@@ -362,6 +362,14 @@ export interface ProductsByIdsOptions {
    */
   includeMerchantHiddenProductIds?: readonly string[]
   /**
+   * Coordinate-scoped routing hints supplied by a signed reference. Hints only
+   * extend bounded relay discovery; listing, author, and deletion checks remain
+   * authoritative.
+   */
+  relayHintsByAddressId?: Readonly<
+    Record<string, readonly string[] | undefined>
+  >
+  /**
    * Signed-in account whose durable whole-relay exclusions apply at final I/O.
    * Its explicit Network choices may join this generic product lookup without
    * displacing the bounded public commerce discovery set.
@@ -706,11 +714,21 @@ function hasCommerceFetchTestOverride(): boolean {
  */
 type CommerceReadRelayPlan = {
   relayUrls: string[]
+  /** Ordered candidates retained until the final live-policy admission gate. */
+  candidateRelayUrls: string[]
+  /** Maximum candidates that may reach relay I/O after policy filtering. */
+  maxRelayAttempts?: number
   parkedRelayUrls: string[]
   /** Complete NIP-65 hint set before the executable fanout cap. */
   hintRelayUrls: string[]
   /** Exact planned subset backed by this authenticated owner's settings. */
   ownerSelectedRelayUrls: string[]
+  /** Exact executable subset contributed by Conduit's app-owned layer. */
+  appRelayUrls: string[]
+  /** Exact executable subset contributed by the owner's NIP-65 layer. */
+  personalRelayUrls: string[]
+  /** Exact candidates with signed remote or retained source authority. */
+  independentRelayUrls: string[]
   /** Resolved once so per-family plans do not repeat the NIP-65 lookup. */
   relayLists: ReadonlyMap<string, RelayList>
 }
@@ -750,34 +768,69 @@ async function planCommerceReadRelayPlan(input: {
     )
   )
 
-  const shouldFetchRelayHints =
-    hintPubkeys.length > 0 &&
-    (input.relayHintMode === "force" ||
-      (input.relayHintMode !== "skip" &&
-        hintPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
-  const relayListLookupRelayUrls = getGeneralReadRelayUrls({
-    settings: settingsSnapshot.settings,
-    fallbackRelayUrls: config.defaultRelays,
-    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
-  })
   const normalizedAuthenticatedPubkey = input.authenticatedPubkey
     ?.trim()
     .toLowerCase()
   const normalizedPolicyAccount = accountPubkey?.trim().toLowerCase()
-  const ownerSelectedRelayListLookupUrls =
+  const configuredOwnerRelayListLookupUrls =
     normalizedAuthenticatedPubkey &&
     normalizedAuthenticatedPubkey === normalizedPolicyAccount
       ? normalizeOwnerSelectedRelayUrls(
           settingsSnapshot.settings.entries.flatMap((entry) =>
             entry.readEnabled ? [entry.url] : []
           )
-        ).filter((relayUrl) => relayListLookupRelayUrls.includes(relayUrl))
+        )
       : []
+  const relayListLookupPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: configuredOwnerRelayListLookupUrls,
+    settings: settingsSnapshot.settings,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
+  })
+  // A durable signed-empty owner projection is already authoritative. Do not
+  // activate ambient app discovery merely to refresh that owner's own NIP-65
+  // hints before the account relay-settings scope is available. This boundary
+  // is author-specific: unrelated authors still need bounded App discovery so
+  // their advertised write relays can participate in the requested read.
+  const suppressAmbientOwnerRelayListLookup =
+    !!normalizedAuthenticatedPubkey &&
+    normalizedAuthenticatedPubkey === normalizedPolicyAccount &&
+    settingsSnapshot.signedRelayListAuthoritative &&
+    configuredOwnerRelayListLookupUrls.length === 0
+  const relayListLookupPubkeys = suppressAmbientOwnerRelayListLookup
+    ? hintPubkeys.filter(
+        (pubkey) =>
+          pubkey.trim().toLowerCase() !== normalizedAuthenticatedPubkey
+      )
+    : hintPubkeys
+  const shouldFetchRelayHints =
+    relayListLookupPubkeys.length > 0 &&
+    (input.relayHintMode === "force" ||
+      (input.relayHintMode !== "skip" &&
+        relayListLookupPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
+  const relayListLookupRelayUrls =
+    relayListLookupPubkeys.length === 0
+      ? []
+      : relayListLookupPlan.candidateRelayUrls
+  const relayListLookupRelayUrlSet = new Set(relayListLookupRelayUrls)
+  const ownerSelectedRelayListLookupUrls = (
+    relayListLookupPlan.ownerSelectedRelayUrls ?? []
+  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
+  const appRelayListLookupUrls = (
+    relayListLookupPlan.appRelayUrls ?? []
+  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
+  const personalRelayListLookupUrls = (
+    relayListLookupPlan.personalRelayUrls ?? []
+  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
+  const independentRelayListLookupUrls = (
+    relayListLookupPlan.independentRelayUrls ?? []
+  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
   const relayLists =
     input.relayLists ??
     (shouldFetchRelayHints
       ? await (testOverrides.getRelayLists ?? getRelayLists)(
-          hintPubkeys,
+          relayListLookupPubkeys,
           hasCommerceFetchTestOverride()
             ? {
                 cacheOnly: true,
@@ -785,6 +838,10 @@ async function planCommerceReadRelayPlan(input: {
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
                 ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
+                appRelayUrls: appRelayListLookupUrls,
+                personalRelayUrls: personalRelayListLookupUrls,
+                independentRelayUrls: independentRelayListLookupUrls,
+                maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,
                 shouldContinue: input.shouldContinue,
@@ -796,6 +853,10 @@ async function planCommerceReadRelayPlan(input: {
                 accountPubkey,
                 authenticatedPubkey: input.authenticatedPubkey,
                 ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
+                appRelayUrls: appRelayListLookupUrls,
+                personalRelayUrls: personalRelayListLookupUrls,
+                independentRelayUrls: independentRelayListLookupUrls,
+                maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,
                 shouldContinue: input.shouldContinue,
@@ -845,7 +906,7 @@ async function planCommerceReadRelayPlan(input: {
   )
   const authenticatedAuthorRelayHints = normalizeUntrustedRelayHintsForContext({
     relayUrls: input.authenticatedAuthorRelayUrls ?? [],
-    approvedRelayUrls: plan.relayUrls,
+    approvedRelayUrls: plan.candidateRelayUrls,
     allowApprovedPrivate: !!input.authenticatedPubkey,
   })
   const externalRelayHints = uniqueStrings([
@@ -856,21 +917,21 @@ async function planCommerceReadRelayPlan(input: {
     ? uniqueStrings([
         ...fallbackRelayUrls,
         ...externalRelayHints,
-        ...plan.relayUrls,
+        ...plan.candidateRelayUrls,
       ])
     : uniqueStrings([
         ...externalRelayHints,
-        ...plan.relayUrls,
+        ...plan.candidateRelayUrls,
         ...fallbackRelayUrls,
       ])
   const effectiveMaxRelays = input.maxRelays ?? DEFAULT_READ_FANOUT
   const clampRelayFanout = (relayUrls: string[]): string[] =>
     effectiveMaxRelays <= 0 ? relayUrls : relayUrls.slice(0, effectiveMaxRelays)
-  const expandedRelayUrls = clampRelayFanout(plannedRelayUrls)
-  const executableRelayUrls = config.e2eRelayIsolationEnabled
-    ? normalizePublicOrIsolatedE2eRelayHints(expandedRelayUrls)
-    : expandedRelayUrls
-  const executableRelayUrlSet = new Set(executableRelayUrls)
+  const candidateRelayUrls = config.e2eRelayIsolationEnabled
+    ? normalizePublicOrIsolatedE2eRelayHints(plannedRelayUrls)
+    : plannedRelayUrls
+  const executableRelayUrls = clampRelayFanout(candidateRelayUrls)
+  const candidateRelayUrlSet = new Set(candidateRelayUrls)
   const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
   const policyAccount = accountPubkey?.trim().toLowerCase()
   const includesAuthenticatedOwner = Boolean(
@@ -888,8 +949,16 @@ async function planCommerceReadRelayPlan(input: {
               ? [entry.url]
               : []
           )
-        ).filter((relayUrl) => executableRelayUrlSet.has(relayUrl))
+        ).filter((relayUrl) => candidateRelayUrlSet.has(relayUrl))
       : []
+  const appRelayUrlSet = new Set([
+    ...(plan.appRelayUrls ?? []),
+    ...fallbackRelayUrls,
+  ])
+  const independentRelayUrlSet = new Set([
+    ...(plan.independentRelayUrls ?? []),
+    ...publicExternalRelayHints,
+  ])
 
   if (
     config.e2eRelayIsolationEnabled ||
@@ -899,11 +968,22 @@ async function planCommerceReadRelayPlan(input: {
   ) {
     return {
       relayUrls: executableRelayUrls,
+      candidateRelayUrls,
+      ...(effectiveMaxRelays > 0
+        ? { maxRelayAttempts: effectiveMaxRelays }
+        : {}),
       parkedRelayUrls: plan.parkedRelayUrls.filter(
-        (relayUrl) => !executableRelayUrlSet.has(relayUrl)
+        (relayUrl) => !candidateRelayUrlSet.has(relayUrl)
       ),
       hintRelayUrls: plan.hintRelayUrls,
       ownerSelectedRelayUrls,
+      appRelayUrls: candidateRelayUrls.filter((relayUrl) =>
+        appRelayUrlSet.has(relayUrl)
+      ),
+      personalRelayUrls: ownerSelectedRelayUrls,
+      independentRelayUrls: candidateRelayUrls.filter((relayUrl) =>
+        independentRelayUrlSet.has(relayUrl)
+      ),
       relayLists,
     }
   }
@@ -914,26 +994,42 @@ async function planCommerceReadRelayPlan(input: {
     case "author_products": {
       const relayUrls = clampRelayFanout(commerceReadRelayUrls())
       const relayUrlSet = new Set(relayUrls)
+      const candidateRelayUrls = commerceReadRelayUrls()
       return {
         relayUrls,
+        candidateRelayUrls,
+        ...(effectiveMaxRelays > 0
+          ? { maxRelayAttempts: effectiveMaxRelays }
+          : {}),
         parkedRelayUrls: plan.parkedRelayUrls.filter(
           (relayUrl) => !relayUrlSet.has(relayUrl)
         ),
         hintRelayUrls: plan.hintRelayUrls,
         ownerSelectedRelayUrls: [],
+        appRelayUrls: candidateRelayUrls,
+        personalRelayUrls: [],
+        independentRelayUrls: [],
         relayLists,
       }
     }
     default: {
       const relayUrls = clampRelayFanout(publicReadRelayUrls())
       const relayUrlSet = new Set(relayUrls)
+      const candidateRelayUrls = publicReadRelayUrls()
       return {
         relayUrls,
+        candidateRelayUrls,
+        ...(effectiveMaxRelays > 0
+          ? { maxRelayAttempts: effectiveMaxRelays }
+          : {}),
         parkedRelayUrls: plan.parkedRelayUrls.filter(
           (relayUrl) => !relayUrlSet.has(relayUrl)
         ),
         hintRelayUrls: plan.hintRelayUrls,
         ownerSelectedRelayUrls: [],
+        appRelayUrls: candidateRelayUrls,
+        personalRelayUrls: [],
+        independentRelayUrls: [],
         relayLists,
       }
     }
@@ -1350,7 +1446,11 @@ async function streamProductRecordChunks(input: {
   baseFilter: NDKFilter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
+  maxRelayAttempts?: number
   ownerSelectedRelayUrls: string[]
+  appRelayUrls: string[]
+  personalRelayUrls: string[]
+  independentRelayUrls: string[]
   authenticatedPubkey?: string | null
   accountPubkey?: string | null
   shouldContinue?: () => boolean
@@ -1387,7 +1487,11 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
+            maxRelayAttempts: input.maxRelayAttempts,
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            appRelayUrls: input.appRelayUrls,
+            personalRelayUrls: input.personalRelayUrls,
+            independentRelayUrls: input.independentRelayUrls,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             accountNetworkLocalStateRepository:
@@ -3999,8 +4103,12 @@ async function fetchPublicProductRecords(query: {
   })
 
   const result = await runFetchEventsFanoutDetailed(filter, {
-    relayUrls: relayPlan.relayUrls,
+    relayUrls: relayPlan.candidateRelayUrls,
+    maxRelayAttempts: relayPlan.maxRelayAttempts,
     ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+    appRelayUrls: relayPlan.appRelayUrls,
+    personalRelayUrls: relayPlan.personalRelayUrls,
+    independentRelayUrls: relayPlan.independentRelayUrls,
     accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
     authenticatedPubkey: query.authenticatedPubkey,
     accountNetworkLocalStateRepository:
@@ -4097,8 +4205,12 @@ async function fetchPublicProductRecordsProgressive(
   await streamProductRecordChunks({
     baseFilter: filter,
     authorChunks,
-    relayUrls: relayPlan.relayUrls,
+    relayUrls: relayPlan.candidateRelayUrls,
+    maxRelayAttempts: relayPlan.maxRelayAttempts,
     ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+    appRelayUrls: relayPlan.appRelayUrls,
+    personalRelayUrls: relayPlan.personalRelayUrls,
+    independentRelayUrls: relayPlan.independentRelayUrls,
     authenticatedPubkey: query.authenticatedPubkey,
     accountPubkey: query.accountPubkey,
     shouldContinue: query.shouldContinue,
@@ -4110,16 +4222,28 @@ async function fetchPublicProductRecordsProgressive(
   })
 
   const expandedRelayPlan = await expandedRelayPlanPromise
-  const expansionRelayUrls = expandedRelayPlan.relayUrls.filter(
-    (relayUrl) => !relayPlan.relayUrls.includes(relayUrl)
+  const initialRelayUrlSet = new Set(relayPlan.candidateRelayUrls)
+  const expansionRelayUrls = expandedRelayPlan.candidateRelayUrls.filter(
+    (relayUrl) => !initialRelayUrlSet.has(relayUrl)
   )
   if (expansionRelayUrls.length > 0) {
+    const expansionRelayUrlSet = new Set(expansionRelayUrls)
     await streamProductRecordChunks({
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
+      maxRelayAttempts: expandedRelayPlan.maxRelayAttempts,
       ownerSelectedRelayUrls: expandedRelayPlan.ownerSelectedRelayUrls.filter(
-        (relayUrl) => expansionRelayUrls.includes(relayUrl)
+        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
+      ),
+      appRelayUrls: expandedRelayPlan.appRelayUrls.filter((relayUrl) =>
+        expansionRelayUrlSet.has(relayUrl)
+      ),
+      personalRelayUrls: expandedRelayPlan.personalRelayUrls.filter(
+        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
+      ),
+      independentRelayUrls: expandedRelayPlan.independentRelayUrls.filter(
+        (relayUrl) => expansionRelayUrlSet.has(relayUrl)
       ),
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
@@ -5000,8 +5124,12 @@ async function fetchVariationGroupRecordBatch(
       // Each transport-safe chunk starts with at most two family reads.
       // Saturated results split below without increasing concurrency.
       const fetchOptions = {
-        relayUrls: relayPlan.relayUrls,
+        relayUrls: relayPlan.candidateRelayUrls,
+        maxRelayAttempts: relayPlan.maxRelayAttempts,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+        appRelayUrls: relayPlan.appRelayUrls,
+        personalRelayUrls: relayPlan.personalRelayUrls,
+        independentRelayUrls: relayPlan.independentRelayUrls,
         accountPubkey: options.authenticatedPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
         accountNetworkLocalStateRepository:
@@ -5628,7 +5756,17 @@ export async function getProductsByIds(
     const valid = !!address && address.kind === EVENT_KINDS.PRODUCT
     return {
       productId,
-      address: valid ? address : null,
+      address: valid
+        ? {
+            ...address,
+            relayHints: [
+              ...address.relayHints,
+              ...(addressId
+                ? (options.relayHintsByAddressId?.[addressId] ?? [])
+                : []),
+            ],
+          }
+        : null,
       addressId: valid ? addressId : null,
     }
   })
@@ -6107,8 +6245,12 @@ async function readPreparedProductTargets(
               "#d": uniqueStrings(targets.map((target) => target.dTag)),
             },
             {
-              relayUrls: relayPlan.relayUrls,
+              relayUrls: relayPlan.candidateRelayUrls,
+              maxRelayAttempts: relayPlan.maxRelayAttempts,
               ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+              appRelayUrls: relayPlan.appRelayUrls,
+              personalRelayUrls: relayPlan.personalRelayUrls,
+              independentRelayUrls: relayPlan.independentRelayUrls,
               accountPubkey: options.authenticatedPubkey,
               authenticatedPubkey: options.authenticatedPubkey,
               accountNetworkLocalStateRepository:
@@ -6852,8 +6994,12 @@ export async function getProfiles(
       limit: Math.max(10, missing.length * 3),
     }
     const fanoutOptions = {
-      relayUrls: relayPlan.relayUrls,
+      relayUrls: relayPlan.candidateRelayUrls,
+      maxRelayAttempts: relayPlan.maxRelayAttempts,
       ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+      appRelayUrls: relayPlan.appRelayUrls,
+      personalRelayUrls: relayPlan.personalRelayUrls,
+      independentRelayUrls: relayPlan.independentRelayUrls,
       accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
       authenticatedPubkey: query.authenticatedPubkey,
       accountNetworkLocalStateRepository:
@@ -7909,6 +8055,9 @@ async function fetchNewInboxWraps(
     authenticatedPubkey: principalPubkey,
     maxRelays: DM_INBOX_READ_FANOUT,
   })
+  const compatibilityAppRelayUrls = readPlan.relayUrls.filter(
+    (relayUrl) => readPlan.relaySources[relayUrl] === "compatibility"
+  )
 
   if (
     testOverrides.fetchEventsFanoutWithDiagnostics ||
@@ -7917,6 +8066,8 @@ async function fetchNewInboxWraps(
     const result = await runFetchEventsFanoutWithDiagnostics(filter, {
       relayUrls: readPlan.relayUrls,
       ownerSelectedRelayUrls: readPlan.ownerSelectedRelayUrls,
+      appRelayUrls: compatibilityAppRelayUrls,
+      personalRelayUrls: [],
       accountPubkey: principalPubkey,
       authenticatedPubkey: principalPubkey,
       accountNetworkLocalStateRepository:
@@ -7951,6 +8102,7 @@ async function fetchNewInboxWraps(
     principalPubkey,
     relayUrls: readPlan.relayUrls,
     ownerSelectedRelayUrls: readPlan.ownerSelectedRelayUrls,
+    appRelayUrls: compatibilityAppRelayUrls,
     limit,
     authorization,
     accountNetworkLocalStateRepository:
@@ -8175,8 +8327,12 @@ async function runLegacyDmSync(
         limit: 400,
       },
       {
-        relayUrls: relayPlan.relayUrls,
+        relayUrls: relayPlan.candidateRelayUrls,
+        maxRelayAttempts: relayPlan.maxRelayAttempts,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+        appRelayUrls: relayPlan.appRelayUrls,
+        personalRelayUrls: relayPlan.personalRelayUrls,
+        independentRelayUrls: relayPlan.independentRelayUrls,
         accountPubkey: principalPubkey,
         authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:
@@ -8192,8 +8348,12 @@ async function runLegacyDmSync(
         limit: 400,
       },
       {
-        relayUrls: relayPlan.relayUrls,
+        relayUrls: relayPlan.candidateRelayUrls,
+        maxRelayAttempts: relayPlan.maxRelayAttempts,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
+        appRelayUrls: relayPlan.appRelayUrls,
+        personalRelayUrls: relayPlan.personalRelayUrls,
+        independentRelayUrls: relayPlan.independentRelayUrls,
         accountPubkey: principalPubkey,
         authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:

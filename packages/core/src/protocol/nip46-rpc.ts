@@ -120,10 +120,6 @@ export class ConduitNip46Signer {
     }
   }
 
-  get pendingRequestCount(): number {
-    return this.pending.size
-  }
-
   hasPendingRequests(): boolean {
     return this.pending.size > 0
   }
@@ -545,12 +541,6 @@ export class ConduitNip46Signer {
       )
     }
     return result
-  }
-
-  async switchRelays(): Promise<boolean> {
-    // PR 2 adopts signer-provided relays transactionally. PR 1 deliberately
-    // retains the already verified route instead of partially mutating it.
-    return false
   }
 
   async signEvent(

@@ -77,11 +77,15 @@ async function durableOwnerRelayListRepository(tags: string[][]) {
 
 function accountNetworkState(
   pubkey: string,
-  excludedRelayUrls: readonly string[]
+  excludedRelayUrls: readonly string[],
+  routingPolicy: Partial<
+    ReturnType<typeof emptyAccountNetworkLocalState>["routingPolicy"]
+  > = {}
 ) {
   const state = emptyAccountNetworkLocalState(pubkey)
   return {
     ...state,
+    routingPolicy: { ...state.routingPolicy, ...routingPolicy },
     exclusions: excludedRelayUrls.map((relayUrl, index) => ({
       relayUrl,
       committedAt: NOW + index,
@@ -623,6 +627,11 @@ describe("planPublishRelays", () => {
       intent: "author_event",
       authorPubkey: AUTHOR_PUBKEY,
       authenticatedPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) =>
+          accountNetworkState(pubkey, [], { appRelaysEnabled: false }),
+      },
     })
 
     expect(plan.primaryRelayUrls).toEqual([currentRelayUrl])
@@ -649,7 +658,8 @@ describe("planPublishRelays", () => {
       },
     })
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
-      get: async (pubkey) => accountNetworkState(pubkey, []),
+      get: async (pubkey) =>
+        accountNetworkState(pubkey, [], { appRelaysEnabled: false }),
     }
 
     const result = await publishWithPlanner(event, {
@@ -665,7 +675,7 @@ describe("planPublishRelays", () => {
     expect(attempts).toEqual([[`${ownerWs}/`]])
   })
 
-  it("does not broaden signed owner authority when no Publish relay is declared", async () => {
+  it("does not broaden signed owner authority when App Relays are disabled and no Publish relay is declared", async () => {
     const cases = [[], [["r", "wss://read-only-owner.example", "read"]]]
 
     for (const tags of cases) {
@@ -686,6 +696,11 @@ describe("planPublishRelays", () => {
           intent: "author_event",
           authorPubkey: AUTHOR_PUBKEY,
           authenticatedPubkey: AUTHOR_PUBKEY,
+          accountPubkey: AUTHOR_PUBKEY,
+          accountNetworkLocalStateRepository: {
+            get: async (pubkey) =>
+              accountNetworkState(pubkey, [], { appRelaysEnabled: false }),
+          },
         })
       ).rejects.toThrow("signed Network settings have no usable Publish relay")
       expect(publishCalls).toBe(0)
@@ -851,6 +866,30 @@ describe("planPublishRelays", () => {
     expect(planned).toBe(false)
   })
 
+  it("applies the author signature fence to commerce author events", async () => {
+    let planned = false
+    const event = signedTestEvent({ publish: async () => new Set() })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => {
+        planned = true
+        return {
+          intent: "commerce_author_event",
+          primaryRelayUrls: [],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "commerce_author_event",
+        authorPubkey: OTHER_AUTHOR_PUBKEY,
+      })
+    ).rejects.toThrow("signed by a different account")
+    expect(planned).toBe(false)
+  })
+
   it("allows a single Publish relay before planning relays", async () => {
     const event = signedTestEvent({
       kind: EVENT_KINDS.RELAY_LIST,
@@ -905,6 +944,44 @@ describe("planPublishRelays", () => {
     })
 
     expect(publishAttempts).toEqual([APP_WRITE_ATTEMPT_RELAYS])
+  })
+
+  it("keeps commerce fallback writes within commerce-qualified App roles", async () => {
+    const publishAttempts: string[][] = []
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "commerce_author_event",
+        primaryRelayUrls: [],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await publishWithPlanner(
+      signedTestEvent({
+        kind: EVENT_KINDS.PRODUCT,
+        tags: [["d", "commerce-fallback"]],
+        publish: async (relaySet: unknown) => {
+          const relayUrls = [
+            ...((relaySet as { relayUrls?: Set<string> | string[] })
+              .relayUrls ?? []),
+          ]
+          publishAttempts.push(relayUrls)
+          return new Set(relayUrls.map((url) => ({ url })))
+        },
+      }),
+      {
+        intent: "commerce_author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+      }
+    )
+
+    expect(publishAttempts).toEqual([
+      config.commerceRelayUrls.map((url) => `${url}/`),
+    ])
+    expect(publishAttempts[0]).not.toContain("wss://relay.dreamith.to/")
+    expect(publishAttempts[0]).not.toContain("wss://relay.primal.net/")
+    expect(publishAttempts[0]).not.toContain("wss://relay.plebeian.market/")
   })
 
   it("refuses tiny contact-list publishes before planning relays", async () => {
@@ -2030,8 +2107,55 @@ describe("planPublishRelays", () => {
     expect(attempts[1]).toEqual([normalizedPrimaryRelay])
     expect(attempts[2]?.length).toBeGreaterThan(0)
     expect(attempts[2]).toContain(APP_WRITE_ATTEMPT_RELAYS[0])
-    expect(result.successfulRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
+    expect(result.successfulRelayUrls).toEqual([CANONICAL_APP_WRITE_RELAYS[0]])
     expect(result.failedRelayUrls).toContain(primaryRelay)
+  })
+
+  it("backfills a capped publish after source policy suppresses the preview target", async () => {
+    const personalRelayUrl = "wss://personal-disabled-write.example"
+    const appRelayUrl = "wss://app-enabled-write.example"
+    const attempts: string[][] = []
+    const event = signedTestEvent({
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        signedRelayListAuthoritative: true,
+        primaryRelayUrls: [personalRelayUrl],
+        primaryCandidateRelayUrls: [personalRelayUrl, appRelayUrl],
+        maxPrimaryRelayAttempts: 1,
+        broadcastRelayUrls: [],
+        broadcastCandidateRelayUrls: [],
+        parkedRelayUrls: [],
+        appRelayUrls: [appRelayUrl],
+        personalRelayUrls: [personalRelayUrl],
+      }),
+    })
+
+    const result = await publishWithPlanner(event, {
+      intent: "author_event",
+      authorPubkey: AUTHOR_PUBKEY,
+      authenticatedPubkey: AUTHOR_PUBKEY,
+      accountPubkey: AUTHOR_PUBKEY,
+      accountNetworkLocalStateRepository: {
+        get: async (pubkey) =>
+          accountNetworkState(pubkey, [], {
+            appRelaysEnabled: true,
+            personalRelaysEnabled: false,
+          }),
+      },
+    })
+
+    expect(attempts).toEqual([[`${appRelayUrl}/`]])
+    expect(result.attemptedRelayUrls).toEqual([appRelayUrl])
   })
 
   it("filters a stale publish plan by explicit account without changing other or public callers", async () => {

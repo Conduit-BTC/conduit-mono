@@ -71,6 +71,18 @@ export function getClientErrorFamily(error: unknown): ClientErrorFamily {
   }
 }
 
+export function getClientErrorMessage(
+  error: unknown,
+  fallback: string
+): string {
+  try {
+    if (!(error instanceof Error)) return fallback
+    return error.message || fallback
+  } catch {
+    return fallback
+  }
+}
+
 export function buildClientErrorTelemetryProperties(input: {
   source: ClientErrorSource
   error: unknown

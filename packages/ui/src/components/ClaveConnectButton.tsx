@@ -18,7 +18,6 @@ const CLAVE_MARK =
 export function claveConnectUrl(nostrConnectUri: string): string {
   return `${CLAVE_CONNECT_URL}${encodeURIComponent(nostrConnectUri)}`
 }
-
 export interface ClaveConnectButtonProps {
   nostrConnectUri: string
   className?: string

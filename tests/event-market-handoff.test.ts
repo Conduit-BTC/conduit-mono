@@ -1176,7 +1176,9 @@ describe("event-market private handoff delivery", () => {
     }
     await expect(
       publishEventMarketReadyReceipt({ ...common, signer: merchantSigner })
-    ).rejects.toThrow("declared NIP-17 inbox")
+    ).rejects.toThrow(
+      "No usable recipient NIP-17 inbox declaration was found on the relays checked."
+    )
     expect(wrapped).toBe(false)
 
     await expect(
@@ -2309,7 +2311,7 @@ describe("event-market organizer inbox readiness", () => {
           failedRelayUrls: [],
         }),
       })
-    ).resolves.toMatchObject({ state: "blocked", reason: "not_declared" })
+    ).resolves.toMatchObject({ state: "blocked", reason: "not_observed" })
   })
 
   it("reads handoff wraps from declared kind-10050 relays only", async () => {

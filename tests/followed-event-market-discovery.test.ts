@@ -36,6 +36,16 @@ const COMPLETE_COVERAGE: EventMarketRelayCoverage = {
   failedRelayCount: 0,
 }
 
+function boundedRelayUrls(options: {
+  relayUrls?: readonly string[]
+  maxRelayAttempts?: number
+}): string[] {
+  const relayUrls = [...(options.relayUrls ?? [])]
+  return options.maxRelayAttempts === undefined
+    ? relayUrls
+    : relayUrls.slice(0, options.maxRelayAttempts)
+}
+
 function followEvent(pubkeys: readonly string[]): SignedPublicNostrEvent {
   return {
     id: "d".repeat(64),
@@ -845,7 +855,7 @@ describe("organizer event-market read coverage", () => {
     configureRead({ relayListState: "network", relayUrls: organizerRelayUrls })
     __setEventMarketTestOverrides({
       fetchEventsFanoutDetailed: async (_filter, options) => {
-        const relayUrls = [...(options.relayUrls ?? [])]
+        const relayUrls = boundedRelayUrls(options)
         observedRelaySets.push(relayUrls)
         const events = relayUrls.includes(organizerRelayUrls[2]!)
           ? [collection, pickup, calendar]

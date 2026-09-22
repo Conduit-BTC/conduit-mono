@@ -175,7 +175,6 @@ async function expectMobileSignerChoices(
   await expect(
     surface.getByRole("button", { name: "Other ways to connect", exact: true })
   ).toBeVisible()
-
   if (ios) {
     const clave = surface.getByRole("link", {
       name: "Connect with Clave",
@@ -195,7 +194,7 @@ async function expectMobileSignerChoices(
         )
       })
     ).toBe(true)
-    await expect(surface.getByText(/Primal|Amber/)).toHaveCount(0)
+    await expect(surface.getByText(/Amber/)).toHaveCount(0)
     await expect(surface.locator('a[href^="intent://"]')).toHaveCount(0)
     await expect(
       surface.locator('a[href^="https://apps.apple.com/"]')
@@ -203,10 +202,10 @@ async function expectMobileSignerChoices(
     return "Clave"
   }
 
-  const choices = [
-    ["Use Amber", "com.greenart7c3.nostrsigner"],
-    ["Use Primal", "net.primal.android"],
-  ] as const
+  await expect(
+    surface.getByRole("button", { name: "Other ways to connect", exact: true })
+  ).toBeVisible()
+  const choices = [["Use Amber", "com.greenart7c3.nostrsigner"]] as const
   for (const [name, packageName] of choices) {
     const control = surface.getByRole("link", {
       name,
@@ -225,27 +224,10 @@ async function expectMobileSignerChoices(
       }, packageName)
     ).toBe(true)
   }
-  const amberBox = await surface
-    .getByRole("link", { name: "Use Amber", exact: true, includeHidden: true })
-    .evaluate((element) => ({
-      width: element.getBoundingClientRect().width,
-      height: element.getBoundingClientRect().height,
-    }))
-  const primalBox = await surface
-    .getByRole("link", { name: "Use Primal", exact: true, includeHidden: true })
-    .evaluate((element) => ({
-      width: element.getBoundingClientRect().width,
-      height: element.getBoundingClientRect().height,
-    }))
-  expect(amberBox?.width).toBe(primalBox?.width)
-  expect(amberBox?.height).toBe(primalBox?.height)
   await expect(
     surface.locator('a[href^="https://clave.casa/connect/"]')
   ).toHaveCount(0)
   await expect(surface.locator('a[href^="https://f-droid.org/"]')).toBeVisible()
-  await expect(
-    surface.locator('a[href^="https://play.google.com/store/apps/details"]')
-  ).toBeVisible()
   return "Amber"
 }
 
@@ -1010,12 +992,13 @@ test.describe("CND-162 mobile browser baseline", () => {
       ).toHaveCount(0)
       const primaryApp = await expectMobileSignerChoices(page, dialog)
       await assertMobileViewport(page)
-      const firstClick = dialog.getByRole("link", {
-        name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",
-        exact: true,
-        includeHidden: true,
-      })
-      await firstClick.dispatchEvent("click")
+      await dialog
+        .getByRole("link", {
+          name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",
+          exact: true,
+          includeHidden: true,
+        })
+        .dispatchEvent("click")
       await expect(
         dialog.getByRole("link", {
           name: `Open ${primaryApp} again`,
@@ -1032,48 +1015,6 @@ test.describe("CND-162 mobile browser baseline", () => {
           exact: true,
         })
       ).toBeVisible()
-
-      if (primaryApp === "Amber") {
-        await expect(
-          dialog.getByRole("link", {
-            name: "Use Primal",
-            exact: true,
-            includeHidden: true,
-          })
-        ).toHaveCount(0)
-        await dialog
-          .getByRole("button", { name: "Choose another app", exact: true })
-          .tap()
-        await expect(dialog.locator('a[href^="intent://"]')).toHaveCount(0)
-        await expect(
-          dialog.getByRole("button", { name: "Use Primal", exact: true })
-        ).toBeDisabled()
-        await dialog
-          .getByRole("button", { name: "Start new connection", exact: true })
-          .tap()
-        await dialog
-          .getByRole("link", {
-            name: "Use Primal",
-            exact: true,
-            includeHidden: true,
-          })
-          .dispatchEvent("click")
-        await expect(
-          dialog.getByRole("link", {
-            name: "Open Primal again",
-            exact: true,
-            includeHidden: true,
-          })
-        ).toHaveCount(1)
-        await expect(
-          dialog.getByRole("link", {
-            name: "Use Amber",
-            exact: true,
-            includeHidden: true,
-          })
-        ).toHaveCount(0)
-      }
-
       await dialog
         .getByRole("button", { name: "Other ways to connect", exact: true })
         .tap()
