@@ -1095,6 +1095,89 @@ describe("order payment admission", () => {
     })
   })
 
+  it("preserves a live proof-delivery owner while recording exact receipt evidence", async () => {
+    const proofDeliveryClaimedAt = Date.now()
+    const waiting: OrderLifecycle = {
+      ...lifecycle,
+      paymentClaimId: input.paymentClaimId,
+      paymentClaimedAt: proofDeliveryClaimedAt,
+      paymentClaimLeaseExpiresAt:
+        proofDeliveryClaimedAt + ORDER_PAYMENT_CLAIM_LEASE_MS,
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      proofDeliveryClaimId: "live-proof-owner",
+      proofDeliveryClaimedAt,
+      proofDeliveryClaimLeaseExpiresAt:
+        proofDeliveryClaimedAt + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+      invoice: "lnbc1public",
+      zapRequestId: "zap-request-current",
+      zapReceiptStatus: "waiting",
+    }
+
+    await withMockOrderPaymentDb({ lifecycle: waiting }, async (state) => {
+      const receipt = await recordObservedOrderPaymentReceipt(waiting.orderId, {
+        zapRequestId: waiting.zapRequestId!,
+        zapReceiptId: "zap-receipt-current",
+        proofDeliveryStatus: "retry_needed",
+      })
+
+      expect(receipt.status).toBe("recorded")
+      if (receipt.status !== "recorded") throw new Error("receipt not recorded")
+      expect(receipt.proofDeliveryClaimed).toBe(false)
+      expect(state.lifecycle()).toMatchObject({
+        paymentStatus: "paid",
+        proofDeliveryStatus: "pending",
+        proofDeliveryClaimId: "live-proof-owner",
+        proofDeliveryClaimedAt,
+        proofDeliveryClaimLeaseExpiresAt:
+          proofDeliveryClaimedAt + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+        zapReceiptStatus: "observed",
+        zapReceiptId: "zap-receipt-current",
+      })
+      expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+    })
+  })
+
+  it("uses retry-needed when exact receipt evidence has no live proof-delivery owner", async () => {
+    const expiredAt = Date.now() - 1
+    const waiting: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      proofDeliveryClaimId: "expired-proof-owner",
+      proofDeliveryClaimedAt: expiredAt - 1_000,
+      proofDeliveryClaimLeaseExpiresAt: expiredAt,
+      invoice: "lnbc1public",
+      zapRequestId: "zap-request-current",
+      zapReceiptStatus: "waiting",
+    }
+
+    await withMockOrderPaymentDb({ lifecycle: waiting }, async (state) => {
+      const receipt = await recordObservedOrderPaymentReceipt(waiting.orderId, {
+        zapRequestId: waiting.zapRequestId!,
+        zapReceiptId: "zap-receipt-current",
+        proofDeliveryStatus: "retry_needed",
+      })
+
+      expect(receipt.status).toBe("recorded")
+      if (receipt.status !== "recorded") throw new Error("receipt not recorded")
+      expect(receipt.proofDeliveryClaimed).toBe(false)
+      expect(state.lifecycle()).toMatchObject({
+        paymentStatus: "paid",
+        proofDeliveryStatus: "retry_needed",
+        zapReceiptStatus: "observed",
+        zapReceiptId: "zap-receipt-current",
+      })
+      expect(state.lifecycle()?.proofDeliveryClaimId).toBeUndefined()
+      expect(state.lifecycle()?.proofDeliveryClaimedAt).toBeUndefined()
+      expect(
+        state.lifecycle()?.proofDeliveryClaimLeaseExpiresAt
+      ).toBeUndefined()
+    })
+  })
+
   it("keeps a deferred receipt timeout from overwriting exact evidence", async () => {
     const waiting: OrderLifecycle = {
       ...lifecycle,

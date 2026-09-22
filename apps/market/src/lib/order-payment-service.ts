@@ -375,6 +375,7 @@ export interface OrderReceiptObservationDependencies {
   waitForZapReceipt: typeof waitForZapReceipt
   recordObservedOrderPaymentReceipt: typeof recordObservedOrderPaymentReceipt
   recordOrderPaymentReceiptTimeout: typeof recordOrderPaymentReceiptTimeout
+  savePaymentAttempt: typeof savePaymentAttempt
 }
 
 export interface OrderReceiptObservationOptions {
@@ -387,6 +388,7 @@ const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDepende
     waitForZapReceipt,
     recordObservedOrderPaymentReceipt,
     recordOrderPaymentReceiptTimeout,
+    savePaymentAttempt,
   }
 
 function requirePreparedAnonZap(
@@ -953,7 +955,7 @@ export async function observeOrderPublicZapReceipt(
         const updated = receiptRecord.lifecycle
         const proofNeedsDelivery = updated.proofDeliveryStatus !== "sent"
         try {
-          await savePaymentAttempt({
+          await dependencies.savePaymentAttempt({
             id: orderId,
             orderId,
             buyerPubkey: updated.buyerPubkey,
@@ -963,11 +965,12 @@ export async function observeOrderPublicZapReceipt(
             invoice: updated.invoice!,
             zapRequestId: updated.zapRequestId,
             zapReceiptId: updated.zapReceiptId,
-            proofDeliveryStatus: proofNeedsDelivery
-              ? options.mode === "observe_only"
-                ? "retry_needed"
-                : "pending"
-              : "sent",
+            proofDeliveryStatus:
+              updated.proofDeliveryStatus === "sent"
+                ? "sent"
+                : updated.proofDeliveryStatus === "pending"
+                  ? "pending"
+                  : "retry_needed",
             createdAt: updated.createdAt,
             updatedAt: Date.now(),
           })

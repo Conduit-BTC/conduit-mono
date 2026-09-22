@@ -30,7 +30,6 @@ import {
   isAccountNetworkRelayRowOrderEligible,
   orderAccountNetworkRelayRows,
   tryNormalizeRelayUrl,
-  type AccountNetworkDesiredRelayRoles,
   type AccountNetworkFrontierView,
   type AccountNetworkRelayConfiguredUse,
   type AccountNetworkRelayRowView,
@@ -63,6 +62,12 @@ import {
   PreferenceSectionDivider,
   PreferenceSectionFooter,
 } from "./PreferenceSectionCard"
+import {
+  baselineRolesFromRows,
+  desiredRolesFromRows,
+  hasUnpublishedRelayRoleChanges,
+  reconcileRelaySettingsDraftRows,
+} from "./relay-settings-draft"
 import { StatusPill } from "./StatusPill"
 import { Switch } from "./Switch"
 
@@ -75,31 +80,6 @@ export interface RelaySettingsPanelProps {
   signerReviewKey?: string
   signerReady?: boolean
   onUnpublishedRelayChangesChange?: (hasUnpublishedChanges: boolean) => void
-}
-
-function desiredRolesFromRows(
-  rows: readonly AccountNetworkRelayRowView[]
-): AccountNetworkDesiredRelayRoles[] {
-  return rows.map((row) => ({
-    url: row.url,
-    readEnabled: row.readEnabled,
-    publishEnabled: row.publishEnabled,
-    privateInboxEnabled: row.privateInboxEnabled,
-  }))
-}
-
-function baselineRolesFromRows(
-  rows: readonly AccountNetworkRelayRowView[]
-): AccountNetworkDesiredRelayRoles[] {
-  return rows.map((row) => ({
-    url: row.url,
-    readEnabled: row.readState === "published" || row.readState === "pending",
-    publishEnabled:
-      row.publishState === "published" || row.publishState === "pending",
-    privateInboxEnabled:
-      row.privateInboxState === "published" ||
-      row.privateInboxState === "pending",
-  }))
 }
 
 function hasSignedOrPendingMembership(
@@ -115,33 +95,6 @@ function hasSignedOrPendingMembership(
 
 function usesUnencryptedRelayTransport(relayUrl: string): boolean {
   return relayUrl.trim().toLowerCase().startsWith("ws://")
-}
-
-function rolesDiffer(
-  baselineRoles: readonly AccountNetworkDesiredRelayRoles[],
-  desiredRoles: readonly AccountNetworkDesiredRelayRoles[],
-  select: (roles: AccountNetworkDesiredRelayRoles) => readonly boolean[]
-): boolean {
-  const baselineByUrl = new Map(
-    baselineRoles.flatMap((roles) => {
-      const selected = select(roles)
-      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
-    })
-  )
-  const desiredByUrl = new Map(
-    desiredRoles.flatMap((roles) => {
-      const selected = select(roles)
-      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
-    })
-  )
-  const urls = new Set([...baselineByUrl.keys(), ...desiredByUrl.keys()])
-  for (const url of urls) {
-    const baseline = baselineByUrl.get(url) ?? []
-    const desired = desiredByUrl.get(url) ?? []
-    if (baseline.length !== desired.length) return true
-    if (baseline.some((value, index) => value !== desired[index])) return true
-  }
-  return false
 }
 
 export async function persistRelayOrderPreference(input: {
@@ -1241,6 +1194,34 @@ function useRelaySettingsReview(
     setRemovalPreparationError(null)
   }, [signerReviewKey])
 
+  const controllerRevisionRef = useRef(controller.revision)
+  const previousControllerRowsRef = useRef(controller.view.rows)
+  const revisionRows = useMemo(() => {
+    if (controllerRevisionRef.current === controller.revision) return rows
+    return reconcileRelaySettingsDraftRows({
+      previousControllerRows: previousControllerRowsRef.current,
+      localRows: rows,
+      nextControllerRows: controller.view.rows,
+    })
+  }, [controller.revision, controller.view.rows, rows])
+
+  useLayoutEffect(() => {
+    if (controllerRevisionRef.current === controller.revision) {
+      previousControllerRowsRef.current = controller.view.rows
+      return
+    }
+    const previousControllerRows = previousControllerRowsRef.current
+    controllerRevisionRef.current = controller.revision
+    previousControllerRowsRef.current = controller.view.rows
+    setRows((current) =>
+      reconcileRelaySettingsDraftRows({
+        previousControllerRows,
+        localRows: current,
+        nextControllerRows: controller.view.rows,
+      })
+    )
+  }, [controller.revision, controller.view.rows])
+
   const baselineRoles = useMemo(
     () => baselineRolesFromRows(controller.view.rows),
     [controller.view.rows]
@@ -1250,21 +1231,20 @@ function useRelaySettingsReview(
       controller.view.rows.map((row) => [row.url, row])
     )
     return orderAccountNetworkRelayRows(
-      rows.map((row) => {
+      revisionRows.map((row) => {
         const current = currentByUrl.get(row.url)
         return current
           ? {
-              ...row,
-              signedPosition: current.signedPosition ?? row.signedPosition,
-              reachability: current.reachability,
-              capability: current.capability,
-              recoveryReadOnly: current.recoveryReadOnly,
+              ...current,
+              readEnabled: row.readEnabled,
+              publishEnabled: row.publishEnabled,
+              privateInboxEnabled: row.privateInboxEnabled,
             }
           : row
       }),
-      rows.map((row) => row.url)
+      revisionRows.map((row) => row.url)
     )
-  }, [controller.view.rows, rows])
+  }, [controller.view.rows, revisionRows])
   const controllerPreferredOrder = useMemo(
     () => controller.view.rows.map((row) => row.url),
     [controller.view.rows]
@@ -1312,19 +1292,15 @@ function useRelaySettingsReview(
     }
     return relayUrls
   }, [controller.view.rows])
-  const relayListChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-    roles.readEnabled,
-    roles.publishEnabled,
-  ])
-  const inboxChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-    roles.privateInboxEnabled,
-  ])
-  const dirty = relayListChanged || inboxChanged
+  const dirty = hasUnpublishedRelayRoleChanges(
+    controller.view.rows,
+    presentationRows
+  )
   const controllerRowUrls = new Set(controller.view.rows.map((row) => row.url))
-  const hasLocalCandidate = rows.some(
+  const hasLocalCandidate = presentationRows.some(
     (row) => row.candidate && !controllerRowUrls.has(row.url)
   )
-  const hasUnconfiguredLocalCandidate = rows.some(
+  const hasUnconfiguredLocalCandidate = presentationRows.some(
     (row) =>
       row.candidate &&
       !controllerRowUrls.has(row.url) &&
@@ -1355,7 +1331,9 @@ function useRelaySettingsReview(
   const busy = operationIsBusy(controller.operation.phase) || reordering
   const metadataReady = controller.status === "ready" && !busy
   const mutationReady = metadataReady && !pendingRetry && signerReady
-  const inboxCount = rows.filter((row) => row.privateInboxEnabled).length
+  const inboxCount = presentationRows.filter(
+    (row) => row.privateInboxEnabled
+  ).length
   const removalInstruction = removalInstructionForReview(
     relayPendingRemoval,
     hasUnpublishedChanges,
@@ -1408,7 +1386,7 @@ function useRelaySettingsReview(
   ): void {
     controller.clearOperation()
     setLocalActionError(null)
-    const currentRow = rows.find((row) => row.url === url)
+    const currentRow = presentationRows.find((row) => row.url === url)
     if (
       currentRow &&
       wholeSetupRelayUrls.has(url) &&
@@ -1509,7 +1487,7 @@ function useRelaySettingsReview(
       setAddError(normalized.error)
       return
     }
-    if (rows.some((row) => row.url === normalized.url)) {
+    if (presentationRows.some((row) => row.url === normalized.url)) {
       setAddError("This relay is already in your Network review.")
       return
     }
