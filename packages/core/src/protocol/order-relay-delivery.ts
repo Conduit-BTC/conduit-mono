@@ -65,6 +65,8 @@ async function defaultPublisher(
     relayUrl: input.relayUrl,
     authorPubkey: input.signedEvent.pubkey,
     accountPubkey: input.accountPubkey,
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
   })

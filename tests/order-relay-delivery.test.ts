@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { finalizeEvent } from "nostr-tools/pure"
 import {
   emptyAccountNetworkLocalState,
   retryOrderRelayDelivery,
@@ -8,6 +9,7 @@ import {
 } from "@conduit/core"
 
 const BUYER = "e".repeat(64)
+const WRAP_SECRET = Uint8Array.from([...new Uint8Array(31), 42])
 
 const signedWrap: SignedPublicNostrEvent = {
   id: "a".repeat(64),
@@ -302,6 +304,82 @@ describe("order relay delivery retry", () => {
           : [expect.objectContaining({ relayUrl, appRelayUrls: [] })]
       )
     }
+  })
+
+  it("rechecks the App cutoff at the default publisher boundary", async () => {
+    const relayUrl = "wss://policy-race.conduit.market"
+    const candidate = lifecycle()
+    candidate.orderRelayDelivery!.signedRecipientWrap = finalizeEvent(
+      {
+        created_at: 1_700_000_000,
+        kind: 1059,
+        tags: [["p", "c".repeat(64)]],
+        content: "encrypted-gift-wrap",
+      },
+      WRAP_SECRET
+    )
+    candidate.orderRelayDelivery!.relayDelivery = [
+      {
+        relayUrl,
+        source: "compatibility_registry",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+    ]
+    const store = repository(candidate)
+    const enabledState = emptyAccountNetworkLocalState(BUYER, () => 1)
+    const disabledState = structuredClone(enabledState)
+    disabledState.routingPolicy = {
+      ...disabledState.routingPolicy,
+      appRelaysEnabled: false,
+      appRelaysTouched: true,
+    }
+    let policyReads = 0
+    const accountNetworkLocalStateRepository = {
+      get: async () => {
+        policyReads += 1
+        return structuredClone(policyReads >= 3 ? disabledState : enabledState)
+      },
+    }
+    const openedRelayUrls: string[] = []
+    const originalWebSocket = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "WebSocket"
+    )
+
+    class UnexpectedRelaySocket {
+      constructor(url: string) {
+        openedRelayUrls.push(url)
+        throw new Error("Unexpected relay write after the App cutoff changed")
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: UnexpectedRelaySocket,
+    })
+
+    try {
+      await retryOrderRelayDelivery("order-id", BUYER, {
+        repository: store.repository,
+        accountNetworkLocalStateRepository,
+        leaseOwner: "worker-policy-race",
+        now: () => 100,
+      })
+    } finally {
+      if (originalWebSocket) {
+        Object.defineProperty(globalThis, "WebSocket", originalWebSocket)
+      } else {
+        Reflect.deleteProperty(globalThis, "WebSocket")
+      }
+    }
+
+    expect(policyReads).toBeGreaterThanOrEqual(3)
+    expect(openedRelayUrls).toEqual([])
+    expect(store.read().orderRelayDelivery?.relayDelivery).toMatchObject([
+      { relayUrl, status: "timed_out", attemptCount: 1 },
+    ])
   })
 
   it("refuses background replay for a guest or different active account", async () => {
