@@ -3355,16 +3355,23 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
       )
       .toBe(3)
     await expect(search).toBeVisible()
-    const organizerLabel = page.getByText(organizerNip05, { exact: true })
-    await expect(organizerLabel).toBeVisible()
+    const organizerTrust = page.getByRole("img", {
+      name: `Verified NIP-05: ${organizerNip05}`,
+    })
+    await expect(organizerTrust).toBeVisible()
+    await expect(organizerTrust).toHaveAttribute(
+      "title",
+      `Verified NIP-05: ${organizerNip05}`
+    )
+    await expect(page.getByText(organizerNip05, { exact: true })).toHaveCount(0)
     if (viewport.name === "mobile") {
-      const labelSize = await organizerLabel.evaluate((element) => ({
+      const labelSize = await organizerTrust.evaluate((element) => ({
         width: element.clientWidth,
         scrollWidth: element.scrollWidth,
         right: element.getBoundingClientRect().right,
       }))
       expect(labelSize.width).toBeGreaterThan(0)
-      expect(labelSize.scrollWidth).toBeGreaterThan(labelSize.width)
+      expect(labelSize.scrollWidth).toBe(labelSize.width)
       expect(labelSize.right).toBeLessThanOrEqual(viewport.width)
     }
     await search.fill("Alpine Goods")
@@ -4904,7 +4911,7 @@ test("paid organizer pickup uses ordinary checkout even after inbox withdrawal @
     hud.getByText(
       "Checkout is needed to review event pickup and confirm who handles it."
     )
-  ).toBeVisible()
+  ).toHaveCount(0)
 
   // A newer withdrawal must not turn a cached paid pickup into automatic intent.
   relay.seed(
