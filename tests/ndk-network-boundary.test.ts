@@ -7,6 +7,7 @@ import {
   emptyAccountNetworkLocalState,
   type AccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
+import { createDefaultAccountNetworkRoutingPolicy } from "../packages/core/src/protocol/account-network-routing-policy"
 
 const ACCOUNT_A = "a".repeat(64)
 const ACCOUNT_B = "b".repeat(64)
@@ -318,6 +319,44 @@ describe("NDK network boundary", () => {
     }
   })
 
+  it("keeps independent remote authority when its URL overlaps a disabled local source", async () => {
+    const remoteOverlap = "wss://relay.ditto.pub"
+    const appOnly = "wss://relay.dreamith.to"
+    const opened = installEoseWebSocket()
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => ({
+        ...accountNetworkState(pubkey, []),
+        routingPolicy: {
+          ...createDefaultAccountNetworkRoutingPolicy(),
+          appRelaysEnabled: false,
+          appRelaysTouched: true,
+        },
+      }),
+    }
+
+    try {
+      const result = await fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [appOnly, remoteOverlap],
+          accountPubkey: ACCOUNT_A,
+          authenticatedPubkey: ACCOUNT_A,
+          appRelayUrls: [appOnly, remoteOverlap],
+          independentRelayUrls: [remoteOverlap],
+          accountNetworkLocalStateRepository: repository,
+          reuseRelayConnections: false,
+        }
+      )
+
+      expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual([
+        remoteOverlap,
+      ])
+      expect(opened.openedUrls).toEqual([remoteOverlap])
+    } finally {
+      opened.restore()
+    }
+  })
+
   it("applies whole-relay exclusions only to the explicit account", async () => {
     const relayUrl = "wss://stale-read-plan.conduit.market"
     const opened = installEoseWebSocket()
@@ -376,6 +415,45 @@ describe("NDK network boundary", () => {
         ACCOUNT_B,
         ACCOUNT_B,
       ])
+    } finally {
+      opened.restore()
+    }
+  })
+
+  it("backfills a bounded read after source policy suppresses an earlier candidate", async () => {
+    const personalRelayUrl = "wss://personal-disabled.conduit.market"
+    const appRelayUrl = "wss://app-enabled.conduit.market"
+    const opened = installEoseWebSocket()
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => ({
+        ...accountNetworkState(pubkey, []),
+        routingPolicy: {
+          ...createDefaultAccountNetworkRoutingPolicy(),
+          personalRelaysEnabled: false,
+          personalRelaysTouched: true,
+        },
+      }),
+    }
+
+    try {
+      const result = await fetchEventsFanoutDetailed(
+        { kinds: [1] },
+        {
+          relayUrls: [personalRelayUrl, appRelayUrl],
+          maxRelayAttempts: 1,
+          accountPubkey: ACCOUNT_A,
+          appRelayUrls: [appRelayUrl],
+          personalRelayUrls: [personalRelayUrl],
+          accountNetworkLocalStateRepository: repository,
+          reuseRelayConnections: false,
+        }
+      )
+
+      expect(opened.openedUrls).toEqual([appRelayUrl])
+      expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual([
+        appRelayUrl,
+      ])
+      expect(result.admittedRelayUrls).toEqual([appRelayUrl])
     } finally {
       opened.restore()
     }

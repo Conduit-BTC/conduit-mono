@@ -19,6 +19,12 @@ export {
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
 export {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  type CollapsibleProps,
+} from "./Collapsible"
+export {
   EventTimelineEntry,
   EventTimelineLoading,
   EventTimelineViewport,

@@ -2219,6 +2219,9 @@ describe("publishPrivateMessage", () => {
           "wss://commerce.conduit.market",
           "wss://interop.conduit.market",
         ])
+        expect(options.appRelayUrls).toEqual(relayUrls)
+        expect(options.personalRelayUrls).toEqual([])
+        expect(options.independentRelayUrls).toEqual([])
         const diagnostics = {
           plan: {
             intent: "recipient_event",
@@ -2413,6 +2416,11 @@ describe("publishPrivateMessage", () => {
         wrap(`wrap-${recipient.pubkey}`)) as never,
       publishFn: (async (_event, options) => {
         publishes.push(options.exclusiveRelayUrls ?? [])
+        expect(options.appRelayUrls).toEqual([])
+        expect(options.personalRelayUrls).toEqual([])
+        expect(options.independentRelayUrls).toEqual([
+          "wss://recipient.inbox.conduit.market",
+        ])
         return {} as never
       }) as never,
     })

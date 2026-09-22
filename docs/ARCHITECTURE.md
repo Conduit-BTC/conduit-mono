@@ -49,7 +49,9 @@ interaction primitives belong in `@conduit/ui`. Apps may depend on both.
 | `e.conduit.market`        | Product telemetry proxy      |
 | `presence.conduit.market` | Live product/store presence  |
 
-The canonical relay reset list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://relay.conduit.market`. Retired Conduit relay hosts should not appear in active docs or examples.
+The versioned App Relay registry and reset inputs are code-owned in
+`packages/core/src/config.ts` and start with `wss://relay.conduit.market`.
+Retired Conduit relay hosts should not appear in active docs or examples.
 
 ---
 
@@ -245,7 +247,7 @@ Dexie is used for local-first persistence and recovery:
 | `relayLists`               | NIP-65 relay list cache                                     |
 | `ownerRelayListEvidence`   | Validated owner `kind:10002` frontier and delivery evidence |
 | `inboxDeclarationEvidence` | Validated `kind:10050` frontier, delivery, and recovery     |
-| `accountNetworkLocalState` | Unsigned exclusions, ordering, and capability scans         |
+| `accountNetworkLocalState` | Unsigned layer policy, exclusions, ordering, and metadata   |
 | `productSocialSummaries`   | Product trust/social summary cache                          |
 | `paymentAttempts`          | Buyer payment attempt history                               |
 | `wallets`                  | Non-secret local wallet descriptors/defaults                |
@@ -264,14 +266,14 @@ wallet instance.
 ### localStorage
 
 localStorage is used for small local preferences, cart state, and the selected
-public key/signer method. Active account Network membership is not a
-localStorage setting: it is projected from validated signed `kind:10002` and
-`kind:10050` evidence. IndexedDB stores signed Network evidence, unsigned local
-Network policy, local order/message/payment records, caches, wallet descriptors,
-and provider-owned credential records. Unpublished legacy local Network settings
-and their migration or inbox-recovery markers are ignored. Reconnect or reset
-reconstructs account membership from validated published signed evidence, with
-explicit Network setup or repair when valid published state is absent.
+public key/signer method. Signed personal Network membership is projected from
+validated `kind:10002` and `kind:10050` evidence. IndexedDB stores signed
+Network evidence, the versioned account-and-device-scoped App Relays and Your
+Relays policy, exclusions, local order/message/payment records, caches, wallet
+descriptors, and provider-owned credential records. Unpublished legacy local
+Network membership and migration markers are ignored. Reconnect or reset
+reconstructs personal membership from signed evidence and composes it with the
+enabled code-owned App Relay registry.
 
 A legacy single-wallet NWC record may be read only for transactional migration
 into `wallets` and `walletCredentials`; new wallet credentials must not be
@@ -285,41 +287,60 @@ relay, or another user-selected provider processes them.
 
 ## Relay Architecture
 
-Conduit treats relays as Nostr infrastructure, not fixed app roles. Market and
-Merchant render the same account-level Network experience through a shared core
-controller and shared panel; app routes are navigation shells.
+Conduit treats relays as Nostr infrastructure with a transparent app baseline.
+Market and Merchant render the same account-level Network experience through a
+shared core controller and shared panel; app routes are navigation shells.
 
-The Network screen projects two independent signed frontiers into one flat relay
-list. Read and Publish map to NIP-65 `kind:10002`; Private inbox maps to NIP-17
-`kind:10050`. The latest validated signed frontier for each kind is authoritative,
-while an unpublished review draft remains in memory. Exact signed bytes and
-immutable target plans are staged before network I/O so interrupted operations
-can retry without asking the signer to create a different replaceable event.
+The Network screen has separate **App Relays** and **Your Relays** sections.
+App Relays come from a versioned, operation-specific registry and start enabled.
+Your Relays displays the union of signed NIP-65 `kind:10002` Read/Publish and
+owner NIP-17 `kind:10050` Private inbox membership. Its local toggle controls
+only whether personal NIP-65 routes are additive. A valid owner inbox remains
+active and editable while that toggle is off, and a valid recipient declaration
+remains exclusive for delivery.
+
+The latest validated signed frontier for each event kind is authoritative for
+the published personal setup, while an unpublished review draft remains in
+memory. Exact signed bytes and immutable target plans are staged before network
+I/O so interrupted operations can retry without asking the signer to create a
+different replaceable event. A reviewed **Match Conduit defaults** action may
+publish both event kinds through that same mutation boundary.
 
 Dexie retains signed frontier and delivery evidence plus unsigned local policy:
-causal whole-relay exclusions, capability observations, and a signer-free
-preferred order among otherwise eligible and equivalent operations.
-Causal exclusions gate later operations until an authoritative re-add. Preferred
-order and capability observations never override signed membership, protocol
-routing, exclusions, validity, or evidence rules. Owner-selected `ws://` relays
+layer toggles and touched state, causal whole-relay exclusions, capability
+observations, and a signer-free preferred order among otherwise eligible and
+equivalent operations. Causal exclusions gate later operations until an
+authoritative re-add. Layer policy cannot rewrite signed state, suppress valid
+owner inbox reads, or widen recipient delivery. Owner-selected `ws://` relays
 remain eligible for that owner's account activity and receive a non-blocking
 unencrypted-connection warning; remotely learned `ws://` targets are rejected
-again at final I/O.
+again at final I/O. Every executor also rechecks layer toggles and exclusions
+immediately before I/O.
 
 The durable authority, recovery, transport, and removal contracts are defined in
 [`docs/specs/relay.md`](./specs/relay.md) and the detailed
 [`Relay Architecture`](./specs/relay/conduit_relay_architecture.md).
 
-The current canonical fallback/reset relay list lives in `packages/core/src/config.ts`:
-
-```text
-wss://relay.conduit.market
-wss://nos.lol
-wss://relay.ditto.pub
-wss://relay.primal.net
-```
+The current code-owned relay registry lives in `packages/core/src/config.ts`.
+It assigns bounded operation roles rather than making any one relay network
+authority. Conduit and Ditto supply the qualified general, commerce, and
+private-inbox baseline. Dreamith supplies general read/write routing but does
+not enter commerce or protected-inbox roles until separately qualified. Primal
+is a public-write route; `nos.lol` is scoped general-read; Plebeian is scoped
+commerce discovery. The exact URLs, directions, signed preset membership, and
+registry version remain code-owned so UI and planners consume one policy.
 
 Conduit-hosted deploys should leave relay env vars empty unless an operator intentionally needs an override. This keeps the public code defaults auditable.
+
+NIP-11 display names and square icons may identify rows after URL and
+media-policy validation. They are advertised metadata only, not proof of relay
+identity, commerce support, protected-inbox behavior, or current health. Conduit
+does not run an end-user relay optimizer or active scan.
+
+Turning App Relays off is allowed after an explicit warning when the enabled
+personal setup has no positively qualified commerce Publish relay or no valid
+private inbox. Partial or unavailable evidence is presented as unverified, not
+as failure. The safe default remains enabled.
 
 Signed commerce writes for orders, messages, merchant replies, payment proofs, and product publish/delete actions should remain locally visible and retryable where implemented. Relay behavior should stay typed, recoverable, and shared rather than being rebuilt in routes.
 

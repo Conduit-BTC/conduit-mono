@@ -2,17 +2,24 @@
 
 ## Overview
 
-Conduit treats relays as Nostr infrastructure, not fixed app roles. Market and
-Merchant expose one account-level Network experience projected from the user's
-latest validated signed NIP-65 `kind:10002` and NIP-17 `kind:10050` events.
+Conduit treats relays as Nostr infrastructure with two transparent runtime
+layers. Market and Merchant expose the same account-level Network experience:
 
-The UI presents one flat relay list. Each row may
-participate in Read, Publish, Private inbox, or any combination, and may show
-configured, advertised, or observed capability evidence. Only configured or
-scoped observed commerce compatibility can move a relay into the Commerce tier.
-Advertised relay-protocol capabilities remain weaker supporting evidence. A
-signer-free Conduit-local preference may order otherwise eligible and equivalent
-operations, but cannot change signed membership or protocol routing.
+- **App Relays** are a versioned, code-owned, operation-specific registry. They
+  are enabled by default and supply a reliable baseline.
+- **Your Relays** displays the union of the user's latest validated signed
+  NIP-65 `kind:10002` and owner NIP-17 `kind:10050` membership. Its local switch
+  controls only additive NIP-65 routing and starts disabled only after complete
+  scoped absence with no retained NIP-65 frontier.
+
+NIP-17 `kind:10050` remains the signed Private inbox declaration. A valid owner
+declaration remains active for Conduit inbox reads regardless of the Your Relays
+toggle, and a valid recipient declaration remains exclusive for delivery. The
+UI presents separate App Relays and Your Relays sections with configured,
+advertised, or observed evidence. Advertised relay-protocol capabilities remain
+weaker supporting evidence. App Relays starts as a collapsed accessible
+disclosure whose visible summary derives its route count from the registry;
+expansion is informational and Your Relays remains immediately available below.
 
 Transport eligibility is authority-scoped. An authenticated owner may
 explicitly select either `ws://` or `wss://` relays in Network for eligible
@@ -72,11 +79,15 @@ or application behavior. Its `supported_nips` list must not be used to require
 client/application/event NIPs such as NIP-17, NIP-33, NIP-65, NIP-99, or Open
 Markets product semantics.
 
-Adding a relay currently performs URL normalization, deduplication, and bounded
-metadata discovery. Active connection, read, write, and protected-auth checks
-belong to a separate future **Optimize my relays** flow. That scan and its
-recommendations remain non-mutating until the user reviews and accepts a
-proposed configuration.
+Adding a relay performs URL normalization, deduplication, and bounded NIP-11
+metadata discovery. NIP-11 `name` and square `icon` may identify a relay after
+URL and media-policy validation, with the normalized relay URL and generic icon
+as fallbacks. Names and icons are advertised presentation metadata, not verified
+identity or capability.
+
+Conduit does not run an end-user optimizer, active relay scan, or silent probe.
+Operator qualification of an App Relay role is release evidence and does not
+mutate signed account state.
 
 Auth capability has separate evidence states: untested, advertised by NIP-11,
 challenge observed, a matching positive auth `OK` observed, and
@@ -181,7 +192,9 @@ the required access-control evidence is absent.
 Apps should not hard-code a single relay as the network authority. Relay plans
 should come from:
 
+- enabled roles in the versioned App Relay registry;
 - the latest usable validated signed `kind:10002` and `kind:10050` frontiers;
+- the account-and-device-scoped App Relays and Your Relays layer policy;
 - evidence-labelled capabilities and warnings;
 - evidence groups followed by signer-free Conduit-local ordering only among
   otherwise eligible and equivalent operations;
@@ -201,13 +214,23 @@ as a new authority across isolated devices and never overrides protocol event
 ordering, signed authority, `kind:10050` routing, whole-relay exclusions,
 validity, or evidence rules.
 
+For private delivery, a valid recipient `kind:10050` is exclusive. Only a
+completed bounded lookup that resolves to `not_observed`, with no retained
+signed frontier, can enter the separately flagged validated-kind-16
+compatibility lane. `signed_empty`, `malformed`, `lookup_partial`, and
+`lookup_unavailable` cannot. Kind-14 general DMs never use App Relays or any
+other compatibility fallback for delivery.
+
 Every fresh signer connection reconciles both replaceable-event frontiers over
 a bounded discovery plan independent of legacy local preferences. Partial or
 unavailable coverage is unknown, not absence. Reconnect or reset reconstructs
-account membership from validated published `kind:10002` and `kind:10050`
-evidence. Unpublished legacy local Network settings and migration records are
-ignored; they do not seed drafts, recovery, retries, or relay I/O. When valid
-published state is absent, Network provides explicit setup or repair.
+personal membership from validated published `kind:10002` and `kind:10050`
+evidence and composes it with enabled App Relay roles. App Relays initialize
+enabled. Your Relays initializes disabled only for complete scoped absence with
+no retained NIP-65 frontier; existing signed setups migrate enabled and unknown
+coverage preserves the last local choice. Unpublished legacy local Network
+settings and migration records are ignored; they do not seed signed drafts,
+recovery, or retries.
 
 A persisted legacy singleton cutover record up-converts to one batch without
 resetting its established readback or expiry. Whole-relay removal filters the
@@ -254,14 +277,33 @@ whole-relay removal excludes the removed URL from reads, writes, and every
 recovery batch immediately after the atomic local commit. Unsigned drafts,
 cancelled signer flows, and missing required signatures change nothing.
 
-The desired configuration retains at least one Publish relay. A single Publish
-relay is valid with a redundancy warning. A reviewed change cannot eliminate the
-last usable Private inbox without selecting a replacement. An account that
-already has no usable Private inbox may still change Read or Publish roles; this
-does not force inbox setup for an unrelated change. Removing a current Private
-inbox always requires selecting a current replacement, even when a different
-recovery-only read route survives. For an account that is already signed-empty,
-the guard also prevents removing its final recovery-only read route.
+The effective configuration retains at least one Publish relay while either
+layer is enabled. A single Publish relay is valid with a redundancy warning. A
+reviewed signed change cannot eliminate the last usable Private inbox without
+selecting a replacement. An account that already has no usable Private inbox
+may still change Read or Publish roles; this does not force inbox setup for an
+unrelated change. Removing a current Private inbox always requires selecting a
+current replacement, even when a different recovery-only read route survives.
+For an account that is already signed-empty, the guard also prevents removing
+its final recovery-only read route.
+
+Turning App Relays off is a signer-free local action, but it warns when Your
+Relays is disabled, no enabled personal Publish member has positively
+established commerce compatibility, or no valid private inbox is current.
+Unknown capability is **Not verified**, not broken. The user may explicitly
+proceed. Every executor rechecks current layer policy and durable whole-relay
+exclusions immediately before final I/O.
+
+When complete bounded reconciliation observes neither setup event within the
+queried plan and retains no valid frontier, **Match Conduit defaults** reviews
+and may publish both NIP-65 and NIP-17 events through the sole Network mutation
+owner. The review states that signed preferences may exist outside the queried
+plan and that publication may supersede them. Only changed kinds are signed,
+every required exact event and immutable target plan is staged before
+publication, and retries reuse those bytes. Existing observed setups use **Add
+missing Conduit defaults** and preserve personal tags and exclusions.
+Partial/unavailable discovery, `signed_empty`, and `malformed` states never
+trigger a silent replacement.
 
 Shared acceleration, cache, index, and routing systems may derive only from
 relay-visible state and must never expose a hidden API for private messages,
@@ -279,7 +321,10 @@ VITE_APP_WRITE_RELAY_URLS=
 
 `VITE_RELAY_URL` remains a default relay hint for legacy and NIP-89-related flows, not a user-facing relay role.
 
-The canonical reset/fallback list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://relay.conduit.market`. Retired Conduit relay hosts must not be used in active examples.
+The versioned App Relay registry and reset inputs are code-owned in
+`packages/core/src/config.ts`; the registry starts with
+`wss://relay.conduit.market`. Retired Conduit relay hosts must not be used in
+active examples.
 
 New source-aware relay outcome work should be documented before replacing current shared helpers with a custom relay substrate.
 
@@ -291,5 +336,12 @@ New source-aware relay outcome work should be documented before replacing curren
 - clear warning states for unreachable or partially compatible relays
 - no reliance on a single relay for baseline Nostr interoperability
 - identical account-level Network behavior in Market and Merchant
+- App Relays enabled by default with source-aware, deduplicated execution
+- personal NIP-65 routes disabled only after complete scoped absence with no
+  retained frontier
+- valid signed owner inbox reads preserved across personal-layer changes
+- recipient delivery never widened beyond a valid `kind:10050`, and
+  compatibility admitted only for validated kind-16 `not_observed`
+- NIP-11 names and icons degrade safely to normalized URLs and local artwork
 - truthful reconciliation, publication, readback, and retry state for both
   signed relay declarations
