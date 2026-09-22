@@ -1204,12 +1204,46 @@ export function useAccountNetworkSettings(
       const stored =
         (await dexieAccountNetworkLocalStateRepository.get(snapshot.pubkey)) ??
         emptyAccountNetworkLocalState(snapshot.pubkey)
+      const personalRelayRows = baseView.rows
+      const appRelayRows = baseView.appRelays?.rows ?? []
+      const ownerSelectedRelayUrls = personalRelayRows.map((row) => row.url)
+      const appRelayUrlSet = new Set(appRelayRows.map((row) => row.url))
+      const personalRelayUrlSet = new Set(
+        personalRelayRows
+          .filter((row) => row.readEnabled || row.publishEnabled)
+          .map((row) => row.url)
+      )
+      const independentRelayUrlSet = new Set(
+        personalRelayRows
+          .filter((row) => row.privateInboxEnabled || row.recoveryReadOnly)
+          .map((row) => row.url)
+      )
+      const refreshShouldContinue = () =>
+        shouldContinue() && generation === scanGeneration.current
       const scans = await scanRelayBatch({
         relayUrls: [
-          ...baseView.rows.map((row) => row.url),
-          ...(baseView.appRelays?.rows.map((row) => row.url) ?? []),
+          ...personalRelayRows.map((row) => row.url),
+          ...appRelayRows.map((row) => row.url),
         ],
         existing: stored.relayScans,
+        shouldContinue: refreshShouldContinue,
+        isRelayEligible: async (relayUrl) =>
+          (
+            await filterEligibleAccountRelayUrls({
+              accountPubkey: snapshot.pubkey,
+              authenticatedPubkey: snapshot.pubkey,
+              candidateRelayUrls: [relayUrl],
+              ownerSelectedRelayUrls,
+              appRelayUrls: appRelayUrlSet.has(relayUrl) ? [relayUrl] : [],
+              personalRelayUrls: personalRelayUrlSet.has(relayUrl)
+                ? [relayUrl]
+                : [],
+              independentRelayUrls: independentRelayUrlSet.has(relayUrl)
+                ? [relayUrl]
+                : [],
+              repository: dexieAccountNetworkLocalStateRepository,
+            })
+          ).includes(relayUrl),
       })
       if (!shouldContinue() || generation !== scanGeneration.current) return
       const updated = await recordAccountNetworkRelayScans({

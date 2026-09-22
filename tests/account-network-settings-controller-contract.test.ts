@@ -239,11 +239,34 @@ describe("account Network settings controller contract", () => {
       "return {\n    view: baseView"
     )
     expect(refresh).toContain("async (): Promise<void>")
-    expect(refresh).toContain("...baseView.rows.map((row) => row.url)")
-    expect(refresh).toContain(
-      "...(baseView.appRelays?.rows.map((row) => row.url) ?? [])"
-    )
+    expect(refresh).toContain("...personalRelayRows.map((row) => row.url)")
+    expect(refresh).toContain("...appRelayRows.map((row) => row.url)")
     expect(refresh).not.toContain("relayUrls?:")
+  })
+
+  it("rechecks live source eligibility before every manual metadata request", () => {
+    const refresh = sourceBetween(
+      "const refresh = useCallback(",
+      "return {\n    view: baseView"
+    )
+
+    expect(refresh).toContain("const personalRelayRows = baseView.rows")
+    expect(refresh).toContain(
+      "const appRelayRows = baseView.appRelays?.rows ?? []"
+    )
+    expect(refresh).toContain("shouldContinue: refreshShouldContinue")
+    expect(refresh).toContain("isRelayEligible: async (relayUrl)")
+    expect(refresh).toContain("filterEligibleAccountRelayUrls({")
+    expect(refresh).toContain("candidateRelayUrls: [relayUrl]")
+    expect(refresh).toContain("ownerSelectedRelayUrls")
+    expect(refresh).toContain("row.readEnabled || row.publishEnabled")
+    expect(refresh).toContain("row.privateInboxEnabled || row.recoveryReadOnly")
+    expect(refresh).toContain("appRelayUrls:")
+    expect(refresh).toContain("personalRelayUrls:")
+    expect(refresh).toContain("independentRelayUrls:")
+    expect(refresh).toContain(
+      "repository: dexieAccountNetworkLocalStateRepository"
+    )
   })
 
   it("turns refresh failures into an actionable operation error", () => {
