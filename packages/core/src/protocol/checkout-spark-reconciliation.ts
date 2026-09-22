@@ -84,7 +84,7 @@ export interface FreezeCheckoutSparkPlanInput {
   obligations: readonly CheckoutSparkObligationPlanInput[]
 }
 
-export interface CheckoutSparkFundingPlan extends CheckoutSparkFundingPlanInput {}
+export type CheckoutSparkFundingPlan = CheckoutSparkFundingPlanInput
 
 export interface CheckoutSparkObligationPlan extends CheckoutSparkObligationPlanInput {
   obligationId: string
