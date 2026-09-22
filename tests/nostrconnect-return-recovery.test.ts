@@ -169,13 +169,15 @@ function createRelayHarness() {
           decrypt(event.content, getConversationKey(signerKey, event.pubkey))
         ) as { id: string; method: string }
         methods.push(request.method)
-        publish(
-          response(
-            event.pubkey,
-            request.method === "get_public_key" ? publicKeyResponse : "ack",
-            request.id
-          )
-        )
+        const result =
+          request.method === "get_public_key"
+            ? publicKeyResponse
+            : request.method === "ping"
+              ? "pong"
+              : request.method === "switch_relays"
+                ? "null"
+                : "ack"
+        publish(response(event.pubkey, result, request.id))
       }
     }
 
