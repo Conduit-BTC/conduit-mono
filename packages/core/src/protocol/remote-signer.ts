@@ -1806,19 +1806,7 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
     this.removeTransportFailureListener =
       this.bunkerSigner.onLifecycleFailure?.((failure) => {
         const error = classifyRemoteSignerError(failure, "transport lifecycle")
-        void (error.code === "invalid_response"
-          ? this.transitionToPermanentlyUnusable({
-              type: "permanently_unusable",
-              reason: "integrity_failure",
-              sessionDisposition: "discard",
-              error,
-            })
-          : this.transitionToPermanentlyUnusable({
-              type: "permanently_unusable",
-              reason: "transport_unavailable",
-              sessionDisposition: "retain_for_restore",
-              error,
-            }))
+        void this.invalidateAfterFailure(error, "transport_unavailable")
       }) ?? null
   }
 
@@ -1884,7 +1872,10 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
   }
 
   assertUsable(): void {
-    if (this.lifecycle.state !== "active") {
+    if (
+      this.lifecycle.state !== "active" ||
+      this.bunkerSigner.isTransportAvailable?.() === false
+    ) {
       throw this.unavailableError(
         "session setup",
         "The remote signer session became unavailable before setup completed."
@@ -1894,23 +1885,7 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
 
   async failVerification(error: unknown): Promise<void> {
     const remoteError = classifyRemoteSignerError(error, "resume identity")
-    const closePromise =
-      remoteError.code === "invalid_response" ||
-      remoteError.code === "session_identity_mismatch"
-        ? this.transitionToPermanentlyUnusable({
-            type: "permanently_unusable",
-            reason: "integrity_failure",
-            sessionDisposition: "discard",
-            error: remoteError,
-          })
-        : this.transitionToPermanentlyUnusable({
-            type: "permanently_unusable",
-            reason: "transport_unavailable",
-            sessionDisposition: "retain_for_restore",
-            error: remoteError,
-          })
-    if (closePromise) await closePromise
-    else await this.waitForInvalidationClose()
+    await this.invalidateAfterFailure(remoteError, "transport_unavailable")
   }
 
   private unavailableError(
@@ -1986,6 +1961,41 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
       : Promise.resolve()
   }
 
+  private async invalidateAfterFailure(
+    error: RemoteSignerError,
+    recoverableReason: Extract<
+      RemoteSignerAdapterInvalidation,
+      { sessionDisposition: "retain_for_restore" }
+    >["reason"] = error.code === "timeout"
+      ? "request_timeout"
+      : "transport_unavailable"
+  ): Promise<void> {
+    const transition =
+      error.code === "invalid_response" ||
+      error.code === "session_identity_mismatch"
+        ? ({
+            type: "permanently_unusable",
+            reason: "integrity_failure",
+            sessionDisposition: "discard",
+            error,
+          } as const)
+        : recoverableReason === "request_timeout"
+          ? ({
+              type: "permanently_unusable",
+              reason: "request_timeout",
+              sessionDisposition: "retain_for_restore",
+              error,
+            } as const)
+          : ({
+              type: "permanently_unusable",
+              reason: "transport_unavailable",
+              sessionDisposition: "retain_for_restore",
+              error,
+            } as const)
+    const closePromise = this.transitionToPermanentlyUnusable(transition)
+    await (closePromise ?? this.waitForInvalidationClose())
+  }
+
   private canCompleteStartedRequest(): boolean {
     return (
       this.lifecycle.state === "active" || this.lifecycle.state === "draining"
@@ -2034,37 +2044,11 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
       }
       if (
         remoteError.code === "timeout" ||
-        remoteError.code === "unavailable"
-      ) {
-        const closePromise = this.transitionToPermanentlyUnusable({
-          type: "permanently_unusable",
-          reason:
-            remoteError.code === "timeout"
-              ? "request_timeout"
-              : "transport_unavailable",
-          sessionDisposition: "retain_for_restore",
-          error: remoteError,
-        })
-        if (closePromise) {
-          await closePromise
-        } else {
-          await this.waitForInvalidationClose()
-        }
-      } else if (
+        remoteError.code === "unavailable" ||
         remoteError.code === "invalid_response" ||
         remoteError.code === "session_identity_mismatch"
       ) {
-        const closePromise = this.transitionToPermanentlyUnusable({
-          type: "permanently_unusable",
-          reason: "integrity_failure",
-          sessionDisposition: "discard",
-          error: remoteError,
-        })
-        if (closePromise) {
-          await closePromise
-        } else {
-          await this.waitForInvalidationClose()
-        }
+        await this.invalidateAfterFailure(remoteError)
       }
       throw remoteError
     } finally {
@@ -2137,17 +2121,7 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
   private async rejectSignerIntegrityFailure(
     error: RemoteSignerError
   ): Promise<never> {
-    const closePromise = this.transitionToPermanentlyUnusable({
-      type: "permanently_unusable",
-      reason: "integrity_failure",
-      sessionDisposition: "discard",
-      error,
-    })
-    if (closePromise) {
-      await closePromise
-    } else {
-      await this.waitForInvalidationClose()
-    }
+    await this.invalidateAfterFailure(error)
     throw error
   }
 

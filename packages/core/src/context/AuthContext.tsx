@@ -80,7 +80,7 @@ export interface AuthContextValue {
   status: AuthStatus
   error: string | null
   remoteSignerRecovery: RemoteSignerRecoveryState | null
-  remoteSignerState: RemoteSignerState
+  /** Live signer authority, distinct from retained account scope. */
   signerReadiness: AuthSignerReadiness
   authUrl: string | null
   nostrConnectUri: string | null
@@ -95,7 +95,7 @@ export interface RemoteSignerRecoveryState {
   restoreError: string | null
 }
 
-export type RemoteSignerState =
+type RemoteSignerState =
   | "none"
   | "verifying"
   | "active"
@@ -1854,7 +1854,6 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         status,
         error,
         remoteSignerRecovery,
-        remoteSignerState,
         signerReadiness: getAuthSignerReadiness({
           status,
           pubkey,

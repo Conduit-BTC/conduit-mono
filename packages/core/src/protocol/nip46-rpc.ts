@@ -120,10 +120,6 @@ export class ConduitNip46Signer {
     }
   }
 
-  get pendingRequestCount(): number {
-    return this.pending.size
-  }
-
   hasPendingRequests(): boolean {
     return this.pending.size > 0
   }

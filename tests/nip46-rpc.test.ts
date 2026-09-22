@@ -158,7 +158,7 @@ describe("Conduit NIP-46 RPC transport", () => {
       code: "unavailable",
     })
 
-    expect(signer.pendingRequestCount).toBe(0)
+    expect(signer.hasPendingRequests()).toBe(false)
     expect(failures).toHaveLength(1)
     expect(failures[0]?.code).toBe("unavailable")
   })
@@ -176,7 +176,7 @@ describe("Conduit NIP-46 RPC transport", () => {
 
     await expect(pending).resolves.toBe("pong")
     expect(failures).toHaveLength(0)
-    expect(signer.pendingRequestCount).toBe(0)
+    expect(signer.hasPendingRequests()).toBe(false)
   })
 
   it("keeps the route usable when one response subscription cannot open", async () => {
@@ -222,7 +222,7 @@ describe("Conduit NIP-46 RPC transport", () => {
     pool.emit(RELAYS[0]!, response(request.id, { result: null }))
 
     await expect(pending).resolves.toBeNull()
-    expect(signer.pendingRequestCount).toBe(0)
+    expect(signer.hasPendingRequests()).toBe(false)
   })
 
   it("accepts conventional null errors and preserves an empty result", async () => {
@@ -233,7 +233,7 @@ describe("Conduit NIP-46 RPC transport", () => {
     pool.emit(RELAYS[0]!, response(request.id, { result: "", error: null }))
 
     await expect(pending).resolves.toBe("")
-    expect(signer.pendingRequestCount).toBe(0)
+    expect(signer.hasPendingRequests()).toBe(false)
   })
 
   it("keeps auth_url interim responses pending until a final result arrives", async () => {
@@ -247,7 +247,7 @@ describe("Conduit NIP-46 RPC transport", () => {
       RELAYS[0]!,
       harness.response(request.id, { result: "auth_url", error: onauth })
     )
-    expect(harness.signer.pendingRequestCount).toBe(1)
+    expect(harness.signer.hasPendingRequests()).toBe(true)
     expect(authUrls).toEqual([onauth])
     expect(harness.pool.published).toHaveLength(1)
 
@@ -290,7 +290,7 @@ describe("Conduit NIP-46 RPC transport", () => {
     pool.emit(RELAYS[0]!, unreadableResponse())
 
     await expect(pending).rejects.toMatchObject({ code: "invalid_response" })
-    expect(signer.pendingRequestCount).toBe(0)
+    expect(signer.hasPendingRequests()).toBe(false)
   })
 
   it("rejects a malformed matching response and clears every pending request", async () => {
@@ -307,7 +307,7 @@ describe("Conduit NIP-46 RPC transport", () => {
 
     await expect(first).rejects.toMatchObject({ code: "invalid_response" })
     await expect(second).rejects.toMatchObject({ code: "invalid_response" })
-    expect(signer.pendingRequestCount).toBe(0)
+    expect(signer.hasPendingRequests()).toBe(false)
   })
 
   it("fences late responses after cancellation without affecting a later request", async () => {
@@ -327,7 +327,7 @@ describe("Conduit NIP-46 RPC transport", () => {
     pool.emit(RELAYS[1]!, response(secondRequest.id, { result: "pong" }))
 
     await expect(second).resolves.toBe("pong")
-    expect(signer.pendingRequestCount).toBe(0)
+    expect(signer.hasPendingRequests()).toBe(false)
   })
 
   it("ignores unknown and duplicate responses", async () => {
@@ -341,7 +341,7 @@ describe("Conduit NIP-46 RPC transport", () => {
     pool.emit(RELAYS[1]!, reply)
 
     await expect(pending).resolves.toBe("pong")
-    expect(signer.pendingRequestCount).toBe(0)
+    expect(signer.hasPendingRequests()).toBe(false)
   })
 
   it("ignores malformed relay events without stranding the real response", async () => {
@@ -364,7 +364,7 @@ describe("Conduit NIP-46 RPC transport", () => {
 
     await expect(first).rejects.toMatchObject({ code: "unavailable" })
     await expect(second).rejects.toMatchObject({ code: "unavailable" })
-    expect(signer.pendingRequestCount).toBe(0)
+    expect(signer.hasPendingRequests()).toBe(false)
   })
 
   it("restarts subscriptions on resume and fences ambiguous in-flight work", async () => {
