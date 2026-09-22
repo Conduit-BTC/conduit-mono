@@ -3064,6 +3064,7 @@ interface EventMarketFrontierFilterResult
   remainingRelayUrls: string[]
   remainingRelayUrlsByAuthor: Map<string, string[]>
   saturatedFilterIndexes: number[]
+  admittedRelayUrlsByFilterIndex: ReadonlyMap<number, readonly string[]>
 }
 
 const EMPTY_EVENT_MARKET_SATURATED_COORDINATES: ReadonlySet<string> = new Set()
@@ -3105,6 +3106,48 @@ function saturatedRecordCoordinatesForFilters(input: {
     }
   }
   return saturatedCoordinates
+}
+
+function cappedProductRelayHintEvidence(input: {
+  filters: readonly NDKFilter[]
+  coordinates: readonly AddressableEventCoordinate[]
+  relayHintsByCoordinate?: ReadonlyMap<string, readonly string[]>
+  admittedRelayUrlsByFilterIndex: ReadonlyMap<number, readonly string[]>
+}): {
+  saturatedCoordinates: ReadonlySet<string>
+  saturatedFilterCount: number
+} {
+  const saturatedCoordinates = new Set<string>()
+  let saturatedFilterCount = 0
+  input.filters.forEach((filter, filterIndex) => {
+    const admittedRelayUrls = new Set(
+      input.admittedRelayUrlsByFilterIndex.get(filterIndex) ?? []
+    )
+    let filterHintCapped = false
+    for (const coordinate of input.coordinates) {
+      if (
+        !filter.kinds?.includes(coordinate.kind as never) ||
+        !filter.authors?.some(
+          (author) => normalizePubkey(author) === coordinate.authorPubkey
+        ) ||
+        !filter["#d"]?.includes(coordinate.dTag)
+      ) {
+        continue
+      }
+      const relayHints = normalizePortableRelayHints(
+        input.relayHintsByCoordinate?.get(coordinate.coordinate)
+      )
+      if (
+        relayHints.length > 0 &&
+        relayHints.some((relayUrl) => !admittedRelayUrls.has(relayUrl))
+      ) {
+        saturatedCoordinates.add(coordinate.coordinate)
+        filterHintCapped = true
+      }
+    }
+    if (filterHintCapped) saturatedFilterCount += 1
+  })
+  return { saturatedCoordinates, saturatedFilterCount }
 }
 
 async function fetchEventMarketFrontierFilters(input: {
@@ -3159,6 +3202,7 @@ async function fetchEventMarketFrontierFilters(input: {
       incompleteFilterCount: 0,
       saturatedFilterCount: 0,
       saturatedFilterIndexes: [],
+      admittedRelayUrlsByFilterIndex: new Map(),
     }
   }
   const fetch =
@@ -3168,6 +3212,7 @@ async function fetchEventMarketFrontierFilters(input: {
   let incompleteFilterCount = 0
   let saturatedFilterCount = 0
   const saturatedFilterIndexes: number[] = []
+  const admittedRelayUrlsByFilterIndex = new Map<number, string[]>()
   let remainingRelayUrls = [...invocationRelayUrls]
   for (
     let index = 0;
@@ -3222,6 +3267,10 @@ async function fetchEventMarketFrontierFilters(input: {
       const result = batchResults[resultIndex]!
       const plan = batchPlans[resultIndex]
       if (!plan) continue
+      admittedRelayUrlsByFilterIndex.set(plan.filterIndex, [
+        ...(result.admittedRelayUrls ??
+          result.relays.map((relay) => relay.relayUrl)),
+      ])
       const relayStatuses = new Map(
         result.relays.map((relay) => [relay.relayUrl.toLowerCase(), relay])
       )
@@ -3275,6 +3324,7 @@ async function fetchEventMarketFrontierFilters(input: {
     incompleteFilterCount,
     saturatedFilterCount,
     saturatedFilterIndexes,
+    admittedRelayUrlsByFilterIndex,
   }
 }
 
@@ -4395,6 +4445,13 @@ async function fetchEventMarketProductRequestFrontiers(
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
+  const cappedRelayHintEvidence = cappedProductRelayHintEvidence({
+    filters: productFilters,
+    coordinates,
+    relayHintsByCoordinate: input.relayHintsByCoordinate,
+    admittedRelayUrlsByFilterIndex:
+      productResult.admittedRelayUrlsByFilterIndex,
+  })
   const productFrontiers = boundedProductFrontierEvents(
     rawSignedEvents(productResult).events,
     coordinates
@@ -4440,12 +4497,17 @@ async function fetchEventMarketProductRequestFrontiers(
       productResult.incompleteFilterCount +
       deletionResult.incompleteFilterCount,
     saturatedFilterCount:
-      productResult.saturatedFilterCount + deletionResult.saturatedFilterCount,
-    saturatedRecordCoordinates: saturatedRecordCoordinatesForFilters({
-      filters: productFilters,
-      saturatedFilterIndexes: productResult.saturatedFilterIndexes,
-      coordinates,
-    }),
+      productResult.saturatedFilterCount +
+      deletionResult.saturatedFilterCount +
+      cappedRelayHintEvidence.saturatedFilterCount,
+    saturatedRecordCoordinates: mergeEventMarketSaturatedCoordinates(
+      saturatedRecordCoordinatesForFilters({
+        filters: productFilters,
+        saturatedFilterIndexes: productResult.saturatedFilterIndexes,
+        coordinates,
+      }),
+      cappedRelayHintEvidence.saturatedCoordinates
+    ),
   }
 }
 

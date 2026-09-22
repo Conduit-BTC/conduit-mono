@@ -47,6 +47,7 @@ type TagFilter = NDKFilter & {
 type ReadHarnessOptions = {
   maxRelayAttempts?: number
   independentRelayUrls?: readonly string[]
+  ownerSelectedRelayUrls?: readonly string[]
 }
 
 function sign(
@@ -202,10 +203,12 @@ function installReadHarness(
     | {
         events: SignedPublicNostrEvent[]
         relayBStatus?: "success" | "partial" | "failed"
+        admittedRelayUrls?: readonly string[]
       }
     | Promise<{
         events: SignedPublicNostrEvent[]
         relayBStatus?: "success" | "partial" | "failed"
+        admittedRelayUrls?: readonly string[]
       }>
 ): void {
   __setEventMarketTestOverrides({
@@ -225,13 +228,15 @@ function installReadHarness(
     fetchEventsFanoutDetailed: async (filter, options) => {
       const relayUrls = options.relayUrls ?? []
       const result = await fetchResult(filter as TagFilter, relayUrls, options)
+      const admittedRelayUrls = result.admittedRelayUrls ?? relayUrls
       return {
         events: wrapped(result.events),
         relays: relayStatuses(
           result.events.length,
           result.relayBStatus,
-          relayUrls
+          admittedRelayUrls
         ),
+        admittedRelayUrls: [...admittedRelayUrls],
         eventsVerified: true,
       }
     },
@@ -1022,6 +1027,141 @@ describe("event-market exact product request frontiers", () => {
       coordinates.slice().sort()
     )
     expect(result.organizerOnlyProductCoordinates).toEqual([])
+  })
+
+  it("keeps a collection hint partial when final admission spends the budget elsewhere", async () => {
+    const buyer = getPublicKey(generateSecretKey())
+    const ownerRelays = Array.from(
+      { length: 6 },
+      (_, index) => `wss://owner-${index}.relay.dev`
+    )
+    const hintedGraph = graph().map((event) =>
+      event.kind === EVENT_KINDS.PRODUCT_COLLECTION
+        ? sign(
+            ORGANIZER_SECRET,
+            {
+              kind: event.kind,
+              content: event.content,
+              tags: event.tags.map((tag) =>
+                tag[0] === "a" && tag[1] === PRODUCT
+                  ? [tag[0], tag[1], MERCHANT_RELAY]
+                  : [...tag]
+              ),
+            },
+            event.created_at
+          )
+        : event
+    )
+    let exactCandidateRelayUrls: readonly string[] = []
+    let exactAdmittedRelayUrls: readonly string[] = []
+    let exactOwnerSelectedRelayUrls: readonly string[] = []
+    installReadHarness((filter, relayUrls, options) => {
+      if (filter.authors?.includes(ORGANIZER)) return { events: hintedGraph }
+      if (filter["#d"]?.includes("coffee")) {
+        exactCandidateRelayUrls = relayUrls
+        exactOwnerSelectedRelayUrls = options.ownerSelectedRelayUrls ?? []
+        exactAdmittedRelayUrls = relayUrls
+          .filter((relayUrl) => relayUrl !== MERCHANT_RELAY)
+          .slice(0, options.maxRelayAttempts ?? relayUrls.length)
+        return { events: [], admittedRelayUrls: exactAdmittedRelayUrls }
+      }
+      return { events: [] }
+    })
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+      readAccountRelaySettingsPlanningSnapshot: async () => ({
+        settings: {
+          version: 1,
+          updatedAt: 1,
+          entries: ownerRelays.map((url) => ({
+            url,
+            readEnabled: true,
+            writeEnabled: false,
+            section: "commerce" as const,
+            capabilities: {
+              nip11: false,
+              search: false,
+              dm: false,
+              auth: false,
+              commerce: false,
+            },
+            warnings: {
+              dmWithoutAuth: false,
+              staleRelayInfo: false,
+              unreachable: false,
+              commercePartialSupport: false,
+            },
+          })),
+        },
+        signedRelayListAuthoritative: true,
+      }),
+    })
+
+    const result = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: NOW_MS,
+      authenticatedPubkey: buyer,
+    })
+
+    expect(exactCandidateRelayUrls).toContain(MERCHANT_RELAY)
+    expect(exactOwnerSelectedRelayUrls).toEqual(
+      expect.arrayContaining(ownerRelays)
+    )
+    expect(exactAdmittedRelayUrls).toHaveLength(8)
+    expect(exactAdmittedRelayUrls).toContain(RELAY_A)
+    expect(exactAdmittedRelayUrls).not.toContain(MERCHANT_RELAY)
+    expect(result.state).toBe("partial")
+    expect(result.acceptedProductCoordinates).toEqual([])
+    expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
+  })
+
+  it("keeps an eighth retained hint partial when the share plan reserves fallback", async () => {
+    const relayHints = Array.from(
+      { length: 8 },
+      (_, index) => `wss://product-source-${index}.relay.dev`
+    )
+    const hintedGraph = graph().map((event) =>
+      event.kind === EVENT_KINDS.PRODUCT_COLLECTION
+        ? sign(
+            ORGANIZER_SECRET,
+            {
+              kind: event.kind,
+              content: event.content,
+              tags: event.tags.flatMap((tag) =>
+                tag[0] === "a" && tag[1] === PRODUCT
+                  ? relayHints.map((relayHint) => [tag[0]!, tag[1]!, relayHint])
+                  : [[...tag]]
+              ),
+            },
+            event.created_at
+          )
+        : event
+    )
+    let exactCandidateRelayUrls: readonly string[] = []
+    installReadHarness((filter, relayUrls) => {
+      if (filter.authors?.includes(ORGANIZER)) return { events: hintedGraph }
+      if (filter["#d"]?.includes("coffee")) {
+        exactCandidateRelayUrls = relayUrls
+      }
+      return { events: [] }
+    })
+
+    const result = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: NOW_MS,
+    })
+
+    expect(result.collection?.productRelayHintsByCoordinate).toEqual({
+      [PRODUCT]: relayHints,
+    })
+    expect(exactCandidateRelayUrls).toEqual(
+      expect.arrayContaining(relayHints.slice(0, 7))
+    )
+    expect(exactCandidateRelayUrls).toContain(RELAY_A)
+    expect(exactCandidateRelayUrls).not.toContain(relayHints[7]!)
+    expect(result.state).toBe("partial")
+    expect(result.acceptedProductCoordinates).toEqual([])
+    expect(result.organizerOnlyProductCoordinates).toEqual([PRODUCT])
   })
 
   it("keeps event catalog deletion checks isolated by product and author", async () => {
