@@ -212,7 +212,7 @@ export interface ProductDeletionDeliveryJob {
   state: ProductDeletionDeliveryState
   deliveryAttemptCount: number
   retryCount: number
-  /** Mixed product mutation gate; deletion waits until this listing job is ready. */
+  /** Mixed mutation gate; deletion waits for one relay to ACK the full listing family. */
   companionListingJobId?: string
   lastAttemptAt?: number
   nextRetryAt?: number

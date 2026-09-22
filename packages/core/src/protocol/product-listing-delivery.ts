@@ -368,14 +368,19 @@ function getCurrentAuthenticatedPubkey(
   }
 }
 
-function hasCommonAcknowledgedRelay(job: ProductListingDeliveryJob): boolean {
-  return job.relayTargets.some((target) =>
-    job.signedEvents.every((event) =>
-      job.relayDelivery.some(
-        (delivery) =>
-          delivery.eventId === event.id &&
-          delivery.relayUrl === target.relayUrl &&
-          delivery.status === "acked"
+export function hasCommonAcknowledgedRelay(
+  job: ProductListingDeliveryJob
+): boolean {
+  return (
+    job.signedEvents.length > 0 &&
+    job.relayTargets.some((target) =>
+      job.signedEvents.every((event) =>
+        job.relayDelivery.some(
+          (delivery) =>
+            delivery.eventId === event.id &&
+            delivery.relayUrl === target.relayUrl &&
+            delivery.status === "acked"
+        )
       )
     )
   )

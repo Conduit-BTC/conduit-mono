@@ -1070,10 +1070,10 @@ export async function deliverSignedProductWriteBundle(
     )
   }
 
-  const deliveryPromises: Promise<PublishWithPlannerResult>[] = []
+  const deliveries: PublishWithPlannerResult[] = []
   if (bundle.productListingDeliveryJobId) {
-    deliveryPromises.push(
-      deliverQueuedProductListings(bundle.productListingDeliveryJobId, {
+    deliveries.push(
+      await deliverQueuedProductListings(bundle.productListingDeliveryJobId, {
         ...deliveryOptions.productListingDeliveryOptions,
         authenticatedPubkey: deliveryOptions.authenticatedPubkey,
         shouldContinue: deliveryOptions.shouldContinue,
@@ -1082,26 +1082,19 @@ export async function deliverSignedProductWriteBundle(
     )
   }
   if (bundle.deletionDeliveryJobId) {
-    deliveryPromises.push(
-      deliverQueuedProductDeletion(bundle.deletionDeliveryJobId, {
+    deliveries.push(
+      await deliverQueuedProductDeletion(bundle.deletionDeliveryJobId, {
         ...deliveryOptions,
-        isCompanionListingReady:
-          deliveryOptions.isCompanionListingReady ??
-          (async (jobId, deletionJobId) => {
-            const listing = await getProductListingDelivery(
+        getCompanionListingJob:
+          deliveryOptions.getCompanionListingJob ??
+          ((jobId) =>
+            getProductListingDelivery(
               jobId,
               deliveryOptions.productListingDeliveryOptions
-            )
-            return (
-              !!listing &&
-              listing.companionDeletionJobId === deletionJobId &&
-              listing.readyForDelivery !== false
-            )
-          }),
+            )),
       })
     )
   }
-  const deliveries = await Promise.all(deliveryPromises)
   return aggregateProductEventDeliveries(deliveries)
 }
 

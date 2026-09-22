@@ -52,6 +52,7 @@ import {
   type SignedProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
 import {
+  deliverQueuedProductDeletion,
   persistSignedProductDeletion,
   resumePendingProductDeletionDeliveries,
 } from "../apps/merchant/src/lib/product-deletion-delivery"
@@ -786,6 +787,7 @@ describe("merchant product event delivery", () => {
     const deletionPendingRelayUrl = "wss://relay.nostr.net"
     const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
     const beforeReload = new MemoryProductDeletionOutbox(durableStorage)
+    const listingOptions = createAckedProductListingDeliveryOptions()
     const signer = new NDKPrivateKeySigner(MERCHANT_SECRET)
     setSigner(signer)
     const deletionTargets = buildProductRemovalDeletionTargets([
@@ -828,8 +830,7 @@ describe("merchant product event delivery", () => {
           }) as never
           deletion.publish = (async () => new Set()) as never
         },
-        productListingDeliveryOptions:
-          createAckedProductListingDeliveryOptions(),
+        productListingDeliveryOptions: listingOptions,
         deletionDeliveryOptions: {
           repository: beforeReload,
           accountNetworkLocalStateRepository:
@@ -882,7 +883,7 @@ describe("merchant product event delivery", () => {
       now: () => NOW + 10_000,
       retryDelayMs: 1,
       deliveryLeaseOwner: "after-reload",
-      isCompanionListingReady: async () => true,
+      getCompanionListingJob: (jobId) => listingOptions.repository.get(jobId),
       restoreLocalEvidence: async () => {},
       publisher: async ({ relayUrl, signedEvent }) => {
         resumedRelayUrls.push(relayUrl)
@@ -894,6 +895,259 @@ describe("merchant product event delivery", () => {
     expect(resumedRelayUrls).toEqual([deletionPendingRelayUrl])
     expect(resumedEventIds).toEqual([signedDeletionId])
     expect((await afterReload.get(signedDeletionId))?.state).toBe("delivered")
+  })
+
+  it("keeps a mixed deletion queued until every replacement event is ACKed on one relay", async () => {
+    const firstRelayUrl = "wss://relay.damus.io"
+    const secondRelayUrl = "wss://relay.nostr.net"
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const deletionStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const listingsBeforeReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionsBeforeReload = new MemoryProductDeletionOutbox(
+      deletionStorage
+    )
+    const deletionAttempts: string[] = []
+    let signedBundle: SignedProductWriteBundle | null = null
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+    const initial = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: ["root", "variation"].map((dTag) => ({
+          product: makeProduct(dTag),
+          dTag,
+          fulfillmentIntent: { kind: "coordinate_after_order" as const },
+        })),
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "a".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+            sourceRelayUrls: [],
+          },
+        ]),
+        onSignedLocal: async (bundle) => {
+          signedBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingsBeforeReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ relayUrl, signedEvent }) => {
+            const dTag = signedEvent.tags.find(([name]) => name === "d")?.[1]
+            return {
+              status:
+                (relayUrl === firstRelayUrl && dTag === "root") ||
+                (relayUrl === secondRelayUrl && dTag === "variation")
+                  ? ("acked" as const)
+                  : relayUrl === firstRelayUrl
+                    ? ("timed_out" as const)
+                    : ("rejected" as const),
+            }
+          },
+        },
+        deletionDeliveryOptions: {
+          repository: deletionsBeforeReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ signedEvent }) => {
+            deletionAttempts.push(signedEvent.id)
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          { relayUrl: firstRelayUrl, ownerSelected: false },
+          { relayUrl: secondRelayUrl, ownerSelected: false },
+        ],
+      }
+    )
+    if (!signedBundle) throw new Error("Expected a signed mixed mutation")
+    const listingJobId = signedBundle.productListingDeliveryJobId
+    const deletionJobId = signedBundle.deletionDeliveryJobId
+    if (!listingJobId || !deletionJobId) {
+      throw new Error("Expected reciprocal durable jobs")
+    }
+
+    expect(initial.successfulRelayUrls).toEqual([])
+    expect(deletionAttempts).toEqual([])
+    expect(
+      (await deletionsBeforeReload.get(deletionJobId))?.deliveryAttemptCount
+    ).toBe(0)
+
+    const listingsAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionsAfterReload = new MemoryProductDeletionOutbox(
+      deletionStorage
+    )
+    const retryOptions = {
+      repository: deletionsAfterReload,
+      getCompanionListingJob: (jobId: string) => listingsAfterReload.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({
+        signedEvent,
+      }: {
+        signedEvent: SignedPublicNostrEvent
+      }) => {
+        deletionAttempts.push(signedEvent.id)
+        return { status: "acked" as const }
+      },
+    }
+    await deliverQueuedProductDeletion(deletionJobId, retryOptions)
+    await resumePendingProductDeletionDeliveries(retryOptions)
+    expect(deletionAttempts).toEqual([])
+    expect(
+      (await deletionsAfterReload.get(deletionJobId))?.deliveryAttemptCount
+    ).toBe(0)
+
+    await resumePendingProductListingDeliveries({
+      repository: listingsAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ relayUrl, signedEvent }) => {
+        const dTag = signedEvent.tags.find(([name]) => name === "d")?.[1]
+        expect(relayUrl).toBe(firstRelayUrl)
+        expect(dTag).toBe("variation")
+        return { status: "acked" }
+      },
+    })
+    const listingAfterRetry = await listingsAfterReload.get(listingJobId)
+    expect(listingAfterRetry?.state).toBe("delivered")
+    expect(
+      listingAfterRetry?.signedEvents.every((event) =>
+        listingAfterRetry.relayDelivery.some(
+          (delivery) =>
+            delivery.relayUrl === firstRelayUrl &&
+            delivery.eventId === event.id &&
+            delivery.status === "acked"
+        )
+      )
+    ).toBe(true)
+
+    await resumePendingProductDeletionDeliveries(retryOptions)
+    expect(deletionAttempts.length).toBeGreaterThan(0)
+    expect(deletionAttempts.every((id) => id === deletionJobId)).toBe(true)
+    expect((await deletionsAfterReload.get(deletionJobId))?.state).toBe(
+      "delivered"
+    )
+  })
+
+  it("never attempts a mixed deletion after every replacement relay rejects the listing", async () => {
+    const relayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]!
+    const secondRelayUrl = "wss://relay.nostr.net"
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const deletionStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const listingRepository = new MemoryProductListingOutbox(listingStorage)
+    const deletionRepository = new MemoryProductDeletionOutbox(deletionStorage)
+    let signedBundle: SignedProductWriteBundle | null = null
+    let deletionAttempts = 0
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+    const initial = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("rejected-replacement"),
+            dTag: "rejected-replacement",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "c".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+            sourceRelayUrls: [],
+          },
+        ]),
+        onSignedLocal: async (bundle) => {
+          signedBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingRepository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => ({ status: "rejected" }),
+        },
+        deletionDeliveryOptions: {
+          repository: deletionRepository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => {
+            deletionAttempts += 1
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          { relayUrl, ownerSelected: false },
+          { relayUrl: secondRelayUrl, ownerSelected: false },
+        ],
+      }
+    )
+    if (!signedBundle) throw new Error("Expected a signed mixed mutation")
+    const listingJobId = signedBundle.productListingDeliveryJobId
+    const deletionJobId = signedBundle.deletionDeliveryJobId
+    if (!listingJobId || !deletionJobId) {
+      throw new Error("Expected reciprocal durable jobs")
+    }
+
+    expect(initial.successfulRelayUrls).toEqual([])
+    const rejectedListing = await listingRepository.get(listingJobId)
+    expect(rejectedListing?.state).toBe("failed")
+    expect(rejectedListing?.relayDelivery).toHaveLength(2)
+    expect(
+      rejectedListing?.relayDelivery.every(
+        (delivery) => delivery.status === "rejected"
+      )
+    ).toBe(true)
+    expect(deletionAttempts).toBe(0)
+
+    const listingsAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionsAfterReload = new MemoryProductDeletionOutbox(
+      deletionStorage
+    )
+    const retryOptions = {
+      repository: deletionsAfterReload,
+      getCompanionListingJob: (jobId: string) => listingsAfterReload.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        deletionAttempts += 1
+        return { status: "acked" as const }
+      },
+    }
+    await deliverQueuedProductDeletion(deletionJobId, retryOptions)
+    await resumePendingProductDeletionDeliveries(retryOptions)
+
+    const deletionAfterRetry = await deletionsAfterReload.get(deletionJobId)
+    expect(deletionAttempts).toBe(0)
+    expect(deletionAfterRetry?.state).toBe("pending")
+    expect(deletionAfterRetry?.deliveryAttemptCount).toBe(0)
+    expect(
+      deletionAfterRetry?.relayDelivery.every(
+        (delivery) => delivery.attemptCount === 0
+      )
+    ).toBe(true)
   })
 
   it("resumes the exact signed product family after partial relay delivery and reload", async () => {
@@ -1630,13 +1884,7 @@ describe("merchant product event delivery", () => {
         repository: deletionRepository,
         accountNetworkLocalStateRepository:
           allowAllAccountNetworkLocalStateRepository,
-        isCompanionListingReady: async (jobId, deletionId) => {
-          const listing = await listingRepository.get(jobId)
-          return (
-            listing?.companionDeletionJobId === deletionId &&
-            listing.readyForDelivery !== false
-          )
-        },
+        getCompanionListingJob: (jobId) => listingRepository.get(jobId),
         restoreLocalEvidence: async () => {},
         publisher: async () => {
           deletionAttempts += 1
@@ -1680,13 +1928,7 @@ describe("merchant product event delivery", () => {
         repository: deletionRepository,
         accountNetworkLocalStateRepository:
           allowAllAccountNetworkLocalStateRepository,
-        isCompanionListingReady: async (jobId, deletionId) => {
-          const listing = await listingRepository.get(jobId)
-          return (
-            listing?.companionDeletionJobId === deletionId &&
-            listing.readyForDelivery !== false
-          )
-        },
+        getCompanionListingJob: (jobId) => listingRepository.get(jobId),
         restoreLocalEvidence: async () => {},
         publisher: async () => {
           deletionAttempts += 1
@@ -1696,6 +1938,18 @@ describe("merchant product event delivery", () => {
     ])
 
     expect(listingAttempts).toBe(1)
+    expect(deletionAttempts).toBe(0)
+    await resumePendingProductDeletionDeliveries({
+      repository: deletionRepository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      getCompanionListingJob: (jobId) => listingRepository.get(jobId),
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        deletionAttempts += 1
+        return { status: "acked" }
+      },
+    })
     expect(deletionAttempts).toBeGreaterThan(0)
   })
 
@@ -1770,13 +2024,7 @@ describe("merchant product event delivery", () => {
       }),
       resumePendingProductDeletionDeliveries({
         repository: deletionRepository,
-        isCompanionListingReady: async (jobId, deletionId) => {
-          const listing = await listingRepository.get(jobId)
-          return (
-            listing?.companionDeletionJobId === deletionId &&
-            listing.readyForDelivery !== false
-          )
-        },
+        getCompanionListingJob: (jobId) => listingRepository.get(jobId),
         restoreLocalEvidence: async () => {},
         publisher: async () => {
           deletionAttempts += 1
@@ -2161,6 +2409,7 @@ describe("merchant product event delivery", () => {
     const previousConfig = structuredClone(config)
     const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
     const repository = new MemoryProductDeletionOutbox(durableStorage)
+    const listingOptions = createAckedProductListingDeliveryOptions()
     const attemptedDeletionRelayUrls: string[] = []
     let deletionDeliveryJobId = ""
 
@@ -2202,8 +2451,7 @@ describe("merchant product event delivery", () => {
             listing.publish = (async () =>
               new Set([{ url: `${loopbackRelayUrl}/` }])) as never
           },
-          productListingDeliveryOptions:
-            createAckedProductListingDeliveryOptions(),
+          productListingDeliveryOptions: listingOptions,
           deletionDeliveryOptions: {
             repository,
             accountNetworkLocalStateRepository:
@@ -2236,7 +2484,7 @@ describe("merchant product event delivery", () => {
         now: () => NOW + 10_000,
         retryDelayMs: 1,
         deliveryLeaseOwner: "after-isolated-reload",
-        isCompanionListingReady: async () => true,
+        getCompanionListingJob: (jobId) => listingOptions.repository.get(jobId),
         restoreLocalEvidence: async () => {},
         publisher: async ({ relayUrl }) => {
           attemptedDeletionRelayUrls.push(relayUrl)

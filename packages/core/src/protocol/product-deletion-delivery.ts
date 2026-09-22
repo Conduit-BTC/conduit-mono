@@ -6,9 +6,11 @@ import {
   type ProductDeletionRelayDeliveryStatus,
   type ProductDeletionRelayRole,
   type ProductDeletionRelayTarget,
+  type ProductListingDeliveryJob,
 } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { validateProductDeletionEvent } from "./product-deletion"
+import { hasCommonAcknowledgedRelay } from "./product-listing-delivery"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import {
   getConfiguredIsolatedE2eRelayUrl,
@@ -99,10 +101,10 @@ export interface ProductDeletionDeliveryOptions {
   deliveryLeaseMs?: number
   /** Explicit user retry may recover a lease orphaned by a crashed tab. */
   forceDeliveryLeaseRecovery?: boolean
-  isCompanionListingReady?: (
-    jobId: string,
-    deletionJobId: string
-  ) => Promise<boolean>
+  /** The same durable listing read used by explicit retries and workers. */
+  getCompanionListingJob?: (
+    jobId: string
+  ) => Promise<ProductListingDeliveryJob | undefined>
 }
 
 function cloneSignedEvent(
@@ -480,14 +482,14 @@ async function isCompanionListingReady(
   deletionJobId: string,
   options: ProductDeletionDeliveryOptions
 ): Promise<boolean> {
-  if (options.isCompanionListingReady) {
-    return await options.isCompanionListingReady(jobId, deletionJobId)
-  }
-  const listing = await db.productListingOutbox.get(jobId)
+  const listing = await (options.getCompanionListingJob?.(jobId) ??
+    db.productListingOutbox.get(jobId))
   return (
     !!listing &&
     listing.companionDeletionJobId === deletionJobId &&
-    listing.readyForDelivery !== false
+    listing.readyForDelivery !== false &&
+    listing.state === "delivered" &&
+    hasCommonAcknowledgedRelay(listing)
   )
 }
 

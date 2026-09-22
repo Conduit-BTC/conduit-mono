@@ -105,6 +105,14 @@ state. Pending and partially delivered jobs survive route changes, page
 reloads, and browser restarts. A retry republishes the same signed event bytes;
 it never asks the signer to produce a replacement deletion event.
 
+For a mixed replacement and deletion, both exact signed jobs must be durable
+before either is sent. The deletion remains queued without relay attempts until
+one relay has acknowledged every event in the replacement listing family.
+Explicit retry and background recovery apply the same gate after reload. A
+timeout or rejection on another relay cannot substitute for that common ACK;
+once it arrives, the original signed deletion can be retried without another
+signer request. Standalone deletions retain their independent delivery path.
+
 Workers use a durable expiring claim to avoid duplicate cross-tab delivery.
 Acknowledgements are monotonic, so a late timeout or rejection from a stale
 worker cannot overwrite an ACK. Only a NIP-01 machine-readable `OK false`
