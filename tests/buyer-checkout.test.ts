@@ -14,14 +14,11 @@ import {
   isFastCheckoutInputPending,
   getFastCheckoutUnavailableReasons,
   getInvoiceCheckoutUnavailableReasons,
-  getShippingPhoneDescribedBy,
   getShippingCheckoutState,
   getShippingRegionRequirement,
   getShippingStepBlockingMessage,
   sanitizeShippingPhoneInput,
   SHIPPING_PHONE_ERROR_ID,
-  SHIPPING_PHONE_HELP_COPY,
-  SHIPPING_PHONE_HELP_ID,
   type ShippingFormState,
 } from "../apps/market/src/lib/checkout-validation"
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
@@ -107,17 +104,9 @@ function validShipping(
 
 // ─── validateShippingFields ───────────────────────────────────────────────────
 
-describe("checkout phone helper copy", () => {
-  it("links the optional phone input to the international calling-code hint", () => {
-    expect(SHIPPING_PHONE_HELP_ID).toBe("ship-phone-help")
+describe("checkout phone errors", () => {
+  it("keeps the inline phone error identifier stable", () => {
     expect(SHIPPING_PHONE_ERROR_ID).toBe("ship-phone-error")
-    expect(getShippingPhoneDescribedBy(false)).toBe(SHIPPING_PHONE_HELP_ID)
-    expect(getShippingPhoneDescribedBy(true)).toBe(
-      `${SHIPPING_PHONE_HELP_ID} ${SHIPPING_PHONE_ERROR_ID}`
-    )
-    expect(SHIPPING_PHONE_HELP_COPY).toBe(
-      "Use + country code if this number is outside the delivery country."
-    )
   })
 })
 
@@ -2295,20 +2284,31 @@ describe("order payload schema", () => {
     expect(parsed.items[0]?.fulfillment?.type).toBe("pickup")
   })
 
-  it("requires only one merchant recovery method for guest pickup", () => {
-    const emailOnly = orderSchema.parse(
-      pickupOrder("guest_ephemeral", { email: "alice@example.com" })
-    )
-    const phoneOnly = orderSchema.parse(
-      pickupOrder("guest_ephemeral", { phone: "+18005551234" })
-    )
-
-    expect(emailOnly.guestContact).toEqual({ email: "alice@example.com" })
-    expect(phoneOnly.guestContact).toEqual({ phone: "+18005551234" })
-    expect(emailOnly.shippingAddress).toBeUndefined()
+  it("requires both merchant contact methods for guest pickup", () => {
+    expect(() =>
+      orderSchema.parse(
+        pickupOrder("guest_ephemeral", { email: "alice@example.com" })
+      )
+    ).toThrow("Guest orders require both email and phone.")
+    expect(() =>
+      orderSchema.parse(
+        pickupOrder("guest_ephemeral", { phone: "+18005551234" })
+      )
+    ).toThrow("Guest orders require both email and phone.")
     expect(() => orderSchema.parse(pickupOrder("guest_ephemeral"))).toThrow(
       "Guest orders require a recovery contact."
     )
+    const complete = orderSchema.parse(
+      pickupOrder("guest_ephemeral", {
+        email: "alice@example.com",
+        phone: "+18005551234",
+      })
+    )
+    expect(complete.guestContact).toEqual({
+      email: "alice@example.com",
+      phone: "+18005551234",
+    })
+    expect(complete.shippingAddress).toBeUndefined()
   })
 
   it("keeps guest contact metadata out of signed-in orders", () => {

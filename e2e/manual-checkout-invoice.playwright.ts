@@ -287,7 +287,7 @@ for (const scenario of scenarios) {
 
     await page.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
     await expect(
-      page.getByRole("heading", { name: "Send Order", exact: true })
+      page.getByRole("heading", { name: "Checkout", exact: true })
     ).toBeVisible()
     const paymentTarget = page.getByRole("combobox", { name: "Pay with" })
     await expect(paymentTarget).toContainText("Browser wallet (WebLN)")

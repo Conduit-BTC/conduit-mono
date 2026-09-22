@@ -179,12 +179,10 @@ describe("checkout completion navigation contracts", () => {
     )
     expect(checkoutRoute).toContain("selectedMerchantReadiness?.readDecision")
     expect(checkoutRoute).toContain(
-      'checkoutAvailability.readDecision.coverage === "partial"'
-    )
-    expect(checkoutRoute).toContain(
       'if (refreshResult.decision.status === "unverified")'
     )
-    expect(checkoutRoute).toContain("<CheckoutAvailabilityNotice")
+    expect(checkoutRoute).not.toContain("<CheckoutAvailabilityNotice")
+    expect(checkoutRoute).not.toContain("Availability may still change")
   })
 
   it("keeps every payment rail behind final availability and durable order delivery", async () => {
@@ -304,33 +302,28 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).toContain('"Send order"')
     expect(checkoutRoute).toContain("!manualInvoiceEligible")
     expect(checkoutRoute).toContain("Connect signer to send order")
-    expect(checkoutRoute).toContain("Send order and show invoice")
+    expect(checkoutRoute).toContain("manualInvoiceEligible &&")
     expect(checkoutRoute).toContain(
       "walletPayCapable: !isGuestCheckout && canAttemptLightningPayment"
     )
     expect(checkoutRoute).toContain("<SignerSwitch")
   })
 
-  it("warns guests about tab-scoped recovery before and during payment", async () => {
+  it("keeps guest checkout on one concise review and contact screen", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
-    const ordersRoute = await Bun.file(
-      "apps/market/src/routes/orders.tsx"
-    ).text()
 
-    const invoicePanel = await Bun.file(
-      "apps/market/src/components/ExternalWalletPanel.tsx"
-    ).text()
+    const summary = checkoutRoute.indexOf("<OrderSummary")
+    const details = checkoutRoute.indexOf("<section", summary)
 
-    expect(checkoutRoute).toContain(
-      "Keep this tab open until the payment is reported"
-    )
-    expect(invoicePanel).toContain("Closing it ends")
-    expect(invoicePanel).toContain("local access to this guest order")
-    expect(invoicePanel).toContain(
-      "merchant can use the private recovery contact"
-    )
-    expect(ordersRoute).toContain("disabled={!activeBuyerPubkey}")
+    expect(summary).toBeGreaterThan(-1)
+    expect(details).toBeGreaterThan(summary)
+    expect(checkoutRoute).toContain("validateCheckoutDetailsForSubmit()")
+    expect(checkoutRoute).toContain("Phone and email are required")
+    expect(checkoutRoute).not.toContain("Pickup recovery")
+    expect(checkoutRoute).not.toContain("Merchant-only recovery")
+    expect(checkoutRoute).not.toContain("Continue to Send Order")
+    expect(checkoutRoute).not.toContain("Keep this tab open")
   })
 })

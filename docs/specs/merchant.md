@@ -55,8 +55,8 @@ The current product uses focused pages plus dashboard readiness. Do not re-open 
 
 For `guest_ephemeral` orders, buyer contact occurs out of band using the
 structured recovery channel required by that checkout flow and shown in order
-details. Pickup requires at least one of email or phone; shipping retains its
-stricter contact/address contract. The guest pubkey is an outbound order
+details. Every guest order requires both email and phone; shipping additionally
+requires its address contract. The guest pubkey is an outbound order
 sender, not a reply-capable Nostr inbox; Merchant must not claim to send Nostr
 invoice, status, shipping, or reply messages to that key. Merchant may still
 record decisions and fulfillment as encrypted messages addressed to itself so

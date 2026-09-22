@@ -58,9 +58,8 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(placeOrder).toContain('checkoutMode: "pay_later"')
     expect(placeOrder).not.toContain("runOrderPayment")
     expect(checkout).toContain('"Send order"')
-    expect(checkout).toContain(
-      "No payment is required. The merchant reviews the order and coordinates pickup."
-    )
+    expect(checkout).not.toContain("What happens next")
+    expect(checkout).not.toContain("No payment is required")
   })
 
   it("suppresses Lightning discovery and fails closed before any zero payment", async () => {

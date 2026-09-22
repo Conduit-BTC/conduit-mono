@@ -677,14 +677,13 @@ export const orderSchema = z
     }
     if (
       order.buyerIdentityKind === "guest_ephemeral" &&
-      !hasPickup &&
       order.guestContact &&
       (!order.guestContact.email || !order.guestContact.phone)
     ) {
       context.addIssue({
         code: "custom",
         path: ["guestContact"],
-        message: "Guest delivery orders require both email and phone.",
+        message: "Guest orders require both email and phone.",
       })
     }
     if (order.guestContact && order.buyerIdentityKind !== "guest_ephemeral") {
