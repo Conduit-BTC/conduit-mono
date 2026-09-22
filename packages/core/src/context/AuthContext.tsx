@@ -28,6 +28,7 @@ import {
   abandonRemoteSignerConnection,
   canStartAuthConnection,
   cleanupInvalidatedAuthSession,
+  commitRemoteSignerConnection,
   forgetAuthSession,
   claimAuthRevision,
   logoutRemoteSigner,
@@ -1130,6 +1131,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       }
       activeSessionSigner.current = sessionSigner
       remoteConnection.current = connectedRemote
+      if (connectedRemote) void commitRemoteSignerConnection(connectedRemote)
       uncommittedRemote = null
       activeSession.current = session
       setAuthSigner(sessionSigner)
@@ -1147,7 +1149,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       setRemoteSignerState(session.type === "nip46" ? "active" : "none")
       setCapabilities(
         session.type === "nip46"
-          ? { signEvent: true, nip44: true, nip04: true }
+          ? { signEvent: true, nip44: true, nip04: false }
           : getNip07Capabilities()
       )
       setAuthUrl(null)
@@ -1605,7 +1607,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
           return
         }
         setRemoteSignerState("active")
-        setCapabilities({ signEvent: true, nip44: true, nip04: true })
+        setCapabilities({ signEvent: true, nip44: true, nip04: false })
         setStatus("connected")
         setError(null)
       })
