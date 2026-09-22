@@ -1,5 +1,8 @@
 import { config, isRetiredDefaultRelayUrl, type ConduitConfig } from "../config"
-import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import {
+  normalizePublicMediaUrl,
+  normalizePublicWebSocketUrl,
+} from "../network-target-safety"
 
 export type RelaySettingsSection = "commerce" | "public"
 export type RelaySettingsSource = "default" | "manual" | "signer" | "published"
@@ -73,6 +76,7 @@ export interface RelaySettingsEntry {
   source?: RelaySettingsSource
   scannedAt?: number
   relayName?: string
+  relayIconUrl?: string
 }
 
 export interface RelaySettingsState {
@@ -95,6 +99,7 @@ export interface Nip65RelayUrls {
 
 export interface RelayInfoDocument {
   name?: unknown
+  icon?: unknown
   supported_nips?: unknown
   limitation?: {
     auth_required?: unknown
@@ -107,6 +112,7 @@ export interface RelayScanResult {
   url: string
   reachable: boolean
   relayName?: string
+  relayIconUrl?: string
   capabilities: RelayCapabilities
   warnings: RelayWarnings
   observations: RelayCapabilityObservations
@@ -390,6 +396,10 @@ function getRelayName(info: RelayInfoDocument | null): string | undefined {
   return typeof info?.name === "string" && info.name.trim()
     ? info.name.trim()
     : undefined
+}
+
+function getRelayIconUrl(info: RelayInfoDocument | null): string | undefined {
+  return normalizePublicMediaUrl(info?.icon) ?? undefined
 }
 
 function getAuthRequired(info: RelayInfoDocument | null): boolean {
@@ -923,6 +933,7 @@ export function deriveRelayScanResult(
     url: normalizedUrl,
     reachable: hasNip11,
     relayName: getRelayName(info),
+    relayIconUrl: getRelayIconUrl(info),
     capabilities,
     warnings,
     observations,
@@ -966,6 +977,7 @@ export function createRelaySettingsEntryFromScan(
     source,
     scannedAt: scan.scannedAt,
     relayName: scan.relayName,
+    relayIconUrl: scan.relayIconUrl,
   }
 }
 
@@ -1015,6 +1027,7 @@ export function createUnreachableRelaySettingsEntry(
     source,
     scannedAt,
     relayName: existing?.relayName,
+    relayIconUrl: existing?.relayIconUrl,
   }
 }
 
@@ -1170,6 +1183,11 @@ export function normalizeRelaySettingsState(
       commerceProfileVersion: capabilities.commerce
         ? (entry.commerceProfileVersion ?? RELAY_COMMERCE_PROFILE_VERSION)
         : undefined,
+      relayName:
+        typeof entry.relayName === "string" && entry.relayName.trim()
+          ? entry.relayName.trim()
+          : undefined,
+      relayIconUrl: normalizePublicMediaUrl(entry.relayIconUrl) ?? undefined,
       section,
     }
     entriesByUrl.set(result.url, normalizedEntry)
@@ -1438,6 +1456,7 @@ export function mergeRelayPreferencesIntoSettings(
       source: preserveLocalControls ? existing.source : source,
       scannedAt: existing?.scannedAt,
       relayName: existing?.relayName,
+      relayIconUrl: existing?.relayIconUrl,
     }
     next = upsertRelaySettingsEntry(next, entry)
   }

@@ -790,7 +790,7 @@ describe("merchant organizer handoff workflow", () => {
     expect(resolve({ stale: true }).blocker).toBe("stale")
     expect(resolve({ decryptFailureCount: 1 }).blocker).toBe("decrypt_failure")
     expect(resolve({ declarationState: "not_declared" }).blocker).toBe(
-      "inbox_not_declared"
+      "inbox_not_ready"
     )
     expect(resolve({ coverage: "partial" }).blocker).toBe("coverage_incomplete")
     for (const result of [

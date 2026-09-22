@@ -8,9 +8,13 @@ import {
   __resetRelayHealth,
   __setFollowListTestOverrides,
   buildMerchantTrustSocialSummary,
+  config,
+  createDefaultAccountNetworkRoutingPolicy,
   disconnectNdk,
+  emptyAccountNetworkLocalState,
   extractFollowPubkeys,
   fetchMerchantTrustSocialSummary,
+  filterEligibleAccountRelayUrls,
   peekRetainedOwnFollowListSnapshot,
   publishContactListUpdate,
   readRetainedOwnFollowListSnapshot,
@@ -30,8 +34,10 @@ const viewerSecret = Uint8Array.from([...new Uint8Array(31), 32])
 const merchantPubkey = getPublicKey(merchantSecret)
 const viewerPubkey = getPublicKey(viewerSecret)
 const mutualPubkey = "c".repeat(64)
+const originalConfig = structuredClone(config)
 
 afterEach(() => {
+  Object.assign(config, structuredClone(originalConfig))
   __resetFollowListTestState()
   __resetRelayHealth()
 })
@@ -601,6 +607,120 @@ describe("NIP-02 merchant trust helpers", () => {
     expect(() =>
       requirePublishableContactListSnapshot(read, viewerPubkey)
     ).toThrow("completed the read")
+  })
+
+  it("backfills an enabled App relay after disabled Personal follow candidates", async () => {
+    const personalRelayUrls = Array.from(
+      { length: 6 },
+      (_, index) => `wss://personal-follow-${index}.example`
+    )
+    const appRelayUrls = Array.from(
+      { length: 3 },
+      (_, index) => `wss://app-follow-${index}.example`
+    )
+    config.appReadRelayUrls = appRelayUrls
+    config.corePublicFallbackRelayUrls = []
+    const localState = emptyAccountNetworkLocalState(viewerPubkey, () => 1)
+    localState.routingPolicy = {
+      ...createDefaultAccountNetworkRoutingPolicy(),
+      personalRelaysEnabled: false,
+      personalRelaysTouched: true,
+    }
+    const repository = { get: async () => localState }
+    const event = followListEvent({
+      secret: viewerSecret,
+      createdAt: 100,
+      follows: [merchantPubkey],
+    })
+    let candidates: string[] = []
+    let attempted: string[] = []
+    let maxRelayAttempts: number | undefined
+
+    const read = await readLatestFollowLists(
+      {
+        pubkeys: [viewerPubkey],
+        authenticatedPubkey: viewerPubkey,
+        accountPubkey: viewerPubkey,
+      },
+      {
+        maxRelays: 4,
+        refreshRelayLists: true,
+        accountNetworkLocalStateRepository: repository,
+        readAccountRelaySettingsPlanningSnapshot: async () => ({
+          settings: {
+            version: 1,
+            updatedAt: 1,
+            entries: personalRelayUrls.map((url) => ({
+              url,
+              readEnabled: true,
+              writeEnabled: true,
+              section: "public" as const,
+              capabilities: {
+                nip11: false,
+                search: false,
+                dm: false,
+                auth: false,
+                commerce: false,
+              },
+              warnings: {
+                dmWithoutAuth: false,
+                staleRelayInfo: false,
+                unreachable: false,
+                commercePartialSupport: false,
+              },
+            })),
+          },
+          signedRelayListAuthoritative: true,
+        }),
+        resolveRelayLists: async () =>
+          new Map([[viewerPubkey, relayList(viewerPubkey, [], [])]]),
+        fetchEvents: async (_filter, options) => {
+          candidates = [...(options.relayUrls ?? [])]
+          maxRelayAttempts = options.maxRelayAttempts
+          const eligible = await filterEligibleAccountRelayUrls({
+            accountPubkey: options.accountPubkey ?? viewerPubkey,
+            authenticatedPubkey: options.authenticatedPubkey,
+            candidateRelayUrls: candidates,
+            ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+            appRelayUrls: options.appRelayUrls,
+            personalRelayUrls: options.personalRelayUrls,
+            repository,
+          })
+          attempted = eligible.slice(
+            0,
+            options.maxRelayAttempts ?? eligible.length
+          )
+          return {
+            events: [event],
+            eventSourceRelayUrls: { [event.id]: [appRelayUrls[2]!] },
+            relays: attempted.map((relayUrl) => ({
+              relayUrl,
+              status:
+                relayUrl === appRelayUrls[2]
+                  ? ("success" as const)
+                  : ("failed" as const),
+              eventCount: relayUrl === appRelayUrls[2] ? 1 : 0,
+            })),
+            eventsVerified: false,
+          }
+        },
+      }
+    )
+
+    expect(candidates.slice(0, 4)).toEqual([
+      ...personalRelayUrls.slice(0, 3),
+      appRelayUrls[0],
+    ])
+    expect(candidates).toContain(appRelayUrls[2])
+    expect(maxRelayAttempts).toBe(4)
+    expect(attempted).toEqual(appRelayUrls)
+    expect(read.authors[0]?.plannedRelayUrls).toEqual(appRelayUrls)
+    expect(read.authors[0]?.relays.at(-1)).toMatchObject({
+      relayUrl: appRelayUrls[2],
+      status: "success",
+    })
+    expect(read.authors[0]?.coverage).toBe("limited")
+    expect(read.authors[0]?.event?.id).toBe(event.id)
   })
 
   it("marks a relay response capped when rejected events fill the result limit", async () => {

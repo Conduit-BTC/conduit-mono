@@ -5,6 +5,7 @@ import {
   getPublicKey,
   kinds,
 } from "nostr-tools"
+import { config } from "../packages/core/src/config"
 import {
   __resetMediaServerPreferencesForTests,
   addMediaServerPreference,
@@ -68,11 +69,13 @@ function relayRead(
     status: "success" | "partial" | "failed"
     rejectedEventCount?: number
   }>,
-  sources: Record<string, string[]> = {}
+  sources: Record<string, string[]> = {},
+  admittedRelayUrls?: string[]
 ) {
   return {
     events,
     eventSourceRelayUrls: sources,
+    ...(admittedRelayUrls ? { admittedRelayUrls } : {}),
     relays: relays.map((relay) => ({
       ...relay,
       eventCount: events.length,
@@ -252,9 +255,13 @@ describe("kind 10063 replacement selection and evidence", () => {
       accountPubkey: string | null | undefined
       authenticatedPubkey: string | null | undefined
       ownerSelectedRelayUrls: readonly string[] | undefined
+      appRelayUrls: readonly string[] | undefined
+      personalRelayUrls: readonly string[] | undefined
+      maxRelayAttempts: number | undefined
       allowInsecureRelayUrlsForPubkey: string | null | undefined
     }> = []
     const plannerCalls: Array<{
+      intent: string
       authenticatedPubkey: string | null | undefined
       ownerSelectedRelayUrls: readonly string[] | undefined
       signedRelayListAuthoritative: boolean | undefined
@@ -293,6 +300,9 @@ describe("kind 10063 replacement selection and evidence", () => {
           accountPubkey: options.accountPubkey,
           authenticatedPubkey: options.authenticatedPubkey,
           ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+          appRelayUrls: options.appRelayUrls,
+          personalRelayUrls: options.personalRelayUrls,
+          maxRelayAttempts: options.maxRelayAttempts,
           allowInsecureRelayUrlsForPubkey:
             options.allowInsecureRelayUrlsForPubkey,
         })
@@ -311,6 +321,7 @@ describe("kind 10063 replacement selection and evidence", () => {
       },
       planReads: (input) => {
         plannerCalls.push({
+          intent: input.intent,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
           signedRelayListAuthoritative: input.signedRelayListAuthoritative,
@@ -323,6 +334,9 @@ describe("kind 10063 replacement selection and evidence", () => {
           accountPubkey: options.accountPubkey,
           authenticatedPubkey: options.authenticatedPubkey,
           ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+          appRelayUrls: options.appRelayUrls,
+          personalRelayUrls: options.personalRelayUrls,
+          maxRelayAttempts: options.maxRelayAttempts,
         })
         return relayRead(
           [],
@@ -334,17 +348,33 @@ describe("kind 10063 replacement selection and evidence", () => {
       },
     })
 
+    const generalAppRelayUrls = Array.from(
+      new Set([
+        ...config.appReadRelayUrls,
+        ...config.corePublicFallbackRelayUrls,
+      ])
+    )
     expect(lookupCalls).toEqual([
       {
-        relayUrls: [ownerWsRelay, ownerWssRelay],
+        relayUrls: [ownerWsRelay, ownerWssRelay, ...generalAppRelayUrls],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
+        appRelayUrls: generalAppRelayUrls,
+        personalRelayUrls: [ownerWsRelay, ownerWssRelay],
+        maxRelayAttempts: 6,
         allowInsecureRelayUrlsForPubkey: OWNER,
       },
     ])
     expect(plannerCalls).toEqual([
       {
+        intent: "relay_lists",
+        authenticatedPubkey: OWNER,
+        ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
+        signedRelayListAuthoritative: true,
+      },
+      {
+        intent: "general",
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
         signedRelayListAuthoritative: true,
@@ -352,10 +382,13 @@ describe("kind 10063 replacement selection and evidence", () => {
     ])
     expect(finalReadCalls).toEqual([
       {
-        relayUrls: [ownerWsRelay, ownerWssRelay],
+        relayUrls: [ownerWsRelay, ownerWssRelay, ...generalAppRelayUrls],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
+        appRelayUrls: generalAppRelayUrls,
+        personalRelayUrls: [ownerWsRelay, ownerWssRelay],
+        maxRelayAttempts: 6,
       },
     ])
   })
@@ -512,6 +545,38 @@ describe("kind 10063 replacement selection and evidence", () => {
       "wss://one.conduit.market",
       "wss://two.conduit.market",
     ])
+  })
+
+  it("uses the admitted bounded plan for complete source-filtered reads", async () => {
+    const storage = new MemoryStorage()
+    const suppressedRelay = "wss://personal-disabled.conduit.market"
+    const admittedRelay = "wss://app-admitted.conduit.market"
+    const cappedRelay = "wss://app-beyond-cap.conduit.market"
+    const signed = event([["server", "https://media.conduit.market"]])
+    const result = await readMediaServerPreferences(OWNER, {
+      storage,
+      readRelayUrls: [suppressedRelay, admittedRelay, cappedRelay],
+      fetchEvents: async () =>
+        relayRead(
+          [signed],
+          [{ relayUrl: admittedRelay, status: "success" }],
+          { [signed.id]: [admittedRelay] },
+          [admittedRelay]
+        ),
+    })
+
+    expect(result).toMatchObject({
+      status: "published",
+      coverage: "complete",
+      stale: false,
+      retained: false,
+      lookup: {
+        plannedRelayCount: 1,
+        successfulRelayCount: 1,
+        failedRelayCount: 0,
+      },
+    })
+    expect(result.sourceRelayUrls).toEqual([admittedRelay])
   })
 
   it("retains stronger published evidence when a later lookup is partial", async () => {

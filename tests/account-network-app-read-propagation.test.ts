@@ -42,10 +42,10 @@ describe("app account-network read propagation", () => {
       /reference: canonicalNaddr,\s+selectedProductCoordinates: options.selectedProductCoordinates,\s+authenticatedPubkey: options.authenticatedPubkey,\s+shouldContinue: active/
     )
     expect(adapter).toMatch(
-      /includeMerchantHiddenProductIds:\s+resolution.acceptedProductCoordinates,\s+authenticatedPubkey: options.authenticatedPubkey,\s+shouldContinue: active/
+      /includeMerchantHiddenProductIds:\s+resolution.acceptedProductCoordinates,\s+relayHintsByAddressId:\s+resolution.collection\?\.productRelayHintsByCoordinate,\s+authenticatedPubkey: options.authenticatedPubkey,\s+shouldContinue: active/
     )
     expect(adapter).toContain(
-      "includeMerchantHiddenProductIds: [item.productId],\n    authenticatedPubkey,\n    shouldContinue,"
+      "includeMerchantHiddenProductIds: [item.productId],\n    relayHintsByAddressId: resolution.collection?.productRelayHintsByCoordinate,\n    authenticatedPubkey,\n    shouldContinue,"
     )
     expect(authorization).toContain("input.authenticatedPubkey")
     expect(authorization).toContain("input.shouldContinue")

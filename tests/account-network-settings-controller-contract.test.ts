@@ -86,6 +86,18 @@ describe("account Network settings controller contract", () => {
     expect(controllerSource).not.toContain("  removeRelay: (")
   })
 
+  it("carries bounded-absence risk into the exact publish review", () => {
+    const summary = sourceBetween(
+      "function preparedChangeSummary(",
+      "function desiredRolesFromCommittedRows("
+    )
+
+    expect(summary).toContain('"scoped_absence_may_hide_signed_state"')
+    expect(summary).toContain(
+      "No signed relay setup was observed on the relays checked. Publishing may supersede preferences stored elsewhere."
+    )
+  })
+
   it("accepts an owner-selected ws candidate before relay I/O or storage", () => {
     const localState = emptyAccountNetworkLocalState("a".repeat(64))
     expect(
@@ -115,6 +127,32 @@ describe("account Network settings controller contract", () => {
     expect(preflightIndex).toBeGreaterThan(-1)
     expect(scanIndex).toBeGreaterThan(preflightIndex)
     expect(persistIndex).toBeGreaterThan(scanIndex)
+  })
+
+  it("rechecks live App relay eligibility before every automatic metadata request", () => {
+    const automaticScan = sourceBetween(
+      "const known = new Set(localState.relayScans",
+      "const authEvidenceByUrl = useMemo("
+    )
+    const batch = sourceBetween(
+      "async function scanRelayBatch(",
+      "function resultMessage("
+    )
+
+    expect(automaticScan).toContain("shouldContinue: () => !cancelled")
+    expect(automaticScan).toContain("isRelayEligible: async (relayUrl)")
+    expect(automaticScan).toContain("filterEligibleAccountRelayUrls({")
+    expect(automaticScan).toContain("candidateRelayUrls: [relayUrl]")
+    expect(automaticScan).toContain("appRelayUrls: [relayUrl]")
+    expect(automaticScan).toContain("personalRelayUrls: []")
+
+    const eligibilityIndex = batch.indexOf(
+      "await input.isRelayEligible(relayUrl)"
+    )
+    const scanIndex = batch.indexOf("await scanRelay(")
+    expect(batch).toContain("input.shouldContinue?.() === false")
+    expect(eligibilityIndex).toBeGreaterThan(-1)
+    expect(scanIndex).toBeGreaterThan(eligibilityIndex)
   })
 
   it("keeps exact retries, inbox redistribution, and ordering signer-free", () => {
@@ -195,14 +233,40 @@ describe("account Network settings controller contract", () => {
     )
   })
 
-  it("refreshes only already-validated view rows", () => {
+  it("refreshes only already-validated personal and app view rows", () => {
     const refresh = sourceBetween(
       "const refresh = useCallback(",
       "return {\n    view: baseView"
     )
     expect(refresh).toContain("async (): Promise<void>")
-    expect(refresh).toContain("relayUrls: baseView.rows.map((row) => row.url)")
+    expect(refresh).toContain("...personalRelayRows.map((row) => row.url)")
+    expect(refresh).toContain("...appRelayRows.map((row) => row.url)")
     expect(refresh).not.toContain("relayUrls?:")
+  })
+
+  it("rechecks live source eligibility before every manual metadata request", () => {
+    const refresh = sourceBetween(
+      "const refresh = useCallback(",
+      "return {\n    view: baseView"
+    )
+
+    expect(refresh).toContain("const personalRelayRows = baseView.rows")
+    expect(refresh).toContain(
+      "const appRelayRows = baseView.appRelays?.rows ?? []"
+    )
+    expect(refresh).toContain("shouldContinue: refreshShouldContinue")
+    expect(refresh).toContain("isRelayEligible: async (relayUrl)")
+    expect(refresh).toContain("filterEligibleAccountRelayUrls({")
+    expect(refresh).toContain("candidateRelayUrls: [relayUrl]")
+    expect(refresh).toContain("ownerSelectedRelayUrls")
+    expect(refresh).toContain("row.readEnabled || row.publishEnabled")
+    expect(refresh).toContain("row.privateInboxEnabled || row.recoveryReadOnly")
+    expect(refresh).toContain("appRelayUrls:")
+    expect(refresh).toContain("personalRelayUrls:")
+    expect(refresh).toContain("independentRelayUrls:")
+    expect(refresh).toContain(
+      "repository: dexieAccountNetworkLocalStateRepository"
+    )
   })
 
   it("turns refresh failures into an actionable operation error", () => {

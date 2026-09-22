@@ -333,11 +333,11 @@ function organizerAckReadCopy(blocker: MerchantHandoffAckReadBlocker): {
         detail:
           "Some acknowledgement messages could not be decrypted. Retry to improve discovery.",
       }
-    case "inbox_not_declared":
+    case "inbox_not_ready":
       return {
-        status: "Acknowledgement inbox not declared",
+        status: "Acknowledgement inbox not confirmed",
         detail:
-          "A usable declared acknowledgement inbox is unavailable, so discovery is degraded.",
+          "A usable acknowledgement inbox was not confirmed from current evidence, so discovery is degraded.",
       }
     case "coverage_incomplete":
       return {

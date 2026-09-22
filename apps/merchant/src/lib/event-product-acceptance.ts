@@ -257,9 +257,10 @@ export async function retryOwnEventProductAcceptance(
     shouldContinue: input.shouldContinue,
     record: strongest,
   })
-  const latestSavedCollection = dependencies.load(organizer)[
-    reference.coordinate
-  ]?.find((record) => record.record === "collection")
+  const latestDeliveries = dependencies.load(organizer)[reference.coordinate]
+  const latestSavedCollection = latestDeliveries?.find(
+    (record) => record.record === "collection"
+  )
   const retainedDelivery = latestSavedCollection
     ? strongestSignedDelivery(delivery, latestSavedCollection)
     : delivery

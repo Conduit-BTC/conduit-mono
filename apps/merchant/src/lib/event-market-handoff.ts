@@ -141,7 +141,7 @@ export type MerchantHandoffAckReadBlocker =
   | "unavailable"
   | "stale"
   | "decrypt_failure"
-  | "inbox_not_declared"
+  | "inbox_not_ready"
   | "coverage_incomplete"
 
 /**
@@ -180,7 +180,7 @@ export function resolveMerchantHandoffAckReadState<
       : input.read.decryptFailureCount > 0
         ? "decrypt_failure"
         : input.read.inbox?.declarationState !== "declared"
-          ? "inbox_not_declared"
+          ? "inbox_not_ready"
           : input.read.inbox.coverage !== "complete"
             ? "coverage_incomplete"
             : null

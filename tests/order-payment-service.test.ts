@@ -4,6 +4,7 @@ import { finalizeEvent, getPublicKey } from "nostr-tools"
 import {
   claimOrderLifecyclePayment as claimOrderLifecyclePaymentProduction,
   createSelectedProfileContext,
+  ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
   patchClaimedOrderLifecyclePayment as patchClaimedOrderLifecyclePaymentProduction,
   weblnSendPayment,
   type ParsedOrderMessage,
@@ -2380,6 +2381,7 @@ describe("runOrderPayment", () => {
     } as unknown as NDKEvent
     let recordedProofStatus: string | undefined
     let recordedClaimId: string | undefined
+    let persistedProofStatus: string | undefined
 
     await observeOrderPublicZapReceipt(
       orderId,
@@ -2396,6 +2398,9 @@ describe("runOrderPayment", () => {
             proofDeliveryClaimed: false,
           }
         },
+        savePaymentAttempt: async (attempt) => {
+          persistedProofStatus = attempt.proofDeliveryStatus
+        },
       },
       null,
       null,
@@ -2405,6 +2410,80 @@ describe("runOrderPayment", () => {
 
     expect(recordedProofStatus).toBe("retry_needed")
     expect(recordedClaimId).toBeUndefined()
+    expect(persistedProofStatus).toBe("retry_needed")
+  })
+
+  it("persists a live proof-delivery owner after an observe-only receipt wait", async () => {
+    const orderId = "observe-only-live-proof-owner"
+    const proofDeliveryClaimedAt = Date.now()
+    const waiting = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      zapReceiptStatus: "waiting",
+      zapRequestId: "zap-request-id",
+      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+      zapLnurl: "lnurl1test",
+      zapReceiptPubkey: "a".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: Date.now() + 60_000,
+    })
+    const observed = lifecycle({
+      ...waiting,
+      paymentStatus: "paid",
+      proofDeliveryStatus: "pending",
+      proofDeliveryClaimId: "live-proof-owner",
+      proofDeliveryClaimedAt,
+      proofDeliveryClaimLeaseExpiresAt:
+        proofDeliveryClaimedAt + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
+    const receipt = {
+      id: "f".repeat(64),
+      rawEvent: () => ({ id: "f".repeat(64) }),
+    } as unknown as NDKEvent
+    let proposedProofStatus: string | undefined
+    let persistedProofStatus: string | undefined
+
+    await observeOrderPublicZapReceipt(
+      orderId,
+      undefined,
+      {
+        getOrderLifecycle: async () => waiting,
+        waitForZapReceipt: async () => receipt,
+        recordObservedOrderPaymentReceipt: async (_orderId, input) => {
+          proposedProofStatus = input.proofDeliveryStatus
+          return {
+            status: "recorded",
+            lifecycle: observed,
+            proofDeliveryClaimed: false,
+          }
+        },
+        savePaymentAttempt: async (attempt) => {
+          persistedProofStatus = attempt.proofDeliveryStatus
+        },
+      },
+      null,
+      null,
+      undefined,
+      { mode: "observe_only" }
+    )
+
+    expect(proposedProofStatus).toBe("retry_needed")
+    expect(persistedProofStatus).toBe("pending")
+    expect(observed).toMatchObject({
+      proofDeliveryStatus: "pending",
+      proofDeliveryClaimId: "live-proof-owner",
+      proofDeliveryClaimedAt,
+      proofDeliveryClaimLeaseExpiresAt:
+        proofDeliveryClaimedAt + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
   })
 
   it.each(["anon", "shopper"] as const)(
