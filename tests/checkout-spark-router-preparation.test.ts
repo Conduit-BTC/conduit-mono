@@ -185,12 +185,16 @@ describe("checkout Spark router preparation", () => {
     ])
     expect(result.fundingInvoice).toBe("lnbc-hidden-router-funding")
     expect(result.plan.funding.paymentRequest).toBe(result.fundingInvoice)
+    expect(result.fundingReceive).toEqual(fundingReceive())
+    expect(Object.isFrozen(result.fundingReceive)).toBe(true)
+    expect(result.fundingSubmissionState).toBe("not_started")
     expect(result).not.toHaveProperty("mnemonic")
     const stored = getCheckoutSparkRouterPreparation(
       result.plan.checkoutId,
       storage
     )
     expect(stored?.fundingInvoiceExposedAt).toBe(CREATED_AT)
+    expect(stored?.fundingSubmissionState).toBe("not_started")
     expect(Array.from(storage.values.values()).join("")).not.toContain(MNEMONIC)
   })
 

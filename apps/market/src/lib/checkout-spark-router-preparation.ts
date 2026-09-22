@@ -1,4 +1,5 @@
 import {
+  applyCheckoutSparkEvidence,
   buildCheckoutSparkRouterObligations,
   createCheckoutSparkReconciliation,
   freezeCheckoutSparkPlan,
@@ -29,13 +30,20 @@ const STORAGE_KEY = "conduit:checkout-spark-router-preparations:v1"
 const MAX_STORED_PREPARATIONS = 64
 const MAX_HANDOFF_ID_LENGTH = 256
 
-type RouterStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">
+export type CheckoutSparkRouterStorage = Pick<
+  Storage,
+  "getItem" | "setItem" | "removeItem"
+>
+
+export type CheckoutSparkRouterFundingSubmissionState =
+  "not_started" | "provisional"
 
 export interface StoredCheckoutSparkRouterPreparation {
   schemaVersion: 1
   reconciliation: CheckoutSparkReconciliation
   recoveryHandoffId: string | null
   fundingInvoiceExposedAt: number | null
+  fundingSubmissionState: CheckoutSparkRouterFundingSubmissionState
   savedAt: number
 }
 
@@ -57,7 +65,7 @@ export interface PrepareCheckoutSparkRouterFundingInput {
     BuildCheckoutSparkRouterObligationsInput,
     "network" | "nowSeconds"
   >
-  storage?: RouterStorage | null
+  storage?: CheckoutSparkRouterStorage | null
 }
 
 export interface PreparedCheckoutSparkRouterFunding {
@@ -65,6 +73,8 @@ export interface PreparedCheckoutSparkRouterFunding {
   reconciliation: CheckoutSparkReconciliation
   recoveryHandoffId: string
   fundingInvoice: string
+  fundingReceive: Readonly<SparkCheckoutReceiveRequest>
+  fundingSubmissionState: CheckoutSparkRouterFundingSubmissionState
 }
 
 interface PublishRecoveryHandoffInput {
@@ -91,7 +101,7 @@ export interface PrepareCheckoutSparkRouterFundingDependencies {
   ) => Promise<{ handoffId: string; canExposeFundingInvoice: true }>
 }
 
-function browserStorage(): RouterStorage | null {
+function browserStorage(): CheckoutSparkRouterStorage | null {
   if (typeof window === "undefined") return null
   try {
     return window.localStorage
@@ -100,7 +110,9 @@ function browserStorage(): RouterStorage | null {
   }
 }
 
-function requireStorage(storage: RouterStorage | null): RouterStorage {
+function requireStorage(
+  storage: CheckoutSparkRouterStorage | null
+): CheckoutSparkRouterStorage {
   if (!storage) {
     throw new Error("Durable checkout Spark router storage is unavailable.")
   }
@@ -130,6 +142,14 @@ function parseOptionalExposureTime(
   return value as number
 }
 
+function parseFundingSubmissionState(
+  value: unknown
+): CheckoutSparkRouterFundingSubmissionState {
+  if (value === undefined || value === "not_started") return "not_started"
+  if (value === "provisional") return value
+  throw new Error("Stored checkout Spark router submission is invalid.")
+}
+
 function parseStoredPreparation(
   value: unknown
 ): StoredCheckoutSparkRouterPreparation {
@@ -148,6 +168,9 @@ function parseStoredPreparation(
     candidate.fundingInvoiceExposedAt,
     reconciliation.plan.createdAt
   )
+  const fundingSubmissionState = parseFundingSubmissionState(
+    candidate.fundingSubmissionState
+  )
   if (
     !Number.isSafeInteger(candidate.savedAt) ||
     (candidate.savedAt ?? -1) < reconciliation.plan.createdAt ||
@@ -160,12 +183,13 @@ function parseStoredPreparation(
     reconciliation,
     recoveryHandoffId,
     fundingInvoiceExposedAt,
+    fundingSubmissionState,
     savedAt: candidate.savedAt!,
   }
 }
 
 function readPreparations(
-  storage: RouterStorage | null
+  storage: CheckoutSparkRouterStorage | null
 ): StoredCheckoutSparkRouterPreparation[] {
   const durable = requireStorage(storage)
   const raw = durable.getItem(STORAGE_KEY)
@@ -194,7 +218,7 @@ function readPreparations(
 
 function writePreparations(
   preparations: readonly StoredCheckoutSparkRouterPreparation[],
-  storage: RouterStorage | null
+  storage: CheckoutSparkRouterStorage | null
 ): void {
   const durable = requireStorage(storage)
   if (preparations.length > MAX_STORED_PREPARATIONS) {
@@ -208,14 +232,14 @@ function writePreparations(
 }
 
 export function listCheckoutSparkRouterPreparations(
-  storage: RouterStorage | null = browserStorage()
+  storage: CheckoutSparkRouterStorage | null = browserStorage()
 ): StoredCheckoutSparkRouterPreparation[] {
   return readPreparations(storage)
 }
 
 export function getCheckoutSparkRouterPreparation(
   checkoutId: string,
-  storage: RouterStorage | null = browserStorage()
+  storage: CheckoutSparkRouterStorage | null = browserStorage()
 ): StoredCheckoutSparkRouterPreparation | null {
   return (
     readPreparations(storage).find(
@@ -224,9 +248,39 @@ export function getCheckoutSparkRouterPreparation(
   )
 }
 
-export function saveCheckoutSparkRouterPreparation(
+function mergeCheckoutSparkRouterFundingProgress(
+  current: CheckoutSparkReconciliation,
+  candidate: CheckoutSparkReconciliation
+): CheckoutSparkReconciliation {
+  if (current.plan.planDigest !== candidate.plan.planDigest) {
+    throw new Error(
+      "Checkout Spark router funding progress does not match its frozen plan."
+    )
+  }
+  if (
+    candidate.funding.state === "unreconciled" ||
+    candidate.funding.observedAt === null
+  ) {
+    return current
+  }
+  return applyCheckoutSparkEvidence(current, {
+    type: "funding",
+    requestId: candidate.plan.funding.requestId,
+    paymentRequest: candidate.plan.funding.paymentRequest,
+    paymentHash: candidate.plan.funding.paymentHash,
+    walletId: candidate.plan.walletId,
+    network: candidate.plan.network,
+    requiredNetSats: candidate.plan.funding.requiredNetSats,
+    grossFundingSats: candidate.plan.funding.grossFundingSats,
+    state: candidate.funding.state,
+    observedAt: candidate.funding.observedAt,
+  })
+}
+
+function saveCheckoutSparkRouterPreparationInternal(
   input: Omit<StoredCheckoutSparkRouterPreparation, "schemaVersion">,
-  storage: RouterStorage | null = browserStorage()
+  storage: CheckoutSparkRouterStorage | null,
+  allowFundingSubmissionReset: boolean
 ): StoredCheckoutSparkRouterPreparation {
   const candidate = parseStoredPreparation({ schemaVersion: 1, ...input })
   const preparations = readPreparations(storage)
@@ -247,12 +301,32 @@ export function saveCheckoutSparkRouterPreparation(
       "Checkout Spark router preparation conflicts with its frozen plan."
     )
   }
+  const candidateFundingMatchesExisting =
+    existing === null ||
+    (existing.reconciliation.funding.state ===
+      candidate.reconciliation.funding.state &&
+      existing.reconciliation.funding.observedAt ===
+        candidate.reconciliation.funding.observedAt)
+  const canResetFundingSubmission =
+    allowFundingSubmissionReset && candidateFundingMatchesExisting
   const stored = parseStoredPreparation({
     ...candidate,
+    reconciliation: existing
+      ? mergeCheckoutSparkRouterFundingProgress(
+          existing.reconciliation,
+          candidate.reconciliation
+        )
+      : candidate.reconciliation,
     recoveryHandoffId:
       existing?.recoveryHandoffId ?? candidate.recoveryHandoffId,
     fundingInvoiceExposedAt:
       existing?.fundingInvoiceExposedAt ?? candidate.fundingInvoiceExposedAt,
+    fundingSubmissionState:
+      !canResetFundingSubmission &&
+      existing?.fundingSubmissionState === "provisional" &&
+      candidate.fundingSubmissionState === "not_started"
+        ? "provisional"
+        : candidate.fundingSubmissionState,
     savedAt: Math.max(
       existing?.savedAt ?? candidate.savedAt,
       candidate.savedAt
@@ -269,16 +343,56 @@ export function saveCheckoutSparkRouterPreparation(
     readback.reconciliation.plan.planDigest !==
       stored.reconciliation.plan.planDigest ||
     readback.recoveryHandoffId !== stored.recoveryHandoffId ||
-    readback.fundingInvoiceExposedAt !== stored.fundingInvoiceExposedAt
+    readback.fundingInvoiceExposedAt !== stored.fundingInvoiceExposedAt ||
+    readback.fundingSubmissionState !== stored.fundingSubmissionState
   ) {
     throw new Error("Checkout Spark router preparation was not durably saved.")
   }
   return readback
 }
 
+export function saveCheckoutSparkRouterPreparation(
+  input: Omit<StoredCheckoutSparkRouterPreparation, "schemaVersion">,
+  storage: CheckoutSparkRouterStorage | null = browserStorage()
+): StoredCheckoutSparkRouterPreparation {
+  return saveCheckoutSparkRouterPreparationInternal(input, storage, false)
+}
+
+export function saveCheckoutSparkRouterFundingProgress(
+  input: {
+    checkoutId: string
+    planDigest: string
+    reconciliation: CheckoutSparkReconciliation
+    fundingSubmissionState: CheckoutSparkRouterFundingSubmissionState
+    savedAt: number
+  },
+  storage: CheckoutSparkRouterStorage | null = browserStorage()
+): StoredCheckoutSparkRouterPreparation {
+  const existing = getCheckoutSparkRouterPreparation(input.checkoutId, storage)
+  if (
+    !existing ||
+    existing.reconciliation.plan.planDigest !== input.planDigest ||
+    input.reconciliation.plan.planDigest !== input.planDigest
+  ) {
+    throw new Error(
+      "Checkout Spark router funding progress does not match its frozen plan."
+    )
+  }
+  return saveCheckoutSparkRouterPreparationInternal(
+    {
+      ...existing,
+      reconciliation: input.reconciliation,
+      fundingSubmissionState: input.fundingSubmissionState,
+      savedAt: input.savedAt,
+    },
+    storage,
+    true
+  )
+}
+
 export function deleteCheckoutSparkRouterPreparation(
   checkoutId: string,
-  storage: RouterStorage | null = browserStorage()
+  storage: CheckoutSparkRouterStorage | null = browserStorage()
 ): void {
   writePreparations(
     readPreparations(storage).filter(
@@ -397,6 +511,7 @@ export async function prepareCheckoutSparkRouterFunding(
         reconciliation,
         recoveryHandoffId: null,
         fundingInvoiceExposedAt: null,
+        fundingSubmissionState: "not_started",
         savedAt: now(),
       },
       storage
@@ -441,6 +556,8 @@ export async function prepareCheckoutSparkRouterFunding(
       reconciliation: preparation.reconciliation,
       recoveryHandoffId: handoff.handoffId,
       fundingInvoice: plan.funding.paymentRequest,
+      fundingReceive: Object.freeze({ ...funding }),
+      fundingSubmissionState: preparation.fundingSubmissionState,
     }
   } catch (error) {
     if (!recoveryPersisted) {
