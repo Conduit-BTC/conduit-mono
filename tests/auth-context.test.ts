@@ -887,6 +887,9 @@ describe("NIP-46 AuthContext API", () => {
     const commitRemote = connectAttempt.indexOf(
       "remoteConnection.current = connectedRemote"
     )
+    const retirePreviousRoute = connectAttempt.indexOf(
+      "commitRemoteSignerConnection(connectedRemote)"
+    )
     const releasePendingRemote = connectAttempt.indexOf(
       "uncommittedRemote = null",
       commitRemote
@@ -902,7 +905,9 @@ describe("NIP-46 AuthContext API", () => {
     expect(installSigner).toBeGreaterThan(finalAuthorityFence)
     expect(installSigner).toBeGreaterThan(persistRemote)
     expect(commitRemote).toBeGreaterThan(installSigner)
+    expect(retirePreviousRoute).toBeGreaterThan(commitRemote)
     expect(releasePendingRemote).toBeGreaterThan(installSigner)
+    expect(releasePendingRemote).toBeGreaterThan(retirePreviousRoute)
     expect(catchBlock).toContain("resolveFailedAuthAttempt({")
   })
 
