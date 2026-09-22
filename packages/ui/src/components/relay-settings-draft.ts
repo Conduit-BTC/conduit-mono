@@ -109,16 +109,42 @@ export function reconcileRelaySettingsDraftRows(input: {
         : nextRow.privateInboxEnabled,
     }
   })
-  const retainedLocalRows = input.localRows.filter((localRow) => {
-    if (nextUrls.has(localRow.url)) return false
-    if (localRow.candidate) return true
+  const retainedLocalRows = input.localRows.flatMap((localRow) => {
+    if (nextUrls.has(localRow.url)) return []
+    if (localRow.candidate) return [localRow]
     const previousControllerRow = previousByUrl.get(localRow.url)
-    if (!previousControllerRow) return false
-    return (
-      relayRoleWasEdited(localRow, previousControllerRow, "readEnabled") ||
-      relayRoleWasEdited(localRow, previousControllerRow, "publishEnabled") ||
-      relayRoleWasEdited(localRow, previousControllerRow, "privateInboxEnabled")
+    if (!previousControllerRow) return []
+    const retainedRow: AccountNetworkRelayRowView = {
+      ...localRow,
+      readEnabled: relayRoleWasEdited(
+        localRow,
+        previousControllerRow,
+        "readEnabled"
+      )
+        ? localRow.readEnabled
+        : false,
+      publishEnabled: relayRoleWasEdited(
+        localRow,
+        previousControllerRow,
+        "publishEnabled"
+      )
+        ? localRow.publishEnabled
+        : false,
+      privateInboxEnabled: relayRoleWasEdited(
+        localRow,
+        previousControllerRow,
+        "privateInboxEnabled"
+      )
+        ? localRow.privateInboxEnabled
+        : false,
+    }
+    if (
+      !retainedRow.readEnabled &&
+      !retainedRow.publishEnabled &&
+      !retainedRow.privateInboxEnabled
     )
+      return []
+    return [retainedRow]
   })
 
   return orderAccountNetworkRelayRows(

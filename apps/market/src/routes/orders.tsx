@@ -1042,7 +1042,12 @@ function OrderDetail({
       )
     }
     await verifyRetryFreshness()
-    const ctx = await persistTargetAndBuildServiceCtx()
+    const ctx = buildServiceCtx()
+    if (!ctx) {
+      throw new Error(
+        "Payment details are unavailable. Refresh before retrying."
+      )
+    }
     await runRetryPayment(ctx, pending)
     setPaymentAddressUpdate((current) => (current === pending ? null : current))
   }
@@ -2194,7 +2199,9 @@ function OrdersPage() {
           identity
             ? undefined
             : () => authGenerationRef.current === authGeneration,
-          { mode: "observe_only" }
+          {
+            mode: signerConnected ? "observe_and_deliver" : "observe_only",
+          }
         )
       }
     }

@@ -685,6 +685,20 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(hasUnpublishedRelayRoleChanges([current], [reconciled!])).toBe(true)
   })
 
+  it("keeps only explicitly enabled roles for a removed relay", () => {
+    const previous = relayRow("wss://removed.example")
+    const local = { ...previous, readEnabled: false }
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [previous],
+      localRows: [local],
+      nextControllerRows: [],
+    })
+
+    expect(reconciled).toEqual([])
+    expect(hasUnpublishedRelayRoleChanges([], reconciled)).toBe(false)
+  })
+
   it("preserves a local relay candidate across controller revisions", () => {
     const existing = relayRow("wss://existing.example")
     const candidate = relayRow("wss://candidate.example", {

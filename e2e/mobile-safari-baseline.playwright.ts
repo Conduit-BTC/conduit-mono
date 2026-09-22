@@ -411,7 +411,7 @@ async function readRecoveredPayment(
 
 function makeManualInvoice(description: string): string {
   return makeBolt11Fixture({
-    hrp: "lnbc10n",
+    hrp: "lntb10n",
     createdAt: Math.floor(Date.now() / 1000),
     fields: [bolt11PaymentHashField(), bolt11DescriptionHashField(description)],
   })
