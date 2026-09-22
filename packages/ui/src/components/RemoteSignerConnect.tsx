@@ -31,8 +31,7 @@ export function RemoteSignerConnect({
 }) {
   const otherWaysId = useId()
   const hasAppChoices = platform === "ios" || platform === "android"
-  const hasOtherWaysToggle = platform === "ios" || platform === "android"
-  const [showOtherWays, setShowOtherWays] = useState(!hasOtherWaysToggle)
+  const [showOtherWays, setShowOtherWays] = useState(!hasAppChoices)
   const [activeTab, setActiveTab] = useState("qr")
   const [selectedApp, setSelectedApp] = useState<SignerApp | null>(null)
   const [bunkerUri, setBunkerUri] = useState("")
@@ -174,7 +173,7 @@ export function RemoteSignerConnect({
         </div>
       )}
 
-      {hasOtherWaysToggle && (
+      {hasAppChoices && (
         <Button
           type="button"
           variant="ghost"

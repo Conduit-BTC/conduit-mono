@@ -17,7 +17,6 @@ export function BunkerSignerConnection({
   connectPending,
   error,
   errorId,
-  buttonLabel = "Connect with bunker link",
 }: {
   bunkerUri: string
   onBunkerChange: (uri: string) => void
@@ -26,7 +25,6 @@ export function BunkerSignerConnection({
   connectPending: boolean
   error?: string | null
   errorId: string
-  buttonLabel?: string
 }) {
   const bunkerHelpId = useId()
   return (
@@ -56,7 +54,7 @@ export function BunkerSignerConnection({
         disabled={connectDisabled || !bunkerUri.trim()}
         className={primaryClassName}
       >
-        {connectPending ? "Connecting…" : buttonLabel}
+        {connectPending ? "Connecting…" : "Connect with bunker link"}
       </Button>
     </div>
   )
@@ -77,7 +75,6 @@ export function ManualSignerConnection({
   connectPending,
   error,
   errorId,
-  allowBunker = true,
 }: {
   id: string
   activeTab: string
@@ -93,7 +90,6 @@ export function ManualSignerConnection({
   connectPending: boolean
   error?: string | null
   errorId: string
-  allowBunker?: boolean
 }) {
   return (
     <div
@@ -101,13 +97,11 @@ export function ManualSignerConnection({
       className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
     >
       <p className="text-sm leading-6 text-[var(--text-secondary)]">
-        {allowBunker
-          ? "Use another signer or connect from another device."
-          : "Connect with a signer on another device."}
+        Use another signer or connect from another device.
       </p>
       <Tabs value={activeTab} onValueChange={onTabChange}>
         <TabsList
-          className={`grid h-auto w-full ${allowBunker ? "grid-cols-3" : "grid-cols-2"} rounded-xl p-1`}
+          className="grid h-auto w-full grid-cols-3 rounded-xl p-1"
           aria-label="Remote signer connection method"
         >
           <TabsTrigger value="qr" className={tabClassName}>
@@ -118,12 +112,10 @@ export function ManualSignerConnection({
             <Link2 className="h-4 w-4 shrink-0" aria-hidden="true" />
             Copy link
           </TabsTrigger>
-          {allowBunker && (
-            <TabsTrigger value="bunker" className={tabClassName}>
-              <KeyRound className="h-4 w-4 shrink-0" aria-hidden="true" />
-              Paste bunker
-            </TabsTrigger>
-          )}
+          <TabsTrigger value="bunker" className={tabClassName}>
+            <KeyRound className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Paste bunker
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="qr" className="min-w-0">
           {nostrConnectUri ? (
@@ -168,19 +160,17 @@ export function ManualSignerConnection({
             startButton
           )}
         </TabsContent>
-        {allowBunker && (
-          <TabsContent value="bunker" className="min-w-0 space-y-3">
-            <BunkerSignerConnection
-              bunkerUri={bunkerUri}
-              onBunkerChange={onBunkerChange}
-              onSubmitBunker={onSubmitBunker}
-              connectDisabled={connectDisabled}
-              connectPending={connectPending}
-              error={error}
-              errorId={errorId}
-            />
-          </TabsContent>
-        )}
+        <TabsContent value="bunker" className="min-w-0 space-y-3">
+          <BunkerSignerConnection
+            bunkerUri={bunkerUri}
+            onBunkerChange={onBunkerChange}
+            onSubmitBunker={onSubmitBunker}
+            connectDisabled={connectDisabled}
+            connectPending={connectPending}
+            error={error}
+            errorId={errorId}
+          />
+        </TabsContent>
       </Tabs>
     </div>
   )

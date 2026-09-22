@@ -52,7 +52,7 @@ export function SignerAppChoices({
     return (
       <Button asChild className={primaryClassName}>
         <a
-          href={androidSignerConnectUrl("amber", nostrConnectUri)}
+          href={androidSignerConnectUrl(nostrConnectUri)}
           target="_self"
           onClick={() => onSelectApp(app)}
         >
