@@ -6,7 +6,12 @@ import {
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
 import { buildMerchantOrderReviewUrl } from "../app-links"
-import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
+import type {
+  OrderDeliveryRoute,
+  OrderRelayDeliveryRecord,
+  OrderRelayDeliveryStatus,
+  OrderRelayRoutingAuthority,
+} from "../db"
 import {
   recordBrowserTelemetryEvent,
   type ConduitTelemetryApp,
@@ -760,6 +765,18 @@ export interface PublishPrivateMessageInput {
    * write; callers may persist the signed ciphertext wraps, never plaintext.
    */
   onWrapped?: (prepared: PreparedPrivateMessageWraps) => void | Promise<void>
+  /** Persist the exact merchant wrap and signed route before relay I/O. */
+  onRecipientPrepared?: (
+    prepared: PreparedPrivateMessageRecipientDelivery
+  ) => void | Promise<void>
+  /** Commit the attempt fence immediately before recipient relay I/O. */
+  onRecipientPublishStarting?: (
+    prepared: PreparedPrivateMessageRecipientDelivery
+  ) => void | Promise<void>
+  /** Persist the current batch outcomes, or release it when unavailable. */
+  onRecipientPublishSettled?: (
+    delivery: PublishWithPlannerResult | null
+  ) => void | Promise<void>
   /**
    * Recipient/sender kind-10050 inbox relays. NIP-17 delivery is exclusive to
    * these declarations; an empty recipient list means the peer is not ready.
@@ -872,6 +889,17 @@ export interface PreparedPrivateMessageWraps {
   rumorId: string
   wrappedToRecipient: NDKEvent
   wrappedToSelf: NDKEvent | null
+}
+
+export interface PreparedPrivateMessageRecipientDelivery {
+  rumorId: string
+  wrappedToRecipient: NDKEvent
+  deliveryRoute: Extract<OrderDeliveryRoute, "declared_inbox">
+  routingAuthority: OrderRelayRoutingAuthority
+  relayPlan: Array<{
+    relayUrl: string
+    source: "declared"
+  }>
 }
 
 export interface PublishPrivateMessageResult {
@@ -999,6 +1027,38 @@ function recordValidatedOrderCompatibilityOutcome(
     properties:
       buildNip17CompatibilityResultTelemetryProperties(telemetryOutcome),
   })
+}
+
+function buildRecoverableRecipientRoutingAuthority(input: {
+  recipientPubkey: string
+  declaration: InboxDeclarationResolution
+  route: DeliveryRouteSelection
+}): OrderRelayRoutingAuthority | null {
+  const eventId = input.declaration.eventId?.trim().toLowerCase()
+  const eventCreatedAt = input.declaration.eventCreatedAt
+  const pubkey = input.recipientPubkey.trim().toLowerCase()
+  if (
+    input.route.route !== "declared_inbox" ||
+    input.declaration.state !== "declared" ||
+    !eventId ||
+    !/^[0-9a-f]{64}$/.test(eventId) ||
+    !Number.isSafeInteger(eventCreatedAt) ||
+    (eventCreatedAt ?? -1) < 0 ||
+    input.route.relayUrls.length === 0 ||
+    input.route.relayUrls.some(
+      (relayUrl) => input.route.relaySources[relayUrl] !== "declared"
+    )
+  ) {
+    return null
+  }
+
+  return {
+    eventId,
+    eventCreatedAt: eventCreatedAt!,
+    pubkey,
+    kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+    relayUrls: [...input.route.relayUrls],
+  }
 }
 
 /**
@@ -1144,6 +1204,23 @@ export async function publishPrivateMessage(
     })
     throw new PrivateMessageRelayReadinessError(readinessReason)
   }
+  const recoverableRoutingAuthority = buildRecoverableRecipientRoutingAuthority(
+    {
+      recipientPubkey,
+      declaration: recipientDeclaration,
+      route: recipientRoute,
+    }
+  )
+  const recoverableDeliveryRequested = Boolean(
+    input.onRecipientPrepared ||
+    input.onRecipientPublishStarting ||
+    input.onRecipientPublishSettled
+  )
+  if (recoverableDeliveryRequested && !recoverableRoutingAuthority) {
+    throw new Error(
+      "Recoverable order delivery requires a validated recipient kind:10050 declaration."
+    )
+  }
 
   let senderRoute: ReturnType<typeof selectPrivateMessageDeliveryRoute> | null =
     null
@@ -1253,6 +1330,21 @@ export async function publishPrivateMessage(
     })
     throw error
   }
+  const preparedRecipientDelivery = recoverableRoutingAuthority
+    ? {
+        rumorId: input.rumor.id,
+        wrappedToRecipient,
+        deliveryRoute: "declared_inbox" as const,
+        routingAuthority: recoverableRoutingAuthority,
+        relayPlan: recipientRoute.relayUrls.map((relayUrl) => ({
+          relayUrl,
+          source: "declared" as const,
+        })),
+      }
+    : null
+  if (preparedRecipientDelivery) {
+    await input.onRecipientPrepared?.(preparedRecipientDelivery)
+  }
 
   // The self-copy is a non-critical local-recovery leg: a signer failure while
   // wrapping it must never block the critical recipient delivery below.
@@ -1290,6 +1382,10 @@ export async function publishPrivateMessage(
   }
 
   let recipientDelivery: PublishWithPlannerResult
+  let recipientDeliveryReported = false
+  if (preparedRecipientDelivery) {
+    await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
+  }
   try {
     recipientDelivery = await publishFn(wrappedToRecipient, {
       intent: "recipient_event",
@@ -1323,6 +1419,12 @@ export async function publishPrivateMessage(
         : {}),
     })
   } catch (error) {
+    if (preparedRecipientDelivery && input.onRecipientPublishSettled) {
+      await input.onRecipientPublishSettled(
+        error instanceof RelayPublishDiagnosticsError ? error.diagnostics : null
+      )
+      recipientDeliveryReported = true
+    }
     const partial = recoverPartialRelayPublishDiagnostics(error)
     if (partial) {
       // A planner diagnostic that includes a recipient ACK is durable delivery.
@@ -1342,6 +1444,13 @@ export async function publishPrivateMessage(
       })
       throw error
     }
+  }
+  if (
+    preparedRecipientDelivery &&
+    input.onRecipientPublishSettled &&
+    !recipientDeliveryReported
+  ) {
+    await input.onRecipientPublishSettled(recipientDelivery)
   }
   if (
     Array.isArray(recipientDelivery.successfulRelayUrls) &&
@@ -1367,9 +1476,11 @@ export async function publishPrivateMessage(
   const orderRelayDelivery =
     input.rumorKind === EVENT_KINDS.ORDER
       ? buildOrderRelayDeliveryRecord({
+          rumorId: input.rumor.id,
           wrappedToRecipient,
           recipientRoute,
           recipientDelivery,
+          routingAuthority: recoverableRoutingAuthority,
         })
       : undefined
   const selfCopySessionChangedError =
@@ -1516,12 +1627,14 @@ function consumeValidatedGuestOrderCompanionScope(input: {
 }
 
 function buildOrderRelayDeliveryRecord(input: {
+  rumorId: string
   wrappedToRecipient: NDKEvent
   recipientRoute: DeliveryRouteSelection
   recipientDelivery: Awaited<ReturnType<typeof publishWithPlanner>>
+  routingAuthority: OrderRelayRoutingAuthority | null
 }): OrderRelayDeliveryRecord | undefined {
   const route = input.recipientRoute.route
-  if (route === "blocked") return undefined
+  if (route !== "declared_inbox" || !input.routingAuthority) return undefined
   let signedRecipientWrap: SignedPublicNostrEvent
   try {
     signedRecipientWrap =
@@ -1562,8 +1675,10 @@ function buildOrderRelayDeliveryRecord(input: {
   })
 
   return {
+    rumorId: input.rumorId,
     signedRecipientWrap,
-    route,
+    route: "declared_inbox",
+    routingAuthority: structuredClone(input.routingAuthority),
     relayDelivery,
     deliveryAttemptCount: 1,
     retryCount: 0,

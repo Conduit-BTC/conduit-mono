@@ -1,5 +1,5 @@
 import { StrictMode } from "react"
-import { useEffect, useRef, type ReactNode } from "react"
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react"
 import { createRoot } from "react-dom/client"
 import { RouterProvider, createRouter } from "@tanstack/react-router"
 import {
@@ -66,7 +66,7 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
       ? `connected:${session.pubkey}`
       : "anonymous"
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = identityRef.current
     identityRef.current = identity
     if (previous === null || previous === identity) return
@@ -92,7 +92,10 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
     const resume = () => {
       if (active) return
       active = true
-      void resumePendingOrderRelayDeliveries(buyerPubkey).finally(() => {
+      void resumePendingOrderRelayDeliveries(buyerPubkey, {
+        shouldContinue: () =>
+          identityRef.current === `connected:${buyerPubkey}`,
+      }).finally(() => {
         active = false
       })
     }
