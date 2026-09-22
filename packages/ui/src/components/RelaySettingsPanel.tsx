@@ -13,6 +13,7 @@ import {
   ArrowUp,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Info,
   Plus,
   RefreshCw,
@@ -20,6 +21,7 @@ import {
   Store,
   Trash2,
   Upload,
+  X,
 } from "lucide-react"
 import {
   areAccountNetworkRelayRowsReorderEquivalent,
@@ -40,6 +42,11 @@ import { getResultPresentation } from "../result-presentation"
 import { cn } from "../utils"
 import { Button } from "./Button"
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "./Collapsible"
+import {
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -56,6 +63,7 @@ import {
   PreferenceSectionFooter,
 } from "./PreferenceSectionCard"
 import { StatusPill } from "./StatusPill"
+import { Switch } from "./Switch"
 
 export interface RelaySettingsPanelProps {
   controller: AccountNetworkSettingsController
@@ -254,43 +262,105 @@ function reachabilityDotClassName(
 }
 
 function RelayIndicator({ row }: { row: AccountNetworkRelayRowView }) {
+  const [failedIconUrls, setFailedIconUrls] = useState<readonly string[]>([])
   const commerce = isAccountNetworkRelayCommerceRelevant(row.capability)
   const status = reachabilityLabel(row.reachability)
   const commerceStatus = row.capability.observedCommerce
     ? "Full commerce support observed"
     : "Used for commerce workflows"
+  const advertisedIcon = row.capability.relayIconUrl
+  const fallbackIcon = row.capability.relayIconFallbackUrl
+  const iconCandidates = [
+    ...(row.capability.nip11 === "available" ? [advertisedIcon] : []),
+    fallbackIcon,
+  ].filter(
+    (iconUrl, index, urls): iconUrl is string =>
+      Boolean(iconUrl) && urls.indexOf(iconUrl) === index
+  )
+  const failedIconUrlSet = new Set(failedIconUrls)
+  const iconUrl = iconCandidates.find(
+    (candidate) => !failedIconUrlSet.has(candidate)
+  )
+  const relayLabel = row.capability.relayName ?? row.url
   return (
     <span
       role="img"
-      aria-label={commerce ? `${commerceStatus}. ${status}.` : `${status}.`}
+      aria-label={
+        commerce
+          ? `${relayLabel}. ${commerceStatus}. ${status}.`
+          : `${relayLabel}. ${status}.`
+      }
       title={commerce ? `${commerceStatus} · ${status}` : status}
       className={cn(
-        "relative flex size-8 shrink-0 items-center justify-center rounded-full",
+        "relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--surface-elevated)]",
         commerce &&
           "bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--primary-500)]"
       )}
     >
-      {commerce ? (
+      {iconUrl ? (
+        <img
+          src={iconUrl}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() =>
+            setFailedIconUrls((current) =>
+              current.includes(iconUrl) ? current : [...current, iconUrl]
+            )
+          }
+          className="size-full object-cover"
+        />
+      ) : commerce ? (
         <>
           <Store className="size-4" aria-hidden="true" />
-          <span
-            aria-hidden="true"
-            className={cn(
-              "absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-[var(--surface)]",
-              reachabilityDotClassName(row.reachability)
-            )}
-          />
         </>
       ) : (
-        <span
-          aria-hidden="true"
-          className={cn(
-            "size-3 rounded-full",
-            reachabilityDotClassName(row.reachability)
-          )}
-        />
+        <Store className="size-4 text-[var(--text-muted)]" aria-hidden="true" />
       )}
+      <span
+        aria-hidden="true"
+        className={cn(
+          "absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-[var(--surface)]",
+          reachabilityDotClassName(row.reachability)
+        )}
+      />
     </span>
+  )
+}
+
+function RelayIdentity({
+  row,
+  urlAnnotation,
+}: {
+  row: AccountNetworkRelayRowView
+  urlAnnotation?: string
+}) {
+  const relayName = row.capability.relayName
+  return (
+    <div className="min-w-0 pt-1">
+      <span
+        className={cn(
+          "block min-w-0 truncate text-sm text-[var(--text-primary)]",
+          relayName ? "font-semibold" : "font-mono"
+        )}
+        title={relayName ?? row.url}
+      >
+        {relayName ?? row.url}
+      </span>
+      {relayName ? (
+        <span
+          className="mt-0.5 flex min-w-0 items-baseline gap-2 text-xs text-[var(--text-secondary)]"
+          title={row.url}
+        >
+          <span className="min-w-0 truncate font-mono">{row.url}</span>
+          {urlAnnotation ? (
+            <span className="shrink-0 text-[var(--text-muted)]">
+              ({urlAnnotation})
+            </span>
+          ) : null}
+        </span>
+      ) : null}
+    </div>
   )
 }
 
@@ -583,14 +653,9 @@ function RelayRow({
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <RelayIndicator row={row} />
-          <div className="min-w-0 pt-1.5">
+          <div className="min-w-0">
+            <RelayIdentity row={row} />
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-              <span
-                className="min-w-0 truncate font-mono text-sm text-[var(--text-primary)]"
-                title={row.url}
-              >
-                {row.url}
-              </span>
               {row.recoveryReadOnly ? (
                 <span className="text-xs font-medium text-warning">
                   Recovery read-only
@@ -685,7 +750,7 @@ function frontierExceptionMessage(
     return "No preference was found in the relay responses received."
   }
   if (frontier.state === "not_observed") {
-    return "No published preference found."
+    return "No published preference found on the relays checked."
   }
   return "Not checked yet."
 }
@@ -1539,6 +1604,26 @@ function useRelaySettingsReview(
     )
   }
 
+  function applySetupRecommendation(
+    recommendedRows: readonly AccountNetworkRelayRowView[]
+  ): void {
+    setPublishDialogOpen(false)
+    setPreparedPublishChange(null)
+    const recommendedByUrl = new Map(
+      recommendedRows.map((row) => [row.url, row])
+    )
+    setRows((current) =>
+      orderAccountNetworkRelayRows([
+        ...current.map((row) => recommendedByUrl.get(row.url) ?? row),
+        ...recommendedRows.filter(
+          (row) => !current.some((currentRow) => currentRow.url === row.url)
+        ),
+      ])
+    )
+    setLocalActionError(null)
+    controller.clearOperation()
+  }
+
   function cancelRemoval(): void {
     setRelayPendingRemoval(null)
     setPreparedRemovalChange(null)
@@ -1600,6 +1685,7 @@ function useRelaySettingsReview(
     closePublishDialog,
     confirmPublish,
     discardReview,
+    applySetupRecommendation,
     cancelRemoval,
     proceedRemoval,
   }
@@ -1821,8 +1907,9 @@ function RelayListSection({
         </div>
       ) : (
         <div className="py-4 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-          No relay preferences were found. Add at least one Publish relay.
-          Select a Private inbox if you want to receive private messages.
+          No relay preferences were found on the relays checked. Add at least
+          one Publish relay. Select a Private inbox if you want to receive
+          private messages.
         </div>
       )}
     </div>
@@ -2069,6 +2156,308 @@ function NetworkReviewSection({
   )
 }
 
+const DREAMITH_RELAY_URL = "wss://relay.dreamith.to"
+
+function AppRelayRow({ row }: { row: AccountNetworkRelayRowView }) {
+  const uses = [
+    row.readEnabled ? "Read" : null,
+    !row.readEnabled &&
+    row.capability.configuredUses.includes("product_discovery")
+      ? "Commerce read"
+      : null,
+    row.publishEnabled ? "Write" : null,
+    row.privateInboxEnabled ? "Private inbox" : null,
+  ].filter((label): label is string => Boolean(label))
+
+  return (
+    <li className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="flex min-w-0 items-start gap-2">
+        <RelayIndicator row={row} />
+        <RelayIdentity
+          row={row}
+          urlAnnotation={
+            row.url === DREAMITH_RELAY_URL ? "Ditto backup" : undefined
+          }
+        />
+      </div>
+      {uses.length > 0 ? (
+        <div
+          className="flex flex-wrap gap-1.5 pl-10 sm:shrink-0 sm:justify-end sm:pl-0"
+          aria-label={`Configured use for ${row.url}`}
+        >
+          {uses.map((label) => (
+            <span
+              key={label}
+              className="rounded-full border border-[var(--border-overlay)] px-2 py-1 text-xs font-medium text-[var(--text-secondary)]"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </li>
+  )
+}
+
+function AppRelaysSection({
+  controller,
+  busy,
+}: {
+  controller: AccountNetworkSettingsController
+  busy: boolean
+}) {
+  const appRelays = controller.view.appRelays
+  const [disableReviewOpen, setDisableReviewOpen] = useState(false)
+  const [policyBusy, setPolicyBusy] = useState(false)
+  const [policyError, setPolicyError] = useState<string | null>(null)
+  if (!appRelays) return null
+  const disableWarning = appRelays.warning
+
+  async function updateEnabled(enabled: boolean): Promise<void> {
+    setPolicyBusy(true)
+    setPolicyError(null)
+    try {
+      await controller.setAppRelaysEnabled(enabled)
+      setDisableReviewOpen(false)
+    } catch (error) {
+      setPolicyError(
+        error instanceof Error
+          ? error.message
+          : "The app relay preference could not be saved."
+      )
+    } finally {
+      setPolicyBusy(false)
+    }
+  }
+
+  function requestEnabledChange(enabled: boolean): void {
+    if (!enabled && disableWarning) {
+      setDisableReviewOpen(true)
+      return
+    }
+    void updateEnabled(enabled)
+  }
+
+  return (
+    <Collapsible defaultOpen={false}>
+      <section aria-labelledby="app-relays-heading">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
+          <CollapsibleTrigger
+            aria-labelledby="app-relays-heading app-relays-summary"
+            className="group flex size-11 items-center justify-center rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+          >
+            <ChevronRight
+              className="size-5 group-data-[state=open]:rotate-90"
+              aria-hidden="true"
+            />
+          </CollapsibleTrigger>
+          <div className="min-w-0 pt-1">
+            <h3
+              id="app-relays-heading"
+              className="text-balance text-base font-semibold text-[var(--text-primary)]"
+            >
+              App Relays
+            </h3>
+            <p
+              id="app-relays-summary"
+              className="mt-0.5 text-pretty text-sm leading-5 text-[var(--text-secondary)]"
+            >
+              {appRelays.rows.length} managed{" "}
+              {appRelays.rows.length === 1 ? "route" : "routes"} for reliable
+              commerce, discovery, and messaging.
+            </p>
+          </div>
+          <div className="flex min-h-11 shrink-0 items-center gap-3">
+            <span className="text-sm font-medium text-[var(--text-secondary)]">
+              {appRelays.enabled ? "Enabled" : "Disabled"}
+            </span>
+            <Switch
+              checked={appRelays.enabled}
+              disabled={busy || policyBusy}
+              onCheckedChange={requestEnabledChange}
+              aria-label={`${appRelays.enabled ? "Disable" : "Enable"} App Relays`}
+            />
+          </div>
+        </div>
+
+        <CollapsibleContent>
+          {appRelays.rows.length > 0 ? (
+            <ul
+              className="mt-3 divide-y divide-[var(--border)] border-t border-[var(--border)]"
+              aria-label="App Relays"
+            >
+              {appRelays.rows.map((row) => (
+                <AppRelayRow key={row.url} row={row} />
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-3 text-pretty text-sm text-[var(--text-secondary)]">
+              No app relays are configured in this build.
+            </p>
+          )}
+        </CollapsibleContent>
+        {policyError ? (
+          <p className="mt-3 text-pretty text-sm text-error" role="alert">
+            {policyError}
+          </p>
+        ) : null}
+
+        <AlertDialog
+          open={disableReviewOpen}
+          onOpenChange={(open) => {
+            if (!policyBusy) setDisableReviewOpen(open)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-balance">
+                Turn off App Relays?
+              </AlertDialogTitle>
+              <AlertDialogDescription className="text-pretty leading-6">
+                {disableWarning}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={policyBusy}
+                onClick={() => setDisableReviewOpen(false)}
+                className="min-h-11"
+              >
+                Keep enabled
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={policyBusy}
+                onClick={() => void updateEnabled(false)}
+                className="min-h-11"
+              >
+                {policyBusy ? "Saving" : "Turn off App Relays"}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </section>
+    </Collapsible>
+  )
+}
+
+function PersonalRelaysHeader({
+  controller,
+  review,
+}: {
+  controller: AccountNetworkSettingsController
+  review: RelaySettingsReview
+}) {
+  const [policyBusy, setPolicyBusy] = useState(false)
+  const [policyError, setPolicyError] = useState<string | null>(null)
+  const [dismissBusy, setDismissBusy] = useState(false)
+  const enabled = controller.view.personalRelaysEnabled ?? true
+  const recommendation = controller.view.setupRecommendation
+
+  async function updateEnabled(nextEnabled: boolean): Promise<void> {
+    setPolicyBusy(true)
+    setPolicyError(null)
+    try {
+      await controller.setPersonalRelaysEnabled(nextEnabled)
+    } catch (error) {
+      setPolicyError(
+        error instanceof Error
+          ? error.message
+          : "The personal relay preference could not be saved."
+      )
+    } finally {
+      setPolicyBusy(false)
+    }
+  }
+
+  async function dismissRecommendation(): Promise<void> {
+    setDismissBusy(true)
+    setPolicyError(null)
+    try {
+      await controller.dismissSetupRecommendation()
+    } catch (error) {
+      setPolicyError(
+        error instanceof Error
+          ? error.message
+          : "The relay recommendation could not be dismissed."
+      )
+    } finally {
+      setDismissBusy(false)
+    }
+  }
+
+  return (
+    <section aria-labelledby="personal-relays-heading">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3
+            id="personal-relays-heading"
+            className="text-balance text-base font-semibold text-[var(--text-primary)]"
+          >
+            Your Relays
+          </h3>
+          <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+            Your signed relay preferences stay synchronized with Nostr. This
+            switch adds only your NIP-65 Read and Publish relays to Conduit
+            routing. Current Private inbox routes remain active.
+          </p>
+        </div>
+        <div className="flex min-h-11 shrink-0 items-center gap-3">
+          <span className="text-sm font-medium text-[var(--text-secondary)]">
+            {enabled ? "Enabled" : "Disabled"}
+          </span>
+          <Switch
+            checked={enabled}
+            disabled={review.busy || policyBusy}
+            onCheckedChange={(checked) => void updateEnabled(checked)}
+            aria-label={`${enabled ? "Disable" : "Enable"} Your Relays`}
+          />
+        </div>
+      </div>
+      {recommendation ? (
+        <div className="relative mt-4 flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 pr-12 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-[var(--text-primary)]">
+              {recommendation.title}
+            </p>
+            <p className="mt-1 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
+              {recommendation.description}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={review.busy}
+            onClick={() => review.applySetupRecommendation(recommendation.rows)}
+            className="min-h-11 shrink-0"
+          >
+            {recommendation.title}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            disabled={review.busy || dismissBusy}
+            onClick={() => void dismissRecommendation()}
+            aria-label="Dismiss relay setup recommendation"
+            className="absolute right-1 top-1 min-h-11 min-w-11"
+          >
+            <X className="size-4" aria-hidden="true" />
+          </Button>
+        </div>
+      ) : null}
+      {policyError ? (
+        <p className="mt-3 text-pretty text-sm text-error" role="alert">
+          {policyError}
+        </p>
+      ) : null}
+    </section>
+  )
+}
+
 function RelayPreferencesSection({
   controller,
   review,
@@ -2080,6 +2469,7 @@ function RelayPreferencesSection({
     controller.status === "reconciling" || controller.relayInformationRefreshing
   const refreshDisabled =
     checking || review.busy || review.hasUnpublishedChanges
+  const groupedRelayPresentation = Boolean(controller.view.appRelays)
   return (
     <PreferenceSectionCard
       headingId="relay-list-heading"
@@ -2111,6 +2501,17 @@ function RelayPreferencesSection({
         </Button>
       }
     >
+      {groupedRelayPresentation ? (
+        <>
+          <PreferenceSectionBody className="pt-0 sm:pt-0">
+            <AppRelaysSection controller={controller} busy={review.busy} />
+          </PreferenceSectionBody>
+          <PreferenceSectionDivider />
+          <PreferenceSectionBody>
+            <PersonalRelaysHeader controller={controller} review={review} />
+          </PreferenceSectionBody>
+        </>
+      ) : null}
       <PreferenceSectionBody className="pt-0 sm:pt-0">
         <PublishedRelayPreferences controller={controller} />
         <PendingUpdateSummary

@@ -1169,7 +1169,7 @@ async function deleteProduct(
     })),
     clientAppId: "merchant",
   })
-  const currentWriteRelayUrls = await planCurrentProductDeletionWriteRelays(
+  const currentWriteRelayPlan = await planCurrentProductDeletionWriteRelays(
     merchantPubkey,
     activeAuthenticatedPubkey,
     shouldContinue
@@ -1186,7 +1186,9 @@ async function deleteProduct(
   await deletion.sign(ndk.signer)
   const deliveryJob = await persistSignedProductDeletion({
     signedEvent: deletion.rawEvent(),
-    currentWriteRelayUrls,
+    currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
+    currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
+    currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,
     sourceRelayUrls: Array.from(
       new Set(familyRecords.flatMap((record) => record.sourceRelayUrls))
     ),

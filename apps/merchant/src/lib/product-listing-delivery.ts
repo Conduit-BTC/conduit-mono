@@ -57,6 +57,16 @@ function uniqueRelayTargets(
     byUrl.set(target.relayUrl, {
       relayUrl: target.relayUrl,
       ownerSelected: target.ownerSelected || existing?.ownerSelected === true,
+      ...(target.appRelay === true || existing?.appRelay === true
+        ? { appRelay: true }
+        : {}),
+      ...(target.personalRelay === true || existing?.personalRelay === true
+        ? { personalRelay: true }
+        : {}),
+      ...(target.independentRelay === true ||
+      existing?.independentRelay === true
+        ? { independentRelay: true }
+        : {}),
     })
   }
   return Array.from(byUrl.values())
@@ -87,6 +97,9 @@ async function publishProductListingRelay(
     accountPubkey: input.accountPubkey,
     authenticatedPubkey,
     ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
+    independentRelayUrls: input.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue:
@@ -137,7 +150,7 @@ export async function planCurrentProductListingRelayTargets(
   shouldContinue?: () => boolean
 ): Promise<ProductListingRelayTarget[]> {
   const plan = await planPublishRelays({
-    intent: "author_event",
+    intent: "commerce_author_event",
     authorPubkey: merchantPubkey,
     authenticatedPubkey,
     accountPubkey: merchantPubkey,
@@ -157,19 +170,20 @@ export function resolveProductListingRelayTargets(
     ...plan.broadcastRelayUrls,
     ...plan.parkedRelayUrls,
   ]
-  const relayUrls =
+  const fallbackRelayUrls =
     plan.signedRelayListAuthoritative === true
-      ? plannedRelayUrls
-      : [
-          ...plannedRelayUrls,
-          ...getAuthorEventFallbackRelayUrls({
-            eventKind: EVENT_KINDS.PRODUCT,
-            intent: "author_event",
-            attemptedRelayUrls: plannedRelayUrls,
-          }),
-        ]
+      ? []
+      : getAuthorEventFallbackRelayUrls({
+          eventKind: EVENT_KINDS.PRODUCT,
+          intent: "commerce_author_event",
+          attemptedRelayUrls: plannedRelayUrls,
+        })
+  const appRelayUrls = new Set(plan.appRelayUrls ?? [])
+  const personalRelayUrls = new Set(plan.personalRelayUrls ?? [])
+  const independentRelayUrls = new Set(plan.independentRelayUrls ?? [])
+  const commerceFallbackRelayUrls = new Set(fallbackRelayUrls)
   return uniqueRelayTargets(
-    relayUrls.map((relayUrl) => ({
+    [...plannedRelayUrls, ...fallbackRelayUrls].map((relayUrl) => ({
       relayUrl,
       // Private/local targets can only survive author-event planning when the
       // authenticated owner selected them. The configured isolated E2E relay
@@ -177,6 +191,11 @@ export function resolveProductListingRelayTargets(
       ownerSelected:
         !config.e2eRelayIsolationEnabled &&
         !normalizePublicWebSocketUrl(relayUrl),
+      ...(appRelayUrls.has(relayUrl) || commerceFallbackRelayUrls.has(relayUrl)
+        ? { appRelay: true }
+        : {}),
+      ...(personalRelayUrls.has(relayUrl) ? { personalRelay: true } : {}),
+      ...(independentRelayUrls.has(relayUrl) ? { independentRelay: true } : {}),
     }))
   )
 }
@@ -276,10 +295,11 @@ export function productListingJobToPublishResult(
 
   return {
     plan: {
-      intent: "author_event",
+      intent: "commerce_author_event",
       primaryRelayUrls: job.relayTargets.map((target) => target.relayUrl),
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
+      independentRelayUrls: [],
     },
     attemptedRelayUrls,
     successfulRelayUrls,

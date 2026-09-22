@@ -6,7 +6,9 @@ import {
 } from "nostr-tools/pure"
 import {
   buildEventMarketCollectionDraft,
+  emptyAccountNetworkLocalState,
   EVENT_KINDS,
+  filterEligibleAccountRelayUrls,
   getEventMarketCollectionLifecycleEvidence,
   isEventMarketCollectionLifecycleContinuation,
   parseEventMarketCollectionEvent,
@@ -24,7 +26,11 @@ const product = `30402:${merchant}:product`
 async function emptyReadPlan(): Promise<EventMarketReadPlan> {
   return {
     relayUrls: [],
+    candidateRelayUrls: [],
     ownerSelectedRelayUrls: [],
+    appRelayUrls: [],
+    personalRelayUrls: [],
+    independentRelayUrls: [],
     relayListState: "missing",
     relayHintTruncated: false,
   }
@@ -162,6 +168,8 @@ describe("exact event collection lifecycle continuity", () => {
       "wss://fallback.example",
     ]
     const ownerSelectedRelayUrls = ["ws://127.0.0.1:7777"]
+    const appRelayUrls = ["wss://fallback.example"]
+    const personalRelayUrls = ["ws://127.0.0.1:7777"]
     const events = await getEventMarketCollectionLifecycleEvidence(
       {
         original: parseEventMarketCollectionEvent(original)!,
@@ -179,7 +187,11 @@ describe("exact event collection lifecycle continuity", () => {
           expect(input.authenticatedPubkey).toBe(organizer)
           return {
             relayUrls,
+            candidateRelayUrls: relayUrls,
             ownerSelectedRelayUrls,
+            appRelayUrls,
+            personalRelayUrls,
+            independentRelayUrls: [],
             relayListState: "network",
             relayHintTruncated: false,
           }
@@ -188,6 +200,8 @@ describe("exact event collection lifecycle continuity", () => {
           reads.push(filter)
           expect(options.relayUrls).toEqual(relayUrls)
           expect(options.ownerSelectedRelayUrls).toEqual(ownerSelectedRelayUrls)
+          expect(options.appRelayUrls).toEqual(appRelayUrls)
+          expect(options.personalRelayUrls).toEqual(personalRelayUrls)
           expect(options.authenticatedPubkey).toBe(organizer)
           return {
             events: filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)
@@ -215,6 +229,88 @@ describe("exact event collection lifecycle continuity", () => {
         limit: 500,
       },
     ])
+    expect(continuation(original, current, events)).toBe(true)
+  })
+
+  it("backfills an enabled App relay after disabled Personal candidates", async () => {
+    const original = collection("open")
+    const current = collection("closed", 101)
+    const personalRelayUrls = Array.from(
+      { length: 8 },
+      (_, index) => `wss://personal-${index + 1}.example`
+    )
+    const appRelayUrl = "wss://app-fallback.example"
+    const accountState = emptyAccountNetworkLocalState(organizer, () => 1)
+    accountState.routingPolicy = {
+      ...accountState.routingPolicy,
+      personalRelaysEnabled: false,
+      personalRelaysTouched: true,
+    }
+    const accountNetworkLocalStateRepository = {
+      get: async () => structuredClone(accountState),
+    }
+    const admittedReads: string[][] = []
+
+    const events = await getEventMarketCollectionLifecycleEvidence(
+      {
+        original: parseEventMarketCollectionEvent(original)!,
+        current: parseEventMarketCollectionEvent(current)!,
+        authenticatedPubkey: organizer,
+        accountNetworkLocalStateRepository,
+      },
+      {
+        getRetainedEvidence: async () => ({
+          events: [current],
+          eventSourceRelayUrls: {},
+        }),
+        getLocalEvidence: () => ({ status: "ready", events: [] }),
+        getReadPlan: async () => ({
+          relayUrls: personalRelayUrls,
+          candidateRelayUrls: [...personalRelayUrls, appRelayUrl],
+          maxRelayAttempts: 8,
+          ownerSelectedRelayUrls: personalRelayUrls,
+          appRelayUrls: [appRelayUrl],
+          personalRelayUrls,
+          independentRelayUrls: [],
+          relayListState: "network",
+          relayHintTruncated: false,
+        }),
+        fetchEvents: async (filter, options) => {
+          const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+            accountPubkey: organizer,
+            authenticatedPubkey: organizer,
+            candidateRelayUrls: options.relayUrls ?? [],
+            ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+            appRelayUrls: options.appRelayUrls,
+            personalRelayUrls: options.personalRelayUrls,
+            independentRelayUrls: options.independentRelayUrls,
+            repository: accountNetworkLocalStateRepository,
+          })
+          const admittedRelayUrls = eligibleRelayUrls.slice(
+            0,
+            options.maxRelayAttempts
+          )
+          admittedReads.push(admittedRelayUrls)
+          return {
+            events:
+              admittedRelayUrls.includes(appRelayUrl) &&
+              filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)
+                ? [original]
+                : [],
+            eventSourceRelayUrls: {},
+            relays: admittedRelayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "ok" as const,
+              eventCount: 0,
+            })),
+            admittedRelayUrls,
+            eventsVerified: true,
+          }
+        },
+      }
+    )
+
+    expect(admittedReads).toEqual([[appRelayUrl], [appRelayUrl], [appRelayUrl]])
     expect(continuation(original, current, events)).toBe(true)
   })
 

@@ -1058,7 +1058,7 @@ describe("buyer order publishing", () => {
 
   for (const failure of [
     "Signer rejected companion operation",
-    "Recipient has not declared NIP-17 inbox relays.",
+    "No usable recipient NIP-17 inbox declaration was found on the relays checked.",
     "Recipient delivery completed without a relay ACK.",
   ]) {
     it(`keeps successful order delivery after advisory failure: ${failure}`, async () => {

@@ -6,6 +6,7 @@ import type {
   ProductSupplierAllocation,
   ProductZapMessagePolicy,
 } from "../schemas"
+import type { AccountNetworkRoutingPolicy } from "../protocol/account-network-routing-policy"
 import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
@@ -184,6 +185,10 @@ export type ProductDeletionDeliveryState = "pending" | "partial" | "delivered"
 export interface ProductDeletionRelayTarget {
   relayUrl: string
   roles: ProductDeletionRelayRole[]
+  /** Persisted source provenance for live App-layer admission. */
+  appRelay?: boolean
+  /** Persisted source provenance for live Personal-layer admission. */
+  personalRelay?: boolean
 }
 
 export interface ProductDeletionRelayDelivery {
@@ -234,6 +239,10 @@ export interface ProductListingRelayTarget {
   relayUrl: string
   /** True only when this target came from the merchant's own relay settings. */
   ownerSelected: boolean
+  /** Immutable source provenance; retries still recheck the current layer policy. */
+  appRelay?: boolean
+  personalRelay?: boolean
+  independentRelay?: boolean
 }
 
 export interface ProductListingRelayDelivery {
@@ -560,6 +569,7 @@ export interface AccountNetworkRelayExclusion {
 export interface AccountNetworkLocalState {
   pubkey: string
   version: number
+  routingPolicy: AccountNetworkRoutingPolicy
   exclusions: AccountNetworkRelayExclusion[]
   preferredRelayOrder: string[]
   /** Existing capability vocabulary; observations are never signed authority. */

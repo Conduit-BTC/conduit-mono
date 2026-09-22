@@ -34,6 +34,10 @@ const ROLE_ORDER: readonly ProductDeletionRelayRole[] = [
 export interface ProductDeletionRelayPlanInput {
   /** Current relay output from the authenticated author's write planner. */
   currentWriteRelayUrls: readonly string[]
+  /** Exact current-write subset contributed by the app layer. */
+  currentAppRelayUrls?: readonly string[]
+  /** Exact current-write subset contributed by the personal NIP-65 layer. */
+  currentPersonalRelayUrls?: readonly string[]
   /** Untrusted source provenance retained with product observations. */
   sourceRelayUrls: readonly string[]
   canonicalConduitRelayUrl: string
@@ -64,6 +68,9 @@ export type ProductDeletionRelayPublisher = (input: {
   isAuthenticatedPubkeyCurrent?: (pubkey: string) => boolean
   /** Exact target subset authorized by persisted `author_write` provenance. */
   ownerSelectedRelayUrls: string[]
+  appRelayUrls: string[]
+  personalRelayUrls: string[]
+  independentRelayUrls: string[]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -127,6 +134,11 @@ function cloneRelayPlan(
   return plan.map((target) => ({
     relayUrl: target.relayUrl,
     roles: [...target.roles],
+    // Legacy jobs did not persist layer flags. Delivery retains both plausible
+    // authorities for ambiguous App/personal `author_write` overlap; retain the
+    // old shape here for compatibility.
+    ...(target.appRelay === true ? { appRelay: true } : {}),
+    ...(target.personalRelay === true ? { personalRelay: true } : {}),
   }))
 }
 
@@ -134,6 +146,56 @@ function cloneRelayDelivery(
   deliveries: readonly ProductDeletionRelayDelivery[]
 ): ProductDeletionRelayDelivery[] {
   return deliveries.map((delivery) => ({ ...delivery }))
+}
+
+function persistedTargetRelaySources(
+  target: ProductDeletionRelayTarget | undefined
+): {
+  ownerSelectedRelayUrls: string[]
+  appRelayUrls: string[]
+  personalRelayUrls: string[]
+  independentRelayUrls: string[]
+} {
+  if (!target) {
+    return {
+      ownerSelectedRelayUrls: [],
+      appRelayUrls: [],
+      personalRelayUrls: [],
+      independentRelayUrls: [],
+    }
+  }
+
+  const relayUrl = target.relayUrl
+  const hasPersistedLayerProvenance =
+    target.appRelay === true || target.personalRelay === true
+  const legacyAuthorWrite =
+    target.roles.includes("author_write") && !hasPersistedLayerProvenance
+  const configuredAppWriteRelayUrls = new Set(
+    [...config.appWriteRelayUrls, ...config.appBackplaneRelayUrls].flatMap(
+      (rawRelayUrl) => {
+        const normalized = tryNormalizeRelayUrl(rawRelayUrl)
+        return normalized.ok ? [normalized.url] : []
+      }
+    )
+  )
+  // An unflagged author_write URL in the App registry may also have been the
+  // owner's signed NIP-65 choice. Preserve both possibilities; only the
+  // explicit `conduit` role is unambiguously App-owned in legacy jobs.
+  const appRelay =
+    target.appRelay === true ||
+    target.roles.includes("conduit") ||
+    (legacyAuthorWrite && configuredAppWriteRelayUrls.has(relayUrl))
+  const personalRelay =
+    target.personalRelay === true ||
+    (legacyAuthorWrite && !target.roles.includes("conduit"))
+
+  return {
+    ownerSelectedRelayUrls:
+      personalRelay && target.roles.includes("author_write") ? [relayUrl] : [],
+    appRelayUrls: appRelay ? [relayUrl] : [],
+    personalRelayUrls: personalRelay ? [relayUrl] : [],
+    independentRelayUrls: target.roles.includes("source") ? [relayUrl] : [],
+  }
 }
 
 function cloneJob(job: ProductDeletionDeliveryJob): ProductDeletionDeliveryJob {
@@ -197,6 +259,18 @@ function isApprovedPersistedRelayTarget(
 export function planProductDeletionRelays(
   input: ProductDeletionRelayPlanInput
 ): ProductDeletionRelayTarget[] {
+  const appRelayUrls = new Set(
+    (input.currentAppRelayUrls ?? []).flatMap((relayUrl) => {
+      const normalized = tryNormalizeRelayUrl(relayUrl)
+      return normalized.ok ? [normalized.url] : []
+    })
+  )
+  const personalRelayUrls = new Set(
+    (input.currentPersonalRelayUrls ?? []).flatMap((relayUrl) => {
+      const normalized = tryNormalizeRelayUrl(relayUrl)
+      return normalized.ok ? [normalized.url] : []
+    })
+  )
   const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
   if (config.e2eRelayIsolationEnabled) {
     if (!isolatedRelayUrl) {
@@ -235,6 +309,10 @@ export function planProductDeletionRelays(
       {
         relayUrl: isolatedRelayUrl,
         roles: ROLE_ORDER.filter((role) => roles.has(role)),
+        ...(appRelayUrls.has(isolatedRelayUrl) ? { appRelay: true } : {}),
+        ...(personalRelayUrls.has(isolatedRelayUrl)
+          ? { personalRelay: true }
+          : {}),
       },
     ]
   }
@@ -267,6 +345,8 @@ export function planProductDeletionRelays(
     .map(([relayUrl, roles]) => ({
       relayUrl,
       roles: ROLE_ORDER.filter((role) => roles.has(role)),
+      ...(appRelayUrls.has(relayUrl) ? { appRelay: true } : {}),
+      ...(personalRelayUrls.has(relayUrl) ? { personalRelay: true } : {}),
     }))
 }
 
@@ -283,7 +363,10 @@ function relayPlanMatches(
   left: readonly ProductDeletionRelayTarget[],
   right: readonly ProductDeletionRelayTarget[]
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
+  return (
+    JSON.stringify(cloneRelayPlan(left)) ===
+    JSON.stringify(cloneRelayPlan(right))
+  )
 }
 
 function signedEventMatches(
@@ -760,16 +843,12 @@ async function deliverProductDeletionJobUnlocked(
       const claimedTarget = claimed.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
-      const claimedOwnerSelectedRelayUrls = claimedTarget?.roles.includes(
-        "author_write"
-      )
-        ? [relayUrl]
-        : []
+      const claimedSources = persistedTargetRelaySources(claimedTarget)
       const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
         accountPubkey,
         authenticatedPubkey,
         candidateRelayUrls: [relayUrl],
-        ownerSelectedRelayUrls: claimedOwnerSelectedRelayUrls,
+        ...claimedSources,
         repository: options.accountNetworkLocalStateRepository,
       })
       if (eligibleRelayUrls.length === 0) {
@@ -818,11 +897,7 @@ async function deliverProductDeletionJobUnlocked(
       const currentTarget = current.relayPlan.find(
         (target) => target.relayUrl === relayUrl
       )
-      const currentOwnerSelectedRelayUrls = currentTarget?.roles.includes(
-        "author_write"
-      )
-        ? [relayUrl]
-        : []
+      const currentSources = persistedTargetRelaySources(currentTarget)
 
       let outcome: ProductDeletionPublisherResult
       if (!isApprovedPersistedRelayTarget(currentTarget)) {
@@ -839,7 +914,7 @@ async function deliverProductDeletionJobUnlocked(
             accountPubkey,
             authenticatedPubkey,
             isAuthenticatedPubkeyCurrent: options.isAuthenticatedPubkeyCurrent,
-            ownerSelectedRelayUrls: currentOwnerSelectedRelayUrls,
+            ...currentSources,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
           })
@@ -848,7 +923,7 @@ async function deliverProductDeletionJobUnlocked(
             accountPubkey,
             authenticatedPubkey: getCurrentAuthenticatedPubkey(options),
             candidateRelayUrls: [relayUrl],
-            ownerSelectedRelayUrls: currentOwnerSelectedRelayUrls,
+            ...currentSources,
             repository: options.accountNetworkLocalStateRepository,
           })
           if (stillEligible.length === 0) {

@@ -10,13 +10,15 @@ import {
   __resetRelayPublishTestOverrides,
   __setCommerceTestOverrides,
   __setRelayPublishTestOverrides,
+  applyAccountNetworkRelayExclusion,
   applyE2eRelayIsolation,
   buildProductListingEventDraft,
   cacheSignedProductListingEvent,
   CANONICAL_APP_BACKPLANE_RELAYS,
-  CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   config,
+  createInMemoryAccountNetworkLocalStateRepository,
   deliverProductListingJob,
+  emptyAccountNetworkLocalState,
   EVENT_KINDS,
   getCachedMerchantStorefront,
   parseProductEvent,
@@ -24,10 +26,12 @@ import {
   planProductDeletionRelays,
   RemoteSignerError,
   resolveProductFulfillment,
+  setAccountNetworkRoutingSourceEnabled,
   setSigner,
   type ProductDeletionOutboxRepository,
   type ProductListingDeliveryJob,
   type ProductListingOutboxRepository,
+  type ProductListingRelayTarget,
   type ProductSchema,
   type PublishWithPlannerResult,
 } from "@conduit/core"
@@ -72,6 +76,13 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
 const allowAllAccountNetworkLocalStateRepository = {
   get: async () => undefined,
+}
+
+function personalListingTarget(
+  relayUrl: string,
+  ownerSelected = false
+): ProductListingRelayTarget {
+  return { relayUrl, ownerSelected, personalRelay: true }
 }
 
 function publishAndParse(
@@ -205,7 +216,7 @@ function createProductListingRelayPlanningDependencies(
 ) {
   return {
     planProductListingRelayTargets: async () => [
-      { relayUrl, ownerSelected: false },
+      personalListingTarget(relayUrl),
     ],
   }
 }
@@ -362,34 +373,347 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
-  it("freezes configured product fallbacks into a non-authoritative relay plan", () => {
+  it("freezes configured commerce fallbacks into a non-authoritative relay plan", () => {
     const plannedRelayUrl = "wss://merchant-relay.example"
     const targets = resolveProductListingRelayTargets({
-      intent: "author_event",
+      intent: "commerce_author_event",
       primaryRelayUrls: [plannedRelayUrl],
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
+      personalRelayUrls: [plannedRelayUrl],
       signedRelayListAuthoritative: false,
     })
     const targetUrls = targets.map(({ relayUrl }) => relayUrl)
 
     expect(targetUrls).toContain(plannedRelayUrl)
-    expect(targetUrls).toContain(CANONICAL_APP_BACKPLANE_RELAYS[0]!)
-    for (const relayUrl of CANONICAL_COMMERCE_DISCOVERY_RELAYS) {
+    expect(
+      targets.find(({ relayUrl }) => relayUrl === plannedRelayUrl)
+    ).toMatchObject({
+      personalRelay: true,
+    })
+    for (const relayUrl of config.commerceRelayUrls) {
       expect(targetUrls).toContain(relayUrl)
+      expect(
+        targets.find((target) => target.relayUrl === relayUrl)
+      ).toMatchObject({
+        appRelay: true,
+      })
     }
   })
 
   it("does not add configured fallbacks to an authoritative empty relay plan", () => {
     expect(
       resolveProductListingRelayTargets({
-        intent: "author_event",
+        intent: "commerce_author_event",
         primaryRelayUrls: [],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
         signedRelayListAuthoritative: true,
       })
     ).toEqual([])
+  })
+
+  it("retains both source labels when one product relay belongs to App and Personal layers", () => {
+    const overlapRelayUrl = config.commerceRelayUrls[0]!
+    const targets = resolveProductListingRelayTargets({
+      intent: "commerce_author_event",
+      primaryRelayUrls: [overlapRelayUrl],
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+      appRelayUrls: [overlapRelayUrl],
+      personalRelayUrls: [overlapRelayUrl],
+      signedRelayListAuthoritative: false,
+    })
+
+    expect(
+      targets.filter((target) => target.relayUrl === overlapRelayUrl)
+    ).toEqual([
+      {
+        relayUrl: overlapRelayUrl,
+        ownerSelected: false,
+        appRelay: true,
+        personalRelay: true,
+      },
+    ])
+  })
+
+  it("rechecks queued product relay source toggles and exclusions on retry", async () => {
+    const targets: ProductListingRelayTarget[] = [
+      {
+        relayUrl: "wss://app-only.example",
+        ownerSelected: false,
+        appRelay: true,
+      },
+      personalListingTarget("wss://personal-only.example"),
+      {
+        relayUrl: "wss://overlap.example",
+        ownerSelected: false,
+        appRelay: true,
+        personalRelay: true,
+      },
+      {
+        relayUrl: "wss://independent.example",
+        ownerSelected: false,
+        independentRelay: true,
+      },
+      {
+        relayUrl: "wss://excluded.example",
+        ownerSelected: false,
+        independentRelay: true,
+      },
+    ]
+
+    for (const [index, source] of (["app", "personal"] as const).entries()) {
+      const repository = new MemoryProductListingOutbox()
+      const signedEvent = makeSignedProductEventWithShippingTags({
+        dTag: `source-toggle-${source}`,
+        shippingTags: [],
+      }).rawEvent()
+      const accountNetworkLocalStateRepository =
+        createInMemoryAccountNetworkLocalStateRepository([
+          emptyAccountNetworkLocalState(MERCHANT_PUBKEY, () => NOW),
+        ])
+      const queued = await persistProductListingDelivery(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          signedEvents: [signedEvent],
+          relayTargets: targets,
+        },
+        { repository, now: () => NOW }
+      )
+
+      // The immutable delivery plan survives the local setting change; only
+      // current admission changes. Exclusions always dominate both layers.
+      await accountNetworkLocalStateRepository.update(
+        MERCHANT_PUBKEY,
+        (state) =>
+          applyAccountNetworkRelayExclusion(
+            {
+              ...state,
+              routingPolicy: setAccountNetworkRoutingSourceEnabled(
+                state.routingPolicy,
+                source,
+                false
+              ),
+            },
+            {
+              relayUrl: "wss://excluded.example",
+              relayListFrontier: { eventId: null, createdAt: null },
+              inboxDeclarationFrontier: { eventId: null, createdAt: null },
+              committedAt: NOW + index + 1,
+            }
+          )
+      )
+      const published: string[] = []
+
+      await deliverProductListingJob(
+        queued.id,
+        async ({ relayUrl }) => {
+          published.push(relayUrl)
+          return { status: "acked" }
+        },
+        {
+          repository,
+          accountNetworkLocalStateRepository,
+          now: () => NOW + 10,
+        }
+      )
+
+      expect(published.sort()).toEqual(
+        (source === "app"
+          ? [
+              "wss://independent.example",
+              "wss://overlap.example",
+              "wss://personal-only.example",
+            ]
+          : [
+              "wss://app-only.example",
+              "wss://independent.example",
+              "wss://overlap.example",
+            ]
+        ).sort()
+      )
+      expect((await repository.get(queued.id))?.relayTargets).toEqual(
+        queued.relayTargets
+      )
+      const disabledRelayUrl =
+        source === "app"
+          ? "wss://app-only.example"
+          : "wss://personal-only.example"
+      expect(
+        (await repository.get(queued.id))?.relayDelivery.find(
+          (delivery) => delivery.relayUrl === disabledRelayUrl
+        )?.status
+      ).toBe("pending")
+
+      await accountNetworkLocalStateRepository.update(
+        MERCHANT_PUBKEY,
+        (state) => ({
+          ...state,
+          routingPolicy: setAccountNetworkRoutingSourceEnabled(
+            state.routingPolicy,
+            source,
+            true
+          ),
+        })
+      )
+      const retried: string[] = []
+      await deliverProductListingJob(
+        queued.id,
+        async ({ relayUrl }) => {
+          retried.push(relayUrl)
+          return { status: "acked" }
+        },
+        {
+          repository,
+          accountNetworkLocalStateRepository,
+          now: () => NOW + 20,
+        }
+      )
+      expect(retried).toEqual([disabledRelayUrl])
+      expect(
+        (await repository.get(queued.id))?.relayDelivery.find(
+          (delivery) => delivery.relayUrl === disabledRelayUrl
+        )?.status
+      ).toBe("acked")
+      expect(
+        (await repository.get(queued.id))?.relayDelivery.find(
+          (delivery) => delivery.relayUrl === "wss://excluded.example"
+        )?.status
+      ).toBe("pending")
+    }
+  })
+
+  it("does not send a legacy queued listing whose relay source is unknown", async () => {
+    const relayUrl = "wss://legacy-source.example"
+    const storage = new Map<string, ProductListingDeliveryJob>()
+    const repository = new MemoryProductListingOutbox(storage)
+    const queued = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [makeSignedEvent(EVENT_KINDS.PRODUCT)],
+        relayTargets: [personalListingTarget(relayUrl)],
+      },
+      { repository, now: () => NOW }
+    )
+    storage.set(queued.id, {
+      ...queued,
+      relayTargets: [{ relayUrl, ownerSelected: false }],
+    })
+    let published = false
+
+    const result = await deliverProductListingJob(
+      queued.id,
+      async () => {
+        published = true
+        return { status: "acked" }
+      },
+      {
+        repository,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        now: () => NOW + 10,
+      }
+    )
+
+    expect(published).toBe(false)
+    expect(result.signedEvents).toEqual(queued.signedEvents)
+    expect(result.relayDelivery[0]?.status).toBe("rejected")
+  })
+
+  it("rechecks an App relay cutoff immediately before the exact listing write", async () => {
+    const relayUrl = "wss://app-cutoff.example"
+    const repository = new MemoryProductListingOutbox()
+    const queued = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [makeSignedEvent(EVENT_KINDS.PRODUCT)],
+        relayTargets: [{ relayUrl, ownerSelected: false, appRelay: true }],
+      },
+      { repository, now: () => NOW }
+    )
+    const initiallyEnabled = emptyAccountNetworkLocalState(
+      MERCHANT_PUBKEY,
+      () => NOW
+    )
+    const appDisabled = {
+      ...initiallyEnabled,
+      routingPolicy: setAccountNetworkRoutingSourceEnabled(
+        initiallyEnabled.routingPolicy,
+        "app",
+        false
+      ),
+    }
+    let policyReads = 0
+    let framesSent = 0
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async () => {
+        framesSent += 1
+        return "acked"
+      },
+    })
+
+    await deliverQueuedProductListings(queued.id, {
+      repository,
+      accountNetworkLocalStateRepository: {
+        get: async () => {
+          policyReads += 1
+          return policyReads === 1 ? initiallyEnabled : appDisabled
+        },
+      },
+      restoreLocalEvidence: async () => {},
+      now: () => NOW + 10,
+    })
+
+    expect(policyReads).toBeGreaterThanOrEqual(2)
+    expect(framesSent).toBe(0)
+    expect(
+      (await repository.get(queued.id))?.relayDelivery[0]?.status
+    ).not.toBe("acked")
+  })
+
+  it("routes product and shipping events through the commerce author intent", async () => {
+    const relayUrl = "wss://relay.example"
+    const intents: string[] = []
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async (input) => {
+        intents.push(input.intent)
+        return {
+          intent: input.intent,
+          primaryRelayUrls: [relayUrl],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
+      new Set([{ url: `${relayUrl}/` }]) as never
+    )
+
+    try {
+      await signAndPublishProductWriteBundle({
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("commerce-intent"),
+            dTag: "commerce-intent",
+            fulfillmentIntent: {
+              kind: "fixed_standard",
+              amount: 5,
+              currency: "SATS",
+              countries: ["US"],
+            },
+          },
+        ],
+        onSignedLocal: async () => {},
+        productListingDeliveryOptions:
+          createAckedProductListingDeliveryOptions(),
+      })
+      expect(intents).toEqual(["commerce_author_event"])
+    } finally {
+      publishSpy.mockRestore()
+    }
   })
 
   it("revalidates live account authority before product relay I/O", async () => {
@@ -615,7 +939,7 @@ describe("merchant product event delivery", () => {
 
   it("does not infer owner relay authority from a signed product author", async () => {
     const authenticatedPubkeys: Array<string | null | undefined> = []
-    const relayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const relayUrl = config.commerceRelayUrls[1]!
     __setRelayPublishTestOverrides({
       planPublishRelays: async (input) => {
         authenticatedPubkeys.push(input.authenticatedPubkey)
@@ -656,7 +980,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("retains a fallback-only listing ACK for an immediate deletion", async () => {
-    const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-single",
       acceptedRelayUrl: fallbackRelayUrl,
@@ -683,7 +1007,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("preserves fallback provenance when its post-ACK cache write fails", async () => {
-    const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-volatile",
       acceptedRelayUrl: fallbackRelayUrl,
@@ -744,7 +1068,7 @@ describe("merchant product event delivery", () => {
 
   it("retains per-listing fallback ACKs outside the bundle intersection", async () => {
     const [firstFallbackRelayUrl, secondFallbackRelayUrl] =
-      CANONICAL_COMMERCE_DISCOVERY_RELAYS
+      config.commerceRelayUrls
     const first = makeSignedProductEvent({
       dTag: "fallback-bundle-a",
       acceptedRelayUrl: firstFallbackRelayUrl!,
@@ -963,8 +1287,8 @@ describe("merchant product event delivery", () => {
       },
       {
         planProductListingRelayTargets: async () => [
-          { relayUrl: firstRelayUrl, ownerSelected: false },
-          { relayUrl: secondRelayUrl, ownerSelected: false },
+          personalListingTarget(firstRelayUrl),
+          personalListingTarget(secondRelayUrl),
         ],
       }
     )
@@ -1097,8 +1421,8 @@ describe("merchant product event delivery", () => {
       },
       {
         planProductListingRelayTargets: async () => [
-          { relayUrl, ownerSelected: false },
-          { relayUrl: secondRelayUrl, ownerSelected: false },
+          personalListingTarget(relayUrl),
+          personalListingTarget(secondRelayUrl),
         ],
       }
     )
@@ -1202,8 +1526,8 @@ describe("merchant product event delivery", () => {
       },
       {
         planProductListingRelayTargets: async () => [
-          { relayUrl: firstRelayUrl, ownerSelected: false },
-          { relayUrl: secondRelayUrl, ownerSelected: false },
+          personalListingTarget(firstRelayUrl),
+          personalListingTarget(secondRelayUrl),
         ],
       }
     )
@@ -1267,6 +1591,7 @@ describe("merchant product event delivery", () => {
           {
             relayUrl: CANONICAL_APP_BACKPLANE_RELAYS[0]!,
             ownerSelected: false,
+            appRelay: true,
           },
         ],
       }
@@ -1313,7 +1638,7 @@ describe("merchant product event delivery", () => {
       {
         merchantPubkey: MERCHANT_PUBKEY,
         signedEvents: [signedEvent],
-        relayTargets: [{ relayUrl, ownerSelected: false }],
+        relayTargets: [personalListingTarget(relayUrl)],
       },
       { repository: firstTab, now: () => NOW }
     )
@@ -1377,7 +1702,7 @@ describe("merchant product event delivery", () => {
       {
         merchantPubkey: MERCHANT_PUBKEY,
         signedEvents: [signedEvent],
-        relayTargets: [{ relayUrl, ownerSelected: false }],
+        relayTargets: [personalListingTarget(relayUrl)],
       },
       { repository: firstTab, now: () => NOW }
     )
@@ -1446,8 +1771,8 @@ describe("merchant product event delivery", () => {
         merchantPubkey: MERCHANT_PUBKEY,
         signedEvents,
         relayTargets: [
-          { relayUrl: commonRelayUrl, ownerSelected: false },
-          { relayUrl: timedOutRelayUrl, ownerSelected: false },
+          personalListingTarget(commonRelayUrl),
+          personalListingTarget(timedOutRelayUrl),
         ],
       },
       { repository, now: () => NOW, retryDelayMs: 1 }
@@ -1503,7 +1828,7 @@ describe("merchant product event delivery", () => {
             shippingTags: [],
           }).rawEvent(),
         ],
-        relayTargets: [{ relayUrl, ownerSelected: false }],
+        relayTargets: [personalListingTarget(relayUrl)],
       },
       { repository, now: () => NOW, retryDelayMs: 1 }
     )
@@ -1545,7 +1870,7 @@ describe("merchant product event delivery", () => {
       {
         merchantPubkey: MERCHANT_PUBKEY,
         signedEvents: [makeSignedEvent(EVENT_KINDS.PRODUCT)],
-        relayTargets: [{ relayUrl, ownerSelected: true }],
+        relayTargets: [personalListingTarget(relayUrl, true)],
       },
       { repository, now: () => NOW }
     )
@@ -1589,7 +1914,7 @@ describe("merchant product event delivery", () => {
       {
         planRelayTargets: async () => {
           planCalls += 1
-          return [{ relayUrl, ownerSelected: false }]
+          return [personalListingTarget(relayUrl)]
         },
       }
     )
@@ -1597,7 +1922,7 @@ describe("merchant product event delivery", () => {
     expect(planCalls).toBe(1)
     expect(relayAttempts).toBe(0)
     expect(queued.signedEvents).toEqual([signedEvent])
-    expect(queued.relayTargets).toEqual([{ relayUrl, ownerSelected: false }])
+    expect(queued.relayTargets).toEqual([personalListingTarget(relayUrl)])
 
     await deliverQueuedProductListings(queued.id, {
       repository,
@@ -1621,7 +1946,7 @@ describe("merchant product event delivery", () => {
       {
         planRelayTargets: async () => {
           planCalls += 1
-          return [{ relayUrl: "wss://different.example", ownerSelected: false }]
+          return [personalListingTarget("wss://different.example")]
         },
       }
     )
@@ -1656,7 +1981,7 @@ describe("merchant product event delivery", () => {
       {
         merchantPubkey: MERCHANT_PUBKEY,
         signedEvents: [signedEvent],
-        relayTargets: [{ relayUrl, ownerSelected: false }],
+        relayTargets: [personalListingTarget(relayUrl)],
       },
       { repository, now: () => NOW, retryDelayMs: 1 }
     )
@@ -1710,7 +2035,7 @@ describe("merchant product event delivery", () => {
       {
         merchantPubkey: MERCHANT_PUBKEY,
         signedEvents: slowEvents,
-        relayTargets: [{ relayUrl, ownerSelected: false }],
+        relayTargets: [personalListingTarget(relayUrl)],
       },
       { repository, now: () => NOW }
     )
@@ -1718,7 +2043,7 @@ describe("merchant product event delivery", () => {
       {
         merchantPubkey: MERCHANT_PUBKEY,
         signedEvents: [laterEvent],
-        relayTargets: [{ relayUrl, ownerSelected: false }],
+        relayTargets: [personalListingTarget(relayUrl)],
       },
       { repository, now: () => NOW + 1 }
     )
@@ -1852,7 +2177,7 @@ describe("merchant product event delivery", () => {
       {
         merchantPubkey: MERCHANT_PUBKEY,
         signedEvents: [signedListing],
-        relayTargets: [{ relayUrl, ownerSelected: false }],
+        relayTargets: [personalListingTarget(relayUrl)],
         companionDeletionJobId: signedDeletion.id,
       },
       { repository: listingRepository, now: () => NOW }
@@ -2076,7 +2401,7 @@ describe("merchant product event delivery", () => {
         },
         {
           planProductListingRelayTargets: async () => [
-            { relayUrl: "wss://relay.example", ownerSelected: false },
+            personalListingTarget("wss://relay.example"),
           ],
         }
       )
@@ -2127,7 +2452,7 @@ describe("merchant product event delivery", () => {
       },
       {
         planProductListingRelayTargets: async () => [
-          { relayUrl: "wss://relay.example", ownerSelected: false },
+          personalListingTarget("wss://relay.example"),
         ],
       }
     )
@@ -2412,6 +2737,7 @@ describe("merchant product event delivery", () => {
     const listingOptions = createAckedProductListingDeliveryOptions()
     const attemptedDeletionRelayUrls: string[] = []
     let deletionDeliveryJobId = ""
+    let listingDeliveryJobId = ""
 
     try {
       Object.assign(config, applyE2eRelayIsolation(config, [loopbackRelayUrl]))
@@ -2444,6 +2770,7 @@ describe("merchant product event delivery", () => {
           ]),
           onSignedLocal: async (bundle) => {
             deletionDeliveryJobId = bundle.deletionDeliveryJobId ?? ""
+            listingDeliveryJobId = bundle.productListingDeliveryJobId ?? ""
             const listing = bundle.events.find(
               (event) => event.kind === EVENT_KINDS.PRODUCT
             )
@@ -2465,12 +2792,26 @@ describe("merchant product event delivery", () => {
             },
           },
         },
-        createProductListingRelayPlanningDependencies(loopbackRelayUrl)
+        {
+          planProductListingRelayTargets: async () => [
+            {
+              relayUrl: loopbackRelayUrl,
+              ownerSelected: false,
+              appRelay: true,
+            },
+          ],
+        }
       )
 
       const job = await repository.get(deletionDeliveryJobId)
+      const listingJob =
+        await listingOptions.repository.get(listingDeliveryJobId)
       expect(config.e2eRelayIsolationEnabled).toBe(true)
       expect(config.appBackplaneRelayUrls).toEqual([loopbackRelayUrl])
+      expect(listingJob?.relayTargets).toEqual([
+        { relayUrl: loopbackRelayUrl, ownerSelected: false, appRelay: true },
+      ])
+      expect(listingJob?.state).toBe("delivered")
       expect(job?.relayPlan.map((target) => target.relayUrl)).toEqual([
         loopbackRelayUrl,
       ])

@@ -173,8 +173,12 @@ export async function getEventMarketCollectionLifecycleEvidence(
   const fetchOptions = {
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
-    relayUrls: plan.relayUrls,
+    relayUrls: plan.candidateRelayUrls,
+    maxRelayAttempts: plan.maxRelayAttempts,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
+    appRelayUrls: plan.appRelayUrls,
+    personalRelayUrls: plan.personalRelayUrls,
+    independentRelayUrls: plan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,

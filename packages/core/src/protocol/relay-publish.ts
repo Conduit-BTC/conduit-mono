@@ -16,6 +16,7 @@ import { getNdk } from "./ndk"
 import { getRelayLists } from "./relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
 import {
+  planRelayReads,
   planRelayWrites,
   type RelayWriteIntent,
   type RelayWritePlan,
@@ -49,10 +50,12 @@ import {
 import type { NostrEventSigner } from "./nostr-event-signer"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import {
+  dexieAccountNetworkLocalStateRepository,
   filterEligibleAccountRelayUrls,
   orderEquivalentAccountRelayOperations,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import { createDefaultAccountNetworkRoutingPolicy } from "./account-network-routing-policy"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
@@ -87,6 +90,12 @@ export interface PublishWithPlannerInput {
    * fanout for protocols such as NIP-17 that define an exclusive relay set.
    */
   exclusiveRelayUrls?: readonly string[]
+  /** Exact exclusive targets contributed by Conduit's app-owned layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact exclusive targets contributed by the owner's NIP-65 layer. */
+  personalRelayUrls?: readonly string[]
+  /** Exact exclusive targets with authority outside both local source layers. */
+  independentRelayUrls?: readonly string[]
   /**
    * Exact exclusive-target subset backed by this authenticated owner's own
    * Network selection. Recipient or discovered relay URLs must never populate
@@ -189,7 +198,12 @@ function assertValidSignedPublicPublish(
   if (!isValidSignedPublicNostrEvent(rawEvent)) {
     throw new Error("Refusing to publish an invalid signed Nostr event.")
   }
-  if (input.intent !== "author_event") return
+  if (
+    input.intent !== "author_event" &&
+    input.intent !== "commerce_author_event"
+  ) {
+    return
+  }
   const expectedAuthor = input.authorPubkey?.trim().toLowerCase()
   if (!expectedAuthor || rawEvent.pubkey.toLowerCase() !== expectedAuthor) {
     throw new Error(
@@ -292,6 +306,7 @@ function emptyPlan(intent: RelayWriteIntent): RelayWritePlan {
     primaryRelayUrls: [],
     broadcastRelayUrls: [],
     parkedRelayUrls: [],
+    independentRelayUrls: [],
   }
 }
 
@@ -355,7 +370,12 @@ export function getAuthorEventFallbackRelayUrls(input: {
   intent: RelayWriteIntent
   attemptedRelayUrls: readonly string[]
 }): string[] {
-  if (input.intent !== "author_event") return []
+  if (
+    input.intent !== "author_event" &&
+    input.intent !== "commerce_author_event"
+  ) {
+    return []
+  }
 
   const attempted = new Set(
     input.attemptedRelayUrls.map(normalizeOutcomeRelayUrl)
@@ -373,11 +393,13 @@ export function getAuthorEventFallbackRelayUrls(input: {
         )
       : []
 
-  return mergeUnique([
-    config.appWriteRelayUrls,
-    commerceDiscoveryRelayUrls,
-    publicRelayFallbackUrls,
-  ])
+  return input.intent === "commerce_author_event"
+    ? mergeUnique([config.commerceRelayUrls])
+    : mergeUnique([
+        config.appWriteRelayUrls,
+        commerceDiscoveryRelayUrls,
+        publicRelayFallbackUrls,
+      ])
 }
 
 function getCriticalRecipientFallbackRelayUrls(input: {
@@ -486,6 +508,8 @@ async function publishToRelayUrls(input: {
   event: NDKEvent
   ndk: ReturnType<typeof getNdk>
   relayUrls: readonly string[]
+  /** Bound attempts after live account source-policy filtering. */
+  maxRelayAttempts?: number
   requiredRelayCount: number
   timeoutMs: number
   accountPubkey?: string | null
@@ -493,6 +517,12 @@ async function publishToRelayUrls(input: {
   authenticatedPubkey?: string | null
   /** Exact target subset selected by the authenticated account owner. */
   ownerSelectedRelayUrls?: readonly string[]
+  /** Exact candidates contributed by Conduit's app-owned relay layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact candidates contributed by the owner's NIP-65 relay layer. */
+  personalRelayUrls?: readonly string[]
+  /** Exact candidates independently authorized outside the local source layers. */
+  independentRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -541,7 +571,7 @@ async function publishToRelayUrls(input: {
             repository: accountNetworkLocalStateRepository,
           })
         ).map((operation) => operation.value)
-  const relayUrls =
+  const eligibleRelayUrls =
     orderedCandidateRelayUrls.length === 0
       ? []
       : input.accountPubkey === undefined || input.accountPubkey === null
@@ -551,8 +581,15 @@ async function publishToRelayUrls(input: {
             authenticatedPubkey: input.authenticatedPubkey,
             candidateRelayUrls: orderedCandidateRelayUrls,
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            appRelayUrls: input.appRelayUrls,
+            personalRelayUrls: input.personalRelayUrls,
+            independentRelayUrls: input.independentRelayUrls,
             repository: accountNetworkLocalStateRepository,
           })
+  const relayUrls =
+    input.maxRelayAttempts && input.maxRelayAttempts > 0
+      ? eligibleRelayUrls.slice(0, input.maxRelayAttempts)
+      : eligibleRelayUrls
 
   // NDKEvent.publish() reads the instance from the event itself even when the
   // relay set was built with an NDK instance. Gift-wrap helpers can return an
@@ -586,11 +623,19 @@ async function publishToRelayUrls(input: {
     const relayFailureMessages: Record<string, string> = {}
     const attemptedRelayUrls: string[] = []
     let signerFailureSuppressed = false
+    let actualAttemptCount = 0
 
     // Serialize auth-capable relay writes so one foreground action cannot open
     // concurrent external-signer prompts. Each target still receives the same
     // already-signed gift wrap and remains inside the exact exclusive set.
-    for (const candidateRelayUrl of relayUrls) {
+    for (const candidateRelayUrl of orderedCandidateRelayUrls) {
+      if (
+        input.maxRelayAttempts !== undefined &&
+        input.maxRelayAttempts > 0 &&
+        actualAttemptCount >= input.maxRelayAttempts
+      ) {
+        break
+      }
       let freshlyEligibleRelayUrls: string[]
       try {
         assertPublishSessionCurrent(input.shouldContinue)
@@ -602,6 +647,9 @@ async function publishToRelayUrls(input: {
                 authenticatedPubkey: input.authenticatedPubkey,
                 candidateRelayUrls: [candidateRelayUrl],
                 ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+                appRelayUrls: input.appRelayUrls,
+                personalRelayUrls: input.personalRelayUrls,
+                independentRelayUrls: input.independentRelayUrls,
                 repository: accountNetworkLocalStateRepository,
               })
         assertPublishSessionCurrent(input.shouldContinue)
@@ -614,6 +662,7 @@ async function publishToRelayUrls(input: {
       }
       const relayUrl = freshlyEligibleRelayUrls[0]
       if (!relayUrl) continue
+      actualAttemptCount += 1
       attemptedRelayUrls.push(relayUrl)
       const authorization: ExactRelayWriteAuthorization = {
         expectedPubkey: input.relayAuthentication.expectedPubkey,
@@ -750,6 +799,12 @@ interface ExactRelayTargetInput {
   authenticatedPubkey?: string | null
   /** Exact target subset selected by that authenticated account owner. */
   ownerSelectedRelayUrls?: readonly string[]
+  /** Exact target when it belongs to Conduit's app-owned relay layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact target when it belongs to the owner's NIP-65 relay layer. */
+  personalRelayUrls?: readonly string[]
+  /** Exact target when another authority independently selected it. */
+  independentRelayUrls?: readonly string[]
   /** Explicit account for last-mile whole-relay exclusion enforcement. */
   accountPubkey?: string | null
   /** Injectable durable-state reader for deterministic boundary tests. */
@@ -817,6 +872,9 @@ export async function publishSignedEventToRelay(
             authenticatedPubkey: input.authenticatedPubkey,
             candidateRelayUrls: [candidateRelayUrl],
             ownerSelectedRelayUrls: input.ownerSelectedRelayUrls,
+            appRelayUrls: input.appRelayUrls,
+            personalRelayUrls: input.personalRelayUrls,
+            independentRelayUrls: input.independentRelayUrls,
             repository: input.accountNetworkLocalStateRepository,
           })
         )[0]
@@ -861,11 +919,27 @@ export async function planPublishRelays(
         (relayUrl) => ownerSelectedSet.has(relayUrl)
       ),
     ])
+    const primaryRelayUrlSet = new Set(primaryRelayUrls)
     return {
       intent: input.intent,
       primaryRelayUrls,
+      primaryCandidateRelayUrls: primaryRelayUrls,
+      maxPrimaryRelayAttempts: primaryRelayUrls.length,
       broadcastRelayUrls: [],
+      broadcastCandidateRelayUrls: [],
       parkedRelayUrls: [],
+      appRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
+        input.appRelayUrls ?? []
+      ).filter((relayUrl) => primaryRelayUrlSet.has(relayUrl)),
+      personalRelayUrls: mergeUnique([
+        normalizeSecureOrIsolatedE2eRelayUrls(input.personalRelayUrls ?? []),
+        normalizeOwnerSelectedRelayUrls(input.personalRelayUrls ?? []).filter(
+          (relayUrl) => ownerSelectedSet.has(relayUrl)
+        ),
+      ]).filter((relayUrl) => primaryRelayUrlSet.has(relayUrl)),
+      independentRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
+        input.independentRelayUrls ?? []
+      ).filter((relayUrl) => primaryRelayUrlSet.has(relayUrl)),
     }
   }
 
@@ -893,6 +967,15 @@ export async function planPublishRelays(
   const hasAuthenticatedOwnerContext = Boolean(
     authenticatedOwner && authenticatedOwner === policyAccount
   )
+  const routingPolicy = hasAuthenticatedOwnerContext
+    ? ((
+        await (
+          input.accountNetworkLocalStateRepository ??
+          testOverrides.accountNetworkLocalStateRepository ??
+          dexieAccountNetworkLocalStateRepository
+        ).get(policyAccount!)
+      )?.routingPolicy ?? createDefaultAccountNetworkRoutingPolicy())
+    : undefined
   const ownerSelectedReadRelayUrls = hasAuthenticatedOwnerContext
     ? normalizeOwnerSelectedRelayUrls(
         settingsSnapshot.settings.entries.flatMap((entry) =>
@@ -907,14 +990,26 @@ export async function planPublishRelays(
         )
       )
     : []
+  const relayListReadPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey: input.authenticatedPubkey,
+    ownerSelectedRelayUrls: ownerSelectedReadRelayUrls,
+    settings: settingsSnapshot.settings,
+    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
+    routingPolicy,
+  })
   const relayLists =
     hintPubkeys.length > 0
       ? await getRelayLists(hintPubkeys, {
+          relayUrls: relayListReadPlan.relayUrls,
           cacheOnly: input.refreshRelayLists !== true,
           allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
           accountPubkey: input.accountPubkey,
           authenticatedPubkey: input.authenticatedPubkey,
           ownerSelectedRelayUrls: ownerSelectedReadRelayUrls,
+          appRelayUrls: relayListReadPlan.appRelayUrls,
+          personalRelayUrls: relayListReadPlan.personalRelayUrls,
+          independentRelayUrls: relayListReadPlan.independentRelayUrls,
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,
           shouldContinue: input.shouldContinue,
@@ -930,6 +1025,7 @@ export async function planPublishRelays(
     ownerSelectedRelayUrls: ownerSelectedPlanningRelayUrls,
     settings: settingsSnapshot.settings,
     signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
+    routingPolicy,
     maxPrimaryRelays: input.deliveryMode === "critical" ? 0 : undefined,
     maxBroadcastRelays: input.deliveryMode === "critical" ? 0 : undefined,
     skipHealthFilter:
@@ -1047,6 +1143,14 @@ export async function publishWithPlanner(
             basePlan.primaryRelayUrls,
             extraPrimaryRelayUrls,
           ]),
+          primaryCandidateRelayUrls: mergeUnique([
+            basePlan.primaryCandidateRelayUrls ?? basePlan.primaryRelayUrls,
+            extraPrimaryRelayUrls,
+          ]),
+          maxPrimaryRelayAttempts: mergeUnique([
+            basePlan.primaryRelayUrls,
+            extraPrimaryRelayUrls,
+          ]).length,
         }
       : basePlan
   const plan = config.e2eRelayIsolationEnabled
@@ -1060,17 +1164,24 @@ export async function publishWithPlanner(
         return {
           ...expandedPlan,
           primaryRelayUrls: [isolatedRelayUrl],
+          primaryCandidateRelayUrls: [isolatedRelayUrl],
+          maxPrimaryRelayAttempts: 1,
           broadcastRelayUrls: [],
+          broadcastCandidateRelayUrls: [],
           parkedRelayUrls: [],
         }
       })()
     : expandedPlan
   const plannedRelayUrls = Array.from(
-    new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
+    new Set([
+      ...(plan.primaryCandidateRelayUrls ?? plan.primaryRelayUrls),
+      ...(plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls),
+    ])
   )
   let attemptedRelayUrls: string[] = []
   const authorFallbackAllowed =
-    input.intent !== "author_event" ||
+    (input.intent !== "author_event" &&
+      input.intent !== "commerce_author_event") ||
     plan.signedRelayListAuthoritative !== true
 
   if (plannedRelayUrls.length === 0) {
@@ -1103,6 +1214,8 @@ export async function publishWithPlanner(
         accountPubkey: input.accountPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+        appRelayUrls: fallbackRelayUrls,
+        personalRelayUrls: [],
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -1154,12 +1267,19 @@ export async function publishWithPlanner(
   const primary = await publishToRelayUrls({
     event,
     ndk,
-    relayUrls: plan.primaryRelayUrls,
-    requiredRelayCount: plan.primaryRelayUrls.length > 0 ? 1 : 0,
+    relayUrls: plan.primaryCandidateRelayUrls ?? plan.primaryRelayUrls,
+    maxRelayAttempts: plan.maxPrimaryRelayAttempts,
+    requiredRelayCount:
+      (plan.primaryCandidateRelayUrls ?? plan.primaryRelayUrls).length > 0
+        ? 1
+        : 0,
     timeoutMs: publishTimeoutMs,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+    appRelayUrls: plan.appRelayUrls,
+    personalRelayUrls: plan.personalRelayUrls,
+    independentRelayUrls: plan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -1188,6 +1308,9 @@ export async function publishWithPlanner(
         accountPubkey: input.accountPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+        appRelayUrls: plan.appRelayUrls,
+        personalRelayUrls: plan.personalRelayUrls,
+        independentRelayUrls: plan.independentRelayUrls,
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -1267,6 +1390,8 @@ export async function publishWithPlanner(
         accountPubkey: input.accountPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+        appRelayUrls: fallbackAttemptRelayUrls,
+        personalRelayUrls: [],
         accountNetworkLocalStateRepository:
           input.accountNetworkLocalStateRepository,
         shouldContinue: input.shouldContinue,
@@ -1335,12 +1460,19 @@ export async function publishWithPlanner(
   const broadcast = await publishToRelayUrls({
     event,
     ndk,
-    relayUrls: plan.broadcastRelayUrls,
-    requiredRelayCount: plan.broadcastRelayUrls.length > 0 ? 1 : 0,
+    relayUrls: plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls,
+    maxRelayAttempts: plan.maxBroadcastRelayAttempts,
+    requiredRelayCount:
+      (plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls).length > 0
+        ? 1
+        : 0,
     timeoutMs: publishTimeoutMs,
     accountPubkey: input.accountPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+    appRelayUrls: plan.appRelayUrls,
+    personalRelayUrls: plan.personalRelayUrls,
+    independentRelayUrls: plan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,

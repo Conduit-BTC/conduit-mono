@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import type { NDKFilter } from "@nostr-dev-kit/ndk"
+import { finalizeEvent, getPublicKey, type Event } from "nostr-tools"
+
 import {
   db,
   EVENT_KINDS,
@@ -13,7 +15,8 @@ import {
   type ShopperTrustFetchEvents,
   type ShopperTrustResolveRelayLists,
 } from "@conduit/core"
-import { finalizeEvent, getPublicKey, type Event } from "nostr-tools"
+import { createInMemoryAccountNetworkLocalStateRepository } from "@conduit/core/protocol/account-network-local-state"
+
 import {
   bolt11DescriptionHashField,
   bolt11PaymentHashField,
@@ -1022,6 +1025,8 @@ describe("shopper trust evidence", () => {
         resolveRelayLists,
         baseRelayUrls: [publicRelay],
         authenticatedPubkey: MERCHANT_PUBKEY,
+        accountNetworkLocalStateRepository:
+          createInMemoryAccountNetworkLocalStateRepository(),
       }
     )
 
@@ -1059,6 +1064,8 @@ describe("shopper trust evidence", () => {
       },
       {
         authenticatedPubkey: MERCHANT_PUBKEY,
+        accountNetworkLocalStateRepository:
+          createInMemoryAccountNetworkLocalStateRepository(),
         cache: createCache(),
         forceRefresh: true,
         now: () => NOW_MS,

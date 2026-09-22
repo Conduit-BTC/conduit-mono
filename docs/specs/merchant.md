@@ -369,17 +369,25 @@ ordering, mutation flow, and copy must not diverge between the two apps. The
 durable contract lives in
 [Conduit Relay Architecture](./relay/conduit_relay_architecture.md).
 
-The screen presents one flat, automatically ordered relay list. Each relay may
-participate in:
+The screen presents two equal, transparent sections:
 
-- **Read** and **Publish**, expressed by NIP-65 `kind:10002`;
-- **Private inbox**, expressed by NIP-17 `kind:10050`;
-- configured, advertised, or observed capability badges with truthful evidence
-  labels.
+- **App Relays** is the versioned Conduit baseline and starts enabled.
+- **Your Relays** displays signed NIP-65 `kind:10002` Read/Publish and owner
+  NIP-17 `kind:10050` Private inbox membership. Its local switch controls only
+  additive NIP-65 routing and starts disabled only after complete scoped absence
+  with no retained NIP-65 frontier.
 
-Signed events are account state. Merchant must not maintain a separate local
-relay preference or manual commerce-priority model. One reviewed change may
-produce one or both signed replacement events.
+NIP-17 `kind:10050` remains the separate signed private-inbox authority. A valid
+merchant declaration stays active for order/message reads regardless of the
+Your Relays toggle. A valid recipient declaration is exclusive for delivery.
+Signed events are portable account state; the layer toggles are versioned local
+Conduit policy and do not rewrite those events.
+
+Turning App Relays off warns when Your Relays is disabled, the enabled personal
+list has no positively qualified commerce Publish relay, or no valid private
+inbox is current. Unknown evidence is **Not verified**, not broken. The merchant
+may explicitly proceed, and the cutoff is rechecked with durable exclusions
+immediately before later I/O.
 
 NIP-65 uses no marker when a relay is both Read and Publish, and exactly one
 `read` or `write` marker for a single direction:
@@ -397,7 +405,7 @@ const relayListEvent = {
 ```
 
 Private inbox routing remains a separate signed object even though the user
-manages it in the same list:
+manages it on the same Network surface:
 
 ```typescript
 const inboxRelayEvent = {
@@ -408,6 +416,27 @@ const inboxRelayEvent = {
 ```
 
 Do not use retired Conduit relay hosts in active Merchant docs or examples.
+
+When neither setup event is observed within a complete bounded plan and no valid
+frontier is retained, **Match Conduit defaults** reviews the exact NIP-65 and
+NIP-17 changes and warns that publishing may supersede preferences stored
+outside that plan. It publishes only changed kinds through the sole shared
+mutation owner. Every required signature and immutable retry checkpoint exists
+before publication. Existing observed setups use **Add missing Conduit
+defaults** and preserve personal tags and exclusions. Partial/unavailable
+discovery and current `signed_empty` or `malformed` frontiers never authorize
+silent repair.
+
+When complete bounded discovery resolves a recipient to `not_observed`, a
+separately flagged compatibility plan may deliver only validated kind-16 order
+traffic through at most three operator-approved relays. `signed_empty`,
+`malformed`, `lookup_partial`, and `lookup_unavailable` do not qualify. Kind-14
+general DMs never use this lane.
+
+Relay rows may use a validated NIP-11 name and square icon, while retaining the
+normalized URL and a generic icon fallback. This is advertised presentation
+metadata, not proof of identity, commerce behavior, protected reads, or health.
+Merchant does not run a user-facing optimizer or active relay scan.
 
 ## Shipping Options
 

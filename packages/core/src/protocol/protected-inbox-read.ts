@@ -36,6 +36,8 @@ export interface ReadProtectedInboxOptions {
    * Network selection. Compatibility and remote evidence must not populate it.
    */
   ownerSelectedRelayUrls?: readonly string[]
+  /** Compatibility-only inbox targets contributed by the App Relays layer. */
+  appRelayUrls?: readonly string[]
   limit: number
   authorization: ProtectedReadAuthorization | null
   accountNetworkLocalStateRepository?: Pick<
@@ -152,6 +154,8 @@ export async function readProtectedInbox(
     authenticatedPubkey: options.authorization.expectedPubkey,
     candidateRelayUrls: options.relayUrls,
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+    appRelayUrls: options.appRelayUrls,
+    personalRelayUrls: [],
     repository: options.accountNetworkLocalStateRepository,
   })
   if (eligibleRelayUrls.length === 0) {

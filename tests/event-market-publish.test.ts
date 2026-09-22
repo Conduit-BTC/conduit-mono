@@ -105,6 +105,23 @@ afterEach(() => {
 })
 
 describe("organizer event-market publishing", () => {
+  it("routes organizer market events through the commerce author intent", async () => {
+    const intents: string[] = []
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft,
+      publishWithPlanner: async (_event, options) => {
+        intents.push(options.intent)
+        return publishResult(true)
+      },
+    })
+
+    await publishOrganizerEventMarket(input())
+
+    expect(intents).toHaveLength(3)
+    expect(new Set(intents)).toEqual(new Set(["commerce_author_event"]))
+  })
+
   it("publishes lifecycle changes only on the collection and retries the exact signed closure", async () => {
     const published: SignedPublicNostrEvent[] = []
     __setEventMarketTestOverrides({

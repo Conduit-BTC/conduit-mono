@@ -766,6 +766,51 @@ async function gotoAs(
     .toBe(syntheticIdentities[identity].pubkey)
 }
 
+async function seedSyntheticConduitPerspective(page: Page): Promise<void> {
+  await page.route("**/src/lib/defaultMarketPerspective.ts*", async (route) => {
+    const response = await route.fetch()
+    const source = await response.text()
+    const marker = "const DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS_RAW = `"
+    const contentStart = source.indexOf(marker) + marker.length
+    const contentEnd = source.indexOf("`", contentStart)
+    if (contentStart < marker.length || contentEnd < contentStart) {
+      throw new Error("Synthetic Conduit perspective module marker is missing.")
+    }
+    await route.fulfill({
+      response,
+      body: `${source.slice(0, contentStart)}${ORGANIZER_PUBKEY}${source.slice(contentEnd)}`,
+    })
+  })
+}
+
+async function readSyntheticConduitPerspective(page: Page): Promise<{
+  organizerApproved: boolean
+  merchantApproved: boolean
+}> {
+  return page.evaluate(
+    async ({ organizerPubkey, merchantPubkey }) => {
+      const modulePath = "/src/lib/defaultMarketPerspective.ts"
+      const perspective = (await import(/* @vite-ignore */ modulePath)) as {
+        DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS: string[]
+      }
+      return {
+        organizerApproved:
+          perspective.DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.includes(
+            organizerPubkey
+          ),
+        merchantApproved:
+          perspective.DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.includes(
+            merchantPubkey
+          ),
+      }
+    },
+    {
+      organizerPubkey: ORGANIZER_PUBKEY,
+      merchantPubkey: MERCHANT_PUBKEY,
+    }
+  )
+}
+
 function uniquePublishedEvents(
   publications: readonly PublishedEvent[]
 ): SignedEvent[] {
@@ -3509,13 +3554,16 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   const perspectiveButtons = page.getByRole("group", {
     name: "Market perspective",
   })
+  const refreshEventsButton = page.getByRole("button", {
+    name: "Refresh events",
+    exact: true,
+  })
+  await expect(refreshEventsButton).toBeEnabled()
   await perspectiveButtons
     .getByRole("button", { name: "Conduit", exact: true })
     .focus()
   await page.keyboard.press("Tab")
-  await expect(
-    page.getByRole("button", { name: "Refresh events", exact: true })
-  ).toBeFocused()
+  await expect(refreshEventsButton).toBeFocused()
   await page.keyboard.press("Tab")
   await expect(page.getByLabel("Organizer")).toBeFocused()
   await page.keyboard.press("Tab")
@@ -3532,6 +3580,173 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   await expect(
     page.getByRole("heading", { name: "Synthetic Timeline Event" })
   ).toBeVisible({ timeout: 60_000 })
+})
+
+test("approved event organizers expose accepted non-marketplace merchant products to guest and combined shoppers @market", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000)
+  const relay = createRelayHarness()
+  const now = Math.floor(Date.now() / 1000)
+  const startDate = new Date((now + 86_400) * 1_000).toISOString().slice(0, 10)
+  const endDate = new Date((now + 172_800) * 1_000).toISOString().slice(0, 10)
+  const calendarCoordinate = `31922:${ORGANIZER_PUBKEY}:approved-organizer-event`
+  const collectionCoordinate = `30405:${ORGANIZER_PUBKEY}:approved-organizer-catalog`
+  const pickupCoordinate = `30406:${ORGANIZER_PUBKEY}:approved-organizer-pickup`
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31922,
+    created_at: now - 60,
+    content: "Synthetic approved organizer event.",
+    tags: [
+      ["d", "approved-organizer-event"],
+      ["title", "Synthetic approved organizer event"],
+      ["start", startDate],
+      ["end", endDate],
+      ["location", "Synthetic Fixture Hall"],
+    ],
+  })
+  const pickup = signEvent(ORGANIZER_SECRET, {
+    kind: 30406,
+    created_at: now - 60,
+    content: "",
+    tags: [
+      ["d", "approved-organizer-pickup"],
+      ["title", "Synthetic organizer pickup"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic Fixture Hall"],
+    ],
+  })
+  const product = createMerchantProductEvent({
+    dTag: "non-marketplace-event-product",
+    title: "Synthetic event-only merchant product",
+    collectionCoordinate,
+    pickupCoordinate,
+    createdAt: now - 30,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: now - 20,
+    content: "Synthetic accepted merchant product.",
+    tags: [
+      ["d", "approved-organizer-catalog"],
+      ["title", "Synthetic approved organizer event"],
+      ["a", calendarCoordinate],
+      ["a", eventCoordinate(product)],
+      ["shipping_option", pickupCoordinate],
+    ],
+  })
+  relay.seed(
+    calendar,
+    pickup,
+    product,
+    collection,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 10002,
+      created_at: collection.created_at,
+      content: "",
+      tags: [["r", FIXTURE_RELAY]],
+    }),
+    signEvent(MERCHANT_SECRET, {
+      kind: 10002,
+      created_at: product.created_at,
+      content: "",
+      tags: [["r", FIXTURE_RELAY]],
+    }),
+    createFollowList("buyer", [ORGANIZER_PUBKEY], now + 1)
+  )
+
+  const exerciseShopper = async (identity: "guest" | "buyer") => {
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    page.setDefaultTimeout(30_000)
+    page.setDefaultNavigationTimeout(30_000)
+    try {
+      await installSyntheticEnvironment(page, relay)
+      await seedSyntheticConduitPerspective(page)
+      if (identity === "buyer") {
+        await gotoAs(page, marketUrl, "/products", "buyer")
+      } else {
+        await page.goto(`${marketUrl}/products`)
+      }
+      expect(await readSyntheticConduitPerspective(page)).toEqual({
+        organizerApproved: true,
+        merchantApproved: false,
+      })
+
+      await page
+        .getByRole("navigation", { name: "Market browse" })
+        .getByRole("link", { name: "Events", exact: true })
+        .click()
+      await expect(page).toHaveURL(/\/events(?:\?|$)/)
+      if (identity === "guest") {
+        await expect(
+          page.getByRole("group", { name: "Market perspective" })
+        ).toHaveCount(0)
+      } else {
+        await expect(
+          page.getByRole("button", {
+            name: "Following + Conduit",
+            exact: true,
+          })
+        ).toHaveAttribute("aria-pressed", "true")
+      }
+
+      const eventCard = page.getByRole("button", {
+        name: /^Open Synthetic approved organizer event\./,
+      })
+      await expect(eventCard).toBeVisible({ timeout: 60_000 })
+      await eventCard.click()
+      await expect
+        .poll(() => {
+          const reference = new URL(page.url()).pathname.split("/").at(-1)
+          if (!reference) return null
+          const decoded = nip19.decode(reference)
+          return decoded.type === "naddr"
+            ? {
+                kind: decoded.data.kind,
+                pubkey: decoded.data.pubkey,
+                identifier: decoded.data.identifier,
+              }
+            : null
+        })
+        .toEqual({
+          kind: 30405,
+          pubkey: ORGANIZER_PUBKEY,
+          identifier: "approved-organizer-catalog",
+        })
+      await expect(
+        page.getByRole("heading", {
+          name: "Synthetic approved organizer event",
+          exact: true,
+        })
+      ).toBeVisible({ timeout: 60_000 })
+
+      const productCard = page
+        .getByRole("listitem")
+        .filter({ hasText: "Synthetic event-only merchant product" })
+      await expect(productCard).toBeVisible({ timeout: 60_000 })
+      const add = productCard.getByRole("button", {
+        name: "Add",
+        exact: true,
+      })
+      await expect(add).toBeEnabled()
+      await add.click()
+      await expect
+        .poll(() => readCanonicalCartLines(page))
+        .toEqual([{ productId: eventCoordinate(product), quantity: 1 }])
+    } finally {
+      await context.close()
+    }
+  }
+
+  await test.step("signed-out Conduit perspective", async () => {
+    await exerciseShopper("guest")
+  })
+  await test.step("signed-in Following + Conduit perspective", async () => {
+    await exerciseShopper("buyer")
+  })
 })
 
 test("late publish completion preserves a newly selected event @merchant", async ({

@@ -70,6 +70,9 @@ export type ProductListingRelayPublisher = (input: {
   authenticatedPubkey: string | null
   isAuthenticatedPubkeyCurrent?: (pubkey: string) => boolean
   ownerSelectedRelayUrls: string[]
+  appRelayUrls: string[]
+  personalRelayUrls: string[]
+  independentRelayUrls: string[]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -212,7 +215,7 @@ function normalizeRelayTargets(
   }
 
   const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
-  const normalizedTargets = new Map<string, boolean>()
+  const normalizedTargets = new Map<string, ProductListingRelayTarget>()
 
   for (const target of targets) {
     const normalized = tryNormalizeRelayUrl(target.relayUrl)
@@ -231,22 +234,49 @@ function normalizeRelayTargets(
         "Unencrypted product listing delivery targets must be owner selected"
       )
     }
+    if (
+      target.appRelay !== true &&
+      target.personalRelay !== true &&
+      target.independentRelay !== true
+    ) {
+      throw new Error("Product listing delivery target lacks source provenance")
+    }
 
-    normalizedTargets.set(
-      normalized.url,
-      (normalizedTargets.get(normalized.url) ?? false) || target.ownerSelected
-    )
+    const existing = normalizedTargets.get(normalized.url)
+    normalizedTargets.set(normalized.url, {
+      relayUrl: normalized.url,
+      ownerSelected: target.ownerSelected || existing?.ownerSelected === true,
+      ...(target.appRelay === true || existing?.appRelay === true
+        ? { appRelay: true }
+        : {}),
+      ...(target.personalRelay === true || existing?.personalRelay === true
+        ? { personalRelay: true }
+        : {}),
+      ...(target.independentRelay === true ||
+      existing?.independentRelay === true
+        ? { independentRelay: true }
+        : {}),
+    })
   }
 
   return Array.from(normalizedTargets.entries())
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    .map(([relayUrl, ownerSelected]) => ({ relayUrl, ownerSelected }))
+    .map(([, target]) => target)
 }
 
 function isApprovedPersistedRelayTarget(
   target: ProductListingRelayTarget | undefined
 ): target is ProductListingRelayTarget {
   if (!target) return false
+  // Pre-provenance jobs cannot infer whether a relay came from a currently
+  // disabled layer. Keep their signed bytes local instead of guessing.
+  if (
+    target.appRelay !== true &&
+    target.personalRelay !== true &&
+    target.independentRelay !== true
+  ) {
+    return false
+  }
   const normalized = tryNormalizeRelayUrl(target.relayUrl)
   if (!normalized.ok || normalized.url !== target.relayUrl) return false
   const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
@@ -680,11 +710,19 @@ async function deliverProductListingJobUnlocked(
       const ownerSelectedRelayUrls = target.ownerSelected
         ? [target.relayUrl]
         : []
+      const appRelayUrls = target.appRelay === true ? [target.relayUrl] : []
+      const personalRelayUrls =
+        target.personalRelay === true ? [target.relayUrl] : []
+      const independentRelayUrls =
+        target.independentRelay === true ? [target.relayUrl] : []
       const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
         accountPubkey: stored.merchantPubkey,
         authenticatedPubkey,
         candidateRelayUrls: [target.relayUrl],
         ownerSelectedRelayUrls,
+        appRelayUrls,
+        personalRelayUrls,
+        independentRelayUrls,
         repository: options.accountNetworkLocalStateRepository,
       })
       if (eligibleRelayUrls.length === 0) return
@@ -726,6 +764,9 @@ async function deliverProductListingJobUnlocked(
             authenticatedPubkey,
             isAuthenticatedPubkeyCurrent: options.isAuthenticatedPubkeyCurrent,
             ownerSelectedRelayUrls,
+            appRelayUrls,
+            personalRelayUrls,
+            independentRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
           })
@@ -735,6 +776,9 @@ async function deliverProductListingJobUnlocked(
             authenticatedPubkey: getCurrentAuthenticatedPubkey(options),
             candidateRelayUrls: [target.relayUrl],
             ownerSelectedRelayUrls,
+            appRelayUrls,
+            personalRelayUrls,
+            independentRelayUrls,
             repository: options.accountNetworkLocalStateRepository,
           })
           if (stillEligible.length === 0) return

@@ -784,7 +784,14 @@ function readCoverage(
   result: SignedEventRelayReadResult | null,
   observedAt: number
 ): MediaServerLookupEvidence {
-  const relays = result?.relays ?? []
+  const admittedRelayUrls = result?.admittedRelayUrls ?? plannedRelayUrls
+  const admittedRelaySet = new Set(admittedRelayUrls)
+  const relays = (result?.relays ?? []).filter((relay) =>
+    admittedRelaySet.has(relay.relayUrl)
+  )
+  const statusByRelay = new Map(
+    relays.map((relay) => [relay.relayUrl, relay.status] as const)
+  )
   const successfulRelayCount = relays.filter(
     (relay) => relay.status === "success"
   ).length
@@ -793,7 +800,7 @@ function readCoverage(
   ).length
   const failedRelayCount = Math.max(
     relays.filter((relay) => relay.status === "failed").length,
-    plannedRelayUrls.length - relays.length
+    admittedRelayUrls.length - relays.length
   )
   const rejectedEventCount = relays.reduce(
     (count, relay) => count + (relay.rejectedEventCount ?? 0),
@@ -802,11 +809,9 @@ function readCoverage(
   const verified = result?.eventsVerified === true
   const allComplete =
     verified &&
-    plannedRelayUrls.length > 0 &&
-    plannedRelayUrls.every((relayUrl) =>
-      relays.some(
-        (relay) => relay.relayUrl === relayUrl && relay.status === "success"
-      )
+    admittedRelayUrls.length > 0 &&
+    admittedRelayUrls.every(
+      (relayUrl) => statusByRelay.get(relayUrl) === "success"
     ) &&
     rejectedEventCount === 0
   const usable =
@@ -817,7 +822,7 @@ function readCoverage(
   return {
     observedAt,
     coverage: allComplete ? "complete" : usable ? "partial" : "unavailable",
-    plannedRelayCount: plannedRelayUrls.length,
+    plannedRelayCount: admittedRelayUrls.length,
     successfulRelayCount,
     partialRelayCount,
     failedRelayCount,
@@ -923,8 +928,11 @@ async function resolveReadPlan(
       plan: {
         intent: "general",
         relayUrls,
+        candidateRelayUrls: relayUrls,
+        maxRelayAttempts: MAX_MEDIA_SERVER_READ_RELAYS,
         parkedRelayUrls: [],
         hintRelayUrls: [],
+        independentRelayUrls: [],
       },
       authenticatedPubkey,
       ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
@@ -932,20 +940,30 @@ async function resolveReadPlan(
       ),
     }
   }
+  const relayListReadPlan = (dependencies.planReads ?? planRelayReads)({
+    intent: "relay_lists",
+    authenticatedPubkey,
+    ownerSelectedRelayUrls: authority.readRelayUrls,
+    maxRelays: MAX_MEDIA_SERVER_READ_RELAYS,
+    skipHealthFilter: true,
+    settings: authority.snapshot?.settings,
+    signedRelayListAuthoritative:
+      authority.snapshot?.signedRelayListAuthoritative,
+  })
   const relayLists = await (dependencies.getRelayLists ?? getRelayLists)(
     [owner],
     {
       cacheOnly: false,
-      relayUrls:
-        authority.readRelayUrls.length > 0 ||
-        authority.snapshot?.signedRelayListAuthoritative
-          ? authority.readRelayUrls
-          : undefined,
+      relayUrls: relayListReadPlan.candidateRelayUrls,
+      maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
       allowInsecureRelayUrlsForPubkey:
         authenticatedPubkey === owner ? owner : undefined,
       accountPubkey: authenticatedPubkey,
       authenticatedPubkey,
-      ownerSelectedRelayUrls: authority.readRelayUrls,
+      ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
+      appRelayUrls: relayListReadPlan.appRelayUrls,
+      personalRelayUrls: relayListReadPlan.personalRelayUrls,
+      independentRelayUrls: relayListReadPlan.independentRelayUrls,
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,
       shouldContinue: dependencies.shouldContinue,
@@ -963,12 +981,16 @@ async function resolveReadPlan(
     signedRelayListAuthoritative:
       authority.snapshot?.signedRelayListAuthoritative,
   })
+  const candidateRelayUrls = applyOwnerTransportAuthority(
+    planned.candidateRelayUrls,
+    ownerSelectedRelayUrls
+  )
   const relayUrls = applyOwnerTransportAuthority(
     planned.relayUrls,
     ownerSelectedRelayUrls
   )
   return {
-    plan: { ...planned, relayUrls },
+    plan: { ...planned, relayUrls, candidateRelayUrls },
     authenticatedPubkey,
     ownerSelectedRelayUrls: ownerSelectedRelayUrls.filter((relayUrl) =>
       relayUrls.includes(relayUrl)
@@ -1085,10 +1107,14 @@ export async function readMediaServerPreferences(
         limit: 24,
       } satisfies Filter,
       {
-        relayUrls: resolvedPlan.plan.relayUrls,
+        relayUrls: resolvedPlan.plan.candidateRelayUrls,
+        maxRelayAttempts: resolvedPlan.plan.maxRelayAttempts,
         accountPubkey: resolvedPlan.authenticatedPubkey,
         authenticatedPubkey: resolvedPlan.authenticatedPubkey,
         ownerSelectedRelayUrls: resolvedPlan.ownerSelectedRelayUrls,
+        appRelayUrls: resolvedPlan.plan.appRelayUrls,
+        personalRelayUrls: resolvedPlan.plan.personalRelayUrls,
+        independentRelayUrls: resolvedPlan.plan.independentRelayUrls,
         accountNetworkLocalStateRepository:
           dependencies.accountNetworkLocalStateRepository,
         shouldContinue: dependencies.shouldContinue,
@@ -1111,8 +1137,10 @@ export async function readMediaServerPreferences(
       plan: {
         intent: "general",
         relayUrls: [],
+        candidateRelayUrls: [],
         parkedRelayUrls: [],
         hintRelayUrls: [],
+        independentRelayUrls: [],
       },
       authenticatedPubkey: null,
       ownerSelectedRelayUrls: [],
@@ -1121,6 +1149,7 @@ export async function readMediaServerPreferences(
 
   const plan = resolvedPlan.plan
   const lookup = readCoverage(plan.relayUrls, result, observedAt)
+  const admittedRelayUrls = result?.admittedRelayUrls ?? plan.relayUrls
   const events = result?.eventsVerified === true ? result.events : []
   const networkFrontierEvent = selectLatestObservedBlossomServerListEvent(
     events,
@@ -1158,7 +1187,7 @@ export async function readMediaServerPreferences(
     const signedEvent = networkValid.event as SignedPublicNostrEvent
     const sourceRelayUrls = uniqueWithinPlan(
       result?.eventSourceRelayUrls[signedEvent.id] ?? [],
-      plan.relayUrls
+      admittedRelayUrls
     )
     if (strongerRevision(signedEvent, record.published?.signedEvent)) {
       record.published = {

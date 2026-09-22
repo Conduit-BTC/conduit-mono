@@ -118,7 +118,7 @@ export async function deliverSignedProductEvent(
     }
 
     const delivery = await publishWithPlanner(publishableEvent, {
-      intent: "author_event",
+      intent: "commerce_author_event",
       authorPubkey: merchantPubkey,
       authenticatedPubkey:
         authenticatedPubkey === merchantPubkey.toLowerCase()
@@ -1205,7 +1205,7 @@ export async function signAndPublishProductWriteBundle(
   for (const write of writes) {
     if (!write.shippingEvent) continue
     const delivery = await publishWithPlanner(write.shippingEvent, {
-      intent: "author_event",
+      intent: "commerce_author_event",
       authorPubkey: signerPubkey,
       authenticatedPubkey,
       accountPubkey: signerPubkey,
@@ -1263,7 +1263,7 @@ export async function signAndPublishProductWriteBundle(
       )
     }
     if (deletionEvent && deletionDeliveryJobId) {
-      const currentWriteRelayUrls = await planCurrentProductDeletionWriteRelays(
+      const currentWriteRelayPlan = await planCurrentProductDeletionWriteRelays(
         signerPubkey,
         signerPubkey,
         input.shouldContinue
@@ -1276,7 +1276,9 @@ export async function signAndPublishProductWriteBundle(
       await persistSignedProductDeletion(
         {
           signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
-          currentWriteRelayUrls,
+          currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
+          currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
+          currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,
           sourceRelayUrls,
           companionListingJobId: productListingDeliveryJobId,
         },

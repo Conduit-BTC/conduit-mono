@@ -2,6 +2,7 @@ import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
 import { db, type CachedProfile } from "../db"
 import type { Profile } from "../types"
+import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import { fetchEventsFanoutDetailed, type FetchEventsFanoutResult } from "./ndk"
 import {
@@ -369,12 +370,24 @@ async function defaultPlanSearchRelayUrls(
   const snapshot = authenticatedPubkey
     ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
     : loadRelaySettingsPlanningSnapshot()
-  return planProfileSearchRelayUrls(
+  const personalRelayUrls = snapshot.settings.entries
+    .filter((entry) => entry.readEnabled && entry.capabilities.search)
+    .map((entry) => entry.url)
+  const candidateRelayUrls = planProfileSearchRelayUrls(
     config.searchIndexRelayUrls,
-    snapshot.settings.entries
-      .filter((entry) => entry.readEnabled && entry.capabilities.search)
-      .map((entry) => entry.url)
+    personalRelayUrls,
+    Number.MAX_SAFE_INTEGER
   )
+  const admittedRelayUrls = authenticatedPubkey
+    ? await filterEligibleAccountRelayUrls({
+        accountPubkey: authenticatedPubkey,
+        authenticatedPubkey,
+        candidateRelayUrls,
+        appRelayUrls: config.searchIndexRelayUrls,
+        personalRelayUrls,
+      })
+    : candidateRelayUrls
+  return admittedRelayUrls.slice(0, PROFILE_SEARCH_MAX_RELAYS)
 }
 
 async function defaultLoadSellerPubkeys(
@@ -406,15 +419,33 @@ const defaultDependencies: ProfileSearchDependencies = {
   loadCachedProfileRows: defaultLoadCachedProfileRows,
   loadSellerPubkeys: defaultLoadSellerPubkeys,
   planSearchRelayUrls: defaultPlanSearchRelayUrls,
-  fetchEvents: (filter, options) =>
-    fetchEventsFanoutDetailed(filter, {
+  fetchEvents: async (filter, options) => {
+    const snapshot = options.authenticatedPubkey
+      ? await readDurableAccountRelaySettingsPlanningSnapshot(
+          options.authenticatedPubkey
+        )
+      : loadRelaySettingsPlanningSnapshot()
+    const appRelaySet = new Set(config.searchIndexRelayUrls)
+    const personalRelaySet = new Set(
+      snapshot.settings.entries
+        .filter((entry) => entry.readEnabled && entry.capabilities.search)
+        .map((entry) => entry.url)
+    )
+    return await fetchEventsFanoutDetailed(filter, {
       relayUrls: options.relayUrls,
+      appRelayUrls: options.relayUrls.filter((relayUrl) =>
+        appRelaySet.has(relayUrl)
+      ),
+      personalRelayUrls: options.relayUrls.filter((relayUrl) =>
+        personalRelaySet.has(relayUrl)
+      ),
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
       signal: options.signal,
       connectTimeoutMs: NETWORK_CONNECT_TIMEOUT_MS,
       fetchTimeoutMs: NETWORK_FETCH_TIMEOUT_MS,
-    }),
+    })
+  },
 }
 
 function emptyResult(query: string): ProfileSearchResult {

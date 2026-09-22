@@ -435,7 +435,11 @@ async function attemptProductPublication(input: {
         getEventMarketPickups: input.getEventMarketPickups ?? (async () => []),
         getShippingOptions: input.getShippingOptions ?? (async () => []),
         planProductListingRelayTargets: async () => [
-          { relayUrl: "wss://relay.example", ownerSelected: false },
+          {
+            relayUrl: "wss://relay.example",
+            ownerSelected: false,
+            personalRelay: true,
+          },
         ],
       }
     )
