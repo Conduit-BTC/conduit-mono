@@ -198,7 +198,12 @@ function assertValidSignedPublicPublish(
   if (!isValidSignedPublicNostrEvent(rawEvent)) {
     throw new Error("Refusing to publish an invalid signed Nostr event.")
   }
-  if (input.intent !== "author_event") return
+  if (
+    input.intent !== "author_event" &&
+    input.intent !== "commerce_author_event"
+  ) {
+    return
+  }
   const expectedAuthor = input.authorPubkey?.trim().toLowerCase()
   if (!expectedAuthor || rawEvent.pubkey.toLowerCase() !== expectedAuthor) {
     throw new Error(
@@ -365,7 +370,12 @@ function getAuthorEventFallbackRelayUrls(input: {
   intent: RelayWriteIntent
   attemptedRelayUrls: readonly string[]
 }): string[] {
-  if (input.intent !== "author_event") return []
+  if (
+    input.intent !== "author_event" &&
+    input.intent !== "commerce_author_event"
+  ) {
+    return []
+  }
 
   const attempted = new Set(
     input.attemptedRelayUrls.map(normalizeOutcomeRelayUrl)
@@ -383,11 +393,13 @@ function getAuthorEventFallbackRelayUrls(input: {
         )
       : []
 
-  return mergeUnique([
-    config.appWriteRelayUrls,
-    commerceDiscoveryRelayUrls,
-    publicRelayFallbackUrls,
-  ])
+  return input.intent === "commerce_author_event"
+    ? mergeUnique([config.commerceRelayUrls])
+    : mergeUnique([
+        config.appWriteRelayUrls,
+        commerceDiscoveryRelayUrls,
+        publicRelayFallbackUrls,
+      ])
 }
 
 function getCriticalRecipientFallbackRelayUrls(input: {
@@ -1165,7 +1177,8 @@ export async function publishWithPlanner(
   )
   let attemptedRelayUrls: string[] = []
   const authorFallbackAllowed =
-    input.intent !== "author_event" ||
+    (input.intent !== "author_event" &&
+      input.intent !== "commerce_author_event") ||
     plan.signedRelayListAuthoritative !== true
 
   if (plannedRelayUrls.length === 0) {

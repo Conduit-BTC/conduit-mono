@@ -866,6 +866,30 @@ describe("planPublishRelays", () => {
     expect(planned).toBe(false)
   })
 
+  it("applies the author signature fence to commerce author events", async () => {
+    let planned = false
+    const event = signedTestEvent({ publish: async () => new Set() })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => {
+        planned = true
+        return {
+          intent: "commerce_author_event",
+          primaryRelayUrls: [],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "commerce_author_event",
+        authorPubkey: OTHER_AUTHOR_PUBKEY,
+      })
+    ).rejects.toThrow("signed by a different account")
+    expect(planned).toBe(false)
+  })
+
   it("allows a single Publish relay before planning relays", async () => {
     const event = signedTestEvent({
       kind: EVENT_KINDS.RELAY_LIST,
@@ -920,6 +944,44 @@ describe("planPublishRelays", () => {
     })
 
     expect(publishAttempts).toEqual([APP_WRITE_ATTEMPT_RELAYS])
+  })
+
+  it("keeps commerce fallback writes within commerce-qualified App roles", async () => {
+    const publishAttempts: string[][] = []
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "commerce_author_event",
+        primaryRelayUrls: [],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await publishWithPlanner(
+      signedTestEvent({
+        kind: EVENT_KINDS.PRODUCT,
+        tags: [["d", "commerce-fallback"]],
+        publish: async (relaySet: unknown) => {
+          const relayUrls = [
+            ...((relaySet as { relayUrls?: Set<string> | string[] })
+              .relayUrls ?? []),
+          ]
+          publishAttempts.push(relayUrls)
+          return new Set(relayUrls.map((url) => ({ url })))
+        },
+      }),
+      {
+        intent: "commerce_author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+      }
+    )
+
+    expect(publishAttempts).toEqual([
+      config.commerceRelayUrls.map((url) => `${url}/`),
+    ])
+    expect(publishAttempts[0]).not.toContain("wss://relay.dreamith.to/")
+    expect(publishAttempts[0]).not.toContain("wss://relay.primal.net/")
+    expect(publishAttempts[0]).not.toContain("wss://relay.plebeian.market/")
   })
 
   it("refuses tiny contact-list publishes before planning relays", async () => {

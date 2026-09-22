@@ -619,6 +619,7 @@ describe("NIP-02 merchant trust helpers", () => {
       (_, index) => `wss://app-follow-${index}.example`
     )
     config.appReadRelayUrls = appRelayUrls
+    config.corePublicFallbackRelayUrls = []
     const localState = emptyAccountNetworkLocalState(viewerPubkey, () => 1)
     localState.routingPolicy = {
       ...createDefaultAccountNetworkRoutingPolicy(),

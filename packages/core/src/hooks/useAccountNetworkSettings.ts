@@ -18,6 +18,7 @@ import { useConduitSession } from "../context/ConduitSessionContext"
 import {
   dexieAccountNetworkLocalStateRepository,
   emptyAccountNetworkLocalState,
+  filterEligibleAccountRelayUrls,
   subscribeAccountNetworkLocalState,
   type AccountNetworkLocalState,
 } from "../protocol/account-network-local-state"
@@ -328,6 +329,8 @@ function mergeRelayScans(
 async function scanRelayBatch(input: {
   relayUrls: readonly string[]
   existing: readonly RelayScanResult[]
+  shouldContinue?: () => boolean
+  isRelayEligible?: (relayUrl: string) => Promise<boolean>
 }): Promise<RelayScanResult[]> {
   const existing = new Map(input.existing.map((scan) => [scan.url, scan]))
   const relayUrls = [...new Set(input.relayUrls)]
@@ -337,12 +340,25 @@ async function scanRelayBatch(input: {
     offset < relayUrls.length;
     offset += RELAY_INFORMATION_REFRESH_CONCURRENCY
   ) {
+    if (input.shouldContinue?.() === false) break
     scans.push(
-      ...(await Promise.all(
-        relayUrls
-          .slice(offset, offset + RELAY_INFORMATION_REFRESH_CONCURRENCY)
-          .map((relayUrl) => scanRelay(relayUrl, existing.get(relayUrl)))
-      ))
+      ...(
+        await Promise.all(
+          relayUrls
+            .slice(offset, offset + RELAY_INFORMATION_REFRESH_CONCURRENCY)
+            .map(async (relayUrl) => {
+              if (input.shouldContinue?.() === false) return null
+              if (
+                input.isRelayEligible &&
+                !(await input.isRelayEligible(relayUrl))
+              ) {
+                return null
+              }
+              if (input.shouldContinue?.() === false) return null
+              return await scanRelay(relayUrl, existing.get(relayUrl))
+            })
+        )
+      ).filter((scan): scan is RelayScanResult => scan !== null)
     )
   }
   return scans
@@ -515,6 +531,17 @@ export function useAccountNetworkSettings(
     void scanRelayBatch({
       relayUrls,
       existing: localState.relayScans,
+      shouldContinue: () => !cancelled,
+      isRelayEligible: async (relayUrl) =>
+        (
+          await filterEligibleAccountRelayUrls({
+            accountPubkey,
+            authenticatedPubkey: accountPubkey,
+            candidateRelayUrls: [relayUrl],
+            appRelayUrls: [relayUrl],
+            personalRelayUrls: [],
+          })
+        ).includes(relayUrl),
     })
       .then(async (scans) => {
         if (
@@ -525,6 +552,7 @@ export function useAccountNetworkSettings(
         ) {
           return
         }
+        if (scans.length === 0) return
         const updated = await recordAccountNetworkRelayScans({
           pubkey: accountPubkey,
           relayScans: mergeRelayScans(localState.relayScans, scans),

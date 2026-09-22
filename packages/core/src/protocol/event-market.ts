@@ -7651,7 +7651,7 @@ async function publishSignedEventMarketRecord(input: {
   let result: PublishWithPlannerResult
   try {
     result = await publish(event, {
-      intent: "author_event",
+      intent: "commerce_author_event",
       authorPubkey: input.organizerPubkey,
       authenticatedPubkey:
         authenticatedPubkey === input.organizerPubkey

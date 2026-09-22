@@ -129,6 +129,32 @@ describe("account Network settings controller contract", () => {
     expect(persistIndex).toBeGreaterThan(scanIndex)
   })
 
+  it("rechecks live App relay eligibility before every automatic metadata request", () => {
+    const automaticScan = sourceBetween(
+      "const known = new Set(localState.relayScans",
+      "const authEvidenceByUrl = useMemo("
+    )
+    const batch = sourceBetween(
+      "async function scanRelayBatch(",
+      "function resultMessage("
+    )
+
+    expect(automaticScan).toContain("shouldContinue: () => !cancelled")
+    expect(automaticScan).toContain("isRelayEligible: async (relayUrl)")
+    expect(automaticScan).toContain("filterEligibleAccountRelayUrls({")
+    expect(automaticScan).toContain("candidateRelayUrls: [relayUrl]")
+    expect(automaticScan).toContain("appRelayUrls: [relayUrl]")
+    expect(automaticScan).toContain("personalRelayUrls: []")
+
+    const eligibilityIndex = batch.indexOf(
+      "await input.isRelayEligible(relayUrl)"
+    )
+    const scanIndex = batch.indexOf("await scanRelay(")
+    expect(batch).toContain("input.shouldContinue?.() === false")
+    expect(eligibilityIndex).toBeGreaterThan(-1)
+    expect(scanIndex).toBeGreaterThan(eligibilityIndex)
+  })
+
   it("keeps exact retries, inbox redistribution, and ordering signer-free", () => {
     const retry = sourceBetween(
       "const retryPendingUpdate = useCallback(",

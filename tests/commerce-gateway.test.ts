@@ -5654,9 +5654,15 @@ describe("commerce gateway", () => {
       })
     }
 
+    const generalAppRelayUrls = Array.from(
+      new Set([
+        ...config.appReadRelayUrls,
+        ...config.corePublicFallbackRelayUrls,
+      ])
+    )
     expect(genericReadRelayPlans).toEqual([
-      config.appReadRelayUrls,
-      [writeOnlyRelayUrl, readOnlyRelayUrl, ...config.appReadRelayUrls],
+      generalAppRelayUrls,
+      [writeOnlyRelayUrl, readOnlyRelayUrl, ...generalAppRelayUrls],
     ])
     expect(genericReadRelayPlans.flat()).not.toContain(staleSelfRelayUrl)
     expect(genericReadOwnerSelections).toEqual([

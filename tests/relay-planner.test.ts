@@ -17,6 +17,10 @@ const PERSONAL_ONLY_ROUTING = {
   appRelaysEnabled: false,
   personalRelaysEnabled: true,
 } as const
+const APP_ONLY_ROUTING = {
+  appRelaysEnabled: true,
+  personalRelaysEnabled: false,
+} as const
 
 function entry(
   url: string,
@@ -128,20 +132,80 @@ describe("planRelayReads", () => {
     expect(plan.relayUrls).toContain("wss://public.conduit.market")
   })
 
-  it("keeps general app backups in the commerce read plan", () => {
+  it("keeps commerce reads within assigned App commerce roles", () => {
     const plan = planRelayReads({
       intent: "commerce_products",
+      settings: settings([]),
+      routingPolicy: APP_ONLY_ROUTING,
       maxRelays: 20,
       skipHealthFilter: true,
     })
 
-    expect(plan.relayUrls).toEqual(
-      expect.arrayContaining([
-        "wss://relay.dreamith.to",
-        "wss://nos.lol",
-        ...config.commerceDiscoveryRelayUrls,
-      ])
-    )
+    expect(plan.candidateRelayUrls).toEqual(config.appCommerceRelayUrls)
+    expect(plan.candidateRelayUrls).not.toContain("wss://relay.dreamith.to")
+    expect(plan.candidateRelayUrls).not.toContain("wss://nos.lol")
+    expect(plan.candidateRelayUrls).not.toContain("wss://relay.primal.net")
+  })
+
+  it("retains a general-only App URL when remote signed provenance authorizes it", () => {
+    const relayUrl = "wss://relay.dreamith.to"
+    const plan = planRelayReads({
+      intent: "author_products",
+      authors: ["merchant"],
+      relayLists: new Map([
+        ["merchant", relayList("merchant", [], [relayUrl])],
+      ]),
+      settings: settings([]),
+      routingPolicy: APP_ONLY_ROUTING,
+      maxRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.candidateRelayUrls).toContain(relayUrl)
+    expect(plan.independentRelayUrls).toContain(relayUrl)
+  })
+
+  it("routes configured general fallbacks through the App source cutoff", () => {
+    const previousFallbackRelayUrls = [...config.corePublicFallbackRelayUrls]
+    const configuredRelayUrls = [
+      "wss://vite-relay-url.example",
+      "wss://vite-default-relay-url.example",
+      "wss://vite-default-relays.example",
+      "wss://vite-public-relays.example",
+    ]
+
+    try {
+      config.corePublicFallbackRelayUrls = configuredRelayUrls
+      const enabled = planRelayReads({
+        intent: "profiles",
+        settings: settings([]),
+        routingPolicy: APP_ONLY_ROUTING,
+        maxRelays: 20,
+        skipHealthFilter: true,
+      })
+      expect(enabled.candidateRelayUrls).toEqual(
+        expect.arrayContaining(configuredRelayUrls)
+      )
+      expect(enabled.appRelayUrls).toEqual(
+        expect.arrayContaining(configuredRelayUrls)
+      )
+
+      const disabled = planRelayReads({
+        intent: "profiles",
+        settings: settings([]),
+        routingPolicy: {
+          appRelaysEnabled: false,
+          personalRelaysEnabled: false,
+        },
+        maxRelays: 20,
+        skipHealthFilter: true,
+      })
+      for (const relayUrl of configuredRelayUrls) {
+        expect(disabled.candidateRelayUrls).not.toContain(relayUrl)
+      }
+    } finally {
+      config.corePublicFallbackRelayUrls = previousFallbackRelayUrls
+    }
   })
 
   it("uses commerce discovery defaults when local settings are empty", () => {
@@ -589,6 +653,37 @@ describe("planRelayWrites", () => {
       "wss://stale.conduit.market",
     ])
     expect(plan.broadcastRelayUrls).toEqual([])
+  })
+
+  it("keeps commerce App writes role-qualified without losing independent sources", () => {
+    const generalOnlyAppRelay = "wss://relay.dreamith.to"
+    const personalRelay = "wss://personal-write.example"
+    const plan = planRelayWrites({
+      intent: "commerce_author_event",
+      authorPubkey: "merchant",
+      authenticatedPubkey: "owner",
+      relayLists: new Map([
+        ["merchant", relayList("merchant", [], [generalOnlyAppRelay])],
+      ]),
+      settings: settings([
+        entry(personalRelay, {
+          section: "public",
+          writeEnabled: true,
+        }),
+      ]),
+      routingPolicy: {
+        appRelaysEnabled: true,
+        personalRelaysEnabled: true,
+      },
+      maxPrimaryRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.appRelayUrls).toEqual(config.commerceRelayUrls)
+    expect(plan.appRelayUrls).not.toContain(generalOnlyAppRelay)
+    expect(plan.personalRelayUrls).toContain(personalRelay)
+    expect(plan.independentRelayUrls).toContain(generalOnlyAppRelay)
+    expect(plan.primaryCandidateRelayUrls).toContain(generalOnlyAppRelay)
   })
 
   it("author_event includes the author's current NIP-65 write relays", () => {

@@ -105,7 +105,7 @@ export async function deliverSignedProductEvent(
     }
 
     const delivery = await publishWithPlanner(publishableEvent, {
-      intent: "author_event",
+      intent: "commerce_author_event",
       authorPubkey: merchantPubkey,
       authenticatedPubkey:
         authenticatedPubkey === merchantPubkey.toLowerCase()
@@ -1138,7 +1138,7 @@ export async function signAndPublishProductWriteBundle(
   for (const write of writes) {
     if (!write.shippingEvent) continue
     const delivery = await publishWithPlanner(write.shippingEvent, {
-      intent: "author_event",
+      intent: "commerce_author_event",
       authorPubkey: signerPubkey,
       authenticatedPubkey,
       accountPubkey: signerPubkey,

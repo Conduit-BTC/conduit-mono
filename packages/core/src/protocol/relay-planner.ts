@@ -69,8 +69,10 @@ export type RelayReadIntent =
   | "general"
 
 export type RelayWriteIntent =
-  /** Author-only event (e.g. product listing, profile, deletion). */
+  /** General author-only event (e.g. profile or contact list). */
   | "author_event"
+  /** Commerce author event routed through commerce-qualified App roles. */
+  | "commerce_author_event"
   /** Recipient-aware event (e.g. NIP-17 gift wrap to one or more pubkeys). */
   | "recipient_event"
 
@@ -174,8 +176,8 @@ export interface RelayWritePlan {
   /**
    * Relays where the event MUST be accepted for the write to be considered
    * successful. For `recipient_event`, these are the union of recipients'
-   * read relays. For `author_event`, these are the user's write relays
-   * (commerce + public).
+   * read relays. For author intents, these are the user's write relays plus
+   * only the App write roles qualified for that intent.
    */
   primaryRelayUrls: string[]
   /** Full ordered candidates retained until final live-policy admission. */
@@ -237,14 +239,26 @@ function appReadRelayUrlsForIntent(intent: RelayReadIntent): string[] {
       return dedupeOrdered([
         ...config.appCommerceRelayUrls,
         ...config.commerceDiscoveryRelayUrls,
-        ...config.appReadRelayUrls,
       ])
     case "dm_inbox":
     case "legacy_dm":
       return dedupeOrdered(config.commerceDmFallbackRelayUrls)
     default:
-      return dedupeOrdered(config.appReadRelayUrls)
+      return dedupeOrdered([
+        ...config.appReadRelayUrls,
+        ...config.corePublicFallbackRelayUrls,
+      ])
   }
+}
+
+function isAuthorWriteIntent(intent: RelayWriteIntent): boolean {
+  return intent === "author_event" || intent === "commerce_author_event"
+}
+
+function appWriteRelayUrlsForIntent(intent: RelayWriteIntent): string[] {
+  return intent === "commerce_author_event"
+    ? dedupeOrdered(config.commerceRelayUrls)
+    : dedupeOrdered(config.appWriteRelayUrls)
 }
 
 function defaultRecipientWriteFallbackRelayUrls(): string[] {
@@ -611,8 +625,8 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
 /**
  * Resolve a write plan.
  *
- * - `author_event`: primary = author's NIP-65 write relays plus the user's
- *   enabled write relays (commerce + public). Broadcast empty by default.
+ * - author intents: primary = author's NIP-65 write relays plus the user's
+ *   enabled writes and intent-qualified App writes. Broadcast empty by default.
  * - `recipient_event`: primary = union of each recipient's read relays
  *   (from cached NIP-65). If a recipient has no cached list, we fall back
  *   to shared app/public recipient relays instead of sender-only outbox
@@ -647,7 +661,7 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   }
 
   const personalWriteRelays = personalLayerEnabled(input.routingPolicy)
-    ? input.intent === "author_event"
+    ? isAuthorWriteIntent(input.intent)
       ? getCommerceWriteRelayUrls(
           settingsPlanOptions({
             settings: input.settings,
@@ -662,7 +676,7 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
         )
     : []
   const appWriteRelays = appLayerEnabled(input.routingPolicy)
-    ? config.appWriteRelayUrls
+    ? appWriteRelayUrlsForIntent(input.intent)
     : []
   const userWriteRelays = dedupeOrdered([
     ...personalWriteRelays,
@@ -671,7 +685,7 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   const appWriteRelaySet = new Set(appWriteRelays)
   const personalWriteRelaySet = new Set(personalWriteRelays)
 
-  if (input.intent === "author_event") {
+  if (isAuthorWriteIntent(input.intent)) {
     const authorPubkey = input.authorPubkey?.trim().toLowerCase()
     const authenticatedPubkey = input.authenticatedPubkey?.trim().toLowerCase()
     const isAuthenticatedAuthor = Boolean(

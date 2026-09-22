@@ -34,7 +34,7 @@ const CALENDAR = `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER}:calendar`
 const PICKUP = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER}:pickup`
 const PRODUCT = `${EVENT_KINDS.PRODUCT}:${MERCHANT}:coffee`
 const RELAY_A = "wss://relay.conduit.market"
-const RELAY_B = "wss://nos.lol"
+const RELAY_B = "wss://relay.ditto.pub"
 const MERCHANT_RELAY = "wss://merchant-write.relay.dev"
 const NOW_MS = 1_800_000_100_000
 
@@ -1233,8 +1233,8 @@ describe("event-market exact product request frontiers", () => {
 
     expect(result.state).toBe("partial")
     expect(result.coverage).toMatchObject({
-      attemptedRelayCount: 5,
-      completeRelayCount: 4,
+      attemptedRelayCount: 3,
+      completeRelayCount: 2,
       partialRelayCount: 1,
       failedRelayCount: 0,
     })

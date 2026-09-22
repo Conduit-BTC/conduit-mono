@@ -14,7 +14,6 @@ import {
   buildProductListingEventDraft,
   cacheSignedProductListingEvent,
   CANONICAL_APP_BACKPLANE_RELAYS,
-  CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   config,
   EVENT_KINDS,
   getCachedMerchantStorefront,
@@ -284,6 +283,51 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
+  it("routes product and shipping events through the commerce author intent", async () => {
+    const relayUrl = "wss://relay.example"
+    const intents: string[] = []
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async (input) => {
+        intents.push(input.intent)
+        return {
+          intent: input.intent,
+          primaryRelayUrls: [relayUrl],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
+      new Set([{ url: `${relayUrl}/` }]) as never
+    )
+
+    try {
+      await signAndPublishProductWriteBundle({
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("commerce-intent"),
+            dTag: "commerce-intent",
+            fulfillmentIntent: {
+              kind: "fixed_standard",
+              amount: 5,
+              currency: "SATS",
+              countries: ["US"],
+            },
+          },
+        ],
+        onSignedLocal: async () => {},
+      })
+      expect(intents).toEqual([
+        "commerce_author_event",
+        "commerce_author_event",
+      ])
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
   it("revalidates live account authority before product relay I/O", async () => {
     const relayUrl = "wss://relay.example"
     __setRelayPublishTestOverrides({
@@ -507,7 +551,7 @@ describe("merchant product event delivery", () => {
 
   it("does not infer owner relay authority from a signed product author", async () => {
     const authenticatedPubkeys: Array<string | null | undefined> = []
-    const relayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const relayUrl = config.commerceRelayUrls[1]!
     __setRelayPublishTestOverrides({
       planPublishRelays: async (input) => {
         authenticatedPubkeys.push(input.authenticatedPubkey)
@@ -548,7 +592,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("retains a fallback-only listing ACK for an immediate deletion", async () => {
-    const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-single",
       acceptedRelayUrl: fallbackRelayUrl,
@@ -575,7 +619,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("preserves fallback provenance when its post-ACK cache write fails", async () => {
-    const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-volatile",
       acceptedRelayUrl: fallbackRelayUrl,
@@ -636,7 +680,7 @@ describe("merchant product event delivery", () => {
 
   it("retains per-listing fallback ACKs outside the bundle intersection", async () => {
     const [firstFallbackRelayUrl, secondFallbackRelayUrl] =
-      CANONICAL_COMMERCE_DISCOVERY_RELAYS
+      config.commerceRelayUrls
     const first = makeSignedProductEvent({
       dTag: "fallback-bundle-a",
       acceptedRelayUrl: firstFallbackRelayUrl!,

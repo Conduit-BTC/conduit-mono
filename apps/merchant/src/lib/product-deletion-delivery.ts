@@ -80,7 +80,7 @@ export async function planCurrentProductDeletionWriteRelays(
   personalRelayUrls: string[]
 }> {
   const plan = await planPublishRelays({
-    intent: "author_event",
+    intent: "commerce_author_event",
     authorPubkey: merchantPubkey,
     authenticatedPubkey,
     accountPubkey: merchantPubkey,
@@ -148,7 +148,7 @@ export function productDeletionJobToPublishResult(
 
   return {
     plan: {
-      intent: "author_event",
+      intent: "commerce_author_event",
       primaryRelayUrls: job.relayPlan.map((target) => target.relayUrl),
       broadcastRelayUrls: [],
       parkedRelayUrls: [],

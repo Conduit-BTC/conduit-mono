@@ -36,6 +36,60 @@ function resolution(
 }
 
 describe("app relay routing integration", () => {
+  it("keeps configured general fallbacks behind App and whole-relay cutoffs", async () => {
+    const previousFallbackRelayUrls = [...config.corePublicFallbackRelayUrls]
+    const configuredRelayUrls = [
+      "wss://vite-relay-url.example",
+      "wss://vite-default-relay-url.example",
+      "wss://vite-default-relays.example",
+      "wss://vite-public-relays.example",
+    ]
+
+    try {
+      config.corePublicFallbackRelayUrls = configuredRelayUrls
+      const plan = planRelayReads({
+        intent: "profiles",
+        settings: createRelaySettingsFromPreferences([], "published"),
+        routingPolicy: {
+          appRelaysEnabled: true,
+          personalRelaysEnabled: false,
+        },
+        maxRelays: 20,
+        skipHealthFilter: true,
+      })
+      expect(plan.appRelayUrls).toEqual(
+        expect.arrayContaining(configuredRelayUrls)
+      )
+
+      const repository = createInMemoryAccountNetworkLocalStateRepository()
+      await repository.update(OWNER, (state) =>
+        configuredRelayUrls.reduce(
+          (current, relayUrl, index) =>
+            applyAccountNetworkRelayExclusion(current, {
+              relayUrl,
+              relayListFrontier: { eventId: null, createdAt: null },
+              inboxDeclarationFrontier: { eventId: null, createdAt: null },
+              committedAt: 400 + index,
+            }),
+          state
+        )
+      )
+      const eligible = await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        authenticatedPubkey: OWNER,
+        candidateRelayUrls: plan.candidateRelayUrls,
+        appRelayUrls: plan.appRelayUrls,
+        personalRelayUrls: plan.personalRelayUrls,
+        repository,
+      })
+      for (const relayUrl of configuredRelayUrls) {
+        expect(eligible).not.toContain(relayUrl)
+      }
+    } finally {
+      config.corePublicFallbackRelayUrls = previousFallbackRelayUrls
+    }
+  })
+
   it("composes app and personal plans while the final I/O seam honors live source cutoffs", async () => {
     const settings = createRelaySettingsFromPreferences(
       [

@@ -1334,9 +1334,9 @@ describe("event-market retained evidence", () => {
       (_, index) => `wss://app-event-market-${index}.example`
     )
     Object.assign(config, {
-      appCommerceRelayUrls: [],
+      appCommerceRelayUrls: appRelayUrls,
       commerceDiscoveryRelayUrls: [],
-      appReadRelayUrls: appRelayUrls,
+      appReadRelayUrls: [],
     })
     const localState = emptyAccountNetworkLocalState(MERCHANT, () => 1)
     localState.routingPolicy = {

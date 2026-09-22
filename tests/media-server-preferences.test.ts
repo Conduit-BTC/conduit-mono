@@ -348,13 +348,19 @@ describe("kind 10063 replacement selection and evidence", () => {
       },
     })
 
+    const generalAppRelayUrls = Array.from(
+      new Set([
+        ...config.appReadRelayUrls,
+        ...config.corePublicFallbackRelayUrls,
+      ])
+    )
     expect(lookupCalls).toEqual([
       {
-        relayUrls: [ownerWsRelay, ownerWssRelay, ...config.appReadRelayUrls],
+        relayUrls: [ownerWsRelay, ownerWssRelay, ...generalAppRelayUrls],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
-        appRelayUrls: config.appReadRelayUrls,
+        appRelayUrls: generalAppRelayUrls,
         personalRelayUrls: [ownerWsRelay, ownerWssRelay],
         maxRelayAttempts: 6,
         allowInsecureRelayUrlsForPubkey: OWNER,
@@ -376,11 +382,11 @@ describe("kind 10063 replacement selection and evidence", () => {
     ])
     expect(finalReadCalls).toEqual([
       {
-        relayUrls: [ownerWsRelay, ownerWssRelay, ...config.appReadRelayUrls],
+        relayUrls: [ownerWsRelay, ownerWssRelay, ...generalAppRelayUrls],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
-        appRelayUrls: config.appReadRelayUrls,
+        appRelayUrls: generalAppRelayUrls,
         personalRelayUrls: [ownerWsRelay, ownerWssRelay],
         maxRelayAttempts: 6,
       },
