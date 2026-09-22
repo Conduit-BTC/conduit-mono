@@ -7,6 +7,7 @@ import {
 
 import {
   createCheckoutSparkRouterFundingBridge,
+  type CheckoutSparkRouterFundingLockManager,
   type CheckoutSparkRouterFundingPaymentInput,
 } from "../apps/market/src/lib/checkout-spark-router-funding"
 import {
@@ -901,5 +902,208 @@ describe("checkout Spark router funding bridge", () => {
     releasePreflight()
     await first
     expect(payInvoice).toHaveBeenCalledTimes(1)
+  })
+
+  it("fails closed before reconciliation or payment when a browser cannot lock funding", async () => {
+    const payInvoice = mock(async () => ({
+      status: "paid" as const,
+      rail: "wallet" as const,
+      preimage: "must-not-send",
+    }))
+    const reconcileCheckoutReceive = mock(async () => ({
+      state: "pending" as const,
+      providerStatus: "PENDING",
+      failureReason: null,
+      funds: {
+        availableSats: 0,
+        ownedSats: 0,
+        incomingSats: 0,
+        observedAt: CREATED_AT + 500,
+      },
+    }))
+    const bridge = createCheckoutSparkRouterFundingBridge(preparedFunding(), {
+      lockManager: null,
+      requireCrossTabLock: true,
+      payInvoice,
+      reconcileCheckoutReceive,
+      persistProgress: async () => undefined,
+    })
+
+    await expect(bridge.fund(paymentInput())).rejects.toThrow(
+      "cannot safely coordinate checkout funding across tabs"
+    )
+    expect(reconcileCheckoutReceive).toHaveBeenCalledTimes(0)
+    expect(payInvoice).toHaveBeenCalledTimes(0)
+  })
+
+  it("releases only a definite retryable submission for another attempt", async () => {
+    const prepared = preparedFunding()
+    const storage = new MemoryStorage()
+    saveCheckoutSparkRouterPreparation(
+      {
+        reconciliation: prepared.reconciliation,
+        recoveryHandoffId: prepared.recoveryHandoffId,
+        fundingInvoiceExposedAt: CREATED_AT,
+        fundingSubmissionState: "not_started",
+        savedAt: CREATED_AT,
+      },
+      storage
+    )
+    const lockManager: CheckoutSparkRouterFundingLockManager = {
+      async request(name, _options, callback) {
+        return callback({ name })
+      },
+    }
+    let attempts = 0
+    const payInvoice = mock(async () => {
+      attempts += 1
+      return attempts === 1
+        ? {
+            status: "retryable_failure" as const,
+            reason: "Wallet review declined before sending.",
+          }
+        : {
+            status: "paid" as const,
+            rail: "wallet" as const,
+            preimage: "payer-proof",
+          }
+    })
+    const bridge = createCheckoutSparkRouterFundingBridge(prepared, {
+      storage,
+      lockManager,
+      requireCrossTabLock: true,
+      now: () => CREATED_AT + 1_000,
+      payInvoice,
+      reconcileCheckoutReceive: async () => ({
+        state: "pending",
+        providerStatus: "PENDING",
+        failureReason: null,
+        funds: {
+          availableSats: 0,
+          ownedSats: 0,
+          incomingSats: 0,
+          observedAt: CREATED_AT + 500,
+        },
+      }),
+    })
+
+    await expect(bridge.fund(paymentInput())).resolves.toMatchObject({
+      status: "payment_retryable",
+    })
+    expect(
+      getCheckoutSparkRouterPreparation(prepared.plan.checkoutId, storage)
+        ?.fundingSubmissionState
+    ).toBe("not_started")
+    await expect(bridge.fund(paymentInput())).resolves.toMatchObject({
+      status: "awaiting_reconciliation",
+      paymentSubmission: "accepted",
+    })
+    expect(payInvoice).toHaveBeenCalledTimes(2)
+    expect(
+      getCheckoutSparkRouterPreparation(prepared.plan.checkoutId, storage)
+        ?.fundingSubmissionState
+    ).toBe("provisional")
+  })
+
+  it("does not submit twice when another tab holds the exact funding lock", async () => {
+    const prepared = preparedFunding()
+    const storage = new MemoryStorage()
+    saveCheckoutSparkRouterPreparation(
+      {
+        reconciliation: prepared.reconciliation,
+        recoveryHandoffId: prepared.recoveryHandoffId,
+        fundingInvoiceExposedAt: CREATED_AT,
+        fundingSubmissionState: "not_started",
+        savedAt: CREATED_AT,
+      },
+      storage
+    )
+
+    let lockHeld = false
+    const lockNames: string[] = []
+    const lockManager: CheckoutSparkRouterFundingLockManager = {
+      async request(name, options, callback) {
+        expect(options).toEqual({ mode: "exclusive", ifAvailable: true })
+        lockNames.push(name)
+        if (lockHeld) return callback(null)
+        lockHeld = true
+        try {
+          return await callback({ name })
+        } finally {
+          lockHeld = false
+        }
+      },
+    }
+    let releasePayment!: (result: {
+      status: "paid"
+      rail: "wallet"
+      preimage: string
+    }) => void
+    let markPaymentStarted!: () => void
+    const paymentStarted = new Promise<void>((resolve) => {
+      markPaymentStarted = resolve
+    })
+    const payInvoice = mock(() => {
+      markPaymentStarted()
+      return new Promise<{
+        status: "paid"
+        rail: "wallet"
+        preimage: string
+      }>((resolve) => {
+        releasePayment = resolve
+      })
+    })
+    const reconcileCheckoutReceive = async () => ({
+      state: "pending" as const,
+      providerStatus: "PENDING",
+      failureReason: null,
+      funds: {
+        availableSats: 0,
+        ownedSats: 0,
+        incomingSats: 0,
+        observedAt: CREATED_AT + 500,
+      },
+    })
+    const dependencies = {
+      storage,
+      lockManager,
+      requireCrossTabLock: true,
+      now: () => CREATED_AT + 1_000,
+      payInvoice,
+      reconcileCheckoutReceive,
+    }
+    const firstBridge = createCheckoutSparkRouterFundingBridge(
+      prepared,
+      dependencies
+    )
+    const secondBridge = createCheckoutSparkRouterFundingBridge(
+      prepared,
+      dependencies
+    )
+
+    const first = firstBridge.fund(paymentInput())
+    await paymentStarted
+    await expect(secondBridge.fund(paymentInput())).rejects.toThrow(
+      "already active in another tab"
+    )
+    expect(payInvoice).toHaveBeenCalledTimes(1)
+    expect(
+      getCheckoutSparkRouterPreparation(prepared.plan.checkoutId, storage)
+        ?.fundingSubmissionState
+    ).toBe("provisional")
+
+    releasePayment({ status: "paid", rail: "wallet", preimage: "proof" })
+    await expect(first).resolves.toMatchObject({
+      status: "awaiting_reconciliation",
+    })
+    await expect(secondBridge.fund(paymentInput())).resolves.toMatchObject({
+      status: "awaiting_reconciliation",
+    })
+    expect(payInvoice).toHaveBeenCalledTimes(1)
+    expect(lockNames).toEqual([
+      `conduit:checkout-spark-router-funding:${prepared.plan.planDigest}`,
+      `conduit:checkout-spark-router-funding:${prepared.plan.planDigest}`,
+      `conduit:checkout-spark-router-funding:${prepared.plan.planDigest}`,
+    ])
   })
 })

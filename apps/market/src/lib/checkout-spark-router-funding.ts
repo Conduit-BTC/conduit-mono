@@ -19,6 +19,7 @@ import type {
   SparkWalletManager,
 } from "./spark-wallet"
 import {
+  getCheckoutSparkRouterPreparation,
   saveCheckoutSparkRouterFundingProgress,
   type CheckoutSparkRouterFundingSubmissionState,
   type CheckoutSparkRouterStorage,
@@ -72,12 +73,23 @@ export interface CheckoutSparkRouterFundingDependencies {
     reconciliation: CheckoutSparkReconciliation
     fundingSubmissionState: CheckoutSparkRouterFundingSubmissionState
     savedAt: number
+    allowSubmissionReset?: boolean
   }) =>
     | StoredCheckoutSparkRouterPreparation
     | void
     | Promise<StoredCheckoutSparkRouterPreparation | void>
   storage?: CheckoutSparkRouterStorage | null
+  lockManager?: CheckoutSparkRouterFundingLockManager | null
+  requireCrossTabLock?: boolean
   now?: () => number
+}
+
+export interface CheckoutSparkRouterFundingLockManager {
+  request<T>(
+    name: string,
+    options: { mode: "exclusive"; ifAvailable: true },
+    callback: (lock: { name: string } | null) => T | Promise<T>
+  ): Promise<T>
 }
 
 export interface CheckoutSparkRouterFundingBridge {
@@ -92,6 +104,37 @@ function requireSparkManager(): SparkWalletManager {
   const manager = getSparkWalletManager()
   if (!manager) throw new Error("Spark is unavailable in this Market build.")
   return manager
+}
+
+function browserFundingLockManager(): CheckoutSparkRouterFundingLockManager | null {
+  if (typeof navigator === "undefined" || !navigator.locks) return null
+  return navigator.locks as unknown as CheckoutSparkRouterFundingLockManager
+}
+
+async function runWithFundingLock<T>(
+  planDigest: string,
+  operation: () => Promise<T>,
+  lockManager: CheckoutSparkRouterFundingLockManager | null,
+  requireCrossTabLock: boolean
+): Promise<T> {
+  if (!lockManager) {
+    if (requireCrossTabLock) {
+      throw new Error(
+        "This browser cannot safely coordinate checkout funding across tabs."
+      )
+    }
+    return operation()
+  }
+  return lockManager.request(
+    `conduit:checkout-spark-router-funding:${planDigest}`,
+    { mode: "exclusive", ifAvailable: true },
+    async (lock) => {
+      if (!lock) {
+        throw new Error("Checkout funding is already active in another tab.")
+      }
+      return operation()
+    }
+  )
 }
 
 function paymentTargetKey(target: CheckoutPaymentTarget): string {
@@ -185,12 +228,19 @@ export function createCheckoutSparkRouterFundingBridge(
     ((walletId: string, request: SparkCheckoutReceiveRequest) =>
       requireSparkManager().reconcileCheckoutReceive(walletId, request))
   const now = dependencies.now ?? Date.now
+  const lockManager =
+    dependencies.lockManager === undefined
+      ? browserFundingLockManager()
+      : dependencies.lockManager
+  const requireCrossTabLock =
+    dependencies.requireCrossTabLock ?? typeof window !== "undefined"
   const persistProgress =
     dependencies.persistProgress ??
     ((input: {
       reconciliation: CheckoutSparkReconciliation
       fundingSubmissionState: CheckoutSparkRouterFundingSubmissionState
       savedAt: number
+      allowSubmissionReset?: boolean
     }) => {
       return saveCheckoutSparkRouterFundingProgress(
         {
@@ -318,6 +368,39 @@ export function createCheckoutSparkRouterFundingBridge(
         if (observed.status === "funded") return observed
         if (submissionState === "provisional") return observed
 
+        // The per-instance state may have been prepared before another tab
+        // reserved this exact invoice. Recheck the durable authority while
+        // holding the cross-tab lock, immediately before any payer work.
+        if (!dependencies.persistProgress) {
+          const current = getCheckoutSparkRouterPreparation(
+            prepared.plan.checkoutId,
+            dependencies.storage
+          )
+          if (
+            !current ||
+            current.reconciliation.plan.planDigest !==
+              prepared.plan.planDigest ||
+            current.recoveryHandoffId !== prepared.recoveryHandoffId ||
+            current.fundingInvoiceExposedAt === null
+          ) {
+            throw new Error("Checkout Spark funding is not durably authorized.")
+          }
+          reconciliation = restoreCheckoutSparkReconciliation(
+            current.reconciliation
+          )
+          submissionState = current.fundingSubmissionState
+          if (reconciliation.funding.state === "spendable") {
+            return { status: "funded", reconciliation }
+          }
+          if (submissionState === "provisional") {
+            return {
+              status: "awaiting_reconciliation",
+              paymentSubmission: submissionOutcome,
+              reconciliation,
+            }
+          }
+        }
+
         if (input.paymentTarget.type === "manual") {
           const manual = await payInvoice({
             invoice: prepared.fundingInvoice,
@@ -383,6 +466,7 @@ export function createCheckoutSparkRouterFundingBridge(
             reconciliation,
             fundingSubmissionState: "not_started",
             savedAt: now(),
+            allowSubmissionReset: true,
           })
           const retryable = readPersistedProgress(
             persistedRetryable,
@@ -412,7 +496,12 @@ export function createCheckoutSparkRouterFundingBridge(
         return reconcileFunding()
       }
 
-      inFlight = operation().finally(() => {
+      inFlight = runWithFundingLock(
+        prepared.plan.planDigest,
+        operation,
+        lockManager,
+        requireCrossTabLock
+      ).finally(() => {
         inFlight = null
         inFlightTargetKey = null
       })

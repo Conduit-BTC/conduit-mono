@@ -11,7 +11,9 @@ import {
 } from "@conduit/core"
 
 import {
+  getCheckoutSparkRecoveryDelivery,
   publishCheckoutSparkRecoveryHandoff,
+  retryStoredCheckoutSparkRecoveryHandoff,
   type CheckoutSparkRecoverySigningIdentity,
 } from "./checkout-spark-recovery-handoff"
 import { generateSparkMnemonic } from "./spark-recovery"
@@ -41,6 +43,8 @@ export type CheckoutSparkRouterFundingSubmissionState =
 export interface StoredCheckoutSparkRouterPreparation {
   schemaVersion: 1
   reconciliation: CheckoutSparkReconciliation
+  /** Non-secret provider receive identity needed to resume after relay lag. */
+  fundingReceive?: SparkCheckoutReceiveRequest
   recoveryHandoffId: string | null
   fundingInvoiceExposedAt: number | null
   fundingSubmissionState: CheckoutSparkRouterFundingSubmissionState
@@ -150,6 +154,38 @@ function parseFundingSubmissionState(
   throw new Error("Stored checkout Spark router submission is invalid.")
 }
 
+function parseStoredFundingReceive(
+  value: unknown,
+  plan: CheckoutSparkPlan
+): SparkCheckoutReceiveRequest | undefined {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Stored checkout Spark receive is invalid.")
+  }
+  const receive = value as Partial<SparkCheckoutReceiveRequest>
+  const funding = plan.funding
+  const expiryMs = funding.expiresAt - funding.createdAt
+  if (
+    receive.walletId !== plan.walletId ||
+    receive.network !== plan.network ||
+    receive.id !== funding.requestId ||
+    receive.paymentRequest !== funding.paymentRequest ||
+    receive.paymentHash !== funding.paymentHash ||
+    receive.requiredNetSats !== funding.requiredNetSats ||
+    receive.grossFundingSats !== funding.grossFundingSats ||
+    receive.createdAt !== funding.createdAt ||
+    receive.expiresAt !== funding.expiresAt ||
+    !Number.isSafeInteger(receive.expirySecs) ||
+    receive.expirySecs! <= 0 ||
+    receive.expirySecs! * 1_000 !== expiryMs ||
+    typeof receive.providerStatus !== "string" ||
+    !receive.providerStatus.trim()
+  ) {
+    throw new Error("Stored checkout Spark receive conflicts with its plan.")
+  }
+  return receive as SparkCheckoutReceiveRequest
+}
+
 function parseStoredPreparation(
   value: unknown
 ): StoredCheckoutSparkRouterPreparation {
@@ -162,6 +198,10 @@ function parseStoredPreparation(
   }
   const reconciliation = restoreCheckoutSparkReconciliation(
     candidate.reconciliation
+  )
+  const fundingReceive = parseStoredFundingReceive(
+    candidate.fundingReceive,
+    reconciliation.plan
   )
   const recoveryHandoffId = parseOptionalHandoffId(candidate.recoveryHandoffId)
   const fundingInvoiceExposedAt = parseOptionalExposureTime(
@@ -181,6 +221,7 @@ function parseStoredPreparation(
   return {
     schemaVersion: 1,
     reconciliation,
+    ...(fundingReceive ? { fundingReceive } : {}),
     recoveryHandoffId,
     fundingInvoiceExposedAt,
     fundingSubmissionState,
@@ -317,6 +358,11 @@ function saveCheckoutSparkRouterPreparationInternal(
           candidate.reconciliation
         )
       : candidate.reconciliation,
+    ...(existing?.fundingReceive || candidate.fundingReceive
+      ? {
+          fundingReceive: existing?.fundingReceive ?? candidate.fundingReceive,
+        }
+      : {}),
     recoveryHandoffId:
       existing?.recoveryHandoffId ?? candidate.recoveryHandoffId,
     fundingInvoiceExposedAt:
@@ -365,6 +411,8 @@ export function saveCheckoutSparkRouterFundingProgress(
     reconciliation: CheckoutSparkReconciliation
     fundingSubmissionState: CheckoutSparkRouterFundingSubmissionState
     savedAt: number
+    /** Only a definite no-funds-moved result may clear a provisional send. */
+    allowSubmissionReset?: boolean
   },
   storage: CheckoutSparkRouterStorage | null = browserStorage()
 ): StoredCheckoutSparkRouterPreparation {
@@ -386,7 +434,7 @@ export function saveCheckoutSparkRouterFundingProgress(
       savedAt: input.savedAt,
     },
     storage,
-    true
+    input.allowSubmissionReset === true
   )
 }
 
@@ -509,6 +557,7 @@ export async function prepareCheckoutSparkRouterFunding(
     preparation = saveCheckoutSparkRouterPreparation(
       {
         reconciliation,
+        fundingReceive: funding,
         recoveryHandoffId: null,
         fundingInvoiceExposedAt: null,
         fundingSubmissionState: "not_started",
@@ -575,5 +624,94 @@ export async function prepareCheckoutSparkRouterFunding(
       }
     }
     throw error
+  }
+}
+
+/**
+ * Finish a preparation whose exact recovery wrap was saved but received no
+ * relay ACK. This never creates a new wallet, receive invoice, or NIP-59 wrap.
+ */
+export async function retryCheckoutSparkRouterRecoveryAndResumeFunding(input: {
+  checkoutId: string
+  storage?: CheckoutSparkRouterStorage | null
+  now?: () => number
+  recipientInboxRelays?: readonly string[]
+  shouldContinue?: () => boolean
+  publishFn?: Parameters<
+    typeof retryStoredCheckoutSparkRecoveryHandoff
+  >[0]["publishFn"]
+}): Promise<PreparedCheckoutSparkRouterFunding> {
+  const storage = input.storage === undefined ? browserStorage() : input.storage
+  const now = input.now ?? Date.now
+  const stored = getCheckoutSparkRouterPreparation(input.checkoutId, storage)
+  const handoffId = stored?.recoveryHandoffId
+  const receive = stored?.fundingReceive
+  if (!stored || !handoffId || !receive) {
+    throw new Error("Checkout Spark recovery cannot resume this preparation.")
+  }
+  const plan = stored.reconciliation.plan
+  const currentTime = now()
+  if (
+    !Number.isSafeInteger(currentTime) ||
+    currentTime < plan.createdAt ||
+    currentTime >= plan.funding.expiresAt ||
+    currentTime >= plan.takeoverAt ||
+    stored.fundingSubmissionState !== "not_started"
+  ) {
+    throw new Error("Checkout Spark funding is no longer safe to expose.")
+  }
+
+  const delivery = getCheckoutSparkRecoveryDelivery(handoffId, storage)
+  if (
+    !delivery ||
+    delivery.record.checkoutId !== plan.checkoutId ||
+    delivery.record.orderId !== plan.orderId ||
+    delivery.record.planDigest !== plan.planDigest ||
+    delivery.record.walletId !== plan.walletId ||
+    delivery.record.network !== plan.network ||
+    delivery.record.merchantPubkey !== plan.merchantPubkey
+  ) {
+    throw new Error("Checkout Spark recovery does not match its frozen plan.")
+  }
+
+  const retried = await retryStoredCheckoutSparkRecoveryHandoff({
+    handoffId,
+    storage,
+    now,
+    recipientInboxRelays: input.recipientInboxRelays,
+    shouldContinue: input.shouldContinue,
+    publishFn: input.publishFn,
+  })
+  if (!retried.canExposeFundingInvoice) {
+    throw new Error("Checkout Spark recovery received no relay ACK.")
+  }
+  const acknowledged = getCheckoutSparkRecoveryDelivery(handoffId, storage)
+  const current = getCheckoutSparkRouterPreparation(input.checkoutId, storage)
+  if (
+    !acknowledged?.deliveryProgress.acknowledgedRelayRefs.length ||
+    current?.reconciliation.plan.planDigest !== plan.planDigest ||
+    current.recoveryHandoffId !== handoffId ||
+    current.fundingSubmissionState !== "not_started" ||
+    !current.fundingReceive ||
+    now() >= plan.funding.expiresAt ||
+    now() >= plan.takeoverAt
+  ) {
+    throw new Error("Checkout Spark funding is no longer safe to expose.")
+  }
+  const exposed = saveCheckoutSparkRouterPreparation(
+    {
+      ...current,
+      fundingInvoiceExposedAt: current.fundingInvoiceExposedAt ?? now(),
+      savedAt: now(),
+    },
+    storage
+  )
+  return {
+    plan,
+    reconciliation: exposed.reconciliation,
+    recoveryHandoffId: handoffId,
+    fundingInvoice: plan.funding.paymentRequest,
+    fundingReceive: Object.freeze({ ...current.fundingReceive }),
+    fundingSubmissionState: exposed.fundingSubmissionState,
   }
 }
