@@ -25,12 +25,14 @@ import {
   rollbackNewRemoteSignerSession,
   readAuthSession,
   restoreRemoteSigner,
+  verifyRemoteSignerConnection,
   type AuthStorage,
   type Nip46AuthSession,
   type RemoteBunkerSigner,
   type RemoteSignerAdapterInvalidation,
   type RemoteSignerKeyVault,
 } from "../packages/core/src/protocol/remote-signer"
+import { Nip46TransportError } from "../packages/core/src/protocol/nip46-rpc"
 
 const REMOTE_PUBKEY = "1".repeat(64)
 const USER_SECRET = Uint8Array.from([...new Uint8Array(31), 23])
@@ -1009,6 +1011,28 @@ describe("remote signer lifecycle", () => {
             switchRelays: async () => {
               throw new Error("relay migration must not run during pairing")
             },
+            close: async () => {
+              calls.push("handshake-close")
+            },
+            logout: async () => {
+              calls.push("unexpected-handshake-logout")
+            },
+          })
+        },
+        createBunkerSigner: (key, pointer) => {
+          calls.push("established")
+          expect(key).toBe(CLIENT_PRIVATE_KEY)
+          expect(pointer).toEqual({
+            pubkey: REMOTE_PUBKEY,
+            relays: ["wss://one.example", "wss://two.example"],
+            secret: null,
+          })
+          return fakeSigner({
+            bp: pointer,
+            getPublicKey: async () => {
+              calls.push("identity")
+              return USER_PUBKEY
+            },
           })
         },
         clientMetadata: {
@@ -1019,7 +1043,16 @@ describe("remote signer lifecycle", () => {
       }
     )
 
-    expect(calls).toEqual(["prepare", "key", "secret", "callback", "listen"])
+    expect(calls).toEqual([
+      "prepare",
+      "key",
+      "secret",
+      "callback",
+      "listen",
+      "handshake-close",
+      "established",
+      "identity",
+    ])
     const parsed = new URL(emittedUri)
     expect(parsed.protocol).toBe("nostrconnect:")
     expect(parsed.hostname).toBe(getPublicKey(CLIENT_PRIVATE_KEY))
@@ -1050,6 +1083,41 @@ describe("remote signer lifecycle", () => {
     ).toBe(true)
     expect(storage.getItem(AUTH_STORAGE_KEY)).not.toContain("one-use-secret")
     expect(storage.getItem(AUTH_STORAGE_KEY)).not.toContain("nostrconnect://")
+  })
+
+  it("does not logout the one-use handshake signer when established setup fails", async () => {
+    let handshakeClose = 0
+    let handshakeLogout = 0
+
+    await expect(
+      pairRemoteSignerFromNostrConnect(
+        ["wss://one.example", "wss://two.example"],
+        {
+          keyVault: new MemoryKeyVault(),
+          generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+          generatePairingSecret: () => "handoff-failure-secret",
+          createNostrConnectSigner: async () =>
+            fakeSigner({
+              bp: {
+                pubkey: REMOTE_PUBKEY,
+                relays: ["wss://one.example", "wss://two.example"],
+                secret: "handoff-failure-secret",
+              },
+              close: async () => {
+                handshakeClose += 1
+              },
+              logout: async () => {
+                handshakeLogout += 1
+              },
+            }),
+          createBunkerSigner: () => {
+            throw new Error("established transport unavailable")
+          },
+        }
+      )
+    ).rejects.toMatchObject({ code: "unavailable" })
+    expect(handshakeClose).toBe(1)
+    expect(handshakeLogout).toBe(0)
   })
 
   it("closes a bunker pairing when the caller cancels", async () => {
@@ -1141,6 +1209,7 @@ describe("remote signer lifecycle", () => {
           }
           return fakeSigner()
         },
+        createBunkerSigner: (_key, pointer) => fakeSigner({ bp: pointer }),
         timeoutMs: 3_000,
       }
     )
@@ -1237,6 +1306,8 @@ describe("remote signer lifecycle", () => {
       )
     ).rejects.toMatchObject({ code: "invalid_response" })
 
+    let failedEstablishedLogout = 0
+    let failedEstablishedClose = 0
     await expect(
       pairRemoteSignerFromNostrConnect(
         ["wss://one.example", "wss://two.example"],
@@ -1244,14 +1315,26 @@ describe("remote signer lifecycle", () => {
           keyVault: new MemoryKeyVault(),
           generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
           generatePairingSecret: () => "user-secret",
-          createNostrConnectSigner: async () =>
-            fakeSigner({ getPublicKey: async () => "bad" }),
+          createNostrConnectSigner: async () => fakeSigner(),
+          createBunkerSigner: (_key, pointer) =>
+            fakeSigner({
+              bp: pointer,
+              getPublicKey: async () => "bad",
+              logout: async () => {
+                failedEstablishedLogout += 1
+              },
+              close: async () => {
+                failedEstablishedClose += 1
+              },
+            }),
         }
       )
     ).rejects.toMatchObject({
       code: "invalid_response",
       operation: "get public key",
     })
+    expect(failedEstablishedLogout).toBe(1)
+    expect(failedEstablishedClose).toBe(1)
 
     await expect(
       pairRemoteSignerFromNostrConnect(
@@ -1388,6 +1471,53 @@ describe("remote signer lifecycle", () => {
     expect(requiresRemoteSignerSessionCleanup(malformedIdentityFailure)).toBe(
       true
     )
+  })
+
+  it("refuses a restore whose transport closes after identity verification", async () => {
+    let transportAvailable = true
+
+    await expect(
+      restoreRemoteSigner(session(), {
+        keyVault: seededKeyVault(),
+        createBunkerSigner: () =>
+          fakeSigner({
+            getPublicKey: async () => {
+              transportAvailable = false
+              return USER_PUBKEY
+            },
+            isTransportAvailable: () => transportAvailable,
+          }),
+      })
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "session setup",
+    })
+  })
+
+  it("refuses a restore whose transport closes while attaching its lifecycle listener", async () => {
+    let transportAvailable = true
+    let closeCalls = 0
+
+    await expect(
+      restoreRemoteSigner(session(), {
+        keyVault: seededKeyVault(),
+        createBunkerSigner: () =>
+          fakeSigner({
+            isTransportAvailable: () => transportAvailable,
+            onLifecycleFailure: () => {
+              transportAvailable = false
+              return () => undefined
+            },
+            close: async () => {
+              closeCalls += 1
+            },
+          }),
+      })
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "session setup",
+    })
+    expect(closeCalls).toBe(1)
   })
 
   it("retains a timed-out session for explicit restore without signing automatically", async () => {
@@ -1624,6 +1754,212 @@ describe("NDK remote signer adapter", () => {
     expect(encryptCalls).toBe(1)
     expect(closeCalls).toBe(1)
     expect(transitions).toHaveLength(1)
+  })
+
+  it("immediately invalidates a transport that is already unavailable", async () => {
+    let closeCalls = 0
+    const transitions: RemoteSignerAdapterInvalidation[] = []
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        nip44Encrypt: async () => {
+          throw new Nip46TransportError("unavailable", "relay unavailable")
+        },
+        close: async () => {
+          closeCalls += 1
+        },
+      }),
+      USER_PUBKEY,
+      {
+        onAdapterInvalidated: (transition) => transitions.push(transition),
+      }
+    )
+
+    await expect(
+      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "hello", "nip44")
+    ).rejects.toMatchObject({ code: "unavailable" })
+    expect(transitions).toHaveLength(1)
+    expect(transitions[0]).toMatchObject({
+      reason: "transport_unavailable",
+      sessionDisposition: "retain_for_restore",
+    })
+    expect(closeCalls).toBe(1)
+  })
+
+  it("does not invalidate the session for rejection or unsupported permission", async () => {
+    const transitions: RemoteSignerAdapterInvalidation[] = []
+    let calls = 0
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        nip44Encrypt: async () => {
+          calls += 1
+          if (calls === 1) {
+            throw new Nip46TransportError("rejected", "permission denied")
+          }
+          if (calls === 2) {
+            throw new Nip46TransportError("unsupported", "unsupported method")
+          }
+          return "ciphertext"
+        },
+      }),
+      USER_PUBKEY,
+      {
+        onAdapterInvalidated: (transition) => transitions.push(transition),
+      }
+    )
+    const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
+
+    await expect(adapter.encrypt(peer, "first", "nip44")).rejects.toMatchObject(
+      {
+        code: "rejected",
+      }
+    )
+    await expect(
+      adapter.encrypt(peer, "second", "nip44")
+    ).rejects.toMatchObject({
+      code: "unsupported",
+    })
+    await expect(adapter.encrypt(peer, "third", "nip44")).resolves.toBe(
+      "ciphertext"
+    )
+    expect(transitions).toEqual([])
+  })
+
+  it("blocks operations while a resume identity check is in progress", async () => {
+    const adapter = new NdkBunkerSignerAdapter(fakeSigner(), USER_PUBKEY)
+    const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
+
+    expect(adapter.beginVerification()).toBe(true)
+    expect(adapter.beginVerification()).toBe(true)
+    await expect(
+      adapter.encrypt(peer, "blocked", "nip44")
+    ).rejects.toMatchObject({
+      code: "unavailable",
+    })
+    expect(adapter.completeVerification()).toBe(true)
+    await expect(adapter.encrypt(peer, "ready", "nip44")).resolves.toBe(
+      "44:ready"
+    )
+  })
+
+  it("drains an approved request once, gates new work, then resumes after identity proof", async () => {
+    let resolveApproved: ((result: string) => void) | undefined
+    let encryptCalls = 0
+    const bunkerSigner = fakeSigner({
+      nip44Encrypt: async (_pubkey, value) => {
+        encryptCalls += 1
+        if (value === "approved") {
+          return await new Promise<string>((resolve) => {
+            resolveApproved = resolve
+          })
+        }
+        return `44:${value}`
+      },
+    })
+    const adapter = new NdkBunkerSignerAdapter(bunkerSigner, USER_PUBKEY)
+    const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
+    const approved = adapter.encrypt(peer, "approved", "nip44")
+
+    expect(adapter.hasPendingRequests()).toBe(true)
+    expect(adapter.beginDraining()).toBe(true)
+    const idle = adapter.whenIdle()
+
+    await expect(
+      adapter.encrypt(peer, "blocked-after-boundary", "nip44")
+    ).rejects.toMatchObject({ code: "unavailable" })
+    expect(encryptCalls).toBe(1)
+
+    resolveApproved?.("44:approved")
+    await expect(approved).resolves.toBe("44:approved")
+    await idle
+    expect(adapter.hasPendingRequests()).toBe(false)
+    expect(encryptCalls).toBe(1)
+
+    expect(adapter.beginVerification()).toBe(true)
+    await verifyRemoteSignerConnection({
+      session: session(),
+      bunkerSigner,
+      signer: adapter,
+      clientPrivateKey: CLIENT_PRIVATE_KEY_HEX,
+      clientKeyAlreadyPersisted: true,
+    })
+    expect(adapter.completeVerification()).toBe(true)
+
+    await expect(adapter.encrypt(peer, "reviewed", "nip44")).resolves.toBe(
+      "44:reviewed"
+    )
+    expect(encryptCalls).toBe(2)
+  })
+
+  it("fences an in-flight action without invalidating resume verification", async () => {
+    let rejectFirst: ((error: Nip46TransportError) => void) | undefined
+    let calls = 0
+    const transitions: RemoteSignerAdapterInvalidation[] = []
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        nip44Encrypt: async () => {
+          calls += 1
+          if (calls === 1) {
+            return await new Promise<string>((_resolve, reject) => {
+              rejectFirst = reject
+            })
+          }
+          return "ciphertext"
+        },
+      }),
+      USER_PUBKEY,
+      {
+        onAdapterInvalidated: (transition) => transitions.push(transition),
+      }
+    )
+    const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
+    const inFlight = adapter.encrypt(peer, "ambiguous", "nip44")
+
+    expect(adapter.beginVerification()).toBe(true)
+    rejectFirst?.(
+      new Nip46TransportError(
+        "unavailable",
+        "request fenced for resume verification"
+      )
+    )
+    await expect(inFlight).rejects.toMatchObject({ code: "unavailable" })
+    expect(transitions).toEqual([])
+    expect(adapter.completeVerification()).toBe(true)
+    await expect(adapter.encrypt(peer, "reviewed", "nip44")).resolves.toBe(
+      "ciphertext"
+    )
+  })
+
+  it("rejects a pre-resume result even when it arrives after verification", async () => {
+    let resolveFirst: ((result: string) => void) | undefined
+    let calls = 0
+    const transitions: RemoteSignerAdapterInvalidation[] = []
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        nip44Encrypt: async () => {
+          calls += 1
+          if (calls === 1) {
+            return await new Promise<string>((resolve) => {
+              resolveFirst = resolve
+            })
+          }
+          return "fresh"
+        },
+      }),
+      USER_PUBKEY,
+      {
+        onAdapterInvalidated: (transition) => transitions.push(transition),
+      }
+    )
+    const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
+    const inFlight = adapter.encrypt(peer, "old", "nip44")
+
+    expect(adapter.beginVerification()).toBe(true)
+    expect(adapter.completeVerification()).toBe(true)
+    resolveFirst?.("late")
+
+    await expect(inFlight).rejects.toMatchObject({ code: "unavailable" })
+    expect(transitions).toEqual([])
+    await expect(adapter.encrypt(peer, "new", "nip44")).resolves.toBe("fresh")
   })
 
   it("closes and emits only once when concurrent requests time out", async () => {
@@ -1901,5 +2237,48 @@ describe("NDK remote signer adapter", () => {
     } as VerifiedEvent)
 
     await expect(request).rejects.toMatchObject({ code: "unavailable" })
+  })
+})
+
+describe("remote signer resume verification", () => {
+  function connection(
+    bunkerSigner: RemoteBunkerSigner
+  ): RemoteSignerConnection {
+    return {
+      session: session(),
+      bunkerSigner,
+      signer: new NdkBunkerSignerAdapter(bunkerSigner, USER_PUBKEY),
+      clientPrivateKey: CLIENT_PRIVATE_KEY_HEX,
+      clientKeyAlreadyPersisted: true,
+    }
+  }
+
+  it("restarts the response route and proves the exact account", async () => {
+    let resumeCalls = 0
+    let identityCalls = 0
+    const bunkerSigner = fakeSigner({
+      resume: () => {
+        resumeCalls += 1
+      },
+      getPublicKey: async () => {
+        identityCalls += 1
+        return USER_PUBKEY
+      },
+    })
+
+    await verifyRemoteSignerConnection(connection(bunkerSigner))
+
+    expect(resumeCalls).toBe(1)
+    expect(identityCalls).toBe(1)
+  })
+
+  it("rejects a resumed route that returns the wrong account", async () => {
+    const bunkerSigner = fakeSigner({
+      getPublicKey: async () => OTHER_PUBKEY,
+    })
+
+    await expect(
+      verifyRemoteSignerConnection(connection(bunkerSigner))
+    ).rejects.toMatchObject({ code: "session_identity_mismatch" })
   })
 })
