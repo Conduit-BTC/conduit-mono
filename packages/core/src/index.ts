@@ -66,6 +66,7 @@ export {
   clientErrorSources,
   createClientErrorRateLimiter,
   getClientErrorFamily,
+  getClientErrorMessage,
   installBrowserClientErrorTelemetry,
   recordBrowserClientError,
   type BrowserClientErrorInput,
