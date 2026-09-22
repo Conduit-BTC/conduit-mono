@@ -262,7 +262,6 @@ export {
   type AuthSignerReadiness,
   type AuthContextValue,
   type RemoteSignerRecoveryState,
-  type RemoteSignerState,
 } from "./context/AuthContext"
 export {
   ConduitSessionProvider,
