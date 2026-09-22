@@ -21,6 +21,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  SignerRecoveryNotice,
   SignedActionStatus,
   Skeleton,
   type SignedActionStatusState,
@@ -82,7 +83,9 @@ import {
 } from "../lib/merchant-event-query"
 import {
   acknowledgeOrganizerHandoff,
+  eventMarketHandoffDeliveryNeedsRetry,
   loadEventMarketHandoffDeliveries,
+  retryStoredOrganizerHandoffAck,
   resolveOrganizerHandoffAckReadiness,
   resolveOrganizerHandoffMerchandise,
 } from "../lib/event-market-handoff"
@@ -128,6 +131,8 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 type OrganizerMembershipMutationInput = {
+  ownerPubkey: string
+  authGeneration: number
   item: MerchantOrganizerParticipation
   action: OrganizerCollectionMembershipAction
   market: MerchantOrganizerEventMarket
@@ -135,11 +140,17 @@ type OrganizerMembershipMutationInput = {
 }
 
 type OrganizerRetryMutationInput = {
+  ownerPubkey: string
   record: MerchantOrganizerRecordDelivery
   deliveries: readonly MerchantOrganizerRecordDelivery[]
   reference: string
   title?: string
   savedReference?: SavedOrganizerEventMarketReference
+}
+
+type OrganizerFreshAuthority = {
+  ownerPubkey: string
+  authGeneration: number
 }
 
 function expectedEventMarketFrontiers(
@@ -173,10 +184,10 @@ function titleEventMarketFrontiers(
 }
 
 export function EventsDirectoryPage() {
-  const { pubkey } = useAuth()
+  const { accountPubkey } = useAuth()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
-  const merchantPubkey = pubkey ?? ""
+  const merchantPubkey = accountPubkey ?? ""
   const organizerMutationPending =
     useIsMutating({
       predicate: (mutation) =>
@@ -218,6 +229,7 @@ export function EventsDirectoryPage() {
       </header>
 
       <MerchantEventsTimeline
+        key={merchantPubkey || "disconnected"}
         merchantPubkey={merchantPubkey}
         search={{ relation: search.relation }}
         onSearchChange={(next) =>
@@ -399,16 +411,67 @@ export function MyEventsPanel({
   onPublished?: (reference: string) => void
   onCreateDismiss?: () => void
 }) {
+  const {
+    accountPubkey,
+    pubkey,
+    signer,
+    status: authStatus,
+    authGeneration,
+    isAuthGenerationCurrent,
+    remoteSignerRecovery,
+    signerReadiness,
+    connect,
+  } = useAuth()
   const initiatingPanelMounted = useRef(true)
+  const authorityRef = useRef({
+    accountPubkey,
+    pubkey,
+    authGeneration,
+    signerReadiness,
+    signerAvailable: !!signer,
+  })
   useLayoutEffect(() => {
     initiatingPanelMounted.current = true
     return () => {
       initiatingPanelMounted.current = false
     }
   }, [])
+  useLayoutEffect(() => {
+    authorityRef.current = {
+      accountPubkey,
+      pubkey,
+      authGeneration,
+      signerReadiness,
+      signerAvailable: !!signer,
+    }
+  }, [accountPubkey, authGeneration, pubkey, signer, signerReadiness])
   const queryClient = useQueryClient()
   const session = useConduitSession()
-  const { authGeneration } = useAuth()
+  const signerReady =
+    accountPubkey === organizerPubkey &&
+    pubkey === organizerPubkey &&
+    signerReadiness === "ready" &&
+    !!signer
+  const isCurrentOwner = (ownerPubkey: string) =>
+    initiatingPanelMounted.current &&
+    authorityRef.current.accountPubkey === ownerPubkey
+  const isCurrentFreshAuthority = (ownerPubkey: string, generation: number) => {
+    const current = authorityRef.current
+    return (
+      isCurrentOwner(ownerPubkey) &&
+      current.pubkey === ownerPubkey &&
+      current.authGeneration === generation &&
+      current.signerReadiness === "ready" &&
+      current.signerAvailable &&
+      isAuthGenerationCurrent(generation)
+    )
+  }
+  const currentFreshAuthority = () => {
+    const generation = authorityRef.current.authGeneration
+    return isCurrentFreshAuthority(organizerPubkey, generation)
+      ? { ownerPubkey: organizerPubkey, authGeneration: generation }
+      : null
+  }
   const queryScopeToken = `${session.relayScope ?? "no-relay-scope"}:${authenticatedPubkey ?? "disconnected"}:${authGeneration}`
   const queryScopeTokenRef = useRef(queryScopeToken)
   useLayoutEffect(() => {
@@ -589,6 +652,7 @@ export function MyEventsPanel({
       selectedHandoffActionableMarket?.collectionCoordinate ?? "none",
     ],
     enabled:
+      signerReady &&
       !!organizerPubkey &&
       !!selectedHandoffActionableMarket &&
       selectedHandoffActionableMarket.organizerPubkey === organizerPubkey,
@@ -618,6 +682,7 @@ export function MyEventsPanel({
       handoffClaimIds || "none",
     ],
     enabled:
+      signerReady &&
       !!organizerPubkey &&
       !!selectedHandoffActionableMarket &&
       selectedHandoffActionableMarket.organizerPubkey === organizerPubkey &&
@@ -697,11 +762,13 @@ export function MyEventsPanel({
   }
 
   function rememberDelivery(
+    ownerPubkey: string,
     reference: string,
     record: MerchantOrganizerRecordDelivery
   ): void {
     const coordinate = parseOrganizerEventMarketReference(reference).coordinate
-    saveOrganizerEventMarketDelivery(organizerPubkey, coordinate, record)
+    saveOrganizerEventMarketDelivery(ownerPubkey, coordinate, record)
+    if (!isCurrentOwner(ownerPubkey)) return
     setDeliveriesByReference((current) =>
       mergeOrganizerEventMarketDeliveryState(current, coordinate, record)
     )
@@ -722,63 +789,85 @@ export function MyEventsPanel({
   const publishMutation = useMutation({
     scope: organizerAuthorityMutationScope,
     mutationFn: (input: {
+      ownerPubkey: string
+      authGeneration: number
       form: OrganizerEventMarketFormValues
       existing: MerchantOrganizerEventMarket | null
-    }) =>
-      publishMerchantOrganizerEventMarket({
-        organizerPubkey,
-        authenticatedPubkey,
-        shouldContinue,
+    }) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        throw new Error("Reconnect your signer, review the event, and retry.")
+      }
+      return publishMerchantOrganizerEventMarket({
+        organizerPubkey: input.ownerPubkey,
+        authenticatedPubkey: input.ownerPubkey,
+        shouldContinue: () =>
+          isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration),
         form: input.form,
         existing: input.existing,
         onSignedEvent: (record, reference) => {
-          if (record.record === "collection") setPublishState("publishing")
-          const saved = rememberOrganizerEventMarket(organizerPubkey, {
+          const saved = rememberOrganizerEventMarket(input.ownerPubkey, {
             reference,
             title: input.form.title,
             savedAt: Date.now(),
             ...expectedOrganizerEventMarketFrontier(record),
           })
+          rememberDelivery(input.ownerPubkey, reference, record)
+          if (
+            !isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)
+          ) {
+            return
+          }
+          if (record.record === "collection") setPublishState("publishing")
           setSavedReferences(saved)
           setSelectedReference(
             findSavedOrganizerEventMarketReference(saved, reference)
               ?.reference ?? reference
           )
-          rememberDelivery(reference, record)
         },
         onSignedRecord: (record, reference) => {
-          setPublishState("publishing")
-          rememberDelivery(reference, record)
+          rememberDelivery(input.ownerPubkey, reference, record)
           const hintedReference =
             organizerEventMarketReferenceWithAllDeliveryRelayHints(reference, [
               record,
             ])
-          const saved = rememberOrganizerEventMarket(organizerPubkey, {
+          const saved = rememberOrganizerEventMarket(input.ownerPubkey, {
             reference: hintedReference,
             title: input.form.title,
             savedAt: Date.now(),
             ...expectedOrganizerEventMarketFrontier(record),
           })
+          if (
+            !isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)
+          ) {
+            return
+          }
+          setPublishState("publishing")
           setSavedReferences(saved)
           setSelectedReference(
             findSavedOrganizerEventMarketReference(saved, hintedReference)
               ?.reference ?? hintedReference
           )
         },
-      }),
-    onMutate: () => {
+      })
+    },
+    onMutate: (input) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
       setPublishError("")
       setPublishState("awaiting_signature")
     },
     onSuccess: async (
       result: MerchantOrganizerPublishResult,
       input: {
+        ownerPubkey: string
+        authGeneration: number
         form: OrganizerEventMarketFormValues
         existing: MerchantOrganizerEventMarket | null
       }
     ) => {
       const reference = result.naddr
-      const saved = rememberOrganizerEventMarket(organizerPubkey, {
+      const saved = rememberOrganizerEventMarket(input.ownerPubkey, {
         reference,
         title: input.form.title,
         savedAt: Date.now(),
@@ -786,10 +875,13 @@ export function MyEventsPanel({
         ...expectedEventMarketFrontiers(result.records),
         replaceExpectedRecordFrontiers: true,
       })
-      setSavedReferences(saved)
       for (const record of result.records) {
-        rememberDelivery(result.collectionCoordinate, record)
+        rememberDelivery(input.ownerPubkey, result.collectionCoordinate, record)
       }
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
+      setSavedReferences(saved)
       setSelectedReference(
         findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
           reference
@@ -798,11 +890,14 @@ export function MyEventsPanel({
       setEditorOpen(false)
       setEditingMarket(null)
       await refreshMarketQueries(reference)
-      if (initiatingPanelMounted.current && shouldContinue()) {
+      if (isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
         onPublished?.(reference)
       }
     },
-    onError: (error) => {
+    onError: (error, input) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
       setPublishError(
         errorMessage(
           error,
@@ -815,16 +910,20 @@ export function MyEventsPanel({
 
   const membershipMutation = useMutation({
     scope: organizerAuthorityMutationScope,
-    mutationFn: (input: OrganizerMembershipMutationInput) =>
-      publishMerchantOrganizerMembership({
-        organizerPubkey,
-        authenticatedPubkey,
-        shouldContinue,
+    mutationFn: (input: OrganizerMembershipMutationInput) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        throw new Error("Reconnect your signer, review the change, and retry.")
+      }
+      return publishMerchantOrganizerMembership({
+        organizerPubkey: input.ownerPubkey,
+        authenticatedPubkey: input.ownerPubkey,
+        shouldContinue: () =>
+          isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration),
         market: input.market,
         item: input.item,
         action: input.action,
         onSignedEvent: (record, reference, currentMarket) => {
-          const saved = rememberOrganizerEventMarket(organizerPubkey, {
+          const saved = rememberOrganizerEventMarket(input.ownerPubkey, {
             reference,
             title: input.market.title,
             savedAt: Date.now(),
@@ -833,38 +932,47 @@ export function MyEventsPanel({
               currentMarket
             ),
           })
+          rememberDelivery(input.ownerPubkey, reference, record)
+          if (
+            !isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)
+          ) {
+            return
+          }
           setSavedReferences(saved)
           updateInitiatingEventSelection(
             input.reference,
             findSavedOrganizerEventMarketReference(saved, reference)
               ?.reference ?? reference
           )
-          rememberDelivery(reference, record)
         },
-      }),
+      })
+    },
     onSuccess: (delivery, input) => {
       const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
         input.reference,
         delivery
       )
-      const saved = rememberOrganizerEventMarket(organizerPubkey, {
+      const saved = rememberOrganizerEventMarket(input.ownerPubkey, {
         reference,
         title: input.market.title,
         savedAt: Date.now(),
         ...expectedOrganizerEventMarketFrontiersAfterRetry(
           delivery,
           findSavedOrganizerEventMarketReference(
-            loadSavedOrganizerEventMarkets(organizerPubkey),
+            loadSavedOrganizerEventMarkets(input.ownerPubkey),
             reference
           )
         ),
       })
+      rememberDelivery(input.ownerPubkey, reference, delivery)
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
       setSavedReferences(saved)
       const nextReference =
         findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
         reference
       updateInitiatingEventSelection(input.reference, nextReference)
-      rememberDelivery(reference, delivery)
       void refreshMarketQueries(nextReference)
     },
   })
@@ -872,19 +980,25 @@ export function MyEventsPanel({
   const lifecycleMutation = useMutation({
     scope: organizerAuthorityMutationScope,
     mutationFn: (input: {
+      ownerPubkey: string
+      authGeneration: number
       market: MerchantOrganizerEventMarket
       reference: string
       orderAcceptance: "open" | "closed"
-    }) =>
-      publishMerchantOrganizerOrderAcceptance({
-        organizerPubkey,
-        authenticatedPubkey,
-        shouldContinue,
+    }) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        throw new Error("Reconnect your signer, review the change, and retry.")
+      }
+      return publishMerchantOrganizerOrderAcceptance({
+        organizerPubkey: input.ownerPubkey,
+        authenticatedPubkey: input.ownerPubkey,
+        shouldContinue: () =>
+          isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration),
         market: input.market,
         orderAcceptance: input.orderAcceptance,
         onSignedEvent: (record, reference, currentMarket) => {
-          rememberDelivery(reference, record)
-          const saved = rememberOrganizerEventMarket(organizerPubkey, {
+          rememberDelivery(input.ownerPubkey, reference, record)
+          const saved = rememberOrganizerEventMarket(input.ownerPubkey, {
             reference,
             title: input.market.title,
             savedAt: Date.now(),
@@ -893,6 +1007,11 @@ export function MyEventsPanel({
               currentMarket
             ),
           })
+          if (
+            !isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)
+          ) {
+            return
+          }
           setSavedReferences(saved)
           updateInitiatingEventSelection(
             input.reference,
@@ -900,25 +1019,29 @@ export function MyEventsPanel({
               ?.reference ?? reference
           )
         },
-      }),
+      })
+    },
     onSuccess: (delivery, input) => {
-      rememberDelivery(input.reference, delivery)
+      rememberDelivery(input.ownerPubkey, input.reference, delivery)
       const reference = organizerEventMarketReferenceWithDeliveryRelayHints(
         input.reference,
         delivery
       )
-      const saved = rememberOrganizerEventMarket(organizerPubkey, {
+      const saved = rememberOrganizerEventMarket(input.ownerPubkey, {
         reference,
         title: input.market.title,
         savedAt: Date.now(),
         ...expectedOrganizerEventMarketFrontiersAfterRetry(
           delivery,
           findSavedOrganizerEventMarketReference(
-            loadSavedOrganizerEventMarkets(organizerPubkey),
+            loadSavedOrganizerEventMarkets(input.ownerPubkey),
             reference
           )
         ),
       })
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
       setSavedReferences(saved)
       const nextReference =
         findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
@@ -932,14 +1055,15 @@ export function MyEventsPanel({
     scope: organizerAuthorityMutationScope,
     mutationFn: (input: OrganizerRetryMutationInput) =>
       retryMerchantOrganizerRecord({
-        organizerPubkey,
-        authenticatedPubkey,
-        shouldContinue,
+        organizerPubkey: input.ownerPubkey,
+        authenticatedPubkey: null,
+        shouldContinue: () => isCurrentOwner(input.ownerPubkey),
         record: input.record,
       }),
     onSuccess: async (delivery, input) => {
-      const latestSavedReferences =
-        loadSavedOrganizerEventMarkets(organizerPubkey)
+      const latestSavedReferences = loadSavedOrganizerEventMarkets(
+        input.ownerPubkey
+      )
       const latestSavedReference =
         findSavedOrganizerEventMarketReference(
           latestSavedReferences,
@@ -949,7 +1073,7 @@ export function MyEventsPanel({
         input.reference
       ).coordinate
       const latestDeliveries =
-        loadOrganizerEventMarketDeliveryOutbox(organizerPubkey)[coordinate] ??
+        loadOrganizerEventMarketDeliveryOutbox(input.ownerPubkey)[coordinate] ??
         []
       const latestDelivery = latestDeliveries.find(
         (candidate) => candidate.record === delivery.record
@@ -963,7 +1087,7 @@ export function MyEventsPanel({
         latestSavedReference?.reference ?? input.reference,
         [...input.deliveries, ...latestDeliveries, delivery]
       )
-      const saved = rememberOrganizerEventMarket(organizerPubkey, {
+      const saved = rememberOrganizerEventMarket(input.ownerPubkey, {
         reference,
         title: latestSavedReference?.title ?? input.title,
         savedAt: Date.now(),
@@ -974,14 +1098,16 @@ export function MyEventsPanel({
             )
           : {}),
       })
+      if (retryRemainsCurrent) {
+        rememberDelivery(input.ownerPubkey, reference, delivery)
+      }
+      if (!isCurrentOwner(input.ownerPubkey)) return
       setSavedReferences(saved)
       const nextReference =
         findSavedOrganizerEventMarketReference(saved, reference)?.reference ??
         reference
       updateInitiatingEventSelection(input.reference, nextReference)
-      if (retryRemainsCurrent) {
-        rememberDelivery(reference, delivery)
-      } else if (latestDelivery) {
+      if (!retryRemainsCurrent && latestDelivery) {
         setDeliveriesByReference((current) =>
           mergeOrganizerEventMarketDeliveryState(
             current,
@@ -1004,6 +1130,7 @@ export function MyEventsPanel({
       return
     }
     retryMutation.mutate({
+      ownerPubkey: organizerPubkey,
       record,
       deliveries,
       reference: selectedReference,
@@ -1014,40 +1141,66 @@ export function MyEventsPanel({
 
   const handoffAckMutation = useMutation({
     scope: organizerAuthorityMutationScope,
-    mutationFn: async (claim: EventMarketOrganizerClaim) => {
+    mutationFn: async (
+      input: OrganizerFreshAuthority & {
+        claim: EventMarketOrganizerClaim
+        reference: string
+      }
+    ) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        throw new Error("Reconnect your signer, review the handoff, and retry.")
+      }
+      const existing = loadEventMarketHandoffDeliveries(input.ownerPubkey).find(
+        (delivery) =>
+          delivery.record.messageType === "organizer_handoff_ack" &&
+          delivery.record.readyReceiptId ===
+            input.claim.receipt.id.toLowerCase()
+      )
+      if (existing) {
+        throw new Error(
+          "A signed handoff update is already saved. Retry that exact update instead."
+        )
+      }
       const ndk = getNdk()
       if (!ndk.signer) throw new Error("Organizer signer is not connected.")
-      if (!selectedReference) {
-        throw new Error("Choose an organizer event before handing out items.")
-      }
-      const initiatingReference = selectedReference
+      const initiatingReference = input.reference
       const receiptReadResult = await handoffReceiptsQuery.refetch()
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        throw new Error("Signer authority changed before handoff signing.")
+      }
       const receiptRead = receiptReadResult.data
       if (!receiptRead) {
         throw new Error("Current organizer receipt evidence is unavailable.")
       }
       const freshClaim = receiptRead.data.find(
-        (candidate) => candidate.receipt.id === claim.receipt.id
+        (candidate) => candidate.receipt.id === input.claim.receipt.id
       )
       if (!freshClaim) {
         throw new Error("The exact organizer receipt is no longer current.")
       }
       const merchandise = await resolveOrganizerHandoffMerchandise({
-        organizerPubkey,
-        authenticatedPubkey,
+        organizerPubkey: input.ownerPubkey,
+        authenticatedPubkey: input.ownerPubkey,
         claim: freshClaim,
-        shouldContinue,
+        shouldContinue: () =>
+          isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration),
       })
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        throw new Error("Signer authority changed before handoff signing.")
+      }
       const freshMarket = await resolveOrganizerEventMarket(
         initiatingReference,
-        organizerPubkey,
-        authenticatedPubkey,
+        input.ownerPubkey,
+        input.ownerPubkey,
         undefined,
-        shouldContinue
+        () => isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)
       )
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        throw new Error("Signer authority changed before handoff signing.")
+      }
       const latestSavedReference =
         findSavedOrganizerEventMarketReference(
-          loadSavedOrganizerEventMarkets(organizerPubkey),
+          loadSavedOrganizerEventMarkets(input.ownerPubkey),
           initiatingReference
         ) ?? selectedSavedReference
       if (
@@ -1061,32 +1214,96 @@ export function MyEventsPanel({
         )
       }
       return acknowledgeOrganizerHandoff({
-        organizerPubkey,
+        organizerPubkey: input.ownerPubkey,
         claim: freshClaim,
         market: freshMarket.source,
         merchandise,
         signer: ndk.signer,
-        transport: { authenticatedPubkey, shouldContinue },
+        transport: {
+          authenticatedPubkey: input.ownerPubkey,
+          shouldContinue: () =>
+            isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration),
+        },
       })
     },
-    onSuccess: async () => {
+    onSuccess: async (_delivery, input) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
       setHandoffDeliveryRevision((revision) => revision + 1)
       await Promise.all([
         handoffReceiptsQuery.refetch(),
         handoffMerchandiseQuery.refetch(),
       ])
     },
-    onError: () => {
+    onError: (_error, input) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
       setHandoffDeliveryRevision((revision) => revision + 1)
     },
   })
+
+  const handoffAckRetryMutation = useMutation({
+    scope: organizerAuthorityMutationScope,
+    mutationFn: (input: {
+      ownerPubkey: string
+      delivery: (typeof handoffAckDeliveries)[number]
+    }) =>
+      retryStoredOrganizerHandoffAck({
+        organizerPubkey: input.ownerPubkey,
+        delivery: input.delivery,
+        transport: {
+          authenticatedPubkey: null,
+          shouldContinue: () => isCurrentOwner(input.ownerPubkey),
+        },
+      }),
+    onSuccess: async (_delivery, input) => {
+      if (!isCurrentOwner(input.ownerPubkey)) return
+      setHandoffDeliveryRevision((revision) => revision + 1)
+      if (!currentFreshAuthority()) return
+      await Promise.all([
+        handoffReceiptsQuery.refetch(),
+        handoffMerchandiseQuery.refetch(),
+      ])
+    },
+    onError: (_error, input) => {
+      if (!isCurrentOwner(input.ownerPubkey)) return
+      setHandoffDeliveryRevision((revision) => revision + 1)
+    },
+  })
+
+  const previousAuthorityKeyRef = useRef(`${authGeneration}:${signerReady}`)
+  useLayoutEffect(() => {
+    const authorityKey = `${authGeneration}:${signerReady}`
+    if (previousAuthorityKeyRef.current === authorityKey) return
+    previousAuthorityKeyRef.current = authorityKey
+    if (signerReady) return
+    publishMutation.reset()
+    membershipMutation.reset()
+    lifecycleMutation.reset()
+    handoffAckMutation.reset()
+    setPublishState((current) =>
+      current === "awaiting_signature" || current === "publishing"
+        ? "dirty"
+        : current
+    )
+  }, [
+    authGeneration,
+    handoffAckMutation,
+    lifecycleMutation,
+    membershipMutation,
+    publishMutation,
+    signerReady,
+  ])
 
   const organizerAuthorityMutationPending =
     publishMutation.isPending ||
     membershipMutation.isPending ||
     lifecycleMutation.isPending ||
     retryMutation.isPending ||
-    handoffAckMutation.isPending
+    handoffAckMutation.isPending ||
+    handoffAckRetryMutation.isPending
   const organizerMutationPendingOutsideHandoff =
     publishMutation.isPending ||
     membershipMutation.isPending ||
@@ -1146,6 +1363,16 @@ export function MyEventsPanel({
 
   return (
     <div className="space-y-6">
+      {remoteSignerRecovery ? (
+        <SignerRecoveryNotice
+          description="Your event draft and exact signed delivery retries remain here. Reconnect the same signer, review the pending action, then choose it again. Conduit will not sign or send it automatically."
+          reconnecting={authStatus === "restoring"}
+          restoreFailed={!!remoteSignerRecovery.restoreError}
+          restoreFailureDescription="That saved signer connection could not be restored. Your event work remains for this account, and no event action was replayed."
+          onReconnect={() => connect({ mode: "restore" })}
+        />
+      ) : null}
+
       {publishState !== "idle" && !editorOpen && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
           <SignedActionStatus
@@ -1303,6 +1530,7 @@ export function MyEventsPanel({
             membershipPending={organizerAuthorityMutationPending}
             actionsDisabled={
               !selectedMembershipActionableMarket ||
+              !signerReady ||
               organizerAuthorityMutationPending
             }
             deliveryRetryDisabled={organizerAuthorityMutationPending}
@@ -1325,11 +1553,15 @@ export function MyEventsPanel({
             onOrderAcceptance={(orderAcceptance) => {
               if (
                 organizerAuthorityMutationPending ||
+                !signerReady ||
                 !selectedMembershipActionableMarket ||
                 !selectedReference
               )
                 return
+              const authority = currentFreshAuthority()
+              if (!authority) return
               lifecycleMutation.mutate({
+                ...authority,
                 market: selectedMembershipActionableMarket,
                 reference: selectedReference,
                 orderAcceptance,
@@ -1341,12 +1573,16 @@ export function MyEventsPanel({
             onMembership={(item, action) => {
               if (
                 organizerAuthorityMutationPending ||
+                !signerReady ||
                 !selectedMembershipActionableMarket ||
                 !selectedReference
               ) {
                 return
               }
+              const authority = currentFreshAuthority()
+              if (!authority) return
               membershipMutation.mutate({
+                ...authority,
                 item,
                 action,
                 market: selectedMembershipActionableMarket,
@@ -1400,25 +1636,60 @@ export function MyEventsPanel({
               }
               error={handoffReceiptsQuery.isError}
               actionError={
-                handoffAckMutation.isError
+                handoffAckMutation.isError || handoffAckRetryMutation.isError
                   ? errorMessage(
-                      handoffAckMutation.error,
+                      handoffAckMutation.error ?? handoffAckRetryMutation.error,
                       "The organizer handoff update could not be delivered."
                     )
                   : undefined
               }
-              actionsDisabled={organizerMutationPendingOutsideHandoff}
+              freshActionsDisabled={
+                !signerReady || organizerMutationPendingOutsideHandoff
+              }
+              retryActionsDisabled={
+                organizerMutationPendingOutsideHandoff ||
+                handoffAckMutation.isPending ||
+                handoffAckRetryMutation.isPending
+              }
               pendingReceiptId={
                 handoffAckMutation.isPending
-                  ? (handoffAckMutation.variables?.receipt.id ?? null)
-                  : null
+                  ? (handoffAckMutation.variables?.claim.receipt.id ?? null)
+                  : handoffAckRetryMutation.isPending
+                    ? (handoffAckRetryMutation.variables?.delivery.record
+                        .readyReceiptId ?? null)
+                    : null
               }
               onAcknowledge={(claim) => {
-                if (!organizerMutationPendingOutsideHandoff) {
-                  handoffAckMutation.mutate(claim)
+                const exactDelivery = handoffAckDeliveries.find(
+                  (delivery) =>
+                    delivery.record.readyReceiptId ===
+                    claim.receipt.id.toLowerCase()
+                )
+                if (
+                  exactDelivery &&
+                  eventMarketHandoffDeliveryNeedsRetry(exactDelivery)
+                ) {
+                  handoffAckRetryMutation.mutate({
+                    ownerPubkey: organizerPubkey,
+                    delivery: exactDelivery,
+                  })
+                  return
                 }
+                if (
+                  organizerMutationPendingOutsideHandoff ||
+                  !selectedReference
+                )
+                  return
+                const authority = currentFreshAuthority()
+                if (!authority) return
+                handoffAckMutation.mutate({
+                  ...authority,
+                  claim,
+                  reference: selectedReference,
+                })
               }}
               onRefresh={() => {
+                if (!currentFreshAuthority()) return
                 void Promise.all([
                   handoffReceiptsQuery.refetch(),
                   handoffMerchandiseQuery.refetch(),
@@ -1430,20 +1701,27 @@ export function MyEventsPanel({
       )}
 
       <OrganizerEventMarketEditor
-        key={`${editorOpen ? "open" : "closed"}:${editingMarket?.collectionCoordinate ?? "new"}`}
+        key={`${organizerPubkey}:${editorOpen ? "open" : "closed"}:${editingMarket?.collectionCoordinate ?? "new"}`}
         open={editorOpen}
         initialForm={
           editingMarket ? organizerEventMarketToForm(editingMarket) : null
         }
         actionState={publishState}
         actionError={publishError}
+        actionDisabled={!signerReady}
         onOpenChange={(open) => {
           setEditorOpen(open)
           if (!open) setEditingMarket(null)
           if (!open && startCreate && !editingMarket) onCreateDismiss?.()
         }}
         onSubmit={(form) => {
-          publishMutation.mutate({ form, existing: editingMarket })
+          const authority = currentFreshAuthority()
+          if (!authority) return
+          publishMutation.mutate({
+            ...authority,
+            form,
+            existing: editingMarket,
+          })
         }}
       />
     </div>

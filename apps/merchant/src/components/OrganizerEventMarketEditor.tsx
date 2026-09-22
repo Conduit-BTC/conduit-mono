@@ -79,6 +79,7 @@ export function OrganizerEventMarketEditor({
   initialForm,
   actionState,
   actionError,
+  actionDisabled = false,
   onOpenChange,
   onSubmit,
 }: {
@@ -86,6 +87,7 @@ export function OrganizerEventMarketEditor({
   initialForm?: OrganizerEventMarketFormValues | null
   actionState: SignedActionStatusState
   actionError?: string
+  actionDisabled?: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (form: OrganizerEventMarketFormValues) => void
 }) {
@@ -162,6 +164,7 @@ export function OrganizerEventMarketEditor({
             if (
               validation.canPublish &&
               !pending &&
+              !actionDisabled &&
               (!initialForm || isDirty)
             ) {
               onSubmit(form)
@@ -523,7 +526,9 @@ export function OrganizerEventMarketEditor({
             </Button>
             <Button
               type="submit"
-              disabled={pending || (!!initialForm && !isDirty)}
+              disabled={
+                pending || actionDisabled || (!!initialForm && !isDirty)
+              }
             >
               {pending
                 ? "Waiting for signer…"

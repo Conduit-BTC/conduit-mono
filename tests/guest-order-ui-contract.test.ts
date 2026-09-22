@@ -50,7 +50,7 @@ describe("guest order UI contracts", () => {
 
     expect(source).toContain("assertBuyerHasNostrInbox()")
     expect(source).toContain("delivery: operationalDelivery")
-    expect(source).toContain("readOnly={!buyerInboxKnown}")
+    expect(source).toContain("readOnly={!buyerInboxKnown || !signerConnected}")
     expect(source).toContain('"Record shipping update"')
     expect(source).toContain("isMerchantGuestOrder")
     expect(orderIdentity).toContain('"guest_ephemeral"')

@@ -494,6 +494,35 @@ describe("organizer event-market publishing", () => {
     ])
   })
 
+  it("stops before a later signature when signer authority changes", async () => {
+    const signedKinds: number[] = []
+    const publishedKinds: number[] = []
+    let authorityCurrent = true
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft: async (draftInput) => {
+        signedKinds.push(draftInput.draft.kind)
+        const signed = await signDraft(draftInput)
+        authorityCurrent = false
+        return signed
+      },
+      publishWithPlanner: async (event: NDKEvent) => {
+        publishedKinds.push(event.kind!)
+        return publishResult(true)
+      },
+    })
+
+    await expect(
+      publishOrganizerEventMarket({
+        ...input(),
+        shouldContinue: () => authorityCurrent,
+      })
+    ).rejects.toMatchObject({ name: "AbortError" })
+
+    expect(signedKinds).toEqual([EVENT_KINDS.CALENDAR_TIME])
+    expect(publishedKinds).toEqual([])
+  })
+
   it("rejects an empty pickup price before relay I/O", async () => {
     let signCalls = 0
     let publishCalls = 0

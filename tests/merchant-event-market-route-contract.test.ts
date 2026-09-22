@@ -197,11 +197,14 @@ describe("merchant organizer event market route", () => {
         ).text(),
       ])
 
+    expect(detailRoute).toContain("accountPubkey,")
+    expect(detailRoute).toContain("signerReadiness,")
+    expect(detailRoute).toContain("isAuthGenerationCurrent,")
     expect(detailRoute).toContain(
-      "const { pubkey, status, authGeneration } = useAuth()"
+      'signerReadiness === "ready" && pubkey === accountPubkey'
     )
     expect(detailRoute).toContain(
-      "authGenerationRef.current === authGeneration"
+      "const shouldContinue = () => isAuthGenerationCurrent(authGeneration)"
     )
     expect(route).toContain("merchantEventMarketQueryOptions(")
     expect(route).toContain("queryFn: async ({ signal }) =>")
@@ -209,14 +212,14 @@ describe("merchant organizer event market route", () => {
       "shouldContinue: () => !signal.aborted && shouldContinue()"
     )
     expect(route).toContain("shouldContinue,")
-    expect(route).toMatch(
-      /publishMerchantOrganizerEventMarket\(\{\r?\n\s+organizerPubkey,\r?\n\s+authenticatedPubkey,\r?\n\s+shouldContinue,/
+    expect(route).toContain("organizerPubkey: input.ownerPubkey,")
+    expect(route).toContain("authenticatedPubkey: input.ownerPubkey,")
+    expect(route).toContain(
+      "isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)"
     )
-    expect(route).toMatch(
-      /publishMerchantOrganizerMembership\(\{\r?\n\s+organizerPubkey,\r?\n\s+authenticatedPubkey,\r?\n\s+shouldContinue,/
-    )
-    expect(route).toMatch(
-      /retryMerchantOrganizerRecord\(\{\r?\n\s+organizerPubkey,\r?\n\s+authenticatedPubkey,\r?\n\s+shouldContinue,/
+    expect(route).toContain("authenticatedPubkey: null,")
+    expect(route).toContain(
+      "shouldContinue: () => isCurrentOwner(input.ownerPubkey)"
     )
     expect(adapter).toContain("...(signal ? { signal } : {})")
     expect(adapter).toContain("...(shouldContinue ? { shouldContinue } : {})")
@@ -463,6 +466,36 @@ describe("merchant organizer event market route", () => {
     expect(route).toContain("onPublished?.(reference)")
   })
 
+  it("keeps reconnect and exact event-product retries inert until explicit review", async () => {
+    const [route, publisher] = await Promise.all([
+      Bun.file("apps/merchant/src/routes/events.tsx").text(),
+      Bun.file(
+        "apps/merchant/src/components/EventProductPublisherDialog.tsx"
+      ).text(),
+    ])
+    const exactProductRetry = publisher.slice(
+      publisher.indexOf("const retryProductDeliveryMutation"),
+      publisher.indexOf("const reviewAcceptanceMutation")
+    )
+    const recoveryNotice = route.slice(
+      route.indexOf("<SignerRecoveryNotice"),
+      route.indexOf("{publishState", route.indexOf("<SignerRecoveryNotice"))
+    )
+
+    expect(exactProductRetry).toContain("retryEventProductDelivery(")
+    expect(exactProductRetry).not.toContain("reviewAndAccept(")
+    expect(publisher).toContain("Retry exact product delivery")
+    expect(publisher).toContain("Retry exact acceptance")
+    expect(publisher).toContain("Review and accept")
+    expect(recoveryNotice).toContain(
+      'onReconnect={() => connect({ mode: "restore" })}'
+    )
+    expect(recoveryNotice).not.toContain(".mutate(")
+    expect(route).toContain(
+      'current === "awaiting_signature" || current === "publishing"'
+    )
+  })
+
   it("hydrates merchant identity without changing organizer acceptance authority", async () => {
     const panel = await Bun.file(
       "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
@@ -593,7 +626,9 @@ describe("merchant organizer event market route", () => {
     )
     expect(orders).toContain("orderFulfillment.requiresShipping &&")
     expect(orders).toContain("primaryButtonActions.map((action)")
-    expect(orders).toContain("await assertCurrentPickupAuthorization()")
+    expect(orders).toContain(
+      "await assertCurrentPickupAuthorization(authority)"
+    )
     expect(orders).toContain(
       "Pickup orders do not use carrier or tracking details."
     )

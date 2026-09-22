@@ -1057,9 +1057,17 @@ export async function signAndPublishProductWriteBundle(
   dependencies: Partial<ProductPublicationDependencies> = {}
 ): Promise<PublishWithPlannerResult> {
   const ndk = getNdk()
+  const assertSignerSessionCurrent = () => {
+    if (input.shouldContinue?.() === false) {
+      throw new Error("Product signer session changed.")
+    }
+  }
+  assertSignerSessionCurrent()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signer = ndk.signer
+  assertSignerSessionCurrent()
   const signerPubkey = (await signer.user()).pubkey
+  assertSignerSessionCurrent()
   if (signerPubkey !== input.merchantPubkey) {
     throw new Error("Active signer does not match current merchant pubkey")
   }
@@ -1089,6 +1097,7 @@ export async function signAndPublishProductWriteBundle(
         dependencies.getShippingOptions ?? getShippingOptionsByCoordinates,
     }
   )
+  assertSignerSessionCurrent()
   const signerRequestTotal = getProductSignerRequestCount({
     listings,
     deletions: input.deletions,
@@ -1100,6 +1109,7 @@ export async function signAndPublishProductWriteBundle(
     event: NDKEvent,
     kind: ProductSignerRequestKind
   ): Promise<void> => {
+    assertSignerSessionCurrent()
     signerRequestCurrent += 1
     input.onSignerRequest?.({
       kind,
@@ -1107,7 +1117,9 @@ export async function signAndPublishProductWriteBundle(
       total: signerRequestTotal,
     })
     await waitForSignerVisibility()
+    assertSignerSessionCurrent()
     await event.sign(signer)
+    assertSignerSessionCurrent()
   }
 
   const writes: SignedProductWrite[] = []
@@ -1133,7 +1145,9 @@ export async function signAndPublishProductWriteBundle(
     events.push(deletion)
   }
 
+  assertSignerSessionCurrent()
   input.onSignerRequestsComplete?.()
+  assertSignerSessionCurrent()
 
   for (const write of writes) {
     if (!write.shippingEvent) continue

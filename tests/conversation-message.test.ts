@@ -5,7 +5,10 @@ import {
   ConversationMessageBubble,
   getConversationMessageDisplayContent,
   optimisticConversationMessagesReducer,
+  projectOptimisticConversationMessages,
+  scopedOptimisticConversationReducer,
   type OptimisticConversationMessage,
+  type ScopedOptimisticConversationState,
 } from "@conduit/ui"
 
 describe("getConversationMessageDisplayContent", () => {
@@ -110,5 +113,92 @@ describe("optimistic direct-message UI", () => {
     expect(markup).toContain(queuedMessage.content)
     expect(markup).toContain('aria-label="Retry message"')
     expect(markup).toContain("Retry")
+  })
+
+  it("projects no private messages when the account owner changes", () => {
+    const state: ScopedOptimisticConversationState = {
+      ownerKey: "account-a",
+      authorityKey: "generation-1:ready",
+      messages: [queuedMessage],
+    }
+
+    expect(
+      projectOptimisticConversationMessages(state, {
+        ownerKey: "account-b",
+        authorityKey: "generation-2:ready",
+      })
+    ).toEqual([])
+  })
+
+  it("fails pending messages when authority changes without replaying them", () => {
+    const state: ScopedOptimisticConversationState = {
+      ownerKey: "account-a",
+      authorityKey: "generation-1:ready",
+      messages: [queuedMessage],
+    }
+    const projected = projectOptimisticConversationMessages(state, {
+      ownerKey: "account-a",
+      authorityKey: "generation-2:recovering",
+    })
+    const reconciled = scopedOptimisticConversationReducer(state, {
+      type: "scope_changed",
+      ownerKey: "account-a",
+      authorityKey: "generation-2:recovering",
+    })
+
+    expect(projected[0]?.deliveryState).toBe("failed")
+    expect(state.messages[0]?.deliveryState).toBe("pending")
+    expect(reconciled.messages[0]?.deliveryState).toBe("failed")
+  })
+
+  it("ignores stale callbacks after an authority change and after retry", () => {
+    const initial: ScopedOptimisticConversationState = {
+      ownerKey: "account-a",
+      authorityKey: "generation-1:ready",
+      messages: [queuedMessage],
+    }
+    const changed = scopedOptimisticConversationReducer(initial, {
+      type: "scope_changed",
+      ownerKey: "account-a",
+      authorityKey: "generation-2:ready",
+    })
+    const retried = scopedOptimisticConversationReducer(changed, {
+      type: "message_action",
+      ownerKey: "account-a",
+      authorityKey: "generation-2:ready",
+      action: { type: "mark_pending", localId: queuedMessage.localId },
+    })
+    const stalePublished = scopedOptimisticConversationReducer(retried, {
+      type: "message_action",
+      ownerKey: "account-a",
+      authorityKey: "generation-1:ready",
+      action: { type: "mark_published", localId: queuedMessage.localId },
+    })
+
+    expect(retried.messages[0]?.deliveryState).toBe("pending")
+    expect(stalePublished).toBe(retried)
+    expect(stalePublished.messages[0]?.deliveryState).toBe("pending")
+  })
+
+  it("clears synchronously owned state and ignores old-owner callbacks", () => {
+    const initial: ScopedOptimisticConversationState = {
+      ownerKey: "account-a",
+      authorityKey: "generation-1:ready",
+      messages: [queuedMessage],
+    }
+    const switched = scopedOptimisticConversationReducer(initial, {
+      type: "scope_changed",
+      ownerKey: "account-b",
+      authorityKey: "generation-2:ready",
+    })
+    const staleFailure = scopedOptimisticConversationReducer(switched, {
+      type: "message_action",
+      ownerKey: "account-a",
+      authorityKey: "generation-1:ready",
+      action: { type: "mark_failed", localId: queuedMessage.localId },
+    })
+
+    expect(switched.messages).toEqual([])
+    expect(staleFailure).toBe(switched)
   })
 })

@@ -7036,7 +7036,7 @@ export interface PublishOrganizerEventMarketInput {
   organizerPubkey: string
   /** Active authenticated account; never inferred from organizerPubkey. */
   authenticatedPubkey?: string | null
-  /** Abort before relay I/O when the caller's authenticated session changed. */
+  /** Abort before signer interaction or relay I/O when authority changed. */
   shouldContinue?: () => boolean
   calendar: OrganizerEventMarketCalendarPublishInput
   pickup?: OrganizerEventMarketPickupPublishInput
@@ -7057,7 +7057,7 @@ export interface PublishOrganizerCollectionUpdateInput {
   organizerPubkey: string
   /** Active authenticated account; never inferred from organizerPubkey. */
   authenticatedPubkey?: string | null
-  /** Abort before relay I/O when the caller's authenticated session changed. */
+  /** Abort before signer interaction or relay I/O when authority changed. */
   shouldContinue?: () => boolean
   collection: OrganizerEventMarketCollectionPublishInput
   previousCreatedAt?: number
@@ -7081,7 +7081,7 @@ export interface PublishEventMarketPickupOptionInput {
   authorPubkey: string
   /** Active authenticated account; never inferred from authorPubkey. */
   authenticatedPubkey?: string | null
-  /** Abort before relay I/O when the caller's authenticated session changed. */
+  /** Abort before signer interaction or relay I/O when authority changed. */
   shouldContinue?: () => boolean
   pickup: OrganizerEventMarketPickupPublishInput
   previousCreatedAt?: number
@@ -7257,15 +7257,38 @@ interface SignedEventMarketDraft {
   authenticatedPubkey: string | null
 }
 
+function assertEventMarketSignerCurrent(
+  shouldContinue: (() => boolean) | undefined
+): void {
+  if (shouldContinue?.() !== false) return
+  const error = new Error(
+    "Organizer event signing was cancelled because signer authority changed."
+  )
+  error.name = "AbortError"
+  throw error
+}
+
+async function waitForCurrentEventMarketSigner(
+  waitForSignerVisibility: () => Promise<void>,
+  shouldContinue: (() => boolean) | undefined
+): Promise<void> {
+  assertEventMarketSignerCurrent(shouldContinue)
+  await waitForSignerVisibility()
+  assertEventMarketSignerCurrent(shouldContinue)
+}
+
 async function signEventMarketDraft(input: {
   draft: EventMarketEventDraft
   createdAt: number
   organizerPubkey: string
   authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
 }): Promise<SignedEventMarketDraft> {
+  assertEventMarketSignerCurrent(input.shouldContinue)
   const override = eventMarketTestOverrides.signDraft
   if (override) {
     const signed = await override(input)
+    assertEventMarketSignerCurrent(input.shouldContinue)
     if (
       !isValidSignedPublicNostrEvent(signed) ||
       signed.pubkey.toLowerCase() !== input.organizerPubkey ||
@@ -7285,8 +7308,11 @@ async function signEventMarketDraft(input: {
   }
 
   const ndk = await (eventMarketTestOverrides.getNdk ?? getNdk)()
+  assertEventMarketSignerCurrent(input.shouldContinue)
   if (!ndk.signer) throw new Error("Signer not connected")
+  assertEventMarketSignerCurrent(input.shouldContinue)
   const signerPubkey = normalizePubkey((await ndk.signer.user()).pubkey)
+  assertEventMarketSignerCurrent(input.shouldContinue)
   if (signerPubkey !== input.organizerPubkey) {
     throw new Error("Active signer does not match this organizer.")
   }
@@ -7295,7 +7321,9 @@ async function signEventMarketDraft(input: {
   event.created_at = input.createdAt
   event.content = input.draft.content
   event.tags = input.draft.tags
+  assertEventMarketSignerCurrent(input.shouldContinue)
   await event.sign(ndk.signer)
+  assertEventMarketSignerCurrent(input.shouldContinue)
   const signed = event.rawEvent() as SignedPublicNostrEvent
   if (
     !isValidSignedPublicNostrEvent(signed) ||
@@ -7449,12 +7477,16 @@ export async function publishOrganizerEventMarket(
   )
   const waitForSignerVisibility =
     input.waitForSignerVisibility ?? waitForVisibleDocument
-  await waitForSignerVisibility()
+  await waitForCurrentEventMarketSigner(
+    waitForSignerVisibility,
+    input.shouldContinue
+  )
   const calendarSignature = await signEventMarketDraft({
     draft: calendarDraft,
     createdAt: calendarCreatedAt,
     organizerPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
   })
   const calendarSigned = calendarSignature.signedEvent
   await input.onSignedEvent?.({
@@ -7463,24 +7495,32 @@ export async function publishOrganizerEventMarket(
   })
   let pickupSignature: SignedEventMarketDraft | null = null
   if (pickupDraft) {
-    await waitForSignerVisibility()
+    await waitForCurrentEventMarketSigner(
+      waitForSignerVisibility,
+      input.shouldContinue
+    )
     pickupSignature = await signEventMarketDraft({
       draft: pickupDraft,
       createdAt: pickupCreatedAt,
       organizerPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
     })
   }
   const pickupSigned = pickupSignature?.signedEvent ?? null
   if (pickupSigned) {
     await input.onSignedEvent?.({ record: "pickup", signedEvent: pickupSigned })
   }
-  await waitForSignerVisibility()
+  await waitForCurrentEventMarketSigner(
+    waitForSignerVisibility,
+    input.shouldContinue
+  )
   const collectionSignature = await signEventMarketDraft({
     draft: collectionDraft,
     createdAt: collectionCreatedAt,
     organizerPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
   })
   const collectionSigned = collectionSignature.signedEvent
   await input.onSignedEvent?.({
@@ -7541,6 +7581,7 @@ export async function publishOrganizerCollectionUpdate(
     ),
     organizerPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
   })
   const signedEvent = signature.signedEvent
   await input.onSignedEvent?.({ record: "collection", signedEvent })
@@ -7611,6 +7652,7 @@ export async function publishOrganizerCollectionOrderAcceptance(
     createdAt,
     organizerPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
   })
   const signedEvent = signature.signedEvent
   if (
@@ -7640,7 +7682,10 @@ export async function publishEventMarketPickupOption(
 ): Promise<OrganizerEventMarketSignedRecord> {
   const authorPubkey = normalizePubkey(input.authorPubkey)
   if (!authorPubkey) throw new Error("Pickup author pubkey is invalid.")
-  await (input.waitForSignerVisibility ?? waitForVisibleDocument)()
+  await waitForCurrentEventMarketSigner(
+    input.waitForSignerVisibility ?? waitForVisibleDocument,
+    input.shouldContinue
+  )
   const signature = await signEventMarketDraft({
     draft: pickupPublishDraft(input.pickup),
     createdAt: nextReplaceableCreatedAt(
@@ -7649,6 +7694,7 @@ export async function publishEventMarketPickupOption(
     ),
     organizerPubkey: authorPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
   })
   const signedEvent = signature.signedEvent
   await input.onSignedEvent({ record: "pickup", signedEvent })

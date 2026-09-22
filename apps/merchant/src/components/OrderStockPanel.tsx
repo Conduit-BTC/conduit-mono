@@ -22,6 +22,7 @@ interface OrderStockPanelProps {
   delivery: OrderStockDeliveryView | null
   deliveryNeedsAttention: boolean
   pending: boolean
+  retryPending?: boolean
   updatePending: boolean
   errorMessage: string | null
   canMessageBuyer?: boolean
@@ -156,6 +157,7 @@ export function OrderStockPanel({
   delivery,
   deliveryNeedsAttention,
   pending,
+  retryPending = pending,
   updatePending,
   errorMessage,
   canMessageBuyer = false,
@@ -208,7 +210,7 @@ export function OrderStockPanel({
                 type="button"
                 size="sm"
                 className="min-h-10 px-3 text-xs"
-                disabled={pending}
+                disabled={retryPending}
                 onClick={onRetry}
               >
                 Retry delivery

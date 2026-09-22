@@ -12,6 +12,8 @@ export type StorefrontFollowState = {
   override: boolean | null
   error: string | null
   activeOperationId: number | null
+  activeShouldFollow: boolean | null
+  retryFollowing: boolean | null
 }
 
 export type StorefrontFollowAction =
@@ -39,6 +41,11 @@ export type StorefrontFollowAction =
       operationId: number
       message: string
     }
+  | {
+      type: "authority_changed"
+      scope: StorefrontFollowScope
+      message: string
+    }
 
 export function isStorefrontFollowScopeEqual(
   left: StorefrontFollowScope,
@@ -59,6 +66,8 @@ export function createStorefrontFollowState(
     override: null,
     error: null,
     activeOperationId: null,
+    activeShouldFollow: null,
+    retryFollowing: null,
   }
 }
 
@@ -66,13 +75,16 @@ export function deriveStorefrontFollowControl(input: {
   override: boolean | null
   observedFollowing: boolean
   pendingFollowing: boolean | null
+  retryFollowing?: boolean | null
 }): {
   isFollowing: boolean
   shouldFollowOnClick: boolean
   isPendingRetry: boolean
 } {
   const pendingFollowing =
-    input.override === null ? input.pendingFollowing : null
+    input.override === null
+      ? (input.retryFollowing ?? input.pendingFollowing)
+      : null
   const isFollowing =
     input.override ?? pendingFollowing ?? input.observedFollowing
 
@@ -112,13 +124,27 @@ export function storefrontFollowReducer(
         saveState: action.shouldFollow ? "saving_follow" : "saving_unfollow",
         error: null,
         activeOperationId: action.operationId,
+        activeShouldFollow: action.shouldFollow,
+        retryFollowing: null,
       }
     case "publish_succeeded":
       if (!isCurrentOperation(state, action)) return state
-      return { ...state, override: action.shouldFollow }
+      return {
+        ...state,
+        saveState: "idle",
+        override: action.shouldFollow,
+        activeOperationId: null,
+        activeShouldFollow: null,
+        retryFollowing: null,
+      }
     case "operation_settled":
       if (!isCurrentOperation(state, action)) return state
-      return { ...state, saveState: "idle", activeOperationId: null }
+      return {
+        ...state,
+        saveState: "idle",
+        activeOperationId: null,
+        activeShouldFollow: null,
+      }
     case "operation_failed":
       if (!isCurrentOperation(state, action)) return state
       return {
@@ -127,6 +153,23 @@ export function storefrontFollowReducer(
         override: null,
         error: action.message,
         activeOperationId: null,
+        activeShouldFollow: null,
+        retryFollowing: state.activeShouldFollow,
+      }
+    case "authority_changed":
+      if (
+        !isStorefrontFollowScopeEqual(state.scope, action.scope) ||
+        state.activeOperationId === null
+      ) {
+        return state
+      }
+      return {
+        ...state,
+        saveState: "idle",
+        error: action.message,
+        activeOperationId: null,
+        activeShouldFollow: null,
+        retryFollowing: state.activeShouldFollow,
       }
   }
 }

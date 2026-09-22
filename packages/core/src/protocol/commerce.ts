@@ -366,6 +366,8 @@ export interface ProductsByIdsOptions {
    * Its explicit Network choices may join this generic product lookup without
    * displacing the bounded public commerce discovery set.
    */
+  accountPubkey?: string | null
+  /** Live signer identity available for relay authentication. */
   authenticatedPubkey?: string | null
   /** Live account session authority for relay admission after policy awaits. */
   shouldContinue?: () => boolean
@@ -1285,7 +1287,7 @@ async function preloadExactProductRelayLists(
         intent: "author_products",
         authors: authorChunk,
         authenticatedPubkey: options.authenticatedPubkey,
-        accountPubkey: options.authenticatedPubkey,
+        accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
         shouldContinue: options.shouldContinue,
         relayHintMode: "force",
         maxRelays: DEFAULT_READ_FANOUT,
@@ -4918,7 +4920,7 @@ async function fetchVariationGroupRecordBatch(
             intent: "author_products",
             authors: [familyTargets[0]!.author],
             authenticatedPubkey: options.authenticatedPubkey,
-            accountPubkey: options.authenticatedPubkey,
+            accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             shouldContinue: options.shouldContinue,
             extraRelayUrls: familyTargets[0]!.plannedRelayHints,
             relayHintMode: "force",
@@ -5002,7 +5004,7 @@ async function fetchVariationGroupRecordBatch(
       const fetchOptions = {
         relayUrls: relayPlan.relayUrls,
         ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-        accountPubkey: options.authenticatedPubkey,
+        accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
         authenticatedPubkey: options.authenticatedPubkey,
         accountNetworkLocalStateRepository:
           testOverrides.accountNetworkLocalStateRepository,
@@ -5977,7 +5979,7 @@ async function readPreparedProductTargets(
             intent: "author_products",
             authors: [author],
             authenticatedPubkey: options.authenticatedPubkey,
-            accountPubkey: options.authenticatedPubkey,
+            accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             shouldContinue: options.shouldContinue,
             extraRelayUrls: group.relayHints,
             relayHintMode: "force",
@@ -6109,7 +6111,8 @@ async function readPreparedProductTargets(
             {
               relayUrls: relayPlan.relayUrls,
               ownerSelectedRelayUrls: relayPlan.ownerSelectedRelayUrls,
-              accountPubkey: options.authenticatedPubkey,
+              accountPubkey:
+                options.accountPubkey ?? options.authenticatedPubkey,
               authenticatedPubkey: options.authenticatedPubkey,
               accountNetworkLocalStateRepository:
                 testOverrides.accountNetworkLocalStateRepository,
@@ -6293,7 +6296,7 @@ async function readPreparedProductTargets(
             ...cachedByAuthors.map(deletionCandidateFromRecord),
           ],
           {
-            accountPubkey: options.authenticatedPubkey,
+            accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             shouldContinue: options.shouldContinue,
             fetchEvents: fetchDeletionEventsWithCoverage,
             onSkippedRelayUrls: (relayUrls) => {

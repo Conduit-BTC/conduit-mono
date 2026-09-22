@@ -100,7 +100,7 @@ describe("app account-network read propagation", () => {
     expect(merchantOrders).toContain("getProductsByIds(allOrderProductIds, {")
     expect(merchantOrders).toContain("authenticatedPubkey,")
     expect(merchantOrders).toContain(
-      "authGenerationRef.current === authGeneration"
+      "isCurrentOrderOwner(pubkey, authGeneration)"
     )
     expect(merchantOrders).toContain('session.relayScope ?? "no-relay-scope"')
 
@@ -108,7 +108,9 @@ describe("app account-network read propagation", () => {
       commerce.indexOf("export async function getProductsByIds("),
       commerce.indexOf("function resolveProductAvailabilityIssue(")
     )
-    expect(exactRead).toContain("accountPubkey: options.authenticatedPubkey")
+    expect(exactRead).toContain(
+      "accountPubkey: options.accountPubkey ?? options.authenticatedPubkey"
+    )
     expect(exactRead).toContain(
       "authenticatedPubkey: options.authenticatedPubkey"
     )
@@ -196,7 +198,7 @@ describe("app account-network read propagation", () => {
     expect(follows).not.toContain("authenticatedPubkey: normalizedViewerPubkey")
     expect(follows).toContain("accountPubkey: normalizedAccountPubkey")
     expect(merchantOrders).toContain(
-      "authenticatedPubkey: signerConnected ? pubkey : null"
+      "const authenticatedPubkey = signerConnected ? signerPubkey : null"
     )
   })
 
@@ -212,16 +214,17 @@ describe("app account-network read propagation", () => {
     expect(handoff).toContain("authenticatedPubkey: input.authenticatedPubkey")
     expect(handoff).not.toContain("authenticatedPubkey: organizer")
     expect(eventDetailRoute).toContain(
-      'const authenticatedPubkey = status === "connected" ? pubkey : null'
+      'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
     expect(eventDetailRoute).toContain(
       "authenticatedPubkey={authenticatedPubkey}"
     )
-    expect(
-      events.match(
-        /resolveOrganizerHandoffMerchandise\(\{[\s\S]{0,160}authenticatedPubkey,/g
-      )
-    ).toHaveLength(2)
+    expect(events).toContain(
+      "resolveOrganizerHandoffMerchandise({\n                  organizerPubkey,\n                  authenticatedPubkey,"
+    )
+    expect(events).toContain(
+      "resolveOrganizerHandoffMerchandise({\n        organizerPubkey: input.ownerPubkey,\n        authenticatedPubkey: input.ownerPubkey,"
+    )
     expect(events).toMatch(
       /"merchant-organizer-handoff-merchandise",[\s\S]{0,160}authenticatedPubkey \?\? "disconnected"/
     )
@@ -300,14 +303,12 @@ describe("app account-network read propagation", () => {
     expect(profileHook).toContain("signal,")
     expect(commerce).toContain("signal: query.signal")
     expect(commerce).toContain("signal: input.signal")
-    expect(marketMessages).toContain(
-      "accountPubkey: signerConnected ? pubkey : null,\n    authenticatedPubkey: signerConnected ? pubkey : null,"
-    )
+    expect(marketMessages).toContain("accountPubkey,\n    authenticatedPubkey,")
     expect(merchantOrders).toContain(
-      "accountPubkey: authenticatedPubkey,\n    authenticatedPubkey,"
+      "accountPubkey: pubkey,\n    authenticatedPubkey,"
     )
     expect(merchantMessages).toContain(
-      "accountPubkey: signerConnected ? pubkey : null,\n    authenticatedPubkey: signerConnected ? pubkey : null,"
+      "accountPubkey,\n    authenticatedPubkey,"
     )
     expect(merchantDashboard).toMatch(
       /fetchDashboardStats\([\s\S]{0,180}!signal\.aborted && authGenerationRef\.current === authGeneration/
@@ -321,7 +322,8 @@ describe("app account-network read propagation", () => {
     )
     expect(merchantCatalogRead).not.toContain("getShippingOptionsByCoordinates")
     expect(merchantCatalogRead).not.toContain("resolveProductFulfillment")
-    expect(eventTemplates).toContain("accountPubkey: authenticatedPubkey,")
+    expect(eventTemplates).toContain("accountPubkey: string | null")
+    expect(eventTemplates).toContain("accountPubkey,\n    authenticatedPubkey,")
     expect(eventTemplates).toContain("authenticatedPubkey,")
     expect(eventTemplates).not.toContain("authenticatedPubkey: merchantPubkey")
     expect(marketCart).toContain("accountPubkey: authenticatedPubkey,")
@@ -461,10 +463,10 @@ describe("app account-network read propagation", () => {
       merchantOrders.indexOf("const confirmPaymentMutation =")
     )
     expect(stockMutation).toMatch(
-      /signAndPublishProductListing\(\{[\s\S]{0,100}merchantPubkey: pubkey,[\s\S]{0,100}authenticatedPubkey: signerConnected \? pubkey : null,[\s\S]{0,100}shouldContinue: \(\) => authGenerationRef.current === authGeneration/
+      /signAndPublishProductListing\(\{[\s\S]{0,100}merchantPubkey: pubkey,[\s\S]{0,100}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAction\(authority\)/
     )
     expect(stockMutation).toMatch(
-      /deliverSignedProductEvent\([\s\S]{0,180}authenticatedPubkey: signerConnected \? pubkey : null,[\s\S]{0,100}shouldContinue: \(\) => authGenerationRef.current === authGeneration/
+      /deliverSignedProductEvent\([\s\S]{0,180}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
     )
     expect(lightning).toContain("accountPubkey,")
     expect(lightning).toContain("accountNetworkLocalStateRepository,")

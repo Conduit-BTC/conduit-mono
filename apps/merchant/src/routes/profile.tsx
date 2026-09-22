@@ -27,6 +27,7 @@ import {
   Input,
   Label,
   SignedActionStatus,
+  SignerRecoveryNotice,
   StatusPill,
   Textarea,
   cn,
@@ -63,14 +64,24 @@ function RequiredMark() {
 }
 
 function ProfilePage() {
-  const { pubkey, status, authGeneration } = useAuth()
+  const {
+    accountPubkey,
+    pubkey,
+    authGeneration,
+    remoteSignerRecovery,
+    signerReadiness,
+    status,
+    connect,
+  } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
-  const authenticatedPubkey = status === "connected" ? pubkey : null
-  const profileQuery = useProfile(pubkey, {
-    accountPubkey: authenticatedPubkey,
+  const signerReady =
+    signerReadiness === "ready" && pubkey === accountPubkey && !!accountPubkey
+  const authenticatedPubkey = signerReady ? pubkey : null
+  const profileQuery = useProfile(accountPubkey, {
+    accountPubkey,
     authenticatedPubkey,
     shouldContinue: () => authGenerationRef.current === authGeneration,
     requireCompleteEvidence: true,
@@ -82,21 +93,37 @@ function ProfilePage() {
     authenticatedPubkey,
     authGeneration,
   })
+  const resetUpdateMutation = updateMutation.reset
   const [editingPubkey, setEditingPubkey] = useState<string | null>(null)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
   const editBaselineRef = useRef<ProfileFormValues | null>(null)
+  const profileWorkOwnerRef = useRef(accountPubkey)
   const [copiedPubkey, setCopiedPubkey] = useState(false)
   const [copiedStoreLink, setCopiedStoreLink] = useState(false)
   const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
-  const editing = !!pubkey && editingPubkey === pubkey
+  const editing = !!accountPubkey && editingPubkey === accountPubkey
 
-  useEffect(() => {
-    if (editingPubkey === null || editingPubkey === pubkey) return
+  useLayoutEffect(() => {
+    const previousOwner = profileWorkOwnerRef.current
+    profileWorkOwnerRef.current = accountPubkey
+    if (!previousOwner || previousOwner === accountPubkey) return
     setEditingPubkey(null)
     editBaselineRef.current = null
     setForm(EMPTY_PROFILE_FORM)
     setProfileSaveSucceeded(false)
-  }, [editingPubkey, pubkey])
+    resetUpdateMutation()
+  }, [accountPubkey, resetUpdateMutation])
+
+  const profileMutationAuthorityKeyRef = useRef(
+    `${authGeneration}:${signerReadiness}`
+  )
+  useLayoutEffect(() => {
+    const authorityKey = `${authGeneration}:${signerReadiness}`
+    if (profileMutationAuthorityKeyRef.current === authorityKey) return
+    profileMutationAuthorityKeyRef.current = authorityKey
+    resetUpdateMutation()
+    setProfileSaveSucceeded(false)
+  }, [authGeneration, resetUpdateMutation, signerReadiness])
 
   useEffect(() => {
     if (editing || !selectedProfile) return
@@ -119,8 +146,8 @@ function ProfilePage() {
   const formBannerUrl = normalizePublicMediaUrl(form.banner)
   const complete = isProfileComplete(profileData)
   const displayName = profileData?.displayName || profileData?.name
-  const npub = pubkey ? pubkeyToNpub(pubkey) : ""
-  const storefrontUrl = pubkey ? getStorefrontUrl(pubkey) : ""
+  const npub = accountPubkey ? pubkeyToNpub(accountPubkey) : ""
+  const storefrontUrl = accountPubkey ? getStorefrontUrl(accountPubkey) : ""
   const savedProfileForm = useMemo(
     () => (profileData ? profileToFormValues(profileData) : EMPTY_PROFILE_FORM),
     [profileData]
@@ -163,12 +190,28 @@ function ProfilePage() {
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    if (!editing || !hasProfileChanges || updateMutation.isPending) return
+    if (
+      !editing ||
+      !signerReady ||
+      !hasProfileChanges ||
+      updateMutation.isPending ||
+      !accountPubkey
+    ) {
+      return
+    }
+    const saveOwner = accountPubkey
+    const saveGeneration = authGeneration
     setProfileSaveSucceeded(false)
     updateMutation.mutate(
       profileFormToUpdatePayload(reconciledProfileForm, profileData),
       {
         onSuccess: () => {
+          if (
+            profileWorkOwnerRef.current !== saveOwner ||
+            authGenerationRef.current !== saveGeneration
+          ) {
+            return
+          }
           setProfileSaveSucceeded(true)
           setEditingPubkey(null)
           editBaselineRef.current = null
@@ -178,11 +221,11 @@ function ProfilePage() {
   }
 
   function startEditing(): void {
-    if (!canEditProfile || !profileData || !pubkey) return
+    if (!canEditProfile || !profileData || !accountPubkey) return
     const baseline = profileToFormValues(profileData)
     editBaselineRef.current = baseline
     setForm(baseline)
-    setEditingPubkey(pubkey)
+    setEditingPubkey(accountPubkey)
     setProfileSaveSucceeded(false)
   }
 
@@ -714,6 +757,18 @@ function ProfilePage() {
                       </div>
                     )}
 
+                    {remoteSignerRecovery ? (
+                      <div className="md:col-span-2">
+                        <SignerRecoveryNotice
+                          description="Your profile changes are still here. Reconnect the same signer, review them, then choose Save changes again."
+                          reconnecting={status === "restoring"}
+                          restoreFailed={!!remoteSignerRecovery.restoreError}
+                          restoreFailureDescription="That saved signer connection could not be restored. Your unsaved profile changes will remain on this page while this account stays selected."
+                          onReconnect={() => connect({ mode: "restore" })}
+                        />
+                      </div>
+                    ) : null}
+
                     {updateMutation.error && (
                       <div className="md:col-span-2 rounded-2xl border border-[var(--destructive)]/30 bg-[color-mix(in_srgb,var(--destructive)_8%,transparent)] p-3 text-sm text-[var(--destructive)]">
                         {updateMutation.error instanceof Error
@@ -737,7 +792,9 @@ function ProfilePage() {
                       <Button
                         type="submit"
                         disabled={
-                          updateMutation.isPending || !hasProfileChanges
+                          updateMutation.isPending ||
+                          !hasProfileChanges ||
+                          !signerReady
                         }
                       >
                         {updateMutation.isPending

@@ -61,7 +61,7 @@ describe("authenticated account profile and storefront read propagation", () => 
     expect(checkout).toContain("authenticatedPubkey: string | null")
     expect(checkout).toContain("accountPubkey,\n    authenticatedPubkey,")
     expect(checkout).toContain("accountPubkey={draftOwnerIdentity}")
-    expect(checkout).toContain("authenticatedPubkey={draftOwnerIdentity}")
+    expect(checkout).toContain("authenticatedPubkey={signedBuyerPubkey}")
   })
 
   it("uses only explicit Merchant authentication for storefront and organizer profiles", async () => {
@@ -85,13 +85,14 @@ describe("authenticated account profile and storefront read propagation", () => 
     expect(dashboard).toContain(
       "authenticatedPubkey: signerConnected ? pubkey : null"
     )
-    expect(eventTemplates).toContain("accountPubkey: authenticatedPubkey,")
+    expect(eventTemplates).toContain("accountPubkey: string | null")
+    expect(eventTemplates).toContain("accountPubkey,\n    authenticatedPubkey,")
     expect(eventTemplates).toContain("authenticatedPubkey,")
     expect(eventTemplates).not.toContain("authenticatedPubkey: merchantPubkey")
     expect(organizerPanel).toContain("authenticatedPubkey: string | null")
     expect(organizerPanel).toContain("accountPubkey,\n    authenticatedPubkey,")
     expect(eventDetailRoute).toContain(
-      'const authenticatedPubkey = status === "connected" ? pubkey : null'
+      'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
     expect(eventDetailRoute).toContain(
       "authenticatedPubkey={authenticatedPubkey}"
