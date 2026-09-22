@@ -1494,6 +1494,32 @@ describe("remote signer lifecycle", () => {
     })
   })
 
+  it("refuses a restore whose transport closes while attaching its lifecycle listener", async () => {
+    let transportAvailable = true
+    let closeCalls = 0
+
+    await expect(
+      restoreRemoteSigner(session(), {
+        keyVault: seededKeyVault(),
+        createBunkerSigner: () =>
+          fakeSigner({
+            isTransportAvailable: () => transportAvailable,
+            onLifecycleFailure: () => {
+              transportAvailable = false
+              return () => undefined
+            },
+            close: async () => {
+              closeCalls += 1
+            },
+          }),
+      })
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "session setup",
+    })
+    expect(closeCalls).toBe(1)
+  })
+
   it("retains a timed-out session for explicit restore without signing automatically", async () => {
     const storage = new MemoryStorage()
     const keyVault = new MemoryKeyVault()

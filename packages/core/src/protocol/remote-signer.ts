@@ -1650,7 +1650,10 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
   }
 
   assertUsable(): void {
-    if (this.lifecycle.state !== "active") {
+    if (
+      this.lifecycle.state !== "active" ||
+      this.bunkerSigner.isTransportAvailable?.() === false
+    ) {
       throw this.unavailableError(
         "session setup",
         "The remote signer session became unavailable before setup completed."
