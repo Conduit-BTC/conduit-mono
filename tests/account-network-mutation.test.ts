@@ -1421,6 +1421,111 @@ describe("account network mutation", () => {
     )
   })
 
+  it("keeps disabled personal NIP-65 relays out of kind-10050 delivery", async () => {
+    const fixture = createFixture()
+    const execution = createExecutionHarness(fixture, {
+      planForKind: (kind) =>
+        kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+          ? [PLAN_A, RELAY_A]
+          : [PLAN_A],
+      filterEligibleRelayUrls: (
+        relayUrls,
+        _ownerSelectedRelayUrls,
+        _authenticatedPubkey,
+        appRelayUrls,
+        _personalRelayUrls
+      ) => relayUrls.filter((relayUrl) => appRelayUrls.includes(relayUrl)),
+    })
+    const signer = createSignerHarness({ log: execution.log })
+    const reviewed = reviewAccountNetworkMutation(
+      fixture.reconciliation,
+      action(inboxChangedRoles())
+    )
+
+    await publishAccountNetworkMutation({
+      reviewed,
+      authenticatedPubkey: ACCOUNT,
+      signer: signer.signer,
+      dependencies: execution.dependencies,
+    })
+
+    expect(execution.publishCalls.map((call) => call.relayUrl)).toEqual([
+      PLAN_A,
+      RELAY_A,
+    ])
+    expect(execution.readbackCalls.map((call) => call.relayUrl)).toEqual([
+      PLAN_A,
+      RELAY_A,
+    ])
+    expect(
+      [...execution.publishCalls, ...execution.readbackCalls]
+        .filter((call) => call.relayUrl === RELAY_A)
+        .every(
+          (call) =>
+            call.appRelayUrls.includes(RELAY_A) &&
+            call.personalRelayUrls.includes(RELAY_A)
+        )
+    ).toBe(true)
+    expect(
+      [...execution.publishCalls, ...execution.readbackCalls].some(
+        (call) => call.relayUrl === RELAY_B
+      )
+    ).toBe(false)
+  })
+
+  it("stops kind-10050 retries to personal-only relays after Your Relays is disabled", async () => {
+    const fixture = createFixture()
+    let personalEnabled = true
+    const execution = createExecutionHarness(fixture, {
+      planForKind: () => [PLAN_A],
+      filterEligibleRelayUrls: (
+        relayUrls,
+        _ownerSelectedRelayUrls,
+        _authenticatedPubkey,
+        appRelayUrls,
+        personalRelayUrls
+      ) =>
+        relayUrls.filter(
+          (relayUrl) =>
+            appRelayUrls.includes(relayUrl) ||
+            (personalEnabled && personalRelayUrls.includes(relayUrl))
+        ),
+      publishBehavior: ({ relayUrl }) =>
+        relayUrl === RELAY_B ? "timed_out" : "acked",
+      readbackBehavior: ({ relayUrl }) =>
+        relayUrl === RELAY_B ? "timed_out" : "observed",
+    })
+    const signer = createSignerHarness({ log: execution.log })
+    const reviewed = reviewAccountNetworkMutation(
+      fixture.reconciliation,
+      action(inboxChangedRoles())
+    )
+
+    await publishAccountNetworkMutation({
+      reviewed,
+      authenticatedPubkey: ACCOUNT,
+      signer: signer.signer,
+      dependencies: execution.dependencies,
+    })
+    expect(
+      (await execution.baseRepository.get(ACCOUNT)).inboxDeclaration
+        ?.pendingDistribution?.publishRelayUrls
+    ).toContain(RELAY_B)
+
+    personalEnabled = false
+    execution.publishCalls.splice(0)
+    execution.readbackCalls.splice(0)
+    await retryAccountNetworkMutation({
+      pubkey: ACCOUNT,
+      authenticatedPubkey: ACCOUNT,
+      kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+      dependencies: execution.dependencies,
+    })
+
+    expect(execution.publishCalls).toHaveLength(0)
+    expect(execution.readbackCalls).toHaveLength(0)
+  })
+
   it("does no I/O or durable write when the second signature is cancelled", async () => {
     const fixture = createFixture()
     const execution = createExecutionHarness(fixture)

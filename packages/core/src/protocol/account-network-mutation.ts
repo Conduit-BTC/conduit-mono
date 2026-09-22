@@ -1168,15 +1168,23 @@ function distributionRelaySources(input: {
   signedEvent?: SignedPublicNostrEvent
   relayUrls: readonly string[]
   desiredPublishRelayUrls?: readonly string[]
+  sharedRelayUrls?: readonly string[]
+  ownerSelectedRelayUrls?: readonly string[]
 }): { appRelayUrls: string[]; personalRelayUrls: string[] } {
   const relayUrlSet = new Set(input.relayUrls)
   if (input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS) {
     return {
       // Publishing and confirming the owner's declaration uses Conduit's
-      // shared discovery registry. Runtime reads from the relays declared by
-      // that kind-10050 event remain independent of both layer toggles.
-      appRelayUrls: [...input.relayUrls],
-      personalRelayUrls: [],
+      // shared discovery registry plus the owner's NIP-65 Publish relays. Keep
+      // those sources independent so either live layer can retain an overlap
+      // without relabeling a Personal-only target as App-owned. Runtime reads
+      // from relays declared by kind 10050 remain independent of both toggles.
+      appRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
+        input.sharedRelayUrls ?? []
+      ).filter((relayUrl) => relayUrlSet.has(relayUrl)),
+      personalRelayUrls: normalizeOwnerSelectedRelayUrls(
+        input.ownerSelectedRelayUrls ?? []
+      ).filter((relayUrl) => relayUrlSet.has(relayUrl)),
     }
   }
 
@@ -1240,6 +1248,8 @@ async function resolveDistributionPlan(input: {
     kind: input.kind,
     relayUrls: requested,
     desiredPublishRelayUrls: input.desiredPublishRelayUrls,
+    sharedRelayUrls,
+    ownerSelectedRelayUrls,
   })
   const eligible = await eligibleRelayUrls(
     input.pubkey,
@@ -1337,6 +1347,11 @@ async function deliverPendingKind(input: {
     )
   }
   const signedEvent = structuredClone(pending.signedEvent)
+  const pendingPublishRelayUrls = [...pending.publishRelayUrls]
+  const pendingInboxDistribution =
+    input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+      ? snapshot.inboxDeclaration?.pendingDistribution
+      : undefined
   const ownerSelectedRelayUrls =
     input.authenticatedPubkey === input.pubkey
       ? ownerSelectedRelayUrlsFromSnapshot(input.pubkey, snapshot)
@@ -1344,7 +1359,15 @@ async function deliverPendingKind(input: {
   const relaySources = distributionRelaySources({
     kind: input.kind,
     signedEvent,
-    relayUrls: pending.publishRelayUrls,
+    relayUrls: pendingPublishRelayUrls,
+    sharedRelayUrls:
+      input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+        ? (pendingInboxDistribution?.confirmationRelayUrls ??
+          normalizePublicOrIsolatedE2eRelayHints(
+            sharedInboxDiscoveryRelayUrls()
+          ).filter((relayUrl) => pendingPublishRelayUrls.includes(relayUrl)))
+        : [],
+    ownerSelectedRelayUrls,
   })
   const publishTargets = unresolvedNetworkPreferencePublishRelayUrls(
     pending.relayOutcomes
