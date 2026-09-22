@@ -243,6 +243,8 @@ export interface ParsedEventMarketCollection {
   eventCoordinates: string[]
   pickupCoordinates: string[]
   productCoordinates: string[]
+  /** Valid bounded relay hints from product `a` tags, keyed by coordinate. */
+  productRelayHintsByCoordinate?: Record<string, string[]>
   unsupportedReferences: string[]
   createdAt: number
   sourceRelayUrls?: string[]
@@ -1017,6 +1019,7 @@ export function parseEventMarketCollectionEvent(
 
   const eventCoordinates: string[] = []
   const productCoordinates: string[] = []
+  const productRelayHintsByCoordinate = new Map<string, string[]>()
   const pickupCoordinates: string[] = []
   const unsupportedReferences: string[] = []
   for (const tag of event.tags) {
@@ -1027,6 +1030,16 @@ export function parseEventMarketCollectionEvent(
         eventCoordinates.push(parsed.coordinate)
       } else if (parsed.kind === EVENT_KINDS.PRODUCT) {
         productCoordinates.push(parsed.coordinate)
+        const relayHints = normalizePortableRelayHints(tag[2] ? [tag[2]] : [])
+        if (relayHints.length > 0) {
+          productRelayHintsByCoordinate.set(
+            parsed.coordinate,
+            mergeRelayUrls(
+              productRelayHintsByCoordinate.get(parsed.coordinate) ?? [],
+              relayHints
+            )
+          )
+        }
       } else {
         unsupportedReferences.push(parsed.coordinate)
       }
@@ -1060,6 +1073,13 @@ export function parseEventMarketCollectionEvent(
     eventCoordinates: Array.from(new Set(eventCoordinates)),
     pickupCoordinates: Array.from(new Set(pickupCoordinates)),
     productCoordinates: Array.from(new Set(productCoordinates)),
+    ...(productRelayHintsByCoordinate.size > 0
+      ? {
+          productRelayHintsByCoordinate: Object.fromEntries(
+            productRelayHintsByCoordinate
+          ),
+        }
+      : {}),
     unsupportedReferences: Array.from(new Set(unsupportedReferences)),
     createdAt: event.created_at * 1_000,
   }
@@ -3044,6 +3064,7 @@ interface EventMarketFrontierFilterResult
   remainingRelayUrls: string[]
   remainingRelayUrlsByAuthor: Map<string, string[]>
   saturatedFilterIndexes: number[]
+  admittedRelayUrlsByFilterIndex: ReadonlyMap<number, readonly string[]>
 }
 
 const EMPTY_EVENT_MARKET_SATURATED_COORDINATES: ReadonlySet<string> = new Set()
@@ -3085,6 +3106,48 @@ function saturatedRecordCoordinatesForFilters(input: {
     }
   }
   return saturatedCoordinates
+}
+
+function cappedProductRelayHintEvidence(input: {
+  filters: readonly NDKFilter[]
+  coordinates: readonly AddressableEventCoordinate[]
+  relayHintsByCoordinate?: ReadonlyMap<string, readonly string[]>
+  admittedRelayUrlsByFilterIndex: ReadonlyMap<number, readonly string[]>
+}): {
+  saturatedCoordinates: ReadonlySet<string>
+  saturatedFilterCount: number
+} {
+  const saturatedCoordinates = new Set<string>()
+  let saturatedFilterCount = 0
+  input.filters.forEach((filter, filterIndex) => {
+    const admittedRelayUrls = new Set(
+      input.admittedRelayUrlsByFilterIndex.get(filterIndex) ?? []
+    )
+    let filterHintCapped = false
+    for (const coordinate of input.coordinates) {
+      if (
+        !filter.kinds?.includes(coordinate.kind as never) ||
+        !filter.authors?.some(
+          (author) => normalizePubkey(author) === coordinate.authorPubkey
+        ) ||
+        !filter["#d"]?.includes(coordinate.dTag)
+      ) {
+        continue
+      }
+      const relayHints = normalizePortableRelayHints(
+        input.relayHintsByCoordinate?.get(coordinate.coordinate)
+      )
+      if (
+        relayHints.length > 0 &&
+        relayHints.some((relayUrl) => !admittedRelayUrls.has(relayUrl))
+      ) {
+        saturatedCoordinates.add(coordinate.coordinate)
+        filterHintCapped = true
+      }
+    }
+    if (filterHintCapped) saturatedFilterCount += 1
+  })
+  return { saturatedCoordinates, saturatedFilterCount }
 }
 
 async function fetchEventMarketFrontierFilters(input: {
@@ -3139,6 +3202,7 @@ async function fetchEventMarketFrontierFilters(input: {
       incompleteFilterCount: 0,
       saturatedFilterCount: 0,
       saturatedFilterIndexes: [],
+      admittedRelayUrlsByFilterIndex: new Map(),
     }
   }
   const fetch =
@@ -3148,6 +3212,7 @@ async function fetchEventMarketFrontierFilters(input: {
   let incompleteFilterCount = 0
   let saturatedFilterCount = 0
   const saturatedFilterIndexes: number[] = []
+  const admittedRelayUrlsByFilterIndex = new Map<number, string[]>()
   let remainingRelayUrls = [...invocationRelayUrls]
   for (
     let index = 0;
@@ -3202,6 +3267,10 @@ async function fetchEventMarketFrontierFilters(input: {
       const result = batchResults[resultIndex]!
       const plan = batchPlans[resultIndex]
       if (!plan) continue
+      admittedRelayUrlsByFilterIndex.set(plan.filterIndex, [
+        ...(result.admittedRelayUrls ??
+          result.relays.map((relay) => relay.relayUrl)),
+      ])
       const relayStatuses = new Map(
         result.relays.map((relay) => [relay.relayUrl.toLowerCase(), relay])
       )
@@ -3255,6 +3324,7 @@ async function fetchEventMarketFrontierFilters(input: {
     incompleteFilterCount,
     saturatedFilterCount,
     saturatedFilterIndexes,
+    admittedRelayUrlsByFilterIndex,
   }
 }
 
@@ -3409,6 +3479,7 @@ function candidateProductCoordinates(input: {
 
 async function eventMarketParticipantRelayPlans(input: {
   coordinates: readonly AddressableEventCoordinate[]
+  relayHintsByCoordinate?: ReadonlyMap<string, readonly string[]>
   candidateEvents: readonly SignedPublicNostrEvent[]
   sourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
   fallbackRelayUrls: readonly string[]
@@ -3505,6 +3576,13 @@ async function eventMarketParticipantRelayPlans(input: {
   )
   const relayUrlsByAuthor = new Map(
     authors.map((author) => {
+      const collectionRelayHints = buildEventMarketShareRelayHints(
+        input.coordinates.flatMap((coordinate) =>
+          coordinate.authorPubkey === author
+            ? [input.relayHintsByCoordinate?.get(coordinate.coordinate)]
+            : []
+        )
+      )
       const selectedForAuthor = [
         ...ownerReadRelayUrls,
         ...(author === authenticatedPubkey ? ownerWriteRelayUrls : []),
@@ -3527,12 +3605,14 @@ async function eventMarketParticipantRelayPlans(input: {
       const planAppRelayUrls = new Set(plan.appRelayUrls ?? [])
       const planPersonalRelayUrls = new Set(plan.personalRelayUrls ?? [])
       const planIndependentRelayUrls = new Set(plan.independentRelayUrls ?? [])
+      const collectionRelayHintUrls = new Set(collectionRelayHints)
       const observedRelayUrls = new Set(
         observedRelaysByAuthor.get(author) ?? []
       )
       const relayUrls = partitionByHealthSnapshot(
         mergeRelayCandidatesWithOwnerAuthority(
           plan.ownerSelectedRelayUrls ?? [],
+          collectionRelayHints,
           plan.hintRelayUrls,
           observedRelaysByAuthor.get(author) ?? [],
           input.fallbackRelayUrls,
@@ -3554,6 +3634,7 @@ async function eventMarketParticipantRelayPlans(input: {
           personalRelayUrls.add(relayUrl)
         }
         if (
+          collectionRelayHintUrls.has(relayUrl) ||
           planIndependentRelayUrls.has(relayUrl) ||
           observedRelayUrls.has(relayUrl) ||
           fallbackIndependentRelayUrls.has(relayUrl)
@@ -3594,6 +3675,51 @@ function productFrontierFilters(
       limit: Math.min(EVENT_MARKET_MAX_AUTHOR_EVENTS, batch.length * 4),
     }))
   )
+}
+
+function productFrontierCoordinateBatches(
+  coordinates: readonly AddressableEventCoordinate[],
+  relayHintsByCoordinate?: ReadonlyMap<string, readonly string[]>
+): AddressableEventCoordinate[][] {
+  type CoordinateBatch = {
+    coordinates: AddressableEventCoordinate[]
+    relayHintsByAuthor: Map<string, Set<string>>
+  }
+
+  const batches: CoordinateBatch[] = []
+  for (const coordinate of coordinates) {
+    const coordinateRelayHints = buildEventMarketShareRelayHints([
+      relayHintsByCoordinate?.get(coordinate.coordinate),
+    ])
+    const compatibleBatch = batches.find((batch) => {
+      if (
+        batch.coordinates.length >=
+        EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
+      ) {
+        return false
+      }
+      const authorRelayHints =
+        batch.relayHintsByAuthor.get(coordinate.authorPubkey) ?? new Set()
+      return (
+        new Set([...authorRelayHints, ...coordinateRelayHints]).size <=
+        EVENT_MARKET_SHARE_RELAY_HINT_LIMIT
+      )
+    })
+    const batch = compatibleBatch ?? {
+      coordinates: [],
+      relayHintsByAuthor: new Map<string, Set<string>>(),
+    }
+    batch.coordinates.push(coordinate)
+    batch.relayHintsByAuthor.set(
+      coordinate.authorPubkey,
+      new Set([
+        ...(batch.relayHintsByAuthor.get(coordinate.authorPubkey) ?? []),
+        ...coordinateRelayHints,
+      ])
+    )
+    if (!compatibleBatch) batches.push(batch)
+  }
+  return batches.map((batch) => batch.coordinates)
 }
 
 function boundedProductFrontierEvents(
@@ -4202,6 +4328,7 @@ async function fetchEventMarketProductRequestFrontiers(
   input: {
     candidateEvents: readonly SignedPublicNostrEvent[]
     candidateCoordinates: readonly string[]
+    relayHintsByCoordinate?: ReadonlyMap<string, readonly string[]>
     candidateSourceRelayUrlsById: ReadonlyMap<string, readonly string[]>
     relayUrls: string[]
     maxRelayAttempts?: number
@@ -4224,14 +4351,15 @@ async function fetchEventMarketProductRequestFrontiers(
     targetCount: coordinates.length,
     targetLimit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
   }
-  if (coordinates.length > EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT) {
+  const coordinateBatches = productFrontierCoordinateBatches(
+    coordinates,
+    input.relayHintsByCoordinate
+  )
+  if (coordinateBatches.length > 1) {
     const batchResults: EventMarketProductRequestFrontierResult[] = []
-    // Reuse the invocation health view so an earlier bounded batch cannot
-    // suppress a later product's only positive source.
-    for (const batchCoordinates of chunkValues(
-      coordinates,
-      EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-    )) {
+    // Reuse the invocation health view so an earlier bounded or hint-isolated
+    // batch cannot suppress a later product's only positive source.
+    for (const batchCoordinates of coordinateBatches) {
       const result = await fetchEventMarketProductRequestFrontiers(
         input,
         batchCoordinates,
@@ -4268,6 +4396,7 @@ async function fetchEventMarketProductRequestFrontiers(
   }
   const participantPlan = await eventMarketParticipantRelayPlans({
     coordinates,
+    relayHintsByCoordinate: input.relayHintsByCoordinate,
     candidateEvents: input.candidateEvents,
     sourceRelayUrlsById: input.candidateSourceRelayUrlsById,
     fallbackRelayUrls: input.relayUrls,
@@ -4316,6 +4445,13 @@ async function fetchEventMarketProductRequestFrontiers(
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   })
+  const cappedRelayHintEvidence = cappedProductRelayHintEvidence({
+    filters: productFilters,
+    coordinates,
+    relayHintsByCoordinate: input.relayHintsByCoordinate,
+    admittedRelayUrlsByFilterIndex:
+      productResult.admittedRelayUrlsByFilterIndex,
+  })
   const productFrontiers = boundedProductFrontierEvents(
     rawSignedEvents(productResult).events,
     coordinates
@@ -4361,12 +4497,17 @@ async function fetchEventMarketProductRequestFrontiers(
       productResult.incompleteFilterCount +
       deletionResult.incompleteFilterCount,
     saturatedFilterCount:
-      productResult.saturatedFilterCount + deletionResult.saturatedFilterCount,
-    saturatedRecordCoordinates: saturatedRecordCoordinatesForFilters({
-      filters: productFilters,
-      saturatedFilterIndexes: productResult.saturatedFilterIndexes,
-      coordinates,
-    }),
+      productResult.saturatedFilterCount +
+      deletionResult.saturatedFilterCount +
+      cappedRelayHintEvidence.saturatedFilterCount,
+    saturatedRecordCoordinates: mergeEventMarketSaturatedCoordinates(
+      saturatedRecordCoordinatesForFilters({
+        filters: productFilters,
+        saturatedFilterIndexes: productResult.saturatedFilterIndexes,
+        coordinates,
+      }),
+      cappedRelayHintEvidence.saturatedCoordinates
+    ),
   }
 }
 
@@ -5942,12 +6083,16 @@ function addResolutionSources(
   }
 }
 
-function organizerProductCoordinatesFromEvidence(
+function organizerProductReferencesFromEvidence(
   events: readonly SignedPublicNostrEvent[],
   collectionCoordinates: readonly string[]
-): string[] {
+): {
+  coordinates: string[]
+  relayHintsByCoordinate: Map<string, string[]>
+} {
   const deletions = validDeletionEvents(events)
   const products = new Set<string>()
+  const relayHintsByCoordinate = new Map<string, string[]>()
   for (const reference of collectionCoordinates) {
     const coordinate = decodeEventMarketReference(reference, [
       EVENT_KINDS.PRODUCT_COLLECTION,
@@ -5962,9 +6107,32 @@ function organizerProductCoordinatesFromEvidence(
     if (collection.state !== "current") continue
     for (const productCoordinate of collection.value.productCoordinates) {
       products.add(productCoordinate)
+      const relayHints =
+        collection.value.productRelayHintsByCoordinate?.[productCoordinate] ??
+        []
+      if (relayHints.length > 0) {
+        relayHintsByCoordinate.set(
+          productCoordinate,
+          mergeRelayUrls(
+            relayHintsByCoordinate.get(productCoordinate) ?? [],
+            relayHints
+          )
+        )
+      }
     }
   }
-  return Array.from(products).sort()
+  return {
+    coordinates: Array.from(products).sort(),
+    relayHintsByCoordinate,
+  }
+}
+
+function organizerProductCoordinatesFromEvidence(
+  events: readonly SignedPublicNostrEvent[],
+  collectionCoordinates: readonly string[]
+): string[] {
+  return organizerProductReferencesFromEvidence(events, collectionCoordinates)
+    .coordinates
 }
 
 function productCoordinatesForMerchant(
@@ -6336,10 +6504,11 @@ export async function getEventMarket(
     events: organizerRecords.events,
     collectionCoordinates: [decoded.coordinate],
   })
-  const organizerProductCoordinates = organizerProductCoordinatesFromEvidence(
+  const organizerProductReferences = organizerProductReferencesFromEvidence(
     organizerRecords.events,
     [decoded.coordinate]
   )
+  const organizerProductCoordinates = organizerProductReferences.coordinates
   const selectedMerchantProductCoordinates = hasSelectedMerchant
     ? productCoordinatesForMerchant(
         organizerProductCoordinates,
@@ -6397,6 +6566,8 @@ export async function getEventMarket(
           await fetchEventMarketProductRequestFrontiers({
             candidateEvents: rawRequestCandidates.events,
             candidateCoordinates: requestedProductCoordinates,
+            relayHintsByCoordinate:
+              organizerProductReferences.relayHintsByCoordinate,
             candidateSourceRelayUrlsById:
               rawRequestCandidates.sourceRelayUrlsById,
             relayUrls: relayUrlsWithoutObservedFailures(
@@ -7025,12 +7196,13 @@ export async function getOrganizerEventMarketsDetailed(
   ])
   const rawOrganizerPickupFrontiers = rawSignedEvents(organizerPickupResult)
   const rawRequestCandidates = rawSignedEvents(requestResult)
-  const organizerProductCoordinates = discoveryProjection
-    ? []
-    : organizerProductCoordinatesFromEvidence(
+  const organizerProductReferences = discoveryProjection
+    ? { coordinates: [], relayHintsByCoordinate: new Map<string, string[]>() }
+    : organizerProductReferencesFromEvidence(
         organizerRecords.events,
         collectionCoordinates
       )
+  const organizerProductCoordinates = organizerProductReferences.coordinates
   const requestFrontierResult = discoveryProjection
     ? {
         events: [],
@@ -7044,6 +7216,8 @@ export async function getOrganizerEventMarketsDetailed(
     : await fetchEventMarketProductRequestFrontiers({
         candidateEvents: rawRequestCandidates.events,
         candidateCoordinates: organizerProductCoordinates,
+        relayHintsByCoordinate:
+          organizerProductReferences.relayHintsByCoordinate,
         candidateSourceRelayUrlsById: rawRequestCandidates.sourceRelayUrlsById,
         relayUrls: relayUrlsWithoutObservedFailures(
           relayUrls,

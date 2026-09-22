@@ -362,6 +362,14 @@ export interface ProductsByIdsOptions {
    */
   includeMerchantHiddenProductIds?: readonly string[]
   /**
+   * Coordinate-scoped routing hints supplied by a signed reference. Hints only
+   * extend bounded relay discovery; listing, author, and deletion checks remain
+   * authoritative.
+   */
+  relayHintsByAddressId?: Readonly<
+    Record<string, readonly string[] | undefined>
+  >
+  /**
    * Signed-in account whose durable whole-relay exclusions apply at final I/O.
    * Its explicit Network choices may join this generic product lookup without
    * displacing the bounded public commerce discovery set.
@@ -5748,7 +5756,17 @@ export async function getProductsByIds(
     const valid = !!address && address.kind === EVENT_KINDS.PRODUCT
     return {
       productId,
-      address: valid ? address : null,
+      address: valid
+        ? {
+            ...address,
+            relayHints: [
+              ...address.relayHints,
+              ...(addressId
+                ? (options.relayHintsByAddressId?.[addressId] ?? [])
+                : []),
+            ],
+          }
+        : null,
       addressId: valid ? addressId : null,
     }
   })
