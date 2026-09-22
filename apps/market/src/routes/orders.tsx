@@ -36,7 +36,7 @@ import {
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
   pubkeyToNpub,
-  receiveMerchantPresentSaleDirectWrap,
+  receiveMerchantPresentSaleDirectAuthorization,
   replaceOrderPaymentTarget,
   resolveWalletPaymentInstance,
   selectProtectedReadRows,
@@ -188,7 +188,7 @@ import {
   consumeReadyMerchantPresentAuthorization,
   deriveMerchantPresentAuthorizationState,
   getMerchantPresentOrderReview,
-  parseMerchantPresentDirectWrapText,
+  parseMerchantPresentDirectAuthorizationText,
   resolveMerchantPresentOrderContext,
   type MerchantPresentAuthorizationState,
 } from "../lib/merchant-present-order-authorization"
@@ -1154,17 +1154,13 @@ function OrderDetail({
         "This guest booth order is not available in the current tab. Return to the merchant and restart the sale."
       )
     }
-    const wrap = parseMerchantPresentDirectWrapText(directAuthorizationText)
-    const decrypt = guestIdentity.createMerchantPresentSaleDirectDecrypt({
-      orderId: context.order.id,
-      merchantPubkey: context.order.merchantPubkey,
-      wrap,
-    })
-    const authorization = await receiveMerchantPresentSaleDirectWrap({
-      wrap,
+    const event = parseMerchantPresentDirectAuthorizationText(
+      directAuthorizationText
+    )
+    const authorization = receiveMerchantPresentSaleDirectAuthorization({
+      event,
       order: context.order,
       reviewedCommerceFingerprint: context.reviewedCommerceFingerprint,
-      decrypt,
     })
     setImportedBoothAuthorization(authorization)
     setDirectAuthorizationText("")
@@ -1660,8 +1656,9 @@ function OrderDetail({
                     </label>
                     <p className="text-xs leading-5 text-[var(--text-secondary)]">
                       Use only the signed confirmation transferred directly by
-                      this merchant. This guest session decrypts that one wrap;
-                      it does not read an inbox or grant general message access.
+                      this merchant. It is verified against this exact order
+                      without reading an inbox or using the guest order key to
+                      decrypt inbound messages.
                     </p>
                     <Textarea
                       id={`booth-confirmation-${vm.orderId}`}

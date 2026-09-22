@@ -201,7 +201,7 @@ import {
   rememberCoordinatedMerchantHandoffFallback,
 } from "../lib/event-market-handoff-fallback"
 import {
-  canRenderMerchantPresentSaleDirectWrapQr,
+  canRenderMerchantPresentSaleDirectAuthorizationQr,
   deliverMerchantPresentSaleAuthorization,
   getMerchantPresentSaleDeliveryMode,
   prepareMerchantPresentSaleAuthorization,
@@ -3078,7 +3078,7 @@ function OrdersPage() {
                                       </div>
                                       <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
                                         Have the buyer scan or copy this exact
-                                        encrypted wrap on this device. It
+                                        signed confirmation on this device. It
                                         expires at{" "}
                                         {new Date(
                                           selectedMerchantPresentDelivery.expiresAt *
@@ -3087,7 +3087,7 @@ function OrdersPage() {
                                         . Nothing is published to a guest inbox.
                                       </p>
                                     </div>
-                                    {canRenderMerchantPresentSaleDirectWrapQr(
+                                    {canRenderMerchantPresentSaleDirectAuthorizationQr(
                                       selectedMerchantPresentDelivery.transferValue
                                     ) ? (
                                       <div
@@ -3105,15 +3105,15 @@ function OrdersPage() {
                                       </div>
                                     ) : (
                                       <p className="rounded-md border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
-                                        This encrypted wrap is too large for one
-                                        reliable QR code. Use the exact copy
-                                        transfer below.
+                                        This signed confirmation is too large
+                                        for one reliable QR code. Use the exact
+                                        copy transfer below.
                                       </p>
                                     )}
                                     <Textarea
                                       readOnly
                                       rows={3}
-                                      aria-label="Guest booth authorization encrypted wrap"
+                                      aria-label="Guest booth authorization signed confirmation"
                                       value={
                                         selectedMerchantPresentDelivery.transferValue
                                       }
@@ -3127,7 +3127,7 @@ function OrdersPage() {
                                       onClick={() => {
                                         if (!navigator.clipboard) {
                                           flash(
-                                            "Copy is unavailable; use the encrypted wrap field"
+                                            "Copy is unavailable; use the signed confirmation field"
                                           )
                                           return
                                         }
@@ -3137,7 +3137,7 @@ function OrdersPage() {
                                           )
                                           .then(() =>
                                             flash(
-                                              "Encrypted guest authorization copied"
+                                              "Signed guest authorization copied"
                                             )
                                           )
                                           .catch(() =>
@@ -3151,7 +3151,7 @@ function OrdersPage() {
                                         className="size-4"
                                         aria-hidden="true"
                                       />
-                                      Copy encrypted wrap
+                                      Copy signed confirmation
                                     </Button>
                                   </div>
                                 )}

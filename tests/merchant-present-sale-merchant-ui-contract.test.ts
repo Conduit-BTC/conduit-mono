@@ -50,7 +50,9 @@ describe("merchant booth authorization UI contract", () => {
       /communicationState === "guest_out_of_band" &&\s+!selectedIsMerchantPresentSale/
     )
     expect(source).toContain("Nothing is published to a guest inbox.")
-    expect(source).toContain("Copy encrypted wrap")
-    expect(source).toContain("This encrypted wrap is too large for one")
+    expect(source).toContain("Copy signed confirmation")
+    expect(source).toMatch(
+      /This signed confirmation is too large\s+for one reliable QR code/
+    )
   })
 })

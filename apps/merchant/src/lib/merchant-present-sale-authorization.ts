@@ -9,7 +9,7 @@ import {
   createValidatedOrderRouteScope,
   orderSchema,
   parseOrderMessageRumorEvent,
-  prepareMerchantPresentSaleDirectWrap,
+  prepareMerchantPresentSaleDirectAuthorization,
   publishPrivateMessage,
   type MerchantPresentSaleAuthorizationSchema,
   type OrderSchema,
@@ -31,7 +31,7 @@ export type MerchantPresentSaleDeliveryResult =
       mode: "guest_direct"
       expiresAt: number
       transferValue: string
-      wrap: SignedPublicNostrEvent
+      event: SignedPublicNostrEvent
     }
 
 function assertMerchantPresentOrder(
@@ -123,10 +123,10 @@ export function prepareMerchantPresentSaleAuthorization(
   })
 }
 
-export function serializeMerchantPresentSaleDirectWrap(
-  wrap: SignedPublicNostrEvent
+export function serializeMerchantPresentSaleDirectAuthorization(
+  event: SignedPublicNostrEvent
 ): string {
-  return JSON.stringify(wrap)
+  return JSON.stringify(event)
 }
 
 // Version 40-L carries at most 2,953 bytes in byte mode. Leave headroom for
@@ -134,7 +134,7 @@ export function serializeMerchantPresentSaleDirectWrap(
 // the order surface. The exact copy/manual transfer remains available.
 const MAX_SINGLE_QR_TRANSFER_BYTES = 2_800
 
-export function canRenderMerchantPresentSaleDirectWrapQr(
+export function canRenderMerchantPresentSaleDirectAuthorizationQr(
   transferValue: string
 ): boolean {
   return (
@@ -153,7 +153,7 @@ export interface DeliverMerchantPresentSaleAuthorizationInput {
 }
 
 export interface MerchantPresentSaleDeliveryDependencies {
-  prepareGuestWrap: typeof prepareMerchantPresentSaleDirectWrap
+  prepareGuestAuthorization: typeof prepareMerchantPresentSaleDirectAuthorization
   publishSignedIn: (
     input: DeliverMerchantPresentSaleAuthorizationInput & { order: OrderSchema }
   ) => Promise<{
@@ -199,14 +199,14 @@ async function publishSignedInMerchantPresentSaleAuthorization(
 }
 
 const DEFAULT_DELIVERY_DEPENDENCIES: MerchantPresentSaleDeliveryDependencies = {
-  prepareGuestWrap: prepareMerchantPresentSaleDirectWrap,
+  prepareGuestAuthorization: prepareMerchantPresentSaleDirectAuthorization,
   publishSignedIn: publishSignedInMerchantPresentSaleAuthorization,
 }
 
 /**
  * Deliver the booth capability through exactly one identity-appropriate lane.
- * Signed-in buyers use their private order channel; guests receive one exact
- * NIP-59 wrap for direct in-person transfer and never gain an inbox.
+ * Signed-in buyers use their private order channel; guests receive one exact,
+ * merchant-signed direct transfer and never gain an inbox or decrypt authority.
  */
 export async function deliverMerchantPresentSaleAuthorization(
   input: DeliverMerchantPresentSaleAuthorizationInput,
@@ -229,15 +229,15 @@ export async function deliverMerchantPresentSaleAuthorization(
   }
 
   if (mode === "guest_direct") {
-    const wrap = await dependencies.prepareGuestWrap({
+    const event = await dependencies.prepareGuestAuthorization({
       authorization: input.authorization,
       merchantSigner: input.signer,
     })
     return {
       mode,
       expiresAt: input.authorization.expiresAt,
-      transferValue: serializeMerchantPresentSaleDirectWrap(wrap),
-      wrap,
+      transferValue: serializeMerchantPresentSaleDirectAuthorization(event),
+      event,
     }
   }
 

@@ -528,7 +528,7 @@ export async function consumeReadyMerchantPresentAuthorization(
   })
 }
 
-export function parseMerchantPresentDirectWrapText(
+export function parseMerchantPresentDirectAuthorizationText(
   text: string
 ): SignedPublicNostrEvent {
   let parsed: unknown

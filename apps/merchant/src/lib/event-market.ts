@@ -1351,9 +1351,6 @@ export async function publishMerchantOrganizerMembership(input: {
     collectionCoordinate: string
   ) => void | Promise<void>
 }): Promise<MerchantOrganizerRecordDelivery> {
-  if (input.action === "accept") {
-    assertOrganizerAcceptanceHandoffInvariant(input.market, input.item)
-  }
   const retainedCollection =
     input.retainedCollection ??
     loadOrganizerEventMarketDeliveryOutbox(input.organizerPubkey)[
@@ -1364,6 +1361,9 @@ export async function publishMerchantOrganizerMembership(input: {
     input.market,
     retainedCollection
   )
+  if (input.action === "accept") {
+    assertOrganizerAcceptanceHandoffInvariant(market, input.item)
+  }
   const retainedEvent = retainedCollection?.signedEvent
   const retainedCollectionIsUnrepresented =
     retainedCollection?.acknowledgedCount === 0 &&

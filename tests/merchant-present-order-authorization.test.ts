@@ -10,7 +10,7 @@ import {
   consumeReadyMerchantPresentAuthorization,
   deriveMerchantPresentAuthorizationState,
   getMerchantPresentOrderReview,
-  parseMerchantPresentDirectWrapText,
+  parseMerchantPresentDirectAuthorizationText,
   persistMerchantPresentOrderReview,
   resolveMerchantPresentOrderContext,
   type MerchantPresentAuthorizationLockManager,
@@ -378,11 +378,11 @@ describe("buyer merchant-present order authorization", () => {
     ).rejects.toThrow("already used")
   })
 
-  it("rejects pasted values before granting the guest decrypt capability", () => {
-    expect(() => parseMerchantPresentDirectWrapText("not-json")).toThrow(
-      "complete signed booth confirmation"
-    )
-    expect(() => parseMerchantPresentDirectWrapText("{}")).toThrow(
+  it("rejects malformed pasted guest confirmations before import", () => {
+    expect(() =>
+      parseMerchantPresentDirectAuthorizationText("not-json")
+    ).toThrow("complete signed booth confirmation")
+    expect(() => parseMerchantPresentDirectAuthorizationText("{}")).toThrow(
       "not a valid signed event"
     )
   })
