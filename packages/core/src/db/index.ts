@@ -3,6 +3,7 @@ import { config } from "../config"
 import type {
   OrderItemFulfillmentSchema,
   ProductShippingOptionReference,
+  ProductSupplierAllocation,
   ProductZapMessagePolicy,
 } from "../schemas"
 import type { RelayScanResult } from "../protocol/relay-settings"
@@ -120,6 +121,7 @@ export interface CachedProduct {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
+  supplierAllocation?: ProductSupplierAllocation
   location?: string
   eventId?: string
   eventCreatedAt?: number

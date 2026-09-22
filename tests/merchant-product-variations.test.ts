@@ -1442,15 +1442,50 @@ describe("merchant product variation planning", () => {
     ).toThrow(
       "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
     )
+  })
 
+  it("blocks unrelated saves from a degraded legacy cache that omitted allocation evidence", () => {
+    const legacyCachedPlan = buildProductFamilyChangePlan({
+      parentDTag: "legacy-cached-product",
+      baseProduct: baseProduct(),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+    const legacyCachedFamily = toFamily(legacyCachedPlan)
+    expect(
+      [legacyCachedFamily.root, ...legacyCachedFamily.variations].every(
+        ({ product }) => product.supplierAllocation === undefined
+      )
+    ).toBe(true)
+
+    expect(() =>
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline: legacyCachedFamily,
+        current: null,
+        nextAllocation: undefined,
+        evidenceComplete: false,
+      })
+    ).toThrow(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+  })
+
+  it("keeps explicit allocation absence publishable on an unrelated save", () => {
+    const explicitAbsent = {
+      state: "absent" as const,
+      recipients: [],
+      issues: [],
+    }
     const absentPlan = buildProductFamilyChangePlan({
       parentDTag: "ordinary-product",
-      baseProduct: baseProduct(),
+      baseProduct: baseProduct({ supplierAllocation: explicitAbsent }),
       variations: createEmptyProductVariationForm(),
       currency: "USD",
       now: NOW,
     })
     const absentFamily = toFamily(absentPlan)
+
     expect(
       validateProductFamilySupplierAllocationSaveSnapshot({
         baseline: absentFamily,
@@ -1459,6 +1494,73 @@ describe("merchant product variation planning", () => {
         evidenceComplete: false,
       })
     ).toEqual({ requiresCurrentSnapshot: false })
+  })
+
+  it("rejects a stale unrelated save when refresh restores cached allocation terms", () => {
+    const legacyCachedPlan = buildProductFamilyChangePlan({
+      parentDTag: "legacy-cached-product",
+      baseProduct: baseProduct(),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+    const legacyCachedFamily = toFamily(legacyCachedPlan)
+    const refreshedFamily = structuredClone(legacyCachedFamily)
+    const revisionEvent = {
+      id: "e".repeat(64),
+      pubkey: MERCHANT_PUBKEY,
+      created_at: Math.floor(NOW / 1_000),
+      kind: 30_402 as const,
+      tags: [
+        ["d", "legacy-cached-product"],
+        ["conduit_supplier_allocation", "1"],
+        ["zap", MERCHANT_PUBKEY, "wss://relay.conduit.market/", "3"],
+        ["zap", SUPPLIER_PUBKEY, "wss://nos.lol/", "1"],
+      ],
+      content: "Signed supplier allocation",
+      sig: "f".repeat(128),
+    }
+    const restoredAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+      revisionEventId: revisionEvent.id,
+      revisionCreatedAt: revisionEvent.created_at,
+      revisionEvent,
+    }
+    for (const record of [
+      refreshedFamily.root,
+      ...refreshedFamily.variations,
+    ]) {
+      record.product.supplierAllocation = restoredAllocation
+    }
+
+    expect(
+      productFamilySnapshotsMatch(legacyCachedFamily, refreshedFamily)
+    ).toBe(true)
+    expect(() =>
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline: legacyCachedFamily,
+        current: refreshedFamily,
+        nextAllocation: undefined,
+        evidenceComplete: true,
+      })
+    ).toThrow(
+      "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+    )
   })
 
   it("propagates supplier allocation rotation and removal across a variation family", () => {

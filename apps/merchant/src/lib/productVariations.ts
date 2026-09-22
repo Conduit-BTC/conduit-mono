@@ -159,6 +159,14 @@ function productFamilySupplierAllocationTermsChanged<
   )
 }
 
+function productFamilyHasUnknownSupplierAllocationEvidence<
+  TRecord extends ProductListingRecordLike,
+>(family: ProductListingFamily<TRecord>): boolean {
+  return [family.root, ...family.variations].some(
+    ({ product }) => product.supplierAllocation === undefined
+  )
+}
+
 function getProductListingRevisionKey(
   record: ProductListingRecordLike
 ): string {
@@ -206,7 +214,10 @@ export function validateProductFamilySupplierAllocationSaveSnapshot<
   nextAllocation: ProductSchema["supplierAllocation"]
   evidenceComplete: boolean
 }): { requiresCurrentSnapshot: boolean } {
+  const baselineHasUnknownAllocation =
+    productFamilyHasUnknownSupplierAllocationEvidence(input.baseline)
   const requiresCurrentSnapshot =
+    baselineHasUnknownAllocation ||
     (!!input.nextAllocation && input.nextAllocation.state !== "absent") ||
     productFamilySupplierAllocationChangeRequested(
       input.baseline,
@@ -221,7 +232,13 @@ export function validateProductFamilySupplierAllocationSaveSnapshot<
   }
   if (
     !input.current ||
-    !productFamilySnapshotsMatch(input.baseline, input.current)
+    !productFamilySnapshotsMatch(input.baseline, input.current) ||
+    (baselineHasUnknownAllocation &&
+      (productFamilyHasUnknownSupplierAllocationEvidence(input.current) ||
+        productFamilySupplierAllocationChangeRequested(
+          input.current,
+          input.nextAllocation
+        )))
   ) {
     throw new Error(
       "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
