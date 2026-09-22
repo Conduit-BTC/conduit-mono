@@ -4,6 +4,7 @@ import {
   buildClientErrorTelemetryProperties,
   createClientErrorRateLimiter,
   getClientErrorFamily,
+  getClientErrorMessage,
   sanitizeTelemetryEventProperties,
 } from "@conduit/core"
 
@@ -31,6 +32,35 @@ describe("client error telemetry", () => {
         )
       )
     ).toBe("non_error")
+  })
+
+  it("extracts display messages without trusting hostile thrown values", () => {
+    const fallback = "An unexpected error occurred."
+    const prototypeProxy = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error("private proxy prototype detail")
+        },
+      }
+    )
+    const messageProxy = new Proxy(new Error("private proxy message detail"), {
+      get(target, property, receiver) {
+        if (property === "message") {
+          throw new Error("private proxy property detail")
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })
+
+    expect(getClientErrorMessage(new Error("Readable error"), fallback)).toBe(
+      "Readable error"
+    )
+    expect(getClientErrorMessage("private rejection detail", fallback)).toBe(
+      fallback
+    )
+    expect(getClientErrorMessage(prototypeProxy, fallback)).toBe(fallback)
+    expect(getClientErrorMessage(messageProxy, fallback)).toBe(fallback)
   })
 
   it("builds an enum-only payload for the shared sanitizer", () => {
