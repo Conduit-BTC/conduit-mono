@@ -563,6 +563,7 @@ function mergeAcknowledgedRelayRefs(input: {
 export async function publishCheckoutSparkRecovery(input: {
   payload: CheckoutSparkRecoveryPayload
   signer: NDKSigner
+  signerInteraction?: PublishPrivateMessageInput["signerInteraction"]
   persistExactWrap: PersistCheckoutSparkRecoveryWrap
   transport?: CheckoutSparkRecoveryTransportOptions
 }): Promise<PublishCheckoutSparkRecoveryResult> {
@@ -597,7 +598,7 @@ export async function publishCheckoutSparkRecovery(input: {
     ...(transport?.shouldContinue
       ? { shouldContinue: transport.shouldContinue }
       : {}),
-    signerInteraction: "application_owned",
+    signerInteraction: input.signerInteraction ?? "application_owned",
     // Recovery traffic never uses the compatibility order relay lane.
     onWrapped: async (prepared) => {
       const record = buildRecoveryDeliveryRecord(payload, prepared)

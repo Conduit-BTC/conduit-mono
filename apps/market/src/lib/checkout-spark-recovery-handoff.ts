@@ -8,9 +8,10 @@ import {
   type CheckoutSparkRecoveryDeliveryProgress,
   type CheckoutSparkRecoveryDeliveryRecord,
   type CheckoutSparkRecoveryTransportOptions,
-  type PublishCheckoutSparkRecoveryResult,
+  type PublishCheckoutSparkRecoveryResult as CorePublishCheckoutSparkRecoveryResult,
   type RetryCheckoutSparkRecoveryResult,
 } from "@conduit/core"
+import type { NDKSigner } from "@nostr-dev-kit/ndk"
 
 import type { GuestOrderSigningIdentity } from "./guest-order-identity"
 import type { SparkRecoveryBundle } from "./spark-recovery-bundle"
@@ -21,11 +22,24 @@ const MAX_STORED_RECOVERY_DELIVERIES = 64
 
 type RecoveryStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">
 
+export type CheckoutSparkRecoverySigningIdentity =
+  | GuestOrderSigningIdentity
+  | {
+      kind: "signed_in"
+      pubkey: string
+      signer: NDKSigner
+    }
+
 export interface StoredCheckoutSparkRecoveryDelivery {
   record: CheckoutSparkRecoveryDeliveryRecord
   deliveryProgress: CheckoutSparkRecoveryDeliveryProgress
   savedAt: number
 }
+
+export type PublishCheckoutSparkRecoveryHandoffResult =
+  CorePublishCheckoutSparkRecoveryResult & {
+    handoffId: string
+  }
 
 function browserStorage(): RecoveryStorage | null {
   if (typeof window === "undefined") return null
@@ -208,18 +222,27 @@ export function deleteCheckoutSparkRecoveryDelivery(
 function assertScopedRecoveryInput(input: {
   plan: CheckoutSparkPlan
   recovery: SparkRecoveryBundle
-  identity: GuestOrderSigningIdentity
+  identity: CheckoutSparkRecoverySigningIdentity
   preparedAt: number
 }): string {
   const mnemonic = normalizeSparkMnemonic(input.recovery.mnemonic)
   if (
     !isValidSparkMnemonic(mnemonic) ||
-    input.recovery.network !== input.plan.network ||
-    input.identity.orderId !== input.plan.orderId ||
-    input.identity.merchantPubkey.trim().toLowerCase() !==
-      input.plan.merchantPubkey ||
-    input.preparedAt < input.identity.createdAt ||
-    input.preparedAt >= input.identity.expiresAt
+    input.recovery.network !== input.plan.network
+  ) {
+    throw new Error(
+      input.identity.kind === "guest_ephemeral"
+        ? "Checkout Spark recovery is outside its guest order scope."
+        : "Checkout Spark recovery is outside its checkout scope."
+    )
+  }
+  if (
+    input.identity.kind === "guest_ephemeral" &&
+    (input.identity.orderId !== input.plan.orderId ||
+      input.identity.merchantPubkey.trim().toLowerCase() !==
+        input.plan.merchantPubkey ||
+      input.preparedAt < input.identity.createdAt ||
+      input.preparedAt >= input.identity.expiresAt)
   ) {
     throw new Error("Checkout Spark recovery is outside its guest order scope.")
   }
@@ -233,12 +256,13 @@ function assertScopedRecoveryInput(input: {
 export async function publishCheckoutSparkRecoveryHandoff(input: {
   plan: CheckoutSparkPlan
   recovery: SparkRecoveryBundle
-  identity: GuestOrderSigningIdentity
+  identity: CheckoutSparkRecoverySigningIdentity
   preparedAt?: number
   storage?: RecoveryStorage | null
   transport?: CheckoutSparkRecoveryTransportOptions
   now?: () => number
-}): Promise<PublishCheckoutSparkRecoveryResult> {
+  onPersisted?: (handoffId: string) => void | Promise<void>
+}): Promise<PublishCheckoutSparkRecoveryHandoffResult> {
   const now = input.now ?? Date.now
   const preparedAt = input.preparedAt ?? now()
   const mnemonic = assertScopedRecoveryInput({
@@ -255,21 +279,29 @@ export async function publishCheckoutSparkRecoveryHandoff(input: {
     preparedAt,
   })
   const storage = input.storage === undefined ? browserStorage() : input.storage
-  let record: CheckoutSparkRecoveryDeliveryRecord | null = null
+  const persisted = {
+    record: null as CheckoutSparkRecoveryDeliveryRecord | null,
+  }
   const result = await publishCheckoutSparkRecovery({
     payload,
     signer: input.identity.signer,
+    signerInteraction:
+      input.identity.kind === "guest_ephemeral"
+        ? "application_owned"
+        : "external",
     transport: input.transport,
-    persistExactWrap: (preparedRecord, progress) => {
-      record = preparedRecord
+    persistExactWrap: async (preparedRecord, progress) => {
+      persisted.record = preparedRecord
       saveCheckoutSparkRecoveryDelivery(
         preparedRecord,
         progress,
         storage,
         now()
       )
+      await input.onPersisted?.(preparedRecord.handoffId)
     },
   })
+  const record = persisted.record
   if (!record) {
     throw new Error("Checkout Spark recovery wrapper was not persisted.")
   }
@@ -279,7 +311,7 @@ export async function publishCheckoutSparkRecoveryHandoff(input: {
     storage,
     now()
   )
-  return result
+  return { ...result, handoffId: record.handoffId }
 }
 
 /** Retry a previously persisted exact wrapper without accessing the mnemonic. */

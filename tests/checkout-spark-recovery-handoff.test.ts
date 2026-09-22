@@ -127,6 +127,7 @@ describe("checkout Spark recovery outbox", () => {
   it("durably saves ciphertext before publish and never stores wallet plaintext", async () => {
     const storage = new MemoryStorage()
     const calls: string[] = []
+    const persistedHandoffIds: string[] = []
     const relayUrls = ["wss://merchant.inbox.relay.dev"]
     const result = await publishCheckoutSparkRecoveryHandoff({
       plan: plan(),
@@ -139,6 +140,7 @@ describe("checkout Spark recovery outbox", () => {
       preparedAt: CREATED_AT + 1_000,
       storage,
       now: () => CREATED_AT + 2_000,
+      onPersisted: (handoffId) => persistedHandoffIds.push(handoffId),
       transport: {
         recipientInboxRelays: relayUrls,
         giftWrapFn: (async (_rumor, recipient) =>
@@ -155,6 +157,7 @@ describe("checkout Spark recovery outbox", () => {
     })
 
     expect(result.canExposeFundingInvoice).toBe(true)
+    expect(result.handoffId).toBe(persistedHandoffIds[0])
     expect(calls).toEqual(["persisted-before-publish"])
     const raw = Array.from(storage.values.values()).join("")
     expect(raw).not.toContain(MNEMONIC)
@@ -274,5 +277,36 @@ describe("checkout Spark recovery outbox", () => {
       })
     ).rejects.toThrow("outside its guest order scope")
     expect(storage.values.size).toBe(0)
+  })
+
+  it("delivers the same merchant recovery handoff for a signed-in checkout", async () => {
+    const storage = new MemoryStorage()
+    const relayUrls = ["wss://merchant.inbox.relay.dev"]
+    const result = await publishCheckoutSparkRecoveryHandoff({
+      plan: plan(),
+      recovery: {
+        mnemonic: MNEMONIC,
+        accountNumber: 0,
+        network: "mainnet",
+      },
+      identity: {
+        kind: "signed_in",
+        pubkey: BUYER_SIGNER.pubkey,
+        signer: BUYER_SIGNER,
+      },
+      preparedAt: CREATED_AT + 1_000,
+      storage,
+      now: () => CREATED_AT + 2_000,
+      transport: {
+        recipientInboxRelays: relayUrls,
+        giftWrapFn: (async (_rumor, recipient) =>
+          signedWrap(recipient.pubkey)) as never,
+        publishFn: (async (_event, options) =>
+          delivery(options.exclusiveRelayUrls ?? [])) as never,
+      },
+    })
+
+    expect(result.canExposeFundingInvoice).toBe(true)
+    expect(listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(1)
   })
 })
