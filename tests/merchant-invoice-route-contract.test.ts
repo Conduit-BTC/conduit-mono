@@ -10,6 +10,8 @@ describe("merchant invoice route contract", () => {
     const invoiceControls = panel.indexOf("<InvoicePayment")
 
     expect(source).toContain("prepareMerchantInvoicePaymentAction")
+    expect(source).toContain("releaseExpiredOrderInvoiceForRetry")
+    expect(source).toContain("onRenewExpiredInvoice")
     expect(source).toContain("pricing={shopperPricing}")
     expect(source).not.toContain("function ExternalWalletPanel")
     expect(prepareGate).toBeGreaterThan(-1)

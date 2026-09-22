@@ -586,6 +586,90 @@ export async function claimOrderLifecyclePayment(
   })
 }
 
+export type ExpiredOrderInvoiceRetryResult =
+  | { status: "released"; lifecycle: OrderLifecycle }
+  | { status: "preserved"; lifecycle: OrderLifecycle }
+  | { status: "missing"; lifecycle: null }
+
+/**
+ * Release one exact expired private invoice so the existing payment service can
+ * request a replacement. The explicit shopper action that calls this helper is
+ * the only authority to abandon the old invoice; fresh, public, merchant-issued,
+ * in-flight, paid, ambiguous, or proof-bearing state is preserved.
+ */
+export async function releaseExpiredOrderInvoiceForRetry(
+  orderId: string,
+  expectedInvoice: string,
+  nowMs = Date.now()
+): Promise<ExpiredOrderInvoiceRetryResult> {
+  const normalizedExpectedInvoice = normalizeLightningInvoice(expectedInvoice)
+  return db.transaction("rw", db.orderLifecycles, async () => {
+    const lifecycle = await db.orderLifecycles.get(orderId)
+    if (!lifecycle) return { status: "missing", lifecycle: null }
+
+    const storedInvoice = lifecycle.invoice
+      ? normalizeLightningInvoice(lifecycle.invoice)
+      : ""
+    const storedPaymentHash = storedInvoice
+      ? decodeLightningInvoicePaymentHash(storedInvoice)
+      : null
+    const nowSeconds = Math.floor(nowMs / 1_000)
+    const validation = storedInvoice
+      ? validateLightningInvoiceForPayment({
+          invoice: storedInvoice,
+          expectedAmountMsats: lifecycle.totalMsats,
+          nowSeconds,
+          allowExpired: true,
+        })
+      : null
+    const canRelease =
+      normalizedExpectedInvoice.length > 0 &&
+      storedInvoice.toLowerCase() === normalizedExpectedInvoice.toLowerCase() &&
+      lifecycle.checkoutMode === "private_checkout" &&
+      lifecycle.publicZapSigner === undefined &&
+      lifecycle.paymentTarget?.type === "manual" &&
+      lifecycle.orderDeliveryStatus === "sent" &&
+      lifecycle.phase !== "completed" &&
+      lifecycle.phase !== "cancelled" &&
+      lifecycle.completedAt === undefined &&
+      lifecycle.invoiceStatus === "manual_required" &&
+      lifecycle.paymentStatus === "manual_required" &&
+      lifecycle.proofDeliveryStatus === "not_started" &&
+      lifecycle.zapReceiptStatus === "not_applicable" &&
+      lifecycle.paymentClaimId === undefined &&
+      lifecycle.proofDeliveryClaimId === undefined &&
+      lifecycle.preimage === undefined &&
+      lifecycle.feeMsats === undefined &&
+      validation?.ok === true &&
+      validation.metadata.expiresAt === lifecycle.invoiceExpiresAt &&
+      validation.metadata.expiresAt! <= nowSeconds &&
+      storedPaymentHash !== null &&
+      storedPaymentHash.toLowerCase() === lifecycle.paymentHash?.toLowerCase()
+
+    if (!canRelease) return { status: "preserved", lifecycle }
+
+    const released = mergeOrderLifecyclePatch(lifecycle, {
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      proofDeliveryStatus: "not_started",
+      zapReceiptStatus: "not_applicable",
+      invoice: undefined,
+      paymentHash: undefined,
+      invoiceExpiresAt: undefined,
+      zapRequestId: undefined,
+      zapRequestCreatedAt: undefined,
+      zapReceiptId: undefined,
+      zapReceiptRelayUrls: undefined,
+      zapLnurl: undefined,
+      zapReceiptPubkey: undefined,
+      zapReceiptObservationDeadline: undefined,
+      lastError: "The previous invoice expired before payment.",
+    })
+    await db.orderLifecycles.put(released)
+    return { status: "released", lifecycle: released }
+  })
+}
+
 export function getOrderPaymentAddressReplacementAdmission(
   lifecycle: OrderLifecycle | undefined
 ): "replaceable" | "missing" | "unsafe_state" {

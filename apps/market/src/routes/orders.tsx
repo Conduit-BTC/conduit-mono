@@ -30,6 +30,7 @@ import {
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
   pubkeyToNpub,
+  releaseExpiredOrderInvoiceForRetry,
   replaceOrderPaymentTarget,
   resolveWalletPaymentInstance,
   selectProtectedReadRows,
@@ -978,6 +979,25 @@ function OrderDetail({
     setRecoveryError(null)
   }
 
+  async function renewExpiredInvoice(): Promise<void> {
+    await verifyRetryFreshness()
+    if (!vm.invoice) {
+      throw new Error("The expired invoice is no longer available.")
+    }
+    const released = await releaseExpiredOrderInvoiceForRetry(
+      vm.orderId,
+      vm.invoice
+    )
+    if (released.status !== "released") {
+      throw new Error(
+        released.status === "missing"
+          ? "Order payment state is unavailable."
+          : "Payment state changed in another tab. Refresh before trying again."
+      )
+    }
+    await retryPayment()
+  }
+
   async function runRetryPayment(
     ctx: OrderPaymentContext,
     update?: OrderPaymentAddressUpdate
@@ -1329,6 +1349,12 @@ function OrderDetail({
             autoDetectReceipt={autoDetectPublicReceipt}
             onBeforeInvoiceUse={beginMerchantInvoicePayment}
             onPrepareMerchantInvoice={prepareCurrentMerchantInvoice}
+            onRenewExpiredInvoice={
+              row.lifecycle?.checkoutMode === "private_checkout" &&
+              row.lifecycle.paymentTarget?.type === "manual"
+                ? () => withBusy(renewExpiredInvoice)
+                : undefined
+            }
             preparationScope={`${authGeneration}:${authenticatedPubkey ?? "guest"}:${buyerPubkey}:${vm.orderId}`}
             merchantInvoicePrepared={merchantInvoicePrepared}
             boundMerchantInvoiceExpiresAt={boundMerchantInvoiceExpiresAt}

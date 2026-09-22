@@ -34,6 +34,7 @@ import {
   recordOrderPaymentReceiptTimeout,
   recordOrderPaymentWalletSuccessRecovery,
   recordOrderPaymentPreparationFailure,
+  releaseExpiredOrderInvoiceForRetry,
   renewOrderPaymentProofDeliveryClaim,
   replaceOrderPaymentTarget,
   type OrderLifecycle,
@@ -765,6 +766,162 @@ describe("order payment admission", () => {
         state.lifecycle()!.paymentClaimLeaseExpiresAt! -
           state.lifecycle()!.paymentClaimedAt!
       ).toBe(ORDER_PAYMENT_CLAIM_LEASE_MS)
+    })
+  })
+
+  describe("expired manual invoice retry", () => {
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc20n",
+      createdAt: 1_800_000_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(17)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    const expired: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      paymentTarget: { type: "manual" },
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      zapReceiptStatus: "not_applicable",
+      invoice,
+      paymentHash: "11".repeat(32),
+      invoiceExpiresAt: 1_800_003_600,
+    }
+
+    it("atomically releases the exact expired private invoice for a new request", async () => {
+      const previousNetwork = config.lightningNetwork
+      config.lightningNetwork = "mainnet"
+      try {
+        await withMockOrderPaymentDb({ lifecycle: expired }, async (state) => {
+          const released = await releaseExpiredOrderInvoiceForRetry(
+            expired.orderId,
+            invoice,
+            1_800_003_601_000
+          )
+
+          expect(released.status).toBe("released")
+          expect(state.lifecycle()).toMatchObject({
+            invoiceStatus: "failed",
+            paymentStatus: "failed",
+            proofDeliveryStatus: "not_started",
+            zapReceiptStatus: "not_applicable",
+            lastError: "The previous invoice expired before payment.",
+          })
+          expect(state.lifecycle()?.invoice).toBeUndefined()
+          expect(state.lifecycle()?.paymentHash).toBeUndefined()
+          expect(state.lifecycle()?.invoiceExpiresAt).toBeUndefined()
+          expect(
+            getOrderLifecyclePaymentAdmission(state.lifecycle(), {
+              ...input,
+              checkoutMode: "private_checkout",
+              paymentTarget: { type: "manual" },
+            })
+          ).toBe("admissible")
+        })
+      } finally {
+        config.lightningNetwork = previousNetwork
+      }
+    })
+
+    it("preserves fresh, changed, public, merchant-issued, and uncertain invoice state", async () => {
+      const previousNetwork = config.lightningNetwork
+      config.lightningNetwork = "mainnet"
+      try {
+        for (const { candidate, expectedInvoice } of [
+          { candidate: expired, expectedInvoice: `${invoice}changed` },
+          {
+            candidate: {
+              ...expired,
+              checkoutMode: "public_zap_as_shopper" as const,
+            },
+            expectedInvoice: invoice,
+          },
+          {
+            candidate: { ...expired, checkoutMode: "pay_later" as const },
+            expectedInvoice: invoice,
+          },
+          {
+            candidate: {
+              ...expired,
+              paymentTarget: { type: "webln" as const },
+            },
+            expectedInvoice: invoice,
+          },
+          {
+            candidate: {
+              ...expired,
+              paymentStatus: "ambiguous" as const,
+            },
+            expectedInvoice: invoice,
+          },
+          {
+            candidate: {
+              ...expired,
+              proofDeliveryStatus: "pending" as const,
+            },
+            expectedInvoice: invoice,
+          },
+          {
+            candidate: { ...expired, paymentClaimId: "another-tab" },
+            expectedInvoice: invoice,
+          },
+        ]) {
+          await withMockOrderPaymentDb(
+            { lifecycle: candidate },
+            async (state) => {
+              const result = await releaseExpiredOrderInvoiceForRetry(
+                expired.orderId,
+                expectedInvoice,
+                1_800_003_601_000
+              )
+              expect(result.status).toBe("preserved")
+              expect(state.lifecycle()).toEqual(candidate)
+            }
+          )
+        }
+
+        await withMockOrderPaymentDb({ lifecycle: expired }, async (state) => {
+          const result = await releaseExpiredOrderInvoiceForRetry(
+            expired.orderId,
+            invoice,
+            1_800_003_599_000
+          )
+          expect(result.status).toBe("preserved")
+          expect(state.lifecycle()).toEqual(expired)
+        })
+      } finally {
+        config.lightningNetwork = previousNetwork
+      }
+    })
+
+    it("allows only one tab to release an expired invoice", async () => {
+      const previousNetwork = config.lightningNetwork
+      config.lightningNetwork = "mainnet"
+      try {
+        await withMockOrderPaymentDb({ lifecycle: expired }, async () => {
+          const results = await Promise.all([
+            releaseExpiredOrderInvoiceForRetry(
+              expired.orderId,
+              invoice,
+              1_800_003_601_000
+            ),
+            releaseExpiredOrderInvoiceForRetry(
+              expired.orderId,
+              invoice,
+              1_800_003_601_000
+            ),
+          ])
+          expect(results.map((result) => result.status)).toEqual([
+            "released",
+            "preserved",
+          ])
+        })
+      } finally {
+        config.lightningNetwork = previousNetwork
+      }
     })
   })
 
