@@ -18,11 +18,10 @@ describe("merchant-present buyer Orders UI contract", () => {
     expect(authorization).toContain(
       "validateMerchantPresentSaleAuthorization({"
     )
-    expect(orders).toContain(
-      "guestIdentity.createMerchantPresentSaleDirectDecrypt({"
-    )
-    expect(orders).toContain("receiveMerchantPresentSaleDirectWrap({")
-    expect(orders).toContain("wrap,")
+    expect(orders).toContain("receiveMerchantPresentSaleDirectAuthorization({")
+    expect(orders).toContain("event,")
+    expect(orders).not.toContain("createMerchantPresentSaleDirectDecrypt")
+    expect(orders).not.toContain("guestIdentity.signer.decrypt")
     expect(orders).not.toContain("fetchGuestMerchantPresentAuthorization")
   })
 

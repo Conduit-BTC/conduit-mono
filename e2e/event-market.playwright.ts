@@ -4604,6 +4604,295 @@ test("guest remote merchant pickup reaches a manual invoice without reading unse
   }
 })
 
+test("legacy equivalent booth pickups reconcile into one combined order without rewriting historical authority @market @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(300_000)
+  page.setDefaultTimeout(25_000)
+  page.setDefaultNavigationTimeout(30_000)
+  const relay = createRelayHarness()
+  const createdAt = Math.floor(Date.now() / 1000)
+  relay.seed(
+    createInboxDeclaration("organizer", createdAt),
+    createInboxDeclaration("merchant", createdAt + 1),
+    createInboxDeclaration("buyer", createdAt + 2)
+  )
+  await installSyntheticEnvironment(page, relay, "legacy-pickup-reconciliation")
+  const market = await publishOrganizerMarket(page, relay, {
+    title: "Synthetic legacy booth reconciliation",
+    organizerHandoffEnabled: false,
+  })
+  const productCreatedAt = market.initialCollection.created_at + 1
+  const legacyPickups = ["legacy-booth-a", "legacy-booth-b"].map((dTag) =>
+    signEvent(MERCHANT_SECRET, {
+      kind: 30406,
+      created_at: productCreatedAt,
+      content: "",
+      tags: [
+        ["d", dTag],
+        ["title", "Synthetic legacy booth"],
+        ["price", "0", "SAT"],
+        ["country", "US"],
+        ["service", "pickup"],
+        ["location", "Synthetic legacy aisle"],
+      ],
+    })
+  )
+  const legacyProducts = [
+    createMerchantProductEvent({
+      dTag: "legacy-booth-coffee",
+      title: "Synthetic legacy booth coffee",
+      collectionCoordinate: market.collectionCoordinate,
+      pickupCoordinate: eventCoordinate(legacyPickups[0]!),
+      createdAt: productCreatedAt,
+    }),
+    createMerchantProductEvent({
+      dTag: "legacy-booth-pastry",
+      title: "Synthetic legacy booth pastry",
+      collectionCoordinate: market.collectionCoordinate,
+      pickupCoordinate: eventCoordinate(legacyPickups[1]!),
+      createdAt: productCreatedAt,
+    }),
+  ]
+  relay.seed(
+    ...legacyPickups,
+    ...legacyProducts,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30405,
+      created_at: productCreatedAt + 1,
+      content: market.initialCollection.content,
+      tags: [
+        ...market.initialCollection.tags,
+        ...legacyProducts.map((product) => ["a", eventCoordinate(product)]),
+      ],
+    })
+  )
+
+  // Place one order before migration. Its exact pickup snapshot must remain
+  // merchant-only and usable after the public product revisions move forward.
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  await page
+    .getByRole("listitem")
+    .filter({ hasText: "Synthetic legacy booth coffee" })
+    .getByRole("button", { name: "Add", exact: true })
+    .click()
+  await expect
+    .poll(() => readCanonicalCartLines(page))
+    .toEqual([
+      {
+        productId: eventCoordinate(legacyProducts[0]!),
+        quantity: 1,
+      },
+    ])
+  await gotoAs(page, marketUrl, "/checkout", "buyer", {
+    merchant: nip19.npubEncode(MERCHANT_PUBKEY),
+  })
+  await expect(
+    page.getByRole("heading", { name: "Send Order", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  const historicalOrderStart = relay.publications.length
+  await page.getByRole("button", { name: /^Send order$/i }).click()
+  await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  const historicalOrder = uniquePrivatePublications(
+    decryptPrivatePublications(
+      relay.publications,
+      MERCHANT_SECRET,
+      historicalOrderStart
+    )
+  ).find((message) => rumorType(message.rumor) === "order")
+  expect(historicalOrder).toBeTruthy()
+  expect(
+    historicalOrder!.rumor.tags
+      .filter((tag) => tag[0] === "p")
+      .map((tag) => tag[1])
+  ).toEqual([MERCHANT_PUBKEY])
+  expect(historicalOrder!.rumor.content).toContain(
+    eventCoordinate(legacyPickups[0]!)
+  )
+  const historicalOrderPayload = JSON.parse(historicalOrder!.rumor.content) as {
+    id: string
+  }
+  expect(
+    uniquePrivatePublications(
+      decryptPrivatePublications(
+        relay.publications,
+        ORGANIZER_SECRET,
+        historicalOrderStart
+      )
+    ).filter((message) => rumorType(message.rumor) === "order")
+  ).toEqual([])
+
+  // Reconcile the two semantically equivalent legacy records through the
+  // merchant-facing workflow. This also checkpoints the historical order.
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  const legacyArrangement = page.getByTestId(
+    "merchant-event-handoff-legacy_equivalent"
+  )
+  await expect(legacyArrangement).toBeVisible({ timeout: 30_000 })
+  await legacyArrangement
+    .getByRole("button", { name: "Reconcile event listings", exact: true })
+    .click()
+  const changeDialog = page.getByRole("dialog", {
+    name: "Review the event-wide handoff change",
+  })
+  await expect(changeDialog).toBeVisible()
+  const affectedListings = changeDialog.getByRole("region", {
+    name: "Affected event listings",
+  })
+  await expect(affectedListings).toContainText("Synthetic legacy booth coffee")
+  await expect(affectedListings).toContainText("Synthetic legacy booth pastry")
+  await changeDialog
+    .getByLabel("Pickup point or booth")
+    .fill("Synthetic unified booth")
+  const changeStart = relay.publications.length
+  const changeListings = changeDialog.getByRole("button", {
+    name: "Change 2 listings",
+    exact: true,
+  })
+  await expect(changeListings).toBeEnabled({ timeout: 30_000 })
+  await changeListings.click()
+  const transition = page.getByTestId("merchant-event-handoff-transition")
+  await expect(transition).toContainText("2 of 2", { timeout: 30_000 })
+  await expect(
+    transition.getByRole("button", {
+      name: "Check acceptance and finish",
+      exact: true,
+    })
+  ).toBeVisible()
+
+  const changeEvents = uniquePublishedEvents(
+    relay.publications.slice(changeStart)
+  )
+  const canonicalPickup = changeEvents.find(
+    (event) => event.kind === 30406 && event.pubkey === MERCHANT_PUBKEY
+  )
+  expect(canonicalPickup).toBeTruthy()
+  expect(canonicalPickup!.tags).toContainEqual([
+    "location",
+    "Synthetic unified booth",
+  ])
+  const revisedProducts = changeEvents.filter(
+    (event) =>
+      event.kind === 30402 &&
+      legacyProducts.some(
+        (product) => eventCoordinate(product) === eventCoordinate(event)
+      )
+  )
+  expect(revisedProducts).toHaveLength(2)
+  for (const revisedProduct of revisedProducts) {
+    expect(revisedProduct.tags).toContainEqual([
+      "shipping_option",
+      eventCoordinate(canonicalPickup!),
+    ])
+  }
+
+  // The product revisions deliberately become pending until the organizer
+  // signs current acceptance for both exact revisions.
+  await gotoAs(page, merchantUrl, "/events", "organizer")
+  await selectOrganizerMarket(page, "Synthetic legacy booth reconciliation")
+  const acceptButtons = page.getByRole("button", {
+    name: "Accept",
+    exact: true,
+  })
+  await expect(acceptButtons).toHaveCount(2, { timeout: 30_000 })
+  await acceptButtons.first().click()
+  // Organizer membership updates are merchant-grouped, so accepting either
+  // revised listing advances the exact current revisions for both products.
+  await expect(acceptButtons).toHaveCount(0, { timeout: 30_000 })
+
+  await gotoAs(page, merchantUrl, market.merchantParticipationPath, "merchant")
+  const finishingTransition = page.getByTestId(
+    "merchant-event-handoff-transition"
+  )
+  await finishingTransition
+    .getByRole("button", {
+      name: "Check acceptance and finish",
+      exact: true,
+    })
+    .click()
+  const consistentArrangement = page.getByTestId(
+    "merchant-event-handoff-consistent"
+  )
+  await expect(consistentArrangement).toContainText(
+    "2 existing event listings use this arrangement.",
+    { timeout: 30_000 }
+  )
+
+  // The historical order still resolves from its immutable signed snapshot,
+  // not the new canonical pickup or a newly exposed organizer copy.
+  await gotoAs(page, merchantUrl, "/orders", "merchant", {
+    order: historicalOrderPayload.id,
+  })
+  const historicalPickup = page.getByTestId("merchant-order-pickup")
+  await expect(historicalPickup).toContainText("Signed snapshot", {
+    timeout: 30_000,
+  })
+  await expect(historicalPickup).toContainText("Synthetic legacy aisle")
+  await expect(historicalPickup).not.toContainText("Synthetic unified booth")
+  const retainedHistoricalOrder = uniquePrivatePublications(
+    decryptPrivatePublications(
+      relay.publications,
+      MERCHANT_SECRET,
+      historicalOrderStart
+    )
+  ).find((message) => message.rumor.id === historicalOrder!.rumor.id)
+  expect(retainedHistoricalOrder?.rumor.content).toBe(
+    historicalOrder!.rumor.content
+  )
+
+  // Both revised products now share one cart purchase and one zero-cost order.
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  for (const title of [
+    "Synthetic legacy booth coffee",
+    "Synthetic legacy booth pastry",
+  ]) {
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: title })
+      .getByRole("button", { name: "Add", exact: true })
+      .click()
+  }
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await expect(page.getByLabel(/Clear .* purchase/)).toHaveCount(1)
+  const combinedOrderButton = page.getByRole("button", {
+    name: "Order",
+    exact: true,
+  })
+  await expect(combinedOrderButton).toHaveCount(1)
+  await combinedOrderButton.click()
+  await expect(
+    page.getByRole("heading", { name: "Send Order", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText(/No payment is required/).first()).toBeVisible()
+  const combinedOrderStart = relay.publications.length
+  await page.getByRole("button", { name: /^Send order$/i }).click()
+  await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  const combinedOrder = uniquePrivatePublications(
+    decryptPrivatePublications(
+      relay.publications,
+      MERCHANT_SECRET,
+      combinedOrderStart
+    )
+  ).find((message) => rumorType(message.rumor) === "order")
+  expect(combinedOrder).toBeTruthy()
+  const combinedPayload = JSON.parse(combinedOrder!.rumor.content) as {
+    items: Array<{ productId: string; quantity: number }>
+  }
+  expect(combinedPayload.items.map((item) => item.productId).sort()).toEqual(
+    legacyProducts.map(eventCoordinate).sort()
+  )
+  expect(combinedPayload.items.map((item) => item.quantity)).toEqual([1, 1])
+  expect(combinedOrder!.rumor.content).toContain(
+    eventCoordinate(canonicalPickup!)
+  )
+  expect(combinedOrder!.rumor.content).not.toContain(
+    eventCoordinate(legacyPickups[0]!)
+  )
+  expect(combinedOrder!.rumor.content).not.toContain(
+    eventCoordinate(legacyPickups[1]!)
+  )
+})
+
 test("merchant-present guest and signed-in purchases stay isolated and merchant-authorized @market @merchant", async ({
   context,
   page,
@@ -4827,22 +5116,27 @@ test("merchant-present guest and signed-in purchases stay isolated and merchant-
   await boothConfirmation
     .getByRole("button", { name: "Prepare direct transfer", exact: true })
     .click()
-  const directWrap = merchantPage.getByLabel(
-    "Guest booth authorization encrypted wrap",
+  const directAuthorization = merchantPage.getByLabel(
+    "Guest booth authorization signed confirmation",
     { exact: true }
   )
-  await expect(directWrap).toBeVisible({ timeout: 30_000 })
-  const directWrapValue = await directWrap.inputValue()
-  const directWrapEvent = JSON.parse(directWrapValue) as {
+  await expect(directAuthorization).toBeVisible({ timeout: 30_000 })
+  const directAuthorizationValue = await directAuthorization.inputValue()
+  const directAuthorizationEvent = JSON.parse(directAuthorizationValue) as {
     kind: number
+    pubkey: string
     tags: string[][]
   }
-  expect(directWrapEvent.kind).toBe(1059)
-  expect(directWrapEvent.tags).toContainEqual(["p", orderPayload.buyerPubkey])
+  expect(directAuthorizationEvent.kind).toBe(16)
+  expect(directAuthorizationEvent.pubkey).toBe(MERCHANT_PUBKEY)
+  expect(directAuthorizationEvent.tags).toContainEqual([
+    "p",
+    orderPayload.buyerPubkey,
+  ])
 
   await page
     .getByLabel("Paste merchant booth confirmation", { exact: true })
-    .fill(directWrapValue)
+    .fill(directAuthorizationValue)
   await page
     .getByRole("button", { name: "Verify confirmation", exact: true })
     .click()

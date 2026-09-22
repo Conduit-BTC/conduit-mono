@@ -111,35 +111,16 @@ describe("guest order signing identity", () => {
     ).rejects.toThrow("Guest order signer cannot decrypt inbound messages.")
   })
 
-  it("exposes only an exact order-and-merchant direct-wrap decrypt capability", () => {
-    const merchantPubkey = "a".repeat(64)
+  it("never exposes inbound decrypt authority", async () => {
     const identity = createGuestOrderSigningIdentity(
       "booth-order",
-      merchantPubkey
+      "a".repeat(64)
     )
-    const wrap = { pubkey: "b".repeat(64), content: "ciphertext" }
 
-    expect(() =>
-      identity.createMerchantPresentSaleDirectDecrypt({
-        orderId: "other-order",
-        merchantPubkey,
-        wrap,
-      })
-    ).toThrow("exact order and merchant")
-    expect(() =>
-      identity.createMerchantPresentSaleDirectDecrypt({
-        orderId: "booth-order",
-        merchantPubkey: "c".repeat(64),
-        wrap,
-      })
-    ).toThrow("exact order and merchant")
-    expect(
-      identity.createMerchantPresentSaleDirectDecrypt({
-        orderId: "booth-order",
-        merchantPubkey,
-        wrap,
-      })
-    ).toBeFunction()
+    expect("createMerchantPresentSaleDirectDecrypt" in identity).toBe(false)
+    await expect(
+      identity.signer.decrypt("merchant", "ciphertext", "nip44")
+    ).rejects.toThrow("cannot decrypt inbound messages")
   })
 
   it("restores an order-scoped signer from session storage", async () => {

@@ -187,6 +187,38 @@ describe("organizer own-product acceptance", () => {
     ).rejects.toThrow("conflicts with the merchant's event handoff arrangement")
   })
 
+  it("rejects a stale acceptance when a newer retained collection already accepted a conflicting handoff", async () => {
+    const candidate = market.participation[0]!
+    const staleMarket = {
+      ...market,
+      participation: [
+        candidate,
+        {
+          ...candidate,
+          productCoordinate: PRIOR_PRODUCT,
+          status: "pending" as const,
+          handoffMode: "organizer_handoff" as const,
+          handlerPubkey: OTHER,
+          pickupCoordinate: `30406:${OWNER}:organizer-booth`,
+        },
+      ],
+    } as MerchantOrganizerEventMarket
+    const retained = {
+      ...record,
+      signedEvent: signedCollection([PRIOR_PRODUCT], 13, "Retained event"),
+    }
+
+    await expect(
+      publishMerchantOrganizerMembership({
+        organizerPubkey: OWNER,
+        market: staleMarket,
+        item: candidate,
+        action: "accept",
+        retainedCollection: retained,
+      })
+    ).rejects.toThrow("conflicts with the merchant's event handoff arrangement")
+  })
+
   it("accepts another product only when the merchant/event handoff matches", async () => {
     const h = harness({
       ...market,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { NDKPrivateKeySigner, NDKUser } from "@nostr-dev-kit/ndk"
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
   assertMerchantPresentSalePaymentReview,
   buildMerchantPresentSaleReviewedCommerceFingerprint,
@@ -14,12 +14,11 @@ import {
   parseMerchantPresentSaleReviewedCommerceFingerprint,
   parseMerchantPresentSaleAuthorizationRumor,
   parseOrderMessageRumorEvent,
-  prepareMerchantPresentSaleDirectWrap,
-  receiveMerchantPresentSaleDirectWrap,
+  prepareMerchantPresentSaleDirectAuthorization,
+  receiveMerchantPresentSaleDirectAuthorization,
   validateMerchantPresentSaleAuthorization,
   type OrderSchema,
 } from "@conduit/core"
-import { createGuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
 
 const merchantPubkey = "a".repeat(64)
 const buyerPubkey = "b".repeat(64)
@@ -518,7 +517,7 @@ describe("merchant-present sale authorization", () => {
     ).toThrow("must be 32 bytes")
   })
 
-  it("prepares and receives one direct guest wrap without relay or signing authority", async () => {
+  it("prepares and receives one merchant-signed guest confirmation without guest decrypt authority", async () => {
     const merchantSigner = NDKPrivateKeySigner.generate()
     const buyerSigner = NDKPrivateKeySigner.generate()
     const dynamicOrder = rekeyOrder(
@@ -542,48 +541,29 @@ describe("merchant-present sale authorization", () => {
       issuedAt,
     })
 
-    const wrap = await prepareMerchantPresentSaleDirectWrap({
+    const event = await prepareMerchantPresentSaleDirectAuthorization({
       authorization: built,
       merchantSigner,
     })
-    expect(wrap.kind).toBe(EVENT_KINDS.GIFT_WRAP)
-    expect(wrap.tags).toEqual([["p", dynamicOrder.buyerPubkey]])
+    expect(event.kind).toBe(EVENT_KINDS.ORDER)
+    expect(event.pubkey).toBe(dynamicOrder.merchantPubkey)
+    expect(event.tags).toContainEqual(["p", dynamicOrder.buyerPubkey])
 
-    const guestIdentity = createGuestOrderSigningIdentity(
-      dynamicOrder.id,
-      dynamicOrder.merchantPubkey,
-      () => buyerSigner
-    )
-    const decrypt = guestIdentity.createMerchantPresentSaleDirectDecrypt({
-      orderId: dynamicOrder.id,
-      merchantPubkey: dynamicOrder.merchantPubkey,
-      wrap,
-    })
-    const received = await receiveMerchantPresentSaleDirectWrap({
-      wrap,
+    const received = receiveMerchantPresentSaleDirectAuthorization({
+      event,
       order: dynamicOrder,
       reviewedCommerceFingerprint: fingerprint,
       now: issuedAt,
-      decrypt,
     })
     expect(received).toEqual(built)
-    await expect(
-      decrypt(new NDKUser({ pubkey: wrap.pubkey }), wrap.content, "nip44")
-    ).rejects.toThrow("limited to one")
 
-    let wrongBuyerDecryptCalls = 0
-    await expect(
-      receiveMerchantPresentSaleDirectWrap({
-        wrap,
+    expect(() =>
+      receiveMerchantPresentSaleDirectAuthorization({
+        event,
         order: { ...dynamicOrder, buyerPubkey: "d".repeat(64) },
         reviewedCommerceFingerprint: fingerprint,
         now: issuedAt,
-        decrypt: async () => {
-          wrongBuyerDecryptCalls += 1
-          throw new Error("must not decrypt")
-        },
       })
-    ).rejects.toThrow("belongs to another buyer")
-    expect(wrongBuyerDecryptCalls).toBe(0)
+    ).toThrow("belongs to another sale")
   })
 })

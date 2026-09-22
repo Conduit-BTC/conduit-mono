@@ -7,7 +7,7 @@ import {
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
-  canRenderMerchantPresentSaleDirectWrapQr,
+  canRenderMerchantPresentSaleDirectAuthorizationQr,
   deliverMerchantPresentSaleAuthorization,
   getMerchantPresentSaleDeliveryMode,
   prepareMerchantPresentSaleAuthorization,
@@ -102,13 +102,13 @@ function boothOrder(
   }
 }
 
-const directWrap: SignedPublicNostrEvent = {
+const directAuthorization: SignedPublicNostrEvent = {
   id: "5".repeat(64),
-  pubkey: "6".repeat(64),
+  pubkey: merchantPubkey,
   created_at: 1_000,
-  kind: 1059,
+  kind: 16,
   tags: [["p", buyerPubkey]],
-  content: "encrypted",
+  content: "signed booth authorization",
   sig: "7".repeat(128),
 }
 
@@ -116,9 +116,9 @@ function dependencies(
   calls: string[]
 ): MerchantPresentSaleDeliveryDependencies {
   return {
-    prepareGuestWrap: async () => {
+    prepareGuestAuthorization: async () => {
       calls.push("guest")
-      return directWrap
+      return directAuthorization
     },
     publishSignedIn: async () => {
       calls.push("signed")
@@ -232,7 +232,7 @@ describe("merchant booth authorization delivery", () => {
     })
   })
 
-  it("prepares one exact direct wrap for a guest without publishing", async () => {
+  it("prepares one exact signed guest confirmation without publishing", async () => {
     const calls: string[] = []
     const order = boothOrder("guest_ephemeral")
     const authorization = prepareMerchantPresentSaleAuthorization({
@@ -255,16 +255,18 @@ describe("merchant booth authorization delivery", () => {
 
     expect(calls).toEqual(["guest"])
     expect(result.mode).toBe("guest_direct")
-    if (result.mode !== "guest_direct") throw new Error("Expected guest wrap")
-    expect(JSON.parse(result.transferValue)).toEqual(directWrap)
+    if (result.mode !== "guest_direct") {
+      throw new Error("Expected guest direct authorization")
+    }
+    expect(JSON.parse(result.transferValue)).toEqual(directAuthorization)
   })
 
-  it("renders a single QR only when the exact encrypted wrap safely fits", () => {
-    expect(canRenderMerchantPresentSaleDirectWrapQr("a".repeat(2_800))).toBe(
-      true
-    )
-    expect(canRenderMerchantPresentSaleDirectWrapQr("a".repeat(2_801))).toBe(
-      false
-    )
+  it("renders a single QR only when the signed confirmation safely fits", () => {
+    expect(
+      canRenderMerchantPresentSaleDirectAuthorizationQr("a".repeat(2_800))
+    ).toBe(true)
+    expect(
+      canRenderMerchantPresentSaleDirectAuthorizationQr("a".repeat(2_801))
+    ).toBe(false)
   })
 })
