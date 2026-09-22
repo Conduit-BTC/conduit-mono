@@ -95,6 +95,12 @@ export interface FetchEventsFanoutResult {
   events: NDKEvent[]
   relays: FetchEventsRelayStatus[]
   /**
+   * Exact relays that passed final source-policy admission and consumed this
+   * completed read's bounded attempt budget. Older injected adapters may omit
+   * this field; coverage callers must then fall back to their requested plan.
+   */
+  admittedRelayUrls?: string[]
+  /**
    * True only when every returned event completed id and Schnorr verification
    * through this module's bounded worker-backed pipeline.
    */
@@ -1334,7 +1340,12 @@ export async function fetchEventsFanoutDetailed(
   )
 
   if (relayUrls.length === 0) {
-    return { events: [], relays: [], eventsVerified: true }
+    return {
+      events: [],
+      relays: [],
+      admittedRelayUrls: [],
+      eventsVerified: true,
+    }
   }
 
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
@@ -1377,6 +1388,9 @@ export async function fetchEventsFanoutDetailed(
           options.onProgress({
             events: Array.from(progressEvents.values()),
             relays: [...progressRelays],
+            admittedRelayUrls: progressRelays.map(
+              ({ relayUrl: admittedRelayUrl }) => admittedRelayUrl
+            ),
             eventsVerified: true,
           })
         }
@@ -1400,6 +1414,7 @@ export async function fetchEventsFanoutDetailed(
           ? { rejectedEventCount: result.rejectedEventCount }
           : {}),
       })),
+      admittedRelayUrls: perRelayResults.map(({ relayUrl }) => relayUrl),
       eventsVerified: true,
     }
   } finally {

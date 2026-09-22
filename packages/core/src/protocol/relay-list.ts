@@ -677,14 +677,17 @@ export async function getRelayListsDetailed(
     const statusByRelay = new Map(
       result.relays.map((relay) => [relay.relayUrl, relay.status] as const)
     )
+    const admittedRelayUrls = result.admittedRelayUrls ?? relayUrls
     const verified = result.eventsVerified === true
     const transportComplete =
       verified &&
-      relayUrls.length > 0 &&
-      relayUrls.every((relayUrl) => statusByRelay.get(relayUrl) === "success")
+      admittedRelayUrls.length > 0 &&
+      admittedRelayUrls.every(
+        (relayUrl) => statusByRelay.get(relayUrl) === "success"
+      )
     const transportUsable =
       verified &&
-      relayUrls.some((relayUrl) => {
+      admittedRelayUrls.some((relayUrl) => {
         const status = statusByRelay.get(relayUrl)
         return status === "success" || status === "partial"
       })

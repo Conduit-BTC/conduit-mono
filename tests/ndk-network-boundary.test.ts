@@ -453,6 +453,7 @@ describe("NDK network boundary", () => {
       expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual([
         appRelayUrl,
       ])
+      expect(result.admittedRelayUrls).toEqual([appRelayUrl])
     } finally {
       opened.restore()
     }

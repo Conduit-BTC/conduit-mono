@@ -69,11 +69,13 @@ function relayRead(
     status: "success" | "partial" | "failed"
     rejectedEventCount?: number
   }>,
-  sources: Record<string, string[]> = {}
+  sources: Record<string, string[]> = {},
+  admittedRelayUrls?: string[]
 ) {
   return {
     events,
     eventSourceRelayUrls: sources,
+    ...(admittedRelayUrls ? { admittedRelayUrls } : {}),
     relays: relays.map((relay) => ({
       ...relay,
       eventCount: events.length,
@@ -537,6 +539,38 @@ describe("kind 10063 replacement selection and evidence", () => {
       "wss://one.conduit.market",
       "wss://two.conduit.market",
     ])
+  })
+
+  it("uses the admitted bounded plan for complete source-filtered reads", async () => {
+    const storage = new MemoryStorage()
+    const suppressedRelay = "wss://personal-disabled.conduit.market"
+    const admittedRelay = "wss://app-admitted.conduit.market"
+    const cappedRelay = "wss://app-beyond-cap.conduit.market"
+    const signed = event([["server", "https://media.conduit.market"]])
+    const result = await readMediaServerPreferences(OWNER, {
+      storage,
+      readRelayUrls: [suppressedRelay, admittedRelay, cappedRelay],
+      fetchEvents: async () =>
+        relayRead(
+          [signed],
+          [{ relayUrl: admittedRelay, status: "success" }],
+          { [signed.id]: [admittedRelay] },
+          [admittedRelay]
+        ),
+    })
+
+    expect(result).toMatchObject({
+      status: "published",
+      coverage: "complete",
+      stale: false,
+      retained: false,
+      lookup: {
+        plannedRelayCount: 1,
+        successfulRelayCount: 1,
+        failedRelayCount: 0,
+      },
+    })
+    expect(result.sourceRelayUrls).toEqual([admittedRelay])
   })
 
   it("retains stronger published evidence when a later lookup is partial", async () => {

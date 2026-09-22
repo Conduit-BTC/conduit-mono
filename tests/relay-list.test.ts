@@ -643,6 +643,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
         expect(options.relayUrls).toEqual(relayUrls)
         return {
           events: [],
+          admittedRelayUrls: relayUrls,
           relays: [
             {
               relayUrl: relayUrls[0]!,
@@ -661,6 +662,43 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     })
 
     expect(result.resolutionStates.get("alice")).toBe("partial-network")
+  })
+
+  it("uses the admitted bounded plan for completed relay-list absence", async () => {
+    const suppressedPersonalRelay = "wss://personal-disabled.example/"
+    const admittedAppRelay = "wss://app-admitted.example/"
+    const cappedAppRelay = "wss://app-beyond-cap.example/"
+    const relayUrls = [
+      suppressedPersonalRelay,
+      admittedAppRelay,
+      cappedAppRelay,
+    ]
+    __setRelayListTestOverrides({
+      fetchEventsFanoutDetailed: async (_filter, options) => {
+        expect(options.relayUrls).toEqual(relayUrls)
+        expect(options.maxRelayAttempts).toBe(1)
+        return {
+          events: [],
+          admittedRelayUrls: [admittedAppRelay],
+          relays: [
+            {
+              relayUrl: admittedAppRelay,
+              status: "success" as const,
+              eventCount: 0,
+            },
+          ],
+          eventsVerified: true,
+        }
+      },
+    })
+
+    const result = await getRelayListsDetailed(["alice"], {
+      relayUrls,
+      maxRelayAttempts: 1,
+      skipCache: true,
+    })
+
+    expect(result.resolutionStates.get("alice")).toBe("missing")
   })
 
   it("retains prior relay evidence when a forced lookup returns no event", async () => {
