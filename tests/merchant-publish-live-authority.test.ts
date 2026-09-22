@@ -52,7 +52,12 @@ describe("Merchant publish live account authority", () => {
       'import { StrictMode, useLayoutEffect } from "react"'
     )
     expect(worker).toContain(
-      "useLayoutEffect(\n    () => startProductDeletionDeliveryWorker(authenticatedPubkey)"
+      "startProductListingDeliveryWorker(authenticatedPubkey)"
     )
+    expect(worker).toContain(
+      "startProductDeletionDeliveryWorker(authenticatedPubkey)"
+    )
+    expect(worker).toContain("stopListingWorker()")
+    expect(worker).toContain("stopDeletionWorker()")
   })
 })
