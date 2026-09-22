@@ -1,4 +1,14 @@
-import { ChevronDown, Minus, Plus, ShoppingCart, Zap } from "lucide-react"
+import {
+  ChevronDown,
+  Download,
+  Minus,
+  Plus,
+  ShoppingCart,
+  Store,
+  Truck,
+  Zap,
+  type LucideIcon,
+} from "lucide-react"
 import { Link, useNavigate } from "@tanstack/react-router"
 import {
   getProfilePaymentAddress,
@@ -38,14 +48,76 @@ import {
   getCartItemKey,
   getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
+  getCartItemFulfillmentType,
   groupCartPurchases,
   isCartProductAvailabilityBlocking,
+  type CartPurchaseGroup,
 } from "../lib/cart-model"
 import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
 import { armHudZapIntent } from "../lib/hud-zap-intent"
 
 const HUD_EXIT_DURATION_MS = 240
+
+type PurchaseContext = {
+  Icon: LucideIcon
+  compactLabel: string
+  label: string
+  selectedLabel: string
+}
+
+function getPurchaseContext(group: CartPurchaseGroup): PurchaseContext {
+  if (group.kind === "pickup") {
+    const pickupTitle = group.items.find(
+      (item) => item.fulfillment?.type === "pickup"
+    )?.fulfillment
+    const pickupDetail =
+      pickupTitle?.type === "pickup"
+        ? pickupTitle.option.location?.trim() ||
+          pickupTitle.option.title?.trim()
+        : ""
+    return {
+      Icon: Store,
+      compactLabel: pickupDetail || "Event pickup",
+      label: pickupDetail ? `Event pickup - ${pickupDetail}` : "Event pickup",
+      selectedLabel: pickupDetail || "Event pickup",
+    }
+  }
+
+  const digitalOnly = group.items.every(
+    (item) => getCartItemFulfillmentType(item) === "digital"
+  )
+  return {
+    Icon: digitalOnly ? Download : Truck,
+    compactLabel: digitalOnly ? "Digital delivery" : "Delivery",
+    label: digitalOnly ? "Digital delivery" : "Delivery",
+    selectedLabel: digitalOnly ? "Digital delivery" : "Delivery",
+  }
+}
+
+function PurchaseContextLabel({
+  group,
+  compact = false,
+}: {
+  group: CartPurchaseGroup
+  compact?: boolean
+}) {
+  const context = getPurchaseContext(group)
+  const { Icon } = context
+  return (
+    <span className="flex min-w-0 max-w-full items-center gap-1 text-xs text-[var(--text-muted)]">
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span
+        className={cn(
+          "min-w-0",
+          compact ? "truncate" : "whitespace-normal break-words"
+        )}
+      >
+        {compact ? context.compactLabel : context.selectedLabel}
+      </span>
+    </span>
+  )
+}
 
 export type MarketCartHudProps = {
   pathname: string
@@ -380,11 +452,15 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               {groups.map((group) => {
                 const profile = profiles.data[group.merchantPubkey]
                 const selected = group.id === activeGroup.id
+                const context = getPurchaseContext(group)
+                const merchantLabel =
+                  getProfileName(profile) ?? formatNpub(group.merchantPubkey, 6)
                 return (
                   <button
                     key={group.id}
                     type="button"
                     aria-pressed={selected}
+                    aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}`}
                     onClick={() => activatePurchase(group.id)}
                     className={cn(
                       "market-cart-hud-item flex min-h-11 max-w-60 shrink-0 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none",
@@ -402,8 +478,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     <span className="min-w-0 text-left leading-tight">
                       <span className="flex min-w-0 items-center gap-2">
                         <span className="block max-w-32 truncate">
-                          {getProfileName(profile) ??
-                            formatNpub(group.merchantPubkey, 6)}
+                          {merchantLabel}
                         </span>
                         <StatusPill
                           variant="neutral"
@@ -413,6 +488,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                           {group.totalItems}
                         </StatusPill>
                       </span>
+                      <PurchaseContextLabel group={group} compact />
                     </span>
                   </button>
                 )
@@ -442,6 +518,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     {activeGroup.totalItems}
                   </StatusPill>
                 </span>
+                <PurchaseContextLabel group={activeGroup} compact />
               </span>
             </Link>
           )}
@@ -536,20 +613,28 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
           <div className="min-h-0 overflow-hidden">
             <div className="space-y-3 p-3 sm:p-4">
               {groups.length > 1 ? (
-                <Link
-                  to="/store/$pubkey"
-                  params={{ pubkey: selectedMerchant }}
-                  aria-label={`Open ${merchantName} merchant page`}
-                  className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-lg px-2 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                >
-                  <Avatar className="h-7 w-7">
-                    <AvatarImage src={activeProfile?.picture} alt="" />
-                    <AvatarFallback>
-                      <MerchantAvatarFallback iconClassName="h-4 w-4" />
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="truncate">{merchantName}</span>
-                </Link>
+                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1">
+                  <Link
+                    to="/store/$pubkey"
+                    params={{ pubkey: selectedMerchant }}
+                    aria-label={`Open ${merchantName} merchant page`}
+                    className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-lg px-2 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                  >
+                    <Avatar className="h-7 w-7">
+                      <AvatarImage src={activeProfile?.picture} alt="" />
+                      <AvatarFallback>
+                        <MerchantAvatarFallback iconClassName="h-4 w-4" />
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="truncate">{merchantName}</span>
+                  </Link>
+                  <span
+                    data-testid="selected-purchase-context"
+                    className="min-w-0 max-w-full"
+                  >
+                    <PurchaseContextLabel group={activeGroup} />
+                  </span>
+                </div>
               ) : null}
               <div
                 role="region"

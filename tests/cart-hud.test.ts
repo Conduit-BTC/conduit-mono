@@ -43,7 +43,27 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("min-h-11 w-fit min-w-0 max-w-60 items-center")
     expect(source.match(/<StatusPill/g)?.length).toBe(2)
     expect(source).toContain('variant="neutral"')
-    expect(source).not.toContain("getCartPurchaseReference")
+    expect(source).toContain(
+      'label: digitalOnly ? "Digital delivery" : "Delivery"'
+    )
+    expect(source).toMatch(/:\s*"Event pickup",/)
+    expect(source).toContain("pickupTitle.option.location?.trim()")
+    expect(source).toContain("pickupTitle.option.title?.trim()")
+    expect(source).toMatch(/Event pickup\s*-\s*\$\{pickupDetail\}/)
+    expect(source).toContain('compactLabel: pickupDetail || "Event pickup"')
+    expect(source).toContain('selectedLabel: pickupDetail || "Event pickup"')
+    expect(source).toContain("<PurchaseContextLabel group={group} compact />")
+    expect(source).toContain(
+      "<PurchaseContextLabel group={activeGroup} compact />"
+    )
+    expect(source).toContain("Truck,")
+    expect(source).toContain("Download,")
+    expect(source).toContain("Store,")
+    expect(source).toContain(
+      "aria-label={`${merchantLabel}, ${group.totalItems}"
+    )
+    expect(source).toContain("<PurchaseContextLabel group={activeGroup} />")
+    expect(source).toContain('aria-hidden="true"')
     expect(source).not.toContain("checkoutFallbackMessage")
     expect(source).toContain("View full cart")
   })

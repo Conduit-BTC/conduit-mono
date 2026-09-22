@@ -29,6 +29,105 @@ function cartSeed(merchantCount: number) {
   }
 }
 
+function sameMerchantFulfillmentCartSeed() {
+  const organizer = "a".repeat(64)
+  const merchant = MERCHANT_A
+  const pickup = (input: {
+    event: string
+    market: string
+    option: string
+    title: string
+    product: string
+    location: string
+  }) => ({
+    type: "pickup",
+    organizerPubkey: organizer,
+    product: {
+      coordinate: `30402:${merchant}:${input.product}`,
+      eventId: input.event,
+      createdAt: 100,
+      merchantPubkey: merchant,
+    },
+    calendar: {
+      coordinate: `31922:${organizer}:event-${input.market}`,
+      eventId: input.event,
+      createdAt: 101,
+    },
+    collection: {
+      coordinate: `30405:${organizer}:market-${input.market}`,
+      eventId: input.event,
+      createdAt: 102,
+    },
+    option: {
+      coordinate: `30406:${organizer}:pickup-${input.option}`,
+      eventId: input.event,
+      createdAt: 103,
+      title: input.title,
+      location: input.location,
+    },
+    handoffMode: "organizer_handoff",
+    handlerPubkey: organizer,
+    costSats: 0,
+    sourceCost: { amount: 0, currency: "SAT", normalizedCurrency: "SAT" },
+  })
+
+  return {
+    version: 2,
+    items: [
+      {
+        productId: `30402:${merchant}:delivery`,
+        merchantPubkey: merchant,
+        merchantAddedAt: 100,
+        title: "Shipped item",
+        price: 1_200,
+        currency: "SATS",
+        priceSats: 1_200,
+        format: "physical",
+        fulfillment: { type: "shipping" },
+        quantity: 1,
+      },
+      {
+        productId: `30402:${merchant}:pickup-main`,
+        merchantPubkey: merchant,
+        merchantAddedAt: 101,
+        title: "Main entrance item",
+        price: 1_200,
+        currency: "SATS",
+        priceSats: 1_200,
+        format: "physical",
+        fulfillment: pickup({
+          event: "1".repeat(64),
+          market: "main",
+          option: "main",
+          title: "Merchant pickup",
+          product: "pickup-main",
+          location: "Test location",
+        }),
+        quantity: 1,
+      },
+      {
+        productId: `30402:${merchant}:pickup-booth`,
+        merchantPubkey: merchant,
+        merchantAddedAt: 102,
+        title: "South booth item",
+        price: 1_200,
+        currency: "SATS",
+        priceSats: 1_200,
+        format: "physical",
+        fulfillment: pickup({
+          event: "2".repeat(64),
+          market: "south",
+          option: "south",
+          title: "Merchant pickup",
+          product: "pickup-booth",
+          location: "South booth pickup for late arrivals",
+        }),
+        quantity: 1,
+      },
+    ],
+  }
+}
+
 async function seedCart(page: Page, merchantCount: number): Promise<void> {
   await page.addInitScript((seed) => {
     localStorage.setItem("conduit:cart", JSON.stringify(seed))
@@ -224,6 +323,9 @@ test("market cart HUD keeps every fixed control inside the HUD across merchant-c
       if (merchantCount > 1) {
         const rail = hud.getByRole("group", { name: "Cart purchases" })
         await expect(rail.getByRole("button")).toHaveCount(merchantCount)
+        await expect(rail.getByRole("button").first()).toHaveAccessibleName(
+          /Digital delivery/
+        )
         const railBox = await rail.evaluate((element) => ({
           clientWidth: element.clientWidth,
           scrollWidth: element.scrollWidth,
@@ -371,6 +473,118 @@ test("market cart HUD rail activation expands a collapsed HUD for pointer and ke
   await merchantButtons.first().focus()
   await page.keyboard.press(" ")
   await expect(toggle).toHaveAttribute("aria-expanded", "true")
+})
+
+test("market cart HUD distinguishes same-merchant delivery and pickup purchases @market", async ({
+  page,
+}) => {
+  await page.addInitScript((seed) => {
+    localStorage.setItem("conduit:cart", JSON.stringify(seed))
+  }, sameMerchantFulfillmentCartSeed())
+  await page.goto(`${marketUrl}/products`)
+  await seedMerchantProfile(page, {
+    pubkey: MERCHANT_A,
+    name: "Fixture Market",
+  })
+  await page.reload()
+
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  await expect(hud).toBeVisible()
+  const rail = hud.getByRole("group", { name: "Cart purchases" })
+  const selectors = rail.getByRole("button")
+  await expect(selectors).toHaveCount(3)
+  await expect(selectors.nth(0)).toHaveAccessibleName(/Fixture Market/)
+  await expect(selectors.nth(1)).toHaveAccessibleName(/Fixture Market/)
+  await expect(selectors.nth(2)).toHaveAccessibleName(/Fixture Market/)
+
+  const names = await selectors.evaluateAll((buttons) =>
+    buttons.map((button) => button.getAttribute("aria-label") ?? "")
+  )
+  expect(names.every((name) => name.includes("Fixture Market"))).toBe(true)
+  expect(names.every((name) => name.includes("1 cart item"))).toBe(true)
+  expect(names[0]).toContain("Delivery")
+  expect(names[1]).toContain("Event pickup - Test location")
+  expect(names[2]).toContain(
+    "Event pickup - South booth pickup for late arrivals"
+  )
+  expect(new Set(names).size).toBe(3)
+  await expect(selectors.nth(1)).toContainText("Test location")
+  await expect(selectors.nth(1)).not.toContainText("Event pickup")
+  await expect(selectors.nth(2)).toContainText(
+    "South booth pickup for late arrivals"
+  )
+  await expect(selectors.nth(2)).not.toContainText("Event pickup")
+
+  const secondPickup = selectors.nth(2)
+  await secondPickup.focus()
+  await page.keyboard.press("Enter")
+  await expect(secondPickup).toHaveAttribute("aria-pressed", "true")
+  await expect(hud.getByTestId("selected-purchase-context")).toContainText(
+    "South booth pickup for late arrivals"
+  )
+  await expect(hud.getByTestId("selected-purchase-context")).not.toContainText(
+    "Event pickup"
+  )
+
+  await page.setViewportSize({ width: 390, height: 900 })
+  await expectInsideHud(page)
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const hud = document.querySelector(
+          "section[aria-label='Cart inventory']"
+        )
+        const context = hud?.querySelector(
+          "[data-testid='selected-purchase-context']"
+        )
+        if (!hud || !context) return "missing"
+        const label = context.querySelector("span > span:last-child")
+        if (!label) return "missing-label"
+        const hudBox = hud.getBoundingClientRect()
+        const contextBox = context.getBoundingClientRect()
+        if (document.documentElement.scrollWidth > window.innerWidth) {
+          return "page-overflow"
+        }
+        if (getComputedStyle(label).textOverflow === "ellipsis") {
+          return "truncated-label"
+        }
+        return contextBox.left >= hudBox.left - 0.5 &&
+          contextBox.right <= hudBox.right + 0.5
+          ? "contained"
+          : "context-overflow"
+      })
+    )
+    .toBe("contained")
+})
+
+test("market cart HUD shows compact pickup context for one purchase @market", async ({
+  page,
+}) => {
+  const seed = sameMerchantFulfillmentCartSeed()
+  seed.items = [seed.items[1]!]
+  await page.addInitScript((cart) => {
+    localStorage.setItem("conduit:cart", JSON.stringify(cart))
+  }, seed)
+  await page.goto(`${marketUrl}/products`)
+  await seedMerchantProfile(page, {
+    pubkey: MERCHANT_A,
+    name: "Fixture Market",
+  })
+  await page.reload()
+
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  await expect(hud).toBeVisible()
+  await expect(hud.getByRole("group", { name: "Cart purchases" })).toHaveCount(
+    0
+  )
+  const merchantLink = hud.getByRole("link", {
+    name: "Open Fixture Market merchant page",
+  })
+  await expect(merchantLink).toContainText("Test location")
+  await expect(merchantLink).not.toContainText("Event pickup")
+
+  await page.setViewportSize({ width: 390, height: 900 })
+  await expectInsideHud(page)
 })
 
 test("market cart HUD collapse restores focus from the panel to the disclosure toggle @market", async ({
