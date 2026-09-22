@@ -180,16 +180,16 @@ export {
   type ProductImageUrlCollectionFieldProps,
 } from "./ProductImageUrlCollectionField"
 export {
+  ClaveConnectButton,
+  claveConnectUrl,
+  type ClaveConnectButtonProps,
+} from "./ClaveConnectButton"
+export {
   EventMarketCard,
   type EventMarketCardProps,
   type EventMarketCardStatusTone,
 } from "./EventMarketCard"
 export { EventPageHeader, type EventPageHeaderProps } from "./EventPageHeader"
-export {
-  ClaveConnectButton,
-  claveConnectUrl,
-  type ClaveConnectButtonProps,
-} from "./ClaveConnectButton"
 export {
   NoSignerSetupGuide,
   SignerConnectPanel,

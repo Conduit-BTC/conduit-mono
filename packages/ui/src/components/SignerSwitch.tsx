@@ -298,6 +298,7 @@ function SignerDisconnectedContent({
   const platform =
     requestedPlatform ?? (mobile === false ? "desktop" : getSignerPlatform())
   const isMobile = mobile ?? platform !== "desktop"
+  const reconnectOnly = rememberedMethod === "nip46"
   const pairing = useSignerPairing({
     autoPrepare: platform === "ios" || platform === "android",
     connectPending,
@@ -345,7 +346,7 @@ function SignerDisconnectedContent({
           </Button>
         )}
 
-        {!isMobile && (
+        {!reconnectOnly && !isMobile && (
           <ExtensionConnectButton
             connectPending={connectPending && connectingMethod === "nip07"}
             connectDisabled={connectDisabled || !extensionAvailable}
@@ -353,17 +354,19 @@ function SignerDisconnectedContent({
           />
         )}
 
-        <RemoteSignerConnect
-          connectPending={connectPending && connectingMethod === "nip46"}
-          connectDisabled={connectDisabled}
-          platform={platform}
-          error={error}
-          errorId={errorId}
-          nostrConnectUri={nostrConnectUri}
-          onConnectNostrConnect={pairing.start}
-          onConnectBunker={(uri) => pairing.run(() => onConnectRemote(uri))}
-          onCancelConnect={pairing.cancel}
-        />
+        {!reconnectOnly && (
+          <RemoteSignerConnect
+            connectPending={connectPending && connectingMethod === "nip46"}
+            connectDisabled={connectDisabled}
+            platform={platform}
+            error={error}
+            errorId={errorId}
+            nostrConnectUri={nostrConnectUri}
+            onConnectNostrConnect={pairing.start}
+            onConnectBunker={(uri) => pairing.run(() => onConnectRemote(uri))}
+            onCancelConnect={pairing.cancel}
+          />
+        )}
 
         {error && (
           <div

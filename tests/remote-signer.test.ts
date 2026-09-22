@@ -10,6 +10,7 @@ import {
   bumpAuthRevision,
   claimAuthRevision,
   cleanupInvalidatedAuthSession,
+  commitRemoteSignerConnection,
   forgetAuthSession,
   logoutRemoteSigner,
   prepareRemoteSignerSessionStorage,
@@ -92,10 +93,10 @@ function fakeSigner(
       relays: ["wss://relay.example"],
       secret: null,
     },
-    sendRequest: async (method) => (method === "connect" ? "ack" : "ok"),
+    sendRequest: async (method) =>
+      method === "connect" ? "ack" : method === "switch_relays" ? null : "ok",
     ping: async () => undefined,
     getPublicKey: async () => USER_PUBKEY,
-    switchRelays: async () => false,
     signEvent: async (event) => finalizeEvent(event, USER_SECRET),
     nip04Encrypt: async (_pubkey, value) => `04:${value}`,
     nip04Decrypt: async (_pubkey, value) => value.replace("04:", ""),
@@ -805,7 +806,8 @@ describe("remote signer lifecycle", () => {
     await expect(
       connection.signer.encrypt(
         new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "payload"
+        "payload",
+        "nip44"
       )
     ).rejects.toThrow("session is unavailable")
   })
@@ -848,7 +850,8 @@ describe("remote signer lifecycle", () => {
     await expect(
       connection.signer.encrypt(
         new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "payload"
+        "payload",
+        "nip44"
       )
     ).rejects.toThrow("session is unavailable")
   })
@@ -901,7 +904,8 @@ describe("remote signer lifecycle", () => {
     await expect(
       connection.signer.encrypt(
         new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "payload"
+        "payload",
+        "nip44"
       )
     ).rejects.toThrow("session is unavailable")
   })
@@ -934,6 +938,7 @@ describe("remote signer lifecycle", () => {
     let factoryPointer:
       { pubkey: string; relays: string[]; secret: string | null } | undefined
     let authCallback: ((url: string) => void) | undefined
+    let connectParams: string[] | undefined
     const onAuthUrl = () => undefined
     const result = await pairRemoteSigner(BUNKER_URI, {
       keyVault: new MemoryKeyVault(),
@@ -941,19 +946,34 @@ describe("remote signer lifecycle", () => {
       createBunkerSigner: (_key, pointer, params) => {
         factoryPointer = pointer
         authCallback = params.onauth
-        const signer = fakeSigner()
-        signer.switchRelays = async () => {
-          throw new Error("relay migration must not run during pairing")
-        }
+        const signer = fakeSigner({
+          sendRequest: async (method, params) => {
+            if (method === "connect") {
+              connectParams = params
+              return "ack"
+            }
+            return method === "switch_relays" ? null : "ok"
+          },
+        })
         return signer
       },
       onAuthUrl,
+      clientMetadata: {
+        name: "Conduit",
+        url: "https://conduit.market",
+      },
       now: () => 25,
     })
 
     expect(factoryPointer?.pubkey).toBe(REMOTE_PUBKEY)
     expect(factoryPointer?.secret).toBe("pair-secret")
     expect(authCallback).toBe(onAuthUrl)
+    expect(connectParams).toEqual([
+      REMOTE_PUBKEY,
+      "pair-secret",
+      "sign_event,get_public_key,nip44_encrypt,nip44_decrypt,nip04_decrypt",
+      JSON.stringify({ name: "Conduit", url: "https://conduit.market" }),
+    ])
     expect(result.session).toMatchObject({
       version: 1,
       type: "nip46",
@@ -970,6 +990,264 @@ describe("remote signer lifecycle", () => {
     expect(result.session.remoteSignerPubkey).not.toBe(
       result.session.userPubkey
     )
+  })
+
+  it("adopts signer-selected relays only after the replacement route verifies", async () => {
+    const nextRelayUrls = [
+      "wss://signer-one.example",
+      "wss://signer-two.example",
+    ]
+    const signerResponseRelayUrls = [
+      nextRelayUrls[0],
+      nextRelayUrls[0],
+      nextRelayUrls[1],
+    ]
+    let factoryCalls = 0
+    let previousCloseCalls = 0
+    let candidatePingCalls = 0
+
+    const result = await pairRemoteSigner(BUNKER_URI, {
+      keyVault: new MemoryKeyVault(),
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      createBunkerSigner: (_key, pointer) => {
+        factoryCalls += 1
+        if (factoryCalls === 1) {
+          return fakeSigner({
+            sendRequest: async (method) =>
+              method === "connect"
+                ? "ack"
+                : method === "switch_relays"
+                  ? JSON.stringify(signerResponseRelayUrls)
+                  : "ok",
+            close: async () => {
+              previousCloseCalls += 1
+            },
+          })
+        }
+        expect(pointer).toEqual({
+          pubkey: REMOTE_PUBKEY,
+          relays: nextRelayUrls,
+          secret: null,
+        })
+        return fakeSigner({
+          bp: pointer,
+          ping: async () => {
+            candidatePingCalls += 1
+          },
+        })
+      },
+    })
+
+    expect(factoryCalls).toBe(2)
+    expect(candidatePingCalls).toBe(1)
+    expect(result.session.relayUrls).toEqual(nextRelayUrls)
+    expect(result.bunkerSigner.bp.relays).toEqual(nextRelayUrls)
+    expect(previousCloseCalls).toBe(0)
+
+    const storage = new MemoryStorage()
+    expect(
+      await persistRemoteSignerSession(result, storage, new MemoryKeyVault())
+    ).toBe(true)
+    expect(readAuthSession(storage)).toMatchObject({ relayUrls: nextRelayUrls })
+    await commitRemoteSignerConnection(result)
+    expect(previousCloseCalls).toBe(1)
+  })
+
+  it("accepts string null plus observed raw-null relay-switch compatibility", async () => {
+    for (const switchResult of [null, "null"] as const) {
+      let factoryCalls = 0
+      const result = await pairRemoteSigner(BUNKER_URI, {
+        keyVault: new MemoryKeyVault(),
+        generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+        createBunkerSigner: () => {
+          factoryCalls += 1
+          return fakeSigner({
+            sendRequest: async (method) =>
+              method === "connect"
+                ? "ack"
+                : method === "switch_relays"
+                  ? switchResult
+                  : "ok",
+          })
+        },
+      })
+
+      expect(factoryCalls).toBe(1)
+      expect(result.session.relayUrls).toEqual(["wss://relay.example"])
+    }
+  })
+
+  it("retains the verified route after an invalid signer relay list", async () => {
+    let retainedPingCalls = 0
+    const result = await pairRemoteSigner(BUNKER_URI, {
+      keyVault: new MemoryKeyVault(),
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      createBunkerSigner: () =>
+        fakeSigner({
+          sendRequest: async (method) =>
+            method === "connect"
+              ? "ack"
+              : method === "switch_relays"
+                ? JSON.stringify(["ws://insecure.example"])
+                : "ok",
+          ping: async () => {
+            retainedPingCalls += 1
+          },
+        }),
+    })
+
+    expect(retainedPingCalls).toBe(1)
+    expect(result.session.relayUrls).toEqual(["wss://relay.example"])
+  })
+
+  it("rolls back a timed-out candidate to the reverified current route", async () => {
+    let factoryCalls = 0
+    let candidateCloseCalls = 0
+    let retainedPingCalls = 0
+    const result = await pairRemoteSigner(BUNKER_URI, {
+      keyVault: new MemoryKeyVault(),
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      timeoutMs: 1,
+      createBunkerSigner: (_key, pointer) => {
+        factoryCalls += 1
+        if (factoryCalls === 1) {
+          return fakeSigner({
+            sendRequest: async (method) =>
+              method === "connect"
+                ? "ack"
+                : method === "switch_relays"
+                  ? JSON.stringify(["wss://candidate.example"])
+                  : "ok",
+            ping: async () => {
+              retainedPingCalls += 1
+            },
+          })
+        }
+        return fakeSigner({
+          bp: pointer,
+          ping: () => new Promise(() => undefined),
+          close: async () => {
+            candidateCloseCalls += 1
+          },
+        })
+      },
+    })
+
+    expect(factoryCalls).toBe(2)
+    expect(candidateCloseCalls).toBe(1)
+    expect(retainedPingCalls).toBe(1)
+    expect(result.session.relayUrls).toEqual(["wss://relay.example"])
+  })
+
+  it("rolls back a wrong-account candidate to the exact verified session", async () => {
+    let factoryCalls = 0
+    let retainedIdentityCalls = 0
+    let candidateCloseCalls = 0
+    const result = await pairRemoteSigner(BUNKER_URI, {
+      keyVault: new MemoryKeyVault(),
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      createBunkerSigner: (_key, pointer) => {
+        factoryCalls += 1
+        if (factoryCalls === 1) {
+          return fakeSigner({
+            sendRequest: async (method) =>
+              method === "connect"
+                ? "ack"
+                : method === "switch_relays"
+                  ? JSON.stringify(["wss://candidate.example"])
+                  : "ok",
+            getPublicKey: async () => {
+              retainedIdentityCalls += 1
+              return USER_PUBKEY
+            },
+          })
+        }
+        return fakeSigner({
+          bp: pointer,
+          getPublicKey: async () => OTHER_PUBKEY,
+          close: async () => {
+            candidateCloseCalls += 1
+          },
+        })
+      },
+    })
+
+    expect(retainedIdentityCalls).toBe(2)
+    expect(candidateCloseCalls).toBe(1)
+    expect(result.session.userPubkey).toBe(USER_PUBKEY)
+    expect(result.session.relayUrls).toEqual(["wss://relay.example"])
+  })
+
+  it("fails when neither the candidate nor current route can be verified", async () => {
+    let factoryCalls = 0
+    let currentPingCalls = 0
+    await expect(
+      pairRemoteSigner(BUNKER_URI, {
+        keyVault: new MemoryKeyVault(),
+        generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+        createBunkerSigner: (_key, pointer) => {
+          factoryCalls += 1
+          if (factoryCalls === 1) {
+            return fakeSigner({
+              sendRequest: async (method) =>
+                method === "connect"
+                  ? "ack"
+                  : method === "switch_relays"
+                    ? JSON.stringify(["wss://candidate.example"])
+                    : "ok",
+              ping: async () => {
+                currentPingCalls += 1
+                throw new Nip46TransportError("unavailable", "old route lost")
+              },
+            })
+          }
+          return fakeSigner({
+            bp: pointer,
+            ping: async () => {
+              throw new Nip46TransportError(
+                "unavailable",
+                "candidate route unavailable"
+              )
+            },
+          })
+        },
+      })
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "retain current relays ping",
+    })
+    expect(currentPingCalls).toBe(1)
+  })
+
+  it("keeps a verified current route when relay switching is unavailable", async () => {
+    let factoryCalls = 0
+    let retainedPingCalls = 0
+    const result = await pairRemoteSigner(BUNKER_URI, {
+      keyVault: new MemoryKeyVault(),
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      createBunkerSigner: () => {
+        factoryCalls += 1
+        return fakeSigner({
+          sendRequest: async (method) => {
+            if (method === "connect") return "ack"
+            if (method === "switch_relays") {
+              throw new Nip46TransportError(
+                "unavailable",
+                "relay switch response was lost"
+              )
+            }
+            return "ok"
+          },
+          ping: async () => {
+            retainedPingCalls += 1
+          },
+        })
+      },
+    })
+
+    expect(factoryCalls).toBe(1)
+    expect(retainedPingCalls).toBe(1)
+    expect(result.session.relayUrls).toEqual(["wss://relay.example"])
   })
 
   it("creates an official one-use nostrconnect URI before listening", async () => {
@@ -1007,9 +1285,6 @@ describe("remote signer lifecycle", () => {
               pubkey: REMOTE_PUBKEY,
               relays: ["wss://one.example", "wss://two.example"],
               secret: "one-use-secret",
-            },
-            switchRelays: async () => {
-              throw new Error("relay migration must not run during pairing")
             },
             close: async () => {
               calls.push("handshake-close")
@@ -1433,11 +1708,7 @@ describe("remote signer lifecycle", () => {
       keyVault: seededKeyVault(),
       createBunkerSigner: (_key, pointer) => {
         pointerSecret = pointer.secret
-        return fakeSigner({
-          switchRelays: async () => {
-            throw new Error("relay migration must not run during restore")
-          },
-        })
+        return fakeSigner()
       },
       now: () => 30,
     })
@@ -1471,6 +1742,39 @@ describe("remote signer lifecycle", () => {
     expect(requiresRemoteSignerSessionCleanup(malformedIdentityFailure)).toBe(
       true
     )
+  })
+
+  it("migrates a restored session to the signer's verified relay route", async () => {
+    const nextRelayUrls = ["wss://restored-signer.example"]
+    let factoryCalls = 0
+    let previousCloseCalls = 0
+    const restored = await restoreRemoteSigner(session(), {
+      keyVault: seededKeyVault(),
+      createBunkerSigner: (_key, pointer) => {
+        factoryCalls += 1
+        if (factoryCalls === 1) {
+          return fakeSigner({
+            sendRequest: async (method) =>
+              method === "switch_relays" ? JSON.stringify(nextRelayUrls) : "ok",
+            close: async () => {
+              previousCloseCalls += 1
+            },
+          })
+        }
+        expect(pointer.relays).toEqual(nextRelayUrls)
+        return fakeSigner({ bp: pointer })
+      },
+      now: () => 50,
+    })
+
+    expect(restored.session).toMatchObject({
+      relayUrls: nextRelayUrls,
+      updatedAt: 50,
+    })
+    expect(restored.clientKeyAlreadyPersisted).toBe(true)
+    expect(previousCloseCalls).toBe(0)
+    await commitRemoteSignerConnection(restored)
+    expect(previousCloseCalls).toBe(1)
   })
 
   it("refuses a restore whose transport closes after identity verification", async () => {
@@ -1662,15 +1966,28 @@ describe("remote signer lifecycle", () => {
 })
 
 describe("NDK remote signer adapter", () => {
-  it("supports signing and NIP-44/NIP-04 encryption methods", async () => {
-    const adapter = new NdkBunkerSignerAdapter(fakeSigner(), USER_PUBKEY)
+  it("advertises NIP-44 encryption and retains NIP-04 decrypt only", async () => {
+    let nip04EncryptCalls = 0
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        nip04Encrypt: async () => {
+          nip04EncryptCalls += 1
+          return "unexpected"
+        },
+      }),
+      USER_PUBKEY
+    )
     const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
 
-    expect(await adapter.encryptionEnabled()).toEqual(["nip04", "nip44"])
+    expect(await adapter.encryptionEnabled()).toEqual(["nip44"])
     expect(await adapter.encryptionEnabled("nip44")).toEqual(["nip44"])
+    expect(await adapter.encryptionEnabled("nip04")).toEqual([])
     expect(await adapter.encrypt(peer, "hello", "nip44")).toBe("44:hello")
     expect(await adapter.decrypt(peer, "44:hello", "nip44")).toBe("hello")
-    expect(await adapter.encrypt(peer, "hello", "nip04")).toBe("04:hello")
+    await expect(adapter.encrypt(peer, "hello", "nip04")).rejects.toMatchObject(
+      { code: "unsupported", operation: "nip04 encrypt" }
+    )
+    expect(nip04EncryptCalls).toBe(0)
     expect(await adapter.decrypt(peer, "04:hello", "nip04")).toBe("hello")
     const signature = await adapter.sign({
       pubkey: USER_PUBKEY,
