@@ -506,7 +506,7 @@ test("a newer signed media-server revision stops a pending upload before PUT @me
   await expect(dialog.getByLabel("Primary image URL")).toHaveCount(0)
 })
 
-test("Primal-compatible auth retries once with the same signed event @merchant", async ({
+test("legacy Blossom auth retries once with the same signed event @merchant", async ({
   page,
 }) => {
   test.setTimeout(90_000)

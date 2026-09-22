@@ -1,58 +1,60 @@
-# NIP-46 Connected Relay Retention
+# NIP-46 Signer Relay Negotiation
 
-- **Name:** NIP-46 connected-relay retention
+- **Name:** NIP-46 signer-authoritative relay negotiation
 - **Status:** active
-- **Canonical target:** Request `switch_relays` after connection, validate the
-  response, and adopt a signer-selected secure relay set without risking a
-  partially migrated live session.
+- **Canonical target:** Request `switch_relays` after connection or restore and
+  adopt a signer-selected secure relay set only after a separate candidate route
+  proves the same signer session.
 - **Owner:** Conduit remote-signer maintainers
 - **Started:** 2026-08-22
 - **Next review:** 2026-11-22
 - **Rollout control:** Repository-controlled remote-signer workflow; removal or
   widening requires a reviewed change.
-- **Activation state:** production when the implementing change is released
 
-## Ecosystem Divergence
+## Protocol Boundary
 
-NIP-46 says clients SHOULD request `switch_relays` immediately after connecting
-or at reasonable intervals. The response `result` is a string containing a
-JSON-serialized relay array or `"null"`, and the client changes relays only
-after receiving that reply.
+NIP-46 transport relays belong to the remote signer session. They are separate
+from Conduit's app/discovery defaults and from signed user relay declarations,
+including NIP-65 and `kind:10050`. Negotiating a NIP-46 route must never mutate,
+publish, or impersonate either of those other relay authorities.
 
-Primal's current shared signer implementation recognizes `switch_relays` but
-serializes its acknowledgement as a raw JSON `null`. `nostr-tools@2.24.1`
-removes the matching response listener but resolves a request only when
-`result` is truthy. The resulting promise never settles. Older signers may also
-ignore the optional migration request.
+After a successful pair or restored-session identity check, Conduit sends
+`switch_relays`. It accepts the specified string result containing a
+JSON-stringified relay array or `"null"`. It also accepts a raw JSON `null`
+result as a bounded compatibility form observed in current signers, even though
+the NIP-46 response schema defines `result` as a string. Every adopted relay must
+be a secure `wss:` URL. Duplicate URLs are removed without adding
+Conduit-selected fallbacks.
 
-Conduit previously turned that unresolved request into a fatal 30-second gate
-after pairing and identity verification. A local timeout cannot cancel
-`nostr-tools` relay migration. If a delayed request later completes, the live
-signer can move relays after Conduit has persisted the original relay set.
+## Transaction
 
-Until the dependency can complete or cancel migration safely, Conduit retains
-the already-connected relay set and does not call `switch_relays` during
-pairing or restore. This avoids blocking an authenticated working connection
-and prevents live and persisted relay state from diverging.
+Relay adoption uses a two-route transaction:
 
-## Requirement Classification
+1. Keep the currently verified transport open.
+2. Request the signer's preferred relay set on that transport.
+3. If the signer supplies a different valid set, open a separate candidate
+   transport with the same client key and signer public key.
+4. Require a successful ping and the exact already-verified user public key on
+   the candidate.
+5. Persist and install the candidate session before closing the previous route.
 
-- The remote signer identity, user identity, connection acknowledgement, and
-  secure `wss:` relay validation remain hard gates.
-- Signer-preferred relay migration is an ecosystem convergence preference. It
-  may degrade while the established secure route remains usable.
-- A failed restore ping is stronger current evidence that the saved route is
-  unavailable and still requires re-pairing.
+An unsupported, rejected, null, malformed, timed-out, or unavailable migration
+does not discard a working session. Conduit re-proves the previous route when the
+outcome is ambiguous. Candidate timeout, malformed identity, or wrong identity
+also closes the candidate and keeps the old session when that old route still
+proves the exact account. If neither route verifies, connection or restoration
+fails with the typed error; Conduit never marks an unverified route connected.
 
 ## Behavior Matrix
 
-| Observed state                                                   | Behavior                                     | User-visible outcome                               |
-| ---------------------------------------------------------------- | -------------------------------------------- | -------------------------------------------------- |
-| Pairing succeeds on a valid secure relay set                     | Retain that set and verify the user identity | Sign-in completes                                  |
-| Restore ping and identity verification succeed                   | Retain the saved secure relay set            | Session restores                                   |
-| Connected relay set is empty, malformed, or not `wss:`           | Reject before creating a session             | Sign-in fails safely                               |
-| Pairing, ping, or identity verification times out or is rejected | Preserve existing typed failure handling     | User retries or reconnects                         |
-| Signer has a newer preferred relay set                           | No automatic migration in this lane          | User may need to re-pair if retained relays retire |
+| Observed state                                | Behavior                                                   | User-visible outcome                                     |
+| --------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------- |
+| `null` or `"null"` response                   | Keep the verified route                                    | Sign-in or reconnect completes                           |
+| Valid equivalent relay set                    | Keep the existing transport                                | No visible interruption                                  |
+| Valid different secure relay set              | Verify candidate, persist/install it, then close old route | Sign-in or reconnect completes on signer-selected relays |
+| Invalid or insecure relay list                | Re-prove and keep the current route                        | Sign-in continues when the route is healthy              |
+| Candidate fails but current route re-verifies | Close candidate and retain current route                   | Sign-in continues without re-pairing                     |
+| Candidate and current route both fail         | Reject the connection                                      | User sees reconnect/retry; no false connected state      |
 
 ## Bounds And Prohibitions
 
@@ -61,48 +63,31 @@ and prevents live and persisted relay state from diverging.
 - QR pairing remains limited to two or three client-selected secure relays.
 - Signer-issued bunker URIs and restored sessions must contain at least one
   secure relay.
-- The one-use QR secret is still cleared before session creation.
-- The lane does not relax signer or account identity, connection
-  acknowledgement, URI, relay URL, encryption, or signature validation.
-- It does not add fallback relays, relay fanout, protocol writes, telemetry, or
-  signer-specific persisted metadata.
+- The one-use QR secret is cleared before established-session creation.
+- Signer public key, user public key, connection acknowledgement, relay URL,
+  event, encryption, and signature validation remain hard gates.
+- No default relay, NIP-65 relay, private-inbox relay, telemetry, or
+  signer-specific persisted metadata is added or changed here.
 
-## Repair, Rollout, And Rollback
+## Permissions
 
-If the retained relays stop answering, the existing reconnect flow asks the
-user to pair the signer again. Re-pairing establishes a fresh client-selected
-or signer-issued secure relay set.
+Both bunker and `nostrconnect://` pairing request the same capabilities:
+`sign_event`, `get_public_key`, `nip44_encrypt`, `nip44_decrypt`, and
+`nip04_decrypt`. Conduit does not request or advertise the defined
+`nip04_encrypt` method because new outbound encryption uses NIP-44. NIP-04
+decrypt remains available for legacy incoming content.
 
-The retention behavior is the default in every deployment profile. Immediate
-rollback is a reviewed revert of the implementing change. Reintroducing the
-previous blocking call is not a safe rollback because the underlying migration
-request remains uncancelable.
+## Validation Boundary
 
-## Privacy-Safe Measurement And Removal Gate
-
-No new telemetry is added. Measuring signer brands, relay URLs, connection
-strings, or account identifiers would violate the repository's diagnostics
-boundary and is unnecessary for this dependency-safety gate.
-
-The exception is removal-ready when an adopted `nostr-tools` release provides
-all of the following:
-
-1. response completion based on the presence of `result`, including raw JSON
-   `null` compatibility;
-2. relay URL validation before changing subscriptions;
-3. cancellation or disposal that prevents a timed-out migration from mutating
-   the returned live signer; and
-4. deterministic coverage for canonical relay arrays, string `"null"`, raw
-   `null`, unsupported methods, timeout, cancellation, and insecure relays.
-
-Removal requires a reviewed change that restores canonical migration, updates
-the regression matrix, and removes this note from the active-exception index.
-If the dependency does not satisfy the gate by the next review, maintainers may
-implement the same guarantees behind Conduit's shared remote-signer boundary.
+Automated tests cover raw and string null, deduplicated valid lists, invalid and
+insecure lists, candidate timeout, malformed or wrong candidate identity,
+rollback to a verified old route, both-routes-dead failure, and deferred old-route
+closure. They do not prove public-relay timing, mobile background behavior, or
+current Clave and Amber interoperability. Those remain required real-device tests
+without logging relay URLs, connection strings, keys, or account identifiers.
 
 ## Public References
 
 - [NIP-46: Nostr Remote Signing](https://github.com/nostr-protocol/nips/blob/master/46.md)
-- [NIP-46 `switch_relays` proposal and compatibility discussion](https://github.com/nostr-protocol/nips/pull/2193)
-- [Primal `switch_relays` response builder](https://github.com/PrimalHQ/primal-android-app/blob/efb88b5af1db9d84eb36b471bf17d49d1c8a8a0c/data/account/repository/src/commonMain/kotlin/net/primal/data/account/repository/builder/RemoteSignerMethodResponseBuilder.kt#L52-L57)
-- [Primal remote-signer response serializer](https://github.com/PrimalHQ/primal-android-app/blob/efb88b5af1db9d84eb36b471bf17d49d1c8a8a0c/data/account/signer/src/commonMain/kotlin/net/primal/data/account/signer/remote/model/serializer/RemoteSignerMethodResponseSerializer.kt#L23-L37)
+- [Clave NIP-46 compatibility guidance](https://github.com/DocNR/clave/blob/master/docs/nip46-compatibility.md)
+- [Amber source](https://github.com/greenart7c3/Amber)
