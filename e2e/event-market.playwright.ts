@@ -7377,7 +7377,26 @@ for (const revocation of [
         )
       )
     const catalogReads = () => relay.requests.filter(isCatalogRead).length
-    const before = catalogReads()
+    // The progressive reader can still be finishing a scheduled hydration
+    // stage after the product first becomes actionable. Wait for the relay
+    // request count to settle so this assertion measures reads caused by the
+    // cross-tab evidence write rather than earlier queued work.
+    let settledCatalogReads = catalogReads()
+    let stableSince = Date.now()
+    await expect
+      .poll(
+        () => {
+          const current = catalogReads()
+          if (current !== settledCatalogReads) {
+            settledCatalogReads = current
+            stableSince = Date.now()
+          }
+          return Date.now() - stableSince
+        },
+        { timeout: 10_000, intervals: [100] }
+      )
+      .toBeGreaterThanOrEqual(1_000)
+    const before = settledCatalogReads
     const held = relay.holdRelayRequests(isCatalogRead)
     try {
       const revised = signEvent(ORGANIZER_SECRET, {
