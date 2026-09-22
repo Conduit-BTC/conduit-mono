@@ -13,6 +13,14 @@ import {
 } from "@conduit/core"
 
 const originalConfig = structuredClone(config)
+const PERSONAL_ONLY_ROUTING = {
+  appRelaysEnabled: false,
+  personalRelaysEnabled: true,
+} as const
+const APP_ONLY_ROUTING = {
+  appRelaysEnabled: true,
+  personalRelaysEnabled: false,
+} as const
 
 function entry(
   url: string,
@@ -124,6 +132,82 @@ describe("planRelayReads", () => {
     expect(plan.relayUrls).toContain("wss://public.conduit.market")
   })
 
+  it("keeps commerce reads within assigned App commerce roles", () => {
+    const plan = planRelayReads({
+      intent: "commerce_products",
+      settings: settings([]),
+      routingPolicy: APP_ONLY_ROUTING,
+      maxRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.candidateRelayUrls).toEqual(config.appCommerceRelayUrls)
+    expect(plan.candidateRelayUrls).not.toContain("wss://relay.dreamith.to")
+    expect(plan.candidateRelayUrls).not.toContain("wss://nos.lol")
+    expect(plan.candidateRelayUrls).not.toContain("wss://relay.primal.net")
+  })
+
+  it("retains a general-only App URL when remote signed provenance authorizes it", () => {
+    const relayUrl = "wss://relay.dreamith.to"
+    const plan = planRelayReads({
+      intent: "author_products",
+      authors: ["merchant"],
+      relayLists: new Map([
+        ["merchant", relayList("merchant", [], [relayUrl])],
+      ]),
+      settings: settings([]),
+      routingPolicy: APP_ONLY_ROUTING,
+      maxRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.candidateRelayUrls).toContain(relayUrl)
+    expect(plan.independentRelayUrls).toContain(relayUrl)
+  })
+
+  it("routes configured general fallbacks through the App source cutoff", () => {
+    const previousFallbackRelayUrls = [...config.corePublicFallbackRelayUrls]
+    const configuredRelayUrls = [
+      "wss://vite-relay-url.example",
+      "wss://vite-default-relay-url.example",
+      "wss://vite-default-relays.example",
+      "wss://vite-public-relays.example",
+    ]
+
+    try {
+      config.corePublicFallbackRelayUrls = configuredRelayUrls
+      const enabled = planRelayReads({
+        intent: "profiles",
+        settings: settings([]),
+        routingPolicy: APP_ONLY_ROUTING,
+        maxRelays: 20,
+        skipHealthFilter: true,
+      })
+      expect(enabled.candidateRelayUrls).toEqual(
+        expect.arrayContaining(configuredRelayUrls)
+      )
+      expect(enabled.appRelayUrls).toEqual(
+        expect.arrayContaining(configuredRelayUrls)
+      )
+
+      const disabled = planRelayReads({
+        intent: "profiles",
+        settings: settings([]),
+        routingPolicy: {
+          appRelaysEnabled: false,
+          personalRelaysEnabled: false,
+        },
+        maxRelays: 20,
+        skipHealthFilter: true,
+      })
+      for (const relayUrl of configuredRelayUrls) {
+        expect(disabled.candidateRelayUrls).not.toContain(relayUrl)
+      }
+    } finally {
+      config.corePublicFallbackRelayUrls = previousFallbackRelayUrls
+    }
+  })
+
   it("uses commerce discovery defaults when local settings are empty", () => {
     const plan = planRelayReads({
       intent: "commerce_products",
@@ -208,6 +292,7 @@ describe("planRelayReads", () => {
     expect(plan.hintRelayUrls).toEqual(["wss://alice-write.conduit.market"])
     expect(plan.relayUrls).not.toContain("ws://artshop:4848")
     expect(plan.ownerSelectedRelayUrls).toEqual([])
+    expect(plan.personalRelayUrls).toContain("wss://alice-write.conduit.market")
   })
 
   it("retains an owner-selected ws relay only with exact owner provenance", () => {
@@ -236,6 +321,7 @@ describe("planRelayReads", () => {
       relayLists: lists,
       settings: state,
       signedRelayListAuthoritative: true,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
 
     expect(plan.relayUrls).toContain(ownerRelay)
@@ -263,6 +349,7 @@ describe("planRelayReads", () => {
       relayLists: lists,
       settings: state,
       signedRelayListAuthoritative: true,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
 
     expect(plan.hintRelayUrls).toEqual([writeRelayUrl])
@@ -287,6 +374,7 @@ describe("planRelayReads", () => {
       recipients: ["bob"],
       relayLists: lists,
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.relayUrls[0]).toBe("wss://bob-read.conduit.market")
     expect(plan.relayUrls).toContain("wss://general.conduit.market")
@@ -303,6 +391,7 @@ describe("planRelayReads", () => {
       intent: "general",
       settings: state,
       now: 100,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.relayUrls).toEqual(["wss://ok.conduit.market"])
     expect(plan.parkedRelayUrls).toEqual(["wss://broken.conduit.market"])
@@ -317,6 +406,7 @@ describe("planRelayReads", () => {
       settings: state,
       skipHealthFilter: true,
       now: 100,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.relayUrls).toEqual(["wss://broken.conduit.market"])
     expect(plan.parkedRelayUrls).toEqual([])
@@ -334,6 +424,19 @@ describe("planRelayReads", () => {
       maxRelays: 2,
     })
     expect(plan.relayUrls.length).toBe(2)
+    expect(plan.relayUrls).toEqual([
+      "wss://r1.conduit.market",
+      "wss://r2.conduit.market",
+    ])
+    expect(plan.candidateRelayUrls.slice(0, 3)).toEqual([
+      "wss://r1.conduit.market",
+      "wss://r2.conduit.market",
+      "wss://r3.conduit.market",
+    ])
+    expect(plan.maxRelayAttempts).toBe(2)
+    expect(plan.personalRelayUrls).toEqual(
+      expect.arrayContaining(["wss://r3.conduit.market"])
+    )
   })
 
   it("dedupes overlapping hint and base relays", () => {
@@ -346,8 +449,70 @@ describe("planRelayReads", () => {
       authors: ["alice"],
       relayLists: lists,
       settings: state,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.relayUrls).toEqual(["wss://shared.conduit.market"])
+  })
+
+  it("tracks remote signed hints independently when relay URLs overlap local sources", () => {
+    const appOverlap = "wss://relay.ditto.pub"
+    const personalOverlap = "wss://relay.nostr.band"
+    const lists = new Map<string, RelayList>([
+      [
+        "remote-author",
+        relayList("remote-author", [], [appOverlap, personalOverlap]),
+      ],
+    ])
+    const plan = planRelayReads({
+      intent: "general",
+      authors: ["remote-author"],
+      relayLists: lists,
+      settings: settings([entry(personalOverlap)]),
+      routingPolicy: {
+        appRelaysEnabled: true,
+        personalRelaysEnabled: true,
+      },
+      maxRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.appRelayUrls).toContain(appOverlap)
+    expect(plan.personalRelayUrls).toContain(personalOverlap)
+    expect(plan.independentRelayUrls).toEqual(
+      expect.arrayContaining([appOverlap, personalOverlap])
+    )
+  })
+
+  it("tracks remote recipient hints independently across write-layer overlaps", () => {
+    const appOverlap = "wss://relay.ditto.pub"
+    const personalOverlap = "wss://relay.nostr.band"
+    const lists = new Map<string, RelayList>([
+      [
+        "remote-recipient",
+        relayList("remote-recipient", [appOverlap, personalOverlap], []),
+      ],
+    ])
+    const plan = planRelayWrites({
+      intent: "recipient_event",
+      recipientPubkeys: ["remote-recipient"],
+      relayLists: lists,
+      settings: settings([
+        entry(personalOverlap, { readEnabled: true, writeEnabled: true }),
+      ]),
+      routingPolicy: {
+        appRelaysEnabled: true,
+        personalRelaysEnabled: true,
+      },
+      maxPrimaryRelays: 20,
+      maxBroadcastRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.appRelayUrls).toContain(appOverlap)
+    expect(plan.personalRelayUrls).toContain(personalOverlap)
+    expect(plan.independentRelayUrls).toEqual(
+      expect.arrayContaining([appOverlap, personalOverlap])
+    )
   })
 
   it("plans shopper trust from merchant and shopper NIP-65 hints before public relays", () => {
@@ -420,9 +585,14 @@ describe("planRelayWrites", () => {
     ).toEqual({
       intent: "author_products",
       relayUrls: [isolatedRelayUrl],
+      candidateRelayUrls: [isolatedRelayUrl],
+      maxRelayAttempts: 1,
       parkedRelayUrls: [],
       hintRelayUrls: [],
       ownerSelectedRelayUrls: [],
+      appRelayUrls: [isolatedRelayUrl],
+      personalRelayUrls: [],
+      independentRelayUrls: [],
     })
     expect(
       planRelayWrites({
@@ -435,8 +605,14 @@ describe("planRelayWrites", () => {
     ).toEqual({
       intent: "author_event",
       primaryRelayUrls: [isolatedRelayUrl],
+      primaryCandidateRelayUrls: [isolatedRelayUrl],
+      maxPrimaryRelayAttempts: 1,
       broadcastRelayUrls: [],
+      broadcastCandidateRelayUrls: [],
       parkedRelayUrls: [],
+      appRelayUrls: [isolatedRelayUrl],
+      personalRelayUrls: [],
+      independentRelayUrls: [],
     })
   })
 
@@ -470,12 +646,44 @@ describe("planRelayWrites", () => {
       intent: "author_event",
       authorPubkey: "alice",
       settings: state,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.primaryRelayUrls).toEqual([
       "wss://commerce.conduit.market",
       "wss://stale.conduit.market",
     ])
     expect(plan.broadcastRelayUrls).toEqual([])
+  })
+
+  it("keeps commerce App writes role-qualified without losing independent sources", () => {
+    const generalOnlyAppRelay = "wss://relay.dreamith.to"
+    const personalRelay = "wss://personal-write.example"
+    const plan = planRelayWrites({
+      intent: "commerce_author_event",
+      authorPubkey: "merchant",
+      authenticatedPubkey: "owner",
+      relayLists: new Map([
+        ["merchant", relayList("merchant", [], [generalOnlyAppRelay])],
+      ]),
+      settings: settings([
+        entry(personalRelay, {
+          section: "public",
+          writeEnabled: true,
+        }),
+      ]),
+      routingPolicy: {
+        appRelaysEnabled: true,
+        personalRelaysEnabled: true,
+      },
+      maxPrimaryRelays: 20,
+      skipHealthFilter: true,
+    })
+
+    expect(plan.appRelayUrls).toEqual(config.commerceRelayUrls)
+    expect(plan.appRelayUrls).not.toContain(generalOnlyAppRelay)
+    expect(plan.personalRelayUrls).toContain(personalRelay)
+    expect(plan.independentRelayUrls).toContain(generalOnlyAppRelay)
+    expect(plan.primaryCandidateRelayUrls).toContain(generalOnlyAppRelay)
   })
 
   it("author_event includes the author's current NIP-65 write relays", () => {
@@ -502,9 +710,14 @@ describe("planRelayWrites", () => {
       authenticatedPubkey: "alice",
       relayLists: lists,
       settings: state,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
 
     expect(plan.primaryRelayUrls).toEqual([
+      "wss://alice-write.conduit.market",
+      "wss://configured.conduit.market",
+    ])
+    expect(plan.personalRelayUrls).toEqual([
       "wss://alice-write.conduit.market",
       "wss://configured.conduit.market",
     ])
@@ -533,6 +746,7 @@ describe("planRelayWrites", () => {
       relayLists: lists,
       settings: state,
       signedRelayListAuthoritative: true,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
 
     expect(plan.primaryRelayUrls).toEqual([currentRelayUrl])
@@ -573,6 +787,7 @@ describe("planRelayWrites", () => {
       recipientPubkeys: ["bob"],
       relayLists: lists,
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(["wss://bob-inbox.conduit.market"])
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
@@ -603,6 +818,7 @@ describe("planRelayWrites", () => {
       recipientPubkeys: ["bob"],
       relayLists: lists,
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(
       config.dmInboxDefaultRelayUrls.slice(0, 4)
@@ -637,9 +853,37 @@ describe("planRelayWrites", () => {
       recipientPubkeys: ["alice"],
       relayLists: lists,
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(["ws://umbrel.local:4848"])
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
+    expect(plan.personalRelayUrls).toEqual([
+      "ws://umbrel.local:4848",
+      "wss://outbox.conduit.market",
+    ])
+  })
+
+  it("does not reuse an authenticated recipient NIP-65 hint when personal relays are disabled", () => {
+    const lists = new Map<string, RelayList>([
+      ["alice", relayList("alice", ["wss://personal-inbox.example"], [])],
+    ])
+    const plan = planRelayWrites({
+      intent: "recipient_event",
+      authenticatedPubkey: "alice",
+      recipientPubkeys: ["alice"],
+      relayLists: lists,
+      settings: settings([]),
+      routingPolicy: {
+        appRelaysEnabled: true,
+        personalRelaysEnabled: false,
+      },
+    })
+
+    expect(plan.primaryRelayUrls).toEqual(
+      config.dmInboxDefaultRelayUrls.slice(0, 4)
+    )
+    expect(plan.primaryRelayUrls).not.toContain("wss://personal-inbox.example")
+    expect(plan.personalRelayUrls).toEqual([])
   })
 
   it("uses shared recipient fallback relays when recipient has no cached list", () => {
@@ -664,6 +908,7 @@ describe("planRelayWrites", () => {
       recipientPubkeys: ["unknown"],
       relayLists: new Map(),
       settings: state,
+      maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(
       config.dmInboxDefaultRelayUrls.slice(0, 4)
@@ -672,7 +917,7 @@ describe("planRelayWrites", () => {
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
   })
 
-  it("uses default public relays for recipient delivery when the signer has no write relays", () => {
+  it("uses app relays for recipient delivery and sender backup when personal writes are empty", () => {
     const plan = planRelayWrites({
       intent: "recipient_event",
       recipientPubkeys: ["unknown"],
@@ -683,7 +928,11 @@ describe("planRelayWrites", () => {
     expect(plan.primaryRelayUrls).toEqual(
       config.dmInboxDefaultRelayUrls.slice(0, 4)
     )
-    expect(plan.broadcastRelayUrls).toEqual([])
+    expect(plan.broadcastRelayUrls).toEqual(
+      config.appWriteRelayUrls
+        .filter((relayUrl) => !plan.primaryRelayUrls.includes(relayUrl))
+        .slice(0, 4)
+    )
   })
 
   it("merges multiple recipients' inboxes and dedupes", () => {
@@ -750,6 +999,15 @@ describe("planRelayWrites", () => {
       maxPrimaryRelays: 2,
     })
     expect(plan.primaryRelayUrls.length).toBe(2)
+    expect(plan.primaryCandidateRelayUrls?.slice(0, 3)).toEqual([
+      "wss://w1.conduit.market",
+      "wss://w2.conduit.market",
+      "wss://w3.conduit.market",
+    ])
+    expect(plan.maxPrimaryRelayAttempts).toBe(2)
+    expect(plan.personalRelayUrls).toEqual(
+      expect.arrayContaining(["wss://w3.conduit.market"])
+    )
   })
 
   it("excludes parked relays from both primary and broadcast", () => {
@@ -781,6 +1039,7 @@ describe("planRelayWrites", () => {
       intent: "author_event",
       settings: state,
       now: 100,
+      routingPolicy: PERSONAL_ONLY_ROUTING,
     })
     expect(plan.primaryRelayUrls).toEqual(["wss://ok.conduit.market"])
     expect(plan.parkedRelayUrls).toEqual(["wss://parked.conduit.market"])

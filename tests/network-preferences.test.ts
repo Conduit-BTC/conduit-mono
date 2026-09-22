@@ -434,7 +434,7 @@ describe("account Network preferences", () => {
     })
   })
 
-  it("keeps signed-empty account reads empty while public commerce discovery remains available", async () => {
+  it("keeps signed-empty personal reads empty while the app layer remains available", async () => {
     const signedEmpty = signedRelayListResolution({
       state: "signed_empty",
       tags: [],
@@ -462,15 +462,17 @@ describe("account Network preferences", () => {
         fallbackRelayUrls: fallback,
       })
     ).toEqual([])
-    expect(
-      planRelayReads({
-        intent: "general",
-        settings: settingsSnapshot.settings,
-        signedRelayListAuthoritative:
-          settingsSnapshot.signedRelayListAuthoritative,
-        skipHealthFilter: true,
-      }).relayUrls
-    ).toEqual([])
+    const appAssistedGeneralPlan = planRelayReads({
+      intent: "general",
+      settings: settingsSnapshot.settings,
+      signedRelayListAuthoritative:
+        settingsSnapshot.signedRelayListAuthoritative,
+      skipHealthFilter: true,
+    })
+    expect(appAssistedGeneralPlan.relayUrls).toContain(
+      config.appReadRelayUrls[0]
+    )
+    expect(appAssistedGeneralPlan.personalRelayUrls).toEqual([])
     expect(
       planRelayReads({
         intent: "commerce_products",
@@ -629,6 +631,10 @@ describe("account Network preferences", () => {
           ],
         ]),
         skipHealthFilter: true,
+        routingPolicy: {
+          appRelaysEnabled: false,
+          personalRelaysEnabled: true,
+        },
       }).primaryRelayUrls
     ).toEqual(["wss://signed.example"])
   })

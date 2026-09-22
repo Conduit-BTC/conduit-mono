@@ -1914,6 +1914,20 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     expect(selection.blockedReason).toBe("recipient_lookup_failed")
   })
 
+  it("never lets partial or unavailable lookup evidence authorize compatibility", () => {
+    for (const state of ["lookup_partial", "lookup_unavailable"] as const) {
+      const selection = selectPrivateMessageDeliveryRoute({
+        rumorKind: EVENT_KINDS.ORDER,
+        declaration: resolution({ state, relayUrls: [] }),
+        validatedOrder: true,
+        compatibilityEnabled: true,
+      })
+
+      expect(selection.route).toBe("blocked")
+      expect(selection.blockedReason).toBe("recipient_lookup_failed")
+    }
+  })
+
   it("drops insecure compatibility relay urls", () => {
     const selection = selectPrivateMessageDeliveryRoute({
       rumorKind: EVENT_KINDS.ORDER,

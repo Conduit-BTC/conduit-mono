@@ -3516,13 +3516,16 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   const perspectiveButtons = page.getByRole("group", {
     name: "Market perspective",
   })
+  const refreshEventsButton = page.getByRole("button", {
+    name: "Refresh events",
+    exact: true,
+  })
+  await expect(refreshEventsButton).toBeEnabled()
   await perspectiveButtons
     .getByRole("button", { name: "Conduit", exact: true })
     .focus()
   await page.keyboard.press("Tab")
-  await expect(
-    page.getByRole("button", { name: "Refresh events", exact: true })
-  ).toBeFocused()
+  await expect(refreshEventsButton).toBeFocused()
   await page.keyboard.press("Tab")
   await expect(page.getByLabel("Organizer")).toBeFocused()
   await page.keyboard.press("Tab")
@@ -7378,7 +7381,22 @@ for (const revocation of [
         )
       )
     const catalogReads = () => relay.requests.filter(isCatalogRead).length
-    const before = catalogReads()
+    let settledCatalogReads = catalogReads()
+    let stableSince = Date.now()
+    await expect
+      .poll(
+        () => {
+          const current = catalogReads()
+          if (current !== settledCatalogReads) {
+            settledCatalogReads = current
+            stableSince = Date.now()
+          }
+          return Date.now() - stableSince
+        },
+        { timeout: 10_000, intervals: [100] }
+      )
+      .toBeGreaterThanOrEqual(1_000)
+    const before = settledCatalogReads
     const held = relay.holdRelayRequests(isCatalogRead)
     try {
       const revised = signEvent(ORGANIZER_SECRET, {

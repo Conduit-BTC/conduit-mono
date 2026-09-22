@@ -3,6 +3,8 @@ import {
   assertSafeNip65RelayList,
   applyE2eRelayIsolation,
   CANONICAL_APP_BACKPLANE_RELAYS,
+  CANONICAL_APP_READ_RELAYS,
+  CANONICAL_APP_RELAY_DEFINITIONS,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
@@ -201,7 +203,41 @@ describe("relay settings protocol helpers", () => {
     expect(CANONICAL_APP_BACKPLANE_RELAYS).toEqual([
       "wss://relay.conduit.market",
     ])
-    expect(CANONICAL_APP_WRITE_RELAYS).toEqual(["wss://relay.conduit.market"])
+    expect(CANONICAL_APP_WRITE_RELAYS).toEqual([
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+      "wss://relay.dreamith.to",
+      "wss://relay.primal.net",
+    ])
+    expect(
+      CANONICAL_APP_RELAY_DEFINITIONS.map(({ fallbackName, url }) => ({
+        fallbackName,
+        url,
+      }))
+    ).toEqual([
+      {
+        fallbackName: "Conduit Relay",
+        url: "wss://relay.conduit.market",
+      },
+      { fallbackName: "Ditto Relay", url: "wss://relay.ditto.pub" },
+      {
+        fallbackName: "Dreamith Relay",
+        url: "wss://relay.dreamith.to",
+      },
+      {
+        fallbackName: "Primal Public Relay",
+        url: "wss://relay.primal.net",
+      },
+      { fallbackName: "nos.lol", url: "wss://nos.lol" },
+      {
+        fallbackName: "Plebeian Market Relay",
+        url: "wss://relay.plebeian.market",
+      },
+    ])
+    expect(CANONICAL_APP_RELAY_DEFINITIONS).toHaveLength(6)
+    expect(CANONICAL_APP_RELAY_DEFINITIONS).not.toContainEqual(
+      expect.objectContaining({ url: "wss://relay.damus.io" })
+    )
     expect(CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS).toEqual([
       "wss://nos.lol",
       "wss://relay.ditto.pub",
@@ -246,6 +282,8 @@ describe("relay settings protocol helpers", () => {
       expect(config.defaultRelays).toContain(relay)
     }
     expect(config.appBackplaneRelayUrls).toEqual(CANONICAL_APP_BACKPLANE_RELAYS)
+    expect(config.appRelayDefinitions).toEqual(CANONICAL_APP_RELAY_DEFINITIONS)
+    expect(config.appReadRelayUrls).toEqual(CANONICAL_APP_READ_RELAYS)
     expect(config.appWriteRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
     expect(config.corePublicFallbackRelayUrls).toEqual(
       CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS
@@ -401,6 +439,7 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.plebeian.market",
       {
         name: "Plebeian Market",
+        icon: "https://nostr.build/plebeian-relay.png",
         supported_nips: [9, 42, 50, 59],
       },
       { now: () => 10 }
@@ -431,6 +470,8 @@ describe("relay settings protocol helpers", () => {
     expect(verified.warnings.dmWithoutAuth).toBe(false)
     expect(verified.warnings.commercePartialSupport).toBe(true)
     expect(verified.scannedAt).toBe(10)
+    expect(verified.relayName).toBe("Plebeian Market")
+    expect(verified.relayIconUrl).toBe("https://nostr.build/plebeian-relay.png")
 
     const dmWithoutAuth = deriveRelayScanResult("wss://relay.example", {
       supported_nips: [59],
@@ -441,6 +482,22 @@ describe("relay settings protocol helpers", () => {
     expect(dmWithoutAuth.capabilities.auth).toBe(false)
     expect(dmWithoutAuth.warnings.dmWithoutAuth).toBe(true)
     expect(dmWithoutAuth.warnings.commercePartialSupport).toBe(true)
+
+    const iconWithUserInfo = new URL("https://nostr.build/relay.png")
+    iconWithUserInfo.username = "fixture"
+    iconWithUserInfo.password = "fixture"
+    for (const icon of [
+      "javascript:alert(1)",
+      "http://127.0.0.1/relay.png",
+      iconWithUserInfo.toString(),
+    ]) {
+      expect(
+        deriveRelayScanResult("wss://relay.example", {
+          icon,
+          supported_nips: [1],
+        }).relayIconUrl
+      ).toBeUndefined()
+    }
   })
 
   it("uses the Conduit commerce profile instead of client/event NIPs", () => {
@@ -762,6 +819,43 @@ describe("relay settings protocol helpers", () => {
     expect(relay.section).toBe("public")
     expect(relay.capabilities.commerce).toBe(false)
     expect(relay.warnings.unreachable).toBe(true)
+  })
+
+  it("preserves sanitized relay identity across transient scan failures", () => {
+    const current = createRelaySettingsEntryFromScan(
+      deriveRelayScanResult("wss://relay.example", {
+        name: "Example Relay",
+        icon: "https://nostr.build/example-relay.png",
+        supported_nips: [1],
+      })
+    )
+    const unreachable = createUnreachableRelaySettingsEntry(
+      current.url,
+      current.source,
+      20,
+      current
+    )
+
+    expect(unreachable.relayName).toBe("Example Relay")
+    expect(unreachable.relayIconUrl).toBe(
+      "https://nostr.build/example-relay.png"
+    )
+    expect(
+      normalizeRelaySettingsState({
+        version: 1,
+        updatedAt: 1,
+        entries: [
+          {
+            ...unreachable,
+            relayName: "  Example Relay  ",
+            relayIconUrl: "http://localhost/private.png",
+          },
+        ],
+      }).entries[0]
+    ).toMatchObject({
+      relayName: "Example Relay",
+      relayIconUrl: undefined,
+    })
   })
 
   it("preserves commerce priority across transient scan failures", () => {

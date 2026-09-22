@@ -947,7 +947,8 @@ export type PrivateMessageRelayReadinessReason =
 const READINESS_MESSAGES: Record<PrivateMessageRelayReadinessReason, string> = {
   sender_not_ready:
     "Your current NIP-17 inbox declaration is not ready for direct messages.",
-  recipient_not_ready: "Recipient has not declared NIP-17 inbox relays.",
+  recipient_not_ready:
+    "No usable recipient NIP-17 inbox declaration was found on the relays checked.",
   recipient_relays_excluded:
     "Recipient inbox relays are excluded by your Network settings.",
   recipient_lookup_failed: "Recipient inbox relay discovery failed.",
@@ -1296,6 +1297,15 @@ export async function publishPrivateMessage(
       authenticatedPubkey: authenticatedOwnerPubkey,
       recipientPubkeys: [input.recipientPubkey],
       exclusiveRelayUrls: recipientRoute.relayUrls,
+      appRelayUrls:
+        recipientRoute.route === "compatibility_order"
+          ? recipientRoute.relayUrls
+          : [],
+      personalRelayUrls: [],
+      independentRelayUrls:
+        recipientRoute.route === "compatibility_order"
+          ? []
+          : recipientRoute.relayUrls,
       shouldContinue: input.shouldContinue,
       refreshRelayLists,
       deliveryMode: "critical",
@@ -1382,6 +1392,15 @@ export async function publishPrivateMessage(
             authenticatedPubkey: authenticatedOwnerPubkey,
             recipientPubkeys: [input.senderPubkey],
             exclusiveRelayUrls: senderRoute.relayUrls,
+            appRelayUrls:
+              senderRoute.route === "compatibility_order"
+                ? senderRoute.relayUrls
+                : [],
+            personalRelayUrls: [],
+            independentRelayUrls:
+              senderRoute.route === "compatibility_order"
+                ? []
+                : senderRoute.relayUrls,
             ownerSelectedRelayUrls: senderRoute.ownerSelectedRelayUrls,
             shouldContinue: input.shouldContinue,
             refreshRelayLists,

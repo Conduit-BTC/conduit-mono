@@ -4,7 +4,12 @@ import type {
   AccountNetworkRelayRowView,
   AccountNetworkSettingsController,
 } from "@conduit/core"
-import { RelaySettingsPanel } from "@conduit/ui"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  RelaySettingsPanel,
+} from "@conduit/ui"
 import {
   getRelayRemovalReviewCopy,
   persistRelayOrderPreference,
@@ -57,11 +62,21 @@ function controller(
     inbox?: AccountNetworkSettingsController["view"]["inbox"]
     status?: AccountNetworkSettingsController["status"]
     relayInformationRefreshing?: boolean
+    appRelays?: AccountNetworkSettingsController["view"]["appRelays"]
+    personalRelaysEnabled?: boolean
+    setupRecommendation?: AccountNetworkSettingsController["view"]["setupRecommendation"]
   } = {}
 ): AccountNetworkSettingsController {
   return {
     view: {
       rows: input.rows ?? [],
+      ...(input.appRelays ? { appRelays: input.appRelays } : {}),
+      ...(input.personalRelaysEnabled === undefined
+        ? {}
+        : { personalRelaysEnabled: input.personalRelaysEnabled }),
+      ...(input.setupRecommendation
+        ? { setupRecommendation: input.setupRecommendation }
+        : {}),
       relayList: input.relayList ?? EMPTY_FRONTIER,
       inbox: input.inbox ?? EMPTY_FRONTIER,
       pendingExactDeliveries: input.pendingExactDeliveries ?? [],
@@ -91,12 +106,37 @@ function controller(
     retryPendingUpdate: async () => undefined,
     redistributeExactInboxDeclaration: async () => undefined,
     reorderRelays: async () => undefined,
+    setAppRelaysEnabled: async () => undefined,
+    setPersonalRelaysEnabled: async () => undefined,
+    dismissSetupRecommendation: async () => undefined,
     refresh: async () => undefined,
     clearOperation: () => undefined,
   }
 }
 
 describe("RelaySettingsPanel account Network review", () => {
+  it("uses a shared accessible collapsible primitive", () => {
+    const closedMarkup = renderToStaticMarkup(
+      <Collapsible>
+        <CollapsibleTrigger>App Relays</CollapsibleTrigger>
+        <CollapsibleContent>Managed relays</CollapsibleContent>
+      </Collapsible>
+    )
+    const openMarkup = renderToStaticMarkup(
+      <Collapsible defaultOpen>
+        <CollapsibleTrigger>App Relays</CollapsibleTrigger>
+        <CollapsibleContent>Managed relays</CollapsibleContent>
+      </Collapsible>
+    )
+
+    expect(closedMarkup).toContain('type="button"')
+    expect(closedMarkup).toContain('aria-expanded="false"')
+    expect(closedMarkup).toContain("aria-controls=")
+    expect(closedMarkup).toContain('hidden=""')
+    expect(openMarkup).toContain('aria-expanded="true"')
+    expect(openMarkup).not.toContain('hidden=""')
+  })
+
   it("keeps initial empty reconciliation pending before offering settled recovery", () => {
     const notCheckedFrontier = {
       ...EMPTY_FRONTIER,
@@ -158,7 +198,10 @@ describe("RelaySettingsPanel account Network review", () => {
     const emptyMarkup = renderToStaticMarkup(
       <RelaySettingsPanel controller={controller()} />
     )
-    expect(emptyMarkup).toContain("at least one Publish relay")
+    expect(emptyMarkup).toContain(
+      "No relay preferences were found on the relays checked."
+    )
+    expect(emptyMarkup).toContain("one Publish relay")
     expect(emptyMarkup).toContain(
       "Select a Private inbox if you want to receive private messages."
     )
@@ -435,6 +478,158 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup.match(/lucide-chevron-down/g)).toHaveLength(2)
     expect(markup).toContain("group-open/relay-details:rotate-180")
     expect(markup).toContain("group-open/published-preferences:rotate-180")
+  })
+
+  it("presents app and personal relay groups with safe relay identity imagery", () => {
+    const personal = relayRow("wss://personal.example", {
+      capability: {
+        configuredUses: [],
+        observedCommerce: false,
+        nip11: "available",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        relayName: "Personal Relay",
+        relayIconUrl: "https://nostr.build/personal-relay.png",
+      },
+    })
+    const app = relayRow("wss://relay.conduit.market", {
+      capability: {
+        configuredUses: ["app_publishing"],
+        observedCommerce: false,
+        nip11: "unavailable",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        relayName: "Conduit Relay",
+        relayIconUrl: "https://nostr.build/stale-conduit-relay.png",
+        relayIconFallbackUrl: "/images/logo/logo-icon.svg",
+      },
+    })
+    const appRows = [
+      app,
+      ...[
+        ["wss://relay.ditto.pub", "Ditto Relay"],
+        ["wss://relay.dreamith.to", "Dreamith Relay"],
+        ["wss://relay.primal.net", "Primal Public Relay"],
+        ["wss://nos.lol", "nos.lol"],
+        ["wss://relay.plebeian.market", "Plebeian Market Relay"],
+      ].map(([url, relayName]) =>
+        relayRow(url, {
+          capability: {
+            configuredUses: [],
+            observedCommerce: false,
+            nip11: "not_checked",
+            searchAdvertised: false,
+            authEvidence: "untested",
+            relayName,
+          },
+        })
+      ),
+    ]
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [personal],
+          appRelays: {
+            enabled: true,
+            rows: appRows,
+            warning: "Your personal setup is missing important routes.",
+          },
+          personalRelaysEnabled: false,
+          setupRecommendation: {
+            title: "Match Conduit defaults",
+            description: "Prepare recommended roles for review.",
+            rows: [app],
+          },
+        })}
+      />
+    )
+
+    expect(markup).toContain("App Relays")
+    expect(markup).toContain("Your Relays")
+    expect(markup).toContain(
+      "6 managed routes for reliable commerce, discovery, and messaging."
+    )
+    expect(markup).toContain('aria-expanded="false"')
+    expect(markup).toContain('hidden=""')
+    expect(markup).toContain("Match Conduit defaults")
+    expect(markup.match(/\(Ditto backup\)/g)).toHaveLength(1)
+    expect(markup).not.toContain("relay.damus.io")
+    expect(markup).toContain(
+      'class="mt-3 divide-y divide-[var(--border)] border-t border-[var(--border)]"'
+    )
+    expect(markup).toContain('src="/images/logo/logo-icon.svg"')
+    expect(markup).toContain('src="https://nostr.build/personal-relay.png"')
+    expect(markup).toContain('loading="lazy"')
+    expect(markup).toContain('referrerPolicy="no-referrer"')
+    expect(markup).toContain('aria-label="Disable App Relays"')
+    expect(markup).toContain('aria-label="Enable Your Relays"')
+    expect(markup).toContain('aria-label="Dismiss relay setup recommendation"')
+    expect(markup.indexOf("Personal Relay")).toBeLessThan(
+      markup.indexOf("wss://personal.example")
+    )
+  })
+
+  it("keeps a kind-10050-only relay visible and editable while personal routing is off", () => {
+    const nip65 = relayRow("wss://nip65-only.example", {
+      privateInboxEnabled: false,
+      privateInboxState: null,
+    })
+    const inboxOnly = relayRow("wss://inbox-only.example", {
+      readEnabled: false,
+      publishEnabled: false,
+      privateInboxEnabled: true,
+      readState: null,
+      publishState: null,
+      privateInboxState: "published",
+      signedPosition: 1,
+    })
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [nip65, inboxOnly],
+          appRelays: { enabled: true, rows: [] },
+          personalRelaysEnabled: false,
+        })}
+      />
+    )
+
+    expect(markup).toContain("wss://nip65-only.example")
+    expect(markup).toContain("wss://inbox-only.example")
+    expect(markup).toContain('aria-label="Enable Your Relays"')
+    const readButton = markup.match(
+      /<button[^>]*aria-label="Enable Read for wss:\/\/inbox-only\.example"[^>]*>/
+    )?.[0]
+    const inboxButton = markup.match(
+      /<button[^>]*aria-label="Disable Private inbox for wss:\/\/inbox-only\.example"[^>]*>/
+    )?.[0]
+    expect(readButton).toBeDefined()
+    expect(readButton).not.toContain('disabled=""')
+    expect(inboxButton).toBeDefined()
+    expect(inboxButton).not.toContain('disabled=""')
+  })
+
+  it("requires a warning review before disabling app relays", async () => {
+    const panelSource = await Bun.file(
+      "packages/ui/src/components/RelaySettingsPanel.tsx"
+    ).text()
+
+    expect(panelSource).toContain("if (!enabled && disableWarning)")
+    expect(panelSource).toContain("Turn off App Relays?")
+    expect(panelSource).toContain("{disableWarning}")
+    expect(panelSource).toContain("controller.setAppRelaysEnabled(enabled)")
+    expect(panelSource).toContain(
+      "review.applySetupRecommendation(recommendation.rows)"
+    )
+    expect(panelSource).toContain("controller.dismissSetupRecommendation()")
+    expect(panelSource).toContain("<Collapsible defaultOpen={false}>")
+    expect(panelSource).toContain("appRelays.rows.length")
+    expect(panelSource).toContain("group-data-[state=open]:rotate-90")
+    expect(panelSource).not.toContain(
+      "gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"
+    )
+    expect(panelSource).toContain(
+      'controller.prepareChange({ type: "set_roles", rows: desiredRoles })'
+    )
   })
 
   it("never labels an all-excluded exact plan as confirmed", () => {
