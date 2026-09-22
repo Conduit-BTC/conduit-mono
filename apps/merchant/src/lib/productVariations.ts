@@ -198,6 +198,39 @@ export function productFamilySnapshotsMatch<
   )
 }
 
+export function validateProductFamilySupplierAllocationSaveSnapshot<
+  TRecord extends ProductListingRecordLike,
+>(input: {
+  baseline: ProductListingFamily<TRecord>
+  current: ProductListingFamily<TRecord> | null
+  nextAllocation: ProductSchema["supplierAllocation"]
+  evidenceComplete: boolean
+}): { requiresCurrentSnapshot: boolean } {
+  const requiresCurrentSnapshot =
+    (!!input.nextAllocation && input.nextAllocation.state !== "absent") ||
+    productFamilySupplierAllocationChangeRequested(
+      input.baseline,
+      input.nextAllocation
+    )
+  if (!requiresCurrentSnapshot) return { requiresCurrentSnapshot: false }
+
+  if (!input.evidenceComplete) {
+    throw new Error(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+  }
+  if (
+    !input.current ||
+    !productFamilySnapshotsMatch(input.baseline, input.current)
+  ) {
+    throw new Error(
+      "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+    )
+  }
+
+  return { requiresCurrentSnapshot: true }
+}
+
 interface ParsedVariationAxis {
   values: string[]
   duplicates: string[]

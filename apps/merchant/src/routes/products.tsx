@@ -197,9 +197,7 @@ import {
   MAX_PRODUCT_VARIATION_COUNT,
   mergeProductVariationAuthoringState,
   parseProductVariationImageInput,
-  productFamilySnapshotsMatch,
   productFamilyReadSupportsAllocationChange,
-  productFamilySupplierAllocationChangeRequested,
   reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
@@ -207,6 +205,7 @@ import {
   updateProductVariationAxis,
   updateProductVariationInheritance,
   updateProductVariationOverride,
+  validateProductFamilySupplierAllocationSaveSnapshot,
   type ProductVariationFormResult,
 } from "../lib/productVariations"
 
@@ -1621,32 +1620,24 @@ function ProductsPage() {
       variations: payload.existing.variations,
       orphanVariation: payload.existing.orphanVariation,
     }
-    if (
-      !productFamilySupplierAllocationChangeRequested(
-        baselineFamily,
-        allocationValidation.allocation
-      )
-    ) {
-      return payload
-    }
-
-    if (!merchantProductFamilyEvidenceCompleteRef.current) {
-      throw new Error(
-        "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
-      )
-    }
-
     const currentFamily = merchantProductsRef.current.find(
       (candidate) => candidate.addressId === payload.existing?.addressId
     )
-    if (
-      !currentFamily ||
-      !productFamilySnapshotsMatch(baselineFamily, {
-        root: currentFamily,
-        variations: currentFamily.variations,
-        orphanVariation: currentFamily.orphanVariation,
+    const snapshotValidation =
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline: baselineFamily,
+        current: currentFamily
+          ? {
+              root: currentFamily,
+              variations: currentFamily.variations,
+              orphanVariation: currentFamily.orphanVariation,
+            }
+          : null,
+        nextAllocation: allocationValidation.allocation,
+        evidenceComplete: merchantProductFamilyEvidenceCompleteRef.current,
       })
-    ) {
+    if (!snapshotValidation.requiresCurrentSnapshot) return payload
+    if (!currentFamily) {
       throw new Error(
         "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
       )
