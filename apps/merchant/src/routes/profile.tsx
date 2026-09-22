@@ -68,6 +68,7 @@ function ProfilePage() {
     accountPubkey,
     pubkey,
     authGeneration,
+    isAuthGenerationCurrent,
     remoteSignerRecovery,
     signerReadiness,
     status,
@@ -92,6 +93,7 @@ function ProfilePage() {
   const updateMutation = useUpdateProfile("merchant", {
     authenticatedPubkey,
     authGeneration,
+    shouldContinue: () => isAuthGenerationCurrent(authGeneration),
   })
   const resetUpdateMutation = updateMutation.reset
   const [editingPubkey, setEditingPubkey] = useState<string | null>(null)
@@ -208,7 +210,8 @@ function ProfilePage() {
         onSuccess: () => {
           if (
             profileWorkOwnerRef.current !== saveOwner ||
-            authGenerationRef.current !== saveGeneration
+            authGenerationRef.current !== saveGeneration ||
+            !isAuthGenerationCurrent(saveGeneration)
           ) {
             return
           }

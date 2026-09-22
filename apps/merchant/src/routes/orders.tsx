@@ -687,12 +687,19 @@ function OrdersWorkspace() {
     connect,
   } = useAuth()
   const pubkey = accountPubkey
+  const mountedRef = useRef(true)
   const orderAuthorityRef = useRef({
     accountPubkey,
     authGeneration,
     signerPubkey,
     signerReadiness,
   })
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
   useLayoutEffect(() => {
     orderAuthorityRef.current = {
       accountPubkey,
@@ -701,16 +708,17 @@ function OrdersWorkspace() {
       signerReadiness,
     }
   }, [accountPubkey, authGeneration, signerPubkey, signerReadiness])
+  const isCurrentOrderAccount = (ownerPubkey: string) =>
+    mountedRef.current &&
+    orderAuthorityRef.current.accountPubkey === ownerPubkey
   const isCurrentOrderOwner = (ownerPubkey: string, generation: number) => {
     const current = orderAuthorityRef.current
     return (
+      isCurrentOrderAccount(ownerPubkey) &&
       isAuthGenerationCurrent(generation) &&
-      current.accountPubkey === ownerPubkey &&
       current.authGeneration === generation
     )
   }
-  const isCurrentOrderAccount = (ownerPubkey: string) =>
-    orderAuthorityRef.current.accountPubkey === ownerPubkey
   const isCurrentOrderSigner = (ownerPubkey: string, generation: number) => {
     const current = orderAuthorityRef.current
     return (

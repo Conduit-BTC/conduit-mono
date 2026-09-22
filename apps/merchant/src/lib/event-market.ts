@@ -57,6 +57,56 @@ export interface MerchantOrganizerRecordDelivery {
   signedEvent: SignedPublicNostrEvent | null
 }
 
+function deliveryIsComplete(
+  delivery: MerchantOrganizerRecordDelivery
+): boolean {
+  return (
+    delivery.acknowledgedCount > 0 &&
+    delivery.rejectedCount === 0 &&
+    delivery.timedOutCount === 0
+  )
+}
+
+/** Preserve monotonic relay progress for the same immutable signed record. */
+export function mergeMerchantOrganizerDeliveryProgress(
+  current: MerchantOrganizerRecordDelivery,
+  candidate: MerchantOrganizerRecordDelivery
+): MerchantOrganizerRecordDelivery {
+  if (
+    !current.signedEvent ||
+    !candidate.signedEvent ||
+    current.signedEvent.id !== candidate.signedEvent.id ||
+    current.record !== candidate.record
+  ) {
+    return candidate
+  }
+
+  const currentComplete = deliveryIsComplete(current)
+  const candidateComplete = deliveryIsComplete(candidate)
+  const selected =
+    currentComplete !== candidateComplete
+      ? currentComplete
+        ? current
+        : candidate
+      : current.acknowledgedCount > candidate.acknowledgedCount
+        ? current
+        : candidate
+  const acknowledgedRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls([
+    ...(current.acknowledgedRelayUrls ?? []),
+    ...(candidate.acknowledgedRelayUrls ?? []),
+  ])
+
+  return {
+    ...selected,
+    acknowledgedRelayUrls,
+    acknowledgedCount: Math.max(
+      current.acknowledgedCount,
+      candidate.acknowledgedCount,
+      acknowledgedRelayUrls.length
+    ),
+  }
+}
+
 export interface MerchantOrganizerParticipation {
   productCoordinate: string
   eventId?: string
@@ -408,11 +458,23 @@ export function saveOrganizerEventMarketDelivery(
       const current = latest.get(key)
       if (!current || stored.savedAt >= current.savedAt) latest.set(key, stored)
     }
-    latest.set(`${candidate.reference}:${candidate.delivery.record}`, candidate)
+    const candidateKey = `${candidate.reference}:${candidate.delivery.record}`
+    const currentCandidate = latest.get(candidateKey)
+    latest.set(
+      candidateKey,
+      currentCandidate
+        ? {
+            ...candidate,
+            delivery: mergeMerchantOrganizerDeliveryProgress(
+              currentCandidate.delivery,
+              candidate.delivery
+            ),
+          }
+        : candidate
+    )
     const sorted = Array.from(latest.values()).sort(
       (left, right) => right.savedAt - left.savedAt
     )
-    const candidateKey = `${candidate.reference}:${candidate.delivery.record}`
     const required = sorted.filter(
       (stored) =>
         stored.delivery.acknowledgedCount === 0 ||

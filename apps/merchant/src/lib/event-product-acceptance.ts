@@ -3,6 +3,7 @@ import {
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
   loadOrganizerEventMarketDeliveryOutbox,
+  mergeMerchantOrganizerDeliveryProgress,
   parseOrganizerEventMarketReference,
   publishMerchantOrganizerMembership,
   reconcileMerchantOrganizerCollectionEvidence,
@@ -54,6 +55,20 @@ function newerSignedDelivery(
   }) >= 0
     ? left
     : right
+}
+
+function strongestSignedDelivery(
+  input: MerchantOrganizerRecordDelivery,
+  saved: MerchantOrganizerRecordDelivery
+): MerchantOrganizerRecordDelivery {
+  if (
+    input.signedEvent?.id &&
+    input.signedEvent.id === saved.signedEvent?.id &&
+    input.record === saved.record
+  ) {
+    return mergeMerchantOrganizerDeliveryProgress(input, saved)
+  }
+  return newerSignedDelivery(input, saved)
 }
 
 /** A product signature requests participation; only a collection signature accepts it. */
@@ -198,7 +213,7 @@ export async function retryOwnEventProductAcceptance(
     (record) => record.record === "collection"
   )
   const strongest = savedCollection
-    ? newerSignedDelivery(input.signedAcceptance, savedCollection)
+    ? strongestSignedDelivery(input.signedAcceptance, savedCollection)
     : input.signedAcceptance
   if (strongest.signedEvent?.id !== input.signedAcceptance.signedEvent?.id) {
     throw new Error(
@@ -207,9 +222,9 @@ export async function retryOwnEventProductAcceptance(
   }
   const reconciledMarket = reconcileMerchantOrganizerCollectionEvidence(
     market,
-    input.signedAcceptance
+    strongest
   )
-  const event = input.signedAcceptance.signedEvent
+  const event = strongest.signedEvent
   const currentCollection = market.source?.collection
   const retainedIsCurrent = event
     ? currentCollection
@@ -235,16 +250,22 @@ export async function retryOwnEventProductAcceptance(
       "The event collection changed. Review this product before accepting again."
     )
   }
-  if (!needsExactRetry(input.signedAcceptance)) return true
+  if (!needsExactRetry(strongest)) return true
   const delivery = await dependencies.retry({
     organizerPubkey: organizer,
     authenticatedPubkey: input.authenticatedPubkey,
     shouldContinue: input.shouldContinue,
-    record: input.signedAcceptance,
+    record: strongest,
   })
-  dependencies.save(organizer, reference.coordinate, delivery)
-  input.onRetriedAcceptance?.(delivery)
-  if (delivery.acknowledgedCount === 0) {
+  const latestSavedCollection = dependencies.load(organizer)[
+    reference.coordinate
+  ]?.find((record) => record.record === "collection")
+  const retainedDelivery = latestSavedCollection
+    ? strongestSignedDelivery(delivery, latestSavedCollection)
+    : delivery
+  dependencies.save(organizer, reference.coordinate, retainedDelivery)
+  input.onRetriedAcceptance?.(retainedDelivery)
+  if (retainedDelivery.acknowledgedCount === 0) {
     throw new Error(
       "Product published. Acceptance is signed but not delivered yet; retry acceptance."
     )

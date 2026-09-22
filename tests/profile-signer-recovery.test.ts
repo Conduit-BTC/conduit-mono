@@ -62,6 +62,11 @@ describe("merchant order signer recovery", () => {
     expect(exactRetryBlock).toContain("retryStoredOrganizerReadyReceipt")
     expect(exactRetryBlock).toContain("retryStoredOrganizerReadyRevocation")
     expect(exactRetryBlock).toContain("isCurrentOrderAccount")
+    expect(contents).toContain("const mountedRef = useRef(true)")
+    expect(contents).toContain("mountedRef.current = false")
+    expect(contents).toContain(
+      "mountedRef.current &&\n    orderAuthorityRef.current.accountPubkey === ownerPubkey"
+    )
     expect(exactRetryBlock).not.toContain("captureFreshOrderAuthority")
     expect(exactRetryBlock).not.toContain("getNdk()")
     expect(contents).toContain("retryPending={stockUpdateMutation.isPending}")

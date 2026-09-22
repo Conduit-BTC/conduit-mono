@@ -269,6 +269,48 @@ describe("merchant organizer delivery outbox", () => {
     ).toEqual({})
   })
 
+  it("does not overwrite completed same-event delivery with stale retry progress", () => {
+    const storage = new MemoryStorage()
+    const signedEvent = signedCollection()
+    saveOrganizerEventMarketDelivery(
+      ORGANIZER,
+      REFERENCE,
+      {
+        record: "collection",
+        acknowledgedRelayUrls: ["wss://ack.example/events"],
+        acknowledgedCount: 1,
+        rejectedCount: 0,
+        timedOutCount: 0,
+        signedEvent,
+      },
+      storage
+    )
+
+    saveOrganizerEventMarketDelivery(
+      ORGANIZER,
+      REFERENCE,
+      {
+        record: "collection",
+        acknowledgedCount: 0,
+        rejectedCount: 1,
+        timedOutCount: 0,
+        signedEvent,
+      },
+      storage
+    )
+
+    expect(
+      loadOrganizerEventMarketDeliveryOutbox(ORGANIZER, storage)[REFERENCE]
+    ).toEqual([
+      expect.objectContaining({
+        acknowledgedRelayUrls: ["wss://ack.example/events"],
+        acknowledgedCount: 1,
+        rejectedCount: 0,
+        timedOutCount: 0,
+      }),
+    ])
+  })
+
   it("drops tampered signed events when reloading browser storage", () => {
     const storage = new MemoryStorage()
     const signedEvent = signedCollection()

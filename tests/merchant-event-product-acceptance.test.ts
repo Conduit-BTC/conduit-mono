@@ -272,6 +272,53 @@ describe("organizer own-product acceptance", () => {
     ])
   })
 
+  it("does not retry a stale pending row after the same signed acceptance completed", async () => {
+    const pending = { ...record, acknowledgedCount: 0 }
+    const completed = {
+      ...record,
+      acknowledgedRelayUrls: ["wss://relay.example/events"],
+    }
+    const h = harness(market, completed)
+
+    expect(
+      await retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: pending },
+        h.deps
+      )
+    ).toBe(true)
+    expect(h.retried).toHaveLength(0)
+    expect(h.saved).toHaveLength(0)
+  })
+
+  it("preserves same-event completion recorded while an exact retry is in flight", async () => {
+    const pending = { ...record, acknowledgedCount: 0 }
+    const completed = {
+      ...record,
+      acknowledgedRelayUrls: ["wss://relay.example/events"],
+    }
+    const retryResult = {
+      ...pending,
+      rejectedCount: 1,
+    }
+    const h = harness()
+    let stored: MerchantOrganizerRecordDelivery = pending
+    h.deps.load = () => ({ [COLLECTION]: [stored] })
+    h.deps.retry = async (retryInput: unknown) => {
+      h.retried.push(retryInput)
+      stored = completed
+      return retryResult
+    }
+
+    expect(
+      await retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: pending },
+        h.deps
+      )
+    ).toBe(true)
+    expect(h.retried).toHaveLength(1)
+    expect(h.saved).toEqual([[OWNER, COLLECTION, completed]])
+  })
+
   it("keeps live session authority on the read and acceptance publish", async () => {
     const h = harness()
     const shouldContinue = () => true
