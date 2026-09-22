@@ -147,6 +147,8 @@ function getDeliveryStateLabel(state: ProductDeliveryNotice["state"]): string {
   if (state === "delivering") return "Delivering"
   if (state === "delivered") return "Delivered"
   if (state === "partial") return "Partial"
+  if (state === "rejected") return "Rejected"
+  if (state === "failed") return "Failed"
   return "Retry needed"
 }
 

@@ -9,11 +9,15 @@ import {
   EVENT_KINDS,
   getEventMarketPickupsByCoordinates,
   getNdk,
+  getProductDeletionDelivery,
+  getProductListingDeliveryJobId,
+  getProductListingDelivery,
   getProductEventMarketFulfillmentClaims,
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,
   getShippingOptionsByCoordinates,
   isValidSignedPublicNostrEvent,
+  markProductListingDeliveryReady,
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
   publishWithPlanner,
@@ -34,23 +38,32 @@ import {
   planCurrentProductDeletionWriteRelays,
   type DeliverQueuedProductDeletionOptions,
 } from "./product-deletion-delivery"
+import {
+  deliverQueuedProductListings,
+  persistSignedProductListings,
+  planCurrentProductListingRelayTargets,
+  type DeliverQueuedProductListingOptions,
+} from "./product-listing-delivery"
 
 export class SignedProductDeliveryError extends Error {
   readonly deliveryCause: unknown
+  readonly retryable: boolean
 
-  constructor(deliveryCause: unknown) {
+  constructor(deliveryCause: unknown, retryable = true) {
     super("Signed product event could not be delivered")
     this.name = "SignedProductDeliveryError"
     this.deliveryCause = deliveryCause
+    this.retryable = retryable
   }
 }
 
 function asSignedProductDeliveryError(
-  error: unknown
+  error: unknown,
+  retryable = true
 ): SignedProductDeliveryError {
   return error instanceof SignedProductDeliveryError
     ? error
-    : new SignedProductDeliveryError(error)
+    : new SignedProductDeliveryError(error, retryable)
 }
 
 export function getRelayPublishDiagnosticsError(
@@ -185,12 +198,26 @@ function aggregateProductEventDeliveries(
   const failedRelayUrls = knownRelayUrls.filter(
     (url) => !successfulRelaySet.has(url)
   )
+  const rejectedRelayUrls = failedRelayUrls.filter((url) => {
+    const failedDeliveries = deliveries.filter(
+      (delivery) =>
+        delivery.failedRelayUrls.includes(url) &&
+        !delivery.successfulRelayUrls.includes(url)
+    )
+    return (
+      failedDeliveries.length > 0 &&
+      failedDeliveries.every((delivery) =>
+        delivery.rejectedRelayUrls?.includes(url)
+      )
+    )
+  })
 
   return {
     plan: deliveries[0]!.plan,
     attemptedRelayUrls,
     successfulRelayUrls,
     failedRelayUrls,
+    rejectedRelayUrls,
     relayFailureMessages: Object.assign(
       {},
       ...deliveries.map((delivery) => delivery.relayFailureMessages)
@@ -250,6 +277,7 @@ export interface ProductPublicationDependencies {
       shouldContinue?: () => boolean
     }
   ) => Promise<ParsedShippingOption[]>
+  planProductListingRelayTargets?: typeof planCurrentProductListingRelayTargets
 }
 
 type SignedProductWrite = {
@@ -987,14 +1015,39 @@ export function buildProductRemovalDeletionTargets(
 
 export interface SignedProductWriteBundle {
   events: readonly NDKEvent[]
+  productListingDeliveryJobId?: string
   deletionDeliveryJobId?: string
+}
+
+export interface ProductWriteDeliveryOptions extends DeliverQueuedProductDeletionOptions {
+  productListingDeliveryOptions?: DeliverQueuedProductListingOptions
 }
 
 export async function deliverSignedProductWriteBundle(
   bundle: SignedProductWriteBundle,
   merchantPubkey: string,
-  deletionDeliveryOptions: DeliverQueuedProductDeletionOptions = {}
+  deliveryOptions: ProductWriteDeliveryOptions = {}
 ): Promise<PublishWithPlannerResult> {
+  const listingEvents = bundle.events.filter(
+    (event) => event.kind === EVENT_KINDS.PRODUCT
+  )
+  const rawListingEvents = listingEvents.map(
+    (event) => event.rawEvent() as SignedPublicNostrEvent
+  )
+  if (
+    (!!listingEvents.length || !!bundle.productListingDeliveryJobId) &&
+    (listingEvents.length === 0 ||
+      !bundle.productListingDeliveryJobId ||
+      rawListingEvents.some(
+        (event) =>
+          !isDeliverableMerchantProductEvent(event, merchantPubkey) ||
+          event.kind !== EVENT_KINDS.PRODUCT
+      ))
+  ) {
+    throw new Error(
+      "Expected an exact signed merchant product family with its durable delivery job"
+    )
+  }
   const deletionEvents = bundle.events.filter(
     (event) => event.kind === EVENT_KINDS.DELETION
   )
@@ -1018,22 +1071,34 @@ export async function deliverSignedProductWriteBundle(
   }
 
   const deliveryPromises: Promise<PublishWithPlannerResult>[] = []
-  for (const event of bundle.events) {
-    if (event.kind !== EVENT_KINDS.DELETION) {
-      deliveryPromises.push(
-        deliverSignedProductEvent(event, merchantPubkey, {
-          authenticatedPubkey: deletionDeliveryOptions.authenticatedPubkey,
-          shouldContinue: deletionDeliveryOptions.shouldContinue,
-        })
-      )
-    }
+  if (bundle.productListingDeliveryJobId) {
+    deliveryPromises.push(
+      deliverQueuedProductListings(bundle.productListingDeliveryJobId, {
+        ...deliveryOptions.productListingDeliveryOptions,
+        authenticatedPubkey: deliveryOptions.authenticatedPubkey,
+        shouldContinue: deliveryOptions.shouldContinue,
+        expectedSignedEvents: rawListingEvents,
+      })
+    )
   }
   if (bundle.deletionDeliveryJobId) {
     deliveryPromises.push(
-      deliverQueuedProductDeletion(
-        bundle.deletionDeliveryJobId,
-        deletionDeliveryOptions
-      )
+      deliverQueuedProductDeletion(bundle.deletionDeliveryJobId, {
+        ...deliveryOptions,
+        isCompanionListingReady:
+          deliveryOptions.isCompanionListingReady ??
+          (async (jobId, deletionJobId) => {
+            const listing = await getProductListingDelivery(
+              jobId,
+              deliveryOptions.productListingDeliveryOptions
+            )
+            return (
+              !!listing &&
+              listing.companionDeletionJobId === deletionJobId &&
+              listing.readyForDelivery !== false
+            )
+          }),
+      })
     )
   }
   const deliveries = await Promise.all(deliveryPromises)
@@ -1049,7 +1114,9 @@ export async function signAndPublishProductWriteBundle(
     listings: readonly ProductListingPublishTarget[]
     deletions?: readonly ProductDeletionPublishTarget[]
     onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
+    onDeliveryQueued?: (bundle: SignedProductWriteBundle) => Promise<void>
     deletionDeliveryOptions?: DeliverQueuedProductDeletionOptions
+    productListingDeliveryOptions?: DeliverQueuedProductListingOptions
     onSignerRequest?: (progress: ProductSignerRequestProgress) => void
     onSignerRequestsComplete?: () => void
     waitForSignerVisibility?: () => Promise<void>
@@ -1089,6 +1156,13 @@ export async function signAndPublishProductWriteBundle(
         dependencies.getShippingOptions ?? getShippingOptionsByCoordinates,
     }
   )
+  const productListingRelayTargets =
+    listings.length > 0
+      ? await (
+          dependencies.planProductListingRelayTargets ??
+          planCurrentProductListingRelayTargets
+        )(signerPubkey, authenticatedPubkey, input.shouldContinue)
+      : []
   const signerRequestTotal = getProductSignerRequestCount({
     listings,
     deletions: input.deletions,
@@ -1158,44 +1232,88 @@ export async function signAndPublishProductWriteBundle(
   const listingEvents = events.filter(
     (event) => event.kind === EVENT_KINDS.PRODUCT
   )
+  const rawListingEvents = listingEvents.map(
+    (event) => event.rawEvent() as SignedPublicNostrEvent
+  )
+  const productListingDeliveryJobId =
+    rawListingEvents.length > 0
+      ? getProductListingDeliveryJobId(rawListingEvents)
+      : undefined
+  const deletionDeliveryJobId = deletionEvent?.id
+  const signedBundle: SignedProductWriteBundle = {
+    events,
+    ...(productListingDeliveryJobId ? { productListingDeliveryJobId } : {}),
+    ...(deletionDeliveryJobId ? { deletionDeliveryJobId } : {}),
+  }
   await Promise.all(
     listingEvents.map((event) => cacheSignedProductListingEvent(event))
   )
-
-  let deletionDeliveryJobId: string | undefined
-  if (deletionEvent) {
-    const currentWriteRelayUrls = await planCurrentProductDeletionWriteRelays(
-      signerPubkey,
-      signerPubkey,
-      input.shouldContinue
-    )
-    const sourceRelayUrls = mergeRelayUrls(
-      ...(input.deletions ?? []).map(
-        (deletion) => deletion.sourceRelayUrls ?? []
-      )
-    )
-    const deliveryJob = await persistSignedProductDeletion(
-      {
-        signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
-        currentWriteRelayUrls,
-        sourceRelayUrls,
-      },
-      input.deletionDeliveryOptions
-    )
-    deletionDeliveryJobId = deliveryJob.id
-    await cacheSignedProductDeletionEvent(deletionEvent)
-  }
-
-  const signedBundle: SignedProductWriteBundle = {
-    events,
-    ...(deletionDeliveryJobId ? { deletionDeliveryJobId } : {}),
-  }
   try {
     await input.onSignedLocal(signedBundle)
+  } catch (error) {
+    throw asSignedProductDeliveryError(error, false)
+  }
+
+  try {
+    if (productListingDeliveryJobId) {
+      await persistSignedProductListings(
+        {
+          merchantPubkey: signerPubkey,
+          signedEvents: rawListingEvents,
+          relayTargets: productListingRelayTargets,
+          companionDeletionJobId: deletionDeliveryJobId,
+          // A mixed listing + NIP-09 write is armed only after both exact jobs
+          // are durable. Standalone families can be retried immediately.
+          readyForDelivery: deletionDeliveryJobId ? false : true,
+        },
+        input.productListingDeliveryOptions
+      )
+    }
+    if (deletionEvent && deletionDeliveryJobId) {
+      const currentWriteRelayUrls = await planCurrentProductDeletionWriteRelays(
+        signerPubkey,
+        signerPubkey,
+        input.shouldContinue
+      )
+      const sourceRelayUrls = mergeRelayUrls(
+        ...(input.deletions ?? []).map(
+          (deletion) => deletion.sourceRelayUrls ?? []
+        )
+      )
+      await persistSignedProductDeletion(
+        {
+          signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
+          currentWriteRelayUrls,
+          sourceRelayUrls,
+          companionListingJobId: productListingDeliveryJobId,
+        },
+        input.deletionDeliveryOptions
+      )
+      await cacheSignedProductDeletionEvent(deletionEvent)
+    }
+    if (productListingDeliveryJobId) {
+      await markProductListingDeliveryReady(productListingDeliveryJobId, {
+        ...input.productListingDeliveryOptions,
+        isCompanionDeletionDurable: async (eventId, listingJobId) => {
+          const deletion = await getProductDeletionDelivery(
+            eventId,
+            input.deletionDeliveryOptions
+          )
+          return deletion?.companionListingJobId === listingJobId
+        },
+      })
+    }
+  } catch (error) {
+    throw asSignedProductDeliveryError(error, false)
+  }
+
+  try {
+    await input.onDeliveryQueued?.(signedBundle)
     return await deliverSignedProductWriteBundle(signedBundle, signerPubkey, {
       ...input.deletionDeliveryOptions,
       authenticatedPubkey,
       shouldContinue: input.shouldContinue,
+      productListingDeliveryOptions: input.productListingDeliveryOptions,
     })
   } catch (error) {
     throw asSignedProductDeliveryError(error)

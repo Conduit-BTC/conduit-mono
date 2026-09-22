@@ -29,10 +29,13 @@ import {
   parsePlainDecimalAmount,
 } from "./productPriceForm"
 import {
-  deliverSignedProductEvent,
   signAndPublishProductListing,
   type ProductSignerRequestProgress,
 } from "./product-publishing"
+import {
+  deliverQueuedProductListings,
+  ensureSignedProductListingsQueued,
+} from "./product-listing-delivery"
 import { parseProductStockInput } from "./productStock"
 
 export interface EventProductTemplate {
@@ -59,6 +62,44 @@ export interface EventProductPublishFormValues {
 export interface EventProductPublishResult {
   productCoordinate: string
   delivery: PublishWithPlannerResult
+}
+
+export interface EventProductDeliveryPresentation {
+  acknowledged: boolean
+  retryable: boolean
+  message: string | null
+}
+
+export function getEventProductDeliveryPresentation(
+  delivery: Pick<
+    PublishWithPlannerResult,
+    "successfulRelayUrls" | "failedRelayUrls" | "rejectedRelayUrls"
+  >
+): EventProductDeliveryPresentation {
+  if (delivery.successfulRelayUrls.length > 0) {
+    return { acknowledged: true, retryable: false, message: null }
+  }
+
+  const rejectedRelayUrls = new Set(delivery.rejectedRelayUrls ?? [])
+  const allTargetsRejected =
+    delivery.failedRelayUrls.length > 0 &&
+    delivery.failedRelayUrls.every((relayUrl) =>
+      rejectedRelayUrls.has(relayUrl)
+    )
+
+  return allTargetsRejected
+    ? {
+        acknowledged: false,
+        retryable: false,
+        message:
+          "Every target relay rejected the signed product. Event acceptance was not published; update the listing or relay setup and start again.",
+      }
+    : {
+        acknowledged: false,
+        retryable: true,
+        message:
+          "No relay acknowledged the complete product yet. The exact signed product is saved; retry delivery before requesting event acceptance.",
+      }
 }
 
 export interface EventProductFormValidation {
@@ -395,8 +436,19 @@ export async function retryEventProductDelivery(
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean
 ): Promise<PublishWithPlannerResult> {
-  return deliverSignedProductEvent(event, merchantPubkey, {
+  const signedEvent = event.rawEvent()
+  if (signedEvent.pubkey !== merchantPubkey) {
+    throw new Error("Signed event does not match current merchant")
+  }
+  const queued = await ensureSignedProductListingsQueued({
+    merchantPubkey,
+    signedEvents: [signedEvent],
     authenticatedPubkey,
     shouldContinue,
+  })
+  return deliverQueuedProductListings(queued.id, {
+    authenticatedPubkey,
+    shouldContinue,
+    expectedSignedEvents: [signedEvent],
   })
 }

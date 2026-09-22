@@ -10,12 +10,19 @@ export function reconcilePendingProductDeletionRetry<
 
 export type ProductDeliveryNotice = {
   action: ProductWriteAction
-  state: "delivering" | "delivered" | "partial" | "retry_needed"
+  state:
+    | "delivering"
+    | "delivered"
+    | "partial"
+    | "retry_needed"
+    | "rejected"
+    | "failed"
   title: string
   detail: string
   attemptedRelayUrls: string[]
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
+  rejectedRelayUrls: string[]
 }
 
 function getRelayCountLabel(count: number): string {
@@ -35,10 +42,14 @@ export function formatProductRelayUrls(urls: readonly string[]): string {
 function getDeliveryState(
   delivery: Pick<
     PublishWithPlannerResult,
-    "successfulRelayUrls" | "failedRelayUrls"
+    "successfulRelayUrls" | "failedRelayUrls" | "rejectedRelayUrls"
   >
 ): ProductDeliveryNotice["state"] {
   if (delivery.failedRelayUrls.length > 0) {
+    const rejectedRelayUrls = new Set(delivery.rejectedRelayUrls ?? [])
+    if (delivery.failedRelayUrls.every((url) => rejectedRelayUrls.has(url))) {
+      return delivery.successfulRelayUrls.length > 0 ? "delivered" : "rejected"
+    }
     return delivery.successfulRelayUrls.length > 0 ? "partial" : "retry_needed"
   }
   return "delivered"
@@ -70,9 +81,16 @@ export function buildProductDeliveryNotice(
   const failedRelayUrls = previous
     ? attemptedRelayUrls.filter((url) => !successfulRelaySet.has(url))
     : delivery.failedRelayUrls
+  const rejectedRelayUrls = failedRelayUrls.filter((url) =>
+    mergeRelayUrls(
+      previous?.rejectedRelayUrls ?? [],
+      delivery.rejectedRelayUrls ?? []
+    ).includes(url)
+  )
   const state = getDeliveryState({
     successfulRelayUrls,
     failedRelayUrls,
+    rejectedRelayUrls,
   })
   const totalRelayCount = mergeRelayUrls(
     attemptedRelayUrls,
@@ -88,10 +106,15 @@ export function buildProductDeliveryNotice(
     totalRelayCount > 0
       ? `ACKed ${successfulRelayUrls.length} of ${getRelayCountLabel(totalRelayCount)}.`
       : "Relay delivery completed without per-relay ACK details."
+  const retryableRelayUrls = failedRelayUrls.filter(
+    (url) => !rejectedRelayUrls.includes(url)
+  )
   const retrySummary =
-    failedRelayUrls.length > 0
-      ? `Use Retry delivery for ${getRelayCountLabel(failedRelayUrls.length)}.`
-      : "No relay retry needed."
+    retryableRelayUrls.length > 0
+      ? `Use Retry delivery for ${getRelayCountLabel(retryableRelayUrls.length)}.`
+      : rejectedRelayUrls.length > 0
+        ? `${getRelayCountLabel(rejectedRelayUrls.length)} rejected the signed event; there is nothing left to retry.`
+        : "No relay retry needed."
 
   return {
     action,
@@ -101,11 +124,14 @@ export function buildProductDeliveryNotice(
         ? `${actionLabel} delivered`
         : state === "partial"
           ? `${actionLabel} partially delivered`
-          : `${actionLabel} saved locally`,
+          : state === "rejected"
+            ? `${actionLabel} rejected`
+            : `${actionLabel} saved locally`,
     detail: `${localEffect} ${relaySummary} ${retrySummary}`,
     attemptedRelayUrls,
     successfulRelayUrls,
     failedRelayUrls,
+    rejectedRelayUrls,
   }
 }
 
@@ -124,6 +150,7 @@ export function buildLocalProductDeliveryNotice(
     attemptedRelayUrls: [],
     successfulRelayUrls: [],
     failedRelayUrls: [],
+    rejectedRelayUrls: [],
   }
 }
 
@@ -142,6 +169,28 @@ export function buildLocalProductRetryNotice(
     attemptedRelayUrls: [],
     successfulRelayUrls: [],
     failedRelayUrls: [],
+    rejectedRelayUrls: [],
+  }
+}
+
+export function buildLocalProductQueueFailureNotice(
+  action: ProductWriteAction
+): ProductDeliveryNotice {
+  return {
+    action,
+    state: "failed",
+    title:
+      action === "delete"
+        ? "Delete delivery was not queued"
+        : "Publish delivery was not queued",
+    detail:
+      action === "delete"
+        ? "The local delete could not be saved for safe relay delivery. No relay delivery was attempted. Start the delete again."
+        : "The signed listing could not be saved for safe relay delivery. No relay delivery was attempted. Open the listing and publish it again.",
+    attemptedRelayUrls: [],
+    successfulRelayUrls: [],
+    failedRelayUrls: [],
+    rejectedRelayUrls: [],
   }
 }
 
@@ -159,6 +208,7 @@ export function buildQueuedProductDeletionNotice(
     attemptedRelayUrls: [],
     successfulRelayUrls: [],
     failedRelayUrls: [],
+    rejectedRelayUrls: [],
   }
 }
 

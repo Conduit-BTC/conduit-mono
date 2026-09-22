@@ -39,6 +39,7 @@ export interface ProductDeletionRelayPlanInput {
 
 export interface PersistProductDeletionDeliveryInput extends ProductDeletionRelayPlanInput {
   signedEvent: SignedPublicNostrEvent
+  companionListingJobId?: string
 }
 
 export type ProductDeletionPublisherResult = {
@@ -98,6 +99,10 @@ export interface ProductDeletionDeliveryOptions {
   deliveryLeaseMs?: number
   /** Explicit user retry may recover a lease orphaned by a crashed tab. */
   forceDeliveryLeaseRecovery?: boolean
+  isCompanionListingReady?: (
+    jobId: string,
+    deletionJobId: string
+  ) => Promise<boolean>
 }
 
 function cloneSignedEvent(
@@ -301,6 +306,17 @@ function signedEventMatches(
   )
 }
 
+function normalizeCompanionListingJobId(
+  raw: string | undefined
+): string | undefined {
+  if (raw === undefined) return undefined
+  const normalized = raw.trim()
+  if (!normalized.startsWith("product-listing:")) {
+    throw new Error("Product deletion companion listing job id is invalid")
+  }
+  return normalized
+}
+
 const dexieProductDeletionOutboxRepository: ProductDeletionOutboxRepository = {
   async add(job) {
     await db.productDeletionOutbox.add(cloneJob(job))
@@ -328,6 +344,12 @@ const dexieProductDeletionOutboxRepository: ProductDeletionOutboxRepository = {
       const next = updater(cloneJob(current))
       if (next.id !== id) {
         throw new Error("Product deletion delivery job id is immutable")
+      }
+      if (
+        !signedEventMatches(next.signedEvent, current.signedEvent) ||
+        next.companionListingJobId !== current.companionListingJobId
+      ) {
+        throw new Error("Product deletion delivery intent is immutable")
       }
       await db.productDeletionOutbox.put(cloneJob(next))
       return cloneJob(next)
@@ -397,12 +419,16 @@ export async function persistProductDeletionDelivery(
   assertSignedDeletionEvent(input.signedEvent)
   const repository = getRepository(options)
   const relayPlan = planProductDeletionRelays(input)
+  const companionListingJobId = normalizeCompanionListingJobId(
+    input.companionListingJobId
+  )
   const existing = await repository.get(input.signedEvent.id)
 
   if (existing) {
     if (
       !signedEventMatches(existing.signedEvent, input.signedEvent) ||
-      !relayPlanMatches(existing.relayPlan, relayPlan)
+      !relayPlanMatches(existing.relayPlan, relayPlan) ||
+      existing.companionListingJobId !== companionListingJobId
     ) {
       throw new Error(
         "A product deletion delivery job already exists with a different immutable plan"
@@ -424,6 +450,7 @@ export async function persistProductDeletionDelivery(
     state: "pending",
     deliveryAttemptCount: 0,
     retryCount: 0,
+    ...(companionListingJobId ? { companionListingJobId } : {}),
     nextRetryAt: createdAt,
     createdAt,
     updatedAt: createdAt,
@@ -437,7 +464,8 @@ export async function persistProductDeletionDelivery(
     if (
       !raced ||
       !signedEventMatches(raced.signedEvent, job.signedEvent) ||
-      !relayPlanMatches(raced.relayPlan, job.relayPlan)
+      !relayPlanMatches(raced.relayPlan, job.relayPlan) ||
+      raced.companionListingJobId !== companionListingJobId
     ) {
       throw error
     }
@@ -445,6 +473,22 @@ export async function persistProductDeletionDelivery(
   }
 
   return cloneJob(job)
+}
+
+async function isCompanionListingReady(
+  jobId: string,
+  deletionJobId: string,
+  options: ProductDeletionDeliveryOptions
+): Promise<boolean> {
+  if (options.isCompanionListingReady) {
+    return await options.isCompanionListingReady(jobId, deletionJobId)
+  }
+  const listing = await db.productListingOutbox.get(jobId)
+  return (
+    !!listing &&
+    listing.companionDeletionJobId === deletionJobId &&
+    listing.readyForDelivery !== false
+  )
 }
 
 function deriveDeliveryState(
@@ -660,6 +704,16 @@ async function deliverProductDeletionJobUnlocked(
   const stored = await repository.get(id)
   if (!stored) {
     throw new Error("Product deletion delivery job not found")
+  }
+  if (
+    stored.companionListingJobId &&
+    !(await isCompanionListingReady(
+      stored.companionListingJobId,
+      stored.id,
+      options
+    ))
+  ) {
+    return cloneJob(stored)
   }
   assertSignedDeletionEvent(stored.signedEvent)
   await retireUnapprovedPersistedRelayTargets(

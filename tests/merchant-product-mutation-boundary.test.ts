@@ -29,6 +29,8 @@ import {
   type OrderSummary,
   type ParsedEventMarketPickup,
   type ParsedShippingOption,
+  type ProductListingDeliveryJob,
+  type ProductListingOutboxRepository,
   type ProductSchema,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -341,6 +343,35 @@ interface PublicationObservation {
   signedEvents?: NDKEvent[]
 }
 
+class MemoryProductListingOutbox implements ProductListingOutboxRepository {
+  private readonly jobs = new Map<string, ProductListingDeliveryJob>()
+
+  async add(job: ProductListingDeliveryJob): Promise<void> {
+    if (this.jobs.has(job.id)) throw new Error("duplicate")
+    this.jobs.set(job.id, structuredClone(job))
+  }
+
+  async get(id: string): Promise<ProductListingDeliveryJob | undefined> {
+    const job = this.jobs.get(id)
+    return job ? structuredClone(job) : undefined
+  }
+
+  async listUndelivered(): Promise<ProductListingDeliveryJob[]> {
+    return Array.from(this.jobs.values()).map((job) => structuredClone(job))
+  }
+
+  async update(
+    id: string,
+    updater: (current: ProductListingDeliveryJob) => ProductListingDeliveryJob
+  ): Promise<ProductListingDeliveryJob> {
+    const current = this.jobs.get(id)
+    if (!current) throw new Error("missing")
+    const next = updater(structuredClone(current))
+    this.jobs.set(id, structuredClone(next))
+    return structuredClone(next)
+  }
+}
+
 async function attemptProductPublication(input: {
   listings: readonly ProductListingPublishTarget[]
   getEventMarketPickups?: ProductPublicationDependencies["getEventMarketPickups"]
@@ -390,10 +421,22 @@ async function attemptProductPublication(input: {
             input.observed.signedEvents?.push(...events)
           }
         },
+        productListingDeliveryOptions: {
+          repository: new MemoryProductListingOutbox(),
+          accountNetworkLocalStateRepository: { get: async () => undefined },
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ signedEvent }) => {
+            input.observed?.publishedKinds.push(signedEvent.kind)
+            return { status: "acked" }
+          },
+        },
       },
       {
         getEventMarketPickups: input.getEventMarketPickups ?? (async () => []),
         getShippingOptions: input.getShippingOptions ?? (async () => []),
+        planProductListingRelayTargets: async () => [
+          { relayUrl: "wss://relay.example", ownerSelected: false },
+        ],
       }
     )
   } finally {

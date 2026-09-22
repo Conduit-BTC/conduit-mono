@@ -178,6 +178,10 @@ describe("merchant order stock UI", () => {
     )
     expect(source).toContain("hasSessionDecision: sessionStockDecisionKeys.has")
     expect(source).toContain('stockDelivery.notice.state !== "delivered"')
+    expect(source).toContain('stockDelivery.notice.state !== "rejected"')
+    expect(source).toContain(
+      'notice.state === "delivered" || notice.state === "rejected"'
+    )
     expect(source).toContain(
       "stockDecisionHydratedSelectionId !== selectedStockDecisionId"
     )
@@ -210,6 +214,7 @@ describe("merchant order stock UI", () => {
             attemptedRelayUrls: [],
             successfulRelayUrls: [],
             failedRelayUrls: [],
+            rejectedRelayUrls: [],
           },
         }}
         deliveryNeedsAttention

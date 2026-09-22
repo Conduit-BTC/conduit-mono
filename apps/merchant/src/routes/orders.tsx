@@ -148,11 +148,14 @@ import {
   type ProductDeliveryNotice,
 } from "../lib/product-delivery"
 import {
-  deliverSignedProductEvent,
   getRelayPublishDiagnosticsError,
   signAndPublishProductListing,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
+import {
+  deliverQueuedProductListings,
+  ensureSignedProductListingsQueued,
+} from "../lib/product-listing-delivery"
 import { prepareOrderStockUpdate } from "../lib/order-stock-fulfillment"
 import {
   applyOrderStockTarget,
@@ -1408,6 +1411,7 @@ function OrdersPage() {
         }).flatMap((adjustment) => {
           const pendingAdjustment =
             stockDelivery?.notice.state !== "delivered" &&
+            stockDelivery?.notice.state !== "rejected" &&
             stockDelivery?.orderId === selected.orderId &&
             stockDelivery.adjustment.key === adjustment.key
               ? stockDelivery.adjustment
@@ -1449,6 +1453,7 @@ function OrdersPage() {
     const hasPendingDelivery = Boolean(
       stockDelivery &&
       stockDelivery.notice.state !== "delivered" &&
+      stockDelivery.notice.state !== "rejected" &&
       selected &&
       stockDelivery.orderId === selected.orderId &&
       stockDelivery.adjustment.key === adjustment.key
@@ -1711,14 +1716,17 @@ function OrdersPage() {
           adjustment: payload.adjustment,
           signedEvent: payload.signedEvent,
         })
-        const delivery = await deliverSignedProductEvent(
-          payload.signedEvent,
-          pubkey,
-          {
-            authenticatedPubkey: signerConnected ? pubkey : null,
-            shouldContinue: () => authGenerationRef.current === authGeneration,
-          }
-        )
+        const queued = await ensureSignedProductListingsQueued({
+          merchantPubkey: pubkey,
+          signedEvents: [payload.signedEvent],
+          authenticatedPubkey: signerConnected ? pubkey : null,
+          shouldContinue: () => authGenerationRef.current === authGeneration,
+        })
+        const delivery = await deliverQueuedProductListings(queued.id, {
+          authenticatedPubkey: signerConnected ? pubkey : null,
+          shouldContinue: () => authGenerationRef.current === authGeneration,
+          expectedSignedEvents: [payload.signedEvent],
+        })
         return {
           delivery,
           signedEvent: payload.signedEvent,
@@ -1827,7 +1835,7 @@ function OrdersPage() {
         notice,
         signedEvent: result.signedEvent,
       })
-      if (notice.state === "delivered") {
+      if (notice.state === "delivered" || notice.state === "rejected") {
         const decisionPersisted = stockDecisionStoreRef.current.set(
           merchantPubkey,
           payload.orderId,
@@ -1859,9 +1867,13 @@ function OrdersPage() {
           })
         }
         flash(
-          decisionPersisted
-            ? `Stock updated for ${result.adjustment.title}`
-            : `Stock updated for ${result.adjustment.title}, but this device could not remember the order decision after reload.`
+          notice.state === "rejected"
+            ? decisionPersisted
+              ? `Stock updated locally for ${result.adjustment.title}, but the target relays rejected the signed update.`
+              : `Stock updated locally for ${result.adjustment.title}, the target relays rejected the signed update, and this device could not remember the order decision after reload.`
+            : decisionPersisted
+              ? `Stock updated for ${result.adjustment.title}`
+              : `Stock updated for ${result.adjustment.title}, but this device could not remember the order decision after reload.`
         )
       } else {
         const retryPersisted = pendingStockDeliveryStoreRef.current.set(

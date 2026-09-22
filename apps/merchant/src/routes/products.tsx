@@ -119,6 +119,7 @@ import {
 import { buildProductTagCatalog } from "../lib/productTagSuggestions"
 import {
   buildLocalProductDeliveryNotice,
+  buildLocalProductQueueFailureNotice,
   buildLocalProductRetryNotice,
   buildProductDeliveryNotice,
   buildQueuedProductDeletionNotice,
@@ -469,6 +470,11 @@ function getPublishErrorMessage(
       ? "Failed to delete listing"
       : "Failed to publish listing"
   if (error instanceof SignedProductDeliveryError) {
+    if (!error.retryable) {
+      return action === "delete"
+        ? "Delete delivery could not be queued safely. Start the delete again."
+        : "Publish delivery could not be queued safely. Open the listing and publish it again."
+    }
     return action === "delete"
       ? "Delete saved locally. Relay delivery needs retry."
       : "Publish saved locally. Relay delivery needs retry."
@@ -517,7 +523,11 @@ function ProductDeliveryStatusNotice({
                   ? "Delivered"
                   : notice.state === "partial"
                     ? "Partial"
-                    : "Retry needed"}
+                    : notice.state === "rejected"
+                      ? "Rejected"
+                      : notice.state === "failed"
+                        ? "Failed"
+                        : "Retry needed"}
             </StatusPill>
             <div className="font-medium text-[var(--text-primary)]">
               {notice.title}
@@ -561,12 +571,26 @@ function ProductDeliveryStatusNotice({
             </span>{" "}
             {formatProductRelayUrls(notice.successfulRelayUrls)}
           </div>
-          {notice.failedRelayUrls.length > 0 && (
+          {notice.failedRelayUrls.some(
+            (url) => !notice.rejectedRelayUrls.includes(url)
+          ) && (
             <div className="break-all">
               <span className="font-medium text-[var(--text-primary)]">
                 Needs retry:
               </span>{" "}
-              {formatProductRelayUrls(notice.failedRelayUrls)}
+              {formatProductRelayUrls(
+                notice.failedRelayUrls.filter(
+                  (url) => !notice.rejectedRelayUrls.includes(url)
+                )
+              )}
+            </div>
+          )}
+          {notice.rejectedRelayUrls.length > 0 && (
+            <div className="break-all">
+              <span className="font-medium text-[var(--text-primary)]">
+                Rejected:
+              </span>{" "}
+              {formatProductRelayUrls(notice.rejectedRelayUrls)}
             </div>
           )}
         </div>
@@ -826,7 +850,8 @@ async function publishProduct(
   onSignerRequestsComplete?: () => void,
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean,
-  existingFamilyEvidenceComplete?: boolean
+  existingFamilyEvidenceComplete?: boolean,
+  onDeliveryQueued?: (bundle: SignedProductWriteBundle) => Promise<void>
 ): Promise<PublishWithPlannerResult> {
   const preserveFulfillment = form.fulfillment === "preserve"
   if (preserveFulfillment && !existing) {
@@ -1108,6 +1133,7 @@ async function publishProduct(
         rootEventId,
       })
     },
+    onDeliveryQueued,
   })
 }
 
@@ -1691,7 +1717,7 @@ function ProductsPage() {
           currentPayload.merchantPubkey,
           currentPayload.form,
           currentPayload.dTag,
-          async (signedBundle, authoringTarget) => {
+          async (_signedBundle, authoringTarget) => {
             signedLocally = true
             if (fallbackMovePrepared) {
               productImageUpload.commitFallbackClaimMove(
@@ -1699,10 +1725,6 @@ function ProductsPage() {
                 fallbackDestinationScope
               )
             }
-            setProductDeliveryRetry({
-              action: "publish",
-              payload: { ...currentPayload, signedBundle },
-            })
             completeLocalProductSave(currentPayload, authoringTarget)
             await showLocalProductProjection(
               "publish",
@@ -1717,7 +1739,13 @@ function ProductsPage() {
           },
           authStatus === "connected" ? pubkey : null,
           () => authGenerationRef.current === authGeneration,
-          currentPayload.familyEvidenceComplete
+          currentPayload.familyEvidenceComplete,
+          async (signedBundle) => {
+            setProductDeliveryRetry({
+              action: "publish",
+              payload: { ...currentPayload, signedBundle },
+            })
+          }
         )
       } catch (error) {
         if (fallbackMovePrepared && !signedLocally) {
@@ -1762,7 +1790,9 @@ function ProductsPage() {
       setProductSignerProgress(null)
       setProductSignerRequestsComplete(false)
       setProductDeliveryNotice(notice)
-      if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
+      if (notice.state === "delivered" || notice.state === "rejected") {
+        setProductDeliveryRetry(null)
+      }
       await refreshProductQueries()
     },
     onError: async (error, variables) => {
@@ -1794,7 +1824,10 @@ function ProductsPage() {
         )
       } else if (error instanceof SignedProductDeliveryError) {
         setProductDeliveryNotice(
-          variables.previousNotice ?? buildLocalProductRetryNotice("publish")
+          variables.previousNotice ??
+            (error.retryable
+              ? buildLocalProductRetryNotice("publish")
+              : buildLocalProductQueueFailureNotice("publish"))
         )
       } else {
         setProductDeliveryNotice((current) =>
@@ -1876,7 +1909,9 @@ function ProductsPage() {
         variables.previousNotice
       )
       setProductDeliveryNotice(notice)
-      if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
+      if (notice.state === "delivered" || notice.state === "rejected") {
+        setProductDeliveryRetry(null)
+      }
       await refreshProductQueries()
     },
     onError: async (error, variables) => {

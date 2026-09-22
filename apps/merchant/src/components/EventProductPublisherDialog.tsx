@@ -35,6 +35,7 @@ import { acceptOwnEventProduct } from "../lib/event-product-acceptance"
 import {
   createEmptyEventProductForm,
   eventProductFormFromTemplate,
+  getEventProductDeliveryPresentation,
   listEventProductTemplates,
   publishEventProduct,
   retryEventProductDelivery,
@@ -43,6 +44,7 @@ import {
 } from "../lib/event-product-publishing"
 import {
   getProductSignerRequestMessage,
+  SignedProductDeliveryError,
   type ProductSignerRequestProgress,
 } from "../lib/product-publishing"
 import { ProductPaymentSetupNotice } from "./ProductPaymentSetupNotice"
@@ -105,6 +107,8 @@ export function EventProductPublisherDialog({
   const [signedAcceptance, setSignedAcceptance] =
     useState<MerchantOrganizerRecordDelivery | null>(null)
   const [accepting, setAccepting] = useState(false)
+  const [productDeliveryRetryable, setProductDeliveryRetryable] =
+    useState(false)
   const [productImageUploadScopeId, setProductImageUploadScopeId] = useState(
     createEventProductUploadScopeId
   )
@@ -159,6 +163,19 @@ export function EventProductPublisherDialog({
     return { productCoordinate, accepted }
   }
 
+  function requireAcknowledgedProductDelivery(
+    delivery: Parameters<typeof getEventProductDeliveryPresentation>[0]
+  ): void {
+    const presentation = getEventProductDeliveryPresentation(delivery)
+    setProductDeliveryRetryable(presentation.retryable)
+    if (!presentation.acknowledged) {
+      throw new Error(
+        presentation.message ??
+          "Product relay delivery was not acknowledged before event acceptance."
+      )
+    }
+  }
+
   function finishPublication(result: {
     productCoordinate: string
     accepted: boolean
@@ -201,6 +218,7 @@ export function EventProductPublisherDialog({
             setActionState("publishing")
           },
         })
+        requireAcknowledgedProductDelivery(result.delivery)
         return completeAcceptance(result.productCoordinate)
       } catch (error) {
         if (
@@ -219,12 +237,16 @@ export function EventProductPublisherDialog({
     onMutate: () => {
       setActionError("")
       setSignedEvent(null)
+      setProductDeliveryRetryable(false)
       setSignerProgress(null)
       setActionState("awaiting_signature")
     },
     onSuccess: finishPublication,
     onError: (error) => {
       setSignerProgress(null)
+      if (!publishedCoordinate && error instanceof SignedProductDeliveryError) {
+        setProductDeliveryRetryable(error.retryable)
+      }
       setActionState("error")
       setActionError(
         errorMessage(error, "The event product could not be published.")
@@ -234,13 +256,15 @@ export function EventProductPublisherDialog({
   const retryMutation = useMutation({
     mutationFn: async () => {
       if (!signedEvent) throw new Error("Signed product event is unavailable.")
-      if (!publishedCoordinate)
-        await retryEventProductDelivery(
+      if (!publishedCoordinate) {
+        const delivery = await retryEventProductDelivery(
           signedEvent,
           merchantPubkey,
           authenticatedPubkey,
           shouldContinue
         )
+        requireAcknowledgedProductDelivery(delivery)
+      }
       const dTag = signedEvent.tags.find((tag) => tag[0] === "d")?.[1]
       if (!dTag) throw new Error("Signed product coordinate is unavailable.")
       return completeAcceptance(`30402:${merchantPubkey}:${dTag}`)
@@ -251,6 +275,9 @@ export function EventProductPublisherDialog({
     },
     onSuccess: finishPublication,
     onError: (error) => {
+      if (!publishedCoordinate && error instanceof SignedProductDeliveryError) {
+        setProductDeliveryRetryable(error.retryable)
+      }
       setActionState("error")
       setActionError(
         errorMessage(error, "The signed product could not be redelivered.")
@@ -287,6 +314,7 @@ export function EventProductPublisherDialog({
     setSignedEvent(null)
     setPublishedCoordinate(null)
     setSignedAcceptance(null)
+    setProductDeliveryRetryable(false)
     setProductImageUploadScopeId(createEventProductUploadScopeId())
     requestAnimationFrame(() => titleInputRef.current?.focus())
   }
@@ -639,16 +667,31 @@ export function EventProductPublisherDialog({
           </div>
 
           <DialogFooter>
-            {signedEvent && actionState === "error" && (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={pending}
-                onClick={() => retryMutation.mutate()}
-              >
-                {publishedCoordinate ? "Retry acceptance" : "Retry delivery"}
-              </Button>
-            )}
+            {signedEvent &&
+              actionState === "error" &&
+              (publishedCoordinate || productDeliveryRetryable) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() => retryMutation.mutate()}
+                >
+                  {publishedCoordinate ? "Retry acceptance" : "Retry delivery"}
+                </Button>
+              )}
+            {signedEvent &&
+              actionState === "error" &&
+              !publishedCoordinate &&
+              !productDeliveryRetryable && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={startAnotherPublication}
+                >
+                  Start over
+                </Button>
+              )}
             <Button
               type="button"
               variant="outline"

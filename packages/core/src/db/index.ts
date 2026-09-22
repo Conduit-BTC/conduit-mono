@@ -212,12 +212,62 @@ export interface ProductDeletionDeliveryJob {
   state: ProductDeletionDeliveryState
   deliveryAttemptCount: number
   retryCount: number
+  /** Mixed product mutation gate; deletion waits until this listing job is ready. */
+  companionListingJobId?: string
   lastAttemptAt?: number
   nextRetryAt?: number
   /** Opaque local worker claim used to avoid duplicate cross-tab delivery. */
   deliveryLeaseOwner?: string
   /** Millisecond deadline after which another worker may recover the job. */
   deliveryLeaseExpiresAt?: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type ProductListingRelayDeliveryStatus =
+  "pending" | "acked" | "rejected" | "timed_out"
+
+export type ProductListingDeliveryState =
+  "pending" | "partial" | "delivered" | "failed"
+
+export interface ProductListingRelayTarget {
+  relayUrl: string
+  /** True only when this target came from the merchant's own relay settings. */
+  ownerSelected: boolean
+}
+
+export interface ProductListingRelayDelivery {
+  eventId: string
+  relayUrl: string
+  status: ProductListingRelayDeliveryStatus
+  attemptCount: number
+  lastAttemptAt?: number
+  acknowledgedAt?: number
+  rejectedAt?: number
+  timedOutAt?: number
+}
+
+/**
+ * Durable delivery state for one exact, already-signed product-family revision.
+ *
+ * The signed events and relay targets are immutable. Delivery updates only the
+ * corresponding event/relay outcome so a later tab can replay the same bytes
+ * without asking the merchant to sign a mixed family revision.
+ */
+export interface ProductListingDeliveryJob {
+  id: string
+  merchantPubkey: string
+  signedEvents: SignedPublicNostrEvent[]
+  relayTargets: ProductListingRelayTarget[]
+  relayDelivery: ProductListingRelayDelivery[]
+  /** Exact NIP-09 job required by this mixed product mutation, when present. */
+  companionDeletionJobId?: string
+  /** False while a mixed mutation is still staging its deletion and local cache. */
+  readyForDelivery?: boolean
+  state: ProductListingDeliveryState
+  deliveryAttemptCount: number
+  lastAttemptAt?: number
+  nextRetryAt?: number
   createdAt: number
   updatedAt: number
 }
@@ -957,6 +1007,7 @@ class ConduitDB extends Dexie {
   merchantPendingInvoices!: EntityTable<StoredMerchantPendingInvoice, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
+  productListingOutbox!: EntityTable<ProductListingDeliveryJob, "id">
   inboxDeclarationEvidence!: EntityTable<
     InboxDeclarationEvidenceRecord,
     "pubkey"
@@ -1154,6 +1205,11 @@ class ConduitDB extends Dexie {
       // Shared, signer-independent shopper state. Market owns the opaque
       // payload while Core supplies one serialized cross-tab transaction lane.
       shoppingCarts: "id, updatedAt",
+    })
+
+    this.version(20).stores({
+      productListingOutbox:
+        "id, merchantPubkey, state, nextRetryAt, updatedAt, createdAt",
     })
   }
 }

@@ -94,6 +94,7 @@ export async function persistSignedProductDeletion(
     signedEvent: SignedPublicNostrEvent
     currentWriteRelayUrls: readonly string[]
     sourceRelayUrls: readonly string[]
+    companionListingJobId?: string
   },
   options: ProductDeletionDeliveryOptions = {}
 ): Promise<ProductDeletionDeliveryJob> {
@@ -107,6 +108,7 @@ export async function persistSignedProductDeletion(
       currentWriteRelayUrls: input.currentWriteRelayUrls,
       sourceRelayUrls: input.sourceRelayUrls,
       canonicalConduitRelayUrl,
+      companionListingJobId: input.companionListingJobId,
     },
     options
   )
