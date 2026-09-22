@@ -192,7 +192,7 @@ export function createCheckoutSparkRouterFundingBridge(
       fundingSubmissionState: CheckoutSparkRouterFundingSubmissionState
       savedAt: number
     }) => {
-      saveCheckoutSparkRouterFundingProgress(
+      return saveCheckoutSparkRouterFundingProgress(
         {
           checkoutId: prepared.plan.checkoutId,
           planDigest: prepared.plan.planDigest,
@@ -208,6 +208,7 @@ export function createCheckoutSparkRouterFundingBridge(
   let submissionOutcome: PaymentSubmissionOutcome = "unknown"
   let selectedTargetKey: string | null = null
   let inFlight: Promise<CheckoutSparkRouterFundingResult> | null = null
+  let inFlightTargetKey: string | null = null
 
   const readPersistedProgress = (
     persisted: StoredCheckoutSparkRouterPreparation | void,
@@ -302,7 +303,15 @@ export function createCheckoutSparkRouterFundingBridge(
           new Error("Checkout Spark funding target is already fixed.")
         )
       }
-      if (inFlight) return inFlight
+      if (inFlight) {
+        if (inFlightTargetKey !== targetKey) {
+          return Promise.reject(
+            new Error("Checkout Spark funding target is already fixed.")
+          )
+        }
+        return inFlight
+      }
+      inFlightTargetKey = targetKey
 
       const operation = async (): Promise<CheckoutSparkRouterFundingResult> => {
         const observed = await reconcileFunding()
@@ -405,6 +414,7 @@ export function createCheckoutSparkRouterFundingBridge(
 
       inFlight = operation().finally(() => {
         inFlight = null
+        inFlightTargetKey = null
       })
       return inFlight
     },

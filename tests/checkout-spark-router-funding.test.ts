@@ -742,6 +742,60 @@ describe("checkout Spark router funding bridge", () => {
     expect(resumedPay).toHaveBeenCalledTimes(0)
   })
 
+  it("uses the durable merged submission state before deciding whether to send", async () => {
+    const prepared = preparedFunding()
+    const storage = new MemoryStorage()
+    saveCheckoutSparkRouterPreparation(
+      {
+        reconciliation: prepared.reconciliation,
+        recoveryHandoffId: prepared.recoveryHandoffId,
+        fundingInvoiceExposedAt: CREATED_AT,
+        fundingSubmissionState: "not_started",
+        savedAt: CREATED_AT,
+      },
+      storage
+    )
+    const payInvoice = mock(async () => ({
+      status: "paid" as const,
+      rail: "wallet" as const,
+      preimage: "must-not-send",
+    }))
+    const bridge = createCheckoutSparkRouterFundingBridge(prepared, {
+      storage,
+      now: () => CREATED_AT + 2_000,
+      payInvoice,
+      reconcileCheckoutReceive: async () => {
+        saveCheckoutSparkRouterFundingProgress(
+          {
+            checkoutId: prepared.plan.checkoutId,
+            planDigest: prepared.plan.planDigest,
+            reconciliation: prepared.reconciliation,
+            fundingSubmissionState: "provisional",
+            savedAt: CREATED_AT + 1_000,
+          },
+          storage
+        )
+        return {
+          state: "pending",
+          providerStatus: "PENDING",
+          failureReason: null,
+          funds: {
+            availableSats: 0,
+            ownedSats: 0,
+            incomingSats: 0,
+            observedAt: CREATED_AT + 1_500,
+          },
+        }
+      },
+    })
+
+    await expect(bridge.fund(paymentInput())).resolves.toMatchObject({
+      status: "awaiting_reconciliation",
+      paymentSubmission: "unknown",
+    })
+    expect(payInvoice).toHaveBeenCalledTimes(0)
+  })
+
   it("coalesces concurrent funding calls into one selected-rail submission", async () => {
     let releasePayment!: (value: {
       status: "paid"
@@ -803,6 +857,49 @@ describe("checkout Spark router funding bridge", () => {
       expect.objectContaining({ status: "funded" }),
       expect.objectContaining({ status: "funded" }),
     ])
+    expect(payInvoice).toHaveBeenCalledTimes(1)
+  })
+
+  it("rejects a different concurrent funding target instead of silently coalescing it", async () => {
+    let releasePreflight!: () => void
+    const preflightHeld = new Promise<void>((resolve) => {
+      releasePreflight = resolve
+    })
+    const payInvoice = mock(async () => ({
+      status: "paid" as const,
+      rail: "wallet" as const,
+      preimage: "payer-proof",
+    }))
+    const bridge = createCheckoutSparkRouterFundingBridge(preparedFunding(), {
+      payInvoice,
+      reconcileCheckoutReceive: async () => {
+        await preflightHeld
+        return {
+          state: "pending",
+          providerStatus: "PENDING",
+          failureReason: null,
+          funds: {
+            availableSats: 0,
+            ownedSats: 0,
+            incomingSats: 0,
+            observedAt: CREATED_AT + 500,
+          },
+        }
+      },
+      persistProgress: async () => undefined,
+    })
+
+    const first = bridge.fund(paymentInput())
+    await expect(
+      bridge.fund({
+        ...paymentInput(),
+        paymentTarget: { type: "webln" },
+        walletPaymentAttemptId: undefined,
+      })
+    ).rejects.toThrow("funding target is already fixed")
+
+    releasePreflight()
+    await first
     expect(payInvoice).toHaveBeenCalledTimes(1)
   })
 })
