@@ -24,6 +24,8 @@ export type OrderRelayDeliveryPublisher = (input: {
   relayUrl: string
   signedEvent: SignedPublicNostrEvent
   accountPubkey: string
+  appRelayUrls?: readonly string[]
+  personalRelayUrls?: readonly string[]
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
@@ -63,6 +65,8 @@ async function defaultPublisher(
     relayUrl: input.relayUrl,
     authorPubkey: input.signedEvent.pubkey,
     accountPubkey: input.accountPubkey,
+    appRelayUrls: input.appRelayUrls,
+    personalRelayUrls: input.personalRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
   })
@@ -148,9 +152,16 @@ export async function retryOrderRelayDelivery(
   })
 
   for (const { value: target } of orderedOutstanding) {
+    const appRelayUrls =
+      claimed.orderRelayDelivery.route === "compatibility_order"
+        ? [target.relayUrl]
+        : []
+    const personalRelayUrls: string[] = []
     const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
       accountPubkey: claimed.buyerPubkey,
       candidateRelayUrls: [target.relayUrl],
+      appRelayUrls,
+      personalRelayUrls,
       repository: options.accountNetworkLocalStateRepository,
     })
     if (eligibleRelayUrls.length === 0) continue
@@ -165,6 +176,8 @@ export async function retryOrderRelayDelivery(
           tags: signedEvent.tags.map((tag) => [...tag]),
         },
         accountPubkey: claimed.buyerPubkey,
+        appRelayUrls,
+        personalRelayUrls,
         accountNetworkLocalStateRepository:
           options.accountNetworkLocalStateRepository,
       })
@@ -172,6 +185,8 @@ export async function retryOrderRelayDelivery(
       const stillEligible = await filterEligibleAccountRelayUrls({
         accountPubkey: claimed.buyerPubkey,
         candidateRelayUrls: [target.relayUrl],
+        appRelayUrls,
+        personalRelayUrls,
         repository: options.accountNetworkLocalStateRepository,
       })
       if (stillEligible.length === 0) continue

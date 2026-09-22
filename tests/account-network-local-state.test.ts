@@ -15,8 +15,13 @@ import {
   orderEquivalentAccountRelayOperations,
   replaceAccountNetworkPreferredRelayOrder,
   replaceAccountNetworkRelayScans,
+  replaceAccountNetworkRoutingPolicy,
   type AccountNetworkLocalState,
 } from "@conduit/core/protocol/account-network-local-state"
+import {
+  reconcileAccountNetworkRoutingPolicy,
+  setAccountNetworkRoutingSourceEnabled,
+} from "@conduit/core/protocol/account-network-routing-policy"
 import { deriveRelayScanResult } from "@conduit/core/protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
@@ -91,6 +96,14 @@ describe("account network local state", () => {
     expect(empty).toMatchObject({
       pubkey: OWNER,
       version: ACCOUNT_NETWORK_LOCAL_STATE_VERSION,
+      routingPolicy: {
+        policyVersion: 1,
+        appRelaysEnabled: true,
+        personalRelaysEnabled: true,
+        appRelaysTouched: false,
+        personalRelaysTouched: false,
+        setupPromptState: "untouched",
+      },
       updatedAt: 10,
     })
 
@@ -114,6 +127,28 @@ describe("account network local state", () => {
         preferredRelayOrder: ["ws://owner-relay.example/"],
       }).preferredRelayOrder
     ).toEqual(["ws://owner-relay.example"])
+  })
+
+  it("migrates legacy local records without disabling prior personal routing", () => {
+    const migrated = normalizeAccountNetworkLocalState({
+      pubkey: OWNER,
+      version: 1,
+      exclusions: [],
+      preferredRelayOrder: [],
+      relayScans: [],
+      updatedAt: 9,
+    })
+
+    expect(migrated).toMatchObject({
+      version: ACCOUNT_NETWORK_LOCAL_STATE_VERSION,
+      routingPolicy: {
+        appRelaysEnabled: true,
+        personalRelaysEnabled: true,
+        appRelaysTouched: false,
+        personalRelaysTouched: false,
+        setupPromptState: "untouched",
+      },
+    })
   })
 
   it("keeps repository reads and writes isolated by normalized account", async () => {
@@ -145,6 +180,50 @@ describe("account network local state", () => {
       RELAY_B,
     ])
     expect((await repository.get(OWNER))?.preferredRelayOrder).toEqual([])
+  })
+
+  it("atomically replaces and updates routing policy inside the account fence", async () => {
+    const repository = createInMemoryAccountNetworkLocalStateRepository(
+      [],
+      () => 10
+    )
+
+    const replaced = await repository.replaceRoutingPolicy(
+      OWNER.toUpperCase(),
+      setAccountNetworkRoutingSourceEnabled(
+        emptyAccountNetworkLocalState(OWNER, () => 1).routingPolicy,
+        "app",
+        false
+      ),
+      11
+    )
+    expect(replaced.routingPolicy).toMatchObject({
+      appRelaysEnabled: false,
+      appRelaysTouched: true,
+      personalRelaysEnabled: true,
+    })
+
+    const updated = await repository.updateRoutingPolicy(
+      OWNER,
+      (policy) =>
+        setAccountNetworkRoutingSourceEnabled(policy, "personal", true),
+      12
+    )
+    expect(updated.routingPolicy).toMatchObject({
+      appRelaysEnabled: false,
+      personalRelaysEnabled: true,
+      personalRelaysTouched: true,
+    })
+    expect(updated.updatedAt).toBe(12)
+    expect(await repository.get(OTHER)).toBeUndefined()
+
+    expect(
+      replaceAccountNetworkRoutingPolicy(updated, updated.routingPolicy, 99)
+        .updatedAt
+    ).toBe(12)
+    await expect(
+      repository.updateRoutingPolicy("invalid", (policy) => policy)
+    ).rejects.toThrow("requires a valid hex pubkey")
   })
 
   it("re-reads local policy on every eligibility call and fails closed", async () => {
@@ -243,6 +322,87 @@ describe("account network local state", () => {
         repository,
       })
     ).toEqual([])
+  })
+
+  it("enforces app and personal provenance switches at the final I/O seam", async () => {
+    const repository = createInMemoryAccountNetworkLocalStateRepository()
+
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        candidateRelayUrls: [RELAY_A, RELAY_B, RELAY_C],
+        appRelayUrls: [RELAY_A],
+        personalRelayUrls: [RELAY_B],
+        repository,
+      })
+    ).toEqual([RELAY_A, RELAY_B, RELAY_C])
+
+    await repository.updateRoutingPolicy(OWNER, (policy) =>
+      reconcileAccountNetworkRoutingPolicy(policy, {
+        state: "absent_within_scope",
+        observedAt: 10,
+      })
+    )
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        candidateRelayUrls: [RELAY_A, RELAY_B, RELAY_C],
+        appRelayUrls: [RELAY_A],
+        personalRelayUrls: [RELAY_B],
+        repository,
+      })
+    ).toEqual([RELAY_A, RELAY_C])
+
+    await repository.updateRoutingPolicy(OWNER, (policy) =>
+      setAccountNetworkRoutingSourceEnabled(policy, "personal", true)
+    )
+    await repository.updateRoutingPolicy(OWNER, (policy) =>
+      setAccountNetworkRoutingSourceEnabled(policy, "app", false)
+    )
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        candidateRelayUrls: [RELAY_A, RELAY_B, RELAY_C],
+        appRelayUrls: [RELAY_A, RELAY_B],
+        personalRelayUrls: [RELAY_A, RELAY_B],
+        repository,
+      })
+    ).toEqual([RELAY_A, RELAY_B, RELAY_C])
+
+    await repository.update(OWNER, (state) =>
+      excludeRelay(state, { relayUrl: RELAY_A, committedAt: 200 })
+    )
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        candidateRelayUrls: [RELAY_A, RELAY_B],
+        appRelayUrls: [RELAY_A, RELAY_B],
+        personalRelayUrls: [RELAY_A, RELAY_B],
+        repository,
+      })
+    ).toEqual([RELAY_B])
+
+    await repository.updateRoutingPolicy(OWNER, (policy) =>
+      setAccountNetworkRoutingSourceEnabled(policy, "personal", false)
+    )
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        candidateRelayUrls: [RELAY_B],
+        appRelayUrls: [RELAY_B],
+        personalRelayUrls: [RELAY_B],
+        repository,
+      })
+    ).toEqual([])
+
+    // Existing callers without provenance retain their pre-policy behavior.
+    expect(
+      await filterEligibleAccountRelayUrls({
+        accountPubkey: OWNER,
+        candidateRelayUrls: [RELAY_B],
+        repository,
+      })
+    ).toEqual([RELAY_B])
   })
 
   it("clears exclusions only for stronger valid own events that explicitly re-add", () => {
@@ -347,7 +507,11 @@ describe("account network local state", () => {
     const repository = createInMemoryAccountNetworkLocalStateRepository()
     const scan = deriveRelayScanResult(
       RELAY_A,
-      { name: "Relay A", supported_nips: [42, 50, 59] },
+      {
+        name: "Relay A",
+        icon: "https://relay-a.net/icon.png",
+        supported_nips: [42, 50, 59],
+      },
       { now: () => 10 }
     )
 

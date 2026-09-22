@@ -102,7 +102,7 @@ describe("Market pickup handoff", () => {
         return {
           state: "blocked",
           organizerPubkey: ORGANIZER,
-          reason: "not_declared",
+          reason: "not_observed",
         }
       }
     )
@@ -175,7 +175,7 @@ describe("Market pickup handoff", () => {
         return {
           state: "blocked",
           organizerPubkey: ORGANIZER,
-          reason: "not_declared",
+          reason: "not_observed",
         }
       }
     )
@@ -189,7 +189,7 @@ describe("Market pickup handoff", () => {
     const blocked: EventMarketOrganizerInboxResolution = {
       state: "blocked",
       organizerPubkey: ORGANIZER,
-      reason: "not_declared",
+      reason: "not_observed",
     }
 
     await expect(
@@ -201,7 +201,9 @@ describe("Market pickup handoff", () => {
         orderSigningAttempts += 1
         paymentAttempts += 1
       })()
-    ).rejects.toThrow("has not declared a usable private inbox")
+    ).rejects.toThrow(
+      "no usable private inbox declaration was found for the event organizer on the relays checked"
+    )
     expect(orderSigningAttempts).toBe(0)
     expect(paymentAttempts).toBe(0)
   })

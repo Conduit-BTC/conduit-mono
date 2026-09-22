@@ -34,7 +34,7 @@ const CALENDAR = `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER}:calendar`
 const PICKUP = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER}:pickup`
 const PRODUCT = `${EVENT_KINDS.PRODUCT}:${MERCHANT}:coffee`
 const RELAY_A = "wss://relay.conduit.market"
-const RELAY_B = "wss://nos.lol"
+const RELAY_B = "wss://relay.ditto.pub"
 const MERCHANT_RELAY = "wss://merchant-write.relay.dev"
 const NOW_MS = 1_800_000_100_000
 
@@ -42,6 +42,11 @@ type TagFilter = NDKFilter & {
   "#a"?: string[]
   "#d"?: string[]
   "#e"?: string[]
+}
+
+type ReadHarnessOptions = {
+  maxRelayAttempts?: number
+  independentRelayUrls?: readonly string[]
 }
 
 function sign(
@@ -191,7 +196,8 @@ function relayStatuses(
 function installReadHarness(
   fetchResult: (
     filter: TagFilter,
-    relayUrls: readonly string[]
+    relayUrls: readonly string[],
+    options: ReadHarnessOptions
   ) =>
     | {
         events: SignedPublicNostrEvent[]
@@ -218,7 +224,7 @@ function installReadHarness(
       ]),
     fetchEventsFanoutDetailed: async (filter, options) => {
       const relayUrls = options.relayUrls ?? []
-      const result = await fetchResult(filter as TagFilter, relayUrls)
+      const result = await fetchResult(filter as TagFilter, relayUrls, options)
       return {
         events: wrapped(result.events),
         relays: relayStatuses(
@@ -919,6 +925,105 @@ describe("event-market exact product request frontiers", () => {
     expect(result.acceptedProductCoordinates).toEqual([PRODUCT])
   })
 
+  it("keeps distinct same-author collection hints reachable in bounded batches", async () => {
+    const requests = Array.from({ length: 8 }, (_, index) =>
+      productRevision(`hinted-${index}`, 100 + index, true)
+    )
+    const coordinates = requests.map((event) => {
+      const dTag = event.tags.find((tag) => tag[0] === "d")![1]!
+      return `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${dTag}`
+    })
+    const relayHints = coordinates.map(
+      (_, index) => `wss://product-${index}.relay.dev`
+    )
+    const relayHintByCoordinate = new Map(
+      coordinates.map((coordinate, index) => [coordinate, relayHints[index]!])
+    )
+    const relayHintByDTag = new Map(
+      requests.map((event, index) => [
+        event.tags.find((tag) => tag[0] === "d")![1]!,
+        relayHints[index]!,
+      ])
+    )
+    const hintedGraph = graph(coordinates).map((event) =>
+      event.kind === EVENT_KINDS.PRODUCT_COLLECTION
+        ? sign(
+            ORGANIZER_SECRET,
+            {
+              kind: event.kind,
+              content: event.content,
+              tags: event.tags.map((tag) => {
+                const relayHint = tag[1]
+                  ? relayHintByCoordinate.get(tag[1])
+                  : undefined
+                return relayHint ? [tag[0]!, tag[1]!, relayHint] : [...tag]
+              }),
+            },
+            event.created_at
+          )
+        : event
+    )
+    const exactRelayPlans: Array<{
+      dTags: string[]
+      relayUrls: string[]
+      independentRelayUrls: readonly string[]
+    }> = []
+    installReadHarness((filter, relayUrls, options) => {
+      if (filter.authors?.includes(ORGANIZER)) {
+        return { events: hintedGraph }
+      }
+      if (filter["#a"]?.includes(COLLECTION)) return { events: requests }
+      if (
+        filter.kinds?.length === 1 &&
+        filter.kinds[0] === EVENT_KINDS.PRODUCT &&
+        filter["#d"]
+      ) {
+        const attemptedRelayUrls = relayUrls.slice(
+          0,
+          options.maxRelayAttempts ?? relayUrls.length
+        )
+        exactRelayPlans.push({
+          dTags: [...filter["#d"]],
+          relayUrls: attemptedRelayUrls,
+          independentRelayUrls: options.independentRelayUrls ?? [],
+        })
+        return {
+          events: requests.filter((event) => {
+            const dTag = event.tags.find((tag) => tag[0] === "d")![1]!
+            return (
+              filter["#d"]!.includes(dTag) &&
+              attemptedRelayUrls.includes(relayHintByDTag.get(dTag)!)
+            )
+          }),
+        }
+      }
+      return { events: [] }
+    })
+    __setEventMarketTestOverrides({
+      getRelayLists: async () => new Map(),
+    })
+
+    const result = await getEventMarket({
+      reference: COLLECTION,
+      nowMs: NOW_MS,
+    })
+
+    expect(exactRelayPlans).toHaveLength(2)
+    for (const plan of exactRelayPlans) {
+      expect(plan.relayUrls.length).toBeLessThanOrEqual(8)
+      expect(plan.relayUrls).toContain(RELAY_A)
+      for (const dTag of plan.dTags) {
+        const relayHint = relayHintByDTag.get(dTag)!
+        expect(plan.relayUrls).toContain(relayHint)
+        expect(plan.independentRelayUrls).toContain(relayHint)
+      }
+    }
+    expect(result.acceptedProductCoordinates.slice().sort()).toEqual(
+      coordinates.slice().sort()
+    )
+    expect(result.organizerOnlyProductCoordinates).toEqual([])
+  })
+
   it("keeps event catalog deletion checks isolated by product and author", async () => {
     const merchants = [
       MERCHANT_SECRET,
@@ -1287,8 +1392,8 @@ describe("event-market exact product request frontiers", () => {
 
     expect(result.state).toBe("partial")
     expect(result.coverage).toMatchObject({
-      attemptedRelayCount: 5,
-      completeRelayCount: 4,
+      attemptedRelayCount: 3,
+      completeRelayCount: 2,
       partialRelayCount: 1,
       failedRelayCount: 0,
     })

@@ -24,6 +24,7 @@ import {
 import { planRelayReads } from "./relay-planner"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
+import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -310,6 +311,9 @@ type DiscoveryReadAuthority = Pick<
   | "authenticatedPubkey"
   | "accountNetworkLocalStateRepository"
   | "shouldContinue"
+  | "appRelayUrls"
+  | "personalRelayUrls"
+  | "independentRelayUrls"
 >
 
 export interface DiscoverPerspectiveEventMarketsInput extends DiscoveryReadAuthority {
@@ -869,25 +873,45 @@ async function readEventMarketCollectionCandidatesWithinBudget(
       .filter((entry) => entry.readEnabled)
       .map((entry) => entry.url) ?? []
   )
-  const plannedRelayUrls = Array.from(
+  const relayPlan = testOverrides.collectionCandidateRelayUrls
+    ? null
+    : planRelayReads({
+        intent: "commerce_products",
+        authenticatedPubkey,
+        ownerSelectedRelayUrls,
+        settings: ownerSnapshot?.settings,
+        signedRelayListAuthoritative:
+          ownerSnapshot?.signedRelayListAuthoritative,
+        maxRelays: FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT,
+        now: input.nowMs,
+      })
+  const candidateRelayUrls = Array.from(
     new Set(
       (
         testOverrides.collectionCandidateRelayUrls ??
-        planRelayReads({
-          intent: "commerce_products",
-          authenticatedPubkey,
-          ownerSelectedRelayUrls,
-          settings: ownerSnapshot?.settings,
-          signedRelayListAuthoritative:
-            ownerSnapshot?.signedRelayListAuthoritative,
-          maxRelays: FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT,
-          now: input.nowMs,
-        }).relayUrls
+        relayPlan?.candidateRelayUrls ??
+        []
       )
         .map((relayUrl) => relayUrl.trim())
         .filter(Boolean)
     )
-  ).slice(0, FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT)
+  )
+  const admittedRelayUrls = authenticatedPubkey
+    ? await filterEligibleAccountRelayUrls({
+        accountPubkey: authenticatedPubkey,
+        authenticatedPubkey,
+        candidateRelayUrls,
+        ownerSelectedRelayUrls,
+        appRelayUrls: relayPlan?.appRelayUrls,
+        personalRelayUrls: relayPlan?.personalRelayUrls,
+        independentRelayUrls: relayPlan?.independentRelayUrls,
+        repository: input.accountNetworkLocalStateRepository,
+      })
+    : candidateRelayUrls
+  const plannedRelayUrls = admittedRelayUrls.slice(
+    0,
+    FOLLOWED_EVENT_MARKET_CANDIDATE_RELAY_LIMIT
+  )
   const emptyCoverage: EventMarketCandidateReadCoverage = {
     plannedRelayUrls,
     authorChunkCount: authorChunks.length,
@@ -930,6 +954,9 @@ async function readEventMarketCollectionCandidatesWithinBudget(
   const fetchEvents =
     testOverrides.fetchCollectionCandidateEvents ??
     fetchSignedEventsFanoutDetailed
+  const appRelayUrlSet = new Set(relayPlan?.appRelayUrls ?? [])
+  const personalRelayUrlSet = new Set(relayPlan?.personalRelayUrls ?? [])
+  const independentRelayUrlSet = new Set(relayPlan?.independentRelayUrls ?? [])
   const unitResults = (
     await mapWithConcurrency({
       values: tasks,
@@ -942,6 +969,15 @@ async function readEventMarketCollectionCandidatesWithinBudget(
           authority: {
             authenticatedPubkey,
             ownerSelectedRelayUrls,
+            appRelayUrls: appRelayUrlSet.has(task.relayUrl)
+              ? [task.relayUrl]
+              : [],
+            personalRelayUrls: personalRelayUrlSet.has(task.relayUrl)
+              ? [task.relayUrl]
+              : [],
+            independentRelayUrls: independentRelayUrlSet.has(task.relayUrl)
+              ? [task.relayUrl]
+              : [],
             accountNetworkLocalStateRepository:
               input.accountNetworkLocalStateRepository,
             shouldContinue: input.shouldContinue,

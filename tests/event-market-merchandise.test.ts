@@ -16,6 +16,7 @@ import {
   resolveEventMarketReceiptMerchandiseEvidence,
   type EventMarketReadyReceiptSchema,
 } from "@conduit/core"
+import { createInMemoryAccountNetworkLocalStateRepository } from "@conduit/core/protocol/account-network-local-state"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
 const MERCHANT_SECRET = generateSecretKey()
@@ -233,6 +234,8 @@ describe("event-market organizer merchandise evidence", () => {
       receipt: receiptFor([product]),
       authenticatedPubkey: ORGANIZER,
       shouldContinue,
+      accountNetworkLocalStateRepository:
+        createInMemoryAccountNetworkLocalStateRepository(),
       readAccountRelaySettingsPlanningSnapshot: async () => ({
         settings: {
           version: 1,
