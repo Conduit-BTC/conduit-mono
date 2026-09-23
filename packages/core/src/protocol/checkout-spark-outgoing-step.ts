@@ -42,6 +42,10 @@ export interface CheckoutSparkOutgoingProvider {
   reconcile(
     target: CheckoutSparkOutgoingTarget
   ): Promise<CheckoutSparkOutgoingObservation>
+  /** Read-only fee check. No provider send may occur before this returns ready. */
+  preflight(
+    target: CheckoutSparkOutgoingTarget
+  ): Promise<"ready" | "fee_over_cap" | "unavailable">
   send(
     target: CheckoutSparkOutgoingTarget
   ): Promise<CheckoutSparkOutgoingObservation>
@@ -269,6 +273,29 @@ async function step(
     action.obligation.obligationId !== obligation.obligationId
   ) {
     return currentResult(state, input, false)
+  }
+  if (!hasSendAuthority(state, input.actor, input.now())) {
+    return currentResult(state, input, false)
+  }
+
+  let preflight: Awaited<ReturnType<CheckoutSparkOutgoingProvider["preflight"]>>
+  try {
+    preflight = await input.provider.preflight(target)
+  } catch {
+    preflight = "unavailable"
+  }
+  if (preflight !== "ready") {
+    return {
+      state,
+      nextAction: {
+        type: "wait",
+        reason:
+          preflight === "fee_over_cap"
+            ? "fee_exceeds_frozen_limit"
+            : "fee_preflight_unavailable",
+      },
+      sendAttempted: false,
+    }
   }
   if (!hasSendAuthority(state, input.actor, input.now())) {
     return currentResult(state, input, false)

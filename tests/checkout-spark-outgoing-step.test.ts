@@ -101,6 +101,10 @@ function observation(
   }
 }
 
+async function readyPreflight(): Promise<"ready"> {
+  return "ready"
+}
+
 function memoryStore(initial: CheckoutSparkReconciliation) {
   let state = structuredClone(initial)
   let revision = 1
@@ -150,18 +154,26 @@ function harness(initial = fundedState()) {
   const memory = memoryStore(initial)
   let now = CREATED_AT + 10
   const reads: CheckoutSparkOutgoingTarget[] = []
+  const preflights: CheckoutSparkOutgoingTarget[] = []
   const sends: CheckoutSparkOutgoingTarget[] = []
   let lookupState: CheckoutSparkOutgoingObservation["state"] = "not_found"
   let sendState: CheckoutSparkOutgoingObservation["state"] = "paid"
   let lookupFailure = false
   let sendFailure = false
+  let preflightState: "ready" | "fee_over_cap" | "unavailable" = "ready"
   let onLookup: (() => void) | null = null
+  let onPreflight: (() => void) | null = null
   const provider: CheckoutSparkOutgoingProvider = {
     async reconcile(target) {
       reads.push(target)
       onLookup?.()
       if (lookupFailure) throw new Error("provider unavailable")
       return observation(target, lookupState)
+    },
+    async preflight(target) {
+      preflights.push(target)
+      onPreflight?.()
+      return preflightState
     },
     async send(target) {
       sends.push(target)
@@ -181,6 +193,7 @@ function harness(initial = fundedState()) {
   return {
     step,
     reads,
+    preflights,
     sends,
     get state() {
       return memory.state
@@ -197,6 +210,9 @@ function harness(initial = fundedState()) {
     setSendState(value: CheckoutSparkOutgoingObservation["state"]) {
       sendState = value
     },
+    setPreflightState(value: typeof preflightState) {
+      preflightState = value
+    },
     failLookup() {
       lookupFailure = true
     },
@@ -211,6 +227,9 @@ function harness(initial = fundedState()) {
     },
     onLookup(callback: () => void) {
       onLookup = callback
+    },
+    onPreflight(callback: () => void) {
+      onPreflight = callback
     },
   }
 }
@@ -243,6 +262,7 @@ describe("checkout Spark one-obligation step", () => {
           },
         },
         provider: {
+          preflight: readyPreflight,
           async reconcile(target) {
             accessed = true
             return observation(target, "not_found")
@@ -277,6 +297,35 @@ describe("checkout Spark one-obligation step", () => {
     )
     expect(run.saves).toBe(3)
   })
+
+  it.each(["fee_over_cap", "unavailable"] as const)(
+    "keeps an unpaid obligation retryable when fee preflight is %s",
+    async (preflightState) => {
+      const run = harness()
+      run.setPreflightState(preflightState)
+      const blocked = await run.step()
+      expect(blocked.sendAttempted).toBe(false)
+      expect(blocked.nextAction).toEqual({
+        type: "wait",
+        reason:
+          preflightState === "fee_over_cap"
+            ? "fee_exceeds_frozen_limit"
+            : "fee_preflight_unavailable",
+      })
+      expect(blocked.state.obligations[0]!.state).toBe("not_found")
+      expect(run.saves).toBe(1)
+      expect(run.preflights).toHaveLength(1)
+      expect(run.sends).toHaveLength(0)
+
+      run.setPreflightState("ready")
+      const completed = await run.step()
+      expect(completed.state.obligations[0]!.state).toBe("paid")
+      expect(run.preflights).toHaveLength(2)
+      expect(run.sends.map((target) => target.idempotencyKey)).toEqual([
+        blocked.state.plan.obligations[0]!.outgoingId,
+      ])
+    }
+  )
 
   it("never sends twice after a lost response and reload with an empty lookup", async () => {
     const run = harness()
@@ -357,6 +406,16 @@ describe("checkout Spark one-obligation step", () => {
     expect(run.sends).toHaveLength(1)
   })
 
+  it("does not write possible-send if shopper authority expires during fee preflight", async () => {
+    const run = harness()
+    run.onPreflight(() => run.setNow(CREATED_AT + 100))
+    const shopper = await run.step("shopper")
+    expect(shopper.sendAttempted).toBe(false)
+    expect(shopper.state.obligations[0]!.state).toBe("not_found")
+    expect(run.saves).toBe(1)
+    expect(run.sends).toHaveLength(0)
+  })
+
   it("clears its own unsent marker if takeover occurs during the durable save", async () => {
     const initial = fundedState()
     const memory = memoryStore(initial)
@@ -371,6 +430,7 @@ describe("checkout Spark one-obligation step", () => {
       now: () => now,
       store: memory.store,
       provider: {
+        preflight: readyPreflight,
         async reconcile(target: CheckoutSparkOutgoingTarget) {
           return observation(target, "not_found")
         },
@@ -430,6 +490,7 @@ describe("checkout Spark one-obligation step", () => {
         now: () => CREATED_AT + 10,
         store: memory.store,
         provider: {
+          preflight: readyPreflight,
           async reconcile(target) {
             return { ...observation(target, "not_found"), outgoingId: "wrong" }
           },
@@ -455,6 +516,7 @@ describe("checkout Spark one-obligation step", () => {
         now: () => CREATED_AT + 10,
         store: memory.store,
         provider: {
+          preflight: readyPreflight,
           async reconcile(target) {
             const other = state.plan.obligations[1]!
             return observation({ ...target, obligation: other }, "paid")
@@ -482,6 +544,7 @@ describe("checkout Spark one-obligation step", () => {
       now: () => CREATED_AT + 10,
       store: memory.store,
       provider: {
+        preflight: readyPreflight,
         async reconcile(target: CheckoutSparkOutgoingTarget) {
           return observation(target, "not_found")
         },
@@ -513,6 +576,7 @@ describe("checkout Spark one-obligation step", () => {
       now: () => CREATED_AT + 10,
       store: memory.store,
       provider: {
+        preflight: readyPreflight,
         async reconcile(target: CheckoutSparkOutgoingTarget) {
           return observation(target, "not_found")
         },
@@ -544,6 +608,7 @@ describe("checkout Spark one-obligation step", () => {
         now: () => CREATED_AT + 101,
         store: memory.store,
         provider: {
+          preflight: readyPreflight,
           async reconcile(target) {
             providerCalled = true
             return observation(target, "not_found")
@@ -575,6 +640,7 @@ describe("checkout Spark one-obligation step", () => {
       })
       const sends: string[] = []
       const provider: CheckoutSparkOutgoingProvider = {
+        preflight: readyPreflight,
         async reconcile(target) {
           lookups += 1
           if (lookups === 2) releaseLookups()
@@ -674,6 +740,7 @@ describe("checkout Spark one-obligation step", () => {
           now: () => CREATED_AT + 10,
           store,
           provider: {
+            preflight: readyPreflight,
             async reconcile(target) {
               return observation(target, "not_found")
             },
@@ -732,6 +799,7 @@ describe("checkout Spark one-obligation step", () => {
         now: () => CREATED_AT + 10,
         store,
         provider: {
+          preflight: readyPreflight,
           async reconcile(target: CheckoutSparkOutgoingTarget) {
             return observation(target, providerState)
           },
@@ -780,6 +848,7 @@ describe("checkout Spark one-obligation step", () => {
         now: () => CREATED_AT + 10,
         store: repository,
         provider: {
+          preflight: readyPreflight,
           async reconcile(target: CheckoutSparkOutgoingTarget) {
             return observation(target, "not_found")
           },

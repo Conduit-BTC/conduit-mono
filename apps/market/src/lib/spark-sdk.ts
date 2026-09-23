@@ -898,15 +898,14 @@ function adaptFirstPartySparkWallet(input: {
         return resolvedCheckoutResult(prior)
       }
 
-      const estimatedFeeSats = await input.wallet.getLightningSendFeeEstimate({
-        encodedInvoice: request.paymentRequest,
-      })
-      if (
-        !Number.isSafeInteger(estimatedFeeSats) ||
-        estimatedFeeSats < 0 ||
-        estimatedFeeSats > request.maxFeeSats
-      ) {
-        throw new Error("Spark fee is outside the frozen checkout limit.")
+      const feePreflight =
+        await client.preflightCheckoutLightningObligation!(request)
+      if (feePreflight !== "ready") {
+        throw new Error(
+          feePreflight === "fee_over_cap"
+            ? "Spark fee is outside the frozen checkout limit."
+            : "Spark fee preflight is unavailable."
+        )
       }
 
       // The first-party SDK re-estimates the fee and rejects if this fixed
@@ -924,6 +923,22 @@ function adaptFirstPartySparkWallet(input: {
       return resolvedCheckoutResult(
         await client.reconcileLightningSend!(request)
       )
+    },
+    async preflightCheckoutLightningObligation(request) {
+      validateFrozenCheckoutLightningSend(request, input.network)
+      input.module.parseTransferId(request.transferId)
+      let estimatedFeeSats: number
+      try {
+        estimatedFeeSats = await input.wallet.getLightningSendFeeEstimate({
+          encodedInvoice: request.paymentRequest,
+        })
+      } catch {
+        return "unavailable"
+      }
+      if (!Number.isSafeInteger(estimatedFeeSats) || estimatedFeeSats < 0) {
+        return "unavailable"
+      }
+      return estimatedFeeSats > request.maxFeeSats ? "fee_over_cap" : "ready"
     },
     async receivePayment(request) {
       if (request.paymentMethod.type === "sparkAddress") {

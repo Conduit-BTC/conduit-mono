@@ -1470,6 +1470,48 @@ describe("first-party Spark SDK adapter", () => {
     expect(sendCalls).toBe(0)
   })
 
+  it("preflights a frozen fee without sending and can recheck the same ID", async () => {
+    let fee: number | "unavailable" = 6
+    let historyReads = 0
+    let sendCalls = 0
+    const wallet = createNativeWallet({
+      async getTransferFromSsp() {
+        historyReads += 1
+        return undefined
+      },
+      async getLightningSendFeeEstimate() {
+        if (fee === "unavailable") throw new Error("quote unavailable")
+        return fee
+      },
+      async payLightningInvoice() {
+        sendCalls += 1
+        throw new Error("preflight must never send")
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+    const request = {
+      network: "mainnet" as const,
+      transferId: CHECKOUT_OUTGOING_ID,
+      paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+      amountSats: 1_000,
+      maxFeeSats: 5,
+    }
+
+    await expect(
+      client.preflightCheckoutLightningObligation?.(request)
+    ).resolves.toBe("fee_over_cap")
+    fee = "unavailable"
+    await expect(
+      client.preflightCheckoutLightningObligation?.(request)
+    ).resolves.toBe("unavailable")
+    fee = 2
+    await expect(
+      client.preflightCheckoutLightningObligation?.(request)
+    ).resolves.toBe("ready")
+    expect(historyReads).toBe(0)
+    expect(sendCalls).toBe(0)
+  })
+
   it("does not send a frozen leg when exact history is unavailable", async () => {
     let feeReads = 0
     let sendCalls = 0
@@ -1542,6 +1584,24 @@ describe("first-party Spark SDK adapter", () => {
         amountSats: 1_001,
       })
     ).rejects.toThrow("invalid Lightning invoice")
+    await expect(
+      manager.preflightCheckoutLightningObligation("wallet-personal", {
+        ...obligation,
+        network: "regtest",
+      })
+    ).rejects.toThrow("another network")
+    await expect(
+      manager.preflightCheckoutLightningObligation("wallet-personal", {
+        ...obligation,
+        amountSats: 1_001,
+      })
+    ).rejects.toThrow("invalid Lightning invoice")
+    await expect(
+      manager.preflightCheckoutLightningObligation(
+        "wallet-personal",
+        obligation
+      )
+    ).resolves.toBe("ready")
     expect(historyReads).toBe(0)
     expect(sendCalls).toBe(0)
     await manager.close("wallet-personal")
