@@ -955,12 +955,110 @@ function pendingDelivery(
   }
 }
 
+function commitRetryDelivery(
+  principalPubkey: string,
+  original: StoredEventMarketHandoffDelivery,
+  attempted: StoredEventMarketHandoffDelivery,
+  storage: HandoffStorage | null
+): StoredEventMarketHandoffDelivery {
+  if (!storage) {
+    throw new Error("Durable private handoff retry storage is unavailable.")
+  }
+  const current = loadEventMarketHandoffDeliveries(
+    principalPubkey,
+    storage
+  ).find(
+    (candidate) => deliveryIdentity(candidate) === deliveryIdentity(original)
+  )
+  if (!current) {
+    throw new Error(
+      "The exact encrypted handoff update is no longer pending on this device. Reload before retrying."
+    )
+  }
+  if (!sameExactStoredDelivery(original, current)) {
+    throw new Error(
+      "The saved encrypted handoff update changed on this device. Reload before retrying."
+    )
+  }
+
+  const deliveryProgress = parseEventMarketPrivateDeliveryProgress(
+    {
+      ...current.deliveryProgress,
+      recipientAcknowledgedRelayRefs: Array.from(
+        new Set([
+          ...current.deliveryProgress.recipientAcknowledgedRelayRefs,
+          ...attempted.deliveryProgress.recipientAcknowledgedRelayRefs,
+        ])
+      ).sort(),
+      selfAcknowledgedRelayRefs: Array.from(
+        new Set([
+          ...current.deliveryProgress.selfAcknowledgedRelayRefs,
+          ...attempted.deliveryProgress.selfAcknowledgedRelayRefs,
+        ])
+      ).sort(),
+    },
+    current.record
+  )
+  const recipientAcknowledgedCount =
+    deliveryProgress.recipientAcknowledgedRelayRefs.length
+  const selfAcknowledgedCount =
+    deliveryProgress.selfAcknowledgedRelayRefs.length
+  // Failures describe this attempt; only ACK references are monotonic.
+  const recipientFailedCount = attempted.recipient.failedCount
+  const selfFailedCount = attempted.selfCopy.failedCount
+  // Preserve a completion written during this retry. An already-complete leg
+  // may still degrade when the new relay plan adds a failing target.
+  const recipientComplete =
+    attempted.recipient.status === "full_success" ||
+    (current.recipient.status === "full_success" &&
+      original.recipient.status !== "full_success")
+  const selfComplete =
+    attempted.selfCopy.status === "full_success" ||
+    (current.selfCopy.status === "full_success" &&
+      original.selfCopy.status !== "full_success")
+  const merged: StoredEventMarketHandoffDelivery = {
+    ...current,
+    record: attempted.record,
+    deliveryProgress,
+    recipient: {
+      status: recipientComplete
+        ? "full_success"
+        : recipientAcknowledgedCount > 0
+          ? recipientFailedCount > 0
+            ? "partial_success"
+            : "unknown"
+          : attempted.recipient.status === "pending"
+            ? current.recipient.status
+            : attempted.recipient.status,
+      acknowledgedCount: recipientAcknowledgedCount,
+      failedCount: recipientComplete ? 0 : recipientFailedCount,
+    },
+    selfCopy: {
+      status: selfComplete
+        ? "full_success"
+        : selfAcknowledgedCount > 0
+          ? selfFailedCount > 0
+            ? "partial_success"
+            : "unknown"
+          : attempted.selfCopy.status === "pending"
+            ? current.selfCopy.status
+            : attempted.selfCopy.status,
+      acknowledgedCount: selfAcknowledgedCount,
+      failedCount: selfComplete ? 0 : selfFailedCount,
+    },
+    savedAt: Math.max(current.savedAt, attempted.savedAt),
+  }
+  upsertDelivery(principalPubkey, merged, storage)
+  return merged
+}
+
 async function retryStoredDelivery(
   principalPubkey: string,
   stored: StoredEventMarketHandoffDelivery,
   storage: HandoffStorage | null,
   transport?: EventMarketPrivateTransportOptions
 ): Promise<StoredEventMarketHandoffDelivery> {
+  let result: RetryEventMarketPrivateDeliveryResult
   try {
     const retainedOwnerDeclaration = transport?.senderInboxRelays
       ? null
@@ -970,7 +1068,7 @@ async function retryStoredDelivery(
       (retainedOwnerDeclaration?.state === "declared"
         ? retainedOwnerDeclaration.relayUrls
         : [])
-    const result = await retryEventMarketPrivateDelivery({
+    result = await retryEventMarketPrivateDelivery({
       record: stored.record,
       authenticatedOwnerPubkey: transport?.authenticatedPubkey,
       ownerSelectedSenderInboxRelayUrls,
@@ -980,19 +1078,24 @@ async function retryStoredDelivery(
       shouldContinue: transport?.shouldContinue,
       publishFn: transport?.publishFn,
     })
-    const delivered = stateFromRetryResult(stored, result)
-    upsertDelivery(principalPubkey, delivered, storage)
-    return delivered
   } catch (error) {
     if (transport?.shouldContinue?.() !== false) {
-      upsertDelivery(
+      const retained = commitRetryDelivery(
         principalPubkey,
+        stored,
         stateFromDeliveryError(stored, error),
         storage
       )
+      if (!eventMarketHandoffDeliveryNeedsRetry(retained)) return retained
     }
     throw error
   }
+  return commitRetryDelivery(
+    principalPubkey,
+    stored,
+    stateFromRetryResult(stored, result),
+    storage
+  )
 }
 
 function exactStoredDeliveryForOwner(
