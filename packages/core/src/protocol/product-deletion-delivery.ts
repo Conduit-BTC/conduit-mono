@@ -31,6 +31,7 @@ import {
 } from "./account-network-local-state"
 
 const DEFAULT_RETRY_DELAY_MS = 30_000
+const MAX_REJECTED_RETRY_DELAY_MS = 30 * 60_000
 const DEFAULT_DELIVERY_LEASE_MS = 30_000
 const ROLE_ORDER: readonly ProductDeletionRelayRole[] = [
   "author_write",
@@ -115,6 +116,8 @@ export interface ProductDeletionDeliveryOptions {
   deliveryLeaseMs?: number
   /** Explicit user retry may recover a lease orphaned by a crashed tab. */
   forceDeliveryLeaseRecovery?: boolean
+  /** Scheduled workers pace explicit relay rejections; user Retry ignores this. */
+  respectRejectionBackoff?: boolean
   /** The same durable listing read used by explicit retries and workers. */
   getCompanionListingJob?: (
     jobId: string
@@ -629,16 +632,63 @@ function deriveDeliveryState(
   return deliveryAttemptCount > 0 ? "partial" : "pending"
 }
 
+function validConsecutiveRejections(
+  delivery: ProductDeletionRelayDelivery
+): number {
+  const count = delivery.consecutiveRejections
+  return Number.isSafeInteger(count) && count !== undefined && count > 0
+    ? count
+    : 0
+}
+
+function rejectedRetryDelayMs(
+  delivery: ProductDeletionRelayDelivery,
+  retryDelayMs: number
+): number {
+  const rejectionCount = Math.max(1, validConsecutiveRejections(delivery))
+  const exponent = Math.min(rejectionCount - 1, 16)
+  return Math.max(
+    retryDelayMs,
+    Math.min(MAX_REJECTED_RETRY_DELAY_MS, retryDelayMs * 2 ** exponent)
+  )
+}
+
+function rejectedTargetNextRetryAt(
+  delivery: ProductDeletionRelayDelivery,
+  retryDelayMs: number
+): number {
+  const rawAttemptAt = delivery.rejectedAt ?? delivery.lastAttemptAt
+  const attemptAt =
+    Number.isSafeInteger(rawAttemptAt) &&
+    rawAttemptAt !== undefined &&
+    rawAttemptAt >= 0
+      ? rawAttemptAt
+      : 0
+  return attemptAt + rejectedRetryDelayMs(delivery, retryDelayMs)
+}
+
 function reconcileJob(
   job: ProductDeletionDeliveryJob,
   timestamp: number,
   retryDelayMs: number
 ): ProductDeletionDeliveryJob {
   const state = deriveDeliveryState(job.relayDelivery, job.deliveryAttemptCount)
+  const outstanding = job.relayDelivery.filter(
+    (delivery) => delivery.status !== "acked"
+  )
   return {
     ...job,
     state,
-    nextRetryAt: state === "delivered" ? undefined : timestamp + retryDelayMs,
+    nextRetryAt:
+      state === "delivered"
+        ? undefined
+        : Math.min(
+            ...outstanding.map((delivery) =>
+              delivery.status === "rejected"
+                ? rejectedTargetNextRetryAt(delivery, retryDelayMs)
+                : timestamp + retryDelayMs
+            )
+          ),
     updatedAt: timestamp,
   }
 }
@@ -754,6 +804,16 @@ async function markRelayOutcome(
       return {
         ...delivery,
         status,
+        ...(status === "rejected"
+          ? {
+              consecutiveRejections: Math.min(
+                17,
+                validConsecutiveRejections(delivery) + 1
+              ),
+            }
+          : delivery.consecutiveRejections === undefined
+            ? {}
+            : { consecutiveRejections: 0 }),
         ...(status === "acked" ? { acknowledgedAt: timestamp } : {}),
         ...(status === "rejected" ? { rejectedAt: timestamp } : {}),
         ...(status === "timed_out" ? { timedOutAt: timestamp } : {}),
@@ -878,6 +938,17 @@ async function deliverProductDeletionJobUnlocked(
     let deliveryRunStarted = false
 
     for (const relayUrl of outstandingRelayUrls) {
+      const claimedDelivery = claimed.relayDelivery.find(
+        (delivery) => delivery.relayUrl === relayUrl
+      )
+      const retryAt = getNow(options)
+      if (
+        options.respectRejectionBackoff &&
+        claimedDelivery?.status === "rejected" &&
+        retryAt < rejectedTargetNextRetryAt(claimedDelivery, retryDelayMs)
+      ) {
+        continue
+      }
       const authenticatedPubkey = getCurrentAuthenticatedPubkey(options)
       const claimedTarget = claimed.relayPlan.find(
         (target) => target.relayUrl === relayUrl
@@ -1107,7 +1178,10 @@ export async function deliverPendingProductDeletions(
   for (const job of jobs) {
     try {
       completed.push(
-        await deliverProductDeletionJob(job.id, publisher, options)
+        await deliverProductDeletionJob(job.id, publisher, {
+          ...options,
+          respectRejectionBackoff: true,
+        })
       )
     } catch {
       // Keep this job durable and continue. One corrupt/unavailable job must

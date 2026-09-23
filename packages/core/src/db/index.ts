@@ -195,6 +195,8 @@ export interface ProductDeletionRelayDelivery {
   relayUrl: string
   status: ProductDeletionRelayDeliveryStatus
   attemptCount: number
+  /** Durable streak used only to pace background retries of explicit OK false. */
+  consecutiveRejections?: number
   lastAttemptAt?: number
   acknowledgedAt?: number
   rejectedAt?: number

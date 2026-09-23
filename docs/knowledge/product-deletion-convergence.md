@@ -109,6 +109,11 @@ exact-byte retry lane. Merchant reports a deletion as partial/retryable until
 every planned target ACKs. Repairing relay settings may allow the same signed
 deletion to reach a previously rejecting target; it does not require or offer
 a second signature with a broader `created_at` cutoff.
+Repeated explicit rejections are paced per target for background delivery with
+a deterministic delay capped at 30 minutes. Timed-out sibling targets retain
+their ordinary retry cadence, and the merchant's explicit Retry can attempt
+the same signed event immediately. The rejection streak and due time survive
+reload without changing the signed event or its target plan.
 
 For a mixed replacement and deletion, both exact signed jobs must be durable
 before either is sent. The deletion remains queued without relay attempts until

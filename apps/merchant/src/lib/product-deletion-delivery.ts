@@ -217,6 +217,7 @@ export async function deliverQueuedProductDeletion(
 
   const deliveredJob = await deliverProductDeletionJob(jobId, publisher, {
     ...deliveryOptions,
+    respectRejectionBackoff: false,
     isAuthenticatedPubkeyCurrent: bindAuthenticatedProductDeletionAuthority(
       deliveryOptions.authenticatedPubkey,
       shouldContinue,
@@ -262,7 +263,10 @@ export async function resumePendingProductDeletionDeliveries(
       continue
     }
     try {
-      await deliverProductDeletionJob(job.id, publisher, deliveryOptions)
+      await deliverProductDeletionJob(job.id, publisher, {
+        ...deliveryOptions,
+        respectRejectionBackoff: true,
+      })
     } catch {
       // Jobs are independent. Preserve this one for a later retry and continue
       // so an old/corrupt entry cannot starve newer deletions.
