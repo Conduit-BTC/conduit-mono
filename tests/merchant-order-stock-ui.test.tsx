@@ -22,6 +22,7 @@ function adjustment(
 const handlers = {
   onUpdate: () => undefined,
   onRetry: () => undefined,
+  onRepublish: () => undefined,
   onDismissDelivery: () => undefined,
 }
 
@@ -230,5 +231,41 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("Hide for now")
     expect(markup).toContain("exceeds tracked stock by 3")
     expect(markup).not.toContain("Publish stock 0")
+  })
+
+  it("offers a new signature, not a second decrement or rejected-byte retry, after zero ACKs", () => {
+    const item = adjustment()
+    const markup = renderToStaticMarkup(
+      <OrderStockPanel
+        adjustments={[item]}
+        stockMutationDisabledKeys={new Set([item.key])}
+        unpublishedStockKeys={new Set([item.key])}
+        delivery={null}
+        deliveryNeedsAttention={false}
+        pending={false}
+        updatePending={false}
+        errorMessage={null}
+        {...handlers}
+      />
+    )
+
+    expect(markup).toContain("Not published")
+    expect(markup).toContain("no relay accepted it")
+    expect(markup).toContain("will not subtract stock again")
+    expect(markup).toContain("Sign new listing for stock 10")
+    expect(markup).not.toContain("Publish stock 10")
+    expect(markup).not.toContain("Retry delivery")
+  })
+
+  it("keeps the Orders route on durable exact-byte retry and a separate fresh-sign path", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+    expect(source).toContain("ensureSignedProductListingsQueued({")
+    expect(source).toContain("deliverQueuedProductListings(queued.id")
+    expect(source).toContain('payload.action === "republish"')
+    expect(source).toContain("getUnpublishedOrderStockRepublishAdjustment({")
+    expect(source).toContain(
+      'notice.state === "rejected" ? "unpublished" : "applied"'
+    )
+    expect(source).toContain("onRepublish={republishStock}")
   })
 })

@@ -1107,6 +1107,10 @@ export async function signAndPublishProductWriteBundle(
     listings: readonly ProductListingPublishTarget[]
     deletions?: readonly ProductDeletionPublishTarget[]
     onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
+    onSignedEvent?: (
+      event: NDKEvent,
+      kind: ProductSignerRequestKind
+    ) => Promise<void>
     onDeliveryQueued?: (bundle: SignedProductWriteBundle) => Promise<void>
     deletionDeliveryOptions?: DeliverQueuedProductDeletionOptions
     productListingDeliveryOptions?: DeliverQueuedProductListingOptions
@@ -1117,9 +1121,17 @@ export async function signAndPublishProductWriteBundle(
   dependencies: Partial<ProductPublicationDependencies> = {}
 ): Promise<PublishWithPlannerResult> {
   const ndk = getNdk()
+  const assertSignerSessionCurrent = () => {
+    if (input.shouldContinue?.() === false) {
+      throw new Error("Product signer session changed.")
+    }
+  }
+  assertSignerSessionCurrent()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signer = ndk.signer
+  assertSignerSessionCurrent()
   const signerPubkey = (await signer.user()).pubkey
+  assertSignerSessionCurrent()
   if (signerPubkey !== input.merchantPubkey) {
     throw new Error("Active signer does not match current merchant pubkey")
   }
@@ -1156,6 +1168,7 @@ export async function signAndPublishProductWriteBundle(
           planCurrentProductListingRelayTargets
         )(signerPubkey, authenticatedPubkey, input.shouldContinue)
       : []
+  assertSignerSessionCurrent()
   const signerRequestTotal = getProductSignerRequestCount({
     listings,
     deletions: input.deletions,
@@ -1167,14 +1180,26 @@ export async function signAndPublishProductWriteBundle(
     event: NDKEvent,
     kind: ProductSignerRequestKind
   ): Promise<void> => {
+    assertSignerSessionCurrent()
+    await waitForSignerVisibility()
+    assertSignerSessionCurrent()
     signerRequestCurrent += 1
     input.onSignerRequest?.({
       kind,
       current: signerRequestCurrent,
       total: signerRequestTotal,
     })
-    await waitForSignerVisibility()
+    assertSignerSessionCurrent()
     await event.sign(signer)
+    const signed = event.rawEvent() as SignedPublicNostrEvent
+    if (
+      !isValidSignedPublicNostrEvent(signed) ||
+      signed.pubkey !== signerPubkey
+    ) {
+      throw new Error("Signer returned invalid product event evidence.")
+    }
+    await input.onSignedEvent?.(event, kind)
+    assertSignerSessionCurrent()
   }
 
   const writes: SignedProductWrite[] = []
@@ -1200,7 +1225,9 @@ export async function signAndPublishProductWriteBundle(
     events.push(deletion)
   }
 
+  assertSignerSessionCurrent()
   input.onSignerRequestsComplete?.()
+  assertSignerSessionCurrent()
 
   for (const write of writes) {
     if (!write.shippingEvent) continue
@@ -1241,11 +1268,6 @@ export async function signAndPublishProductWriteBundle(
   await Promise.all(
     listingEvents.map((event) => cacheSignedProductListingEvent(event))
   )
-  try {
-    await input.onSignedLocal(signedBundle)
-  } catch (error) {
-    throw asSignedProductDeliveryError(error, false)
-  }
 
   try {
     if (productListingDeliveryJobId) {
@@ -1255,9 +1277,10 @@ export async function signAndPublishProductWriteBundle(
           signedEvents: rawListingEvents,
           relayTargets: productListingRelayTargets,
           companionDeletionJobId: deletionDeliveryJobId,
-          // A mixed listing + NIP-09 write is armed only after both exact jobs
-          // are durable. Standalone families can be retried immediately.
-          readyForDelivery: deletionDeliveryJobId ? false : true,
+          // Every exact family remains relay-ineligible until the caller's
+          // local evidence commit succeeds. A companion NIP-09 job adds the
+          // reciprocal durability check when the shared gate is armed.
+          readyForDelivery: false,
         },
         input.productListingDeliveryOptions
       )
@@ -1286,6 +1309,17 @@ export async function signAndPublishProductWriteBundle(
       )
       await cacheSignedProductDeletionEvent(deletionEvent)
     }
+  } catch (error) {
+    throw asSignedProductDeliveryError(error, false)
+  }
+
+  try {
+    await input.onSignedLocal(signedBundle)
+  } catch (error) {
+    throw asSignedProductDeliveryError(error, false)
+  }
+
+  try {
     if (productListingDeliveryJobId) {
       await markProductListingDeliveryReady(productListingDeliveryJobId, {
         ...input.productListingDeliveryOptions,
@@ -1339,9 +1373,10 @@ export async function signAndPublishProductListing(input: {
       },
     ],
     onSignerRequest: input.onSignerRequest,
-    onSignedLocal: async ({ events: [event] }) => {
-      if (!event) throw new Error("Signed product event is missing")
+    onSignedEvent: async (event, kind) => {
+      if (kind !== "product") return
       await input.onSignedLocal(event)
     },
+    onSignedLocal: async () => undefined,
   })
 }

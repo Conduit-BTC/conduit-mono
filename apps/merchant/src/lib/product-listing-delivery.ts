@@ -427,8 +427,9 @@ export interface ResumeStagedProductListingDeliveriesOptions extends ProductList
 }
 
 /**
- * Recover the narrow crash window after both halves of a mixed product write
- * became durable but before its shared listing gate was armed.
+ * Recover the narrow crash window after signed listing evidence became
+ * durable but before its delivery gate was armed. Mixed writes also require
+ * the exact reciprocal deletion intent before either half is exposed.
  */
 export async function resumeStagedProductListingDeliveries(
   options: ResumeStagedProductListingDeliveriesOptions = {}
@@ -447,7 +448,11 @@ export async function resumeStagedProductListingDeliveries(
   for (const job of jobs) {
     const deletionId = job.companionDeletionJobId
     try {
-      if (!deletionId) continue
+      if (!deletionId) {
+        await restoreListing(job)
+        await markProductListingDeliveryReady(job.id, listingOptions)
+        continue
+      }
       const deletion = await getProductDeletionDelivery(
         deletionId,
         deletionDeliveryOptions

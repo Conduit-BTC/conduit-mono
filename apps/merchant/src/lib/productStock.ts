@@ -16,13 +16,15 @@ const STOCK_DELIVERY_STORAGE_PREFIX =
 const MAX_STORED_STOCK_DECISIONS = 500
 const MAX_STORED_STOCK_DELIVERIES = 100
 
-export type ProductStockDecisionKind = "applied" | "declined"
+export type ProductStockDecisionKind = "applied" | "declined" | "unpublished"
 
 export interface ProductStockDecision {
   kind: ProductStockDecisionKind
   decidedAt: number
   /** Latest unresolved order-relative state, preserved across listing refetches. */
   adjustment?: OrderStockAdjustment
+  /** Exact locally applied revision that received no relay ACK. */
+  localEventId?: string
 }
 
 interface StoredProductStockDecisions {
@@ -161,9 +163,12 @@ function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
         kind?: unknown
         decidedAt?: unknown
         adjustment?: unknown
+        localEventId?: unknown
       }
       if (
-        (decision.kind !== "applied" && decision.kind !== "declined") ||
+        (decision.kind !== "applied" &&
+          decision.kind !== "declined" &&
+          decision.kind !== "unpublished") ||
         typeof decision.decidedAt !== "number" ||
         !Number.isFinite(decision.decidedAt)
       ) {
@@ -182,10 +187,21 @@ function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
       ) {
         continue
       }
+      if (
+        decision.kind === "unpublished" &&
+        (!adjustment ||
+          typeof decision.localEventId !== "string" ||
+          !/^[0-9a-f]{64}$/.test(decision.localEventId))
+      ) {
+        continue
+      }
       decisions[key] = {
         kind: decision.kind,
         decidedAt: decision.decidedAt,
         ...(adjustment ? { adjustment } : {}),
+        ...(decision.kind === "unpublished"
+          ? { localEventId: decision.localEventId as string }
+          : {}),
       }
     }
 
@@ -454,6 +470,31 @@ export function doesOrderStockDecisionCoverAdjustment(input: {
   return getOrderStockDecisionFollowUpAdjustment(input) === null
 }
 
+/** Re-sign only the exact locally applied stock revision, never the order decrement. */
+export function getUnpublishedOrderStockRepublishAdjustment(input: {
+  adjustment: OrderStockAdjustment
+  persistedDecision: ProductStockDecision | null
+  record: CommerceProductRecord
+}): OrderStockAdjustment {
+  const decision = input.persistedDecision
+  const applied = decision?.adjustment
+  if (
+    decision?.kind !== "unpublished" ||
+    !applied ||
+    applied.key !== input.adjustment.key ||
+    applied.addressId !== input.adjustment.addressId ||
+    input.record.addressId !== applied.addressId ||
+    input.record.product.id !== applied.addressId ||
+    input.record.eventId !== decision.localEventId ||
+    input.record.product.stock !== applied.nextStock
+  ) {
+    throw new Error(
+      "The rejected local stock revision is no longer current. Review the listing before publishing again."
+    )
+  }
+  return applied
+}
+
 export function getOrderStockDecisionFollowUpAdjustment(input: {
   adjustment: OrderStockAdjustment
   persistedDecision: ProductStockDecision | null
@@ -504,6 +545,7 @@ export function shouldShowOrderStockAdjustment(input: {
   hasSessionDecision: boolean
   persistedDecision: ProductStockDecision | null
 }): boolean {
+  if (input.persistedDecision?.kind === "unpublished") return true
   if (
     input.orderStatus === "cancelled" ||
     input.orderStatus === "complete" ||
@@ -535,6 +577,9 @@ export function getOrderStockAdjustmentForDisplay(input: {
   const followUpAdjustment = getOrderStockDecisionFollowUpAdjustment(input)
   if (followUpAdjustment) return followUpAdjustment
   const persistedAdjustment = input.persistedDecision?.adjustment
+  if (input.persistedDecision?.kind === "unpublished" && persistedAdjustment) {
+    return persistedAdjustment
+  }
   if (
     input.persistedDecision?.kind === "applied" &&
     persistedAdjustment &&
@@ -682,7 +727,8 @@ export class ProductStockDecisionStore {
     orderId: string,
     productAddressId: string,
     kind: ProductStockDecisionKind,
-    adjustment?: OrderStockAdjustment
+    adjustment?: OrderStockAdjustment,
+    localEventId?: string
   ): boolean {
     const normalizedProductAddressId = productAddressId.trim()
     const decisionKey = getOrderStockDecisionKey(
@@ -698,10 +744,19 @@ export class ProductStockDecisionStore {
         "Stock decision adjustment does not match the order product"
       )
     }
+    if (
+      kind === "unpublished" &&
+      (!adjustment || !localEventId || !/^[0-9a-f]{64}$/.test(localEventId))
+    ) {
+      throw new Error(
+        "An unpublished stock decision requires its exact local revision"
+      )
+    }
     const decision: ProductStockDecision = {
       kind,
       decidedAt: Date.now(),
       ...(adjustment ? { adjustment: { ...adjustment } } : {}),
+      ...(kind === "unpublished" ? { localEventId } : {}),
     }
     this.memoryDecisions.set(`${merchantPubkey}:${decisionKey}`, decision)
 

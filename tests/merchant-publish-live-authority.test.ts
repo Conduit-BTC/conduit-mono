@@ -14,10 +14,13 @@ describe("Merchant publish live account authority", () => {
     ])
 
     expect(orders).toContain(
-      "authenticatedPubkey: signerConnected ? pubkey : null,\n            shouldContinue: () =>"
+      "authenticatedPubkey,\n            shouldContinue: () => isCurrentOrderAction(authority)"
     )
     expect(orders).toMatch(
-      /signAndPublishProductListing\(\{[\s\S]{0,180}shouldContinue: \(\) => authGenerationRef\.current === authGeneration/
+      /signAndPublishProductListing\(\{[\s\S]{0,180}shouldContinue: \(\) => isCurrentOrderAction\(authority\)/
+    )
+    expect(orders).toMatch(
+      /deliverSignedProductEvent\([\s\S]{0,220}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
     )
     expect(products).toMatch(
       /ensureMerchantBoothPickup\(\{[\s\S]{0,140}shouldContinue,/

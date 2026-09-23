@@ -864,15 +864,13 @@ export async function getPendingProductListingDeliveries(
     .map(cloneJob)
 }
 
-/** Load mixed product mutations that have both exact halves staged but are not armed. */
+/** Load exact signed listing families staged locally but not yet armed for relay delivery. */
 export async function getStagedProductListingDeliveries(
   options: ProductListingDeliveryOptions = {}
 ): Promise<ProductListingDeliveryJob[]> {
   const jobs = await getRepository(options).listUndelivered()
   return jobs
-    .filter(
-      (job) => job.readyForDelivery === false && !!job.companionDeletionJobId
-    )
+    .filter((job) => job.readyForDelivery === false)
     .sort(
       (left, right) =>
         left.createdAt - right.createdAt || left.id.localeCompare(right.id)

@@ -52,6 +52,7 @@ import {
   resolveProductFulfillmentIntentForTarget,
   resolvePublishedProductFulfillmentIntentForTarget,
   signAndPublishProductWriteBundle,
+  signAndPublishProductListing,
   type CanonicalProductPublishDependencies,
   type SignedProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
@@ -1503,9 +1504,13 @@ describe("merchant product event delivery", () => {
           signedBundle = bundle
           const jobId = bundle.productListingDeliveryJobId
           expect(jobId).toBeString()
-          // Caller-specific local state completes before a background worker
-          // can observe and publish the durable family.
-          expect(await beforeReload.get(jobId!)).toBeUndefined()
+          // The exact family is durable but relay-ineligible until the
+          // caller-specific local commit succeeds.
+          expect(await beforeReload.get(jobId!)).toMatchObject({
+            id: jobId,
+            readyForDelivery: false,
+            signedEvents: bundle.events.map((event) => event.rawEvent()),
+          })
           expect(initialAttempts).toEqual([])
         },
         productListingDeliveryOptions: {
@@ -2095,6 +2100,7 @@ describe("merchant product event delivery", () => {
     }
     let listingRelayAttempts = 0
     let deletionRelayAttempts = 0
+    let onSignedLocalCalls = 0
     let onDeliveryQueuedCalls = 0
     setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
 
@@ -2116,7 +2122,9 @@ describe("merchant product event delivery", () => {
               sourceRelayUrls: [],
             },
           ]),
-          onSignedLocal: async () => {},
+          onSignedLocal: async () => {
+            onSignedLocalCalls += 1
+          },
           onDeliveryQueued: async () => {
             onDeliveryQueuedCalls += 1
           },
@@ -2161,6 +2169,7 @@ describe("merchant product event delivery", () => {
 
     expect(listingRelayAttempts).toBe(0)
     expect(deletionRelayAttempts).toBe(0)
+    expect(onSignedLocalCalls).toBe(0)
     expect(onDeliveryQueuedCalls).toBe(0)
   })
 
@@ -2278,13 +2287,96 @@ describe("merchant product event delivery", () => {
     expect(deletionAttempts).toBeGreaterThan(0)
   })
 
-  it("does not stage either mixed-mutation worker when the local commit fails", async () => {
+  it("recovers a staged standalone listing after local commit fails", async () => {
     const listingStorage = new Map<string, ProductListingDeliveryJob>()
     const listingRepository = new MemoryProductListingOutbox(listingStorage)
-    const deletionRepository = new MemoryProductDeletionOutbox()
-    let listingAttempts = 0
-    let deletionAttempts = 0
-    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let signRequests = 0
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        return await delegate.sign(event)
+      },
+    } as NDKSigner)
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("standalone-commit-failure"),
+              dTag: "standalone-commit-failure",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedLocal: async () => {
+            throw new Error("local product commit failed")
+          },
+          productListingDeliveryOptions: {
+            repository: listingRepository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            now: () => NOW,
+            retryDelayMs: 1,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    const [stagedListing] = Array.from(listingStorage.values())
+    expect(signRequests).toBe(1)
+    expect(stagedListing?.readyForDelivery).toBe(false)
+    expect(stagedListing?.companionDeletionJobId).toBeUndefined()
+    const exactEvents = structuredClone(stagedListing!.signedEvents)
+
+    const listingAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const restoredEventIds: string[] = []
+    await resumeStagedProductListingDeliveries({
+      repository: listingAfterReload,
+      restoreLocalListingEvidence: async (job) => {
+        restoredEventIds.push(...job.signedEvents.map(({ id }) => id))
+      },
+      now: () => NOW + 1,
+    })
+    expect(restoredEventIds).toEqual(exactEvents.map(({ id }) => id))
+    expect(
+      (await listingAfterReload.get(stagedListing!.id))?.readyForDelivery
+    ).toBe(true)
+
+    const deliveredEvents: NostrEvent[] = []
+    await resumePendingProductListingDeliveries({
+      repository: listingAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 100,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        deliveredEvents.push(signedEvent)
+        return { status: "acked" }
+      },
+    })
+    expect(deliveredEvents).toEqual(exactEvents)
+    expect(signRequests).toBe(1)
+  })
+
+  it("recovers the exact staged mixed mutation after a local commit failure", async () => {
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const deletionStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const listingRepository = new MemoryProductListingOutbox(listingStorage)
+    const deletionRepository = new MemoryProductDeletionOutbox(deletionStorage)
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let signRequests = 0
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        return await delegate.sign(event)
+      },
+    } as NDKSigner)
 
     await expect(
       signAndPublishProductWriteBundle(
@@ -2311,58 +2403,93 @@ describe("merchant product event delivery", () => {
             repository: listingRepository,
             accountNetworkLocalStateRepository:
               allowAllAccountNetworkLocalStateRepository,
-            publisher: async () => {
-              listingAttempts += 1
-              return { status: "acked" }
-            },
+            now: () => NOW,
+            retryDelayMs: 1,
           },
           deletionDeliveryOptions: {
             repository: deletionRepository,
             accountNetworkLocalStateRepository:
               allowAllAccountNetworkLocalStateRepository,
+            now: () => NOW,
+            retryDelayMs: 1,
             restoreLocalEvidence: async () => {},
-            publisher: async () => {
-              deletionAttempts += 1
-              return { status: "acked" }
-            },
           },
         },
         createProductListingRelayPlanningDependencies()
       )
     ).rejects.toThrow("Signed product event could not be delivered")
 
-    expect(listingStorage.size).toBe(0)
-    expect((await deletionRepository.listUndelivered()).length).toBe(0)
-    await resumeStagedProductListingDeliveries({
-      repository: listingRepository,
-      deletionDeliveryOptions: { repository: deletionRepository },
-      restoreLocalListingEvidence: async () => {},
-      restoreLocalDeletionEvidence: async () => {},
-    })
-    await Promise.all([
-      resumePendingProductListingDeliveries({
-        repository: listingRepository,
-        publisher: async () => {
-          listingAttempts += 1
-          return { status: "acked" }
-        },
-      }),
-      resumePendingProductDeletionDeliveries({
-        repository: deletionRepository,
-        getCompanionListingJob: (jobId) => listingRepository.get(jobId),
-        restoreLocalEvidence: async () => {},
-        publisher: async () => {
-          deletionAttempts += 1
-          return { status: "acked" }
-        },
-      }),
-    ])
+    const [stagedListing] = Array.from(listingStorage.values())
+    const [stagedDeletion] = await deletionRepository.listUndelivered()
+    expect(signRequests).toBe(2)
+    expect(stagedListing?.readyForDelivery).toBe(false)
+    expect(stagedListing?.companionDeletionJobId).toBe(stagedDeletion?.id)
+    expect(stagedDeletion?.companionListingJobId).toBe(stagedListing?.id)
+    const exactListingEvents = structuredClone(stagedListing!.signedEvents)
+    const exactDeletionEvent = structuredClone(stagedDeletion!.signedEvent)
 
-    expect(listingAttempts).toBe(0)
-    expect(deletionAttempts).toBe(0)
+    const listingAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionAfterReload = new MemoryProductDeletionOutbox(deletionStorage)
+    const restoredEventIds: string[] = []
+    await resumeStagedProductListingDeliveries({
+      repository: listingAfterReload,
+      deletionDeliveryOptions: { repository: deletionAfterReload },
+      restoreLocalListingEvidence: async (job) => {
+        restoredEventIds.push(...job.signedEvents.map(({ id }) => id))
+      },
+      restoreLocalDeletionEvidence: async (event) => {
+        restoredEventIds.push(event.id)
+      },
+      now: () => NOW + 1,
+    })
+
+    expect(restoredEventIds).toEqual([
+      ...exactListingEvents.map(({ id }) => id),
+      exactDeletionEvent.id,
+    ])
+    expect(
+      (await listingAfterReload.get(stagedListing!.id))?.readyForDelivery
+    ).toBe(true)
+
+    const deliveredListingEvents: NostrEvent[] = []
+    await resumePendingProductListingDeliveries({
+      repository: listingAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 100,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        deliveredListingEvents.push(signedEvent)
+        return { status: "acked" }
+      },
+    })
+    const deliveredDeletionEvents: NostrEvent[] = []
+    await resumePendingProductDeletionDeliveries({
+      repository: deletionAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      getCompanionListingJob: (jobId) => listingAfterReload.get(jobId),
+      now: () => NOW + 100,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        deliveredDeletionEvents.push(signedEvent)
+        return { status: "acked" }
+      },
+    })
+
+    expect(deliveredListingEvents).toEqual(exactListingEvents)
+    expect(
+      deliveredDeletionEvents.every(
+        (event) => event.id === exactDeletionEvent.id
+      )
+    ).toBe(true)
+    expect(deliveredDeletionEvents.length).toBeGreaterThan(0)
+    expect(signRequests).toBe(2)
   })
 
-  it("finishes the local commit but stops before relay I/O when persistence fails", async () => {
+  it("leaves the local draft untouched when listing staging fails", async () => {
     const repository = new MemoryProductListingOutbox()
     repository.add = async () => {
       throw new Error("listing outbox unavailable")
@@ -2407,7 +2534,7 @@ describe("merchant product event delivery", () => {
       )
     ).rejects.toThrow("Signed product event could not be delivered")
 
-    expect(onSignedLocalCalls).toBe(1)
+    expect(onSignedLocalCalls).toBe(0)
     expect(onDeliveryQueuedCalls).toBe(0)
     expect(productRelayAttempts).toBe(0)
   })
@@ -2550,7 +2677,7 @@ describe("merchant product event delivery", () => {
     }
   })
 
-  it("does not dispatch the second product approval while the app is hidden", async () => {
+  it("waits for visibility before announcing the next signer request", async () => {
     const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
     const signedKinds: number[] = []
     const signerProgress: Array<{
@@ -2617,7 +2744,6 @@ describe("merchant product event delivery", () => {
       expect(signedKinds).toEqual([EVENT_KINDS.SHIPPING_OPTION])
       expect(signerProgress).toEqual([
         { kind: "shipping", current: 1, total: 2 },
-        { kind: "product", current: 2, total: 2 },
       ])
 
       visible = true
@@ -2627,6 +2753,10 @@ describe("merchant product event delivery", () => {
       expect(signedKinds).toEqual([
         EVENT_KINDS.SHIPPING_OPTION,
         EVENT_KINDS.PRODUCT,
+      ])
+      expect(signerProgress).toEqual([
+        { kind: "shipping", current: 1, total: 2 },
+        { kind: "product", current: 2, total: 2 },
       ])
       expect(visibilityChecks).toBe(2)
     } finally {
@@ -2724,6 +2854,65 @@ describe("merchant product event delivery", () => {
       expect(signedLocalCalls).toBe(1)
       expect(listingDeliveryAttempts).toBe(1)
       expect(publishSpy).toHaveBeenCalledTimes(0)
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
+  it("retains a signer-returned product for exact retry after authority changes", async () => {
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let authorityCurrent = true
+    let signRequests = 0
+    let signedEvent: NDKEvent | null = null
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        const signed = await delegate.sign(event)
+        authorityCurrent = false
+        return signed
+      },
+    } as NDKSigner)
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishedIds: string[] = []
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+      async function (this: NDKEvent) {
+        publishedIds.push(this.id)
+        return new Set([{ url: "wss://relay.example/" }]) as never
+      }
+    )
+
+    try {
+      await expect(
+        signAndPublishProductListing({
+          merchantPubkey: MERCHANT_PUBKEY,
+          shouldContinue: () => authorityCurrent,
+          product: makeProduct("signed-before-recovery"),
+          dTag: "signed-before-recovery",
+          fulfillmentIntent: { kind: "coordinate_after_order" },
+          onSignedLocal: async (event) => {
+            signedEvent = event
+          },
+        })
+      ).rejects.toThrow("Product signer session changed")
+      expect(signRequests).toBe(1)
+      expect(signedEvent?.id).toBeTruthy()
+      expect(publishSpy).toHaveBeenCalledTimes(0)
+
+      authorityCurrent = true
+      await deliverSignedProductEvent(signedEvent!, MERCHANT_PUBKEY, {
+        shouldContinue: () => authorityCurrent,
+      })
+      expect(signRequests).toBe(1)
+      expect(publishSpy).toHaveBeenCalledTimes(1)
+      expect(publishedIds).toEqual([signedEvent!.id])
     } finally {
       publishSpy.mockRestore()
     }

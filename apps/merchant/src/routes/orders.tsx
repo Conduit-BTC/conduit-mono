@@ -86,6 +86,7 @@ import {
   SheetHeader,
   SheetTitle,
   SheetTrigger,
+  SignerRecoveryNotice,
   StatusPill,
   StatusStepper,
   cn,
@@ -161,6 +162,7 @@ import {
   applyOrderStockTarget,
   buildOrderStockAdjustments,
   getOrderStockAdjustmentForDisplay,
+  getUnpublishedOrderStockRepublishAdjustment,
   isOrderStockAdjustmentMutationDisabled,
   PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
@@ -190,8 +192,11 @@ import {
   loadEventMarketHandoffDeliveries,
   releaseCompletedEventMarketHandoffReceipt,
   resolveMerchantHandoffAckReadState,
+  retryStoredOrganizerReadyReceipt,
+  retryStoredOrganizerReadyRevocation,
   revokeOrganizerReadyReceipt,
   type MerchantHandoffAckReadBlocker,
+  type StoredEventMarketHandoffDelivery,
 } from "../lib/event-market-handoff"
 import {
   clearCoordinatedMerchantHandoffFallback,
@@ -217,12 +222,22 @@ type StockDeliveryState = {
   signedEvent: SignedPublicNostrEvent
 }
 
+type OrderActionAuthority = {
+  accountPubkey: string
+  authGeneration: number
+}
+
 type StockUpdateMutationPayload =
   | {
       action: "update"
       orderId: string
       adjustment: OrderStockAdjustment
       orderItems: OrderSummary["items"]
+    }
+  | {
+      action: "republish"
+      orderId: string
+      adjustment: OrderStockAdjustment
     }
   | {
       action: "retry"
@@ -665,13 +680,86 @@ function MobileOrdersScroller({
 }
 
 function OrdersPage() {
-  const { pubkey, status, authGeneration } = useAuth()
-  const authGenerationRef = useRef(authGeneration)
+  const { accountPubkey } = useAuth()
+  return <OrdersWorkspace key={accountPubkey ?? "no-account"} />
+}
+
+function OrdersWorkspace() {
+  const {
+    accountPubkey,
+    pubkey: signerPubkey,
+    status,
+    authGeneration,
+    isAuthGenerationCurrent,
+    remoteSignerRecovery,
+    signerReadiness,
+    connect,
+  } = useAuth()
+  const pubkey = accountPubkey
+  const mountedRef = useRef(true)
+  const orderAuthorityRef = useRef({
+    accountPubkey,
+    authGeneration,
+    signerPubkey,
+    signerReadiness,
+  })
   useLayoutEffect(() => {
-    authGenerationRef.current = authGeneration
-  }, [authGeneration])
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+  useLayoutEffect(() => {
+    orderAuthorityRef.current = {
+      accountPubkey,
+      authGeneration,
+      signerPubkey,
+      signerReadiness,
+    }
+  }, [accountPubkey, authGeneration, signerPubkey, signerReadiness])
+  const isCurrentOrderAccount = (ownerPubkey: string) =>
+    mountedRef.current &&
+    orderAuthorityRef.current.accountPubkey === ownerPubkey
+  const isCurrentOrderOwner = (ownerPubkey: string, generation: number) => {
+    const current = orderAuthorityRef.current
+    return (
+      isCurrentOrderAccount(ownerPubkey) &&
+      isAuthGenerationCurrent(generation) &&
+      current.authGeneration === generation
+    )
+  }
+  const isCurrentOrderSigner = (ownerPubkey: string, generation: number) => {
+    const current = orderAuthorityRef.current
+    return (
+      isCurrentOrderOwner(ownerPubkey, generation) &&
+      current.signerPubkey === ownerPubkey &&
+      current.signerReadiness === "ready"
+    )
+  }
+  const captureFreshOrderAuthority = (): OrderActionAuthority => {
+    const current = orderAuthorityRef.current
+    if (
+      !current.accountPubkey ||
+      current.signerPubkey !== current.accountPubkey ||
+      current.signerReadiness !== "ready" ||
+      !isAuthGenerationCurrent(current.authGeneration)
+    ) {
+      throw new Error("Merchant signer is not connected")
+    }
+    return {
+      accountPubkey: current.accountPubkey,
+      authGeneration: current.authGeneration,
+    }
+  }
+  const isCurrentOrderAction = (authority: OrderActionAuthority) =>
+    isCurrentOrderSigner(authority.accountPubkey, authority.authGeneration)
   const session = useConduitSession()
-  const authenticatedPubkey = status === "connected" ? pubkey : null
+  const signerConnected =
+    signerReadiness === "ready" &&
+    !!accountPubkey &&
+    signerPubkey === accountPubkey
+  const hasAccount = !!accountPubkey
+  const authenticatedPubkey = signerConnected ? signerPubkey : null
   const navigate = useNavigate()
   const { order: selectedFromUrl, queue: queueFromUrl } = Route.useSearch()
   const selectedQueueFromUrl = queueFromUrl ?? "all"
@@ -679,9 +767,10 @@ function OrdersPage() {
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const queryClient = useQueryClient()
   const merchantProfileQuery = useProfile(pubkey, {
-    accountPubkey: authenticatedPubkey,
+    accountPubkey: pubkey,
     authenticatedPubkey,
-    shouldContinue: () => authGenerationRef.current === authGeneration,
+    shouldContinue: () =>
+      !!pubkey && isCurrentOrderOwner(pubkey, authGeneration),
   })
   const merchantInvoiceModule = useMemo(
     () => createDefaultMerchantInvoiceModule(),
@@ -742,7 +831,6 @@ function OrdersPage() {
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [handoffDeliveryRevision, setHandoffDeliveryRevision] = useState(0)
   const selectedOrderResetRef = useRef<string | null>(null)
-  const signerConnected = status === "connected" && !!pubkey
   const invoiceAmountNumber = useMemo(() => {
     const amount = Number(invoiceAmount)
     if (!Number.isFinite(amount) || amount < 0) return 0
@@ -765,6 +853,18 @@ function OrdersPage() {
       invoice.trim() ? decodeLightningInvoiceAmount(invoice.trim()) : null,
     [invoice]
   )
+
+  useLayoutEffect(() => {
+    orderActionLockRef.current = false
+    setPendingDestructiveAction(null)
+    setReopenConfirmation(null)
+    setReopenConfirmationError(null)
+    setPaymentConfirmationTarget(null)
+    setReleaseWithPayment(false)
+    setConfirmingOrganizerFallback(false)
+    setConfirmingOrganizerRelease(false)
+    setOrganizerReleaseConfirmed(false)
+  }, [authGeneration, signerConnected])
 
   useEffect(() => {
     // Detect WebLN (Alby extension) — may load after page render
@@ -813,7 +913,7 @@ function OrdersPage() {
   })
   const cachedOrdersQuery = useQuery({
     queryKey: ["merchant-order-messages", pubkey ?? "none"],
-    enabled: signerConnected,
+    enabled: hasAccount,
     queryFn: () =>
       getCachedMerchantConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
@@ -884,11 +984,11 @@ function OrdersPage() {
     [conversations]
   )
   const buyerProfilesQuery = useProfiles(buyerPubkeys, {
-    accountPubkey: authenticatedPubkey,
+    accountPubkey: pubkey,
     authenticatedPubkey,
-    shouldContinue: () => authGenerationRef.current === authGeneration,
-    enabled:
-      signerConnected && !isOrdersInitialHydration && buyerPubkeys.length > 0,
+    shouldContinue: () =>
+      !!pubkey && isCurrentOrderOwner(pubkey, authGeneration),
+    enabled: hasAccount && !isOrdersInitialHydration && buyerPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
     maxUnresolvedRefetches: 1,
@@ -918,16 +1018,19 @@ function OrdersPage() {
     queryKey: [
       "order-products",
       session.relayScope ?? "no-relay-scope",
-      authenticatedPubkey ?? "anonymous",
+      pubkey ?? "anonymous",
       allOrderProductIds,
     ],
-    enabled: signerConnected && allOrderProductIds.length > 0,
+    enabled: hasAccount && allOrderProductIds.length > 0,
     queryFn: ({ signal }) =>
       getProductsByIds(allOrderProductIds, {
         includeMarketHidden: true,
+        accountPubkey: pubkey,
         authenticatedPubkey,
         shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
+          !signal.aborted &&
+          !!pubkey &&
+          isCurrentOrderOwner(pubkey, authGeneration),
       }),
     staleTime: 5 * 60_000,
   })
@@ -1361,9 +1464,11 @@ function OrdersPage() {
       verifyMerchantPickupOrderAuthorization({
         items: orderSummary!.items,
         merchantPubkey: pubkey!,
-        authenticatedPubkey: signerConnected ? pubkey : null,
+        authenticatedPubkey,
         shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
+          !signal.aborted &&
+          !!pubkey &&
+          isCurrentOrderOwner(pubkey, authGeneration),
       }),
     staleTime: 15_000,
     refetchInterval: 30_000,
@@ -1449,6 +1554,7 @@ function OrdersPage() {
           ]
         })
   const stockMutationDisabledKeys = new Set<string>()
+  const unpublishedStockKeys = new Set<string>()
   for (const adjustment of stockAdjustments) {
     const hasPendingDelivery = Boolean(
       stockDelivery &&
@@ -1466,6 +1572,13 @@ function OrdersPage() {
             adjustment.addressId
           )
         : null
+    if (
+      persistedDecision?.kind === "unpublished" &&
+      !hasPendingDelivery &&
+      !sessionStockDecisionKeys.has(`${pubkey}:${adjustment.key}`)
+    ) {
+      unpublishedStockKeys.add(adjustment.key)
+    }
     if (
       isOrderStockAdjustmentMutationDisabled({
         adjustment,
@@ -1494,17 +1607,27 @@ function OrdersPage() {
     },
     [merchantOrderState.isZeroCostPickup, merchantPaid]
   )
-  const assertCurrentPickupAuthorization = useCallback(async () => {
+  async function assertCurrentPickupAuthorization(
+    authority: OrderActionAuthority
+  ) {
     if (!snapshottedOrderFulfillment.hasPickupClaim) return null
-    if (!pubkey || !orderSummary) {
+    if (
+      !pubkey ||
+      !orderSummary ||
+      authority.accountPubkey !== pubkey ||
+      !isCurrentOrderAction(authority)
+    ) {
       throw new Error("Current signed pickup evidence is unavailable.")
     }
     const result = await verifyMerchantPickupOrderAuthorization({
       items: orderSummary.items,
       merchantPubkey: pubkey,
-      authenticatedPubkey: signerConnected ? pubkey : null,
-      shouldContinue: () => authGenerationRef.current === authGeneration,
+      authenticatedPubkey,
+      shouldContinue: () => isCurrentOrderAction(authority),
     })
+    if (!isCurrentOrderAction(authority)) {
+      throw new Error("Merchant signer session changed")
+    }
     queryClient.setQueriesData(
       {
         queryKey: [
@@ -1518,15 +1641,7 @@ function OrdersPage() {
       throw new Error(getMerchantPickupAuthorizationMessage(result))
     }
     return result.market
-  }, [
-    authGeneration,
-    orderSummary,
-    pubkey,
-    queryClient,
-    selected?.id,
-    signerConnected,
-    snapshottedOrderFulfillment.hasPickupClaim,
-  ])
+  }
   const orderActions = selected
     ? getMerchantOrderActions(merchantOrderState)
     : []
@@ -1636,8 +1751,9 @@ function OrdersPage() {
         session.relaySettingsReady &&
         !isOrdersInitialHydration,
       relayScope: session.relayScope,
-      authenticatedPubkey: signerConnected ? pubkey : null,
-      shouldContinue: () => authGenerationRef.current === authGeneration,
+      authenticatedPubkey,
+      shouldContinue: () =>
+        !!pubkey && isCurrentOrderOwner(pubkey, authGeneration),
     }
   )
   const selectedBuyerNip05 = selectedBuyerProfile?.nip05?.trim()
@@ -1711,6 +1827,14 @@ function OrdersPage() {
       if (!pubkey) throw new Error("Merchant signer is not connected")
 
       if (payload.action === "retry") {
+        if (
+          payload.signedEvent.pubkey !== pubkey ||
+          !isCurrentOrderAccount(pubkey)
+        ) {
+          throw new Error(
+            "This signed stock update belongs to another account."
+          )
+        }
         pendingStockDeliveryStoreRef.current.set(pubkey, {
           orderId: payload.orderId,
           adjustment: payload.adjustment,
@@ -1719,20 +1843,24 @@ function OrdersPage() {
         const queued = await ensureSignedProductListingsQueued({
           merchantPubkey: pubkey,
           signedEvents: [payload.signedEvent],
-          authenticatedPubkey: signerConnected ? pubkey : null,
-          shouldContinue: () => authGenerationRef.current === authGeneration,
+          authenticatedPubkey,
+          shouldContinue: () => isCurrentOrderAccount(pubkey),
         })
         const delivery = await deliverQueuedProductListings(queued.id, {
-          authenticatedPubkey: signerConnected ? pubkey : null,
-          shouldContinue: () => authGenerationRef.current === authGeneration,
+          authenticatedPubkey,
+          shouldContinue: () => isCurrentOrderAccount(pubkey),
           expectedSignedEvents: [payload.signedEvent],
         })
         return {
+          authority: null,
+          retryOwner: pubkey,
           delivery,
           signedEvent: payload.signedEvent,
           adjustment: payload.adjustment,
         }
       }
+
+      const authority = captureFreshOrderAuthority()
 
       const latestLocal = await getCachedMerchantStorefront({
         merchantPubkey: pubkey,
@@ -1752,26 +1880,41 @@ function OrdersPage() {
         record.addressId
       )
       const { adjustment: effectiveAdjustment, fulfillmentIntent } =
-        prepareOrderStockUpdate({
-          merchantPubkey: pubkey,
-          orderId: payload.orderId,
-          items: payload.orderItems,
-          adjustment: payload.adjustment,
-          record,
-          persistedDecision,
-        })
+        payload.action === "republish"
+          ? {
+              adjustment: getUnpublishedOrderStockRepublishAdjustment({
+                adjustment: payload.adjustment,
+                persistedDecision,
+                record,
+              }),
+              fulfillmentIntent: {
+                kind: "preserve_existing" as const,
+                baseline: record.product,
+              },
+            }
+          : prepareOrderStockUpdate({
+              merchantPubkey: pubkey,
+              orderId: payload.orderId,
+              items: payload.orderItems,
+              adjustment: payload.adjustment,
+              record,
+              persistedDecision,
+            })
       const hasPendingDelivery = pendingStockDeliveryStoreRef.current
         .getForOrder(pubkey, payload.orderId)
         .some((pending) => pending.adjustment.key === effectiveAdjustment.key)
       if (
-        isOrderStockAdjustmentMutationDisabled({
-          adjustment: effectiveAdjustment,
-          persistedDecision,
-          hasPendingDelivery,
-          hasSessionDecision: sessionStockDecisionKeys.has(
-            `${pubkey}:${effectiveAdjustment.key}`
-          ),
-        })
+        payload.action === "republish"
+          ? hasPendingDelivery ||
+            sessionStockDecisionKeys.has(`${pubkey}:${effectiveAdjustment.key}`)
+          : isOrderStockAdjustmentMutationDisabled({
+              adjustment: effectiveAdjustment,
+              persistedDecision,
+              hasPendingDelivery,
+              hasSessionDecision: sessionStockDecisionKeys.has(
+                `${pubkey}:${effectiveAdjustment.key}`
+              ),
+            })
       ) {
         throw new Error(
           "This stock update is already applied or awaiting delivery."
@@ -1780,8 +1923,8 @@ function OrdersPage() {
       let signedEvent: SignedPublicNostrEvent | null = null
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
-        authenticatedPubkey: signerConnected ? pubkey : null,
-        shouldContinue: () => authGenerationRef.current === authGeneration,
+        authenticatedPubkey,
+        shouldContinue: () => isCurrentOrderAction(authority),
         product: {
           ...record.product,
           stock: effectiveAdjustment.nextStock,
@@ -1791,6 +1934,9 @@ function OrdersPage() {
         previousEventCreatedAt: record.eventCreatedAt,
         fulfillmentIntent,
         onSignedLocal: async (event) => {
+          if (!isCurrentOrderAccount(pubkey)) {
+            throw new Error("Signed stock update belongs to another account.")
+          }
           const rawEvent = event.rawEvent() as SignedPublicNostrEvent
           signedEvent = rawEvent
           pendingStockDeliveryStoreRef.current.set(pubkey, {
@@ -1815,10 +1961,16 @@ function OrdersPage() {
       if (!signedEvent) {
         throw new Error("The signed stock update was not saved locally")
       }
-      return { delivery, signedEvent, adjustment: effectiveAdjustment }
+      return {
+        authority,
+        retryOwner: null,
+        delivery,
+        signedEvent,
+        adjustment: effectiveAdjustment,
+      }
     },
     onMutate: (payload) => {
-      if (payload.action === "update") setStockDelivery(null)
+      if (payload.action !== "retry") setStockDelivery(null)
     },
     onSuccess: async (result, payload) => {
       const previousNotice =
@@ -1829,6 +1981,13 @@ function OrdersPage() {
         previousNotice
       )
       const merchantPubkey = result.signedEvent.pubkey
+      if (
+        !isCurrentOrderAccount(merchantPubkey) ||
+        (result.authority && !isCurrentOrderAction(result.authority)) ||
+        (result.retryOwner && !isCurrentOrderAccount(result.retryOwner))
+      ) {
+        return
+      }
       setStockDelivery({
         orderId: payload.orderId,
         adjustment: result.adjustment,
@@ -1840,8 +1999,9 @@ function OrdersPage() {
           merchantPubkey,
           payload.orderId,
           result.adjustment.addressId,
-          "applied",
-          result.adjustment
+          notice.state === "rejected" ? "unpublished" : "applied",
+          result.adjustment,
+          notice.state === "rejected" ? result.signedEvent.id : undefined
         )
         pendingStockDeliveryStoreRef.current.delete(
           merchantPubkey,
@@ -1893,6 +2053,7 @@ function OrdersPage() {
       await invalidateProductQueries()
     },
     onError: async (error, payload) => {
+      if (!pubkey || !isCurrentOrderAccount(pubkey)) return
       setStockDelivery((current) => {
         if (
           !current ||
@@ -1964,6 +2125,7 @@ function OrdersPage() {
     mutationFn: (source: MerchantInvoiceActionSource) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
         try {
+          const authority = captureFreshOrderAuthority()
           if (!selectedInvoiceScope) {
             throw new Error("No conversation selected")
           }
@@ -1975,15 +2137,16 @@ function OrdersPage() {
           if (amountSats <= 0) {
             throw new Error("Amount must be greater than 0")
           }
-          return await merchantInvoiceModule.createAndDeliver({
+          await merchantInvoiceModule.createAndDeliver({
             ...selectedInvoiceScope,
             amountSats,
             note: invoiceNote.trim() || undefined,
             delivery: operationalDelivery,
             source: resolveInvoiceSelection(source),
-            authenticatedPubkey: signerConnected ? pubkey : null,
-            shouldContinue: () => authGenerationRef.current === authGeneration,
+            authenticatedPubkey,
+            shouldContinue: () => isCurrentOrderAction(authority),
           })
+          return authority
         } catch {
           // Provider errors can contain invoices, addresses, relay responses,
           // or wallet credentials. React Query retains errors, so only expose
@@ -1991,7 +2154,8 @@ function OrdersPage() {
           throw safeInvoiceActionError(source)
         }
       }),
-    onSuccess: async () => {
+    onSuccess: async (authority) => {
+      if (!isCurrentOrderAction(authority)) return
       setInvoice("")
       setInvoiceNote("")
       flash("Invoice generated and sent to the buyer's relay")
@@ -2008,21 +2172,24 @@ function OrdersPage() {
     mutationFn: () =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
         try {
+          const authority = captureFreshOrderAuthority()
           if (!selectedInvoiceScope) {
             throw new Error("No conversation selected")
           }
-          return await merchantInvoiceModule.retryDelivery({
+          await merchantInvoiceModule.retryDelivery({
             ...selectedInvoiceScope,
-            authenticatedPubkey: signerConnected ? pubkey : null,
-            shouldContinue: () => authGenerationRef.current === authGeneration,
+            authenticatedPubkey,
+            shouldContinue: () => isCurrentOrderAction(authority),
           })
+          return authority
         } catch {
           throw new Error(
             "Could not redeliver the saved invoice. Refresh and try again."
           )
         }
       }),
-    onSuccess: async () => {
+    onSuccess: async (authority) => {
+      if (!isCurrentOrderAction(authority)) return
       flash("Saved invoice sent to the buyer's relay")
       await invalidateOrderQueries()
     },
@@ -2052,19 +2219,25 @@ function OrdersPage() {
   const organizerReceiptMutation = useMutation({
     mutationFn: (authorizationConfirmed: boolean) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
-        if (!pubkey || !selectedOrder) {
+        const authority = captureFreshOrderAuthority()
+        if (!pubkey || !selectedOrder || authority.accountPubkey !== pubkey) {
           throw new Error("The authenticated order is unavailable.")
         }
         if (!selectedUsesOrganizerHandoff) {
           throw new Error("This order does not authorize organizer handoff.")
         }
-        const market = await assertCurrentPickupAuthorization()
+        if (selectedReadyDelivery) {
+          throw new Error(
+            "Retry the retained organizer receipt without requesting another signature."
+          )
+        }
+        const market = await assertCurrentPickupAuthorization(authority)
         if (!market) {
           throw new Error("Current signed pickup evidence is unavailable.")
         }
         const ndk = getNdk()
         if (!ndk.signer) throw new Error("Merchant signer is not connected.")
-        return issueOrganizerReadyReceipt({
+        const delivery = await issueOrganizerReadyReceipt({
           merchantPubkey: pubkey,
           order: selectedOrder,
           paymentAuthenticated: merchantPaid,
@@ -2072,12 +2245,14 @@ function OrdersPage() {
           market,
           signer: ndk.signer,
           transport: {
-            authenticatedPubkey: signerConnected ? pubkey : null,
-            shouldContinue: () => authGenerationRef.current === authGeneration,
+            authenticatedPubkey,
+            shouldContinue: () => isCurrentOrderAction(authority),
           },
         })
+        return { authority, delivery }
       }),
-    onSuccess: async (delivery) => {
+    onSuccess: async ({ authority, delivery }) => {
+      if (!isCurrentOrderAction(authority)) return
       setConfirmingOrganizerRelease(false)
       setOrganizerReleaseConfirmed(false)
       setHandoffDeliveryRevision((revision) => revision + 1)
@@ -2089,20 +2264,65 @@ function OrdersPage() {
       await handoffAcksQuery.refetch()
     },
     onError: () => {
+      if (!pubkey || !isCurrentOrderSigner(pubkey, authGeneration)) return
       setHandoffDeliveryRevision((revision) => revision + 1)
+    },
+  })
+
+  const retryOrganizerReadyDeliveryMutation = useMutation({
+    mutationFn: (input: {
+      kind: "receipt" | "revocation"
+      ownerPubkey: string
+      delivery: StoredEventMarketHandoffDelivery
+    }) =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        if (!isCurrentOrderAccount(input.ownerPubkey)) {
+          throw new Error(
+            `This organizer ${input.kind} belongs to another account.`
+          )
+        }
+        const retry =
+          input.kind === "receipt"
+            ? retryStoredOrganizerReadyReceipt
+            : retryStoredOrganizerReadyRevocation
+        const delivery = await retry({
+          merchantPubkey: input.ownerPubkey,
+          delivery: input.delivery,
+          transport: {
+            shouldContinue: () => isCurrentOrderAccount(input.ownerPubkey),
+          },
+        })
+        return { kind: input.kind, ownerPubkey: input.ownerPubkey, delivery }
+      }),
+    onSuccess: ({ kind, ownerPubkey, delivery }) => {
+      if (!isCurrentOrderAccount(ownerPubkey)) return
+      setHandoffDeliveryRevision((revision) => revision + 1)
+      flash(
+        eventMarketHandoffDeliveryNeedsRetry(delivery)
+          ? `The exact organizer ${kind} still needs delivery attention`
+          : kind === "receipt"
+            ? "The exact organizer receipt was delivered"
+            : "The exact organizer revocation was delivered. Review the order before continuing."
+      )
     },
   })
 
   const confirmPaymentMutation = useMutation({
     mutationFn: (input: MerchantPaymentConfirmationInput) =>
-      runExclusiveOrderAction(orderActionLockRef, () =>
-        confirmMerchantPayment({
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        const authority = captureFreshOrderAuthority()
+        if (authority.accountPubkey !== input.merchantPubkey) {
+          throw new Error("Payment confirmation belongs to another account")
+        }
+        const result = await confirmMerchantPayment({
           ...input,
-          authenticatedPubkey: signerConnected ? pubkey : null,
-          shouldContinue: () => authGenerationRef.current === authGeneration,
+          authenticatedPubkey,
+          shouldContinue: () => isCurrentOrderAction(authority),
         })
-      ),
-    onSuccess: async (result, input) => {
+        return { authority, result }
+      }),
+    onSuccess: async ({ authority, result }, input) => {
+      if (!isCurrentOrderAction(authority)) return
       const estimate = input.order
         ? getCommerceGmvEstimateFromOrder({
             orderId: input.orderId,
@@ -2140,6 +2360,10 @@ function OrdersPage() {
         ) {
           throw new Error("The organizer handoff receipt is unavailable.")
         }
+        const authority = captureFreshOrderAuthority()
+        if (authority.accountPubkey !== pubkey) {
+          throw new Error("The organizer handoff belongs to another account.")
+        }
         if (!selectedUsesOrganizerHandoff) {
           throw new Error("This order does not authorize organizer handoff.")
         }
@@ -2159,8 +2383,8 @@ function OrdersPage() {
           orderId: selected.orderId,
           signer: ndk.signer,
           transport: {
-            authenticatedPubkey: signerConnected ? pubkey : null,
-            shouldContinue: () => authGenerationRef.current === authGeneration,
+            authenticatedPubkey,
+            shouldContinue: () => isCurrentOrderAction(authority),
           },
           matchingAckReceiptIds: new Set(
             (currentAck.currentAckRead.data?.data ?? []).map((ack) =>
@@ -2196,13 +2420,16 @@ function OrdersPage() {
             "The coordinated fallback could not be saved on this device. Merchant handoff remains blocked."
           )
         }
+        return authority
       }),
-    onSuccess: () => {
+    onSuccess: (authority) => {
+      if (!isCurrentOrderAction(authority)) return
       setHandoffDeliveryRevision((revision) => revision + 1)
       setConfirmingOrganizerFallback(false)
       flash("Organizer handoff revoked; merchant handoff is now active")
     },
     onError: () => {
+      if (!pubkey || !isCurrentOrderSigner(pubkey, authGeneration)) return
       setHandoffDeliveryRevision((revision) => revision + 1)
     },
   })
@@ -2239,10 +2466,17 @@ function OrdersPage() {
       conversation?: MerchantConversationSummary
     }) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
+        const authority = captureFreshOrderAuthority()
         const actionConversation = conversation ?? selected
-        if (!pubkey || !actionConversation) {
+        if (
+          !pubkey ||
+          !actionConversation ||
+          authority.accountPubkey !== pubkey
+        ) {
           throw new Error("No conversation selected")
         }
+        const actionCorrelationRef = selectedOrderCorrelationRef
+        const actionReadyDelivery = selectedReadyDelivery
         if (nextStatus === "cancelled") {
           const ndk = getNdk()
           if (!ndk.signer) throw new Error("Merchant signer is not connected.")
@@ -2250,18 +2484,20 @@ function OrdersPage() {
             coordinatedMerchantFallbackActive &&
             hasCurrentCoordinatedMerchantFallback()
           const currentAck =
-            selectedReadyDelivery && !currentFallback
+            actionReadyDelivery && !currentFallback
               ? await readCurrentOrganizerHandoffAck()
               : null
+          if (!isCurrentOrderAction(authority)) {
+            throw new Error("Merchant signer session changed")
+          }
           if (!currentFallback) {
             await revokeOrganizerReadyReceipt({
               merchantPubkey: pubkey,
               orderId: actionConversation.orderId,
               signer: ndk.signer,
               transport: {
-                authenticatedPubkey: signerConnected ? pubkey : null,
-                shouldContinue: () =>
-                  authGenerationRef.current === authGeneration,
+                authenticatedPubkey,
+                shouldContinue: () => isCurrentOrderAction(authority),
               },
               matchingAckReceiptIds: new Set(
                 (currentAck?.currentAckRead.data?.data ?? []).map((ack) =>
@@ -2269,6 +2505,9 @@ function OrdersPage() {
                 )
               ),
             })
+          }
+          if (!isCurrentOrderAction(authority)) {
+            throw new Error("Merchant signer session changed")
           }
           setHandoffDeliveryRevision((revision) => revision + 1)
         }
@@ -2287,13 +2526,16 @@ function OrdersPage() {
           nextStatus === "complete" &&
           snapshottedOrderFulfillment.hasPickupClaim
         ) {
-          await assertCurrentPickupAuthorization()
+          await assertCurrentPickupAuthorization(authority)
           if (selectedUsesOrganizerHandoff) {
             const currentFallback =
               coordinatedMerchantFallbackActive &&
               hasCurrentCoordinatedMerchantFallback()
             if (!currentFallback) {
               const { currentAckState } = await readCurrentOrganizerHandoffAck()
+              if (!isCurrentOrderAction(authority)) {
+                throw new Error("Merchant signer session changed")
+              }
               if (currentAckState.conflicting || !currentAckState.exactAck) {
                 throw new Error(
                   "A valid organizer handed-out acknowledgement is required before completion."
@@ -2311,31 +2553,35 @@ function OrdersPage() {
           payload: { status: nextStatus },
           delivery: operationalDelivery,
           signerInteraction: "external",
-          authenticatedPubkey: signerConnected ? pubkey : null,
-          shouldContinue: () => authGenerationRef.current === authGeneration,
+          authenticatedPubkey,
+          shouldContinue: () => isCurrentOrderAction(authority),
         })
+        if (!isCurrentOrderAction(authority)) {
+          throw new Error("Merchant signer session changed")
+        }
         if (
           nextStatus === "complete" &&
-          selectedReadyDelivery &&
-          selectedOrderCorrelationRef &&
+          actionReadyDelivery &&
+          actionCorrelationRef &&
           releaseCompletedEventMarketHandoffReceipt(
             pubkey,
-            selectedReadyDelivery.record.readyReceiptId,
-            selectedOrderCorrelationRef
+            actionReadyDelivery.record.readyReceiptId,
+            actionCorrelationRef
           )
         ) {
           setHandoffDeliveryRevision((revision) => revision + 1)
         }
+        return { authority, actionCorrelationRef }
       }),
-    onSuccess: async (_data, { nextStatus }) => {
+    onSuccess: async ({ authority, actionCorrelationRef }, { nextStatus }) => {
+      if (!isCurrentOrderAction(authority)) return
       if (
-        pubkey &&
-        selectedOrderCorrelationRef &&
+        actionCorrelationRef &&
         (nextStatus === "complete" || nextStatus === "cancelled")
       ) {
         clearCoordinatedMerchantHandoffFallback(
-          pubkey,
-          selectedOrderCorrelationRef
+          authority.accountPubkey,
+          actionCorrelationRef
         )
       }
       flash(buyerInboxKnown ? "Status update sent to buyer" : "Status recorded")
@@ -2346,6 +2592,10 @@ function OrdersPage() {
   const reopenOrderMutation = useMutation({
     mutationFn: (input: ReopenOrderMutationInput) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
+        const authority = captureFreshOrderAuthority()
+        if (authority.accountPubkey !== input.merchantPubkey) {
+          throw new Error("Merchant signer is not connected")
+        }
         await publishMerchantOrderMessage({
           merchantPubkey: input.merchantPubkey,
           buyerPubkey: input.buyerPubkey,
@@ -2355,11 +2605,13 @@ function OrdersPage() {
           payload: input.transition.payload,
           delivery: input.delivery,
           signerInteraction: "external",
-          authenticatedPubkey: signerConnected ? pubkey : null,
-          shouldContinue: () => authGenerationRef.current === authGeneration,
+          authenticatedPubkey,
+          shouldContinue: () => isCurrentOrderAction(authority),
         })
+        return authority
       }),
-    onSuccess: async (_data, input) => {
+    onSuccess: async (authority, input) => {
+      if (!isCurrentOrderAction(authority)) return
       setReopenConfirmation(null)
       setReopenConfirmationError(null)
       flash(
@@ -2374,7 +2626,15 @@ function OrdersPage() {
   const shippingMutation = useMutation({
     mutationFn: () =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
-        if (!pubkey || !selected) throw new Error("No conversation selected")
+        const authority = captureFreshOrderAuthority()
+        const actionConversation = selected
+        if (
+          !pubkey ||
+          !actionConversation ||
+          authority.accountPubkey !== pubkey
+        ) {
+          throw new Error("No ready merchant signer for this order")
+        }
         if (snapshottedOrderFulfillment.hasPickupClaim) {
           throw new Error(
             "Pickup orders do not use carrier or tracking details."
@@ -2389,8 +2649,8 @@ function OrdersPage() {
         })
         await publishMerchantOrderMessage({
           merchantPubkey: pubkey,
-          buyerPubkey: selected.buyerPubkey,
-          orderId: selected.orderId,
+          buyerPubkey: actionConversation.buyerPubkey,
+          orderId: actionConversation.orderId,
           type: "shipping_update",
           tags: [
             ["tracking", prepared.trackingNumber],
@@ -2404,15 +2664,32 @@ function OrdersPage() {
           },
           delivery: operationalDelivery,
           signerInteraction: "external",
-          authenticatedPubkey: signerConnected ? pubkey : null,
-          shouldContinue: () => authGenerationRef.current === authGeneration,
+          authenticatedPubkey,
+          shouldContinue: () => isCurrentOrderAction(authority),
         })
+        return {
+          authority,
+          buyerInboxKnown,
+          draft: {
+            trackingNumber,
+            carrier,
+            trackingUrl,
+            shippingNote,
+          },
+        }
       }),
-    onSuccess: async () => {
-      setCarrier("")
-      setTrackingNumber("")
-      setTrackingUrl("")
-      setShippingNote("")
+    onSuccess: async ({ authority, buyerInboxKnown, draft }) => {
+      if (!isCurrentOrderAction(authority)) return
+      setCarrier((current) => (current === draft.carrier ? "" : current))
+      setTrackingNumber((current) =>
+        current === draft.trackingNumber ? "" : current
+      )
+      setTrackingUrl((current) =>
+        current === draft.trackingUrl ? "" : current
+      )
+      setShippingNote((current) =>
+        current === draft.shippingNote ? "" : current
+      )
       flash(
         buyerInboxKnown
           ? "Shipping update sent to buyer"
@@ -2423,35 +2700,48 @@ function OrdersPage() {
   })
 
   const noteMutation = useMutation({
-    mutationFn: async () => {
-      if (!pubkey || !selected) throw new Error("No conversation selected")
+    mutationFn: async (content: string) => {
+      const authority = captureFreshOrderAuthority()
+      const actionConversation = selected
+      if (
+        !pubkey ||
+        !actionConversation ||
+        authority.accountPubkey !== pubkey
+      ) {
+        throw new Error("No ready merchant signer for this order")
+      }
       assertBuyerHasNostrInbox()
-      if (!replyNote.trim()) throw new Error("Message is required")
+      const preparedContent = content.trim()
+      if (!preparedContent) throw new Error("Message is required")
       await publishMerchantOrderMessage({
         merchantPubkey: pubkey,
-        buyerPubkey: selected.buyerPubkey,
-        orderId: selected.orderId,
+        buyerPubkey: actionConversation.buyerPubkey,
+        orderId: actionConversation.orderId,
         type: "message",
         payload: {
-          note: replyNote.trim(),
+          note: preparedContent,
         },
         delivery: operationalDelivery,
         signerInteraction: "external",
-        authenticatedPubkey: signerConnected ? pubkey : null,
-        shouldContinue: () => authGenerationRef.current === authGeneration,
+        authenticatedPubkey,
+        shouldContinue: () => isCurrentOrderAction(authority),
       })
+      return { authority, content }
     },
-    onSuccess: async () => {
-      setReplyNote("")
+    onSuccess: async ({ authority, content }) => {
+      if (!isCurrentOrderAction(authority)) return
+      setReplyNote((current) => (current === content ? "" : current))
       flash("Message sent to buyer")
       await invalidateOrderQueries()
     },
   })
 
   const orderActionPending =
+    !signerConnected ||
     stockUpdateMutation.isPending ||
     confirmPaymentMutation.isPending ||
     organizerReceiptMutation.isPending ||
+    retryOrganizerReadyDeliveryMutation.isPending ||
     coordinatedFallbackMutation.isPending ||
     reopenOrderMutation.isPending ||
     isMerchantOrderActionSurfacePending({
@@ -2460,6 +2750,40 @@ function OrdersPage() {
       advanceStatus: advanceStatusMutation.isPending,
       recordShipping: shippingMutation.isPending,
     })
+
+  const previousOrderAuthorityKeyRef = useRef(
+    `${authGeneration}:${signerReadiness}`
+  )
+  useLayoutEffect(() => {
+    const authorityKey = `${authGeneration}:${signerReadiness}`
+    if (previousOrderAuthorityKeyRef.current === authorityKey) return
+    previousOrderAuthorityKeyRef.current = authorityKey
+    if (stockUpdateMutation.variables?.action === "update") {
+      stockUpdateMutation.reset()
+    }
+    createInvoiceMutation.reset()
+    retryInvoiceMutation.reset()
+    organizerReceiptMutation.reset()
+    confirmPaymentMutation.reset()
+    coordinatedFallbackMutation.reset()
+    advanceStatusMutation.reset()
+    reopenOrderMutation.reset()
+    shippingMutation.reset()
+    noteMutation.reset()
+  }, [
+    advanceStatusMutation,
+    authGeneration,
+    confirmPaymentMutation,
+    coordinatedFallbackMutation,
+    createInvoiceMutation,
+    noteMutation,
+    organizerReceiptMutation,
+    reopenOrderMutation,
+    retryInvoiceMutation,
+    shippingMutation,
+    signerReadiness,
+    stockUpdateMutation,
+  ])
   const stockUpdateErrorMessage =
     stockUpdateMutation.error &&
     !(stockUpdateMutation.error instanceof SignedProductDeliveryError)
@@ -2467,6 +2791,7 @@ function OrdersPage() {
         ? stockUpdateMutation.error.message
         : "Failed to update listing stock"
       : null
+  const organizerExactRetryError = retryOrganizerReadyDeliveryMutation.error
 
   function updateStock(
     adjustment: OrderStockAdjustment,
@@ -2490,6 +2815,15 @@ function OrdersPage() {
       adjustment: selectedStockDelivery.adjustment,
       signedEvent: selectedStockDelivery.signedEvent,
       previousNotice: selectedStockDelivery.notice,
+    })
+  }
+
+  function republishStock(adjustment: OrderStockAdjustment): void {
+    if (!selected) return
+    stockUpdateMutation.mutate({
+      action: "republish",
+      orderId: selected.orderId,
+      adjustment,
     })
   }
 
@@ -2549,7 +2883,17 @@ function OrdersPage() {
         </div>
       </div>
 
-      {!signerConnected && (
+      {remoteSignerRecovery ? (
+        <SignerRecoveryNotice
+          description="Your order drafts and saved exact-delivery retries are still here. Reconnect the same signer, review the order, then choose the action again. Conduit will not sign or send it automatically."
+          reconnecting={status === "restoring"}
+          restoreFailed={!!remoteSignerRecovery.restoreError}
+          restoreFailureDescription="That saved signer connection could not be restored. Your drafts remain for this account, and no order action was replayed."
+          onReconnect={() => connect({ mode: "restore" })}
+        />
+      ) : null}
+
+      {!hasAccount && (
         <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           Connect your signer to view incoming orders.
         </div>
@@ -2574,17 +2918,17 @@ function OrdersPage() {
           />
         )}
 
-      {signerConnected && protectedOrdersReadState !== "pending" && (
+      {hasAccount && protectedOrdersReadState !== "pending" && (
         <ProtectedInboxNotice
           state={protectedOrdersReadState}
           subject="orders"
           decryptFailureCount={ordersMeta?.decryptFailures?.length ?? 0}
-          onRetry={handleRefresh}
+          onRetry={signerConnected ? handleRefresh : undefined}
           retrying={ordersQuery.isRefetching}
         />
       )}
 
-      {signerConnected &&
+      {hasAccount &&
         !cachedOrdersQuery.isLoading &&
         conversations.length === 0 &&
         protectedOrdersReadState === "complete" && (
@@ -2594,7 +2938,7 @@ function OrdersPage() {
           </div>
         )}
 
-      {signerConnected && conversations.length > 0 && (
+      {hasAccount && conversations.length > 0 && (
         <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)] xl:items-start">
           <aside className="hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:sticky xl:top-4 xl:flex xl:max-h-[calc(100vh-2rem)] xl:flex-col xl:overflow-hidden">
             <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
@@ -2750,15 +3094,18 @@ function OrdersPage() {
                             stockMutationDisabledKeys={
                               stockMutationDisabledKeys
                             }
+                            unpublishedStockKeys={unpublishedStockKeys}
                             delivery={selectedStockDelivery}
                             deliveryNeedsAttention={stockDeliveryCanRetry}
                             pending={orderActionPending}
+                            retryPending={stockUpdateMutation.isPending}
                             updatePending={stockUpdateMutation.isPending}
                             errorMessage={stockUpdateErrorMessage}
                             canMessageBuyer={buyerInboxKnown}
                             onUpdate={updateStock}
                             onMessageBuyer={() => setMessagesOpen(true)}
                             onRetry={retryStockDelivery}
+                            onRepublish={republishStock}
                             onDismissDelivery={dismissStockDelivery}
                           />
 
@@ -3480,10 +3827,11 @@ function OrdersPage() {
                     {pickupAuthorizationVerified && orderFulfillment.pickup && (
                       <PickupFulfillmentCard
                         pickup={orderFulfillment.pickup}
-                        accountPubkey={authenticatedPubkey}
+                        accountPubkey={pubkey}
                         authenticatedPubkey={authenticatedPubkey}
                         shouldContinue={() =>
-                          authGenerationRef.current === authGeneration
+                          !!pubkey &&
+                          isCurrentOrderOwner(pubkey, authGeneration)
                         }
                         organizerProfileRelayHints={getMerchantPickupOrganizerProfileRelayHints(
                           pickupAuthorizationQuery.data
@@ -3652,6 +4000,17 @@ function OrdersPage() {
                           </p>
                         )}
 
+                        {organizerExactRetryError && (
+                          <p
+                            className="mt-3 text-xs leading-5 text-error"
+                            role="alert"
+                          >
+                            {organizerExactRetryError instanceof Error
+                              ? organizerExactRetryError.message
+                              : "Exact organizer delivery retry failed."}
+                          </p>
+                        )}
+
                         {coordinatedFallbackMutation.error && (
                           <p
                             className="mt-3 text-xs leading-5 text-error"
@@ -3664,6 +4023,7 @@ function OrdersPage() {
                         )}
 
                         {selectedReadyDelivery &&
+                          selectedReadyRetryNeeded &&
                           !exactHandoffAck &&
                           !selectedRevocationDelivery && (
                             <Button
@@ -3671,16 +4031,48 @@ function OrdersPage() {
                               size="sm"
                               className="mt-3"
                               disabled={
-                                orderActionPending ||
-                                !pickupAuthorizationVerified
+                                retryOrganizerReadyDeliveryMutation.isPending
                               }
-                              onClick={() =>
-                                organizerReceiptMutation.mutate(false)
-                              }
+                              onClick={() => {
+                                if (!pubkey) return
+                                retryOrganizerReadyDeliveryMutation.mutate({
+                                  kind: "receipt",
+                                  ownerPubkey: pubkey,
+                                  delivery: selectedReadyDelivery,
+                                })
+                              }}
                             >
-                              {organizerReceiptMutation.isPending
+                              {retryOrganizerReadyDeliveryMutation.isPending &&
+                              retryOrganizerReadyDeliveryMutation.variables
+                                ?.kind === "receipt"
                                 ? "Sending exact receipt..."
                                 : "Retry exact receipt"}
+                            </Button>
+                          )}
+
+                        {selectedRevocationDelivery &&
+                          selectedRevocationRetryNeeded && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="mt-3"
+                              disabled={
+                                retryOrganizerReadyDeliveryMutation.isPending
+                              }
+                              onClick={() => {
+                                if (!pubkey) return
+                                retryOrganizerReadyDeliveryMutation.mutate({
+                                  kind: "revocation",
+                                  ownerPubkey: pubkey,
+                                  delivery: selectedRevocationDelivery,
+                                })
+                              }}
+                            >
+                              {retryOrganizerReadyDeliveryMutation.isPending &&
+                              retryOrganizerReadyDeliveryMutation.variables
+                                ?.kind === "revocation"
+                                ? "Sending exact revocation..."
+                                : "Retry exact revocation"}
                             </Button>
                           )}
                       </section>
@@ -3839,7 +4231,7 @@ function OrdersPage() {
                   selfPubkey={pubkey}
                   replyValue={replyNote}
                   onReplyChange={setReplyNote}
-                  onSend={() => noteMutation.mutate()}
+                  onSend={() => noteMutation.mutate(replyNote)}
                   sending={noteMutation.isPending}
                   error={
                     noteMutation.error instanceof Error
@@ -3849,7 +4241,7 @@ function OrdersPage() {
                         : null
                   }
                   placeholder="Message the buyer, then press Enter"
-                  readOnly={!buyerInboxKnown}
+                  readOnly={!buyerInboxKnown || !signerConnected}
                   resolveItem={(id) => productLookup.get(id)}
                 />
 
@@ -3900,8 +4292,7 @@ function OrdersPage() {
                       <Button
                         type="button"
                         disabled={
-                          organizerReceiptMutation.isPending ||
-                          !organizerReleaseConfirmed
+                          orderActionPending || !organizerReleaseConfirmed
                         }
                         onClick={() => organizerReceiptMutation.mutate(true)}
                       >
@@ -3955,7 +4346,7 @@ function OrdersPage() {
                       </Button>
                       <Button
                         type="button"
-                        disabled={coordinatedFallbackMutation.isPending}
+                        disabled={orderActionPending}
                         onClick={() => coordinatedFallbackMutation.mutate()}
                       >
                         {coordinatedFallbackMutation.isPending

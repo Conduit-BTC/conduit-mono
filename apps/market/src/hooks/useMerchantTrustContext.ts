@@ -64,20 +64,49 @@ export function useMerchantTrustContext({
   profileRelayHints?: string[]
   requireCompleteProfileEvidence?: boolean
 }): MerchantTrustContext {
-  const { authGeneration } = useAuth()
-  const authGenerationRef = useRef(authGeneration)
+  const {
+    accountPubkey,
+    pubkey: signerPubkey,
+    authGeneration,
+    isAuthGenerationCurrent,
+    signerReadiness,
+  } = useAuth()
+  const authorityRef = useRef({
+    accountPubkey,
+    signerPubkey,
+    authGeneration,
+    signerReadiness,
+  })
   useLayoutEffect(() => {
-    authGenerationRef.current = authGeneration
-  }, [authGeneration])
-  const shouldContinueAccountRead = () =>
-    authGenerationRef.current === authGeneration
+    authorityRef.current = {
+      accountPubkey,
+      signerPubkey,
+      authGeneration,
+      signerReadiness,
+    }
+  }, [accountPubkey, authGeneration, signerPubkey, signerReadiness])
+  const shouldContinueAccountRead = () => {
+    const current = authorityRef.current
+    return (
+      (!accountPubkey || isAuthGenerationCurrent(authGeneration)) &&
+      current.accountPubkey === accountPubkey &&
+      current.signerPubkey === signerPubkey &&
+      current.authGeneration === authGeneration &&
+      current.signerReadiness === signerReadiness
+    )
+  }
   const session = useConduitSession()
   const queryClient = useQueryClient()
-  const viewerPubkey = session.mode === "signed_in" ? session.pubkey : null
+  const viewerPubkey = accountPubkey
+  const signerReady =
+    signerReadiness === "ready" &&
+    !!accountPubkey &&
+    signerPubkey === accountPubkey
+  const authenticatedPubkey = signerReady ? signerPubkey : null
   const profileQuery = useProfile(merchantPubkey ?? null, {
     authenticatedPubkey: getMerchantProfileAuthenticatedPubkey(
       merchantPubkey,
-      viewerPubkey
+      authenticatedPubkey
     ),
     accountPubkey: viewerPubkey,
     shouldContinue: shouldContinueAccountRead,
@@ -96,9 +125,16 @@ export function useMerchantTrustContext({
         "v2",
         session.relayScope ?? "none",
         viewerPubkey ?? "none",
+        `${authGeneration}:${signerReadiness}`,
         merchantPubkey ?? "none",
       ] as const,
-    [merchantPubkey, session.relayScope, viewerPubkey]
+    [
+      authGeneration,
+      merchantPubkey,
+      session.relayScope,
+      signerReadiness,
+      viewerPubkey,
+    ]
   )
   const socialQuery = useQuery({
     queryKey: socialQueryKey,
@@ -116,7 +152,7 @@ export function useMerchantTrustContext({
         },
         {
           signal,
-          authenticatedPubkey: viewerPubkey,
+          authenticatedPubkey,
           shouldContinue: () => !signal.aborted && shouldContinueAccountRead(),
         }
       ),

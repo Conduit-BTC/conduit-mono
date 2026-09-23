@@ -12,6 +12,7 @@ import {
   MessageComposer,
   matchesConversationSearch,
   SearchInput,
+  SignerRecoveryNotice,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -25,6 +26,7 @@ import {
   useOptimisticConversationMessages,
   type OrderAmountFormatter,
   type OptimisticConversationMessage,
+  type OptimisticConversationScope,
 } from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
 import {
@@ -77,9 +79,20 @@ type MessagesSearch = {
 }
 
 type OptimisticDirectMessageSend = {
+  accountPubkey: string
+  authGeneration: number
+  messageScope: OptimisticConversationScope
   message: OptimisticConversationMessage
   counterpartyPubkey: string
   rumor: NDKEvent
+}
+
+type BuyerOrderReplySend = {
+  accountPubkey: string
+  authGeneration: number
+  content: string
+  merchantPubkey: string
+  orderId: string
 }
 
 function prepareBuyerConversationRumor(
@@ -127,6 +140,7 @@ function MerchantThreadRow({
   onClick,
   formatAmount,
   accountPubkey,
+  authenticatedPubkey,
   shouldContinue,
 }: {
   conversation: BuyerConversation
@@ -134,11 +148,12 @@ function MerchantThreadRow({
   onClick: () => void
   formatAmount: OrderAmountFormatter
   accountPubkey: string | null
+  authenticatedPubkey: string | null
   shouldContinue?: () => boolean
 }) {
   const { data: profile } = useProfile(conversation.merchantPubkey, {
     accountPubkey,
-    authenticatedPubkey: accountPubkey,
+    authenticatedPubkey,
     shouldContinue,
     maxUnresolvedRefetches: 1,
   })
@@ -200,17 +215,19 @@ function DmThreadRow({
   active,
   onClick,
   accountPubkey,
+  authenticatedPubkey,
   shouldContinue,
 }: {
   conversation: DirectConversationSummary
   active: boolean
   onClick: () => void
   accountPubkey: string | null
+  authenticatedPubkey: string | null
   shouldContinue?: () => boolean
 }) {
   const { data: profile } = useProfile(conversation.counterpartyPubkey, {
     accountPubkey,
-    authenticatedPubkey: accountPubkey,
+    authenticatedPubkey,
     shouldContinue,
     maxUnresolvedRefetches: 1,
   })
@@ -268,6 +285,11 @@ function DmThreadRow({
 }
 
 function MessagesPage() {
+  const { accountPubkey } = useAuth()
+  return <MessagesWorkspace key={accountPubkey ?? "no-account"} />
+}
+
+function MessagesWorkspace() {
   const shopperPricing = useShopperPricing()
   const formatOrderAmount: OrderAmountFormatter = (
     amount,
@@ -283,18 +305,54 @@ function MessagesPage() {
       },
       { settledSatsAreAuthoritative: true }
     )
-  const { pubkey, status, authGeneration } = useAuth()
-  const authGenerationRef = useRef(authGeneration)
+  const {
+    accountPubkey,
+    pubkey,
+    status,
+    authGeneration,
+    isAuthGenerationCurrent,
+    remoteSignerRecovery,
+    signerReadiness,
+    connect,
+  } = useAuth()
+  const messagingAuthorityRef = useRef({
+    accountPubkey,
+    authGeneration,
+    pubkey,
+    signerReadiness,
+  })
   useLayoutEffect(() => {
-    authGenerationRef.current = authGeneration
-  }, [authGeneration])
+    messagingAuthorityRef.current = {
+      accountPubkey,
+      authGeneration,
+      pubkey,
+      signerReadiness,
+    }
+  }, [accountPubkey, authGeneration, pubkey, signerReadiness])
+  const isCurrentMessagingAuthority = (
+    ownerPubkey: string,
+    generation: number
+  ) => {
+    const current = messagingAuthorityRef.current
+    return (
+      isAuthGenerationCurrent(generation) &&
+      current.accountPubkey === ownerPubkey &&
+      current.pubkey === ownerPubkey &&
+      current.authGeneration === generation &&
+      current.signerReadiness === "ready"
+    )
+  }
   const shouldContinueAccountRead = () =>
-    authGenerationRef.current === authGeneration
+    messagingAuthorityRef.current.accountPubkey === accountPubkey &&
+    messagingAuthorityRef.current.authGeneration === authGeneration
   const session = useConduitSession()
   const queryClient = useQueryClient()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
-  const signerConnected = status === "connected" && !!pubkey
+  const hasAccount = !!accountPubkey
+  const signerConnected =
+    signerReadiness === "ready" && !!accountPubkey && pubkey === accountPubkey
+  const authenticatedPubkey = signerConnected ? pubkey : null
   const [query, setQuery] = useState("")
   const [merchantSearchSheetOpen, setMerchantSearchSheetOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
@@ -305,27 +363,23 @@ function MessagesPage() {
   const [selectedDmTransport, setSelectedDmTransport] = useState<
     "nip17" | "nip04"
   >("nip17")
-  const optimisticDmQueue = useOptimisticConversationMessages()
+  const optimisticDmQueue = useOptimisticConversationMessages({
+    ownerKey: accountPubkey,
+    authorityKey: `${authGeneration}:${signerReadiness}`,
+  })
+  const optimisticDmScope = optimisticDmQueue.scope
   const optimisticDmMessages = optimisticDmQueue.messages
-  const clearOptimisticDmQueue = optimisticDmQueue.clear
   const removeOptimisticDmMessage = optimisticDmQueue.remove
-
-  useEffect(() => {
-    clearOptimisticDmQueue()
-    setDmText("")
-    setSelectedDmPubkey(null)
-    setSelectedDmTransport("nip17")
-  }, [clearOptimisticDmQueue, pubkey])
 
   const activeTab = search.tab ?? "merchants"
 
   // Network settings is the only surface that publishes or repairs the
   // NIP-17 inbox declaration; this route only reflects readiness (CND-208).
-  const dmReadiness = useInboxDeclaration(pubkey, {
+  const dmReadiness = useInboxDeclaration(accountPubkey, {
     enabled: signerConnected && session.relaySettingsReady,
     relayScope: session.relayScope,
   })
-  const messagingReady = dmReadiness.status === "ready"
+  const messagingReady = signerConnected && dmReadiness.status === "ready"
   const readinessNoticeState = toMessagingReadinessNoticeState(
     dmReadiness.status
   )
@@ -344,21 +398,21 @@ function MessagesPage() {
   // compatibility relays), so merchant order replies stay reachable even
   // before the buyer publishes a kind-10050 declaration (CND-208).
   const messagesQuery = useQuery({
-    queryKey: ["buyer-messages-live", pubkey ?? "none"],
+    queryKey: ["buyer-messages-live", accountPubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchBuyerConversations(pubkey!),
+    queryFn: () => fetchBuyerConversations(accountPubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const cachedMessagesQuery = useQuery({
-    queryKey: ["buyer-messages", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => fetchCachedBuyerConversations(pubkey!),
+    queryKey: ["buyer-messages", accountPubkey ?? "none"],
+    enabled: hasAccount,
+    queryFn: () => fetchCachedBuyerConversations(accountPubkey!),
     staleTime: 5_000,
   })
   const retryMerchantThreadsRead = () => {
-    if (!pubkey) return
-    clearProtectedReadAuthenticationSuppression(pubkey)
+    if (!accountPubkey || !signerConnected) return
+    clearProtectedReadAuthenticationSuppression(accountPubkey)
     void messagesQuery.refetch()
   }
 
@@ -388,10 +442,10 @@ function MessagesPage() {
     [conversations]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
-    accountPubkey: signerConnected ? pubkey : null,
-    authenticatedPubkey: signerConnected ? pubkey : null,
+    accountPubkey,
+    authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
-    enabled: signerConnected && merchantPubkeys.length > 0,
+    enabled: hasAccount && merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
     maxUnresolvedRefetches: 1,
@@ -462,8 +516,8 @@ function MessagesPage() {
       (conversation) => conversation.id === search.thread
     ) ?? null
   const selectedProfile = useProfile(selectedConversation?.merchantPubkey, {
-    accountPubkey: signerConnected ? pubkey : null,
-    authenticatedPubkey: signerConnected ? pubkey : null,
+    accountPubkey,
+    authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
     maxUnresolvedRefetches: 1,
   })
@@ -479,10 +533,12 @@ function MessagesPage() {
   }, [selectedConversation?.id])
 
   const replyMutation = useMutation({
-    mutationFn: async () => {
-      if (!pubkey || !selectedConversation)
-        throw new Error("No merchant thread selected")
-      if (!replyText.trim()) throw new Error("Message is required")
+    mutationFn: async (input: BuyerOrderReplySend) => {
+      if (
+        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
+      ) {
+        throw new Error("Reconnect your signer, then send this message again.")
+      }
 
       const ndk = getNdk()
       if (!ndk.signer) throw new Error("Signer not connected")
@@ -491,38 +547,42 @@ function MessagesPage() {
       rumor.kind = EVENT_KINDS.ORDER
       rumor.created_at = Math.floor(Date.now() / 1000)
       rumor.tags = [
-        ["p", selectedConversation.merchantPubkey],
+        ["p", input.merchantPubkey],
         ["type", "message"],
-        ["order", selectedConversation.orderId],
+        ["order", input.orderId],
       ]
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = JSON.stringify({
-        note: replyText.trim(),
-        orderId: selectedConversation.orderId,
-        merchantPubkey: selectedConversation.merchantPubkey,
-        buyerPubkey: pubkey,
+        note: input.content,
+        orderId: input.orderId,
+        merchantPubkey: input.merchantPubkey,
+        buyerPubkey: input.accountPubkey,
         createdAt: Date.now(),
       })
-      prepareBuyerConversationRumor(rumor, pubkey)
+      prepareBuyerConversationRumor(rumor, input.accountPubkey)
 
       // Reply inside an existing validated order thread: order identity and
       // counterparty match the parsed conversation, so the compatibility lane
       // may carry it when the merchant has no usable declaration.
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
-        senderPubkey: pubkey,
-        accountPubkey: pubkey,
-        authenticatedPubkey: signerConnected ? pubkey : null,
-        recipientPubkey: selectedConversation.merchantPubkey,
+        senderPubkey: input.accountPubkey,
+        accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.accountPubkey,
+        recipientPubkey: input.merchantPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.ORDER,
         signerInteraction: "external",
-        shouldContinue: () => authGenerationRef.current === authGeneration,
+        shouldContinue: () =>
+          isCurrentMessagingAuthority(
+            input.accountPubkey,
+            input.authGeneration
+          ),
         validatedOrderScope: createValidatedOrderRouteScope({
           rumor,
-          orderId: selectedConversation.orderId,
-          senderPubkey: pubkey,
-          recipientPubkey: selectedConversation.merchantPubkey,
+          orderId: input.orderId,
+          senderPubkey: input.accountPubkey,
+          recipientPubkey: input.merchantPubkey,
         }),
         telemetryApp: "market",
       })
@@ -532,14 +592,21 @@ function MessagesPage() {
 
       await cacheBuyerConversationRumor(rumor)
     },
-    onSuccess: async () => {
-      setReplyText("")
+    onSuccess: async (_, input) => {
+      if (
+        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
+      ) {
+        return
+      }
+      setReplyText((current) =>
+        current.trim() === input.content ? "" : current
+      )
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["buyer-messages", pubkey ?? "none"],
+          queryKey: ["buyer-messages", input.accountPubkey],
         }),
         queryClient.invalidateQueries({
-          queryKey: ["buyer-messages-live", pubkey ?? "none"],
+          queryKey: ["buyer-messages-live", input.accountPubkey],
         }),
       ])
     },
@@ -548,23 +615,25 @@ function MessagesPage() {
   // General kind-14 DM inbox, cache-first, distinct from order threads.
   // Own-inbox reads are permissive (CND-208); only sends require readiness.
   const dmsLiveQuery = useQuery({
-    queryKey: ["buyer-dms-live", pubkey ?? "none"],
+    queryKey: ["buyer-dms-live", accountPubkey ?? "none"],
     enabled: signerConnected,
     queryFn: () =>
-      getDirectMessageConversationList({ principalPubkey: pubkey! }),
+      getDirectMessageConversationList({ principalPubkey: accountPubkey! }),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const dmsCacheQuery = useQuery({
-    queryKey: ["buyer-dms", pubkey ?? "none"],
-    enabled: signerConnected,
+    queryKey: ["buyer-dms", accountPubkey ?? "none"],
+    enabled: hasAccount,
     queryFn: () =>
-      getCachedDirectMessageConversationList({ principalPubkey: pubkey! }),
+      getCachedDirectMessageConversationList({
+        principalPubkey: accountPubkey!,
+      }),
     staleTime: 5_000,
   })
   const retryDirectMessagesRead = () => {
-    if (!pubkey) return
-    clearProtectedReadAuthenticationSuppression(pubkey)
+    if (!accountPubkey || !signerConnected) return
+    clearProtectedReadAuthenticationSuppression(accountPubkey)
     void dmsLiveQuery.refetch()
   }
 
@@ -588,10 +657,10 @@ function MessagesPage() {
     [dmConversations]
   )
   const dmProfilesQuery = useProfiles(dmCounterpartyPubkeys, {
-    accountPubkey: signerConnected ? pubkey : null,
-    authenticatedPubkey: signerConnected ? pubkey : null,
+    accountPubkey,
+    authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
-    enabled: signerConnected && dmCounterpartyPubkeys.length > 0,
+    enabled: hasAccount && dmCounterpartyPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
     maxUnresolvedRefetches: 1,
@@ -650,8 +719,8 @@ function MessagesPage() {
         conversation.transport === selectedDmTransport
     ) ?? null
   const selectedDmProfile = useProfile(selectedDmPubkey ?? undefined, {
-    accountPubkey: signerConnected ? pubkey : null,
-    authenticatedPubkey: signerConnected ? pubkey : null,
+    accountPubkey,
+    authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
     maxUnresolvedRefetches: 1,
   })
@@ -675,20 +744,21 @@ function MessagesPage() {
       )
     )
     for (const message of optimisticDmMessages) {
-      if (
-        message.deliveryState === "published" &&
-        message.eventId &&
-        publishedEventIds.has(message.eventId)
-      ) {
-        removeOptimisticDmMessage(message.localId)
+      if (message.eventId && publishedEventIds.has(message.eventId)) {
+        removeOptimisticDmMessage(optimisticDmScope, message.localId)
       }
     }
-  }, [dmConversations, optimisticDmMessages, removeOptimisticDmMessage])
+  }, [
+    dmConversations,
+    optimisticDmMessages,
+    optimisticDmScope,
+    removeOptimisticDmMessage,
+  ])
 
   useEffect(() => {
     if (
       activeTab !== "dms" ||
-      !pubkey ||
+      !accountPubkey ||
       !selectedDmPubkey ||
       !selectedDm?.unreadFromCounterparty
     ) {
@@ -697,7 +767,7 @@ function MessagesPage() {
 
     let cancelled = false
     void markDirectMessageConversationRead({
-      principalPubkey: pubkey,
+      principalPubkey: accountPubkey,
       counterpartyPubkey: selectedDmPubkey,
       transport: selectedDmTransport,
     })
@@ -705,10 +775,10 @@ function MessagesPage() {
         if (cancelled || updated === 0) return
         await Promise.all([
           queryClient.invalidateQueries({
-            queryKey: ["buyer-dms", pubkey],
+            queryKey: ["buyer-dms", accountPubkey],
           }),
           queryClient.invalidateQueries({
-            queryKey: ["buyer-dms-live", pubkey],
+            queryKey: ["buyer-dms-live", accountPubkey],
           }),
         ])
       })
@@ -721,7 +791,7 @@ function MessagesPage() {
     }
   }, [
     activeTab,
-    pubkey,
+    accountPubkey,
     queryClient,
     selectedDm?.unreadFromCounterparty,
     selectedDmPubkey,
@@ -729,49 +799,71 @@ function MessagesPage() {
   ])
 
   const sendDmMutation = useMutation({
-    mutationFn: async ({
-      message,
-      counterpartyPubkey,
-      rumor,
-    }: OptimisticDirectMessageSend) => {
+    mutationFn: async (input: OptimisticDirectMessageSend) => {
       if (!messagingReady) throw new Error("Encrypted messaging is not enabled")
+      if (
+        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
+      ) {
+        throw new Error("Reconnect your signer, then retry this message.")
+      }
 
       const ndk = getNdk()
-      if (!ndk.signer || !pubkey) throw new Error("Signer not connected")
+      if (!ndk.signer) throw new Error("Signer not connected")
 
       const { selfCopyError } = await publishPrivateMessage({
-        rumor,
-        senderPubkey: pubkey,
-        accountPubkey: pubkey,
-        authenticatedPubkey: signerConnected ? pubkey : null,
-        recipientPubkey: counterpartyPubkey,
+        rumor: input.rumor,
+        senderPubkey: input.accountPubkey,
+        accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.accountPubkey,
+        recipientPubkey: input.counterpartyPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         signerInteraction: "external",
-        shouldContinue: () => authGenerationRef.current === authGeneration,
+        shouldContinue: () =>
+          isCurrentMessagingAuthority(
+            input.accountPubkey,
+            input.authGeneration
+          ),
       })
-      optimisticDmQueue.markPublished(message.localId)
+      if (
+        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
+      ) {
+        return
+      }
+      optimisticDmQueue.markPublished(input.messageScope, input.message.localId)
       if (selfCopyError) {
         console.warn("DM self-copy publish failed", selfCopyError)
       }
       try {
-        await cacheParsedDirectMessage(parseDirectMessageRumor(rumor))
+        await cacheParsedDirectMessage(parseDirectMessageRumor(input.rumor))
       } catch {
         console.warn("Failed to cache published direct message")
       }
     },
-    onSuccess: async () => {
+    onSuccess: async (_, input) => {
+      if (
+        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
+      ) {
+        return
+      }
       await Promise.allSettled([
         queryClient.invalidateQueries({
-          queryKey: ["buyer-dms", pubkey ?? "none"],
+          queryKey: ["buyer-dms", input.accountPubkey],
         }),
         queryClient.invalidateQueries({
-          queryKey: ["buyer-dms-live", pubkey ?? "none"],
+          queryKey: ["buyer-dms-live", input.accountPubkey],
         }),
       ])
     },
-    onError: (error, { message }) => {
-      optimisticDmQueue.markFailed(message.localId)
+    onError: (error, input) => {
+      if (
+        messagingAuthorityRef.current.accountPubkey !== input.accountPubkey ||
+        messagingAuthorityRef.current.authGeneration !== input.authGeneration
+      ) {
+        return
+      }
+      const { message } = input
+      optimisticDmQueue.markFailed(input.messageScope, message.localId)
       if (
         error instanceof PrivateMessageRelayReadinessError &&
         error.reason === "sender_not_ready"
@@ -783,17 +875,19 @@ function MessagesPage() {
 
   const sendDirectMessage = () => {
     const content = dmText.trim()
-    if (!pubkey || !selectedDmPubkey || !content || !messagingReady) return
+    if (!accountPubkey || !selectedDmPubkey || !content || !messagingReady)
+      return
 
     const createdAt = Date.now()
     const rumor = buildDirectMessageRumor({
-      senderPubkey: pubkey,
+      senderPubkey: accountPubkey,
       recipientPubkey: selectedDmPubkey,
       content,
       appId: "market",
       createdAt: Math.floor(createdAt / 1000),
     })
-    const message = optimisticDmQueue.enqueue({
+    const messageScope = optimisticDmScope
+    const message = optimisticDmQueue.enqueue(messageScope, {
       eventId: rumor.id,
       conversationId: `nip17:${selectedDmPubkey}`,
       content,
@@ -801,6 +895,9 @@ function MessagesPage() {
     })
     setDmText("")
     sendDmMutation.mutate({
+      accountPubkey,
+      authGeneration,
+      messageScope,
       message,
       counterpartyPubkey: selectedDmPubkey,
       rumor,
@@ -808,21 +905,34 @@ function MessagesPage() {
   }
 
   const retryDirectMessage = (message: OptimisticConversationMessage) => {
-    if (!pubkey || !selectedDmPubkey || !messagingReady) return
+    if (!accountPubkey || !selectedDmPubkey || !messagingReady) return
     const rumor = buildDirectMessageRumor({
-      senderPubkey: pubkey,
+      senderPubkey: accountPubkey,
       recipientPubkey: selectedDmPubkey,
       content: message.content,
       appId: "market",
       createdAt: Math.floor(message.createdAt / 1000),
     })
-    optimisticDmQueue.markPending(message.localId)
+    const messageScope = optimisticDmScope
+    optimisticDmQueue.markPending(messageScope, message.localId)
     sendDmMutation.mutate({
+      accountPubkey,
+      authGeneration,
+      messageScope,
       message,
       counterpartyPubkey: selectedDmPubkey,
       rumor,
     })
   }
+
+  const previousMessageAuthorityKeyRef = useRef(optimisticDmScope.authorityKey)
+  useLayoutEffect(() => {
+    const previousAuthorityKey = previousMessageAuthorityKeyRef.current
+    previousMessageAuthorityKeyRef.current = optimisticDmScope.authorityKey
+    if (previousAuthorityKey === optimisticDmScope.authorityKey) return
+    replyMutation.reset()
+    sendDmMutation.reset()
+  }, [optimisticDmScope.authorityKey, replyMutation, sendDmMutation])
 
   return (
     <div className="space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
@@ -837,6 +947,16 @@ function MessagesPage() {
           </p>
         </div>
       </div>
+
+      {remoteSignerRecovery ? (
+        <SignerRecoveryNotice
+          description="Your message drafts and failed-send review items are still here. Reconnect the same signer, review the conversation, then choose Send or Retry again."
+          reconnecting={status === "restoring"}
+          restoreFailed={!!remoteSignerRecovery.restoreError}
+          restoreFailureDescription="That saved signer connection could not be restored. Conduit has not re-encrypted or resent any message."
+          onReconnect={() => connect({ mode: "restore" })}
+        />
+      ) : null}
 
       <div className="border-b border-[var(--border)] xl:shrink-0">
         <div className="flex flex-wrap items-center gap-6">
@@ -873,7 +993,7 @@ function MessagesPage() {
       </div>
 
       {activeTab === "dms" ? (
-        !signerConnected ? (
+        !hasAccount ? (
           <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
             <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
               <MessageCircleMore className="h-7 w-7" />
@@ -910,7 +1030,7 @@ function MessagesPage() {
                   (dmLiveMeta?.legacyDecryptFailures?.length ?? 0)
                 }
                 onRetry={
-                  directMessagesRetryUseful
+                  signerConnected && directMessagesRetryUseful
                     ? retryDirectMessagesRead
                     : undefined
                 }
@@ -957,7 +1077,8 @@ function MessagesPage() {
                         <DmThreadRow
                           key={conversation.id}
                           conversation={conversation}
-                          accountPubkey={signerConnected ? pubkey : null}
+                          accountPubkey={accountPubkey}
+                          authenticatedPubkey={authenticatedPubkey}
                           shouldContinue={shouldContinueAccountRead}
                           active={
                             conversation.counterpartyPubkey ===
@@ -1007,7 +1128,8 @@ function MessagesPage() {
                             >
                               <DmThreadRow
                                 conversation={conversation}
-                                accountPubkey={signerConnected ? pubkey : null}
+                                accountPubkey={accountPubkey}
+                                authenticatedPubkey={authenticatedPubkey}
                                 shouldContinue={shouldContinueAccountRead}
                                 active={
                                   conversation.counterpartyPubkey ===
@@ -1053,7 +1175,8 @@ function MessagesPage() {
                           <DmThreadRow
                             key={conversation.id}
                             conversation={conversation}
-                            accountPubkey={signerConnected ? pubkey : null}
+                            accountPubkey={accountPubkey}
+                            authenticatedPubkey={authenticatedPubkey}
                             shouldContinue={shouldContinueAccountRead}
                             active={
                               conversation.counterpartyPubkey ===
@@ -1118,7 +1241,7 @@ function MessagesPage() {
                               <ConversationMessageBubble
                                 key={message.id}
                                 content={message.content}
-                                mine={message.senderPubkey === pubkey}
+                                mine={message.senderPubkey === accountPubkey}
                                 timestampLabel={new Date(
                                   message.createdAt
                                 ).toLocaleString()}
@@ -1212,7 +1335,7 @@ function MessagesPage() {
         )
       ) : (
         <>
-          {!signerConnected && (
+          {!hasAccount && (
             <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
               <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                 <Store className="h-7 w-7" />
@@ -1233,7 +1356,7 @@ function MessagesPage() {
             </div>
           )}
 
-          {signerConnected &&
+          {hasAccount &&
             !dmReadiness.isLoading &&
             !messagingReady &&
             readinessNoticeState && (
@@ -1244,18 +1367,18 @@ function MessagesPage() {
               />
             )}
 
-          {signerConnected && merchantThreadsReadState !== "pending" && (
+          {hasAccount && merchantThreadsReadState !== "pending" && (
             <ProtectedInboxNotice
               state={merchantThreadsReadState}
               decryptFailureCount={
                 messagesQuery.data?.meta.decryptFailures?.length ?? 0
               }
-              onRetry={retryMerchantThreadsRead}
+              onRetry={signerConnected ? retryMerchantThreadsRead : undefined}
               retrying={messagesQuery.isRefetching}
             />
           )}
 
-          {signerConnected &&
+          {hasAccount &&
             !cachedMessagesQuery.isLoading &&
             conversations.length === 0 &&
             merchantThreadsReadState === "complete" && (
@@ -1272,7 +1395,7 @@ function MessagesPage() {
               </section>
             )}
 
-          {signerConnected && conversations.length > 0 && (
+          {hasAccount && conversations.length > 0 && (
             <div className="grid min-w-0 max-w-full gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[340px_minmax(0,1fr)]">
               <aside className="hidden min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
                 <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
@@ -1291,7 +1414,8 @@ function MessagesPage() {
                       <MerchantThreadRow
                         key={conversation.id}
                         conversation={conversation}
-                        accountPubkey={signerConnected ? pubkey : null}
+                        accountPubkey={accountPubkey}
+                        authenticatedPubkey={authenticatedPubkey}
                         shouldContinue={shouldContinueAccountRead}
                         active={conversation.id === selectedConversation?.id}
                         onClick={() =>
@@ -1345,7 +1469,8 @@ function MessagesPage() {
                           >
                             <MerchantThreadRow
                               conversation={conversation}
-                              accountPubkey={signerConnected ? pubkey : null}
+                              accountPubkey={accountPubkey}
+                              authenticatedPubkey={authenticatedPubkey}
                               shouldContinue={shouldContinueAccountRead}
                               active={
                                 conversation.id === selectedConversation?.id
@@ -1397,7 +1522,8 @@ function MessagesPage() {
                         <MerchantThreadRow
                           key={conversation.id}
                           conversation={conversation}
-                          accountPubkey={signerConnected ? pubkey : null}
+                          accountPubkey={accountPubkey}
+                          authenticatedPubkey={authenticatedPubkey}
                           shouldContinue={shouldContinueAccountRead}
                           active={conversation.id === selectedConversation?.id}
                           onClick={() => {
@@ -1477,7 +1603,7 @@ function MessagesPage() {
                         <OrderConversationMessage
                           key={message.id}
                           message={message}
-                          mine={message.senderPubkey === pubkey}
+                          mine={message.senderPubkey === accountPubkey}
                           formatAmount={formatOrderAmount}
                         />
                       ))}
@@ -1495,9 +1621,21 @@ function MessagesPage() {
                         <Button
                           className="h-11 px-5 text-sm"
                           disabled={
-                            replyMutation.isPending || !replyText.trim()
+                            replyMutation.isPending ||
+                            !replyText.trim() ||
+                            !signerConnected
                           }
-                          onClick={() => replyMutation.mutate()}
+                          onClick={() => {
+                            if (!accountPubkey || !selectedConversation) return
+                            replyMutation.mutate({
+                              accountPubkey,
+                              authGeneration,
+                              content: replyText.trim(),
+                              merchantPubkey:
+                                selectedConversation.merchantPubkey,
+                              orderId: selectedConversation.orderId,
+                            })
+                          }}
                         >
                           {replyMutation.isPending
                             ? "Sending..."

@@ -178,6 +178,26 @@ function getProductListingRevisionKey(
   ])
 }
 
+/**
+ * A local read-frontier key for an entire product family. Signed revision ids
+ * catch root/child replacement; allocation terms also catch a cache view that
+ * restores terms without changing the retained revision id.
+ */
+export function getProductFamilySupplierAllocationRevisionKey<
+  TRecord extends ProductListingRecordLike,
+>(family: ProductListingFamily<TRecord>): string {
+  const recordKey = (record: TRecord) =>
+    JSON.stringify([
+      getProductListingRevisionKey(record),
+      getSupplierAllocationTerms(record.product.supplierAllocation),
+    ])
+  return JSON.stringify([
+    recordKey(family.root),
+    family.variations.map(recordKey).sort(),
+    family.orphanVariation,
+  ])
+}
+
 export function productFamilySnapshotsMatch<
   TRecord extends ProductListingRecordLike,
 >(

@@ -1,9 +1,10 @@
-import { useMemo, useRef, useState } from "react"
+import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Copy, Loader2, PackagePlus } from "lucide-react"
 import {
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
+  useAuth,
   type ProductImageUploadController,
 } from "@conduit/core"
 import {
@@ -22,6 +23,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SignerRecoveryNotice,
   SignedActionStatus,
   Textarea,
   cn,
@@ -31,7 +33,10 @@ import type {
   MerchantOrganizerEventMarket,
   MerchantOrganizerRecordDelivery,
 } from "../lib/event-market"
-import { acceptOwnEventProduct } from "../lib/event-product-acceptance"
+import {
+  acceptOwnEventProduct,
+  retryOwnEventProductAcceptance,
+} from "../lib/event-product-acceptance"
 import {
   createEmptyEventProductForm,
   eventProductFormFromTemplate,
@@ -92,6 +97,67 @@ export function EventProductPublisherDialog({
   onOpenChange: (open: boolean) => void
   onPublished: (accepted: boolean) => void
 }) {
+  const {
+    accountPubkey,
+    pubkey,
+    signer,
+    status: authStatus,
+    authGeneration,
+    isAuthGenerationCurrent,
+    remoteSignerRecovery,
+    signerReadiness,
+    connect,
+  } = useAuth()
+  const mountedRef = useRef(true)
+  const authorityRef = useRef({
+    accountPubkey,
+    pubkey,
+    authGeneration,
+    signerReadiness,
+    signerAvailable: !!signer,
+  })
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+  useLayoutEffect(() => {
+    authorityRef.current = {
+      accountPubkey,
+      pubkey,
+      authGeneration,
+      signerReadiness,
+      signerAvailable: !!signer,
+    }
+  }, [accountPubkey, authGeneration, pubkey, signer, signerReadiness])
+
+  function isCurrentOwner(ownerPubkey: string): boolean {
+    return (
+      mountedRef.current && authorityRef.current.accountPubkey === ownerPubkey
+    )
+  }
+
+  function isCurrentFreshAuthority(
+    ownerPubkey: string,
+    generation: number
+  ): boolean {
+    const current = authorityRef.current
+    return (
+      isCurrentOwner(ownerPubkey) &&
+      current.pubkey === ownerPubkey &&
+      current.authGeneration === generation &&
+      current.signerReadiness === "ready" &&
+      current.signerAvailable &&
+      isAuthGenerationCurrent(generation)
+    )
+  }
+
+  const signerReady =
+    accountPubkey === merchantPubkey &&
+    pubkey === merchantPubkey &&
+    signerReadiness === "ready" &&
+    !!signer
   const titleInputRef = useRef<HTMLInputElement>(null)
   const [form, setForm] = useState<EventProductPublishFormValues>(() =>
     createEmptyEventProductForm(market)
@@ -107,8 +173,9 @@ export function EventProductPublisherDialog({
   const [signedAcceptance, setSignedAcceptance] =
     useState<MerchantOrganizerRecordDelivery | null>(null)
   const [accepting, setAccepting] = useState(false)
-  const [productDeliveryRetryable, setProductDeliveryRetryable] =
-    useState(false)
+  const [productDeliveryRetryable, setProductDeliveryRetryable] = useState<
+    boolean | null
+  >(null)
   const [productImageUploadScopeId, setProductImageUploadScopeId] = useState(
     createEventProductUploadScopeId
   )
@@ -126,6 +193,7 @@ export function EventProductPublisherDialog({
     queryFn: ({ signal }) =>
       listEventProductTemplates(
         merchantPubkey,
+        accountPubkey,
         authenticatedPubkey,
         () => shouldContinue() && !signal.aborted
       ),
@@ -141,21 +209,48 @@ export function EventProductPublisherDialog({
   const errors = submitted ? validation.product.errors : {}
   const pickupError = submitted ? validation.pickupError : null
 
-  async function completeAcceptance(productCoordinate: string) {
-    setPublishedCoordinate(productCoordinate)
-    setSignerProgress(null)
-    if (ownsMarket) {
-      setAccepting(true)
-      setActionState("awaiting_signature")
+  type FreshAuthority = { ownerPubkey: string; authGeneration: number }
+
+  function currentFreshAuthority(): FreshAuthority | null {
+    if (!signerReady) return null
+    return { ownerPubkey: merchantPubkey, authGeneration }
+  }
+
+  function productCoordinateFromSignedEvent(event: NDKEvent): string {
+    const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]
+    if (!dTag) throw new Error("Signed product coordinate is unavailable.")
+    return `30402:${merchantPubkey}:${dTag}`
+  }
+
+  async function reviewAndAccept(
+    productCoordinate: string,
+    authority: FreshAuthority
+  ) {
+    if (
+      !isCurrentFreshAuthority(authority.ownerPubkey, authority.authGeneration)
+    ) {
+      throw new Error("Reconnect your signer, review this product, and retry.")
+    }
+    if (isCurrentOwner(authority.ownerPubkey)) {
+      setPublishedCoordinate(productCoordinate)
+      setSignerProgress(null)
+      if (ownsMarket) {
+        setAccepting(true)
+        setActionState("awaiting_signature")
+      }
     }
     const accepted = await acceptOwnEventProduct({
-      merchantPubkey,
-      authenticatedPubkey,
-      shouldContinue,
+      merchantPubkey: authority.ownerPubkey,
+      authenticatedPubkey: authority.ownerPubkey,
+      shouldContinue: () =>
+        isCurrentFreshAuthority(
+          authority.ownerPubkey,
+          authority.authGeneration
+        ),
       marketReference: market.naddr,
       productCoordinate,
-      signedAcceptance,
       onSignedAcceptance: (record) => {
+        if (!isCurrentOwner(authority.ownerPubkey)) return
         setSignedAcceptance(record)
         setActionState("publishing")
       },
@@ -164,10 +259,13 @@ export function EventProductPublisherDialog({
   }
 
   function requireAcknowledgedProductDelivery(
-    delivery: Parameters<typeof getEventProductDeliveryPresentation>[0]
+    delivery: Parameters<typeof getEventProductDeliveryPresentation>[0],
+    ownerPubkey: string
   ): void {
     const presentation = getEventProductDeliveryPresentation(delivery)
-    setProductDeliveryRetryable(presentation.retryable)
+    if (isCurrentOwner(ownerPubkey)) {
+      setProductDeliveryRetryable(presentation.retryable)
+    }
     if (!presentation.acknowledged) {
       throw new Error(
         presentation.message ??
@@ -176,10 +274,11 @@ export function EventProductPublisherDialog({
     }
   }
 
-  function finishPublication(result: {
-    productCoordinate: string
-    accepted: boolean
-  }) {
+  function finishPublication(
+    result: { productCoordinate: string; accepted: boolean },
+    ownerPubkey: string
+  ) {
+    if (!isCurrentOwner(ownerPubkey)) return
     setAccepting(false)
     setSignerProgress(null)
     setActionState("success")
@@ -187,19 +286,50 @@ export function EventProductPublisherDialog({
   }
 
   const publishMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (authority: FreshAuthority) => {
+      if (
+        !isCurrentFreshAuthority(
+          authority.ownerPubkey,
+          authority.authGeneration
+        )
+      ) {
+        throw new Error(
+          "Reconnect your signer, review this product, and retry."
+        )
+      }
       let fallbackDestinationScope: string | null = null
       let fallbackMovePrepared = false
       let signedLocally = false
       try {
         const result = await publishEventProduct({
-          merchantPubkey,
-          authenticatedPubkey,
-          shouldContinue,
+          merchantPubkey: authority.ownerPubkey,
+          authenticatedPubkey: authority.ownerPubkey,
+          shouldContinue: () =>
+            isCurrentFreshAuthority(
+              authority.ownerPubkey,
+              authority.authGeneration
+            ),
           marketReference: market.naddr,
           form,
-          onSignerRequest: setSignerProgress,
+          onSignerRequest: (progress) => {
+            if (
+              isCurrentFreshAuthority(
+                authority.ownerPubkey,
+                authority.authGeneration
+              )
+            ) {
+              setSignerProgress(progress)
+            }
+          },
           onProductPrepared: (dTag) => {
+            if (
+              !isCurrentFreshAuthority(
+                authority.ownerPubkey,
+                authority.authGeneration
+              )
+            ) {
+              return
+            }
             fallbackDestinationScope = `product:30402:${merchantPubkey}:${dTag}`
             fallbackMovePrepared = productImageUpload.prepareFallbackClaimMove(
               productImageUploadScopeId,
@@ -214,12 +344,18 @@ export function EventProductPublisherDialog({
                 fallbackDestinationScope
               )
             }
+            if (!isCurrentOwner(authority.ownerPubkey)) {
+              return
+            }
             setSignedEvent(event)
             setActionState("publishing")
           },
         })
-        requireAcknowledgedProductDelivery(result.delivery)
-        return completeAcceptance(result.productCoordinate)
+        requireAcknowledgedProductDelivery(
+          result.delivery,
+          authority.ownerPubkey
+        )
+        return reviewAndAccept(result.productCoordinate, authority)
       } catch (error) {
         if (
           fallbackMovePrepared &&
@@ -234,15 +370,41 @@ export function EventProductPublisherDialog({
         throw error
       }
     },
-    onMutate: () => {
+    onMutate: (authority) => {
+      if (
+        !isCurrentFreshAuthority(
+          authority.ownerPubkey,
+          authority.authGeneration
+        )
+      ) {
+        return
+      }
       setActionError("")
       setSignedEvent(null)
-      setProductDeliveryRetryable(false)
+      setProductDeliveryRetryable(null)
       setSignerProgress(null)
       setActionState("awaiting_signature")
     },
-    onSuccess: finishPublication,
-    onError: (error) => {
+    onSuccess: (result, authority) => {
+      if (
+        !isCurrentFreshAuthority(
+          authority.ownerPubkey,
+          authority.authGeneration
+        )
+      ) {
+        return
+      }
+      finishPublication(result, authority.ownerPubkey)
+    },
+    onError: (error, authority) => {
+      if (
+        !isCurrentFreshAuthority(
+          authority.ownerPubkey,
+          authority.authGeneration
+        )
+      ) {
+        return
+      }
       setSignerProgress(null)
       if (!publishedCoordinate && error instanceof SignedProductDeliveryError) {
         setProductDeliveryRetryable(error.retryable)
@@ -253,28 +415,41 @@ export function EventProductPublisherDialog({
       )
     },
   })
-  const retryMutation = useMutation({
-    mutationFn: async () => {
-      if (!signedEvent) throw new Error("Signed product event is unavailable.")
-      if (!publishedCoordinate) {
-        const delivery = await retryEventProductDelivery(
-          signedEvent,
-          merchantPubkey,
-          authenticatedPubkey,
-          shouldContinue
-        )
-        requireAcknowledgedProductDelivery(delivery)
+  const retryProductDeliveryMutation = useMutation({
+    mutationFn: async (input: { ownerPubkey: string; event: NDKEvent }) => {
+      if (!isCurrentOwner(input.ownerPubkey)) {
+        throw new Error("This signed product belongs to another account.")
       }
-      const dTag = signedEvent.tags.find((tag) => tag[0] === "d")?.[1]
-      if (!dTag) throw new Error("Signed product coordinate is unavailable.")
-      return completeAcceptance(`30402:${merchantPubkey}:${dTag}`)
+      const delivery = await retryEventProductDelivery(
+        input.event,
+        input.ownerPubkey,
+        null,
+        () => isCurrentOwner(input.ownerPubkey)
+      )
+      requireAcknowledgedProductDelivery(delivery, input.ownerPubkey)
+      return productCoordinateFromSignedEvent(input.event)
     },
-    onMutate: () => {
+    onMutate: (input) => {
+      if (!isCurrentOwner(input.ownerPubkey)) return
       setActionError("")
       setActionState("publishing")
     },
-    onSuccess: finishPublication,
-    onError: (error) => {
+    onSuccess: (productCoordinate, input) => {
+      if (!isCurrentOwner(input.ownerPubkey)) return
+      setProductDeliveryRetryable(false)
+      setPublishedCoordinate(productCoordinate)
+      setSignerProgress(null)
+      if (ownsMarket) {
+        setActionState("dirty")
+      } else {
+        finishPublication(
+          { productCoordinate, accepted: false },
+          input.ownerPubkey
+        )
+      }
+    },
+    onError: (error, input) => {
+      if (!isCurrentOwner(input.ownerPubkey)) return
       if (!publishedCoordinate && error instanceof SignedProductDeliveryError) {
         setProductDeliveryRetryable(error.retryable)
       }
@@ -284,7 +459,110 @@ export function EventProductPublisherDialog({
       )
     },
   })
-  const pending = publishMutation.isPending || retryMutation.isPending
+  const reviewAcceptanceMutation = useMutation({
+    mutationFn: (input: FreshAuthority & { productCoordinate: string }) =>
+      reviewAndAccept(input.productCoordinate, input),
+    onMutate: (input) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
+      setActionError("")
+      setAccepting(true)
+      setActionState("awaiting_signature")
+    },
+    onSuccess: (result, input) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
+      finishPublication(result, input.ownerPubkey)
+    },
+    onError: (error, input) => {
+      if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
+        return
+      }
+      setAccepting(false)
+      setActionState("error")
+      setActionError(
+        errorMessage(error, "The product acceptance could not be published.")
+      )
+    },
+  })
+  const retryAcceptanceMutation = useMutation({
+    mutationFn: async (input: {
+      ownerPubkey: string
+      productCoordinate: string
+      acceptance: MerchantOrganizerRecordDelivery
+    }) => {
+      if (!isCurrentOwner(input.ownerPubkey)) {
+        throw new Error("This signed acceptance belongs to another account.")
+      }
+      const accepted = await retryOwnEventProductAcceptance({
+        merchantPubkey: input.ownerPubkey,
+        authenticatedPubkey: null,
+        shouldContinue: () => isCurrentOwner(input.ownerPubkey),
+        marketReference: market.naddr,
+        productCoordinate: input.productCoordinate,
+        signedAcceptance: input.acceptance,
+        onRetriedAcceptance: (record) => {
+          if (isCurrentOwner(input.ownerPubkey)) setSignedAcceptance(record)
+        },
+      })
+      return { productCoordinate: input.productCoordinate, accepted }
+    },
+    onMutate: (input) => {
+      if (!isCurrentOwner(input.ownerPubkey)) return
+      setActionError("")
+      setActionState("publishing")
+    },
+    onSuccess: (result, input) => {
+      finishPublication(result, input.ownerPubkey)
+    },
+    onError: (error, input) => {
+      if (!isCurrentOwner(input.ownerPubkey)) return
+      setActionState("error")
+      setActionError(
+        errorMessage(
+          error,
+          "The signed event acceptance could not be redelivered."
+        )
+      )
+    },
+  })
+  const pending =
+    publishMutation.isPending ||
+    retryProductDeliveryMutation.isPending ||
+    reviewAcceptanceMutation.isPending ||
+    retryAcceptanceMutation.isPending
+  const acceptanceNeedsRetry =
+    !!signedAcceptance &&
+    (signedAcceptance.acknowledgedCount === 0 ||
+      signedAcceptance.rejectedCount > 0 ||
+      signedAcceptance.timedOutCount > 0)
+
+  const previousAuthorityKeyRef = useRef(`${authGeneration}:${signerReady}`)
+  useLayoutEffect(() => {
+    const authorityKey = `${authGeneration}:${signerReady}`
+    if (previousAuthorityKeyRef.current === authorityKey) return
+    previousAuthorityKeyRef.current = authorityKey
+    if (signerReady) return
+    publishMutation.reset()
+    reviewAcceptanceMutation.reset()
+    setAccepting(false)
+    setSignerProgress(null)
+    setActionState((current) =>
+      current === "awaiting_signature" || current === "publishing"
+        ? signedEvent
+          ? "error"
+          : "dirty"
+        : current
+    )
+  }, [
+    authGeneration,
+    publishMutation,
+    reviewAcceptanceMutation,
+    signedEvent,
+    signerReady,
+  ])
 
   function update<K extends keyof EventProductPublishFormValues>(
     key: K,
@@ -314,7 +592,7 @@ export function EventProductPublisherDialog({
     setSignedEvent(null)
     setPublishedCoordinate(null)
     setSignedAcceptance(null)
-    setProductDeliveryRetryable(false)
+    setProductDeliveryRetryable(null)
     setProductImageUploadScopeId(createEventProductUploadScopeId())
     requestAnimationFrame(() => titleInputRef.current?.focus())
   }
@@ -362,7 +640,9 @@ export function EventProductPublisherDialog({
               signedEvent
             )
               return
-            publishMutation.mutate()
+            const authority = currentFreshAuthority()
+            if (!authority) return
+            publishMutation.mutate(authority)
           }}
         >
           <fieldset disabled={pending || !!signedEvent} className="contents">
@@ -637,52 +917,69 @@ export function EventProductPublisherDialog({
               </div>
             )}
           </fieldset>
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
-            <SignedActionStatus
-              state={actionState}
-              dirtyMessage={
-                ownsMarket
-                  ? "This creates a new product and accepts it into your event with a separate collection signature."
-                  : "This creates a new product and asks the organizer to include it in the event."
-              }
-              awaitingSignatureMessage={
-                accepting
-                  ? "Confirm acceptance into your event catalog in your signer."
-                  : signerProgress
-                    ? getProductSignerRequestMessage(signerProgress)
-                    : "Confirm the product in your signer."
-              }
-              publishingMessage={
-                accepting
-                  ? "Publishing your signed event acceptance."
-                  : "Publishing the product and pickup reference."
-              }
-              successMessage={
-                ownsMarket
-                  ? "Product published and accepted into your event."
-                  : "Product published. Organizer acceptance is pending."
-              }
-              errorMessage={actionError}
+          {remoteSignerRecovery ? (
+            <SignerRecoveryNotice
+              description="Your product draft and any exact signed delivery retry remain here. Reconnect the same signer, review the pending step, then choose it again. Conduit will not sign or send it automatically."
+              reconnecting={authStatus === "restoring"}
+              restoreFailed={!!remoteSignerRecovery.restoreError}
+              restoreFailureDescription="That saved signer connection could not be restored. Your work remains for this account, and no product or acceptance action was replayed."
+              onReconnect={() => connect({ mode: "restore" })}
             />
-          </div>
+          ) : (
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+              <SignedActionStatus
+                state={actionState}
+                dirtyMessage={
+                  publishedCoordinate && ownsMarket
+                    ? "The product is delivered. Review and accept it into your event with a separate signature."
+                    : ownsMarket
+                      ? "This creates a new product and accepts it into your event with a separate collection signature."
+                      : "This creates a new product and asks the organizer to include it in the event."
+                }
+                awaitingSignatureMessage={
+                  accepting
+                    ? "Confirm acceptance into your event catalog in your signer."
+                    : signerProgress
+                      ? getProductSignerRequestMessage(signerProgress)
+                      : "Confirm the product in your signer."
+                }
+                publishingMessage={
+                  accepting
+                    ? "Publishing your signed event acceptance."
+                    : "Publishing the product and pickup reference."
+                }
+                successMessage={
+                  ownsMarket
+                    ? "Product published and accepted into your event."
+                    : "Product published. Organizer acceptance is pending."
+                }
+                errorMessage={actionError}
+              />
+            </div>
+          )}
 
           <DialogFooter>
             {signedEvent &&
-              actionState === "error" &&
-              (publishedCoordinate || productDeliveryRetryable) && (
+              !publishedCoordinate &&
+              productDeliveryRetryable !== false && (
                 <Button
                   type="button"
                   variant="outline"
                   disabled={pending}
-                  onClick={() => retryMutation.mutate()}
+                  onClick={() =>
+                    retryProductDeliveryMutation.mutate({
+                      ownerPubkey: merchantPubkey,
+                      event: signedEvent,
+                    })
+                  }
                 >
-                  {publishedCoordinate ? "Retry acceptance" : "Retry delivery"}
+                  Retry exact product delivery
                 </Button>
               )}
             {signedEvent &&
               actionState === "error" &&
               !publishedCoordinate &&
-              !productDeliveryRetryable && (
+              productDeliveryRetryable === false && (
                 <Button
                   type="button"
                   variant="outline"
@@ -692,6 +989,41 @@ export function EventProductPublisherDialog({
                   Start over
                 </Button>
               )}
+            {ownsMarket &&
+              publishedCoordinate &&
+              signedAcceptance &&
+              acceptanceNeedsRetry && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() =>
+                    retryAcceptanceMutation.mutate({
+                      ownerPubkey: merchantPubkey,
+                      productCoordinate: publishedCoordinate,
+                      acceptance: signedAcceptance,
+                    })
+                  }
+                >
+                  Retry exact acceptance
+                </Button>
+              )}
+            {ownsMarket && publishedCoordinate && !signedAcceptance && (
+              <Button
+                type="button"
+                disabled={pending || !signerReady}
+                onClick={() => {
+                  const authority = currentFreshAuthority()
+                  if (!authority) return
+                  reviewAcceptanceMutation.mutate({
+                    ...authority,
+                    productCoordinate: publishedCoordinate,
+                  })
+                }}
+              >
+                Review and accept
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"
@@ -712,7 +1044,7 @@ export function EventProductPublisherDialog({
             {actionState !== "success" && !signedEvent && (
               <Button
                 type="submit"
-                disabled={pending || productImageUpload.isBusy}
+                disabled={pending || productImageUpload.isBusy || !signerReady}
               >
                 {productImageUpload.isBusy ? (
                   <>

@@ -770,7 +770,9 @@ describe("agent review handoff", () => {
     expect(normalizeWhitespace(reviewWorkflow)).toContain(pointInTimeReview)
     expect(normalizeWhitespace(reviewInstructions)).toContain(pointInTimeReview)
     expect(countOccurrences(reviewWorkflow, "resume: false")).toBe(3)
-    expect(countOccurrences(reviewWorkflow, "model: gpt-5.6-sol/xhigh")).toBe(3)
+    expect(
+      countOccurrences(reviewWorkflow, "model: gpt-5.6-sol/high/fast")
+    ).toBe(3)
     expect(reviewWorkflow).not.toContain("model: gpt-5.4/xhigh")
     expect(
       countOccurrences(

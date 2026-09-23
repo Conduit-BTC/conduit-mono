@@ -53,6 +53,7 @@ import {
   MAX_PRODUCT_VARIATION_COUNT,
   buildProductFamilyChangePlan,
   createEmptyProductVariationForm,
+  getProductFamilySupplierAllocationRevisionKey,
   getProductVariationFormError,
   getProductVariationFormState,
   type ProductListingRecordLike,
@@ -341,14 +342,18 @@ interface PublicationObservation {
   publishedKinds: number[]
   signedBundleCount: number
   signedEvents?: NDKEvent[]
+  queuedDeliveryCount?: number
 }
 
 class MemoryProductListingOutbox implements ProductListingOutboxRepository {
   private readonly jobs = new Map<string, ProductListingDeliveryJob>()
 
+  constructor(private readonly onAdd?: () => void) {}
+
   async add(job: ProductListingDeliveryJob): Promise<void> {
     if (this.jobs.has(job.id)) throw new Error("duplicate")
     this.jobs.set(job.id, structuredClone(job))
+    this.onAdd?.()
   }
 
   async get(id: string): Promise<ProductListingDeliveryJob | undefined> {
@@ -378,6 +383,7 @@ async function attemptProductPublication(input: {
   getShippingOptions?: ProductPublicationDependencies["getShippingOptions"]
   now?: number
   observed?: PublicationObservation
+  assertBeforeSignerRequest?: () => void
 }): Promise<void> {
   setSigner(new NDKPrivateKeySigner(SECRET))
   __setCommerceTestOverrides({
@@ -413,8 +419,10 @@ async function attemptProductPublication(input: {
         merchantPubkey: MERCHANT,
         listings: input.listings,
         waitForSignerVisibility: async () => {},
-        onSignerRequest: (progress) =>
-          input.observed?.signerRequests.push(progress),
+        onSignerRequest: (progress) => {
+          input.assertBeforeSignerRequest?.()
+          input.observed?.signerRequests.push(progress)
+        },
         onSignedLocal: async ({ events }) => {
           if (input.observed) {
             input.observed.signedBundleCount += 1
@@ -422,7 +430,11 @@ async function attemptProductPublication(input: {
           }
         },
         productListingDeliveryOptions: {
-          repository: new MemoryProductListingOutbox(),
+          repository: new MemoryProductListingOutbox(() => {
+            if (input.observed?.queuedDeliveryCount !== undefined) {
+              input.observed.queuedDeliveryCount += 1
+            }
+          }),
           accountNetworkLocalStateRepository: { get: async () => undefined },
           restoreLocalEvidence: async () => {},
           publisher: async ({ signedEvent }) => {
@@ -481,6 +493,92 @@ afterEach(() => {
 })
 
 describe("merchant-owned product mutation boundary", () => {
+  it("stops a stale allocation save before signing or queuing after pickup preparation", async () => {
+    const absent = { state: "absent" as const, recipients: [], issues: [] }
+    const baseline = product("allocation-frontier", {
+      supplierAllocation: absent,
+    })
+    const family = {
+      root: record(baseline),
+      variations: [
+        record(product("allocation-child", { supplierAllocation: absent })),
+      ],
+      orphanVariation: false,
+    }
+    const expectedRevision =
+      getProductFamilySupplierAllocationRevisionKey(family)
+    let currentFamily = structuredClone(family)
+    let releasePickupRead!: () => void
+    let notifyPickupRead!: () => void
+    const pickupReadStarted = new Promise<void>((resolve) => {
+      notifyPickupRead = resolve
+    })
+    const pickupReadRelease = new Promise<void>((resolve) => {
+      releasePickupRead = resolve
+    })
+    const observed: PublicationObservation = {
+      signerRequests: [],
+      publishedKinds: [],
+      signedBundleCount: 0,
+      queuedDeliveryCount: 0,
+    }
+    const change = plan(baseline, { stock: 4 })
+    const publication = attemptProductPublication({
+      listings: change.publish.map((target) => ({
+        ...target,
+        previousEventCreatedAt: target.existing!.eventCreatedAt,
+      })),
+      getEventMarketPickups: async () => {
+        notifyPickupRead()
+        await pickupReadRelease
+        return [pickupOption(baseline)]
+      },
+      assertBeforeSignerRequest: () => {
+        if (
+          getProductFamilySupplierAllocationRevisionKey(currentFamily) !==
+          expectedRevision
+        ) {
+          throw new Error("Products changed while this editor was open.")
+        }
+      },
+      observed,
+    })
+
+    await pickupReadStarted
+    currentFamily = structuredClone(currentFamily)
+    currentFamily.variations[0]!.eventId = "new-child-revision"
+    currentFamily.variations[0]!.product.supplierAllocation = {
+      state: "valid",
+      recipients: [
+        { pubkey: MERCHANT, weight: 1, role: "merchant" },
+        { pubkey: ORGANIZER, weight: 1, role: "supplier" },
+      ],
+      issues: [],
+    }
+    releasePickupRead()
+
+    await expect(publication).rejects.toThrow(
+      "Products changed while this editor was open."
+    )
+    expect(observed).toEqual({
+      signerRequests: [],
+      publishedKinds: [],
+      signedBundleCount: 0,
+      queuedDeliveryCount: 0,
+    })
+
+    const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
+    expect(route).toMatch(
+      /onSignerRequest:\s*\(progress\)\s*=>\s*{\s*assertCurrentFamilyRevision\?\.\(\)/
+    )
+    expect(route).toMatch(
+      /onSignerRequest:\s*\(\)\s*=>\s*{\s*assertCurrentFamilyRevision\?\.\(\)/
+    )
+    expect(route).toMatch(
+      /shouldContinue:\s*\(\)\s*=>\s*{\s*assertCurrentFamilyRevision\?\.\(\)\s*return shouldContinue\?\.\(\) !== false/
+    )
+  })
+
   for (const now of [START - 1, START, START + 1, START + 86_400_000]) {
     for (const networkState of ["delayed", "unavailable"] as const) {
       it(`signs only the merchant stock edit at ${now - START}ms with ${networkState} organizer evidence`, async () => {

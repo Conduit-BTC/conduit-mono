@@ -7,6 +7,7 @@ import {
   doesOrderStockDecisionCoverAdjustment,
   getOrderStockAdjustmentForDisplay,
   getOrderStockDecisionKey,
+  getUnpublishedOrderStockRepublishAdjustment,
   getProductFamilyStockDisplay,
   getProductStockDisplay,
   getProductStockInputError,
@@ -460,6 +461,156 @@ describe("merchant product stock", () => {
         persistedDecision: oversoldDecision,
       })
     ).toBe(true)
+  })
+
+  it("persists all-relay rejection as unpublished and re-signs only the already-applied local stock", () => {
+    const storage = new MemoryStorage()
+    const merchant = "a".repeat(64)
+    const orderId = "order-rejected"
+    const original = productRecord({ stock: 12 })
+    const adjustment = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: original.addressId, quantity: 2 }],
+      productRecords: [original],
+    })[0]!
+    const rejectedEventId = "c".repeat(64)
+    const store = new ProductStockDecisionStore(storage)
+    expect(
+      store.set(
+        merchant,
+        orderId,
+        adjustment.addressId,
+        "unpublished",
+        adjustment,
+        rejectedEventId
+      )
+    ).toBe(true)
+
+    const afterReload = new ProductStockDecisionStore(storage)
+    const decision = afterReload.get(merchant, orderId, adjustment.addressId)
+    expect(decision).toMatchObject({
+      kind: "unpublished",
+      adjustment,
+      localEventId: rejectedEventId,
+    })
+    const local = {
+      ...original,
+      eventId: rejectedEventId,
+      product: { ...original.product, stock: adjustment.nextStock },
+    }
+    const current = buildOrderStockAdjustments({
+      orderId,
+      merchantPubkey: merchant,
+      items: [{ productId: original.addressId, quantity: 2 }],
+      productRecords: [local],
+    })[0]!
+    expect(
+      shouldShowOrderStockAdjustment({
+        adjustment: current,
+        orderStatus: "complete",
+        hasSessionDecision: false,
+        persistedDecision: decision,
+      })
+    ).toBe(true)
+    expect(
+      isOrderStockAdjustmentMutationDisabled({
+        adjustment: current,
+        persistedDecision: decision,
+        hasPendingDelivery: false,
+        hasSessionDecision: false,
+      })
+    ).toBe(true)
+    expect(
+      getOrderStockAdjustmentForDisplay({
+        adjustment: current,
+        persistedDecision: decision,
+      })
+    ).toEqual(adjustment)
+    expect(
+      getUnpublishedOrderStockRepublishAdjustment({
+        adjustment,
+        persistedDecision: decision,
+        record: local,
+      })
+    ).toEqual(adjustment)
+    expect(() =>
+      getUnpublishedOrderStockRepublishAdjustment({
+        adjustment,
+        persistedDecision: decision,
+        record: { ...local, eventId: "d".repeat(64) },
+      })
+    ).toThrow("no longer current")
+    expect(() =>
+      getUnpublishedOrderStockRepublishAdjustment({
+        adjustment,
+        persistedDecision: decision,
+        record: {
+          ...local,
+          product: { ...local.product, stock: 8 },
+        },
+      })
+    ).toThrow("no longer current")
+
+    expect(
+      afterReload.set(
+        merchant,
+        orderId,
+        adjustment.addressId,
+        "applied",
+        adjustment
+      )
+    ).toBe(true)
+    expect(
+      new ProductStockDecisionStore(storage).get(
+        merchant,
+        orderId,
+        adjustment.addressId
+      )
+    ).toMatchObject({ kind: "applied", adjustment })
+  })
+
+  it("fails closed on malformed unpublished decisions after reload", () => {
+    const storage = new MemoryStorage()
+    const merchant = "a".repeat(64)
+    const record = productRecord()
+    const adjustment = buildOrderStockAdjustments({
+      orderId: "order-1",
+      merchantPubkey: merchant,
+      items: [{ productId: record.addressId, quantity: 1 }],
+      productRecords: [record],
+    })[0]!
+    const store = new ProductStockDecisionStore(storage)
+    expect(() =>
+      store.set(
+        merchant,
+        "order-1",
+        record.addressId,
+        "unpublished",
+        adjustment
+      )
+    ).toThrow("exact local revision")
+    store.set(
+      merchant,
+      "order-1",
+      record.addressId,
+      "unpublished",
+      adjustment,
+      "c".repeat(64)
+    )
+    const key = storage.key(0)!
+    const data = JSON.parse(storage.getItem(key)!) as {
+      decisions: Record<string, { localEventId?: string }>
+    }
+    delete data.decisions[adjustment.key]!.localEventId
+    storage.setItem(key, JSON.stringify(data))
+    expect(
+      new ProductStockDecisionStore(storage).get(
+        merchant,
+        "order-1",
+        record.addressId
+      )
+    ).toBeNull()
   })
 
   it("applies only the unresolved shortfall after restocking", () => {

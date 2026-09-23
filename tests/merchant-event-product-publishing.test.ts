@@ -121,22 +121,22 @@ describe("merchant event-led product publishing", () => {
     const source = await Bun.file(
       "apps/merchant/src/components/EventProductPublisherDialog.tsx"
     ).text()
-    const initialGate = source.indexOf(
-      "requireAcknowledgedProductDelivery(result.delivery)"
+    const initialGate = source.search(
+      /requireAcknowledgedProductDelivery\(\s*result\.delivery,/
     )
     const initialAcceptance = source.indexOf(
-      "return completeAcceptance(result.productCoordinate)",
+      "return reviewAndAccept(result.productCoordinate, authority)",
       initialGate
     )
     const retryDelivery = source.indexOf(
       "const delivery = await retryEventProductDelivery("
     )
     const retryGate = source.indexOf(
-      "requireAcknowledgedProductDelivery(delivery)",
+      "requireAcknowledgedProductDelivery(delivery,",
       retryDelivery
     )
-    const retryAcceptance = source.indexOf(
-      "return completeAcceptance(`30402:${merchantPubkey}:${dTag}`)",
+    const retryAcceptedProduct = source.indexOf(
+      "return productCoordinateFromSignedEvent(input.event)",
       retryGate
     )
 
@@ -144,7 +144,10 @@ describe("merchant event-led product publishing", () => {
     expect(initialAcceptance).toBeGreaterThan(initialGate)
     expect(retryDelivery).toBeGreaterThan(-1)
     expect(retryGate).toBeGreaterThan(retryDelivery)
-    expect(retryAcceptance).toBeGreaterThan(retryGate)
+    expect(retryAcceptedProduct).toBeGreaterThan(retryGate)
+    expect(source).toContain("const reviewAcceptanceMutation = useMutation(")
+    expect(source).toContain("setPublishedCoordinate(productCoordinate)")
+    expect(source).toContain("Retry exact product delivery")
     expect(source).toContain("productDeliveryRetryable")
     expect(source).toContain("error instanceof SignedProductDeliveryError")
     expect(source).toContain("setProductDeliveryRetryable(error.retryable)")

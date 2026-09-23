@@ -13,6 +13,7 @@ import {
   generateProductVariationRows,
   getProductVariationCartesianCount,
   getProductVariationCombinations,
+  getProductFamilySupplierAllocationRevisionKey,
   getProductVariationFormError,
   getProductVariationFormState,
   getProductVariationMatrix,
@@ -1370,6 +1371,62 @@ describe("merchant product variation planning", () => {
     const removed = structuredClone(baseline)
     removed.variations.pop()
     expect(productFamilySnapshotsMatch(baseline, removed)).toBe(false)
+  })
+
+  it("captures root, child, and allocation terms in a stable family revision", () => {
+    const absent = { state: "absent" as const, recipients: [], issues: [] }
+    const baseline = toFamily(
+      buildProductFamilyChangePlan({
+        parentDTag: "conduit-tee",
+        baseProduct: baseProduct({ supplierAllocation: absent }),
+        variations: sizeVariationForm("S, M"),
+        currency: "USD",
+        now: NOW,
+      })
+    )
+    const expected = getProductFamilySupplierAllocationRevisionKey(baseline)
+    const reordered = structuredClone(baseline)
+    reordered.variations.reverse()
+    expect(getProductFamilySupplierAllocationRevisionKey(reordered)).toBe(
+      expected
+    )
+
+    const advancedRoot = structuredClone(baseline)
+    advancedRoot.root.eventId = "new-root-revision"
+    expect(
+      getProductFamilySupplierAllocationRevisionKey(advancedRoot)
+    ).not.toBe(expected)
+
+    const advancedChild = structuredClone(baseline)
+    advancedChild.variations[0]!.eventId = "new-child-revision"
+    advancedChild.variations[0]!.product.supplierAllocation = {
+      state: "valid",
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 1,
+          role: "merchant",
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier",
+        },
+      ],
+      issues: [],
+    }
+    expect(
+      getProductFamilySupplierAllocationRevisionKey(advancedChild)
+    ).not.toBe(expected)
+
+    const restoredTerms = structuredClone(baseline)
+    restoredTerms.variations[0]!.product.supplierAllocation =
+      advancedChild.variations[0]!.product.supplierAllocation
+    expect(
+      getProductFamilySupplierAllocationRevisionKey(restoredTerms)
+    ).not.toBe(expected)
   })
 
   it("binds unchanged allocation forms to the current complete family snapshot", () => {

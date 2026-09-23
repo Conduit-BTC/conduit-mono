@@ -19,9 +19,11 @@ interface OrderStockDeliveryView {
 interface OrderStockPanelProps {
   adjustments: OrderStockAdjustment[]
   stockMutationDisabledKeys?: ReadonlySet<string>
+  unpublishedStockKeys?: ReadonlySet<string>
   delivery: OrderStockDeliveryView | null
   deliveryNeedsAttention: boolean
   pending: boolean
+  retryPending?: boolean
   updatePending: boolean
   errorMessage: string | null
   canMessageBuyer?: boolean
@@ -32,6 +34,7 @@ interface OrderStockPanelProps {
   ) => void
   onMessageBuyer?: () => void
   onRetry: () => void
+  onRepublish: (adjustment: OrderStockAdjustment) => void
   onDismissDelivery: () => void
 }
 
@@ -155,15 +158,18 @@ function getDeliveryStateLabel(state: ProductDeliveryNotice["state"]): string {
 export function OrderStockPanel({
   adjustments,
   stockMutationDisabledKeys = new Set<string>(),
+  unpublishedStockKeys = new Set<string>(),
   delivery,
   deliveryNeedsAttention,
   pending,
+  retryPending = pending,
   updatePending,
   errorMessage,
   canMessageBuyer = false,
   onUpdate,
   onMessageBuyer,
   onRetry,
+  onRepublish,
   onDismissDelivery,
 }: OrderStockPanelProps) {
   if (adjustments.length === 0 && !delivery) return null
@@ -210,7 +216,7 @@ export function OrderStockPanel({
                 type="button"
                 size="sm"
                 className="min-h-10 px-3 text-xs"
-                disabled={pending}
+                disabled={retryPending}
                 onClick={onRetry}
               >
                 Retry delivery
@@ -231,12 +237,13 @@ export function OrderStockPanel({
 
       {adjustments.map((adjustment) => {
         const restockingRequired = adjustment.shortfall > 0
+        const unpublished = unpublishedStockKeys.has(adjustment.key)
         const canPublishStock = !stockMutationDisabledKeys.has(adjustment.key)
         const showCalculatedStock =
           adjustment.currentStock !== adjustment.nextStock
         const showMessageBuyer =
           restockingRequired && canMessageBuyer && Boolean(onMessageBuyer)
-        const showActions = canPublishStock || showMessageBuyer
+        const showActions = canPublishStock || showMessageBuyer || unpublished
 
         return (
           <div
@@ -248,6 +255,19 @@ export function OrderStockPanel({
                 : "border-[var(--border)]"
             )}
           >
+            {unpublished && (
+              <div className="mb-3 space-y-1">
+                <StatusPill variant="warning" className="text-[10px]">
+                  Not published
+                </StatusPill>
+                <p className="text-pretty text-xs leading-5 text-[var(--text-secondary)]">
+                  The signed update changed local stock to{" "}
+                  {adjustment.nextStock}, but no relay accepted it. Sign a new
+                  listing with the current relay settings; this will not
+                  subtract stock again.
+                </p>
+              </div>
+            )}
             {restockingRequired ? (
               <>
                 <div className="flex flex-wrap items-center gap-2">
@@ -281,7 +301,7 @@ export function OrderStockPanel({
                   or coordinate a refund if you cannot fulfill it.
                 </p>
               </>
-            ) : (
+            ) : !unpublished ? (
               <p className="text-pretty text-sm leading-6 text-[var(--text-primary)]">
                 Mark {adjustment.quantity} ×{" "}
                 <span className="font-semibold">{adjustment.title}</span> sold.
@@ -291,9 +311,22 @@ export function OrderStockPanel({
                 </span>
                 ?
               </p>
-            )}
+            ) : null}
             {showActions && (
               <div className="mt-3 space-y-3">
+                {unpublished && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="min-h-10 px-3 text-xs"
+                    disabled={pending || deliveryNeedsAttention}
+                    onClick={() => onRepublish(adjustment)}
+                  >
+                    {updatePending
+                      ? "Waiting for signer…"
+                      : `Sign new listing for stock ${adjustment.nextStock}`}
+                  </Button>
+                )}
                 {canPublishStock && (
                   <StockPublishActions
                     adjustment={adjustment}
