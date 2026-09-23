@@ -913,6 +913,18 @@ export interface OrderLifecycle {
 
   invoice?: string
   paymentHash?: string
+  /** Local-only, report-only evidence for a superseded manual invoice. */
+  priorExpiredManualInvoice?: {
+    invoice: string
+    paymentHash: string
+    expiresAt: number
+  }
+  /** Ordered local-only history; the singular field remains for legacy records. */
+  priorExpiredManualInvoices?: Array<{
+    invoice: string
+    paymentHash: string
+    expiresAt: number
+  }>
   preimage?: string
   feeMsats?: number
   zapRequestId?: string

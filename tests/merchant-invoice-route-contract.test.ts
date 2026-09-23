@@ -10,7 +10,8 @@ describe("merchant invoice route contract", () => {
     const invoiceControls = panel.indexOf("<InvoicePayment")
 
     expect(source).toContain("prepareMerchantInvoicePaymentAction")
-    expect(source).toContain("releaseExpiredOrderInvoiceForRetry")
+    expect(source).toContain("runOrderPaymentWithRenewedInvoice")
+    expect(source).not.toContain("releaseExpiredOrderInvoiceForRetry")
     expect(source).toContain("onRenewExpiredInvoice")
     expect(source).toContain("pricing={shopperPricing}")
     expect(source).not.toContain("function ExternalWalletPanel")
@@ -32,6 +33,111 @@ describe("merchant invoice route contract", () => {
     )
     expect(source).not.toContain("allowCancelled")
     expect(source).not.toContain("vm.merchantInvoiceAction ?? undefined")
+  })
+
+  it("renews only the current manual invoice with a live account and view", async () => {
+    const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    const renewal = source.slice(
+      source.indexOf("async function renewExpiredInvoice()"),
+      source.indexOf("async function runRetryPayment(")
+    )
+
+    expect(source).toContain("const expectedInvoice = vm.invoice")
+    expect(source).toContain("currentViewRef.current.invoice?.toLowerCase()")
+    expect(source).toContain("lifecycle.updatedAt")
+    expect(source).toContain("shouldContinue: shouldContinueBuyerSession")
+    expect(source).toContain("shouldContinueBeforePaymentClaim")
+    expect(source).toContain(
+      'currentViewRef.current = { ...currentViewRef.current, orderId: "" }'
+    )
+    expect(source).toContain('current.phase !== "cancelled"')
+    expect(source).toContain(
+      "isGeneralPaymentRetryEligible(currentViewRef.current)"
+    )
+    expect(source).toContain('lifecycle.paymentTarget?.type !== "manual"')
+    expect(source).toContain('retryTarget?.type !== "manual"')
+    expect(renewal).toContain("const ctx = buildServiceCtx()")
+    expect(renewal).not.toContain("persistTargetAndBuildServiceCtx")
+    expect(renewal).not.toContain("replaceOrderPaymentTarget")
+    expect(source).toContain('ctx.zapMode === "private_checkout"')
+    expect(source).toContain(
+      'row.lifecycle?.checkoutMode === "external_wallet"'
+    )
+    expect(source).toContain("row.lifecycle.publicZapSigner === undefined")
+  })
+
+  it("offers prior-invoice reporting only for unpaid, unconfirmed recovery", async () => {
+    const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    const report = source.slice(
+      source.indexOf("async function reportPriorExpiredInvoice()"),
+      source.indexOf("const merchantInvoicePrepared")
+    )
+
+    expect(report).toContain("shouldContinueBuyerSession")
+    expect(report).not.toContain('manualInvoiceAccess === "closed"')
+    expect(report).toContain("currentViewRef.current.invoice === undefined")
+    expect(report).toContain('lifecycle.paymentStatus === "manual_required"')
+    expect(source).toMatch(
+      /Do not pay the new invoice if your wallet already paid an earlier(?:\s|<[^>]+>)+one\./
+    )
+    expect(report).not.toContain('lifecycle.phase !== "cancelled"')
+    expect(
+      source.slice(
+        source.indexOf("async function renewExpiredInvoice()"),
+        source.indexOf("async function runRetryPayment(")
+      )
+    ).toContain("assertGeneralPaymentRetryEligible()")
+    expect(source).toContain("showPriorExpiredInvoiceReport")
+    expect(source).toContain('title="Payment report not sent"')
+    expect(source).toContain('vm.merchantStatus === "refund_requested"')
+    expect(source).toContain("isBuyerOrderPaid(vm)")
+  })
+
+  it("gates general retries on current merchant payment eligibility", async () => {
+    const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    const retry = source.slice(
+      source.indexOf("async function retryPayment()"),
+      source.indexOf("async function renewExpiredInvoice()")
+    )
+
+    expect(retry).toContain("assertGeneralPaymentRetryEligible()")
+    expect(source).toContain("const generalPaymentRetryEligible =")
+    expect(source).toContain('current.merchantStatus !== "refund_requested"')
+    expect(source).toContain('current.merchantStatus !== "cancelled"')
+    expect(source).toContain("isBuyerOrderPaid(current)")
+    expect(source).toContain('current.phase !== "cancelled"')
+    expect(source).toContain('current.phase !== "completed"')
+    expect(source).toContain("async function reportPriorExpiredInvoice()")
+    expect(source).toContain("shouldContinueBeforePaymentClaim: () =>")
+    expect(source).toContain("async function confirmPaymentAddressUpdate()")
+    expect(source).toContain("async function continuePrivateFallback()")
+  })
+
+  it("rechecks retry eligibility immediately before persisting the selected target", async () => {
+    const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    const persist = source.slice(
+      source.indexOf("async function persistTargetAndBuildServiceCtx()"),
+      source.indexOf("const withBusy")
+    )
+    const retry = source.slice(
+      source.indexOf("async function retryPayment()"),
+      source.indexOf("async function renewExpiredInvoice()")
+    )
+
+    expect(
+      persist.indexOf("assertGeneralPaymentRetryEligible()")
+    ).toBeGreaterThan(-1)
+    expect(persist.indexOf("assertGeneralPaymentRetryEligible()")).toBeLessThan(
+      persist.indexOf("replaceOrderPaymentTarget(")
+    )
+    expect(retry).toContain("await verifyRetryFreshness()")
+    expect(retry).toContain("assertGeneralPaymentRetryEligible()")
+    expect(source).toContain("shouldContinuePaymentAuthority: () =>")
+    expect(source).toContain("viewMountedRef.current &&")
+    expect(persist).toContain("shouldContinueAccountRead()")
+    expect(persist).toContain(
+      "isGeneralPaymentRetryEligible(currentViewRef.current)"
+    )
   })
 
   it("keeps the profile destination default and wallet sources explicit", async () => {

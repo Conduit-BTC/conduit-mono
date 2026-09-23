@@ -4,7 +4,9 @@ import { finalizeEvent, getPublicKey } from "nostr-tools"
 import {
   claimOrderLifecyclePayment as claimOrderLifecyclePaymentProduction,
   createSelectedProfileContext,
+  decodeLightningInvoicePaymentHash,
   patchClaimedOrderLifecyclePayment as patchClaimedOrderLifecyclePaymentProduction,
+  validateLightningInvoiceForPayment,
   weblnSendPayment,
   type ParsedOrderMessage,
 } from "@conduit/core"
@@ -21,6 +23,7 @@ import {
   observeOrderPublicZapReceipt,
   runOrderPayment,
   runOrderPaymentWithUpdatedAddress,
+  runOrderPaymentWithRenewedInvoice,
   runOrderPrivateFallback,
   signShopperCheckoutZapRequest,
   submitExternalPaymentProof,
@@ -247,6 +250,7 @@ function paymentDependencies(
     // exercise real admission and the real transaction against stored snapshots.
     getOrderLifecyclePaymentAdmission: () => "admissible",
     checkOrderPaymentAddressUpdate: async () => ({ status: "unchanged" }),
+    checkOrderPaymentAddressForRenewal: async () => ({ status: "unchanged" }),
     loadSelectedProfileContext,
     claimOrderLifecyclePayment,
     claimOrderLifecyclePrivateFallbackPayment,
@@ -347,6 +351,291 @@ function mockImmediateOrderLifecycleTransaction(): () => void {
 }
 
 describe("runOrderPayment", () => {
+  it("preserves the prior invoice when payment authority changes during LNURL metadata lookup", async () => {
+    const orderId = "payment-authority-changes-during-metadata"
+    const oldInvoice = privateInvoice()
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      merchantLightningAddress: "merchant@wallet.example",
+      invoice: oldInvoice,
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+    })
+    const table = db.orderLifecycles
+    const originalGet = table.get
+    const originalPut = table.put
+    let authorityCurrent = true
+    let invoiceRequests = 0
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+    try {
+      const result = await runOrderPayment(
+        basePaymentContext({
+          orderId,
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "private_checkout",
+          shouldContinuePaymentAuthority: () => authorityCurrent,
+        }),
+        paymentDependencies({
+          fetchLnurlPayMetadata: async () => {
+            authorityCurrent = false
+            return lnurlMetadata()
+          },
+          requestCheckoutLnurlInvoice: async () => {
+            invoiceRequests += 1
+            return {
+              invoice: privateInvoice(),
+              zapRelayUrls: [],
+              shouldWaitForZapReceipt: false,
+            }
+          },
+        })
+      )
+
+      expect(invoiceRequests).toBe(0)
+      expect(result.lifecycle?.invoice).toBe(oldInvoice)
+      expect(stored.invoice).toBe(oldInvoice)
+      expect(result.error).toContain("no longer accepts")
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
+  })
+
+  it("restores the prior invoice when payment authority changes before manual invoice persistence", async () => {
+    const orderId = "payment-authority-changes-before-manual-persist"
+    const oldInvoice = privateInvoice()
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      merchantLightningAddress: "merchant@wallet.example",
+      invoice: oldInvoice,
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+    })
+    const table = db.orderLifecycles
+    const originalGet = table.get
+    const originalPut = table.put
+    let authorityCurrent = true
+    const requestedInvoice = privateInvoice("lnbc10n", 9)
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+    try {
+      const result = await runOrderPayment(
+        basePaymentContext({
+          orderId,
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "private_checkout",
+          shouldContinuePaymentAuthority: () => authorityCurrent,
+        }),
+        paymentDependencies({
+          fetchLnurlPayMetadata: async () => lnurlMetadata(),
+          requestCheckoutLnurlInvoice: async () => ({
+            invoice: requestedInvoice,
+            zapRelayUrls: [],
+            shouldWaitForZapReceipt: false,
+          }),
+          payCheckoutInvoice: async () => {
+            authorityCurrent = false
+            return {
+              status: "manual_required",
+              reason: "Open the invoice in a Lightning wallet.",
+            }
+          },
+        })
+      )
+
+      expect(result.lifecycle?.invoice).toBe(oldInvoice)
+      expect(stored.invoice).toBe(oldInvoice)
+      expect(result.lifecycle?.paymentStatus).toBe("failed")
+      expect(result.error).toContain("no longer accepts")
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
+  })
+
+  it("preserves an expired invoice when merchant address authority fails before claim", async () => {
+    const orderId = "expired-invoice-address-failure"
+    const invoice = privateInvoice()
+    const stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoice,
+      invoiceExpiresAt: Math.floor(Date.now() / 1_000) - 1,
+      paymentHash: decodeLightningInvoicePaymentHash(invoice) ?? undefined,
+      merchantLightningAddress: "merchant@wallet.example",
+      updatedAt: 1_700_000_000_000,
+    })
+    let claims = 0
+    let clears = 0
+
+    await expect(
+      runOrderPaymentWithRenewedInvoice(
+        basePaymentContext({
+          orderId,
+          authenticatedPubkey: "buyer",
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "private_checkout",
+        }),
+        invoice,
+        stored.updatedAt,
+        paymentDependencies({
+          getOrderLifecycle: async () => stored,
+          checkOrderPaymentAddressUpdate: async () => ({
+            status: "current_address_changed",
+          }),
+          checkOrderPaymentAddressForRenewal: async () => ({
+            status: "current_address_changed",
+          }),
+          claimExpiredOrderInvoiceForRetry: async () => {
+            claims += 1
+            throw new Error("must not claim")
+          },
+          rememberOrderPaymentClaim: () => true,
+          clearOrderPaymentClaim: () => {
+            clears += 1
+            return true
+          },
+        })
+      )
+    ).rejects.toThrow("merchant's payment address changed")
+
+    expect(stored.invoice).toBe(invoice)
+    expect(claims).toBe(0)
+    expect(clears).toBe(0)
+    expect(isOrderPaymentRunning(orderId)).toBe(false)
+  })
+
+  it("clears a remembered renewal claim when the atomic claim is rejected", async () => {
+    const orderId = "expired-invoice-claim-rejected"
+    const invoice = privateInvoice()
+    const stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoice,
+      invoiceExpiresAt: Math.floor(Date.now() / 1_000) - 1,
+      paymentHash: decodeLightningInvoicePaymentHash(invoice) ?? undefined,
+      merchantLightningAddress: "merchant@wallet.example",
+      updatedAt: 1_700_000_000_000,
+    })
+    let clears = 0
+
+    await expect(
+      runOrderPaymentWithRenewedInvoice(
+        basePaymentContext({
+          orderId,
+          authenticatedPubkey: "buyer",
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "private_checkout",
+        }),
+        invoice,
+        stored.updatedAt,
+        paymentDependencies({
+          getOrderLifecycle: async () => stored,
+          claimExpiredOrderInvoiceForRetry: async () => ({
+            status: "snapshot_mismatch",
+            lifecycle: stored,
+          }),
+          rememberOrderPaymentClaim: () => true,
+          clearOrderPaymentClaim: () => {
+            clears += 1
+            return true
+          },
+        })
+      )
+    ).rejects.toThrow("Payment state changed in another tab")
+
+    expect(clears).toBe(1)
+    expect(isOrderPaymentRunning(orderId)).toBe(false)
+  })
+
+  it("gives a content-free merchant-contact instruction when invoice history is full", async () => {
+    const orderId = "expired-invoice-history-limit"
+    const invoice = privateInvoice()
+    const stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoice,
+      invoiceExpiresAt: Math.floor(Date.now() / 1_000) - 1,
+      paymentHash: decodeLightningInvoicePaymentHash(invoice) ?? undefined,
+      merchantLightningAddress: "merchant@wallet.example",
+      updatedAt: 1_700_000_000_000,
+    })
+
+    await expect(
+      runOrderPaymentWithRenewedInvoice(
+        basePaymentContext({
+          orderId,
+          authenticatedPubkey: "buyer",
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "private_checkout",
+        }),
+        invoice,
+        stored.updatedAt,
+        paymentDependencies({
+          getOrderLifecycle: async () => stored,
+          claimExpiredOrderInvoiceForRetry: async () => ({
+            status: "invoice_history_limit",
+            lifecycle: stored,
+          }),
+        })
+      )
+    ).rejects.toThrow(
+      "This order has reached its limit for retaining expired invoices. Contact the merchant to arrange payment before retrying."
+    )
+  })
+
+  it("renews an external-wallet manual invoice through private checkout", async () => {
+    const orderId = "external-wallet-invoice-renewal"
+    const invoice = privateInvoice()
+    const stored = lifecycle({
+      orderId,
+      checkoutMode: "external_wallet",
+      publicZapSigner: undefined,
+      invoice,
+      invoiceExpiresAt: Math.floor(Date.now() / 1_000) - 1,
+      paymentHash: decodeLightningInvoicePaymentHash(invoice) ?? undefined,
+      merchantLightningAddress: "merchant@wallet.example",
+      updatedAt: 1_700_000_000_000,
+    })
+    let claimedMode: string | undefined
+
+    await expect(
+      runOrderPaymentWithRenewedInvoice(
+        basePaymentContext({
+          orderId,
+          authenticatedPubkey: "buyer",
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "private_checkout",
+        }),
+        invoice,
+        stored.updatedAt,
+        paymentDependencies({
+          getOrderLifecycle: async () => stored,
+          claimExpiredOrderInvoiceForRetry: async (input) => {
+            claimedMode = input.checkoutMode
+            return { status: "snapshot_mismatch", lifecycle: stored }
+          },
+        })
+      )
+    ).rejects.toThrow("Payment state changed in another tab")
+
+    expect(claimedMode).toBe("private_checkout")
+  })
+
   it("does not claim or request payment when recovery ownership cannot be stored", async () => {
     const orderId = "payment-session-storage-blocked"
     let claimCalls = 0
@@ -585,6 +874,197 @@ describe("runOrderPayment", () => {
       table.put = originalPut
       db.transaction = originalTransaction
     }
+  })
+
+  it("does not report the current invoice as prior history", async () => {
+    const original = lifecycle({
+      orderId: "prior-report-replacement-active",
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      invoice: "lnbc1expired",
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      priorExpiredManualInvoice: {
+        invoice: "lnbc1expired",
+        paymentHash: "ab".repeat(32),
+        expiresAt: 1,
+      },
+    })
+    const table = db.orderLifecycles
+    const originalGet = table.get
+    let reads = 0
+    table.get = (async () => {
+      reads += 1
+      return original
+    }) as typeof table.get
+    try {
+      const result = await submitExternalPaymentProof(
+        original.orderId,
+        undefined,
+        undefined,
+        undefined,
+        original.buyerPubkey,
+        original.buyerPubkey,
+        () => true,
+        () => true,
+        original.priorExpiredManualInvoice
+      )
+      expect(result).toBeUndefined()
+      expect(reads).toBe(1)
+    } finally {
+      table.get = originalGet
+    }
+  })
+
+  it("admits an exact prior invoice report for a cancelled failed lifecycle through claim authorization", async () => {
+    const orderId = "prior-report-cancelled-failed"
+    const invoice = privateInvoice()
+    const paymentHash = decodeLightningInvoicePaymentHash(invoice)!
+    const validation = validateLightningInvoiceForPayment({
+      invoice,
+      expectedAmountMsats: lifecycle({ orderId }).totalMsats,
+      allowExpired: true,
+    })
+    if (!validation.ok || validation.metadata.expiresAt === null) {
+      throw new Error("Test invoice fixture must have valid expiry metadata")
+    }
+    const prior = {
+      invoice,
+      paymentHash,
+      expiresAt: validation.metadata.expiresAt,
+    }
+    const original = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      phase: "cancelled",
+      invoice: undefined,
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      priorExpiredManualInvoice: prior,
+    })
+    const table = db.orderLifecycles
+    const attempts = db.paymentAttempts
+    const originalGet = table.get
+    const originalPut = table.put
+    const originalAttemptGet = attempts.get
+    const originalTransaction = db.transaction
+    let authorized = false
+    table.get = (async () => original) as typeof table.get
+    table.put = (async () => orderId) as typeof table.put
+    attempts.get = (async () => undefined) as typeof attempts.get
+    db.transaction = ((...args: unknown[]) =>
+      (args.at(-1) as () => Promise<unknown>)()) as typeof db.transaction
+    try {
+      await expect(
+        submitExternalPaymentProof(
+          orderId,
+          undefined,
+          undefined,
+          undefined,
+          original.buyerPubkey,
+          original.buyerPubkey,
+          () => true,
+          () => {
+            authorized = true
+            return false
+          },
+          prior
+        )
+      ).rejects.toThrow(
+        "Payment state changed. Refresh before reporting this invoice."
+      )
+      expect(authorized).toBe(true)
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+      attempts.get = originalAttemptGet
+      db.transaction = originalTransaction
+    }
+  })
+
+  it("admits a validated replacement invoice without stored metadata and rejects wrong present metadata", async () => {
+    const orderId = "prior-report-replacement-metadata"
+    const priorInvoice = privateInvoice("lnbc10n", 8)
+    const priorPaymentHash = decodeLightningInvoicePaymentHash(priorInvoice)!
+    const priorValidation = validateLightningInvoiceForPayment({
+      invoice: priorInvoice,
+      expectedAmountMsats: lifecycle({ orderId }).totalMsats,
+      allowExpired: true,
+    })
+    if (!priorValidation.ok || priorValidation.metadata.expiresAt === null) {
+      throw new Error("Test invoice fixture must have valid expiry metadata")
+    }
+    const prior = {
+      invoice: priorInvoice,
+      paymentHash: priorPaymentHash,
+      expiresAt: priorValidation.metadata.expiresAt,
+    }
+    const replacement = privateInvoice("lnbc10n", 9)
+
+    const reachesClaim = async (
+      paymentHash?: string,
+      invoiceExpiresAt?: number
+    ) => {
+      const original = lifecycle({
+        orderId,
+        checkoutMode: "private_checkout",
+        publicZapSigner: undefined,
+        invoice: replacement,
+        invoiceStatus: "manual_required",
+        paymentStatus: "manual_required",
+        paymentHash,
+        invoiceExpiresAt,
+        priorExpiredManualInvoice: prior,
+      })
+      const table = db.orderLifecycles
+      const attempts = db.paymentAttempts
+      const originalGet = table.get
+      const originalPut = table.put
+      const originalAttemptGet = attempts.get
+      const originalTransaction = db.transaction
+      let authorized = false
+      table.get = (async () => original) as typeof table.get
+      table.put = (async () => orderId) as typeof table.put
+      attempts.get = (async () => undefined) as typeof attempts.get
+      db.transaction = ((...args: unknown[]) =>
+        (args.at(-1) as () => Promise<unknown>)()) as typeof db.transaction
+      try {
+        await expect(
+          submitExternalPaymentProof(
+            orderId,
+            undefined,
+            undefined,
+            undefined,
+            original.buyerPubkey,
+            original.buyerPubkey,
+            () => true,
+            () => {
+              authorized = true
+              return false
+            },
+            prior
+          )
+        ).rejects.toThrow(
+          "Payment state changed. Refresh before reporting this invoice."
+        )
+        return authorized
+      } finally {
+        table.get = originalGet
+        table.put = originalPut
+        attempts.get = originalAttemptGet
+        db.transaction = originalTransaction
+      }
+    }
+
+    expect(await reachesClaim(undefined, undefined)).toBe(true)
+    expect(await reachesClaim("00".repeat(32), undefined)).toBe(false)
+    expect(
+      await reachesClaim(
+        decodeLightningInvoicePaymentHash(replacement)!,
+        prior.expiresAt - 1
+      )
+    ).toBe(false)
   })
 
   it("revalidates projected merchant invoices at the payment boundary", () => {
@@ -2727,6 +3207,42 @@ describe("executor payment authority", () => {
       expect(isOrderPaymentRunning(stored.orderId)).toBe(false)
     })
   }
+
+  it("passes the latest Orders view fence into the normal payment claim", async () => {
+    const stored = lifecycle({
+      orderId: "executor-stale-view-claim",
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      merchantLightningAddress: address,
+    })
+    let viewIsCurrent = true
+    let claimCalls = 0
+    const result = await runOrderPayment(
+      {
+        ...basePaymentContext({
+          orderId: stored.orderId,
+          merchantLud16: address,
+        }),
+        shouldContinueBeforePaymentClaim: () => viewIsCurrent,
+      },
+      paymentDependencies({
+        getOrderLifecycle: async () => stored,
+        checkOrderPaymentAddressUpdate: async () => ({ status: "unchanged" }),
+        loadSelectedProfileContext: async () => {
+          viewIsCurrent = false
+          return selectedContext()
+        },
+        claimOrderLifecyclePayment: async (_input, shouldContinue) => {
+          claimCalls += 1
+          expect(shouldContinue?.()).toBe(false)
+          return { status: "unsafe_state", lifecycle: stored }
+        },
+      })
+    )
+    expect(result.running).toBe(false)
+    expect(claimCalls).toBe(1)
+    expect(stored.invoice).toBe(lifecycle({ orderId: stored.orderId }).invoice)
+  })
 
   for (const mode of ["private_checkout", "anonymous_public_zap"] as const) {
     for (const status of [

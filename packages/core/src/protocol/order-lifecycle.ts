@@ -22,6 +22,7 @@ import {
 } from "./profile-cache"
 
 export const GUEST_ORDER_LOCAL_RETENTION_MS = 24 * 60 * 60 * 1_000
+export const MAX_PRIOR_EXPIRED_MANUAL_INVOICES = 32
 
 export function isGuestOrderDataExpired(
   lifecycle: Pick<OrderLifecycle, "buyerIdentityKind" | "createdAt">,
@@ -154,6 +155,7 @@ export type OrderPaymentClaimResult =
       preclaimLifecycle?: OrderLifecycle
     }
   | { status: "missing"; lifecycle: null }
+  | { status: "invoice_history_limit"; lifecycle: OrderLifecycle }
   | {
       status: "snapshot_mismatch" | "unsafe_state"
       lifecycle: OrderLifecycle
@@ -226,6 +228,11 @@ export type ProjectedMerchantInvoiceClaim = {
 
 export type ExternalOrderPaymentProofClaimOptions = {
   merchantInvoice?: ProjectedMerchantInvoiceClaim
+  priorExpiredManualInvoice?: {
+    invoice: string
+    paymentHash: string
+    expiresAt: number
+  }
   nowMs?: number
   /** Recheck current action authority after reading storage, before claiming. */
   authorizeClaim?: (lifecycle: OrderLifecycle) => boolean
@@ -473,6 +480,8 @@ type ClaimedOrderLifecycleOverrides = Partial<
     | "publicZapFallback"
     | "zapContent"
     | "walletPaymentAttemptId"
+    | "priorExpiredManualInvoice"
+    | "priorExpiredManualInvoices"
   >
 >
 
@@ -559,7 +568,8 @@ export function getOrderLifecyclePaymentAdmission(
  * tabs against the same IndexedDB record.
  */
 export async function claimOrderLifecyclePayment(
-  input: OrderPaymentClaimInput
+  input: OrderPaymentClaimInput,
+  shouldContinue?: () => boolean
 ): Promise<OrderPaymentClaimResult> {
   if (!input.paymentClaimId.trim()) {
     throw new Error("Payment claim ID is required.")
@@ -577,6 +587,9 @@ export async function claimOrderLifecyclePayment(
 
     const now = Date.now()
     const claimed = buildClaimedOrderLifecycle(lifecycle, input, now)
+    if (shouldContinue && !shouldContinue()) {
+      return { status: "unsafe_state", lifecycle }
+    }
     await db.orderLifecycles.put(claimed)
     return {
       status: "claimed",
@@ -586,88 +599,158 @@ export async function claimOrderLifecyclePayment(
   })
 }
 
-export type ExpiredOrderInvoiceRetryResult =
-  | { status: "released"; lifecycle: OrderLifecycle }
-  | { status: "preserved"; lifecycle: OrderLifecycle }
-  | { status: "missing"; lifecycle: null }
+function isExpiredManualInvoiceRetryEligible(
+  lifecycle: OrderLifecycle,
+  normalizedExpectedInvoice: string,
+  nowMs: number
+): boolean {
+  const storedInvoice = lifecycle.invoice
+    ? normalizeLightningInvoice(lifecycle.invoice)
+    : ""
+  const storedPaymentHash = storedInvoice
+    ? decodeLightningInvoicePaymentHash(storedInvoice)
+    : null
+  const nowSeconds = Math.floor(nowMs / 1_000)
+  const validation = storedInvoice
+    ? validateLightningInvoiceForPayment({
+        invoice: storedInvoice,
+        expectedAmountMsats: lifecycle.totalMsats,
+        nowSeconds,
+        allowExpired: true,
+      })
+    : null
 
-/**
- * Release one exact expired private invoice so the existing payment service can
- * request a replacement. The explicit shopper action that calls this helper is
- * the only authority to abandon the old invoice; fresh, public, merchant-issued,
- * in-flight, paid, ambiguous, or proof-bearing state is preserved.
- */
-export async function releaseExpiredOrderInvoiceForRetry(
-  orderId: string,
+  return (
+    normalizedExpectedInvoice.length > 0 &&
+    storedInvoice.toLowerCase() === normalizedExpectedInvoice.toLowerCase() &&
+    (lifecycle.checkoutMode === "private_checkout" ||
+      lifecycle.checkoutMode === "external_wallet") &&
+    lifecycle.publicZapSigner === undefined &&
+    lifecycle.paymentTarget?.type === "manual" &&
+    lifecycle.orderDeliveryStatus === "sent" &&
+    lifecycle.phase !== "completed" &&
+    lifecycle.phase !== "cancelled" &&
+    lifecycle.completedAt === undefined &&
+    lifecycle.invoiceStatus === "manual_required" &&
+    lifecycle.paymentStatus === "manual_required" &&
+    lifecycle.proofDeliveryStatus === "not_started" &&
+    lifecycle.zapReceiptStatus === "not_applicable" &&
+    lifecycle.paymentClaimId === undefined &&
+    lifecycle.proofDeliveryClaimId === undefined &&
+    lifecycle.preimage === undefined &&
+    lifecycle.feeMsats === undefined &&
+    validation?.ok === true &&
+    (lifecycle.invoiceExpiresAt === undefined ||
+      validation.metadata.expiresAt === lifecycle.invoiceExpiresAt) &&
+    validation.metadata.expiresAt! <= nowSeconds &&
+    storedPaymentHash !== null &&
+    (lifecycle.paymentHash === undefined ||
+      storedPaymentHash.toLowerCase() === lifecycle.paymentHash.toLowerCase())
+  )
+}
+
+/** Atomically replace an exact expired manual invoice with a payment claim. */
+export async function claimExpiredOrderInvoiceForRetry(
+  input: OrderPaymentClaimInput,
   expectedInvoice: string,
-  nowMs = Date.now()
-): Promise<ExpiredOrderInvoiceRetryResult> {
+  expectedUpdatedAt?: number,
+  shouldContinue?: () => boolean
+): Promise<OrderPaymentClaimResult> {
+  if (!input.paymentClaimId.trim()) {
+    throw new Error("Payment claim ID is required.")
+  }
+
   const normalizedExpectedInvoice = normalizeLightningInvoice(expectedInvoice)
-  return db.transaction("rw", db.orderLifecycles, async () => {
-    const lifecycle = await db.orderLifecycles.get(orderId)
-    if (!lifecycle) return { status: "missing", lifecycle: null }
+  return db.transaction(
+    "rw",
+    db.orderLifecycles,
+    db.paymentAttempts,
+    async () => {
+      const lifecycle = await db.orderLifecycles.get(input.orderId)
+      if (!lifecycle) return { status: "missing", lifecycle: null }
+      if (
+        !paymentClaimMatchesLifecycle(lifecycle, input) ||
+        (expectedUpdatedAt !== undefined &&
+          lifecycle.updatedAt !== expectedUpdatedAt)
+      ) {
+        return { status: "snapshot_mismatch", lifecycle }
+      }
+      const now = Date.now()
+      if (
+        !isExpiredManualInvoiceRetryEligible(
+          lifecycle,
+          normalizedExpectedInvoice,
+          now
+        ) ||
+        input.paymentTarget.type !== "manual"
+      ) {
+        return { status: "unsafe_state", lifecycle }
+      }
 
-    const storedInvoice = lifecycle.invoice
-      ? normalizeLightningInvoice(lifecycle.invoice)
-      : ""
-    const storedPaymentHash = storedInvoice
-      ? decodeLightningInvoicePaymentHash(storedInvoice)
-      : null
-    const nowSeconds = Math.floor(nowMs / 1_000)
-    const validation = storedInvoice
-      ? validateLightningInvoiceForPayment({
-          invoice: storedInvoice,
+      const attempt = await db.paymentAttempts.get(input.orderId)
+      if (attempt) return { status: "unsafe_state", lifecycle }
+
+      const currentInvoice = {
+        invoice: normalizeLightningInvoice(lifecycle.invoice!),
+        paymentHash: decodeLightningInvoicePaymentHash(lifecycle.invoice!)!,
+        expiresAt: validateLightningInvoiceForPayment({
+          invoice: lifecycle.invoice!,
           expectedAmountMsats: lifecycle.totalMsats,
-          nowSeconds,
+          nowSeconds: Math.floor(now / 1_000),
           allowExpired: true,
-        })
-      : null
-    const canRelease =
-      normalizedExpectedInvoice.length > 0 &&
-      storedInvoice.toLowerCase() === normalizedExpectedInvoice.toLowerCase() &&
-      lifecycle.checkoutMode === "private_checkout" &&
-      lifecycle.publicZapSigner === undefined &&
-      lifecycle.paymentTarget?.type === "manual" &&
-      lifecycle.orderDeliveryStatus === "sent" &&
-      lifecycle.phase !== "completed" &&
-      lifecycle.phase !== "cancelled" &&
-      lifecycle.completedAt === undefined &&
-      lifecycle.invoiceStatus === "manual_required" &&
-      lifecycle.paymentStatus === "manual_required" &&
-      lifecycle.proofDeliveryStatus === "not_started" &&
-      lifecycle.zapReceiptStatus === "not_applicable" &&
-      lifecycle.paymentClaimId === undefined &&
-      lifecycle.proofDeliveryClaimId === undefined &&
-      lifecycle.preimage === undefined &&
-      lifecycle.feeMsats === undefined &&
-      validation?.ok === true &&
-      validation.metadata.expiresAt === lifecycle.invoiceExpiresAt &&
-      validation.metadata.expiresAt! <= nowSeconds &&
-      storedPaymentHash !== null &&
-      storedPaymentHash.toLowerCase() === lifecycle.paymentHash?.toLowerCase()
+        }).metadata.expiresAt!,
+      }
+      const priorInvoices = [
+        ...(lifecycle.priorExpiredManualInvoices ?? []),
+        ...(lifecycle.priorExpiredManualInvoice
+          ? [lifecycle.priorExpiredManualInvoice]
+          : []),
+      ]
+      const currentInvoiceAlreadyRetained = priorInvoices.some(
+        (entry) =>
+          entry.invoice.toLowerCase() ===
+            currentInvoice.invoice.toLowerCase() &&
+          entry.paymentHash.toLowerCase() ===
+            currentInvoice.paymentHash.toLowerCase()
+      )
+      const distinctPriorInvoices = priorInvoices.filter(
+        (entry, index, entries) =>
+          entries.findIndex(
+            (candidate) =>
+              candidate.invoice.toLowerCase() === entry.invoice.toLowerCase() &&
+              candidate.paymentHash.toLowerCase() ===
+                entry.paymentHash.toLowerCase()
+          ) === index
+      )
+      if (
+        !currentInvoiceAlreadyRetained &&
+        distinctPriorInvoices.length >= MAX_PRIOR_EXPIRED_MANUAL_INVOICES
+      ) {
+        return { status: "invoice_history_limit", lifecycle }
+      }
 
-    if (!canRelease) return { status: "preserved", lifecycle }
-
-    const released = mergeOrderLifecyclePatch(lifecycle, {
-      invoiceStatus: "failed",
-      paymentStatus: "failed",
-      proofDeliveryStatus: "not_started",
-      zapReceiptStatus: "not_applicable",
-      invoice: undefined,
-      paymentHash: undefined,
-      invoiceExpiresAt: undefined,
-      zapRequestId: undefined,
-      zapRequestCreatedAt: undefined,
-      zapReceiptId: undefined,
-      zapReceiptRelayUrls: undefined,
-      zapLnurl: undefined,
-      zapReceiptPubkey: undefined,
-      zapReceiptObservationDeadline: undefined,
-      lastError: "The previous invoice expired before payment.",
-    })
-    await db.orderLifecycles.put(released)
-    return { status: "released", lifecycle: released }
-  })
+      const claimed = buildClaimedOrderLifecycle(
+        lifecycle,
+        input,
+        Math.max(now, lifecycle.updatedAt + 1),
+        {
+          // Snapshot exact, validated evidence before the claim clears the active invoice.
+          priorExpiredManualInvoices: currentInvoiceAlreadyRetained
+            ? distinctPriorInvoices
+            : [...distinctPriorInvoices, currentInvoice],
+        }
+      )
+      if (shouldContinue && !shouldContinue()) {
+        return { status: "unsafe_state", lifecycle }
+      }
+      await db.orderLifecycles.put(claimed)
+      return {
+        status: "claimed",
+        lifecycle: claimed,
+        preclaimLifecycle: lifecycle,
+      }
+    }
+  )
 }
 
 export function getOrderPaymentAddressReplacementAdmission(
@@ -798,7 +881,8 @@ export type ReplaceOrderPaymentTargetResult =
  */
 export async function replaceOrderPaymentTarget(
   orderId: string,
-  paymentTarget: OrderPaymentTarget
+  paymentTarget: OrderPaymentTarget,
+  shouldContinue?: () => boolean
 ): Promise<ReplaceOrderPaymentTargetResult> {
   return db.transaction("rw", db.orderLifecycles, async () => {
     const lifecycle = await db.orderLifecycles.get(orderId)
@@ -819,6 +903,9 @@ export async function replaceOrderPaymentTarget(
           : undefined,
       updatedAt: Date.now(),
     }
+    if (shouldContinue && !shouldContinue()) {
+      return { status: "unsafe_state", lifecycle }
+    }
     await db.orderLifecycles.put(updated)
     return { status: "updated", lifecycle: updated }
   })
@@ -829,7 +916,8 @@ export async function replaceOrderPaymentTarget(
  * No intermediate retryable state is exposed for another tab to overwrite.
  */
 export async function claimOrderLifecyclePrivateFallbackPayment(
-  input: OrderPaymentClaimInput
+  input: OrderPaymentClaimInput,
+  shouldContinue?: () => boolean
 ): Promise<OrderPaymentClaimResult> {
   return db.transaction("rw", db.orderLifecycles, async () => {
     const lifecycle = await db.orderLifecycles.get(input.orderId)
@@ -867,6 +955,9 @@ export async function claimOrderLifecyclePrivateFallbackPayment(
           ? createWalletPaymentAttemptId()
           : undefined,
     })
+    if (shouldContinue && !shouldContinue()) {
+      return { status: "unsafe_state", lifecycle }
+    }
     await db.orderLifecycles.put(claimed)
     return {
       status: "claimed",
@@ -970,7 +1061,15 @@ export async function patchClaimedOrderLifecyclePayment(
     if (
       !paymentClaimId ||
       !lifecycle.paymentClaimId ||
-      lifecycle.paymentClaimId !== paymentClaimId
+      lifecycle.paymentClaimId !== paymentClaimId ||
+      lifecycle.phase === "cancelled" ||
+      lifecycle.phase === "completed" ||
+      (lifecycle.paymentStatus === "paid" &&
+        patch.paymentStatus !== undefined &&
+        patch.paymentStatus !== "paid") ||
+      (lifecycle.proofDeliveryStatus === "sent" &&
+        patch.proofDeliveryStatus !== undefined &&
+        patch.proofDeliveryStatus !== "sent")
     ) {
       return { status: "claim_mismatch", lifecycle }
     }
@@ -1022,7 +1121,11 @@ export async function fenceClaimedOrderLifecyclePaymentAuthority(
     if (
       !paymentClaimId ||
       !lifecycle.paymentClaimId ||
-      lifecycle.paymentClaimId !== paymentClaimId
+      lifecycle.paymentClaimId !== paymentClaimId ||
+      lifecycle.phase === "cancelled" ||
+      lifecycle.phase === "completed" ||
+      lifecycle.paymentStatus === "paid" ||
+      lifecycle.proofDeliveryStatus === "sent"
     ) {
       return { status: "claim_mismatch", lifecycle }
     }
@@ -1294,55 +1397,162 @@ export async function claimExternalOrderPaymentProof(
   proofDeliveryClaimId: string,
   options: ExternalOrderPaymentProofClaimOptions = {}
 ): Promise<ExternalOrderPaymentProofClaimResult> {
-  return db.transaction("rw", db.orderLifecycles, async () => {
-    const lifecycle = await db.orderLifecycles.get(orderId)
-    if (!lifecycle) return { status: "missing", lifecycle: null }
-    const now = options.nowMs ?? Date.now()
-    const normalizedClaimId = proofDeliveryClaimId.trim()
-    const merchantInvoice = options.merchantInvoice
-    const admittedMerchantInvoice = merchantInvoice
-      ? admitProjectedMerchantInvoice(lifecycle, merchantInvoice, now, true)
-      : null
-    const existingManualInvoiceIsAdmissible =
-      !merchantInvoice &&
-      !!lifecycle.invoice &&
-      lifecycle.paymentStatus === "manual_required"
+  return db.transaction(
+    "rw",
+    db.orderLifecycles,
+    db.paymentAttempts,
+    async () => {
+      const lifecycle = await db.orderLifecycles.get(orderId)
+      if (!lifecycle) return { status: "missing", lifecycle: null }
+      const now = options.nowMs ?? Date.now()
+      const normalizedClaimId = proofDeliveryClaimId.trim()
+      const merchantInvoice = options.merchantInvoice
+      const priorEvidence = options.priorExpiredManualInvoice
+      const normalizedPriorInvoice = priorEvidence
+        ? normalizeLightningInvoice(priorEvidence.invoice)
+        : ""
+      const priorValidation = priorEvidence
+        ? validateLightningInvoiceForPayment({
+            invoice: normalizedPriorInvoice,
+            expectedAmountMsats: lifecycle.totalMsats,
+            nowSeconds: Math.floor(now / 1_000),
+            allowExpired: true,
+          })
+        : null
+      const decodedPriorPaymentHash = priorEvidence
+        ? decodeLightningInvoicePaymentHash(normalizedPriorInvoice)
+        : null
+      const activeReplacementValidation = lifecycle.invoice
+        ? validateLightningInvoiceForPayment({
+            invoice: lifecycle.invoice,
+            expectedAmountMsats: lifecycle.totalMsats,
+            nowSeconds: Math.floor(now / 1_000),
+            allowExpired: true,
+          })
+        : null
+      const activeReplacementHash = lifecycle.invoice
+        ? decodeLightningInvoicePaymentHash(lifecycle.invoice)
+        : null
+      const admittedMerchantInvoice = merchantInvoice
+        ? admitProjectedMerchantInvoice(lifecycle, merchantInvoice, now, true)
+        : null
+      const existingManualInvoiceIsAdmissible =
+        !merchantInvoice &&
+        !priorEvidence &&
+        !!lifecycle.invoice &&
+        lifecycle.paymentStatus === "manual_required"
+      const priorHistoryEntry = priorEvidence
+        ? [
+            ...(lifecycle.priorExpiredManualInvoices ?? []),
+            ...(lifecycle.priorExpiredManualInvoice
+              ? [lifecycle.priorExpiredManualInvoice]
+              : []),
+          ].find(
+            (entry) =>
+              normalizeLightningInvoice(entry.invoice).toLowerCase() ===
+                normalizedPriorInvoice.toLowerCase() &&
+              entry.paymentHash.toLowerCase() ===
+                priorEvidence.paymentHash.toLowerCase() &&
+              entry.expiresAt === priorEvidence.expiresAt &&
+              priorEvidence.expiresAt === priorValidation?.metadata.expiresAt
+          )
+        : undefined
+      const priorInvoiceBaseIsAdmissible =
+        !!priorEvidence &&
+        !merchantInvoice &&
+        (lifecycle.checkoutMode === "private_checkout" ||
+          lifecycle.checkoutMode === "external_wallet") &&
+        lifecycle.publicZapSigner === undefined &&
+        lifecycle.paymentTarget?.type === "manual" &&
+        lifecycle.orderDeliveryStatus === "sent" &&
+        lifecycle.phase !== "completed" &&
+        lifecycle.completedAt === undefined &&
+        lifecycle.walletPaymentAttemptId === undefined &&
+        lifecycle.paymentClaimId === undefined &&
+        lifecycle.proofDeliveryClaimId === undefined &&
+        lifecycle.proofDeliveryStatus === "not_started" &&
+        lifecycle.preimage === undefined &&
+        lifecycle.feeMsats === undefined &&
+        lifecycle.zapReceiptId === undefined &&
+        lifecycle.zapRequestId === undefined &&
+        lifecycle.zapReceiptStatus === "not_applicable" &&
+        !!priorHistoryEntry &&
+        /^[0-9a-f]{64}$/i.test(priorEvidence?.paymentHash ?? "") &&
+        decodedPriorPaymentHash !== null &&
+        decodedPriorPaymentHash.toLowerCase() ===
+          priorEvidence?.paymentHash.toLowerCase() &&
+        priorValidation?.ok === true &&
+        priorValidation.metadata.expiresAt !== null
+      const priorManualInvoiceIsAdmissible =
+        priorInvoiceBaseIsAdmissible &&
+        ((lifecycle.paymentStatus === "failed" &&
+          lifecycle.invoiceStatus === "failed" &&
+          !lifecycle.invoice) ||
+          (lifecycle.paymentStatus === "manual_required" &&
+            lifecycle.invoiceStatus === "manual_required" &&
+            !!lifecycle.invoice &&
+            normalizeLightningInvoice(lifecycle.invoice).toLowerCase() !==
+              normalizedPriorInvoice.toLowerCase() &&
+            activeReplacementHash !== null &&
+            (lifecycle.paymentHash === undefined ||
+              activeReplacementHash.toLowerCase() ===
+                lifecycle.paymentHash.toLowerCase()) &&
+            activeReplacementValidation?.ok === true &&
+            (lifecycle.invoiceExpiresAt === undefined ||
+              activeReplacementValidation.metadata.expiresAt ===
+                lifecycle.invoiceExpiresAt)))
 
-    if (
-      !normalizedClaimId ||
-      lifecycle.phase === "completed" ||
-      lifecycle.proofDeliveryStatus !== "not_started" ||
-      (!admittedMerchantInvoice && !existingManualInvoiceIsAdmissible)
-    ) {
-      return { status: "preserved", lifecycle }
+      if (
+        !normalizedClaimId ||
+        lifecycle.phase === "completed" ||
+        lifecycle.proofDeliveryStatus !== "not_started" ||
+        (!admittedMerchantInvoice &&
+          !existingManualInvoiceIsAdmissible &&
+          !priorManualInvoiceIsAdmissible)
+      ) {
+        return { status: "preserved", lifecycle }
+      }
+      if (
+        priorManualInvoiceIsAdmissible &&
+        (await db.paymentAttempts.get(orderId))
+      ) {
+        return { status: "preserved", lifecycle }
+      }
+      if (options.authorizeClaim?.(lifecycle) === false) {
+        return { status: "preserved", lifecycle }
+      }
+      const claimed = mergeOrderLifecyclePatch(
+        lifecycle,
+        {
+          ...(admittedMerchantInvoice
+            ? {
+                invoiceStatus: "manual_required" as const,
+                invoice: admittedMerchantInvoice.invoice,
+                paymentHash: admittedMerchantInvoice.paymentHash,
+                invoiceExpiresAt: admittedMerchantInvoice.expiresAt,
+              }
+            : {}),
+          ...(priorManualInvoiceIsAdmissible
+            ? {
+                invoice: priorHistoryEntry!.invoice,
+                paymentHash: priorHistoryEntry!.paymentHash,
+                invoiceExpiresAt: priorHistoryEntry!.expiresAt,
+              }
+            : {}),
+          paymentStatus: "paid",
+          proofDeliveryStatus: "pending",
+          proofDeliveryClaimId: normalizedClaimId,
+          proofDeliveryClaimedAt: now,
+          proofDeliveryClaimLeaseExpiresAt:
+            now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+          lastError: undefined,
+        },
+        now
+      )
+      await db.orderLifecycles.put(claimed)
+      return { status: "claimed", lifecycle: claimed }
     }
-    if (options.authorizeClaim?.(lifecycle) === false) {
-      return { status: "preserved", lifecycle }
-    }
-    const claimed = mergeOrderLifecyclePatch(
-      lifecycle,
-      {
-        ...(admittedMerchantInvoice
-          ? {
-              invoiceStatus: "manual_required" as const,
-              invoice: admittedMerchantInvoice.invoice,
-              paymentHash: admittedMerchantInvoice.paymentHash,
-              invoiceExpiresAt: admittedMerchantInvoice.expiresAt,
-            }
-          : {}),
-        paymentStatus: "paid",
-        proofDeliveryStatus: "pending",
-        proofDeliveryClaimId: normalizedClaimId,
-        proofDeliveryClaimedAt: now,
-        proofDeliveryClaimLeaseExpiresAt:
-          now + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
-        lastError: undefined,
-      },
-      now
-    )
-    await db.orderLifecycles.put(claimed)
-    return { status: "claimed", lifecycle: claimed }
-  })
+  )
 }
 
 /**
