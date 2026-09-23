@@ -975,7 +975,7 @@ export async function recordObservedOrderPaymentReceipt(
   input: {
     zapRequestId: string
     zapReceiptId: string
-    proofDeliveryStatus: "pending" | "sent"
+    proofDeliveryStatus: "pending" | "retry_needed" | "sent"
     proofDeliveryClaimId?: string
   }
 ): Promise<ObservedOrderPaymentReceiptResult> {
@@ -988,10 +988,10 @@ export async function recordObservedOrderPaymentReceipt(
 
     const now = Date.now()
     const proofDeliveryClaimId = input.proofDeliveryClaimId?.trim()
-    const proofLeaseIsAvailable =
-      lifecycle.proofDeliveryStatus !== "pending" ||
-      !lifecycle.proofDeliveryClaimId ||
-      (lifecycle.proofDeliveryClaimLeaseExpiresAt ?? 0) <= now
+    const hasLiveProofDeliveryClaim =
+      lifecycle.proofDeliveryStatus === "pending" &&
+      !!lifecycle.proofDeliveryClaimId &&
+      (lifecycle.proofDeliveryClaimLeaseExpiresAt ?? 0) > now
 
     // Exact receipt evidence fences the payment owner below, so atomically
     // transfer its proof work without stealing another live proof lease.
@@ -999,7 +999,14 @@ export async function recordObservedOrderPaymentReceipt(
       lifecycle.proofDeliveryStatus !== "sent" &&
       input.proofDeliveryStatus === "pending" &&
       !!proofDeliveryClaimId &&
-      proofLeaseIsAvailable
+      !hasLiveProofDeliveryClaim
+    const proofDeliveryStatus =
+      lifecycle.proofDeliveryStatus === "sent" ||
+      input.proofDeliveryStatus === "sent"
+        ? "sent"
+        : hasLiveProofDeliveryClaim || proofDeliveryClaimed
+          ? "pending"
+          : "retry_needed"
 
     const recorded = mergeOrderLifecyclePatch(
       lifecycle,
@@ -1007,10 +1014,7 @@ export async function recordObservedOrderPaymentReceipt(
         paymentClaimId: undefined,
         invoiceStatus: "received",
         paymentStatus: "paid",
-        proofDeliveryStatus:
-          lifecycle.proofDeliveryStatus === "sent"
-            ? "sent"
-            : input.proofDeliveryStatus,
+        proofDeliveryStatus,
         ...(proofDeliveryClaimed
           ? {
               proofDeliveryClaimId,

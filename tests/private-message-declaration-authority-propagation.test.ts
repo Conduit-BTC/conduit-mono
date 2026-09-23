@@ -37,14 +37,14 @@ describe("private-message declaration authority propagation", () => {
     )
     expect(
       marketMessages.match(
-        /shouldContinue:\s*\(\) =>\s*authGenerationRef\.current === authGeneration/g
+        /shouldContinue:\s*\(\) =>\s*isCurrentMessagingAuthority\(/g
       )
     ).toHaveLength(2)
     expect(
       merchantMessages.match(
-        /shouldContinue:\s*\(\) =>\s*authGenerationRef\.current === authGeneration/g
+        /shouldContinue:\s*\(\) =>\s*isCurrentMessagingAuthority\(/g
       )
-    ).toHaveLength(2)
+    ).toHaveLength(1)
   })
 
   it("binds merchant order sends to the live account generation", async () => {
@@ -55,7 +55,7 @@ describe("private-message declaration authority propagation", () => {
 
     expect(
       merchantOrders.match(
-        /signerInteraction: "external",\s*authenticatedPubkey: signerConnected \? pubkey : null,\s*shouldContinue: \(\) => authGenerationRef\.current === authGeneration/g
+        /signerInteraction: "external",\s*authenticatedPubkey,\s*shouldContinue: \(\) => isCurrentOrderAction\(authority\)/g
       )
     ).toHaveLength(4)
     expect(paymentAutomation).toMatch(

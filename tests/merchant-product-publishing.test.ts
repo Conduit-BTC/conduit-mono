@@ -43,6 +43,7 @@ import {
   resolveProductFulfillmentIntentForTarget,
   resolvePublishedProductFulfillmentIntentForTarget,
   signAndPublishProductWriteBundle,
+  signAndPublishProductListing,
   type CanonicalProductPublishDependencies,
   type SignedProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
@@ -1058,6 +1059,65 @@ describe("merchant product event delivery", () => {
       expect(signRequests).toBe(2)
       expect(signedLocalCalls).toBe(1)
       expect(publishSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
+  it("retains a signer-returned product for exact retry after authority changes", async () => {
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let authorityCurrent = true
+    let signRequests = 0
+    let signedEvent: NDKEvent | null = null
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        const signed = await delegate.sign(event)
+        authorityCurrent = false
+        return signed
+      },
+    } as NDKSigner)
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishedIds: string[] = []
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+      async function (this: NDKEvent) {
+        publishedIds.push(this.id)
+        return new Set([{ url: "wss://relay.example/" }]) as never
+      }
+    )
+
+    try {
+      await expect(
+        signAndPublishProductListing({
+          merchantPubkey: MERCHANT_PUBKEY,
+          shouldContinue: () => authorityCurrent,
+          product: makeProduct("signed-before-recovery"),
+          dTag: "signed-before-recovery",
+          fulfillmentIntent: { kind: "coordinate_after_order" },
+          onSignedLocal: async (event) => {
+            signedEvent = event
+          },
+        })
+      ).rejects.toThrow("Product signer session changed")
+      expect(signRequests).toBe(1)
+      expect(signedEvent?.id).toBeTruthy()
+      expect(publishSpy).toHaveBeenCalledTimes(0)
+
+      authorityCurrent = true
+      await deliverSignedProductEvent(signedEvent!, MERCHANT_PUBKEY, {
+        shouldContinue: () => authorityCurrent,
+      })
+      expect(signRequests).toBe(1)
+      expect(publishSpy).toHaveBeenCalledTimes(1)
+      expect(publishedIds).toEqual([signedEvent!.id])
     } finally {
       publishSpy.mockRestore()
     }

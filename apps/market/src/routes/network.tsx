@@ -4,8 +4,12 @@ import {
   type ShouldBlockFn,
   useBlocker,
 } from "@tanstack/react-router"
-import { useAccountNetworkSettings } from "@conduit/core"
-import { RelaySettingsPanel, UnpublishedRelayChangesDialog } from "@conduit/ui"
+import { useAccountNetworkSettings, useAuth } from "@conduit/core"
+import {
+  RelaySettingsPanel,
+  SignerRecoveryNotice,
+  UnpublishedRelayChangesDialog,
+} from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/network")({
@@ -16,7 +20,16 @@ export const Route = createFileRoute("/network")({
 })
 
 function SettingsPage() {
+  const {
+    accountPubkey,
+    authGeneration,
+    connect,
+    remoteSignerRecovery,
+    signerReadiness,
+    status,
+  } = useAuth()
   const networkSettings = useAccountNetworkSettings({ telemetryApp: "market" })
+  const [reconnecting, setReconnecting] = useState(false)
   const [hasUnpublishedRelayChanges, setHasUnpublishedRelayChanges] =
     useState(false)
   const shouldBlockNavigation = useCallback<ShouldBlockFn>(
@@ -39,12 +52,35 @@ function SettingsPage() {
     blocker.proceed()
   }, [blocker])
 
+  const reconnectSigner = useCallback(async () => {
+    setReconnecting(true)
+    try {
+      await connect({ mode: "restore" })
+    } finally {
+      setReconnecting(false)
+    }
+  }, [connect])
+
   return (
     <>
       <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
         <div className="mx-auto max-w-[50rem]">
+          {remoteSignerRecovery ? (
+            <div className="mb-4">
+              <SignerRecoveryNotice
+                description="Your relay edits are still here. Reconnect, review the current Network evidence, then publish when you are ready."
+                reconnecting={reconnecting || status === "restoring"}
+                restoreFailed={!!remoteSignerRecovery.restoreError}
+                restoreFailureDescription="That saved signer connection could not be restored. Your relay edits remain unpublished on this page."
+                onReconnect={reconnectSigner}
+              />
+            </div>
+          ) : null}
           <RelaySettingsPanel
             controller={networkSettings}
+            accountPubkey={accountPubkey}
+            signerReady={signerReadiness === "ready"}
+            signerReviewKey={`${accountPubkey ?? "none"}:${authGeneration}:${signerReadiness}`}
             onUnpublishedRelayChangesChange={setHasUnpublishedRelayChanges}
           />
         </div>

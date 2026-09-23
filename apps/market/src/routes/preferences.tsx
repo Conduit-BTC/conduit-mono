@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -26,6 +27,7 @@ import {
   SUPPORTED_SHOPPER_DISPLAY_CURRENCIES,
   getShopperPresetPasswordError,
   shopperShippingPresetSchema,
+  useAuth,
   type ShopperDisplayCurrency,
   type ShopperPaymentRail,
   type ShopperPresetsValue,
@@ -47,6 +49,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SignerRecoveryNotice,
   StatusPill,
   Switch,
 } from "@conduit/ui"
@@ -242,6 +245,7 @@ function UnlockPolicySelect({
 }
 
 function PreferencesPage() {
+  const { connect, remoteSignerRecovery, status: authStatus } = useAuth()
   const presets = useShopperPresets()
   const shopperPricing = useShopperPricing()
   const [draft, setDraft] = useState<ShopperPreferencesDraft>(
@@ -256,6 +260,7 @@ function PreferencesPage() {
     presets.unlockPolicy
   )
   const [resultMessage, setResultMessage] = useState<string | null>(null)
+  const [reconnecting, setReconnecting] = useState(false)
   const draftIdentityRef = useRef(presets.identityPubkey)
   const previousUnlockStateRef = useRef(presets.unlockState)
   const policyEditedRef = useRef(false)
@@ -311,7 +316,7 @@ function PreferencesPage() {
       ? "Password confirmation must match."
       : undefined
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const plaintextBecameUnavailable =
       previousUnlockStateRef.current === "unlocked" &&
       presets.unlockState !== "unlocked"
@@ -341,6 +346,20 @@ function PreferencesPage() {
     presets.unlockState,
   ])
 
+  useEffect(() => {
+    if (presets.signerReady) return
+    setClearOpen(false)
+  }, [presets.signerReady])
+
+  const reconnectSigner = useCallback(async () => {
+    setReconnecting(true)
+    try {
+      await connect({ mode: "restore" })
+    } finally {
+      setReconnecting(false)
+    }
+  }, [connect])
+
   function updateShipping<K extends keyof ShopperShippingPreset>(
     field: K,
     value: ShopperShippingPreset[K]
@@ -354,6 +373,12 @@ function PreferencesPage() {
   }
 
   async function save(): Promise<void> {
+    if (!presets.signerReady) {
+      setResultMessage(
+        "Reconnect your signer, review these preferences, then save again."
+      )
+      return
+    }
     if (password !== confirmPassword) {
       setResultMessage("The password confirmation does not match.")
       return
@@ -385,6 +410,7 @@ function PreferencesPage() {
   }
 
   async function clear(): Promise<void> {
+    if (!presets.signerReady) return
     const identity = presets.identityPubkey
     const synced = await presets.clear(password, policy)
     if (currentIdentityRef.current !== identity) return
@@ -416,13 +442,35 @@ function PreferencesPage() {
   if (locked && !resetMode) {
     return (
       <PreferencesFrame status={status}>
-        <UnlockPanel presets={presets} onReplace={replaceForgottenPreset} />
+        {remoteSignerRecovery ? (
+          <SignerRecoveryNotice
+            description="Your encrypted preset remains with this account. Reconnect before refreshing or replacing it."
+            reconnecting={reconnecting || authStatus === "restoring"}
+            restoreFailed={!!remoteSignerRecovery.restoreError}
+            restoreFailureDescription="That saved signer connection could not be restored. No preference was changed."
+            onReconnect={reconnectSigner}
+          />
+        ) : null}
+        <UnlockPanel
+          key={presets.identityPubkey ?? "no-account"}
+          presets={presets}
+          onReplace={replaceForgottenPreset}
+        />
       </PreferencesFrame>
     )
   }
 
   return (
     <PreferencesFrame status={status}>
+      {remoteSignerRecovery ? (
+        <SignerRecoveryNotice
+          description="Your preference edits remain on this page. Reconnect, review them, then choose Save preferences when ready."
+          reconnecting={reconnecting || authStatus === "restoring"}
+          restoreFailed={!!remoteSignerRecovery.restoreError}
+          restoreFailureDescription="That saved signer connection could not be restored. Your edits remain local and unpublished."
+          onReconnect={reconnectSigner}
+        />
+      ) : null}
       <section>
         <div>
           <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
@@ -728,7 +776,7 @@ function PreferencesPage() {
             variant="outline"
             size="sm"
             className="rounded-xl"
-            disabled={busy}
+            disabled={busy || !presets.signerReady}
             onClick={() => void presets.refresh()}
           >
             <RefreshCw className={`size-4 ${busy ? "animate-spin" : ""}`} />
@@ -752,7 +800,11 @@ function PreferencesPage() {
               size="sm"
               className="rounded-xl"
               onClick={() => setClearOpen(true)}
-              disabled={busy || !!getShopperPresetPasswordError(password)}
+              disabled={
+                busy ||
+                !presets.signerReady ||
+                !!getShopperPresetPasswordError(password)
+              }
             >
               <Trash2 className="size-4" />
               Clear
@@ -762,7 +814,7 @@ function PreferencesPage() {
         <Button
           className="h-11 rounded-2xl px-5"
           onClick={() => void save()}
-          disabled={busy || saveBlockers.length > 0}
+          disabled={busy || !presets.signerReady || saveBlockers.length > 0}
           aria-describedby="preferences-save-requirements"
         >
           {busy ? (
@@ -787,7 +839,11 @@ function PreferencesPage() {
             <Button variant="outline" onClick={() => setClearOpen(false)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={() => void clear()}>
+            <Button
+              variant="destructive"
+              disabled={!presets.signerReady}
+              onClick={() => void clear()}
+            >
               Clear preset
             </Button>
           </AlertDialogFooter>

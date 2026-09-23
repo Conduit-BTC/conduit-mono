@@ -228,12 +228,13 @@ export function eventProductFormFromTemplate(
 
 export async function listEventProductTemplates(
   merchantPubkey: string,
+  accountPubkey: string | null,
   authenticatedPubkey: string | null,
   shouldContinue?: () => boolean
 ): Promise<EventProductTemplate[]> {
   const result = await getMerchantStorefront({
     merchantPubkey,
-    accountPubkey: authenticatedPubkey,
+    accountPubkey,
     authenticatedPubkey,
     shouldContinue,
     sort: "updated_at_desc",

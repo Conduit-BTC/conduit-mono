@@ -411,7 +411,7 @@ jobs:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/xhigh
+          model: gpt-5.6-sol/high/fast
           resume: false
           prompt: ${{ steps.review_prompt.outputs.value }}
 
@@ -427,7 +427,7 @@ jobs:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/xhigh
+          model: gpt-5.6-sol/high/fast
           resume: false
           prompt: ${{ steps.review_prompt.outputs.value }}
 
@@ -444,7 +444,7 @@ jobs:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/xhigh
+          model: gpt-5.6-sol/high/fast
           resume: false
           prompt: ${{ steps.review_prompt.outputs.value }}
 

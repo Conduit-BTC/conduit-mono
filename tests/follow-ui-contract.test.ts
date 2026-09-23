@@ -8,14 +8,19 @@ describe("Market follow session lifecycle", () => {
       "utf8"
     )
 
-    expect(source).toContain(
-      "const { pubkey: viewerPubkey, status, authGeneration } = useAuth()"
-    )
+    expect(source).toContain("accountPubkey,")
+    expect(source).toContain("pubkey: viewerPubkey,")
+    expect(source).toContain("signerReadiness,")
+    expect(source).toContain("accountPubkeyRef.current = accountPubkey")
     expect(source).toContain("const followAuthGeneration = authGeneration")
     expect(
       source.match(/authGenerationRef\.current !== followAuthGeneration/g)
     ).toHaveLength(2)
+    expect(
+      source.match(/accountPubkeyRef\.current !== viewerPubkey/g)
+    ).toHaveLength(2)
     expect(source).toContain("isSessionCurrent: () =>")
+    expect(source).toContain('type: "authority_changed"')
     expect(source).not.toContain("setFollowState")
   })
 

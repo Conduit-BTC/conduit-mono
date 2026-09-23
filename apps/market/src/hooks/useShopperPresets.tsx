@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -72,6 +73,7 @@ type ShopperPresetsUnlockPolicyState = {
 
 type ShopperPresetsContextValue = {
   identityPubkey: string | null
+  signerReady: boolean
   presetOwnerPubkey: string | null
   preset: ShopperPresetsValue
   discoveryDestination: { country: string; postalCode: string } | null
@@ -129,10 +131,28 @@ export async function fetchShopperPresetsForSession(
 }
 
 export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
-  const { pubkey, status } = useAuth()
+  const {
+    accountPubkey,
+    authGeneration,
+    capabilities,
+    pubkey,
+    signer,
+    status,
+  } = useAuth()
   const { identityReady, relayScope, relaySettingsReady } = useConduitSession()
   const queryClient = useQueryClient()
-  const identityPubkey = status === "connected" ? pubkey : null
+  const identityPubkey = accountPubkey
+  const signerReady =
+    status === "connected" &&
+    !!accountPubkey &&
+    pubkey === accountPubkey &&
+    !!signer &&
+    capabilities.signEvent
+  const signerAuthority = useMemo(
+    () => ({ authGeneration, identityPubkey, signerReady }),
+    [authGeneration, identityPubkey, signerReady]
+  )
+  const signerAuthorityRef = useRef(signerAuthority)
   const relayLifecycle = useMemo<ShopperPresetsRelayLifecycle>(
     () => ({
       identityPubkey,
@@ -142,7 +162,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     [identityPubkey, relayScope, relaySettingsReady]
   )
   const relayLifecycleRef = useRef(relayLifecycle)
-  relayLifecycleRef.current = relayLifecycle
+  useLayoutEffect(() => {
+    signerAuthorityRef.current = signerAuthority
+    relayLifecycleRef.current = relayLifecycle
+  }, [relayLifecycle, signerAuthority])
   const stateOwnerPubkeyRef = useRef<string | null>(null)
   const previousRelayLifecycleRef = useRef<ShopperPresetsRelayLifecycle | null>(
     null
@@ -178,10 +201,16 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     queryKey: shopperPresetsQueryKey(identityPubkey, relayScope),
     queryFn: ({ signal }) => {
       const expectedLifecycle = relayLifecycle
+      const expectedAuthority = signerAuthority
       return fetchShopperPresetsForSession(
         identityPubkey!,
         () =>
           !signal.aborted &&
+          signerAuthorityRef.current.signerReady &&
+          signerAuthorityRef.current.authGeneration ===
+            expectedAuthority.authGeneration &&
+          signerAuthorityRef.current.identityPubkey ===
+            expectedAuthority.identityPubkey &&
           relayLifecycleRef.current.relaySettingsReady &&
           isCurrentShopperPresetsRelayLifecycle(
             relayLifecycleRef.current,
@@ -189,7 +218,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           )
       )
     },
-    enabled: !!identityPubkey && identityReady && relaySettingsReady,
+    enabled:
+      !!identityPubkey && identityReady && relaySettingsReady && signerReady,
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
     refetchOnMount: false,
@@ -293,7 +323,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     [relayLifecycle, rememberPassword]
   )
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!identityPubkey) {
       stateOwnerPubkeyRef.current = null
       acceptedReadRef.current = null
@@ -325,6 +355,11 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       setUnlockPolicyState({ ownerPubkey: identityPubkey, policy: "always" })
     }
   }, [identityPubkey, relayScope])
+
+  useEffect(() => {
+    if (!identityPubkey || signerReady) return
+    setSyncState((current) => (current === "syncing" ? "unavailable" : current))
+  }, [identityPubkey, signerReady])
 
   useEffect(() => {
     const result = remote.data
@@ -455,14 +490,21 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         !identityPubkey ||
         !relayScope ||
         !identityReady ||
-        !relaySettingsReady
+        !relaySettingsReady ||
+        !signerReady
       )
         return false
       const lifecycle = relayLifecycle
+      const expectedAuthority = signerAuthority
       const identity = lifecycle.identityPubkey
       if (!identity) return false
       return writeQueueRef.current!.enqueue(async () => {
         if (
+          !signerAuthorityRef.current.signerReady ||
+          signerAuthorityRef.current.authGeneration !==
+            expectedAuthority.authGeneration ||
+          signerAuthorityRef.current.identityPubkey !==
+            expectedAuthority.identityPubkey ||
           !isCurrentShopperPresetsRelayLifecycle(
             relayLifecycleRef.current,
             lifecycle
@@ -484,6 +526,11 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
             dependencies: {
               authenticatedPubkey: identity,
               shouldContinue: () =>
+                signerAuthorityRef.current.signerReady &&
+                signerAuthorityRef.current.authGeneration ===
+                  expectedAuthority.authGeneration &&
+                signerAuthorityRef.current.identityPubkey ===
+                  expectedAuthority.identityPubkey &&
                 isCurrentShopperPresetsRelayLifecycle(
                   relayLifecycleRef.current,
                   lifecycle
@@ -491,6 +538,11 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
             },
           })
           if (
+            !signerAuthorityRef.current.signerReady ||
+            signerAuthorityRef.current.authGeneration !==
+              expectedAuthority.authGeneration ||
+            signerAuthorityRef.current.identityPubkey !==
+              expectedAuthority.identityPubkey ||
             !isCurrentShopperPresetsRelayLifecycle(
               relayLifecycleRef.current,
               lifecycle
@@ -518,6 +570,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           return true
         } catch {
           if (
+            signerAuthorityRef.current.authGeneration ===
+              expectedAuthority.authGeneration &&
+            signerAuthorityRef.current.identityPubkey ===
+              expectedAuthority.identityPubkey &&
             isCurrentShopperPresetsRelayLifecycle(
               relayLifecycleRef.current,
               lifecycle
@@ -536,6 +592,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       relayScope,
       relaySettingsReady,
       rememberPassword,
+      signerAuthority,
+      signerReady,
     ]
   )
 
@@ -572,8 +630,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   }, [identityPubkey, remotePreset])
 
   const refresh = useCallback(async (): Promise<void> => {
-    if (!identityPubkey || !relayScope || !relaySettingsReady) return
+    if (!identityPubkey || !relayScope || !relaySettingsReady || !signerReady)
+      return
     const lifecycle = relayLifecycle
+    const expectedAuthority = signerAuthority
     const identity = lifecycle.identityPubkey
     if (!identity) return
     setSyncState("syncing")
@@ -581,12 +641,22 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       const result = await fetchShopperPresets(identity, {
         authenticatedPubkey: identity,
         shouldContinue: () =>
+          signerAuthorityRef.current.signerReady &&
+          signerAuthorityRef.current.authGeneration ===
+            expectedAuthority.authGeneration &&
+          signerAuthorityRef.current.identityPubkey ===
+            expectedAuthority.identityPubkey &&
           isCurrentShopperPresetsRelayLifecycle(
             relayLifecycleRef.current,
             lifecycle
           ),
       })
       if (
+        !signerAuthorityRef.current.signerReady ||
+        signerAuthorityRef.current.authGeneration !==
+          expectedAuthority.authGeneration ||
+        signerAuthorityRef.current.identityPubkey !==
+          expectedAuthority.identityPubkey ||
         !isCurrentShopperPresetsRelayLifecycle(
           relayLifecycleRef.current,
           lifecycle
@@ -622,6 +692,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       )
     } catch {
       if (
+        signerAuthorityRef.current.authGeneration ===
+          expectedAuthority.authGeneration &&
+        signerAuthorityRef.current.identityPubkey ===
+          expectedAuthority.identityPubkey &&
         isCurrentShopperPresetsRelayLifecycle(
           relayLifecycleRef.current,
           lifecycle
@@ -635,6 +709,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     relayLifecycle,
     relayScope,
     relaySettingsReady,
+    signerAuthority,
+    signerReady,
   ])
 
   const presetOwnerPubkey =
@@ -652,6 +728,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       identityPubkey,
+      signerReady,
       presetOwnerPubkey,
       preset,
       discoveryDestination,
@@ -660,7 +737,11 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       unlockPolicy,
       hasRemotePreset: remotePreset !== null,
       canSync:
-        !!identityPubkey && !!relayScope && identityReady && relaySettingsReady,
+        !!identityPubkey &&
+        !!relayScope &&
+        identityReady &&
+        relaySettingsReady &&
+        signerReady,
       unlock,
       save,
       clear,
@@ -680,6 +761,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       refresh,
       remotePreset,
       save,
+      signerReady,
       syncState,
       unlock,
       unlockPolicy,

@@ -315,6 +315,24 @@ describe("selected profile publish workflow", () => {
     }
   })
 
+  it("does not retain publish success when the session changes during relay publication", async () => {
+    let current = true
+    events = [
+      profileEvent(JSON.stringify({ name: "Current", about: "Biography" })),
+    ]
+    afterPublish = () => {
+      current = false
+    }
+
+    await expect(
+      publishProfileContext({ displayName: "Edit" }, "market", {
+        shouldContinue: () => current,
+      })
+    ).rejects.toThrow("connected account changed")
+    expect(published).toHaveLength(1)
+    expect(durable?.eventId).not.toBe(published[0]!.id)
+  })
+
   it("preserves a stronger concurrent frontier instead of reporting publish success", async () => {
     events = [
       profileEvent(JSON.stringify({ name: "Current", about: "Biography" })),
