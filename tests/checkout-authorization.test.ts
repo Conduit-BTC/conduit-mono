@@ -184,6 +184,7 @@ describe("checkout authorization refresh", () => {
   it("accepts unchanged raw listing terms after preparing the fresh shipping option", async () => {
     const original = rawItem()
     const option = shippingOption()
+    const refreshedProduct = product({ sourceEventId: "9".repeat(64) })
     const reviewed = {
       ...original,
       shippingCostSats: undefined,
@@ -201,7 +202,7 @@ describe("checkout authorization refresh", () => {
       mode: "direct_payment",
       reviewedItems: [reviewed],
       rawItems: [original],
-      refreshedProducts: [product()],
+      refreshedProducts: [refreshedProduct],
       readShippingOptions: async (coordinates) => {
         expect(coordinates).toEqual([SHIPPING_ID])
         return [option]
@@ -209,6 +210,20 @@ describe("checkout authorization refresh", () => {
     })
 
     expect(result).toMatchObject({ status: "ok", items: [reviewed] })
+    if (result.status !== "ok") throw new Error("Expected authorized items")
+    expect(result.listingReadProducts[0]).toBe(refreshedProduct)
+    expect(result.fulfillmentResolvedProducts[0]).toBe(refreshedProduct)
+    expect(result.listingReadProducts[0]?.sourceEventId).toBe("9".repeat(64))
+    expect(result.shippingOptionEvidence).toEqual({
+      status: "verified",
+      options: [option],
+    })
+    if (result.shippingOptionEvidence.status === "verified") {
+      expect(result.shippingOptionEvidence.options[0]).toBe(option)
+      expect(result.shippingOptionEvidence.options[0]?.eventId).toBe(
+        "1".repeat(64)
+      )
+    }
   })
 
   it("blocks when the referenced shipping terms change after review", async () => {
@@ -350,6 +365,12 @@ describe("checkout authorization refresh", () => {
       expect(result.items[0]?.shippingOptionDTag).toBeUndefined()
       expect(result.items[0]?.shippingCountries).toBeUndefined()
       expect(result.items[0]?.shippingCountryRules).toBeUndefined()
+      expect(result.listingReadProducts[0]?.id).toBe(PRODUCT_ID)
+      expect(result.fulfillmentResolvedProducts[0]?.id).toBe(PRODUCT_ID)
+      expect(result.shippingOptionEvidence).toEqual({
+        status: "unavailable_order_first",
+        options: [],
+      })
     }
   })
 
@@ -380,7 +401,66 @@ describe("checkout authorization refresh", () => {
 
       expect(result.status).toBe("ok")
       expect(shippingRead).toBe(false)
+      if (result.status === "ok") {
+        expect(result.shippingOptionEvidence).toEqual({
+          status: "not_required",
+          options: [],
+        })
+      }
     }
+  })
+
+  it("retains the exact product revision and allocation projection for later quote authority", async () => {
+    const revisionEventId = "9".repeat(64)
+    // CND-225 supplies the typed allocation field when these branches join.
+    // This tests transport of the upstream projection, not its signature.
+    const allocation = {
+      state: "valid" as const,
+      revisionEventId,
+      revisionCreatedAt: 12,
+      recipients: [{ pubkey: MERCHANT, role: "merchant", weight: 2 }],
+    }
+    const refreshedProduct = {
+      ...product({
+        sourceEventId: revisionEventId,
+        updatedAt: 12_000,
+        format: "digital",
+        shippingOptionId: undefined,
+        shippingOptionDTag: undefined,
+      }),
+      supplierAllocation: allocation,
+    }
+    const item = createCartItemFromProduct(refreshedProduct)
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: [item],
+      rawItems: [item],
+      refreshedProducts: [refreshedProduct],
+      readShippingOptions: async () => {
+        throw new Error("Digital checkout must not read shipping options")
+      },
+      resolveProductFulfillment: async () => ({
+        status: "standard",
+        type: "digital",
+        product: refreshedProduct,
+      }),
+    })
+
+    expect(result.status).toBe("ok")
+    if (result.status !== "ok") throw new Error("Expected authorized items")
+    expect(result.listingReadProducts[0]).toBe(refreshedProduct)
+    expect(result.fulfillmentResolvedProducts[0]).toBe(refreshedProduct)
+    expect(result.listingReadProducts[0]).toEqual(
+      expect.objectContaining({
+        sourceEventId: revisionEventId,
+        supplierAllocation: allocation,
+      })
+    )
+    expect(result.shippingOptionEvidence).toEqual({
+      status: "not_required",
+      options: [],
+    })
   })
 
   it("preserves the selected variation snapshot and quantity", async () => {
@@ -495,9 +575,55 @@ describe("checkout authorization refresh", () => {
       },
     })
 
-    expect(result).toEqual({ status: "ok", items: [item] })
+    expect(result).toEqual({
+      status: "ok",
+      items: [item],
+      listingReadProducts: [refreshedProduct],
+      fulfillmentResolvedProducts: [refreshedProduct],
+      shippingOptionEvidence: { status: "not_required", options: [] },
+    })
     expect(shippingRead).toBe(false)
     expect(handlerAuthorizationCount).toBe(1)
+  })
+
+  it("retains distinct listing-read and pickup-catalog product sources", async () => {
+    const listingReadProduct = {
+      ...pickupProduct(),
+      sourceEventId: "1".repeat(64),
+    }
+    const catalogProduct = {
+      ...listingReadProduct,
+      sourceEventId: "2".repeat(64),
+    }
+    const fulfillment = pickupFulfillment()
+    const item = createCartItemFromProduct(catalogProduct, fulfillment)
+
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: [item],
+      rawItems: [item],
+      refreshedProducts: [listingReadProduct],
+      readShippingOptions: async () => {
+        throw new Error("Pickup checkout must not read standard shipping")
+      },
+      resolveProductFulfillment: async () => ({
+        status: "pickup",
+        product: catalogProduct,
+        fulfillment,
+      }),
+      authorizePickupHandlers: async () => undefined,
+    })
+
+    expect(result.status).toBe("ok")
+    if (result.status !== "ok") throw new Error("Expected authorized items")
+    expect(result.listingReadProducts[0]).toBe(listingReadProduct)
+    expect(result.fulfillmentResolvedProducts[0]).toBe(catalogProduct)
+    expect(result.listingReadProducts[0]?.sourceEventId).toBe("1".repeat(64))
+    expect(result.fulfillmentResolvedProducts[0]?.sourceEventId).toBe(
+      "2".repeat(64)
+    )
+    expect(result.items[0]?.productEventId).toBe("2".repeat(64))
+    expect(result.shippingOptionEvidence.status).toBe("not_required")
   })
 
   it("authorizes a combined pickup line after its fiat quote refreshes", async () => {
@@ -576,6 +702,9 @@ describe("checkout authorization refresh", () => {
     expect(result).toEqual({
       status: "ok",
       items: [createCartItemFromProduct(refreshedProduct, current)],
+      listingReadProducts: [refreshedProduct],
+      fulfillmentResolvedProducts: [refreshedProduct],
+      shippingOptionEvidence: { status: "not_required", options: [] },
     })
   })
 
