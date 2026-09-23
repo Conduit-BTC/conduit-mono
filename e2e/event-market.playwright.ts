@@ -766,6 +766,51 @@ async function gotoAs(
     .toBe(syntheticIdentities[identity].pubkey)
 }
 
+async function seedSyntheticConduitPerspective(page: Page): Promise<void> {
+  await page.route("**/src/lib/defaultMarketPerspective.ts*", async (route) => {
+    const response = await route.fetch()
+    const source = await response.text()
+    const marker = "const DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS_RAW = `"
+    const contentStart = source.indexOf(marker) + marker.length
+    const contentEnd = source.indexOf("`", contentStart)
+    if (contentStart < marker.length || contentEnd < contentStart) {
+      throw new Error("Synthetic Conduit perspective module marker is missing.")
+    }
+    await route.fulfill({
+      response,
+      body: `${source.slice(0, contentStart)}${ORGANIZER_PUBKEY}${source.slice(contentEnd)}`,
+    })
+  })
+}
+
+async function readSyntheticConduitPerspective(page: Page): Promise<{
+  organizerApproved: boolean
+  merchantApproved: boolean
+}> {
+  return page.evaluate(
+    async ({ organizerPubkey, merchantPubkey }) => {
+      const modulePath = "/src/lib/defaultMarketPerspective.ts"
+      const perspective = (await import(/* @vite-ignore */ modulePath)) as {
+        DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS: string[]
+      }
+      return {
+        organizerApproved:
+          perspective.DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.includes(
+            organizerPubkey
+          ),
+        merchantApproved:
+          perspective.DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS.includes(
+            merchantPubkey
+          ),
+      }
+    },
+    {
+      organizerPubkey: ORGANIZER_PUBKEY,
+      merchantPubkey: MERCHANT_PUBKEY,
+    }
+  )
+}
+
 function uniquePublishedEvents(
   publications: readonly PublishedEvent[]
 ): SignedEvent[] {
@@ -2160,7 +2205,10 @@ async function publishMerchantProductFromEvent(
     .click()
   if (options.rejectAcceptanceOnce) {
     await expect(
-      editor.getByRole("button", { name: "Retry acceptance", exact: true })
+      editor.getByRole("button", {
+        name: "Retry exact acceptance",
+        exact: true,
+      })
     ).toBeVisible({ timeout: 30_000 })
     await expect(
       editor.getByRole("button", {
@@ -2175,7 +2223,7 @@ async function publishMerchantProductFromEvent(
     ).toHaveLength(1)
     relay.rejectKind(30405, false)
     await editor
-      .getByRole("button", { name: "Retry acceptance", exact: true })
+      .getByRole("button", { name: "Retry exact acceptance", exact: true })
       .click()
   }
   await expect(
@@ -3542,6 +3590,173 @@ test("Market Events browses the same perspective on desktop, mobile, and keyboar
   await expect(
     page.getByRole("heading", { name: "Synthetic Timeline Event" })
   ).toBeVisible({ timeout: 60_000 })
+})
+
+test("approved event organizers expose accepted non-marketplace merchant products to guest and combined shoppers @market", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000)
+  const relay = createRelayHarness()
+  const now = Math.floor(Date.now() / 1000)
+  const startDate = new Date((now + 86_400) * 1_000).toISOString().slice(0, 10)
+  const endDate = new Date((now + 172_800) * 1_000).toISOString().slice(0, 10)
+  const calendarCoordinate = `31922:${ORGANIZER_PUBKEY}:approved-organizer-event`
+  const collectionCoordinate = `30405:${ORGANIZER_PUBKEY}:approved-organizer-catalog`
+  const pickupCoordinate = `30406:${ORGANIZER_PUBKEY}:approved-organizer-pickup`
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31922,
+    created_at: now - 60,
+    content: "Synthetic approved organizer event.",
+    tags: [
+      ["d", "approved-organizer-event"],
+      ["title", "Synthetic approved organizer event"],
+      ["start", startDate],
+      ["end", endDate],
+      ["location", "Synthetic Fixture Hall"],
+    ],
+  })
+  const pickup = signEvent(ORGANIZER_SECRET, {
+    kind: 30406,
+    created_at: now - 60,
+    content: "",
+    tags: [
+      ["d", "approved-organizer-pickup"],
+      ["title", "Synthetic organizer pickup"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Synthetic Fixture Hall"],
+    ],
+  })
+  const product = createMerchantProductEvent({
+    dTag: "non-marketplace-event-product",
+    title: "Synthetic event-only merchant product",
+    collectionCoordinate,
+    pickupCoordinate,
+    createdAt: now - 30,
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: now - 20,
+    content: "Synthetic accepted merchant product.",
+    tags: [
+      ["d", "approved-organizer-catalog"],
+      ["title", "Synthetic approved organizer event"],
+      ["a", calendarCoordinate],
+      ["a", eventCoordinate(product)],
+      ["shipping_option", pickupCoordinate],
+    ],
+  })
+  relay.seed(
+    calendar,
+    pickup,
+    product,
+    collection,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 10002,
+      created_at: collection.created_at,
+      content: "",
+      tags: [["r", FIXTURE_RELAY]],
+    }),
+    signEvent(MERCHANT_SECRET, {
+      kind: 10002,
+      created_at: product.created_at,
+      content: "",
+      tags: [["r", FIXTURE_RELAY]],
+    }),
+    createFollowList("buyer", [ORGANIZER_PUBKEY], now + 1)
+  )
+
+  const exerciseShopper = async (identity: "guest" | "buyer") => {
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    page.setDefaultTimeout(30_000)
+    page.setDefaultNavigationTimeout(30_000)
+    try {
+      await installSyntheticEnvironment(page, relay)
+      await seedSyntheticConduitPerspective(page)
+      if (identity === "buyer") {
+        await gotoAs(page, marketUrl, "/products", "buyer")
+      } else {
+        await page.goto(`${marketUrl}/products`)
+      }
+      expect(await readSyntheticConduitPerspective(page)).toEqual({
+        organizerApproved: true,
+        merchantApproved: false,
+      })
+
+      await page
+        .getByRole("navigation", { name: "Market browse" })
+        .getByRole("link", { name: "Events", exact: true })
+        .click()
+      await expect(page).toHaveURL(/\/events(?:\?|$)/)
+      if (identity === "guest") {
+        await expect(
+          page.getByRole("group", { name: "Market perspective" })
+        ).toHaveCount(0)
+      } else {
+        await expect(
+          page.getByRole("button", {
+            name: "Following + Conduit",
+            exact: true,
+          })
+        ).toHaveAttribute("aria-pressed", "true")
+      }
+
+      const eventCard = page.getByRole("button", {
+        name: /^Open Synthetic approved organizer event\./,
+      })
+      await expect(eventCard).toBeVisible({ timeout: 60_000 })
+      await eventCard.click()
+      await expect
+        .poll(() => {
+          const reference = new URL(page.url()).pathname.split("/").at(-1)
+          if (!reference) return null
+          const decoded = nip19.decode(reference)
+          return decoded.type === "naddr"
+            ? {
+                kind: decoded.data.kind,
+                pubkey: decoded.data.pubkey,
+                identifier: decoded.data.identifier,
+              }
+            : null
+        })
+        .toEqual({
+          kind: 30405,
+          pubkey: ORGANIZER_PUBKEY,
+          identifier: "approved-organizer-catalog",
+        })
+      await expect(
+        page.getByRole("heading", {
+          name: "Synthetic approved organizer event",
+          exact: true,
+        })
+      ).toBeVisible({ timeout: 60_000 })
+
+      const productCard = page
+        .getByRole("listitem")
+        .filter({ hasText: "Synthetic event-only merchant product" })
+      await expect(productCard).toBeVisible({ timeout: 60_000 })
+      const add = productCard.getByRole("button", {
+        name: "Add",
+        exact: true,
+      })
+      await expect(add).toBeEnabled()
+      await add.click()
+      await expect
+        .poll(() => readCanonicalCartLines(page))
+        .toEqual([{ productId: eventCoordinate(product), quantity: 1 }])
+    } finally {
+      await context.close()
+    }
+  }
+
+  await test.step("signed-out Conduit perspective", async () => {
+    await exerciseShopper("guest")
+  })
+  await test.step("signed-in Following + Conduit perspective", async () => {
+    await exerciseShopper("buyer")
+  })
 })
 
 test("late publish completion preserves a newly selected event @merchant", async ({
@@ -5085,6 +5300,14 @@ test("a stale event tab does not announce an add rejected at the stock limit @ma
     .getByRole("button", { name: "Add", exact: true })
   await expect(currentAdd).toBeEnabled({ timeout: 30_000 })
   await expect(staleAdd).toBeEnabled({ timeout: 30_000 })
+  for (const tab of [page, staleTab]) {
+    await expect(
+      tab
+        .getByRole("listitem")
+        .filter({ hasText: "Synthetic last-stock product" })
+        .getByText("Pickup from event organizer", { exact: true })
+    ).toBeVisible({ timeout: 30_000 })
+  }
 
   await currentAdd.click()
   await expect(
@@ -8430,17 +8653,40 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     ).toBeVisible()
   }
   await page.setViewportSize({ width: 1280, height: 900 })
-  await gotoAs(page, marketUrl, "/checkout", "buyer", {
-    merchant: nip19.npubEncode(MERCHANT_PUBKEY),
+  const checkoutLink = cartHud.getByRole("link", {
+    name: "Continue to checkout",
+    exact: true,
   })
+  await expect(checkoutLink).toHaveAttribute(
+    "href",
+    new RegExp(nip19.npubEncode(MERCHANT_PUBKEY))
+  )
+  const checkoutHref = await checkoutLink.getAttribute("href")
+  expect(checkoutHref).toBeTruthy()
+  const selectedPurchaseId = JSON.parse(
+    new URL(checkoutHref!, page.url()).searchParams.get("purchase") ?? "null"
+  ) as unknown
+  expect(typeof selectedPurchaseId).toBe("string")
+  expect(selectedPurchaseId).not.toBe("")
+  await checkoutLink.click()
+  await expect(page).toHaveURL(/\/checkout(?:\?|$)/)
+  expect(
+    JSON.parse(new URL(page.url()).searchParams.get("purchase") ?? "null")
+  ).toBe(selectedPurchaseId)
   await expect(cartHud).toBeHidden()
   await expect(
     page.getByRole("heading", { name: "Checkout", exact: true })
   ).toBeVisible({ timeout: 30_000 })
+  const orderSummary = page.locator("aside").filter({
+    has: page.getByRole("heading", { name: "Order summary", exact: true }),
+  })
   await expect(
-    page.getByText("Pickup from merchant booth", { exact: true }).first()
+    orderSummary.getByText(/^Pickup from merchant booth \u00b7 .+/)
   ).toBeVisible()
   await expect(page.getByText(/no organizer receipt is sent/i)).toHaveCount(0)
+  await expect(
+    page.getByText(/organizer receives a minimal private pickup receipt/i)
+  ).toHaveCount(0)
   await expect(page.getByText("Organizer pickup is not ready")).toHaveCount(0)
   await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
   await expect(page.getByLabel(/Email/i)).toHaveCount(0)
@@ -8576,18 +8822,39 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await expect(productCard.getByText("Free", { exact: true })).toBeVisible()
   await expect(productCard.getByText("0 sats", { exact: true })).toBeVisible()
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
-  await expect(
-    page.getByRole("region", { name: "Cart inventory" })
-  ).toBeVisible()
-
-  await gotoAs(page, marketUrl, "/checkout", "buyer", {
-    merchant: nip19.npubEncode(MERCHANT_PUBKEY),
+  const cartHud = page.getByRole("region", {
+    name: "Cart inventory",
+    exact: true,
   })
+  await expect(cartHud).toBeVisible()
+  const checkoutLink = cartHud.getByRole("link", {
+    name: "Continue to checkout",
+    exact: true,
+  })
+  await expect(checkoutLink).toHaveAttribute(
+    "href",
+    new RegExp(nip19.npubEncode(MERCHANT_PUBKEY))
+  )
+  const checkoutHref = await checkoutLink.getAttribute("href")
+  expect(checkoutHref).toBeTruthy()
+  const selectedPurchaseId = JSON.parse(
+    new URL(checkoutHref!, page.url()).searchParams.get("purchase") ?? "null"
+  ) as unknown
+  expect(typeof selectedPurchaseId).toBe("string")
+  expect(selectedPurchaseId).not.toBe("")
+  await checkoutLink.click()
+  await expect(page).toHaveURL(/\/checkout(?:\?|$)/)
+  expect(
+    JSON.parse(new URL(page.url()).searchParams.get("purchase") ?? "null")
+  ).toBe(selectedPurchaseId)
   await expect(
     page.getByRole("heading", { name: "Checkout", exact: true })
   ).toBeVisible({ timeout: 30_000 })
+  const orderSummary = page.locator("aside").filter({
+    has: page.getByRole("heading", { name: "Order summary", exact: true }),
+  })
   await expect(
-    page.getByText("Pickup from event organizer", { exact: true }).first()
+    orderSummary.getByText(/^Pickup from event organizer \u00b7 .+/)
   ).toBeVisible()
   await expect(page.getByText(/No payment is required/)).toHaveCount(0)
   await expect(page.getByText("Free", { exact: true }).first()).toBeVisible()
@@ -8600,9 +8867,84 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
   await expect(page.getByLabel(/Email/i)).toHaveCount(0)
   await expect(page.getByLabel(/Phone/i)).toHaveCount(0)
+  const organizerDisclosure = page.getByText(
+    /organizer receives a minimal private pickup receipt/i
+  )
+  await expect(organizerDisclosure).toBeVisible()
+  await expect(organizerDisclosure).toContainText(
+    "Contact details, addresses, notes, invoices, and payment secrets are not shared."
+  )
   await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
     { timeout: 30_000 }
   )
+  const sendOrderButton = page.getByRole("button", { name: /^Send order$/i })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await sendOrderButton.scrollIntoViewIfNeeded()
+  await expect(organizerDisclosure).toBeVisible()
+  await expect(sendOrderButton).toBeVisible()
+  const sendOrderElement = await sendOrderButton.elementHandle()
+  if (!sendOrderElement) throw new Error("Send order button was not rendered.")
+  const mobileBounds = await organizerDisclosure.evaluate(
+    (disclosure, button) => {
+      const disclosureBounds = disclosure.getBoundingClientRect()
+      const buttonBounds = button.getBoundingClientRect()
+      const disclosureStyle = getComputedStyle(disclosure)
+      const disclosureRange = document.createRange()
+      disclosureRange.selectNodeContents(disclosure)
+      const textBounds = Array.from(disclosureRange.getClientRects())
+      return {
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        pageWidth: document.documentElement.scrollWidth,
+        disclosure: {
+          left: disclosureBounds.left,
+          right: disclosureBounds.right,
+          top: disclosureBounds.top,
+          bottom: disclosureBounds.bottom,
+          width: disclosureBounds.width,
+        },
+        button: {
+          left: buttonBounds.left,
+          right: buttonBounds.right,
+          top: buttonBounds.top,
+          bottom: buttonBounds.bottom,
+        },
+        textLineWidths: textBounds.map((bounds) => bounds.width),
+        fontSize: Number.parseFloat(disclosureStyle.fontSize),
+      }
+    },
+    sendOrderElement
+  )
+  expect(mobileBounds.viewportWidth).toBe(390)
+  expect(mobileBounds.viewportHeight).toBe(844)
+  expect(mobileBounds.pageWidth).toBeLessThanOrEqual(mobileBounds.viewportWidth)
+  expect(mobileBounds.disclosure.left).toBeGreaterThanOrEqual(0)
+  expect(mobileBounds.disclosure.right).toBeLessThanOrEqual(
+    mobileBounds.viewportWidth
+  )
+  expect(mobileBounds.button.left).toBeGreaterThanOrEqual(0)
+  expect(mobileBounds.button.right).toBeLessThanOrEqual(
+    mobileBounds.viewportWidth
+  )
+  expect(mobileBounds.disclosure.top).toBeGreaterThanOrEqual(0)
+  expect(mobileBounds.disclosure.bottom).toBeLessThanOrEqual(
+    mobileBounds.viewportHeight
+  )
+  expect(mobileBounds.button.top).toBeGreaterThanOrEqual(0)
+  expect(mobileBounds.button.bottom).toBeLessThanOrEqual(
+    mobileBounds.viewportHeight
+  )
+  expect(mobileBounds.disclosure.bottom).toBeLessThanOrEqual(
+    mobileBounds.button.top
+  )
+  expect(mobileBounds.textLineWidths.length).toBeGreaterThan(0)
+  expect(Math.max(...mobileBounds.textLineWidths)).toBeLessThanOrEqual(
+    mobileBounds.disclosure.width + 1
+  )
+  expect(mobileBounds.disclosure.width).toBeGreaterThanOrEqual(
+    mobileBounds.fontSize * 20
+  )
+  await page.setViewportSize({ width: 1440, height: 900 })
 
   const orderPublishStart = relay.publications.length
   await page.getByRole("button", { name: /^Send order$/i }).click()

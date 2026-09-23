@@ -327,7 +327,7 @@ describe("checkout completion navigation contracts", () => {
       'authSignerReadiness === "pending" || restorePendingPubkey !== null'
     )
     expect(checkoutRoute).toContain(
-      'const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"'
+      '!authPending && !accountPubkey && authSignerReadiness === "disconnected"'
     )
   })
 

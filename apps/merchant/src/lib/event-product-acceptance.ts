@@ -3,6 +3,7 @@ import {
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
   loadOrganizerEventMarketDeliveryOutbox,
+  mergeMerchantOrganizerDeliveryProgress,
   parseOrganizerEventMarketReference,
   publishMerchantOrganizerMembership,
   reconcileMerchantOrganizerCollectionEvidence,
@@ -21,7 +22,11 @@ const acceptanceDependencies = {
 }
 
 function needsExactRetry(record: MerchantOrganizerRecordDelivery): boolean {
-  return record.acknowledgedCount === 0
+  return (
+    record.acknowledgedCount === 0 ||
+    record.rejectedCount > 0 ||
+    record.timedOutCount > 0
+  )
 }
 
 function compareAddressableRevision(
@@ -52,6 +57,20 @@ function newerSignedDelivery(
     : right
 }
 
+function strongestSignedDelivery(
+  input: MerchantOrganizerRecordDelivery,
+  saved: MerchantOrganizerRecordDelivery
+): MerchantOrganizerRecordDelivery {
+  if (
+    input.signedEvent?.id &&
+    input.signedEvent.id === saved.signedEvent?.id &&
+    input.record === saved.record
+  ) {
+    return mergeMerchantOrganizerDeliveryProgress(input, saved)
+  }
+  return newerSignedDelivery(input, saved)
+}
+
 /** A product signature requests participation; only a collection signature accepts it. */
 export async function acceptOwnEventProduct(
   input: {
@@ -61,7 +80,6 @@ export async function acceptOwnEventProduct(
     shouldContinue?: () => boolean
     marketReference: string
     productCoordinate: string
-    signedAcceptance?: MerchantOrganizerRecordDelivery | null
     onSignedAcceptance?: (record: MerchantOrganizerRecordDelivery) => void
   },
   dependencies = acceptanceDependencies
@@ -98,10 +116,7 @@ export async function acceptOwnEventProduct(
   const savedCollection = savedDeliveries[reference.coordinate]?.find(
     (record) => record.record === "collection"
   )
-  const retainedCollection =
-    input.signedAcceptance && savedCollection
-      ? newerSignedDelivery(input.signedAcceptance, savedCollection)
-      : (input.signedAcceptance ?? savedCollection ?? null)
+  const retainedCollection = savedCollection ?? null
   const reconciledMarket = reconcileMerchantOrganizerCollectionEvidence(
     market,
     retainedCollection
@@ -114,64 +129,158 @@ export async function acceptOwnEventProduct(
       : 1
     : -1
   const retainedIsCurrent = retainedComparison >= 0
-  const retryAcceptance =
+  if (
     retainedCollection &&
     retainedIsCurrent &&
-    (retainedCollection === input.signedAcceptance ||
-      needsExactRetry(retainedCollection))
-      ? retainedCollection
-      : null
+    needsExactRetry(retainedCollection) &&
+    reconciledMarket.productCoordinates.includes(input.productCoordinate)
+  ) {
+    throw new Error(
+      "A signed event acceptance is already saved. Retry that exact acceptance instead of signing another one."
+    )
+  }
 
   const save = (record: MerchantOrganizerRecordDelivery) => {
     // Persist before delivery so retry can reuse the exact signed collection.
     dependencies.save(organizer, reference.coordinate, record)
     input.onSignedAcceptance?.(record)
   }
-  let delivery: MerchantOrganizerRecordDelivery
-  if (retryAcceptance) {
-    const event = retryAcceptance.signedEvent
-    if (
-      !event ||
-      event.kind !== 30405 ||
-      event.pubkey !== organizer ||
-      !event.tags.some(
-        (tag) =>
-          tag[0] === "d" &&
-          `30405:${organizer}:${tag[1]}` === reference.coordinate
-      ) ||
-      !event.tags.some(
-        (tag) => tag[0] === "a" && tag[1] === input.productCoordinate
-      ) ||
-      !reconciledMarket.productCoordinates.includes(input.productCoordinate)
-    ) {
-      throw new Error(
-        "The event collection changed. Review this product in My events before accepting again."
-      )
-    }
-    delivery = await dependencies.retry({
-      organizerPubkey: organizer,
-      authenticatedPubkey: input.authenticatedPubkey,
-      shouldContinue: input.shouldContinue,
-      record: retryAcceptance,
-    })
-  } else if (
-    reconciledMarket.productCoordinates.includes(input.productCoordinate)
-  ) {
+  if (reconciledMarket.productCoordinates.includes(input.productCoordinate)) {
     return true
-  } else {
-    delivery = await dependencies.publish({
-      organizerPubkey: organizer,
-      authenticatedPubkey: input.authenticatedPubkey,
-      shouldContinue: input.shouldContinue,
-      market: reconciledMarket,
-      item,
-      action: "accept",
-      retainedCollection,
-      onSignedEvent: save,
-    })
   }
+  const delivery = await dependencies.publish({
+    organizerPubkey: organizer,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+    market: reconciledMarket,
+    item,
+    action: "accept",
+    retainedCollection,
+    onSignedEvent: save,
+  })
   save(delivery)
   if (delivery.acknowledgedCount === 0) {
+    throw new Error(
+      "Product published. Acceptance is signed but not delivered yet; retry acceptance."
+    )
+  }
+  return true
+}
+
+/** Retry only the supplied immutable collection acceptance; never sign anew. */
+export async function retryOwnEventProductAcceptance(
+  input: {
+    merchantPubkey: string
+    authenticatedPubkey: string | null
+    shouldContinue?: () => boolean
+    marketReference: string
+    productCoordinate: string
+    signedAcceptance: MerchantOrganizerRecordDelivery
+    onRetriedAcceptance?: (record: MerchantOrganizerRecordDelivery) => void
+  },
+  dependencies = acceptanceDependencies
+): Promise<boolean> {
+  const reference = parseOrganizerEventMarketReference(input.marketReference)
+  const organizer = reference.coordinate.split(":")[1]
+  if (organizer !== input.merchantPubkey) return false
+  if (
+    decodeProductReference(input.productCoordinate)?.authorPubkey !== organizer
+  ) {
+    throw new Error("Only your own product can be accepted automatically.")
+  }
+  const market = await dependencies.resolve(
+    input.marketReference,
+    organizer,
+    input.authenticatedPubkey,
+    undefined,
+    input.shouldContinue
+  )
+  const item = market.participation.find(
+    (candidate) => candidate.productCoordinate === input.productCoordinate
+  )
+  if (
+    !["active", "partial"].includes(market.state) ||
+    !item ||
+    !isParticipationProductPreviewVerified(item) ||
+    !isParticipationHandoffVerified(item, organizer)
+  ) {
+    throw new Error(
+      "Acceptance needs current signed product and pickup evidence; review this product in My events."
+    )
+  }
+  const savedDeliveries = dependencies.load(organizer)
+  const savedCollection = savedDeliveries[reference.coordinate]?.find(
+    (record) => record.record === "collection"
+  )
+  if (
+    !savedCollection?.signedEvent ||
+    savedCollection.signedEvent.id !== input.signedAcceptance.signedEvent?.id
+  ) {
+    throw new Error(
+      "The event collection changed. Review this product before accepting again."
+    )
+  }
+  const strongest = strongestSignedDelivery(
+    input.signedAcceptance,
+    savedCollection
+  )
+  const reconciledMarket = reconcileMerchantOrganizerCollectionEvidence(
+    market,
+    strongest
+  )
+  const event = strongest.signedEvent
+  const currentCollection = market.source?.collection
+  const retainedIsCurrent = event
+    ? currentCollection
+      ? compareAddressableRevision(event, currentCollection) >= 0
+      : true
+    : false
+  if (
+    !event ||
+    !retainedIsCurrent ||
+    event.kind !== 30405 ||
+    event.pubkey !== organizer ||
+    !event.tags.some(
+      (tag) =>
+        tag[0] === "d" &&
+        `30405:${organizer}:${tag[1]}` === reference.coordinate
+    ) ||
+    !event.tags.some(
+      (tag) => tag[0] === "a" && tag[1] === input.productCoordinate
+    ) ||
+    !reconciledMarket.productCoordinates.includes(input.productCoordinate)
+  ) {
+    throw new Error(
+      "The event collection changed. Review this product before accepting again."
+    )
+  }
+  if (!needsExactRetry(strongest)) return true
+  const delivery = await dependencies.retry({
+    organizerPubkey: organizer,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+    reference: reference.coordinate,
+    record: strongest,
+  })
+  const latestDeliveries = dependencies.load(organizer)[reference.coordinate]
+  const latestSavedCollection = latestDeliveries?.find(
+    (record) => record.record === "collection"
+  )
+  if (
+    !latestSavedCollection ||
+    latestSavedCollection.signedEvent?.id !== delivery.signedEvent?.id
+  ) {
+    throw new Error(
+      "The event collection changed. Review this product before accepting again."
+    )
+  }
+  const retainedDelivery = strongestSignedDelivery(
+    delivery,
+    latestSavedCollection
+  )
+  dependencies.save(organizer, reference.coordinate, retainedDelivery)
+  input.onRetriedAcceptance?.(retainedDelivery)
+  if (retainedDelivery.acknowledgedCount === 0) {
     throw new Error(
       "Product published. Acceptance is signed but not delivered yet; retry acceptance."
     )

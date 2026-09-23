@@ -19,6 +19,7 @@ import {
 export interface UseUpdateProfileOptions {
   authenticatedPubkey?: string | null
   authGeneration?: number
+  shouldContinue?: () => boolean
 }
 
 export function updateProfileQueryCache(
@@ -86,6 +87,7 @@ export function useUpdateProfile(
       const authGeneration = options.authGeneration
       const shouldContinue = authenticatedPubkey
         ? () =>
+            options.shouldContinue?.() !== false &&
             authorityRef.current.authenticatedPubkey === authenticatedPubkey &&
             authorityRef.current.authGeneration === authGeneration
         : undefined

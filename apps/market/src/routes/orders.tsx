@@ -55,6 +55,7 @@ import {
   OrderMessagesWidget,
   ProtectedInboxNotice,
   SearchInput,
+  SignerRecoveryNotice,
   RefreshChip,
   Select,
   SelectContent,
@@ -658,14 +659,18 @@ function OrderDetail({
   row,
   buyerPubkey,
   guestIdentity,
+  accountPubkey,
   authenticatedPubkey,
   paymentFocused = false,
+  signerReady,
 }: {
   row: OrderRow
   buyerPubkey: string
   guestIdentity?: GuestOrderSigningIdentity | null
+  accountPubkey?: string | null
   authenticatedPubkey?: string | null
   paymentFocused?: boolean
+  signerReady: boolean
 }) {
   const { vm, headerStatus } = row
   const currentViewRef = useRef(vm)
@@ -689,6 +694,7 @@ function OrderDetail({
   const shouldContinueBuyerSession = guestIdentity
     ? undefined
     : () => isAuthGenerationCurrent(authGeneration)
+  const actionsReady = !!guestIdentity || signerReady
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
@@ -697,7 +703,7 @@ function OrderDetail({
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
   const { data: profile } = useProfile(row.merchantPubkey, {
-    accountPubkey: authenticatedPubkey,
+    accountPubkey,
     authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
     maxUnresolvedRefetches: 1,
@@ -715,7 +721,7 @@ function OrderDetail({
     [vm.pickupFulfillments]
   )
   const eventActorProfiles = useProfiles(eventActorPubkeys, {
-    accountPubkey: authenticatedPubkey,
+    accountPubkey,
     authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
     enabled: eventActorPubkeys.length > 0,
@@ -734,10 +740,8 @@ function OrderDetail({
   const [busy, setBusy] = useState(false)
   const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
-  const [paymentAddressUpdate, setPaymentAddressUpdate] = useState<{
-    ctx: OrderPaymentContext
-    update: OrderPaymentAddressUpdate
-  } | null>(null)
+  const [paymentAddressUpdate, setPaymentAddressUpdate] =
+    useState<OrderPaymentAddressUpdate | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
@@ -757,6 +761,10 @@ function OrderDetail({
   const [priorInvoiceIndex, setPriorInvoiceIndex] = useState("0")
   const sparkFeeApproval = useSparkFeeApproval()
   const queryClient = useQueryClient()
+
+  useEffect(() => {
+    if (!actionsReady && sparkFeeApproval.quote) sparkFeeApproval.decline()
+  }, [actionsReady, sparkFeeApproval])
 
   useEffect(() => {
     if (
@@ -797,7 +805,7 @@ function OrderDetail({
     queryFn: ({ signal }) =>
       fetchStoreProducts(
         row.merchantPubkey,
-        authenticatedPubkey,
+        accountPubkey,
         authenticatedPubkey,
         () => !signal.aborted && shouldContinueAccountRead()
       ),
@@ -862,6 +870,7 @@ function OrderDetail({
     retryTarget?.type === "wallet" && !paymentWallet ? null : retryTarget
 
   function buildServiceCtx(): OrderPaymentContext | null {
+    if (!actionsReady) return null
     if (zeroCostPickupOrder) return null
     const lc = row.lifecycle
     if (!lc) return null
@@ -944,19 +953,28 @@ function OrderDetail({
     return ctx
   }
 
-  const withBusy = useCallback(async (fn: () => Promise<unknown>) => {
-    setBusy(true)
-    setRecoveryError(null)
-    try {
-      await fn()
-    } catch (error) {
-      setRecoveryError(
-        error instanceof Error ? error.message : "Payment recovery failed."
-      )
-    } finally {
-      setBusy(false)
-    }
-  }, [])
+  const withBusy = useCallback(
+    async (fn: () => Promise<unknown>) => {
+      if (!actionsReady) {
+        setRecoveryError(
+          "Reconnect your signer, review this order, then try again."
+        )
+        return
+      }
+      setBusy(true)
+      setRecoveryError(null)
+      try {
+        await fn()
+      } catch (error) {
+        setRecoveryError(
+          error instanceof Error ? error.message : "Payment recovery failed."
+        )
+      } finally {
+        setBusy(false)
+      }
+    },
+    [actionsReady]
+  )
 
   async function verifyRetryFreshness(): Promise<void> {
     const pickupFreshness = await verifyPickupCartFreshness(
@@ -988,7 +1006,7 @@ function OrderDetail({
     ) {
       const check = await checkOrderPaymentAddressUpdate(lifecycle, ctx)
       if (check.status === "updated") {
-        setPaymentAddressUpdate({ ctx, update: check.update })
+        setPaymentAddressUpdate(check.update)
         return
       }
       if (check.status === "current_address_unusable") {
@@ -1111,7 +1129,6 @@ function OrderDetail({
   async function confirmPaymentAddressUpdate(): Promise<void> {
     const pending = paymentAddressUpdate
     if (!pending) return
-    setPaymentAddressUpdate(null)
     assertGeneralPaymentRetryEligible()
     if (
       vm.phase === "cancelled" ||
@@ -1124,20 +1141,27 @@ function OrderDetail({
     }
     await verifyRetryFreshness()
     assertGeneralPaymentRetryEligible()
-    await runRetryPayment(pending.ctx, pending.update)
+    const ctx = buildServiceCtx()
+    if (!ctx) {
+      throw new Error(
+        "Payment details are unavailable. Refresh before retrying."
+      )
+    }
+    await runRetryPayment(ctx, pending)
+    setPaymentAddressUpdate((current) => (current === pending ? null : current))
   }
 
   async function continuePrivateFallback(): Promise<void> {
     assertGeneralPaymentRetryEligible()
     await verifyRetryFreshness()
     const ctx = await persistTargetAndBuildServiceCtx()
-    setPrivateFallbackOpen(false)
     assertGeneralPaymentRetryEligible()
     await runOrderPrivateFallback({
       ...ctx,
       shouldContinueBeforePaymentClaim: () =>
         isGeneralPaymentRetryEligible(currentViewRef.current),
     })
+    setPrivateFallbackOpen(false)
   }
 
   function isGeneralPaymentRetryEligible(current: OrderViewModel): boolean {
@@ -1388,6 +1412,7 @@ function OrderDetail({
   const replyMutation = useMutation({
     mutationFn: async () => {
       if (guestIdentity) throw new Error("Guest orders cannot send messages")
+      if (!signerReady) throw new Error("Reconnect your signer to send.")
       if (!replyText.trim()) throw new Error("Message is required")
       const ndk = getNdk()
       if (!ndk.signer) throw new Error("Signer not connected")
@@ -1613,7 +1638,7 @@ function OrderDetail({
           <ExternalWalletPanel
             vm={vm}
             pricing={shopperPricing}
-            busy={busy}
+            busy={busy || !actionsReady}
             guestSession={!!guestIdentity}
             autoDetectReceipt={autoDetectPublicReceipt}
             onBeforeInvoiceUse={beginMerchantInvoicePayment}
@@ -1703,6 +1728,7 @@ function OrderDetail({
                 className="h-11 px-4 text-sm"
                 disabled={
                   busy ||
+                  !actionsReady ||
                   wallets.loading ||
                   !selectedStoredPaymentTarget ||
                   !buildServiceCtx()
@@ -1721,6 +1747,7 @@ function OrderDetail({
                 className="h-10 px-4 text-sm"
                 disabled={
                   busy ||
+                  !actionsReady ||
                   wallets.loading ||
                   !selectedStoredPaymentTarget ||
                   !buildServiceCtx()
@@ -1734,7 +1761,7 @@ function OrderDetail({
               <Button
                 variant="outline"
                 className="h-10 px-4 text-sm"
-                disabled={busy}
+                disabled={busy || !actionsReady}
                 onClick={() =>
                   void withBusy(() =>
                     resendOrderProof(
@@ -1835,26 +1862,24 @@ function OrderDetail({
             <div>
               <dt className="text-[var(--text-secondary)]">Saved address</dt>
               <dd className="break-all">
-                {paymentAddressUpdate?.update.previousAddress}
+                {paymentAddressUpdate?.previousAddress}
               </dd>
             </div>
             <div>
               <dt className="text-[var(--text-secondary)]">Updated address</dt>
-              <dd className="break-all">
-                {paymentAddressUpdate?.update.newAddress}
-              </dd>
+              <dd className="break-all">{paymentAddressUpdate?.newAddress}</dd>
             </div>
           </dl>
           <AlertDialogFooter>
             <Button
               variant="outline"
-              disabled={busy}
+              disabled={busy || !actionsReady}
               onClick={() => setPaymentAddressUpdate(null)}
             >
               Cancel
             </Button>
             <Button
-              disabled={busy}
+              disabled={busy || !actionsReady}
               onClick={() => void withBusy(confirmPaymentAddressUpdate)}
             >
               Use updated address and retry
@@ -1888,7 +1913,10 @@ function OrderDetail({
             <Button
               type="button"
               disabled={
-                busy || !selectedStoredPaymentTarget || !buildServiceCtx()
+                busy ||
+                !actionsReady ||
+                !selectedStoredPaymentTarget ||
+                !buildServiceCtx()
               }
               onClick={() => {
                 void withBusy(continuePrivateFallback)
@@ -2151,6 +2179,7 @@ function OrderDetail({
           onReplyChange={setReplyText}
           onSend={() => replyMutation.mutate()}
           sending={replyMutation.isPending}
+          readOnly={!signerReady}
           error={
             replyMutation.error instanceof Error
               ? replyMutation.error.message
@@ -2208,12 +2237,25 @@ function DetailRow({
 type PhaseTab = "all" | "pending" | "in_progress" | "completed"
 
 function OrdersPage() {
-  const { pubkey, status, authGeneration } = useAuth()
+  const {
+    accountPubkey,
+    authGeneration,
+    connect,
+    pubkey,
+    remoteSignerRecovery,
+    signerReadiness,
+    status,
+  } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
-  const signerConnected = status === "connected" && !!pubkey
+  const signerConnected =
+    signerReadiness === "ready" &&
+    status === "connected" &&
+    !!accountPubkey &&
+    pubkey === accountPubkey
+  const hasAccount = !!accountPubkey
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const shopperPricing = useShopperPricing()
@@ -2224,14 +2266,13 @@ function OrdersPage() {
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
   const [changeOrderOpen, setChangeOrderOpen] = useState(false)
+  const [signerReconnectPending, setSignerReconnectPending] = useState(false)
   const [, setGuestSessionEpoch] = useState(0)
   const guestIdentity =
-    !signerConnected && selectedFromUrl
+    !hasAccount && selectedFromUrl
       ? getSessionGuestOrderSigningIdentity(selectedFromUrl)
       : null
-  const activeBuyerPubkey = signerConnected
-    ? pubkey
-    : (guestIdentity?.pubkey ?? null)
+  const activeBuyerPubkey = accountPubkey ?? guestIdentity?.pubkey ?? null
   useEffect(() => {
     if (!guestIdentity) return
     const delayMs = Math.max(0, guestIdentity.expiresAt - Date.now())
@@ -2253,7 +2294,7 @@ function OrdersPage() {
     ],
     enabled: !!activeBuyerPubkey,
     queryFn: async () => {
-      if (signerConnected) {
+      if (hasAccount) {
         const rows = await listOrderLifecycles(activeBuyerPubkey!)
         return Promise.all(
           rows.map((lifecycle) => reconcileOrderPaymentForDisplay(lifecycle))
@@ -2276,7 +2317,7 @@ function OrdersPage() {
   })
   const cachedMessagesQuery = useQuery({
     queryKey: ["buyer-messages", activeBuyerPubkey ?? "none"],
-    enabled: signerConnected,
+    enabled: hasAccount,
     queryFn: () => fetchCachedBuyerConversations(activeBuyerPubkey!),
     staleTime: 5_000,
   })
@@ -2289,6 +2330,15 @@ function OrdersPage() {
     }
     await Promise.all(refreshes)
   }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
+
+  const reconnectSigner = useCallback(async () => {
+    setSignerReconnectPending(true)
+    try {
+      await connect({ mode: "restore" })
+    } finally {
+      setSignerReconnectPending(false)
+    }
+  }, [connect])
 
   useEffect(() => {
     const refetchAfterResume = () => {
@@ -2357,7 +2407,9 @@ function OrdersPage() {
       for (const lifecycle of lifecycles) {
         if (!canObserveOrderPublicZapReceipt(lifecycle)) continue
         const identity =
-          guestIdentity?.orderId === lifecycle.orderId
+          guestIdentity?.orderId === lifecycle.orderId &&
+          guestIdentity.pubkey === lifecycle.buyerPubkey &&
+          guestIdentity.merchantPubkey === lifecycle.merchantPubkey
             ? guestIdentity
             : undefined
         void observeOrderPublicZapReceipt(
@@ -2368,7 +2420,13 @@ function OrdersPage() {
           signerConnected ? activeBuyerPubkey : null,
           identity
             ? undefined
-            : () => authGenerationRef.current === authGeneration
+            : () => authGenerationRef.current === authGeneration,
+          {
+            mode:
+              identity || signerConnected
+                ? "observe_and_deliver"
+                : "observe_only",
+          }
         )
       }
     }
@@ -2446,7 +2504,7 @@ function OrdersPage() {
     [orders]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
-    accountPubkey: signerConnected ? activeBuyerPubkey : null,
+    accountPubkey: hasAccount ? activeBuyerPubkey : null,
     authenticatedPubkey: signerConnected ? activeBuyerPubkey : null,
     shouldContinue: () => authGenerationRef.current === authGeneration,
     enabled: merchantPubkeys.length > 0,
@@ -2596,6 +2654,16 @@ function OrdersPage() {
         </div>
       )}
 
+      {remoteSignerRecovery ? (
+        <SignerRecoveryNotice
+          description="Your locally saved orders, selected order, reply draft, and payment choice remain available. Reconnect, review the current order, then explicitly retry or send."
+          reconnecting={signerReconnectPending || status === "restoring"}
+          restoreFailed={!!remoteSignerRecovery.restoreError}
+          restoreFailureDescription="That saved signer connection could not be restored. No message, receipt, or payment retry was sent."
+          onReconnect={reconnectSigner}
+        />
+      ) : null}
+
       {!activeBuyerPubkey && (
         <EmptyState
           title={
@@ -2629,14 +2697,14 @@ function OrdersPage() {
         (!signerConnected ||
           (!paymentFocused && protectedOrdersReadState === "complete")) && (
           <EmptyState
-            title={signerConnected ? "No orders yet" : "Guest order not found"}
+            title={hasAccount ? "No orders yet" : "Guest order not found"}
             body={
-              signerConnected
+              hasAccount
                 ? "Place your first order and it will appear here with live status."
                 : "This guest order is not available in local order history on this device."
             }
             action={
-              signerConnected ? (
+              hasAccount ? (
                 <Button asChild className="h-11 px-4 text-sm">
                   <Link to="/products">Browse products</Link>
                 </Button>
@@ -2750,12 +2818,14 @@ function OrdersPage() {
           <section className="min-w-0">
             {selectedRow ? (
               <OrderDetail
-                key={selectedRow.orderId}
+                key={`${activeBuyerPubkey}:${selectedRow.orderId}`}
                 row={selectedRow}
                 buyerPubkey={activeBuyerPubkey}
                 guestIdentity={guestIdentity}
+                accountPubkey={hasAccount ? activeBuyerPubkey : null}
                 authenticatedPubkey={signerConnected ? activeBuyerPubkey : null}
                 paymentFocused={paymentFocused}
+                signerReady={signerConnected}
               />
             ) : (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">

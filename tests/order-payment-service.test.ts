@@ -5,6 +5,7 @@ import {
   claimOrderLifecyclePayment as claimOrderLifecyclePaymentProduction,
   createSelectedProfileContext,
   decodeLightningInvoicePaymentHash,
+  ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
   patchClaimedOrderLifecyclePayment as patchClaimedOrderLifecyclePaymentProduction,
   validateLightningInvoiceForPayment,
   weblnSendPayment,
@@ -32,6 +33,11 @@ import {
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
 import { buildZapRequestContent } from "../apps/market/src/lib/checkout-payment"
+import {
+  clearSessionGuestOrderSigningIdentity,
+  createSessionGuestOrderSigningIdentity,
+  getSessionGuestOrderSigningIdentity,
+} from "../apps/market/src/lib/guest-order-identity"
 import {
   AMBIGUOUS_PAYMENT_WARNING,
   payCheckoutInvoice,
@@ -2825,6 +2831,257 @@ describe("runOrderPayment", () => {
 
     expect(observed).toMatchObject({
       paymentStatus: "paid",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
+  })
+
+  it("defers proof signing when a resumed observer finds a receipt", async () => {
+    const orderId = "observe-only-zapout-settlement"
+    const waiting = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      zapReceiptStatus: "waiting",
+      zapRequestId: "zap-request-id",
+      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+      zapLnurl: "lnurl1test",
+      zapReceiptPubkey: "a".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: Date.now() + 60_000,
+    })
+    const observed = lifecycle({
+      ...waiting,
+      paymentStatus: "paid",
+      proofDeliveryStatus: "retry_needed",
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
+    const receipt = {
+      id: "f".repeat(64),
+      rawEvent: () => ({ id: "f".repeat(64) }),
+    } as unknown as NDKEvent
+    let recordedProofStatus: string | undefined
+    let recordedClaimId: string | undefined
+    let persistedProofStatus: string | undefined
+    let proofDeliveries = 0
+
+    await observeOrderPublicZapReceipt(
+      orderId,
+      undefined,
+      {
+        getOrderLifecycle: async () => waiting,
+        waitForZapReceipt: async () => receipt,
+        recordObservedOrderPaymentReceipt: async (_orderId, input) => {
+          recordedProofStatus = input.proofDeliveryStatus
+          recordedClaimId = input.proofDeliveryClaimId
+          return {
+            status: "recorded",
+            lifecycle: observed,
+            proofDeliveryClaimed: false,
+          }
+        },
+        savePaymentAttempt: async (attempt) => {
+          persistedProofStatus = attempt.proofDeliveryStatus
+        },
+        deliverReceiptLinkedProof: async () => {
+          proofDeliveries += 1
+        },
+      },
+      null,
+      null,
+      undefined,
+      { mode: "observe_only" }
+    )
+
+    expect(recordedProofStatus).toBe("retry_needed")
+    expect(recordedClaimId).toBeUndefined()
+    expect(persistedProofStatus).toBe("retry_needed")
+    expect(proofDeliveries).toBe(0)
+  })
+
+  it("delivers the exact receipt proof after a same-order guest resumes", async () => {
+    const orderId = "guest-receipt-resume"
+    const merchantPubkey = "b".repeat(64)
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value)
+      },
+      removeItem: (key: string) => {
+        values.delete(key)
+      },
+    }
+    createSessionGuestOrderSigningIdentity(orderId, merchantPubkey, { storage })
+    const guestIdentity = getSessionGuestOrderSigningIdentity(orderId, storage)
+    expect(guestIdentity).not.toBeNull()
+    if (!guestIdentity) throw new Error("Expected a same-tab guest identity")
+    const waiting = lifecycle({
+      orderId,
+      buyerPubkey: guestIdentity.pubkey,
+      buyerIdentityKind: "guest_ephemeral",
+      merchantPubkey,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      zapReceiptStatus: "waiting",
+      zapRequestId: "guest-zap-request",
+      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+      zapLnurl: "lnurl1test",
+      zapReceiptPubkey: "a".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: Date.now() + 60_000,
+      createdAt: Date.now(),
+    })
+    const receiptId = "f".repeat(64)
+    const receipt = {
+      id: receiptId,
+      rawEvent: () => ({ id: receiptId }),
+    } as unknown as NDKEvent
+    let proofDeliveries = 0
+    let persistedProofStatus: string | undefined
+    let recordedProofStatus: string | undefined
+    let recordedClaimId: string | undefined
+    let deliveredOrderId: string | undefined
+    let deliveredReceiptId: string | undefined
+    let deliveredIdentity: typeof guestIdentity | undefined
+    let deliveredClaimId: string | undefined
+    let deliveredAccountPubkey: string | null | undefined
+    let deliveredAuthenticatedPubkey: string | null | undefined
+
+    await observeOrderPublicZapReceipt(
+      orderId,
+      guestIdentity,
+      {
+        getOrderLifecycle: async () => waiting,
+        waitForZapReceipt: async () => receipt,
+        recordObservedOrderPaymentReceipt: async (_orderId, input) => {
+          recordedProofStatus = input.proofDeliveryStatus
+          recordedClaimId = input.proofDeliveryClaimId
+          return {
+            status: "recorded",
+            lifecycle: {
+              ...waiting,
+              paymentStatus: "paid",
+              zapReceiptStatus: "observed",
+              zapReceiptId: receiptId,
+              proofDeliveryClaimId: input.proofDeliveryClaimId,
+            },
+            proofDeliveryClaimed: true,
+          }
+        },
+        savePaymentAttempt: async (attempt) => {
+          persistedProofStatus = attempt.proofDeliveryStatus
+        },
+        deliverReceiptLinkedProof: async (
+          updated,
+          identity,
+          claimId,
+          accountPubkey,
+          authenticatedPubkey
+        ) => {
+          proofDeliveries += 1
+          deliveredOrderId = updated.orderId
+          deliveredReceiptId = updated.zapReceiptId
+          deliveredIdentity = identity as typeof guestIdentity
+          deliveredClaimId = claimId
+          deliveredAccountPubkey = accountPubkey
+          deliveredAuthenticatedPubkey = authenticatedPubkey
+        },
+      },
+      null,
+      null,
+      undefined,
+      { mode: "observe_and_deliver" }
+    )
+
+    expect(recordedProofStatus).toBe("pending")
+    expect(recordedClaimId).toBeDefined()
+    expect(persistedProofStatus).toBe("pending")
+    expect(proofDeliveries).toBe(1)
+    expect(deliveredOrderId).toBe(orderId)
+    expect(deliveredReceiptId).toBe(receiptId)
+    expect(deliveredIdentity).toBe(guestIdentity)
+    expect(deliveredClaimId).toBe(recordedClaimId)
+    expect(deliveredAccountPubkey).toBeNull()
+    expect(deliveredAuthenticatedPubkey).toBeNull()
+    clearSessionGuestOrderSigningIdentity(orderId, storage)
+  })
+
+  it("persists a live proof-delivery owner after an observe-only receipt wait", async () => {
+    const orderId = "observe-only-live-proof-owner"
+    const proofDeliveryClaimedAt = Date.now()
+    const waiting = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      invoiceStatus: "received",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "pending",
+      zapReceiptStatus: "waiting",
+      zapRequestId: "zap-request-id",
+      zapRequestCreatedAt: Math.floor(Date.now() / 1_000) - 5,
+      zapLnurl: "lnurl1test",
+      zapReceiptPubkey: "a".repeat(64),
+      zapReceiptRelayUrls: ["wss://relay.example"],
+      zapReceiptObservationDeadline: Date.now() + 60_000,
+    })
+    const observed = lifecycle({
+      ...waiting,
+      paymentStatus: "paid",
+      proofDeliveryStatus: "pending",
+      proofDeliveryClaimId: "live-proof-owner",
+      proofDeliveryClaimedAt,
+      proofDeliveryClaimLeaseExpiresAt:
+        proofDeliveryClaimedAt + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
+      zapReceiptStatus: "observed",
+      zapReceiptId: "f".repeat(64),
+    })
+    const receipt = {
+      id: "f".repeat(64),
+      rawEvent: () => ({ id: "f".repeat(64) }),
+    } as unknown as NDKEvent
+    let proposedProofStatus: string | undefined
+    let persistedProofStatus: string | undefined
+
+    await observeOrderPublicZapReceipt(
+      orderId,
+      undefined,
+      {
+        getOrderLifecycle: async () => waiting,
+        waitForZapReceipt: async () => receipt,
+        recordObservedOrderPaymentReceipt: async (_orderId, input) => {
+          proposedProofStatus = input.proofDeliveryStatus
+          return {
+            status: "recorded",
+            lifecycle: observed,
+            proofDeliveryClaimed: false,
+          }
+        },
+        savePaymentAttempt: async (attempt) => {
+          persistedProofStatus = attempt.proofDeliveryStatus
+        },
+      },
+      null,
+      null,
+      undefined,
+      { mode: "observe_only" }
+    )
+
+    expect(proposedProofStatus).toBe("retry_needed")
+    expect(persistedProofStatus).toBe("pending")
+    expect(observed).toMatchObject({
+      proofDeliveryStatus: "pending",
+      proofDeliveryClaimId: "live-proof-owner",
+      proofDeliveryClaimedAt,
+      proofDeliveryClaimLeaseExpiresAt:
+        proofDeliveryClaimedAt + ORDER_PROOF_DELIVERY_CLAIM_LEASE_MS,
       zapReceiptStatus: "observed",
       zapReceiptId: "f".repeat(64),
     })

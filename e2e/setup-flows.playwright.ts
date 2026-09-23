@@ -1372,6 +1372,15 @@ test("merchant product drafts survive safe dialog dismissal @merchant", async ({
   page.once("dialog", (dialog) => dialog.accept())
   await page.getByRole("button", { name: "Discard changes" }).click()
   await expect(productDialog).not.toBeVisible()
+  expect(
+    await page.evaluate(
+      (pubkey) =>
+        localStorage.getItem(
+          `conduit:merchant:product_draft:v1:${pubkey}:create`
+        ) === null,
+      TEST_MERCHANT_PUBKEY
+    )
+  ).toBe(true)
 
   await addProduct.click()
   await expect(productDialog).toBeVisible({ timeout: 30_000 })

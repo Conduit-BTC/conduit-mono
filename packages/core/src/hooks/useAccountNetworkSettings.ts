@@ -441,10 +441,7 @@ export function useAccountNetworkSettings(
   const session = useConduitSession()
   const queryClient = useQueryClient()
   const accountPreferences = session.accountNetworkPreferences
-  const accountPubkey =
-    auth.status === "connected"
-      ? (auth.pubkey?.trim().toLowerCase() ?? null)
-      : null
+  const accountPubkey = auth.accountPubkey?.trim().toLowerCase() ?? null
   const [operation, setOperation] =
     useState<AccountNetworkSettingsOperationView>(EMPTY_OPERATION)
   const [local, setLocal] = useState<ScopedLocalState>({
@@ -512,7 +509,7 @@ export function useAccountNetworkSettings(
         error: operationErrorMessage(error),
       })
     }
-  }, [accountPubkey, auth.authGeneration, session.relayScope])
+  }, [accountPubkey, session.relayScope])
 
   const activeLocal = local.pubkey === accountPubkey ? local : null
   const reconciliation = accountPreferences.reconciliation
@@ -622,15 +619,9 @@ export function useAccountNetworkSettings(
       }),
     [accountPubkey, activeLocal?.state, baseView, reconciliation]
   )
-  const revisionRef = useRef(revision)
-
-  useLayoutEffect(() => {
-    revisionRef.current = revision
-  }, [revision])
-
-  const mediaServerPreferences = useMediaServerPreferences(auth.pubkey, {
+  const mediaServerPreferences = useMediaServerPreferences(accountPubkey, {
     enabled: session.relaySettingsReady,
-    authenticatedPubkey: auth.status === "connected" ? auth.pubkey : null,
+    authenticatedPubkey: auth.signerReadiness === "ready" ? auth.pubkey : null,
     signer: auth.signer,
     authMethod: auth.method,
     authGeneration: auth.authGeneration,
@@ -638,19 +629,24 @@ export function useAccountNetworkSettings(
   })
 
   const captureAccount = useCallback((): AccountFenceSnapshot => {
-    if (auth.status !== "connected" || !auth.pubkey) {
+    if (!accountPubkey) {
       throw new Error("Connect your signer to manage Network preferences.")
     }
     return {
       status: auth.status,
-      pubkey: auth.pubkey.trim().toLowerCase(),
+      pubkey: accountPubkey,
       generation: auth.authGeneration,
     }
-  }, [auth.authGeneration, auth.pubkey, auth.status])
+  }, [accountPubkey, auth.authGeneration, auth.status])
 
   const captureAuth = useCallback((): AuthFenceSnapshot => {
     const account = captureAccount()
-    if (!auth.signer || !auth.method) {
+    if (
+      auth.signerReadiness !== "ready" ||
+      !auth.signer ||
+      !auth.method ||
+      auth.pubkey?.trim().toLowerCase() !== account.pubkey
+    ) {
       throw new Error(
         "Connect a NIP-07 or NIP-46 signer to update Network preferences."
       )
@@ -660,14 +656,20 @@ export function useAccountNetworkSettings(
       signer: auth.signer,
       method: auth.method,
     }
-  }, [auth.method, auth.signer, captureAccount])
+  }, [
+    auth.method,
+    auth.pubkey,
+    auth.signer,
+    auth.signerReadiness,
+    captureAccount,
+  ])
 
   const accountFenceFor = useCallback((snapshot: AccountFenceSnapshot) => {
     return () => {
       const current = authRef.current
       return (
         current.status === snapshot.status &&
-        current.pubkey?.trim().toLowerCase() === snapshot.pubkey &&
+        current.accountPubkey?.trim().toLowerCase() === snapshot.pubkey &&
         current.authGeneration === snapshot.generation
       )
     }
@@ -680,6 +682,7 @@ export function useAccountNetworkSettings(
         const current = authRef.current
         return (
           accountFence() &&
+          current.signerReadiness === "ready" &&
           current.signer === snapshot.signer &&
           current.method === snapshot.method
         )
@@ -691,11 +694,13 @@ export function useAccountNetworkSettings(
   const requireReviewState = useCallback(() => {
     if (
       !reconciliation ||
-      accountPreferences.status !== "ready" ||
+      !accountPreferences.localReady ||
       !activeLocal?.ready ||
       !activeLocal.state
     ) {
-      throw new Error("Finish the fresh Network check before making changes.")
+      throw new Error(
+        "Wait for saved Network settings to load before making changes."
+      )
     }
     if (
       baseView.pendingExactDeliveries.some((pending) => pending.retryAvailable)
@@ -706,7 +711,7 @@ export function useAccountNetworkSettings(
     }
     return { reconciliation, localState: activeLocal.state }
   }, [
-    accountPreferences.status,
+    accountPreferences.localReady,
     activeLocal?.ready,
     activeLocal?.state,
     reconciliation,
@@ -720,7 +725,9 @@ export function useAccountNetworkSettings(
       if (!reconciliation || !activeLocal?.ready || !activeLocal.state) {
         return {
           valid: false,
-          errors: ["Finish the fresh Network check before making changes."],
+          errors: [
+            "Wait for saved Network settings to load before making changes.",
+          ],
           warnings: [],
         }
       }
@@ -747,7 +754,6 @@ export function useAccountNetworkSettings(
       kind: "save" | "remove",
       reviewed: ReviewedAccountNetworkMutation,
       authenticatedPubkey: string,
-      preparedRevision: string,
       shouldContinue: () => boolean,
       signer?: ReturnType<typeof createNdkNostrEventSigner>
     ): Promise<void> => {
@@ -757,11 +763,6 @@ export function useAccountNetworkSettings(
         if (!shouldContinue()) {
           throw new Error(
             "The active account or signer changed after this Network review."
-          )
-        }
-        if (revisionRef.current !== preparedRevision) {
-          throw new Error(
-            "Network evidence changed after review. Review the current preferences again."
           )
         }
         const result = await observeAccountNetworkInboxRepair({
@@ -841,16 +842,10 @@ export function useAccountNetworkSettings(
         ready.reconciliation,
         action
       )
-      if (!reviewed.evidenceReady) {
-        throw new Error(
-          "A complete fresh check of both signed Network preferences is required."
-        )
-      }
       const summary = preparedChangeSummary(reviewed)
       if (summary.changedObjects.length === 0) {
         throw new Error("These Network preferences are already current.")
       }
-      const preparedRevision = revision
       let shouldContinue: () => boolean
       let signer: ReturnType<typeof createNdkNostrEventSigner> | undefined
       let authenticatedPubkey: string
@@ -887,7 +882,6 @@ export function useAccountNetworkSettings(
             kind,
             reviewed,
             authenticatedPubkey,
-            preparedRevision,
             shouldContinue,
             signer
           )
@@ -902,7 +896,6 @@ export function useAccountNetworkSettings(
       captureAuth,
       executePreparedMutation,
       requireReviewState,
-      revision,
       validate,
     ]
   )

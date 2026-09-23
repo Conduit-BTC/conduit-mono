@@ -103,12 +103,12 @@ describe("Market verified zero-cost pickup route contract", () => {
       '["order_sent", "merchant_confirmation", "fulfillment", "complete"]'
     )
     expect(orders).toContain("if (zeroCostPickupOrder) return null")
-    expect(orders).toContain(
-      '!zeroCostPickupOrder && vm.paymentStatus === "failed"'
+    expect(orders).toMatch(
+      /!zeroCostPickupOrder &&\s+vm\.paymentStatus === "failed" &&\s+generalPaymentRetryEligible/
     )
     expect(orders).toContain("const wallets = useWallets()")
-    expect(orders).toContain(
-      'const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"'
+    expect(orders).toMatch(
+      /const showRetryPayment =\s+!zeroCostPickupOrder &&\s+vm\.paymentStatus === "failed" &&\s+generalPaymentRetryEligible/
     )
   })
 

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react"
 import {
   createFileRoute,
   type ShouldBlockFn,
@@ -9,6 +15,7 @@ import { useAccountNetworkSettings, useAuth } from "@conduit/core"
 import {
   Button,
   RelaySettingsPanel,
+  SignerRecoveryNotice,
   UnpublishedRelayChangesDialog,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
@@ -27,7 +34,14 @@ export const Route = createFileRoute("/network")({
 })
 
 function NetworkPage() {
-  const { pubkey } = useAuth()
+  const {
+    accountPubkey,
+    authGeneration,
+    connect,
+    remoteSignerRecovery,
+    signerReadiness,
+    status,
+  } = useAuth()
   const networkSettings = useAccountNetworkSettings({
     telemetryApp: "merchant",
   })
@@ -39,6 +53,7 @@ function NetworkPage() {
   >(null)
   const [hasUnpublishedRelayChanges, setHasUnpublishedRelayChanges] =
     useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
   const shouldBlockNavigation = useCallback<ShouldBlockFn>(
     ({ current, next }) =>
       hasUnpublishedRelayChanges && current.routeId !== next.routeId,
@@ -59,26 +74,35 @@ function NetworkPage() {
     blocker.proceed()
   }, [blocker])
 
-  useEffect(() => {
+  const reconnectSigner = useCallback(async () => {
+    setReconnecting(true)
+    try {
+      await connect({ mode: "restore" })
+    } finally {
+      setReconnecting(false)
+    }
+  }, [connect])
+
+  useLayoutEffect(() => {
     autoReturnStartedRef.current = false
     setProductDraftReturnError(null)
-    if (!pubkey) {
+    if (!accountPubkey) {
       setHasProductDraftReturn(false)
       return
     }
 
-    const returnIntent = loadProductDraftReturnIntent(pubkey)
-    const productDraft = loadProductDraft({ merchantPubkey: pubkey })
+    const returnIntent = loadProductDraftReturnIntent(accountPubkey)
+    const productDraft = loadProductDraft({ merchantPubkey: accountPubkey })
     const canReturn = !!returnIntent.intent && !!productDraft.draft
     if (returnIntent.intent && !productDraft.draft) {
-      clearProductDraftReturnIntent(pubkey)
+      clearProductDraftReturnIntent(accountPubkey)
     }
     setHasProductDraftReturn(canReturn)
-  }, [pubkey])
+  }, [accountPubkey])
 
   const returnToProductDraft = useCallback(() => {
-    if (!pubkey || autoReturnStartedRef.current) return
-    if (!requestProductDraftResume(pubkey)) {
+    if (!accountPubkey || autoReturnStartedRef.current) return
+    if (!requestProductDraftResume(accountPubkey)) {
       setProductDraftReturnError(
         "Automatic return is unavailable. Your local draft has not been published."
       )
@@ -87,7 +111,7 @@ function NetworkPage() {
 
     autoReturnStartedRef.current = true
     void navigate({ to: "/products" })
-  }, [navigate, pubkey])
+  }, [accountPubkey, navigate])
 
   useEffect(() => {
     const setupConfirmed =
@@ -147,8 +171,22 @@ function NetworkPage() {
               )}
             </section>
           )}
+          {remoteSignerRecovery ? (
+            <div className="mb-4">
+              <SignerRecoveryNotice
+                description="Your relay edits are still here. Reconnect, review the current Network evidence, then publish when you are ready."
+                reconnecting={reconnecting || status === "restoring"}
+                restoreFailed={!!remoteSignerRecovery.restoreError}
+                restoreFailureDescription="That saved signer connection could not be restored. Your relay edits remain unpublished on this page."
+                onReconnect={reconnectSigner}
+              />
+            </div>
+          ) : null}
           <RelaySettingsPanel
             controller={networkSettings}
+            accountPubkey={accountPubkey}
+            signerReady={signerReadiness === "ready"}
+            signerReviewKey={`${accountPubkey ?? "none"}:${authGeneration}:${signerReadiness}`}
             onUnpublishedRelayChangesChange={setHasUnpublishedRelayChanges}
           />
         </div>

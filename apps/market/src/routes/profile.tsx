@@ -21,6 +21,7 @@ import {
   Input,
   Label,
   SignedActionStatus,
+  SignerRecoveryNotice,
   Textarea,
 } from "@conduit/ui"
 import { Check, Copy, Globe, PencilLine, UserRound, Zap } from "lucide-react"
@@ -86,14 +87,25 @@ function Field({
 }
 
 function ProfilePage() {
-  const { pubkey, status, authGeneration } = useAuth()
+  const {
+    accountPubkey,
+    pubkey,
+    authGeneration,
+    isAuthGenerationCurrent,
+    remoteSignerRecovery,
+    signerReadiness,
+    status,
+    connect,
+  } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
-  const authenticatedPubkey = status === "connected" ? pubkey : null
-  const profileQuery = useProfile(pubkey, {
-    accountPubkey: authenticatedPubkey,
+  const signerReady =
+    signerReadiness === "ready" && pubkey === accountPubkey && !!accountPubkey
+  const authenticatedPubkey = signerReady ? pubkey : null
+  const profileQuery = useProfile(accountPubkey, {
+    accountPubkey,
     authenticatedPubkey,
     shouldContinue: () => authGenerationRef.current === authGeneration,
     requireCompleteEvidence: true,
@@ -104,21 +116,38 @@ function ProfilePage() {
   const updateMutation = useUpdateProfile("market", {
     authenticatedPubkey,
     authGeneration,
+    shouldContinue: () => isAuthGenerationCurrent(authGeneration),
   })
+  const resetUpdateMutation = updateMutation.reset
   const [editingPubkey, setEditingPubkey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_FORM)
   const editBaselineRef = useRef<ProfileFormValues | null>(null)
+  const profileWorkOwnerRef = useRef(accountPubkey)
   const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
-  const editing = !!pubkey && editingPubkey === pubkey
+  const editing = !!accountPubkey && editingPubkey === accountPubkey
 
-  useEffect(() => {
-    if (editingPubkey === null || editingPubkey === pubkey) return
+  useLayoutEffect(() => {
+    const previousOwner = profileWorkOwnerRef.current
+    profileWorkOwnerRef.current = accountPubkey
+    if (!previousOwner || previousOwner === accountPubkey) return
     setEditingPubkey(null)
     editBaselineRef.current = null
     setForm(EMPTY_FORM)
     setProfileSaveSucceeded(false)
-  }, [editingPubkey, pubkey])
+    resetUpdateMutation()
+  }, [accountPubkey, resetUpdateMutation])
+
+  const profileMutationAuthorityKeyRef = useRef(
+    `${authGeneration}:${signerReadiness}`
+  )
+  useLayoutEffect(() => {
+    const authorityKey = `${authGeneration}:${signerReadiness}`
+    if (profileMutationAuthorityKeyRef.current === authorityKey) return
+    profileMutationAuthorityKeyRef.current = authorityKey
+    resetUpdateMutation()
+    setProfileSaveSucceeded(false)
+  }, [authGeneration, resetUpdateMutation, signerReadiness])
 
   useEffect(() => {
     if (editing || !selectedProfile) return
@@ -139,10 +168,20 @@ function ProfilePage() {
     profileQuery.data?.displayName?.trim() ||
     profileQuery.data?.name?.trim() ||
     "Your profile"
-  const shortPubkey = useMemo(() => formatNpub(pubkey ?? "", 8), [pubkey])
-  const npub = useMemo(() => (pubkey ? pubkeyToNpub(pubkey) : ""), [pubkey])
+  const shortPubkey = useMemo(
+    () => formatNpub(accountPubkey ?? "", 8),
+    [accountPubkey]
+  )
+  const npub = useMemo(
+    () => (accountPubkey ? pubkeyToNpub(accountPubkey) : ""),
+    [accountPubkey]
+  )
   const profileNip05 = getProfileNip05(profileQuery.data)
-  const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
+  const fallbackLetter = (
+    displayName?.[0] ??
+    accountPubkey?.[0] ??
+    "?"
+  ).toUpperCase()
   const savedProfileForm = useMemo(
     () => profileToForm(selectedProfile),
     [selectedProfile]
@@ -195,18 +234,18 @@ function ProfilePage() {
   }
 
   function startEditing(): void {
-    if (!canEditProfile || !selectedProfile || !pubkey) return
+    if (!canEditProfile || !selectedProfile || !accountPubkey) return
     const baseline = profileToForm(selectedProfile)
     editBaselineRef.current = baseline
     setForm(baseline)
-    setEditingPubkey(pubkey)
+    setEditingPubkey(accountPubkey)
     setProfileSaveSucceeded(false)
   }
 
   async function copyPubkey(): Promise<void> {
-    if (!pubkey) return
+    if (!accountPubkey) return
     try {
-      await navigator.clipboard.writeText(pubkeyToNpub(pubkey))
+      await navigator.clipboard.writeText(pubkeyToNpub(accountPubkey))
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1800)
     } catch {
@@ -216,12 +255,29 @@ function ProfilePage() {
 
   function handleSave(event: React.FormEvent): void {
     event.preventDefault()
-    if (!editing || !hasProfileChanges || updateMutation.isPending) return
+    if (
+      !editing ||
+      !signerReady ||
+      !hasProfileChanges ||
+      updateMutation.isPending ||
+      !accountPubkey
+    ) {
+      return
+    }
+    const saveOwner = accountPubkey
+    const saveGeneration = authGeneration
     setProfileSaveSucceeded(false)
     updateMutation.mutate(
       buildProfileUpdatePayload(reconciledProfileForm, selectedProfile),
       {
         onSuccess: () => {
+          if (
+            profileWorkOwnerRef.current !== saveOwner ||
+            authGenerationRef.current !== saveGeneration ||
+            !isAuthGenerationCurrent(saveGeneration)
+          ) {
+            return
+          }
           setProfileSaveSucceeded(true)
           setEditingPubkey(null)
           editBaselineRef.current = null
@@ -280,13 +336,13 @@ function ProfilePage() {
                     {displayName}
                   </h2>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
-                    {pubkey && profileNip05 ? (
+                    {accountPubkey && profileNip05 ? (
                       <Badge
                         variant="outline"
                         className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
                       >
                         <Nip05TrustIndicator
-                          pubkey={pubkey}
+                          pubkey={accountPubkey}
                           nip05={profileNip05}
                         />
                       </Badge>
@@ -323,7 +379,9 @@ function ProfilePage() {
                         form="market-profile-form"
                         className="h-11 px-4 text-sm"
                         disabled={
-                          updateMutation.isPending || !hasProfileChanges
+                          updateMutation.isPending ||
+                          !hasProfileChanges ||
+                          !signerReady
                         }
                       >
                         {updateMutation.isPending
@@ -366,6 +424,16 @@ function ProfilePage() {
               </div>
             </div>
           </section>
+
+          {editing && remoteSignerRecovery ? (
+            <SignerRecoveryNotice
+              description="Your profile changes are still here. Reconnect the same signer, review them, then choose Save changes again."
+              reconnecting={status === "restoring"}
+              restoreFailed={!!remoteSignerRecovery.restoreError}
+              restoreFailureDescription="That saved signer connection could not be restored. Your unsaved profile changes will remain on this page while this account stays selected."
+              onReconnect={() => connect({ mode: "restore" })}
+            />
+          ) : null}
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
             <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-6">

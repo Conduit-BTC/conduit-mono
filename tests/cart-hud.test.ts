@@ -268,7 +268,7 @@ describe("Market cart HUD policy", () => {
     expect(capability).toContain("resolveCheckoutPaymentTarget({")
     expect(capability).toContain("resolveWalletPaymentInstance(")
     expect(capability).toContain("getNwcPaymentReadiness({")
-    expect(capability).toContain("getAuthSignerReadiness({")
+    expect(capability).toContain('signerReadiness === "ready"')
     expect(capability).toContain(
       'if (paymentTarget.type === "webln") return webLnAvailable'
     )

@@ -29,6 +29,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SignerRecoveryNotice,
 } from "@conduit/ui"
 import {
   CONTACT_LIST_WRITES_AVAILABLE,
@@ -144,10 +145,26 @@ function StorefrontPage() {
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
-  const { pubkey: viewerPubkey, status, authGeneration } = useAuth()
+  const {
+    accountPubkey,
+    pubkey: viewerPubkey,
+    status,
+    authGeneration,
+    remoteSignerRecovery,
+    signerReadiness,
+    connect,
+  } = useAuth()
   const authGenerationRef = useRef(authGeneration)
-  authGenerationRef.current = authGeneration
-  const activeViewerPubkey = status === "connected" ? viewerPubkey : null
+  const accountPubkeyRef = useRef(accountPubkey)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+    accountPubkeyRef.current = accountPubkey
+  }, [accountPubkey, authGeneration])
+  const signerReady =
+    signerReadiness === "ready" &&
+    !!accountPubkey &&
+    viewerPubkey === accountPubkey
+  const activeViewerPubkey = signerReady ? viewerPubkey : null
   const shopperPricing = useShopperPricing()
   const btcUsdRate = shopperPricing.quote
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
@@ -189,8 +206,8 @@ function StorefrontPage() {
   const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
   const followScope = useMemo(
-    () => ({ merchantPubkey: pubkey, viewerPubkey: activeViewerPubkey }),
-    [activeViewerPubkey, pubkey]
+    () => ({ merchantPubkey: pubkey, viewerPubkey: accountPubkey }),
+    [accountPubkey, pubkey]
   )
   const [followState, dispatchFollow] = useReducer(
     storefrontFollowReducer,
@@ -267,6 +284,7 @@ function StorefrontPage() {
     override: followOverride,
     observedFollowing: merchantTrust.viewerFollowsMerchant === true,
     pendingFollowing: merchantTrust.pendingViewerFollowsMerchant,
+    retryFollowing: followStateMatchesScope ? followState.retryFollowing : null,
   })
   const { isFollowing } = followControl
   const followSaveState = followStateMatchesScope
@@ -336,6 +354,16 @@ function StorefrontPage() {
     dispatchFollow({ type: "scope_changed", scope: followScope })
   }, [followScope])
 
+  useLayoutEffect(() => {
+    followOperationIdRef.current += 1
+    dispatchFollow({
+      type: "authority_changed",
+      scope: followScope,
+      message:
+        "The signer connection changed before this follow update finished. Reconnect, review the current state, and retry explicitly.",
+    })
+  }, [authGeneration, followScope, signerReadiness])
+
   const normalizedSearch = localSearch.trim()
   const pendingSearch =
     searchDirty &&
@@ -372,7 +400,7 @@ function StorefrontPage() {
   }
 
   function handleSendMessage(): void {
-    if (status !== "connected") {
+    if (!accountPubkey) {
       setConnectOpen(true)
       return
     }
@@ -387,8 +415,8 @@ function StorefrontPage() {
   }
 
   async function handleFollow(): Promise<void> {
-    if (status !== "connected" || !viewerPubkey || viewerPubkey === pubkey) {
-      setConnectOpen(true)
+    if (!signerReady || !viewerPubkey || viewerPubkey === pubkey) {
+      if (!accountPubkey) setConnectOpen(true)
       return
     }
     if (isFollowBusy) return
@@ -409,9 +437,15 @@ function StorefrontPage() {
         shouldFollow: nextShouldFollow,
         appId: "market",
         isSessionCurrent: () =>
-          authGenerationRef.current === followAuthGeneration,
+          authGenerationRef.current === followAuthGeneration &&
+          accountPubkeyRef.current === viewerPubkey,
       })
-      if (authGenerationRef.current !== followAuthGeneration) return
+      if (
+        authGenerationRef.current !== followAuthGeneration ||
+        accountPubkeyRef.current !== viewerPubkey
+      ) {
+        return
+      }
 
       dispatchFollow({
         type: "publish_succeeded",
@@ -433,7 +467,12 @@ function StorefrontPage() {
         operationId,
       })
     } catch (error) {
-      if (authGenerationRef.current !== followAuthGeneration) return
+      if (
+        authGenerationRef.current !== followAuthGeneration ||
+        accountPubkeyRef.current !== viewerPubkey
+      ) {
+        return
+      }
       dispatchFollow({
         type: "operation_failed",
         scope: followScope,
@@ -600,8 +639,17 @@ function StorefrontPage() {
                       : null
                   }
                   saveState={followSaveState}
-                  unavailableDescriptionId="storefront-follow-maintenance"
-                  writesAvailable={CONTACT_LIST_WRITES_AVAILABLE}
+                  unavailableDescriptionId={
+                    !CONTACT_LIST_WRITES_AVAILABLE
+                      ? "storefront-follow-maintenance"
+                      : accountPubkey && !signerReady
+                        ? "storefront-follow-recovery"
+                        : undefined
+                  }
+                  writesAvailable={
+                    CONTACT_LIST_WRITES_AVAILABLE &&
+                    (!accountPubkey || signerReady)
+                  }
                 />
               </div>
               {!CONTACT_LIST_WRITES_AVAILABLE && (
@@ -628,6 +676,20 @@ function StorefrontPage() {
                   ) : null}
                 </p>
               )}
+              {remoteSignerRecovery ? (
+                <div
+                  id="storefront-follow-recovery"
+                  className="w-full sm:ml-auto sm:max-w-sm"
+                >
+                  <SignerRecoveryNotice
+                    description="Reconnect the same signer, review the follow state, then choose Follow or Unfollow again. Conduit will not replay the interrupted update."
+                    reconnecting={status === "restoring"}
+                    restoreFailed={!!remoteSignerRecovery.restoreError}
+                    restoreFailureDescription="That saved signer connection could not be restored. The interrupted follow update was not replayed."
+                    onReconnect={() => connect({ mode: "restore" })}
+                  />
+                </div>
+              ) : null}
             </div>
 
             <MerchantTrustSummary trust={merchantTrust} />

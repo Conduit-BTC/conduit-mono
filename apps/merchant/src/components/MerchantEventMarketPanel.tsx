@@ -447,7 +447,7 @@ export function MerchantEventMarketPanel({
       )}
 
       <EventProductPublisherDialog
-        key={`${publisherOpen ? "open" : "closed"}:${market.collectionCoordinate}`}
+        key={`${merchantPubkey}:${publisherOpen ? "open" : "closed"}:${market.collectionCoordinate}`}
         open={publisherOpen}
         merchantPubkey={merchantPubkey}
         authenticatedPubkey={authenticatedPubkey}

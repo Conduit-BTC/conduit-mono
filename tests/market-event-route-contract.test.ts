@@ -156,7 +156,7 @@ describe("Market event catalog route", () => {
     expect(orders).toContain("async function retryPayment")
     expect(orders).toContain("runOrderPrivateFallback")
     expect(orders.indexOf("verifyPickupCartFreshness")).toBeLessThan(
-      orders.lastIndexOf("runOrderPrivateFallback(ctx)")
+      orders.lastIndexOf("await runOrderPrivateFallback({")
     )
     expect(checkout).toContain("sourceShippingCost: item.sourceShippingCost")
     expect(authorization).toContain("resolveCheckoutProductFulfillments")

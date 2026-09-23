@@ -385,6 +385,12 @@ export interface OrderReceiptObservationDependencies {
   waitForZapReceipt: typeof waitForZapReceipt
   recordObservedOrderPaymentReceipt: typeof recordObservedOrderPaymentReceipt
   recordOrderPaymentReceiptTimeout: typeof recordOrderPaymentReceiptTimeout
+  savePaymentAttempt: typeof savePaymentAttempt
+  deliverReceiptLinkedProof: typeof deliverReceiptLinkedProof
+}
+
+export interface OrderReceiptObservationOptions {
+  mode?: "observe_and_deliver" | "observe_only"
 }
 
 const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDependencies =
@@ -393,6 +399,8 @@ const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDepende
     waitForZapReceipt,
     recordObservedOrderPaymentReceipt,
     recordOrderPaymentReceiptTimeout,
+    savePaymentAttempt,
+    deliverReceiptLinkedProof,
   }
 
 function requirePreparedAnonZap(
@@ -874,7 +882,8 @@ export async function observeOrderPublicZapReceipt(
   dependencyOverrides: Partial<OrderReceiptObservationDependencies> = {},
   accountPubkey?: string | null,
   authenticatedPubkey?: string | null,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  options: OrderReceiptObservationOptions = {}
 ): Promise<void> {
   const dependencies = {
     ...defaultOrderReceiptObservationDependencies,
@@ -891,7 +900,8 @@ export async function observeOrderPublicZapReceipt(
     if (!hasPublicReceiptContext(lifecycle)) return
 
     if (lifecycle.zapReceiptStatus === "observed" && lifecycle.zapReceiptId) {
-      await deliverReceiptLinkedProof(
+      if (options.mode === "observe_only") return
+      await dependencies.deliverReceiptLinkedProof(
         lifecycle as typeof lifecycle & {
           invoice: string
           zapRequestId: string
@@ -938,7 +948,11 @@ export async function observeOrderPublicZapReceipt(
 
     if (receipt) {
       const proofDeliveryStatus =
-        lifecycle.proofDeliveryStatus === "sent" ? "sent" : "pending"
+        lifecycle.proofDeliveryStatus === "sent"
+          ? "sent"
+          : options.mode === "observe_only"
+            ? "retry_needed"
+            : "pending"
       const proofDeliveryClaimId =
         proofDeliveryStatus === "pending" ? generateId() : undefined
       const receiptRecord =
@@ -951,9 +965,9 @@ export async function observeOrderPublicZapReceipt(
       emit(orderId, { lifecycle: receiptRecord.lifecycle })
       if (receiptRecord.status === "recorded") {
         const updated = receiptRecord.lifecycle
-        const shouldDeliverProof = updated.proofDeliveryStatus !== "sent"
+        const proofNeedsDelivery = updated.proofDeliveryStatus !== "sent"
         try {
-          await savePaymentAttempt({
+          await dependencies.savePaymentAttempt({
             id: orderId,
             orderId,
             buyerPubkey: updated.buyerPubkey,
@@ -963,7 +977,12 @@ export async function observeOrderPublicZapReceipt(
             invoice: updated.invoice!,
             zapRequestId: updated.zapRequestId,
             zapReceiptId: updated.zapReceiptId,
-            proofDeliveryStatus: shouldDeliverProof ? "pending" : "sent",
+            proofDeliveryStatus:
+              updated.proofDeliveryStatus === "sent"
+                ? "sent"
+                : updated.proofDeliveryStatus === "pending"
+                  ? "pending"
+                  : "retry_needed",
             createdAt: updated.createdAt,
             updatedAt: Date.now(),
           })
@@ -971,12 +990,13 @@ export async function observeOrderPublicZapReceipt(
           // Lifecycle persistence remains authoritative for this local flow.
         }
         if (
-          !shouldDeliverProof ||
+          !proofNeedsDelivery ||
+          options.mode === "observe_only" ||
           !receiptRecord.proofDeliveryClaimed ||
           !hasPublicReceiptContext(updated)
         )
           return
-        await deliverReceiptLinkedProof(
+        await dependencies.deliverReceiptLinkedProof(
           updated as typeof updated & {
             zapReceiptId: string
           },
@@ -1017,7 +1037,8 @@ export async function observeOrderPublicZapReceipt(
           dependencies,
           accountPubkey,
           authenticatedPubkey,
-          shouldContinue
+          shouldContinue,
+          options
         )
       }, ZAP_RECEIPT_RESCAN_DELAY_MS)
       receiptRescanTimers.set(orderId, timer)
