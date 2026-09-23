@@ -9708,9 +9708,15 @@ test("Orders keeps rejected stock unpublished across reload and re-signs without
     timeout: 30_000,
   })
   await productCard.getByRole("button", { name: "Add" }).click()
+  await expect
+    .poll(() => readCanonicalCartLines(page), { timeout: 30_000 })
+    .toContainEqual({ productId: eventCoordinate(initialProduct), quantity: 1 })
   await gotoAs(page, marketUrl, "/checkout", "buyer", {
     merchant: nip19.npubEncode(ORGANIZER_PUBKEY),
   })
+  await expect(
+    page.getByRole("heading", { name: "Send Order", exact: true })
+  ).toBeVisible({ timeout: 30_000 })
   const sendOrder = page.getByRole("button", {
     name: "Send order",
     exact: true,
