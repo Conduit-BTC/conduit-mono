@@ -1627,10 +1627,28 @@ export async function retryMerchantOrganizerRecord(input: {
   organizerPubkey: string
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
+  reference: string
   record: MerchantOrganizerRecordDelivery
+  storage?: Pick<Storage, "getItem"> | null
 }): Promise<MerchantOrganizerRecordDelivery> {
   if (!input.record.signedEvent) {
     throw new Error("Signed organizer record is unavailable for retry.")
+  }
+  const reference = parseOrganizerEventMarketReference(input.reference)
+  if (reference.coordinate.split(":")[1] !== input.organizerPubkey) {
+    throw new Error("Organizer delivery reference does not match this account.")
+  }
+  const currentRecord = () =>
+    loadOrganizerEventMarketDeliveryOutbox(
+      input.organizerPubkey,
+      input.storage
+    )[reference.coordinate]?.find(
+      (delivery) => delivery.record === input.record.record
+    )
+  if (currentRecord()?.signedEvent?.id !== input.record.signedEvent.id) {
+    throw new Error(
+      "The saved organizer delivery changed. Reload before retrying."
+    )
   }
   const result = await retryOrganizerEventMarketRecord({
     organizerPubkey: input.organizerPubkey,
@@ -1638,6 +1656,11 @@ export async function retryMerchantOrganizerRecord(input: {
     shouldContinue: input.shouldContinue,
     signedEvent: input.record.signedEvent,
   })
+  if (currentRecord()?.signedEvent?.id !== input.record.signedEvent.id) {
+    throw new Error(
+      "The saved organizer delivery changed. Reload before retrying."
+    )
+  }
   return projectDeliveryRecord(result)
 }
 

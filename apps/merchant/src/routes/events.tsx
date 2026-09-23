@@ -1058,6 +1058,7 @@ export function MyEventsPanel({
         organizerPubkey: input.ownerPubkey,
         authenticatedPubkey: null,
         shouldContinue: () => isCurrentOwner(input.ownerPubkey),
+        reference: input.reference,
         record: input.record,
       }),
     onSuccess: async (delivery, input) => {
@@ -1078,11 +1079,12 @@ export function MyEventsPanel({
       const latestDelivery = latestDeliveries.find(
         (candidate) => candidate.record === delivery.record
       )
-      const retryRemainsCurrent = organizerEventMarketRetryRemainsCurrent(
-        delivery,
-        latestSavedReference,
-        latestDelivery
-      )
+      const retryRemainsCurrent =
+        organizerEventMarketRetryRemainsCurrent(
+          delivery,
+          latestSavedReference,
+          latestDelivery
+        ) && latestDelivery?.signedEvent?.id === delivery.signedEvent?.id
       const reference = organizerEventMarketReferenceWithAllDeliveryRelayHints(
         latestSavedReference?.reference ?? input.reference,
         [...input.deliveries, ...latestDeliveries, delivery]

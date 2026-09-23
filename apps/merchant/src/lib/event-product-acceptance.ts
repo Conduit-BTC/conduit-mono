@@ -212,14 +212,18 @@ export async function retryOwnEventProductAcceptance(
   const savedCollection = savedDeliveries[reference.coordinate]?.find(
     (record) => record.record === "collection"
   )
-  const strongest = savedCollection
-    ? strongestSignedDelivery(input.signedAcceptance, savedCollection)
-    : input.signedAcceptance
-  if (strongest.signedEvent?.id !== input.signedAcceptance.signedEvent?.id) {
+  if (
+    !savedCollection?.signedEvent ||
+    savedCollection.signedEvent.id !== input.signedAcceptance.signedEvent?.id
+  ) {
     throw new Error(
       "The event collection changed. Review this product before accepting again."
     )
   }
+  const strongest = strongestSignedDelivery(
+    input.signedAcceptance,
+    savedCollection
+  )
   const reconciledMarket = reconcileMerchantOrganizerCollectionEvidence(
     market,
     strongest
@@ -255,15 +259,25 @@ export async function retryOwnEventProductAcceptance(
     organizerPubkey: organizer,
     authenticatedPubkey: input.authenticatedPubkey,
     shouldContinue: input.shouldContinue,
+    reference: reference.coordinate,
     record: strongest,
   })
   const latestDeliveries = dependencies.load(organizer)[reference.coordinate]
   const latestSavedCollection = latestDeliveries?.find(
     (record) => record.record === "collection"
   )
-  const retainedDelivery = latestSavedCollection
-    ? strongestSignedDelivery(delivery, latestSavedCollection)
-    : delivery
+  if (
+    !latestSavedCollection ||
+    latestSavedCollection.signedEvent?.id !== delivery.signedEvent?.id
+  ) {
+    throw new Error(
+      "The event collection changed. Review this product before accepting again."
+    )
+  }
+  const retainedDelivery = strongestSignedDelivery(
+    delivery,
+    latestSavedCollection
+  )
   dependencies.save(organizer, reference.coordinate, retainedDelivery)
   input.onRetriedAcceptance?.(retainedDelivery)
   if (retainedDelivery.acknowledgedCount === 0) {

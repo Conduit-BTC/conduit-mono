@@ -252,9 +252,9 @@ describe("organizer own-product acceptance", () => {
     expect(h.published).toHaveLength(0)
   })
   it("retries the same signed acceptance instead of creating a new revision", async () => {
-    const h = harness()
     const shouldContinue = () => true
     const pending = { ...record, acknowledgedCount: 0 }
+    const h = harness(market, pending)
     expect(
       await retryOwnEventProductAcceptance(
         { ...input, signedAcceptance: pending, shouldContinue },
@@ -267,9 +267,41 @@ describe("organizer own-product acceptance", () => {
         organizerPubkey: OWNER,
         authenticatedPubkey: OWNER,
         shouldContinue,
-        record: pending,
+        reference: COLLECTION,
+        record: { ...pending, acknowledgedRelayUrls: [] },
       },
     ])
+  })
+
+  it("refuses a removed acceptance before retry transport", async () => {
+    const pending = { ...record, acknowledgedCount: 0 }
+    const h = harness()
+    await expect(
+      retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: pending },
+        h.deps
+      )
+    ).rejects.toThrow("changed")
+    expect(h.retried).toHaveLength(0)
+    expect(h.saved).toHaveLength(0)
+  })
+
+  it("does not restore an acceptance removed during retry", async () => {
+    const pending = { ...record, acknowledgedCount: 0 }
+    const h = harness(market, pending)
+    h.deps.retry = async (retryInput: unknown) => {
+      h.retried.push(retryInput)
+      h.deps.load = () => ({})
+      return record
+    }
+    await expect(
+      retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: pending },
+        h.deps
+      )
+    ).rejects.toThrow("changed")
+    expect(h.retried).toHaveLength(1)
+    expect(h.saved).toHaveLength(0)
   })
 
   it("does not retry a stale pending row after the same signed acceptance completed", async () => {
@@ -332,13 +364,16 @@ describe("organizer own-product acceptance", () => {
     expect(h.published[0]).toEqual(expect.objectContaining({ shouldContinue }))
   })
   it("refuses an exact retry after the collection changes without publishing", async () => {
-    const h = harness({
-      ...market,
-      collectionCreatedAt: 13_000,
-      source: {
-        collection: { eventId: "current", createdAt: 13_000 },
-      },
-    } as MerchantOrganizerEventMarket)
+    const h = harness(
+      {
+        ...market,
+        collectionCreatedAt: 13_000,
+        source: {
+          collection: { eventId: "current", createdAt: 13_000 },
+        },
+      } as MerchantOrganizerEventMarket,
+      record
+    )
     await expect(
       retryOwnEventProductAcceptance(
         { ...input, signedAcceptance: record },
