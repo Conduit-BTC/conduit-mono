@@ -34,7 +34,6 @@ import {
   getPriceSats,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
-  getAuthSignerReadiness,
   getProfiles,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
@@ -81,6 +80,7 @@ import {
   Label,
   Select,
   SelectTrigger,
+  SignerRecoveryNotice,
   Textarea,
 } from "@conduit/ui"
 import {
@@ -1029,13 +1029,15 @@ function OrderSummary({
 function CheckoutPage() {
   const session = useConduitSession()
   const {
-    pubkey,
+    accountPubkey,
+    connect,
+    remoteSignerRecovery,
     restorePendingPubkey,
     signer,
-    capabilities,
     authGeneration,
     method: authMethod,
     isAuthGenerationCurrent,
+    signerReadiness: authSignerReadiness,
     status: authStatus,
   } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -1110,6 +1112,7 @@ function CheckoutPage() {
   })
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
+  const checkoutWorkOwnerRef = useRef<string | null>(null)
   const checkoutShippingInitializedRef = useRef(false)
   const presetMaySeedShippingRef = useRef(false)
   const presetSeededShippingRef = useRef(false)
@@ -1133,6 +1136,7 @@ function CheckoutPage() {
   // Lightning-strike click feedback while the order publishes before navigation.
   const [overlayPlaying, setOverlayPlaying] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
+  const [signerReconnectPending, setSignerReconnectPending] = useState(false)
   const sparkFeeApproval = useSparkFeeApproval()
   // Synchronous re-entrancy guard for the payment flow. A `step`/`disabled`
   // check can't prevent a double-click because the state change doesn't commit
@@ -1141,6 +1145,7 @@ function CheckoutPage() {
   // order (CND-89).
   const paymentInFlightRef = useRef(false)
   const autoZapStartedRef = useRef(false)
+  const autoZapAuthorizationGenerationRef = useRef<number | null>(null)
   const payNowRef = useRef<
     (zapAuthorization?: HudZapAuthorization | null) => Promise<void>
   >(async () => undefined)
@@ -1160,24 +1165,19 @@ function CheckoutPage() {
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const refetchBtcUsdRate = btcUsdRateQuery.refetch
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
-  const authSignerReadiness = getAuthSignerReadiness({
-    status: authStatus,
-    pubkey,
-    signer,
-    capabilities,
-  })
   const signerConnected = authSignerReadiness === "ready"
-  const signedBuyerPubkey = signerConnected ? pubkey : null
-  const draftOwnerIdentity = authStatus === "connected" ? pubkey : null
+  const signedBuyerPubkey = signerConnected ? accountPubkey : null
+  const draftOwnerIdentity = accountPubkey
   const authPending =
     authSignerReadiness === "pending" || restorePendingPubkey !== null
-  const isGuestCheckout = !authPending && authSignerReadiness === "disconnected"
+  const isGuestCheckout =
+    !authPending && !accountPubkey && authSignerReadiness === "disconnected"
   const shouldContinueBuyerSession = signedBuyerPubkey
     ? () => isAuthGenerationCurrent(authGeneration)
     : undefined
   const signerBlockedMessage =
     authSignerReadiness === "unavailable"
-      ? "Your Nostr account is connected, but its signer is unavailable. Disconnect and reconnect it before sending this order. Nothing will be sent or paid until you reconnect."
+      ? "Your Nostr account is connected, but its signer is unavailable. Reconnect it before sending this order. Nothing will be sent or paid until you reconnect."
       : authSignerReadiness === "incompatible"
         ? "This signer cannot encrypt private Nostr orders. Connect a signer with NIP-44 support before sending. Nothing will be sent or paid until you reconnect."
         : null
@@ -1189,6 +1189,38 @@ function CheckoutPage() {
     }
     return { kind: "signed_in", pubkey: signedBuyerPubkey, signer }
   }
+
+  const reconnectCheckoutSigner = useCallback(async () => {
+    setSignerReconnectPending(true)
+    try {
+      await connect({ mode: "restore" })
+    } finally {
+      setSignerReconnectPending(false)
+    }
+  }, [connect])
+
+  useEffect(() => {
+    const authorityChanged =
+      autoZapAuthorizationGenerationRef.current !== null &&
+      autoZapAuthorizationGenerationRef.current !== authGeneration
+    if (
+      !accountPubkey ||
+      !autoZapAuthorization ||
+      (signerConnected && !authorityChanged)
+    )
+      return
+    autoZapAuthorizationGenerationRef.current = null
+    setAutoZapAuthorization(null)
+    setError(
+      "Signer recovery interrupted zap out. Review checkout and hold again after reconnecting."
+    )
+  }, [accountPubkey, authGeneration, autoZapAuthorization, signerConnected])
+
+  useEffect(() => {
+    if (!signerConnected && sparkFeeApproval.quote) {
+      sparkFeeApproval.decline()
+    }
+  }, [signerConnected, sparkFeeApproval])
 
   useEffect(() => {
     if (authPending) return
@@ -1245,6 +1277,24 @@ function CheckoutPage() {
     authPending,
     draftOwnerIdentity,
   ])
+
+  useLayoutEffect(() => {
+    const previousOwner = checkoutWorkOwnerRef.current
+    checkoutWorkOwnerRef.current = draftOwnerIdentity
+    if (!previousOwner || previousOwner === draftOwnerIdentity) return
+    if (sparkFeeApproval.quote) sparkFeeApproval.decline()
+    setStep("shipping")
+    setShipping(DEFAULT_CHECKOUT_SHIPPING)
+    setNote("")
+    setPaymentTargetSelection(null)
+    setAutoZapAuthorization(null)
+    setZapContent("")
+    setZapContentEdited(false)
+    setError(null)
+    setShippingAttempted(false)
+    setShippingErrors([])
+    setTouchedShippingFields(new Set())
+  }, [draftOwnerIdentity, sparkFeeApproval])
 
   useEffect(() => {
     const preset = getIdentityBoundShippingPreset(
@@ -1991,13 +2041,13 @@ function CheckoutPage() {
         readShippingOptions: (coordinates) =>
           getShippingOptionsByCoordinates(coordinates, {
             accountPubkey: draftOwnerIdentity,
-            authenticatedPubkey: draftOwnerIdentity,
-            shouldContinue: () => authGenerationRef.current === authGeneration,
+            authenticatedPubkey: signedBuyerPubkey,
+            shouldContinue: shouldContinueBuyerSession,
           }),
         rateInput,
         accountPubkey: draftOwnerIdentity,
-        authenticatedPubkey: draftOwnerIdentity,
-        shouldContinue: () => authGenerationRef.current === authGeneration,
+        authenticatedPubkey: signedBuyerPubkey,
+        shouldContinue: shouldContinueBuyerSession,
       })
     } catch (error) {
       recordCheckoutStepResult({
@@ -2452,7 +2502,7 @@ function CheckoutPage() {
               buyerIdentity,
               {
                 accountPubkey: signedBuyerPubkey,
-                authenticatedPubkey: draftOwnerIdentity,
+                authenticatedPubkey: signedBuyerPubkey,
                 ...(authMethod ? { relayAuthMethod: authMethod } : {}),
                 shouldContinue: shouldContinueBuyerSession,
               }
@@ -3026,7 +3076,7 @@ function CheckoutPage() {
         buyerIdentity,
         {
           accountPubkey: signedBuyerPubkey,
-          authenticatedPubkey: draftOwnerIdentity,
+          authenticatedPubkey: signedBuyerPubkey,
           ...(authMethod ? { relayAuthMethod: authMethod } : {}),
           shouldContinue: shouldContinueBuyerSession,
         }
@@ -3128,7 +3178,7 @@ function CheckoutPage() {
         orderId,
         buyerPubkey,
         accountPubkey: signedBuyerPubkey,
-        authenticatedPubkey: draftOwnerIdentity,
+        authenticatedPubkey: signedBuyerPubkey,
         shouldContinue: shouldContinueBuyerSession,
         buyerIdentity: guestIdentity ?? undefined,
         merchantPubkey: selectedMerchant,
@@ -3260,7 +3310,10 @@ function CheckoutPage() {
       selectedMerchant,
       selectedPurchase?.id
     )
-    if (authorization) setAutoZapAuthorization(authorization)
+    if (authorization) {
+      autoZapAuthorizationGenerationRef.current = authGeneration
+      setAutoZapAuthorization(authorization)
+    }
     void navigate({
       to: "/checkout",
       search: {
@@ -3269,7 +3322,13 @@ function CheckoutPage() {
       },
       replace: true,
     })
-  }, [navigate, search.intent, selectedMerchant, selectedPurchase?.id])
+  }, [
+    authGeneration,
+    navigate,
+    search.intent,
+    selectedMerchant,
+    selectedPurchase?.id,
+  ])
 
   // The HUD arms zap out from capability-only readiness, so checkout is the
   // first place the merchant payment endpoint is known. Wait while that answer
@@ -3296,6 +3355,22 @@ function CheckoutPage() {
       autoZapStartedRef.current ||
       autoZapInputsResolving
     ) {
+      return
+    }
+    if (!signerConnected) {
+      autoZapAuthorizationGenerationRef.current = null
+      setAutoZapAuthorization(null)
+      setError(
+        "Signer recovery interrupted zap out. Review checkout and hold again after reconnecting."
+      )
+      return
+    }
+    if (autoZapAuthorizationGenerationRef.current !== authGeneration) {
+      autoZapAuthorizationGenerationRef.current = null
+      setAutoZapAuthorization(null)
+      setError(
+        "Signer recovery interrupted zap out. Review checkout and hold again after reconnecting."
+      )
       return
     }
     if (hasUnavailableCheckoutItems) {
@@ -3336,12 +3411,14 @@ function CheckoutPage() {
     // success, failure, or cancellation leaves no armed token behind and a
     // later manual hold starts a fresh attempt without inheriting it.
     autoZapStartedRef.current = true
+    autoZapAuthorizationGenerationRef.current = null
     setAutoZapAuthorization(null)
     setOverlayPlaying(true)
     void payNowRef.current(autoZapAuthorization)
   }, [
     autoZapAuthorization,
     autoZapInputsResolving,
+    authGeneration,
     checkoutItems,
     fastEligible,
     firstFastUnavailableReason,
@@ -3349,6 +3426,7 @@ function CheckoutPage() {
     pricingPreview,
     selectedMerchant,
     selectedPurchase?.id,
+    signerConnected,
     signedBuyerPubkey,
   ])
 
@@ -3654,6 +3732,16 @@ function CheckoutPage() {
             : undefined
         }
       />
+
+      {remoteSignerRecovery ? (
+        <SignerRecoveryNotice
+          description="Your checkout details and payment choices remain on this page. Reconnect, review the order, then explicitly send or hold to pay again."
+          reconnecting={signerReconnectPending || authStatus === "restoring"}
+          restoreFailed={!!remoteSignerRecovery.restoreError}
+          restoreFailureDescription="That saved signer connection could not be restored. Nothing was sent or paid, and your checkout details remain local."
+          onReconnect={reconnectCheckoutSigner}
+        />
+      ) : null}
 
       {hasUnavailableCheckoutItems ? (
         <div
@@ -4817,8 +4905,8 @@ function CheckoutPage() {
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
           accountPubkey={draftOwnerIdentity}
-          authenticatedPubkey={draftOwnerIdentity}
-          shouldContinue={() => authGenerationRef.current === authGeneration}
+          authenticatedPubkey={signedBuyerPubkey}
+          shouldContinue={shouldContinueBuyerSession}
           btcUsdRate={btcUsdRate}
           availabilityByProductId={checkoutAvailability.availabilityByProductId}
           pickupHandlerIdentity={pickupHandlerIdentity}

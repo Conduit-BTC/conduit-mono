@@ -68,12 +68,19 @@ export function MerchantEventsTimeline({
 }) {
   const queryClient = useQueryClient()
   const session = useConduitSession()
-  const { pubkey, status, authGeneration } = useAuth()
+  const {
+    accountPubkey,
+    pubkey,
+    signerReadiness,
+    authGeneration,
+    isAuthGenerationCurrent,
+  } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
-  const authenticatedPubkey = status === "connected" ? pubkey : null
+  const authenticatedPubkey =
+    signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
   const relationship = search.relation ?? "all"
   const viewportKey = `${merchantPubkey}:${relationship}`
   const [presentationLimits, setPresentationLimits] =
@@ -138,9 +145,11 @@ export function MerchantEventsTimeline({
     [presentedItems]
   )
   const profiles = useProfiles(organizerPubkeys, {
-    accountPubkey: authenticatedPubkey,
+    accountPubkey,
     authenticatedPubkey,
-    shouldContinue: () => authGenerationRef.current === authGeneration,
+    shouldContinue: () =>
+      authGenerationRef.current === authGeneration &&
+      isAuthGenerationCurrent(authGeneration),
     priority: "visible",
     maxUnresolvedRefetches: 1,
     relayHintsByPubkey: discovery.profileRelayHintsByPubkey,

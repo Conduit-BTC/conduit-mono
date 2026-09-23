@@ -2205,7 +2205,10 @@ async function publishMerchantProductFromEvent(
     .click()
   if (options.rejectAcceptanceOnce) {
     await expect(
-      editor.getByRole("button", { name: "Retry acceptance", exact: true })
+      editor.getByRole("button", {
+        name: "Retry exact acceptance",
+        exact: true,
+      })
     ).toBeVisible({ timeout: 30_000 })
     await expect(
       editor.getByRole("button", {
@@ -2220,7 +2223,7 @@ async function publishMerchantProductFromEvent(
     ).toHaveLength(1)
     relay.rejectKind(30405, false)
     await editor
-      .getByRole("button", { name: "Retry acceptance", exact: true })
+      .getByRole("button", { name: "Retry exact acceptance", exact: true })
       .click()
   }
   await expect(
@@ -5293,6 +5296,14 @@ test("a stale event tab does not announce an add rejected at the stock limit @ma
     .getByRole("button", { name: "Add", exact: true })
   await expect(currentAdd).toBeEnabled({ timeout: 30_000 })
   await expect(staleAdd).toBeEnabled({ timeout: 30_000 })
+  for (const tab of [page, staleTab]) {
+    await expect(
+      tab
+        .getByRole("listitem")
+        .filter({ hasText: "Synthetic last-stock product" })
+        .getByText("Pickup from event organizer", { exact: true })
+    ).toBeVisible({ timeout: 30_000 })
+  }
 
   await currentAdd.click()
   await expect(

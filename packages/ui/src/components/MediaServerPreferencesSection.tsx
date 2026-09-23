@@ -8,7 +8,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react"
-import { type FormEvent, useRef, useState } from "react"
+import { type FormEvent, useLayoutEffect, useRef, useState } from "react"
 import {
   type MediaServerDraftActionResult,
   type MediaServerPreferencesView,
@@ -42,6 +42,7 @@ export interface MediaServerPreferencesSectionProps {
   onPublish: () => void | Promise<void>
   onRetryPublish: () => void | Promise<void>
   onRetryLookup: () => void
+  signerReviewKey?: string
   className?: string
 }
 
@@ -130,6 +131,7 @@ export function MediaServerPreferencesSection({
   onPublish,
   onRetryPublish,
   onRetryLookup,
+  signerReviewKey = "default",
   className,
 }: MediaServerPreferencesSectionProps) {
   const [newServerUrl, setNewServerUrl] = useState("")
@@ -143,6 +145,10 @@ export function MediaServerPreferencesSection({
   const observedAt = formatObservedTime(view.observedAt)
   const actionStatus = getActionStatusState(view)
   const checking = view.isLoading || view.isRefetching
+
+  useLayoutEffect(() => {
+    setPublishDialogOpen(false)
+  }, [signerReviewKey])
 
   function focusRowOrInput(serverUrl?: string): void {
     requestAnimationFrame(() => {

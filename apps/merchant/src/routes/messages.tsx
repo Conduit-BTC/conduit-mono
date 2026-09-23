@@ -39,6 +39,7 @@ import {
   MessageComposer,
   ProtectedInboxNotice,
   SearchInput,
+  SignerRecoveryNotice,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -47,6 +48,7 @@ import {
   toMessagingReadinessNoticeState,
   useOptimisticConversationMessages,
   type OptimisticConversationMessage,
+  type OptimisticConversationScope,
 } from "@conduit/ui"
 import { DirectConversationListItem } from "../components/DirectConversationListItem"
 import { OrderCardScroller } from "../components/OrderCardScroller"
@@ -65,43 +67,83 @@ function getDisplayName(profile: Profile | undefined, pubkey: string): string {
 }
 
 type OptimisticDirectMessageSend = {
+  accountPubkey: string
+  authGeneration: number
+  messageScope: OptimisticConversationScope
   message: OptimisticConversationMessage
   counterpartyPubkey: string
   rumor: NDKEvent
 }
 
 function MessagesPage() {
-  const { pubkey, status, authGeneration } = useAuth()
-  const authGenerationRef = useRef(authGeneration)
+  const { accountPubkey } = useAuth()
+  return <MessagesWorkspace key={accountPubkey ?? "no-account"} />
+}
+
+function MessagesWorkspace() {
+  const {
+    accountPubkey,
+    pubkey,
+    status,
+    authGeneration,
+    isAuthGenerationCurrent,
+    remoteSignerRecovery,
+    signerReadiness,
+    connect,
+  } = useAuth()
+  const messagingAuthorityRef = useRef({
+    accountPubkey,
+    authGeneration,
+    pubkey,
+    signerReadiness,
+  })
   useLayoutEffect(() => {
-    authGenerationRef.current = authGeneration
-  }, [authGeneration])
+    messagingAuthorityRef.current = {
+      accountPubkey,
+      authGeneration,
+      pubkey,
+      signerReadiness,
+    }
+  }, [accountPubkey, authGeneration, pubkey, signerReadiness])
+  const isCurrentMessagingAuthority = (
+    ownerPubkey: string,
+    generation: number
+  ) => {
+    const current = messagingAuthorityRef.current
+    return (
+      isAuthGenerationCurrent(generation) &&
+      current.accountPubkey === ownerPubkey &&
+      current.pubkey === ownerPubkey &&
+      current.authGeneration === generation &&
+      current.signerReadiness === "ready"
+    )
+  }
   const session = useConduitSession()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const signerConnected = status === "connected" && !!pubkey
+  const hasAccount = !!accountPubkey
+  const signerConnected =
+    signerReadiness === "ready" && !!accountPubkey && pubkey === accountPubkey
+  const authenticatedPubkey = signerConnected ? pubkey : null
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [composerText, setComposerText] = useState("")
   const [conversationSearch, setConversationSearch] = useState("")
   const [conversationSheetOpen, setConversationSheetOpen] = useState(false)
-  const optimisticMessageQueue = useOptimisticConversationMessages()
+  const optimisticMessageQueue = useOptimisticConversationMessages({
+    ownerKey: accountPubkey,
+    authorityKey: `${authGeneration}:${signerReadiness}`,
+  })
+  const optimisticMessageScope = optimisticMessageQueue.scope
   const optimisticMessages = optimisticMessageQueue.messages
-  const clearOptimisticMessages = optimisticMessageQueue.clear
   const removeOptimisticMessage = optimisticMessageQueue.remove
-
-  useEffect(() => {
-    clearOptimisticMessages()
-    setComposerText("")
-    setSelectedId(null)
-  }, [clearOptimisticMessages, pubkey])
 
   // Network settings is the only surface that publishes or repairs the
   // NIP-17 inbox declaration; this route only reflects readiness (CND-208).
-  const dmReadiness = useInboxDeclaration(pubkey, {
+  const dmReadiness = useInboxDeclaration(accountPubkey, {
     enabled: signerConnected && session.relaySettingsReady,
     relayScope: session.relayScope,
   })
-  const messagingReady = dmReadiness.status === "ready"
+  const messagingReady = signerConnected && dmReadiness.status === "ready"
   const readinessNoticeState = toMessagingReadinessNoticeState(
     dmReadiness.status
   )
@@ -118,24 +160,26 @@ function MessagesPage() {
 
   // Own-inbox reads are permissive (CND-208); only sends require readiness.
   const liveQuery = useQuery({
-    queryKey: ["merchant-dms-live", pubkey ?? "none"],
+    queryKey: ["merchant-dms-live", accountPubkey ?? "none"],
     enabled: signerConnected,
     queryFn: () =>
-      getDirectMessageConversationList({ principalPubkey: pubkey! }),
+      getDirectMessageConversationList({ principalPubkey: accountPubkey! }),
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const cachedQuery = useQuery({
-    queryKey: ["merchant-dms", pubkey ?? "none"],
-    enabled: signerConnected,
+    queryKey: ["merchant-dms", accountPubkey ?? "none"],
+    enabled: hasAccount,
     queryFn: () =>
-      getCachedDirectMessageConversationList({ principalPubkey: pubkey! }),
+      getCachedDirectMessageConversationList({
+        principalPubkey: accountPubkey!,
+      }),
     staleTime: 5_000,
   })
   const retryMessagesRead = () => {
-    if (!pubkey) return
-    clearProtectedReadAuthenticationSuppression(pubkey)
+    if (!accountPubkey || !signerConnected) return
+    clearProtectedReadAuthenticationSuppression(accountPubkey)
     void liveQuery.refetch()
   }
 
@@ -164,10 +208,12 @@ function MessagesPage() {
     [conversations]
   )
   const profilesQuery = useProfiles(counterpartyPubkeys, {
-    accountPubkey: signerConnected ? pubkey : null,
-    authenticatedPubkey: signerConnected ? pubkey : null,
-    shouldContinue: () => authGenerationRef.current === authGeneration,
-    enabled: signerConnected && counterpartyPubkeys.length > 0,
+    accountPubkey,
+    authenticatedPubkey,
+    shouldContinue: () =>
+      messagingAuthorityRef.current.accountPubkey === accountPubkey &&
+      messagingAuthorityRef.current.authGeneration === authGeneration,
+    enabled: hasAccount && counterpartyPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
     maxUnresolvedRefetches: 1,
@@ -220,25 +266,26 @@ function MessagesPage() {
       )
     )
     for (const message of optimisticMessages) {
-      if (
-        message.deliveryState === "published" &&
-        message.eventId &&
-        publishedEventIds.has(message.eventId)
-      ) {
-        removeOptimisticMessage(message.localId)
+      if (message.eventId && publishedEventIds.has(message.eventId)) {
+        removeOptimisticMessage(optimisticMessageScope, message.localId)
       }
     }
-  }, [conversations, optimisticMessages, removeOptimisticMessage])
+  }, [
+    conversations,
+    optimisticMessageScope,
+    optimisticMessages,
+    removeOptimisticMessage,
+  ])
   const relatedOrdersLiveQuery = useQuery({
     queryKey: [
       "merchant-message-orders-live",
-      pubkey ?? "none",
+      accountPubkey ?? "none",
       selected?.counterpartyPubkey ?? "none",
     ],
     enabled: signerConnected && !!selected,
     queryFn: () =>
       getMerchantConversationList({
-        principalPubkey: pubkey!,
+        principalPubkey: accountPubkey!,
         counterpartyPubkey: selected!.counterpartyPubkey,
         limit: 3,
       }),
@@ -246,20 +293,20 @@ function MessagesPage() {
   const relatedOrdersCacheQuery = useQuery({
     queryKey: [
       "merchant-message-orders",
-      pubkey ?? "none",
+      accountPubkey ?? "none",
       selected?.counterpartyPubkey ?? "none",
     ],
-    enabled: signerConnected && !!selected,
+    enabled: hasAccount && !!selected,
     queryFn: () =>
       getCachedMerchantConversationList({
-        principalPubkey: pubkey!,
+        principalPubkey: accountPubkey!,
         counterpartyPubkey: selected!.counterpartyPubkey,
         limit: 3,
       }),
   })
   const retryRelatedOrdersRead = () => {
-    if (!pubkey) return
-    clearProtectedReadAuthenticationSuppression(pubkey)
+    if (!accountPubkey || !signerConnected) return
+    clearProtectedReadAuthenticationSuppression(accountPubkey)
     void relatedOrdersLiveQuery.refetch()
   }
   const relatedOrders = selectProtectedReadRows(
@@ -274,11 +321,11 @@ function MessagesPage() {
   })
 
   useEffect(() => {
-    if (!pubkey || !selected?.unreadFromCounterparty) return
+    if (!accountPubkey || !selected?.unreadFromCounterparty) return
 
     let cancelled = false
     void markDirectMessageConversationRead({
-      principalPubkey: pubkey,
+      principalPubkey: accountPubkey,
       counterpartyPubkey: selected.counterpartyPubkey,
       transport: selected.transport,
     })
@@ -286,10 +333,10 @@ function MessagesPage() {
         if (cancelled || updated === 0) return
         await Promise.all([
           queryClient.invalidateQueries({
-            queryKey: ["merchant-dms", pubkey],
+            queryKey: ["merchant-dms", accountPubkey],
           }),
           queryClient.invalidateQueries({
-            queryKey: ["merchant-dms-live", pubkey],
+            queryKey: ["merchant-dms-live", accountPubkey],
           }),
         ])
       })
@@ -301,7 +348,7 @@ function MessagesPage() {
       cancelled = true
     }
   }, [
-    pubkey,
+    accountPubkey,
     queryClient,
     selected?.counterpartyPubkey,
     selected?.transport,
@@ -309,48 +356,75 @@ function MessagesPage() {
   ])
 
   const sendMutation = useMutation({
-    mutationFn: async ({
-      message,
-      counterpartyPubkey,
-      rumor,
-    }: OptimisticDirectMessageSend) => {
+    mutationFn: async (input: OptimisticDirectMessageSend) => {
+      if (
+        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
+      ) {
+        throw new Error("Reconnect your signer, then retry this message.")
+      }
       const ndk = getNdk()
-      if (!ndk.signer || !pubkey) {
+      if (!ndk.signer) {
         throw new Error("Connect your signer to reply.")
       }
       const { selfCopyError } = await publishPrivateMessage({
-        rumor,
-        senderPubkey: pubkey,
-        accountPubkey: pubkey,
-        authenticatedPubkey: signerConnected ? pubkey : null,
-        recipientPubkey: counterpartyPubkey,
+        rumor: input.rumor,
+        senderPubkey: input.accountPubkey,
+        accountPubkey: input.accountPubkey,
+        authenticatedPubkey: input.accountPubkey,
+        recipientPubkey: input.counterpartyPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         signerInteraction: "external",
-        shouldContinue: () => authGenerationRef.current === authGeneration,
+        shouldContinue: () =>
+          isCurrentMessagingAuthority(
+            input.accountPubkey,
+            input.authGeneration
+          ),
       })
-      optimisticMessageQueue.markPublished(message.localId)
+      if (
+        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
+      ) {
+        return
+      }
+      optimisticMessageQueue.markPublished(
+        input.messageScope,
+        input.message.localId
+      )
       if (selfCopyError) {
         console.warn("DM self-copy publish failed", selfCopyError)
       }
       try {
-        await cacheParsedDirectMessage(parseDirectMessageRumor(rumor))
+        await cacheParsedDirectMessage(parseDirectMessageRumor(input.rumor))
       } catch {
         console.warn("Failed to cache published direct message")
       }
     },
-    onSuccess: async () => {
+    onSuccess: async (_, input) => {
+      if (
+        !isCurrentMessagingAuthority(input.accountPubkey, input.authGeneration)
+      ) {
+        return
+      }
       await Promise.allSettled([
         queryClient.invalidateQueries({
-          queryKey: ["merchant-dms", pubkey ?? "none"],
+          queryKey: ["merchant-dms", input.accountPubkey],
         }),
         queryClient.invalidateQueries({
-          queryKey: ["merchant-dms-live", pubkey ?? "none"],
+          queryKey: ["merchant-dms-live", input.accountPubkey],
         }),
       ])
     },
-    onError: (error, { message }) => {
-      optimisticMessageQueue.markFailed(message.localId)
+    onError: (error, input) => {
+      if (
+        messagingAuthorityRef.current.accountPubkey !== input.accountPubkey ||
+        messagingAuthorityRef.current.authGeneration !== input.authGeneration
+      ) {
+        return
+      }
+      optimisticMessageQueue.markFailed(
+        input.messageScope,
+        input.message.localId
+      )
       if (
         error instanceof PrivateMessageRelayReadinessError &&
         error.reason === "sender_not_ready"
@@ -363,7 +437,7 @@ function MessagesPage() {
   const sendDirectMessage = () => {
     const content = composerText.trim()
     if (
-      !pubkey ||
+      !accountPubkey ||
       !selected ||
       selected.transport !== "nip17" ||
       !messagingReady ||
@@ -374,13 +448,14 @@ function MessagesPage() {
 
     const createdAt = Date.now()
     const rumor = buildDirectMessageRumor({
-      senderPubkey: pubkey,
+      senderPubkey: accountPubkey,
       recipientPubkey: selected.counterpartyPubkey,
       content,
       appId: "merchant",
       createdAt: Math.floor(createdAt / 1000),
     })
-    const message = optimisticMessageQueue.enqueue({
+    const messageScope = optimisticMessageScope
+    const message = optimisticMessageQueue.enqueue(messageScope, {
       eventId: rumor.id,
       conversationId: selected.id,
       content,
@@ -388,6 +463,9 @@ function MessagesPage() {
     })
     setComposerText("")
     sendMutation.mutate({
+      accountPubkey,
+      authGeneration,
+      messageScope,
       message,
       counterpartyPubkey: selected.counterpartyPubkey,
       rumor,
@@ -396,7 +474,7 @@ function MessagesPage() {
 
   const retryDirectMessage = (message: OptimisticConversationMessage) => {
     if (
-      !pubkey ||
+      !accountPubkey ||
       !selected ||
       selected.transport !== "nip17" ||
       !messagingReady
@@ -404,19 +482,33 @@ function MessagesPage() {
       return
     }
     const rumor = buildDirectMessageRumor({
-      senderPubkey: pubkey,
+      senderPubkey: accountPubkey,
       recipientPubkey: selected.counterpartyPubkey,
       content: message.content,
       appId: "merchant",
       createdAt: Math.floor(message.createdAt / 1000),
     })
-    optimisticMessageQueue.markPending(message.localId)
+    const messageScope = optimisticMessageScope
+    optimisticMessageQueue.markPending(messageScope, message.localId)
     sendMutation.mutate({
+      accountPubkey,
+      authGeneration,
+      messageScope,
       message,
       counterpartyPubkey: selected.counterpartyPubkey,
       rumor,
     })
   }
+
+  const previousMessageAuthorityKeyRef = useRef(
+    optimisticMessageScope.authorityKey
+  )
+  useLayoutEffect(() => {
+    const previousAuthorityKey = previousMessageAuthorityKeyRef.current
+    previousMessageAuthorityKeyRef.current = optimisticMessageScope.authorityKey
+    if (previousAuthorityKey === optimisticMessageScope.authorityKey) return
+    sendMutation.reset()
+  }, [optimisticMessageScope.authorityKey, sendMutation])
 
   const showEmpty =
     signerConnected &&
@@ -438,7 +530,17 @@ function MessagesPage() {
         </p>
       </div>
 
-      {!signerConnected && (
+      {remoteSignerRecovery ? (
+        <SignerRecoveryNotice
+          description="Your message draft and failed-send review items are still here. Reconnect the same signer, review the conversation, then choose Send or Retry again."
+          reconnecting={status === "restoring"}
+          restoreFailed={!!remoteSignerRecovery.restoreError}
+          restoreFailureDescription="That saved signer connection could not be restored. Conduit has not re-encrypted or resent any message."
+          onReconnect={() => connect({ mode: "restore" })}
+        />
+      ) : null}
+
+      {!hasAccount && (
         <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           Connect your signer to view buyer messages.
         </div>
@@ -450,7 +552,7 @@ function MessagesPage() {
         </div>
       )}
 
-      {signerConnected &&
+      {hasAccount &&
         !dmReadiness.isLoading &&
         !messagingReady &&
         readinessNoticeState && (
@@ -462,20 +564,24 @@ function MessagesPage() {
           />
         )}
 
-      {signerConnected && protectedMessagesReadState !== "pending" && (
+      {hasAccount && protectedMessagesReadState !== "pending" && (
         <ProtectedInboxNotice
           state={protectedMessagesReadState}
           decryptFailureCount={
             (liveMeta?.decryptFailures?.length ?? 0) +
             (liveMeta?.legacyDecryptFailures?.length ?? 0)
           }
-          onRetry={messagesRetryUseful ? retryMessagesRead : undefined}
+          onRetry={
+            signerConnected && messagesRetryUseful
+              ? retryMessagesRead
+              : undefined
+          }
           retrying={liveQuery.isRefetching}
           className="xl:shrink-0"
         />
       )}
 
-      {signerConnected &&
+      {hasAccount &&
         conversations.length === 0 &&
         (cachedQuery.isLoading || liveQuery.isLoading) && (
           <div className="text-sm text-[var(--text-secondary)]">
@@ -489,7 +595,7 @@ function MessagesPage() {
         </div>
       )}
 
-      {signerConnected && conversations.length > 0 && (
+      {hasAccount && conversations.length > 0 && (
         <div className="grid min-w-0 max-w-full gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[320px_minmax(0,1fr)]">
           <aside className="hidden min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
             <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
@@ -690,7 +796,10 @@ function MessagesPage() {
                         variant="outline"
                         size="sm"
                         onClick={retryRelatedOrdersRead}
-                        disabled={relatedOrdersLiveQuery.isRefetching}
+                        disabled={
+                          relatedOrdersLiveQuery.isRefetching ||
+                          !signerConnected
+                        }
                       >
                         Retry
                       </Button>
@@ -714,7 +823,7 @@ function MessagesPage() {
                         <ConversationMessageBubble
                           key={message.id}
                           content={message.content}
-                          mine={message.senderPubkey === pubkey}
+                          mine={message.senderPubkey === accountPubkey}
                           timestampLabel={new Date(
                             message.createdAt
                           ).toLocaleString()}

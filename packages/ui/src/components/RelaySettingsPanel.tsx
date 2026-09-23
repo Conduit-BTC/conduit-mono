@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -29,7 +30,6 @@ import {
   isAccountNetworkRelayRowOrderEligible,
   orderAccountNetworkRelayRows,
   tryNormalizeRelayUrl,
-  type AccountNetworkDesiredRelayRoles,
   type AccountNetworkFrontierView,
   type AccountNetworkRelayConfiguredUse,
   type AccountNetworkRelayRowView,
@@ -62,38 +62,24 @@ import {
   PreferenceSectionDivider,
   PreferenceSectionFooter,
 } from "./PreferenceSectionCard"
+import {
+  baselineRolesFromRows,
+  desiredRolesFromRows,
+  hasUnpublishedRelayRoleChanges,
+  reconcileRelaySettingsDraftRows,
+} from "./relay-settings-draft"
 import { StatusPill } from "./StatusPill"
 import { Switch } from "./Switch"
 
 export interface RelaySettingsPanelProps {
   controller: AccountNetworkSettingsController
   className?: string
+  /** Stable verified account owner. Changing it discards account-private edits. */
+  accountPubkey?: string | null
+  /** Changes whenever prepared signer authority must be invalidated. */
+  signerReviewKey?: string
+  signerReady?: boolean
   onUnpublishedRelayChangesChange?: (hasUnpublishedChanges: boolean) => void
-}
-
-function desiredRolesFromRows(
-  rows: readonly AccountNetworkRelayRowView[]
-): AccountNetworkDesiredRelayRoles[] {
-  return rows.map((row) => ({
-    url: row.url,
-    readEnabled: row.readEnabled,
-    publishEnabled: row.publishEnabled,
-    privateInboxEnabled: row.privateInboxEnabled,
-  }))
-}
-
-function baselineRolesFromRows(
-  rows: readonly AccountNetworkRelayRowView[]
-): AccountNetworkDesiredRelayRoles[] {
-  return rows.map((row) => ({
-    url: row.url,
-    readEnabled: row.readState === "published" || row.readState === "pending",
-    publishEnabled:
-      row.publishState === "published" || row.publishState === "pending",
-    privateInboxEnabled:
-      row.privateInboxState === "published" ||
-      row.privateInboxState === "pending",
-  }))
 }
 
 function hasSignedOrPendingMembership(
@@ -109,33 +95,6 @@ function hasSignedOrPendingMembership(
 
 function usesUnencryptedRelayTransport(relayUrl: string): boolean {
   return relayUrl.trim().toLowerCase().startsWith("ws://")
-}
-
-function rolesDiffer(
-  baselineRoles: readonly AccountNetworkDesiredRelayRoles[],
-  desiredRoles: readonly AccountNetworkDesiredRelayRoles[],
-  select: (roles: AccountNetworkDesiredRelayRoles) => readonly boolean[]
-): boolean {
-  const baselineByUrl = new Map(
-    baselineRoles.flatMap((roles) => {
-      const selected = select(roles)
-      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
-    })
-  )
-  const desiredByUrl = new Map(
-    desiredRoles.flatMap((roles) => {
-      const selected = select(roles)
-      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
-    })
-  )
-  const urls = new Set([...baselineByUrl.keys(), ...desiredByUrl.keys()])
-  for (const url of urls) {
-    const baseline = baselineByUrl.get(url) ?? []
-    const desired = desiredByUrl.get(url) ?? []
-    if (baseline.length !== desired.length) return true
-    if (baseline.some((value, index) => value !== desired[index])) return true
-  }
-  return false
 }
 
 export async function persistRelayOrderPreference(input: {
@@ -1011,6 +970,7 @@ export function RelayRemovalDialog({
   instruction,
   errorMessage,
   busy,
+  signerReady = true,
   returnFocusRef,
   fallbackFocusRef,
   onCancel,
@@ -1021,6 +981,7 @@ export function RelayRemovalDialog({
   instruction: string | null
   errorMessage: string | null
   busy: boolean
+  signerReady?: boolean
   returnFocusRef?: RefObject<HTMLButtonElement | null>
   fallbackFocusRef?: RefObject<HTMLHeadingElement | null>
   onCancel: () => void
@@ -1089,7 +1050,9 @@ export function RelayRemovalDialog({
           <Button
             type="button"
             variant="destructive"
-            disabled={busy || Boolean(instruction) || !preparedChange}
+            disabled={
+              busy || !signerReady || Boolean(instruction) || !preparedChange
+            }
             onClick={onProceed}
             className="min-h-11"
           >
@@ -1193,6 +1156,8 @@ function removalInstructionForReview(
 
 function useRelaySettingsReview(
   controller: AccountNetworkSettingsController,
+  signerReady: boolean,
+  signerReviewKey: string,
   onUnpublishedRelayChangesChange?: (hasUnpublishedChanges: boolean) => void,
   removalFallbackFocusRef?: RefObject<HTMLHeadingElement | null>
 ) {
@@ -1221,6 +1186,42 @@ function useRelaySettingsReview(
     string | null
   >(null)
 
+  useLayoutEffect(() => {
+    setPublishDialogOpen(false)
+    setPreparedPublishChange(null)
+    setRelayPendingRemoval(null)
+    setPreparedRemovalChange(null)
+    setRemovalPreparationError(null)
+  }, [signerReviewKey])
+
+  const controllerRevisionRef = useRef(controller.revision)
+  const previousControllerRowsRef = useRef(controller.view.rows)
+  const revisionRows = useMemo(() => {
+    if (controllerRevisionRef.current === controller.revision) return rows
+    return reconcileRelaySettingsDraftRows({
+      previousControllerRows: previousControllerRowsRef.current,
+      localRows: rows,
+      nextControllerRows: controller.view.rows,
+    })
+  }, [controller.revision, controller.view.rows, rows])
+
+  useLayoutEffect(() => {
+    if (controllerRevisionRef.current === controller.revision) {
+      previousControllerRowsRef.current = controller.view.rows
+      return
+    }
+    const previousControllerRows = previousControllerRowsRef.current
+    controllerRevisionRef.current = controller.revision
+    previousControllerRowsRef.current = controller.view.rows
+    setRows((current) =>
+      reconcileRelaySettingsDraftRows({
+        previousControllerRows,
+        localRows: current,
+        nextControllerRows: controller.view.rows,
+      })
+    )
+  }, [controller.revision, controller.view.rows])
+
   const baselineRoles = useMemo(
     () => baselineRolesFromRows(controller.view.rows),
     [controller.view.rows]
@@ -1230,21 +1231,20 @@ function useRelaySettingsReview(
       controller.view.rows.map((row) => [row.url, row])
     )
     return orderAccountNetworkRelayRows(
-      rows.map((row) => {
+      revisionRows.map((row) => {
         const current = currentByUrl.get(row.url)
         return current
           ? {
-              ...row,
-              signedPosition: current.signedPosition ?? row.signedPosition,
-              reachability: current.reachability,
-              capability: current.capability,
-              recoveryReadOnly: current.recoveryReadOnly,
+              ...current,
+              readEnabled: row.readEnabled,
+              publishEnabled: row.publishEnabled,
+              privateInboxEnabled: row.privateInboxEnabled,
             }
           : row
       }),
-      rows.map((row) => row.url)
+      revisionRows.map((row) => row.url)
     )
-  }, [controller.view.rows, rows])
+  }, [controller.view.rows, revisionRows])
   const controllerPreferredOrder = useMemo(
     () => controller.view.rows.map((row) => row.url),
     [controller.view.rows]
@@ -1292,19 +1292,15 @@ function useRelaySettingsReview(
     }
     return relayUrls
   }, [controller.view.rows])
-  const relayListChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-    roles.readEnabled,
-    roles.publishEnabled,
-  ])
-  const inboxChanged = rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-    roles.privateInboxEnabled,
-  ])
-  const dirty = relayListChanged || inboxChanged
+  const dirty = hasUnpublishedRelayRoleChanges(
+    controller.view.rows,
+    presentationRows
+  )
   const controllerRowUrls = new Set(controller.view.rows.map((row) => row.url))
-  const hasLocalCandidate = rows.some(
+  const hasLocalCandidate = presentationRows.some(
     (row) => row.candidate && !controllerRowUrls.has(row.url)
   )
-  const hasUnconfiguredLocalCandidate = rows.some(
+  const hasUnconfiguredLocalCandidate = presentationRows.some(
     (row) =>
       row.candidate &&
       !controllerRowUrls.has(row.url) &&
@@ -1333,9 +1329,11 @@ function useRelaySettingsReview(
     (delivery) => delivery.retryAvailable
   )
   const busy = operationIsBusy(controller.operation.phase) || reordering
-  const metadataReady = controller.status === "ready" && !busy
-  const mutationReady = metadataReady && !pendingRetry
-  const inboxCount = rows.filter((row) => row.privateInboxEnabled).length
+  const metadataReady = !busy
+  const mutationReady = metadataReady && !pendingRetry && signerReady
+  const inboxCount = presentationRows.filter(
+    (row) => row.privateInboxEnabled
+  ).length
   const removalInstruction = removalInstructionForReview(
     relayPendingRemoval,
     hasUnpublishedChanges,
@@ -1388,7 +1386,7 @@ function useRelaySettingsReview(
   ): void {
     controller.clearOperation()
     setLocalActionError(null)
-    const currentRow = rows.find((row) => row.url === url)
+    const currentRow = presentationRows.find((row) => row.url === url)
     if (
       currentRow &&
       wholeSetupRelayUrls.has(url) &&
@@ -1489,7 +1487,7 @@ function useRelaySettingsReview(
       setAddError(normalized.error)
       return
     }
-    if (rows.some((row) => row.url === normalized.url)) {
+    if (presentationRows.some((row) => row.url === normalized.url)) {
       setAddError("This relay is already in your Network review.")
       return
     }
@@ -1580,6 +1578,7 @@ function useRelaySettingsReview(
   }
 
   async function confirmPublish(): Promise<void> {
+    if (!signerReady) return
     const prepared = preparedPublishChange
     if (!prepared) return
     setPublishDialogOpen(false)
@@ -1631,6 +1630,7 @@ function useRelaySettingsReview(
   }
 
   async function proceedRemoval(): Promise<void> {
+    if (!signerReady) return
     if (!relayPendingRemoval || !preparedRemovalChange) return
     try {
       await preparedRemovalChange.execute()
@@ -1672,6 +1672,7 @@ function useRelaySettingsReview(
     busy,
     metadataReady,
     mutationReady,
+    signerReady,
     inboxCount,
     removalInstruction,
     operationText,
@@ -2122,6 +2123,7 @@ function PublishNetworkReviewDialog({
           </Button>
           <Button
             type="button"
+            disabled={!review.mutationReady}
             onClick={() => void review.confirmPublish()}
             className="min-h-11"
           >
@@ -2468,7 +2470,10 @@ function RelayPreferencesSection({
   const checking =
     controller.status === "reconciling" || controller.relayInformationRefreshing
   const refreshDisabled =
-    checking || review.busy || review.hasUnpublishedChanges
+    checking ||
+    review.busy ||
+    review.hasUnpublishedChanges ||
+    !review.signerReady
   const groupedRelayPresentation = Boolean(controller.view.appRelays)
   return (
     <PreferenceSectionCard
@@ -2544,6 +2549,8 @@ function RelayPreferencesSection({
 
 function RelayPreferencesEditor({
   controller,
+  signerReady,
+  signerReviewKey,
   onUnpublishedRelayChangesChange,
   removalFallbackFocusRef,
 }: RelaySettingsPanelProps & {
@@ -2551,6 +2558,8 @@ function RelayPreferencesEditor({
 }) {
   const review = useRelaySettingsReview(
     controller,
+    signerReady ?? true,
+    signerReviewKey ?? "default",
     onUnpublishedRelayChangesChange,
     removalFallbackFocusRef
   )
@@ -2569,6 +2578,7 @@ function RelayPreferencesEditor({
             : null
         }
         busy={review.busy}
+        signerReady={review.signerReady}
         returnFocusRef={review.removalTriggerRef}
         fallbackFocusRef={removalFallbackFocusRef}
         onCancel={review.cancelRemoval}
@@ -2578,35 +2588,14 @@ function RelayPreferencesEditor({
   )
 }
 
-/** Keep signer-free ordering out of the editor reset identity. */
-function getRelaySettingsEditorRevision(
-  controller: AccountNetworkSettingsController
-): string {
-  const rows = controller.view.rows
-    .map(
-      (row) =>
-        [
-          row.url,
-          row.readState,
-          row.publishState,
-          row.privateInboxState,
-          Boolean(row.recoveryReadOnly),
-        ] as const
-    )
-    .sort((left, right) => left[0].localeCompare(right[0]))
-
-  return JSON.stringify({
-    revision: controller.revision,
-    rows,
-  })
-}
-
 export function RelaySettingsPanel({
   controller,
   className,
+  accountPubkey = null,
+  signerReady = true,
+  signerReviewKey = "default",
   onUnpublishedRelayChangesChange,
 }: RelaySettingsPanelProps) {
-  const editorRevision = getRelaySettingsEditorRevision(controller)
   const removalFallbackFocusRef = useRef<HTMLHeadingElement | null>(null)
   return (
     <section
@@ -2618,13 +2607,20 @@ export function RelaySettingsPanel({
       <div className="space-y-6">
         <NetworkHeader focusRef={removalFallbackFocusRef} />
         <RelayPreferencesEditor
-          key={editorRevision}
+          key={accountPubkey ?? "no-account"}
           controller={controller}
+          accountPubkey={accountPubkey}
+          signerReady={signerReady}
+          signerReviewKey={signerReviewKey}
           onUnpublishedRelayChangesChange={onUnpublishedRelayChangesChange}
           removalFallbackFocusRef={removalFallbackFocusRef}
         />
         {controller.mediaServers ? (
-          <MediaServerPreferencesSection {...controller.mediaServers} />
+          <MediaServerPreferencesSection
+            key={`media:${accountPubkey ?? "no-account"}`}
+            {...controller.mediaServers}
+            signerReviewKey={signerReviewKey}
+          />
         ) : null}
       </div>
     </section>
