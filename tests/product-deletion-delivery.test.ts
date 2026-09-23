@@ -18,9 +18,7 @@ import {
   deliverProductDeletionJob,
   deliverPendingProductDeletions,
   getPendingProductDeletionDeliveries,
-  getTerminalRejectedProductDeletionDeliveries,
   isDeliveredCompanionListingForDeletion,
-  isTerminalRejectedProductDeletionJob,
   persistProductDeletionDelivery,
   planProductDeletionRelays,
   type ProductDeletionDeliveryOptions,
@@ -144,10 +142,6 @@ class MemoryProductDeletionOutbox implements ProductDeletionOutboxRepository {
     return Array.from(this.storage.values())
       .filter((job) => job.state !== "delivered")
       .map(cloneJob)
-  }
-
-  async listAll(): Promise<ProductDeletionDeliveryJob[]> {
-    return Array.from(this.storage.values()).map(cloneJob)
   }
 
   async update(
@@ -428,6 +422,61 @@ describe("companion listing deletion gate", () => {
     )
     expect(delivered.state).toBe("delivered")
     expect(attempts).toEqual(["wss://relay.conduit.market"])
+  })
+
+  it("retries a rejected companion with the same signature only after common family ACK", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const signedEvent = signedDeletionEvent()
+    const listing = companionListingFixture(signedEvent.id)
+    const deletion = await persistProductDeletionDelivery(
+      {
+        signedEvent,
+        currentWriteRelayUrls: [],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+        companionListingJobId: listing.id,
+      },
+      { repository, now: () => NOW }
+    )
+    const options = withEligibleAccountRelays({
+      repository,
+      now: tickingClock(),
+      getCompanionListingJob: async () => listing,
+    })
+    const rejected = await deliverProductDeletionJob(
+      deletion.id,
+      async () => ({ status: "rejected" }),
+      options
+    )
+    expect(rejected.state).toBe("partial")
+
+    const blockedAttempts: string[] = []
+    const blocked = await deliverProductDeletionJob(
+      deletion.id,
+      async ({ relayUrl }) => {
+        blockedAttempts.push(relayUrl)
+        return { status: "acked" }
+      },
+      {
+        ...options,
+        getCompanionListingJob: async () => ({ ...listing, state: "partial" }),
+      }
+    )
+    expect(blocked.state).toBe("partial")
+    expect(blockedAttempts).toEqual([])
+
+    const retryAttempts: string[] = []
+    const delivered = await deliverProductDeletionJob(
+      deletion.id,
+      async ({ relayUrl, signedEvent: retriedEvent }) => {
+        retryAttempts.push(relayUrl)
+        expect(retriedEvent).toEqual(signedEvent)
+        return { status: "acked" }
+      },
+      options
+    )
+    expect(retryAttempts).toEqual(["wss://relay.conduit.market"])
+    expect(delivered.state).toBe("delivered")
   })
 })
 
@@ -789,7 +838,7 @@ describe("durable product deletion delivery", () => {
     ])
   })
 
-  it("classifies an all-rejected deletion as terminal without losing ACK evidence", async () => {
+  it("keeps all-rejected and partly ACKed deletion notices retryable", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent()
     await persistProductDeletionDelivery(
@@ -811,9 +860,10 @@ describe("durable product deletion delivery", () => {
     expect(rejected.successfulRelayUrls).toEqual([])
     expect(rejected.rejectedRelayUrls).toEqual(rejected.failedRelayUrls)
     expect(rejected.rejectedRelayUrls).toHaveLength(2)
-    expect(buildProductDeliveryNotice("delete", rejected).state).toBe(
-      "rejected"
-    )
+    const rejectedNotice = buildProductDeliveryNotice("delete", rejected)
+    expect(rejectedNotice.state).toBe("retry_needed")
+    expect(rejectedNotice.detail).toContain("Use Retry delivery")
+    expect(rejectedNotice.detail).not.toContain("nothing left to retry")
 
     const acknowledgedJob = {
       ...rejectedJob,
@@ -826,12 +876,16 @@ describe("durable product deletion delivery", () => {
     const acknowledged = productDeletionJobToPublishResult(acknowledgedJob)
     expect(acknowledged.successfulRelayUrls).toHaveLength(1)
     expect(acknowledged.rejectedRelayUrls).toHaveLength(1)
-    expect(buildProductDeliveryNotice("delete", acknowledged).state).toBe(
-      "delivered"
+    const acknowledgedNotice = buildProductDeliveryNotice(
+      "delete",
+      acknowledged
     )
+    expect(acknowledgedNotice.state).toBe("partial")
+    expect(acknowledgedNotice.detail).toContain("Use Retry delivery")
+    expect(acknowledgedNotice.detail).not.toContain("nothing left to retry")
   })
 
-  it("keeps an all-rejected deletion inspectable after reload but never exact-retries it", async () => {
+  it("retries the same signed deletion after all relays reject, across reload and explicit retry", async () => {
     const storage = new Map<string, ProductDeletionDeliveryJob>()
     const beforeReload = new MemoryProductDeletionOutbox(storage)
     const event = signedDeletionEvent()
@@ -852,7 +906,8 @@ describe("durable product deletion delivery", () => {
         now: tickingClock(),
       })
     )
-    expect(isTerminalRejectedProductDeletionJob(rejected)).toBe(true)
+    expect(rejected.state).toBe("partial")
+    expect(rejected.deliveryAttemptCount).toBe(1)
 
     const afterReload = new MemoryProductDeletionOutbox(storage)
     const options = withEligibleAccountRelays({
@@ -860,157 +915,47 @@ describe("durable product deletion delivery", () => {
       now: () => NOW + 60_000,
       forceDeliveryLeaseRecovery: true,
     })
-    expect(await getPendingProductDeletionDeliveries(options)).toEqual([])
-    const terminal = await getTerminalRejectedProductDeletionDeliveries(
-      event.pubkey,
+    expect(
+      (await getPendingProductDeletionDeliveries(options)).map(({ id }) => id)
+    ).toEqual([event.id])
+
+    const backgroundAttempts: { relayUrl: string; signedEventId: string }[] = []
+    const background = await deliverPendingProductDeletions(
+      async ({ relayUrl, signedEvent }) => {
+        expect(signedEvent).toEqual(event)
+        backgroundAttempts.push({ relayUrl, signedEventId: signedEvent.id })
+        return {
+          status: relayUrl === "wss://write.example" ? "acked" : "rejected",
+        }
+      },
       options
     )
-    expect(terminal.map(({ id }) => id)).toEqual([event.id])
-    expect(
-      await getTerminalRejectedProductDeletionDeliveries(
-        "a".repeat(64),
-        options
-      )
-    ).toEqual([])
-    expect(
-      await getTerminalRejectedProductDeletionDeliveries(
-        "not-a-pubkey",
-        options
-      )
-    ).toEqual([])
+    expect(background.map(({ id }) => id)).toEqual([event.id])
+    expect(background[0]?.state).toBe("partial")
+    expect(backgroundAttempts).toEqual([
+      { relayUrl: "wss://relay.conduit.market", signedEventId: event.id },
+      { relayUrl: "wss://write.example", signedEventId: event.id },
+    ])
 
-    const attempted: string[] = []
-    const publisher: ProductDeletionRelayPublisher = async ({ relayUrl }) => {
-      attempted.push(relayUrl)
-      return { status: "acked" }
-    }
-    expect(await deliverPendingProductDeletions(publisher, options)).toEqual([])
+    const explicitAttempts: string[] = []
     const explicitRetry = await deliverProductDeletionJob(
       event.id,
-      publisher,
-      options
-    )
-    expect(explicitRetry).toEqual(rejected)
-    expect(attempted).toEqual([])
-    expect((await afterReload.get(event.id))?.deliveryAttemptCount).toBe(1)
-  })
-
-  it("hides a terminal deletion from recovery once a newer matching deletion is staged", async () => {
-    const repository = new MemoryProductDeletionOutbox()
-    const event = signedDeletionEvent()
-    const relayUrl = "wss://relay.conduit.market"
-    const deliveryInput = {
-      currentWriteRelayUrls: [] as string[],
-      sourceRelayUrls: [] as string[],
-      canonicalConduitRelayUrl: relayUrl,
-    }
-    await persistProductDeletionDelivery(
-      { ...deliveryInput, signedEvent: event },
-      { repository, now: () => NOW }
-    )
-    await deliverProductDeletionJob(
-      event.id,
-      async () => ({ status: "rejected" }),
-      withEligibleAccountRelays({ repository, now: tickingClock() })
-    )
-    expect(
-      (
-        await getTerminalRejectedProductDeletionDeliveries(event.pubkey, {
-          repository,
-        })
-      ).map(({ id }) => id)
-    ).toEqual([event.id])
-
-    const differentTarget = finalizeEvent(
-      {
-        kind: 5,
-        created_at: event.created_at + 1,
-        tags: [["e", "b".repeat(64)]],
-        content: "",
+      async ({ relayUrl, signedEvent }) => {
+        expect(signedEvent).toEqual(event)
+        explicitAttempts.push(relayUrl)
+        return { status: "acked" }
       },
-      MERCHANT_SECRET
-    )
-    await persistProductDeletionDelivery(
-      { ...deliveryInput, signedEvent: differentTarget },
-      { repository, now: () => NOW + 1 }
-    )
-    expect(
-      (
-        await getTerminalRejectedProductDeletionDeliveries(event.pubkey, {
-          repository,
-        })
-      ).map(({ id }) => id)
-    ).toEqual([event.id])
-
-    const successor = finalizeEvent(
-      {
-        kind: 5,
-        created_at: event.created_at + 2,
-        tags: [["e", "a".repeat(64)]],
-        content: "",
-      },
-      MERCHANT_SECRET
-    )
-    await persistProductDeletionDelivery(
-      { ...deliveryInput, signedEvent: successor },
-      { repository, now: () => NOW + 2 }
-    )
-    expect(
-      await getTerminalRejectedProductDeletionDeliveries(event.pubkey, {
-        repository,
+      withEligibleAccountRelays({
+        repository: afterReload,
+        now: tickingClock(NOW + 120_000),
+        forceDeliveryLeaseRecovery: true,
       })
-    ).toEqual([])
-
-    await deliverProductDeletionJob(
-      successor.id,
-      async () => ({ status: "acked" }),
-      withEligibleAccountRelays({ repository, now: tickingClock(NOW + 3) })
     )
+    expect(explicitAttempts).toEqual(["wss://relay.conduit.market"])
+    expect(explicitRetry.state).toBe("delivered")
+    expect(explicitRetry.signedEvent).toEqual(event)
     expect(
-      await getTerminalRejectedProductDeletionDeliveries(event.pubkey, {
-        repository,
-      })
-    ).toEqual([])
-  })
-
-  it("recognizes an explicit recovery successor even when both jobs share a timestamp", async () => {
-    const repository = new MemoryProductDeletionOutbox()
-    const original = signedDeletionEvent()
-    const deliveryInput = {
-      currentWriteRelayUrls: [] as string[],
-      sourceRelayUrls: [] as string[],
-      canonicalConduitRelayUrl: "wss://relay.conduit.market",
-    }
-    await persistProductDeletionDelivery(
-      { ...deliveryInput, signedEvent: original },
-      { repository, now: () => NOW }
-    )
-    await deliverProductDeletionJob(
-      original.id,
-      async () => ({ status: "rejected" }),
-      withEligibleAccountRelays({ repository, now: () => NOW })
-    )
-
-    const successor = finalizeEvent(
-      {
-        kind: 5,
-        created_at: original.created_at,
-        tags: [
-          ...original.tags,
-          ["conduit_recovery_attempt", original.id, "unique-attempt"],
-        ],
-        content: original.content,
-      },
-      MERCHANT_SECRET
-    )
-    await persistProductDeletionDelivery(
-      { ...deliveryInput, signedEvent: successor },
-      { repository, now: () => NOW }
-    )
-    expect(
-      await getTerminalRejectedProductDeletionDeliveries(original.pubkey, {
-        repository,
-      })
+      await getPendingProductDeletionDeliveries({ repository: afterReload })
     ).toEqual([])
   })
 
@@ -1035,7 +980,7 @@ describe("durable product deletion delivery", () => {
       }),
       withEligibleAccountRelays({ repository, now: tickingClock() })
     )
-    expect(isTerminalRejectedProductDeletionJob(partial)).toBe(false)
+    expect(partial.state).toBe("partial")
     expect(
       (await getPendingProductDeletionDeliveries({ repository })).map(
         ({ id }) => id

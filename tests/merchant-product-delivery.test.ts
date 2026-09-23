@@ -217,6 +217,49 @@ describe("merchant product delivery notices", () => {
     expect(notice.detail).not.toContain("Use Retry delivery")
   })
 
+  it("keeps an all-rejected deletion in the exact-delivery retry state", () => {
+    const rejected = buildProductDeliveryNotice(
+      "delete",
+      deliveryResult({
+        attemptedRelayUrls: ["wss://relay.one", "wss://relay.two"],
+        failedRelayUrls: ["wss://relay.one", "wss://relay.two"],
+        rejectedRelayUrls: ["wss://relay.one", "wss://relay.two"],
+      })
+    )
+
+    expect(rejected.state).toBe("retry_needed")
+    expect(rejected.title).toBe("Delete saved locally")
+    expect(rejected.detail).toContain("Use Retry delivery for 2 relays")
+    expect(rejected.detail).not.toContain("nothing left to retry")
+
+    const partlyAcknowledged = buildProductDeliveryNotice(
+      "delete",
+      deliveryResult({
+        attemptedRelayUrls: ["wss://relay.one", "wss://relay.two"],
+        successfulRelayUrls: ["wss://relay.one"],
+        failedRelayUrls: ["wss://relay.two"],
+        rejectedRelayUrls: ["wss://relay.two"],
+      }),
+      rejected
+    )
+    expect(partlyAcknowledged.state).toBe("partial")
+    expect(partlyAcknowledged.detail).toContain("ACKed 1 of 2 relays")
+    expect(partlyAcknowledged.detail).toContain(
+      "Use Retry delivery for 1 relay"
+    )
+
+    const delivered = buildProductDeliveryNotice(
+      "delete",
+      deliveryResult({
+        attemptedRelayUrls: ["wss://relay.two"],
+        successfulRelayUrls: ["wss://relay.two"],
+      }),
+      partlyAcknowledged
+    )
+    expect(delivered.state).toBe("delivered")
+    expect(delivered.failedRelayUrls).toEqual([])
+  })
+
   it("treats a common family ACK as delivered when another relay rejects it", () => {
     const notice = buildProductDeliveryNotice(
       "publish",

@@ -103,12 +103,12 @@ the same product coordinate.
 Delivery records per-relay acknowledgement, rejection, timeout, and retry
 state. Pending and partially delivered jobs survive route changes, page
 reloads, and browser restarts. A retry republishes the same signed event bytes;
-it does not silently create a second semantic deletion. When every planned
-relay explicitly rejects the signed event, exact-byte retries stop. The
-rejected job remains inspectable, and after repairing relay settings the
-merchant can deliberately sign a new delivery. That replacement retains the
-original deletion's exact `e`/`a` targets and `created_at` cutoff, so it cannot
-delete product revisions authored after the original deletion request.
+it does not silently create a second semantic deletion. An explicit rejection,
+even from every planned relay, remains an unacknowledged target in the durable
+exact-byte retry lane. Merchant reports a deletion as partial/retryable until
+every planned target ACKs. Repairing relay settings may allow the same signed
+deletion to reach a previously rejecting target; it does not require or offer
+a second signature with a broader `created_at` cutoff.
 
 For a mixed replacement and deletion, both exact signed jobs must be durable
 before either is sent. The deletion remains queued without relay attempts until
@@ -116,9 +116,7 @@ one relay has acknowledged every event in the replacement listing family.
 Explicit retry and background recovery apply the same gate after reload. A
 timeout or rejection on another relay cannot substitute for that common ACK;
 once it arrives, the original signed deletion can be retried without another
-signer request. If that companion deletion is explicitly rejected by every
-planned relay, a new signed delivery is offered only after the reciprocal,
-same-author replacement family has a durable common relay acknowledgement.
+signer request, including when every planned relay explicitly rejects it.
 If the replacement family has no relay that acknowledged every signed listing
 and every event/relay pair has a final ACK or explicit rejection, the untouched
 companion deletion cannot be delivered independently. This includes crossed
@@ -129,7 +127,10 @@ paired start-over. Both intents are newly signed and staged together; the
 replacement deletion retains the original NIP-09 `created_at` cutoff and
 targets, and remains gated on a common ACK for the new listing family. Neither
 old listing bytes nor the old queued deletion are retried as the new operation.
-Standalone deletions retain their independent delivery path.
+Once a replacement family does have a common ACK, a rejected companion kind
+`5` deletion follows the ordinary exact-byte retry lane rather than the
+listing family's terminal-rejection policy. Standalone deletions retain that
+same independent exact-byte delivery path.
 
 Workers use a durable expiring claim to avoid duplicate cross-tab delivery.
 Acknowledgements are monotonic, so a late timeout or rejection from a stale
@@ -159,8 +160,9 @@ The deletion regression matrix covers:
 - tombstone-before-product and product-before-tombstone ordering;
 - agreement between cache, catalog, storefront, detail, batch, and progressive
   reads; and
-- durable delivery of the same signed event after partial failure and browser
-  restart, including the v8-to-v9 cache migration.
+- durable delivery of the same signed event after partial or all-rejected
+  failure and browser restart, without reporting full deletion delivery until
+  every planned relay ACKs, including the v8-to-v9 cache migration.
 
 These are convergence properties. Adding a new product read surface requires
 routing it through the shared resolver and extending the agreement matrix.

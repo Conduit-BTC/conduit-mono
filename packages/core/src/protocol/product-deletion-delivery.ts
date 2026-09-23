@@ -93,8 +93,6 @@ export interface ProductDeletionOutboxRepository {
   add(job: ProductDeletionDeliveryJob): Promise<void>
   get(id: string): Promise<ProductDeletionDeliveryJob | undefined>
   listUndelivered(): Promise<ProductDeletionDeliveryJob[]>
-  /** Required only when presenting terminal jobs; includes delivered successors. */
-  listAll?(): Promise<ProductDeletionDeliveryJob[]>
   update(
     id: string,
     updater: (current: ProductDeletionDeliveryJob) => ProductDeletionDeliveryJob
@@ -428,11 +426,6 @@ const dexieProductDeletionOutboxRepository: ProductDeletionOutboxRepository = {
     return jobs.map(cloneJob)
   },
 
-  async listAll() {
-    const jobs = await db.productDeletionOutbox.toArray()
-    return jobs.map(cloneJob)
-  },
-
   async update(id, updater) {
     return db.transaction("rw", db.productDeletionOutbox, async () => {
       const current = await db.productDeletionOutbox.get(id)
@@ -577,7 +570,7 @@ export async function persistProductDeletionDelivery(
 /**
  * A replacement family may release its companion deletion only after one
  * relay acknowledged every exact, same-author signed listing in that family.
- * Reuse this proof before starting a newly signed deletion after rejection.
+ * Reuse this proof before retrying a companion deletion's exact signed event.
  */
 export function isDeliveredCompanionListingForDeletion(
   listing: ProductListingDeliveryJob | undefined,
@@ -636,28 +629,6 @@ function deriveDeliveryState(
   return deliveryAttemptCount > 0 ? "partial" : "pending"
 }
 
-/** Explicit rejections on every planned relay need a newly signed action, not an exact retry. */
-export function isTerminalRejectedProductDeletionJob(
-  job: ProductDeletionDeliveryJob
-): boolean {
-  if (
-    job.state === "delivered" ||
-    job.deliveryAttemptCount === 0 ||
-    job.relayPlan.length === 0 ||
-    job.relayDelivery.length !== job.relayPlan.length
-  ) {
-    return false
-  }
-  const deliveryByRelay = new Map(
-    job.relayDelivery.map((delivery) => [delivery.relayUrl, delivery])
-  )
-  if (deliveryByRelay.size !== job.relayPlan.length) return false
-  return job.relayPlan.every((target) => {
-    const delivery = deliveryByRelay.get(target.relayUrl)
-    return delivery?.status === "rejected" && delivery.attemptCount > 0
-  })
-}
-
 function reconcileJob(
   job: ProductDeletionDeliveryJob,
   timestamp: number,
@@ -714,11 +685,7 @@ async function markDeliveryRunStarted(
   retryDelayMs: number
 ): Promise<ProductDeletionDeliveryJob> {
   return repository.update(id, (current) => {
-    if (
-      current.deliveryLeaseOwner !== leaseOwner ||
-      isTerminalRejectedProductDeletionJob(current)
-    )
-      return current
+    if (current.deliveryLeaseOwner !== leaseOwner) return current
     return reconcileJob(
       {
         ...current,
@@ -741,11 +708,7 @@ async function markRelayAttemptStarted(
   leaseMs: number
 ): Promise<ProductDeletionDeliveryJob> {
   return repository.update(id, (current) => {
-    if (
-      current.deliveryLeaseOwner !== leaseOwner ||
-      isTerminalRejectedProductDeletionJob(current)
-    )
-      return current
+    if (current.deliveryLeaseOwner !== leaseOwner) return current
     return {
       ...current,
       relayDelivery: current.relayDelivery.map((delivery) =>
@@ -809,11 +772,7 @@ async function claimDeliveryLease(
   forceRecovery: boolean
 ): Promise<ProductDeletionDeliveryJob> {
   return repository.update(id, (current) => {
-    if (
-      current.state === "delivered" ||
-      isTerminalRejectedProductDeletionJob(current)
-    )
-      return current
+    if (current.state === "delivered") return current
     if (
       current.deliveryLeaseOwner &&
       current.deliveryLeaseOwner !== leaseOwner &&
@@ -874,7 +833,6 @@ async function deliverProductDeletionJobUnlocked(
   if (!stored) {
     throw new Error("Product deletion delivery job not found")
   }
-  if (isTerminalRejectedProductDeletionJob(stored)) return cloneJob(stored)
   if (
     stored.companionListingJobId &&
     !(await isCompanionListingReady(stored, options))
@@ -882,13 +840,12 @@ async function deliverProductDeletionJobUnlocked(
     return cloneJob(stored)
   }
   assertSignedDeletionEvent(stored.signedEvent)
-  const approved = await retireUnapprovedPersistedRelayTargets(
+  await retireUnapprovedPersistedRelayTargets(
     repository,
     id,
     getNow(options),
     retryDelayMs
   )
-  if (isTerminalRejectedProductDeletionJob(approved)) return approved
 
   const claimed = await claimDeliveryLease(
     repository,
@@ -898,11 +855,7 @@ async function deliverProductDeletionJobUnlocked(
     leaseMs,
     options.forceDeliveryLeaseRecovery === true
   )
-  if (
-    claimed.deliveryLeaseOwner !== leaseOwner ||
-    isTerminalRejectedProductDeletionJob(claimed)
-  )
-    return claimed
+  if (claimed.deliveryLeaseOwner !== leaseOwner) return claimed
   // The exact signed event is the durable identity for this signer-free retry.
   // Revalidate it after the claim and use only its author as the policy account.
   // Active auth may admit that author's exact owner-selected ws:// subset, but
@@ -967,7 +920,6 @@ async function deliverProductDeletionJobUnlocked(
       const currentDelivery = current.relayDelivery.find(
         (delivery) => delivery.relayUrl === relayUrl
       )
-      if (isTerminalRejectedProductDeletionJob(current)) break
       if (
         current.deliveryLeaseOwner !== leaseOwner ||
         currentDelivery?.status === "acked"
@@ -1104,11 +1056,10 @@ export async function getPendingProductDeletionDeliveries(
   const jobs = await getRepository(options).listUndelivered()
   const dueJobs = jobs.filter(
     (job) =>
-      !isTerminalRejectedProductDeletionJob(job) &&
-      (!options.dueOnly ||
-        ((job.nextRetryAt === undefined || job.nextRetryAt <= timestamp) &&
-          (job.deliveryLeaseExpiresAt === undefined ||
-            job.deliveryLeaseExpiresAt <= timestamp)))
+      !options.dueOnly ||
+      ((job.nextRetryAt === undefined || job.nextRetryAt <= timestamp) &&
+        (job.deliveryLeaseExpiresAt === undefined ||
+          job.deliveryLeaseExpiresAt <= timestamp))
   )
   const actionableJobs = await Promise.all(
     dueJobs.map(async (job) => {
@@ -1133,63 +1084,6 @@ export async function getPendingProductDeletionDeliveries(
   )
   return actionableJobs
     .filter((job): job is ProductDeletionDeliveryJob => job !== null)
-    .sort(
-      (left, right) =>
-        left.createdAt - right.createdAt || left.id.localeCompare(right.id)
-    )
-    .map(cloneJob)
-}
-
-/**
- * Return an author's terminal deletions that still need a newly signed start-over.
- * A newer durable deletion for the same validated target set supersedes the old
- * recovery prompt even when that successor is pending or already delivered.
- */
-export async function getTerminalRejectedProductDeletionDeliveries(
-  merchantPubkey: string,
-  options: ProductDeletionDeliveryOptions = {}
-): Promise<ProductDeletionDeliveryJob[]> {
-  if (!/^[0-9a-f]{64}$/.test(merchantPubkey)) return []
-  const repository = getRepository(options)
-  if (!repository.listAll) {
-    throw new Error(
-      "Terminal product deletion recovery requires a complete outbox read"
-    )
-  }
-  const jobs = await repository.listAll()
-  const authorJobs = jobs.flatMap((job) => {
-    if (job.signedEvent.pubkey !== merchantPubkey) return []
-    const evidence = validateProductDeletionEvent(job.signedEvent)?.evidence
-    if (!evidence?.length) return []
-    const targets = evidence
-      .map((target) =>
-        target.target === "event"
-          ? `e:${target.eventId}`
-          : `a:${target.addressId}`
-      )
-      .sort()
-    return [{ job, targetKey: JSON.stringify(targets) }]
-  })
-  return authorJobs
-    .filter(
-      ({ job, targetKey }) =>
-        isTerminalRejectedProductDeletionJob(job) &&
-        !authorJobs.some(
-          ({ job: successor, targetKey: successorTargetKey }) =>
-            successor.id !== job.id &&
-            successorTargetKey === targetKey &&
-            (successor.signedEvent.tags.some(
-              ([name, replacedId]) =>
-                name === "conduit_recovery_attempt" &&
-                replacedId === job.signedEvent.id
-            ) ||
-              successor.signedEvent.created_at > job.signedEvent.created_at ||
-              (successor.signedEvent.created_at ===
-                job.signedEvent.created_at &&
-                successor.createdAt > job.createdAt))
-        )
-    )
-    .map(({ job }) => job)
     .sort(
       (left, right) =>
         left.createdAt - right.createdAt || left.id.localeCompare(right.id)

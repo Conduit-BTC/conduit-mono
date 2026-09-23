@@ -156,12 +156,21 @@ export function formatProductRelayUrls(urls: readonly string[]): string {
 }
 
 function getDeliveryState(
+  action: ProductWriteAction,
   delivery: Pick<
     PublishWithPlannerResult,
     "successfulRelayUrls" | "failedRelayUrls" | "rejectedRelayUrls"
   >
 ): ProductDeliveryNotice["state"] {
   if (delivery.failedRelayUrls.length > 0) {
+    // A NIP-09 deletion is converged only when every planned target ACKs.
+    // Unlike a listing family, even an explicit relay rejection remains in
+    // the exact signed deletion's durable retry lane.
+    if (action === "delete") {
+      return delivery.successfulRelayUrls.length > 0
+        ? "partial"
+        : "retry_needed"
+    }
     const rejectedRelayUrls = new Set(delivery.rejectedRelayUrls ?? [])
     if (delivery.failedRelayUrls.every((url) => rejectedRelayUrls.has(url))) {
       return delivery.successfulRelayUrls.length > 0 ? "delivered" : "rejected"
@@ -203,7 +212,7 @@ export function buildProductDeliveryNotice(
       delivery.rejectedRelayUrls ?? []
     ).includes(url)
   )
-  const state = getDeliveryState({
+  const state = getDeliveryState(action, {
     successfulRelayUrls,
     failedRelayUrls,
     rejectedRelayUrls,
@@ -223,11 +232,11 @@ export function buildProductDeliveryNotice(
       ? `ACKed ${successfulRelayUrls.length} of ${getRelayCountLabel(totalRelayCount)}.`
       : "Relay delivery completed without per-relay ACK details."
   const retryableRelayUrls = failedRelayUrls.filter(
-    (url) => !rejectedRelayUrls.includes(url)
+    (url) => action === "delete" || !rejectedRelayUrls.includes(url)
   )
   const retrySummary =
     retryableRelayUrls.length > 0
-      ? `Use Retry delivery for ${getRelayCountLabel(retryableRelayUrls.length)}.`
+      ? `${action === "delete" && rejectedRelayUrls.length > 0 ? `${getRelayCountLabel(rejectedRelayUrls.length)} rejected the signed deletion. ` : ""}Use Retry delivery for ${getRelayCountLabel(retryableRelayUrls.length)}.`
       : rejectedRelayUrls.length > 0
         ? state === "rejected"
           ? `${getRelayCountLabel(rejectedRelayUrls.length)} rejected the signed event; there is nothing left to retry. Repair Network Settings, then sign a new delivery.`

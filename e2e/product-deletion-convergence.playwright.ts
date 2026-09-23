@@ -863,7 +863,7 @@ test("Merchant persists one exact deletion and restores it after reload @merchan
   expect(afterReload.tombstoneCount).toBeGreaterThan(0)
 })
 
-test("Merchant starts a newly signed deletion after every relay rejects the original @merchant", async ({
+test("Merchant retries the same signed deletion after every relay rejects it @merchant", async ({
   page,
 }) => {
   let allowDelivery = false
@@ -899,51 +899,39 @@ test("Merchant starts a newly signed deletion after every relay rejects the orig
     .toBe(true)
   const first = (await readDeletionState(page)).jobs[0]!
   expect(signerCalls).toBe(1)
-  await expect(page.getByText("Delete rejected")).toBeVisible()
+  await expect(page.getByText("Delete saved locally")).toBeVisible()
   await expect(
     page.getByRole("button", { name: "Retry delivery" })
-  ).toHaveCount(0)
+  ).toBeVisible()
 
   await page.reload()
   await expect(
-    page.getByRole("button", { name: "Sign new delivery" })
+    page.getByRole("button", { name: "Retry delivery" })
   ).toBeVisible()
-  const beforeRepair = (await readDeletionState(page)).jobs
-  expect(beforeRepair).toHaveLength(1)
-  expect(beforeRepair[0]!.deliveryAttemptCount).toBe(1)
+  expect((await readDeletionState(page)).jobs).toHaveLength(1)
+  await expect(
+    page.getByRole("button", { name: "Sign new delivery" })
+  ).toHaveCount(0)
 
   allowDelivery = true
-  await page.getByRole("button", { name: "Sign new delivery" }).click()
+  await page.getByRole("button", { name: "Retry delivery" }).click()
   await expect
     .poll(async () => {
       const jobs = (await readDeletionState(page)).jobs
-      return (
-        jobs.length === 2 &&
-        jobs.some((job) => job.id !== first.id && job.state === "delivered")
-      )
+      return jobs.length === 1 && jobs[0]?.state === "delivered"
     })
     .toBe(true)
   const recovered = (await readDeletionState(page)).jobs
-  expect(signerCalls).toBe(2)
+  expect(signerCalls).toBe(1)
+  expect(recovered[0]?.id).toBe(first.id)
+  expect(recovered[0]?.signedEvent).toEqual(first.signedEvent)
+  expect(recovered[0]?.deliveryAttemptCount).toBeGreaterThan(1)
   expect(
-    recovered.find((job) => job.id === first.id)?.deliveryAttemptCount
-  ).toBe(1)
-  const replacement = recovered.find((job) => job.id !== first.id)!
-  expect(replacement.signedEvent.id).not.toBe(first.signedEvent.id)
-  expect(replacement.signedEvent.created_at).toBe(first.signedEvent.created_at)
-  expect(
-    replacement.signedEvent.tags.filter(
-      ([name]) => name !== "conduit_recovery_attempt"
-    )
-  ).toEqual(first.signedEvent.tags)
-  expect(
-    replacement.signedEvent.tags.filter(
-      ([name]) => name === "conduit_recovery_attempt"
-    )
-  ).toHaveLength(1)
+    publishes.filter(({ event }) => event.id === first.id).length
+  ).toBeGreaterThan(1)
   await page.reload()
   await expect(
-    page.getByRole("button", { name: "Sign new delivery" })
+    page.getByRole("button", { name: "Retry delivery" })
   ).toHaveCount(0)
 })
 
@@ -980,13 +968,14 @@ test("Merchant refuses a deletion signed by a switched account before staging @m
   expect(publishes).toEqual([])
 })
 
-test("Merchant re-signs a rejected companion deletion only after its replacement family has a reciprocal common ACK @merchant", async ({
+test("Merchant retries a rejected companion deletion only after its replacement family has a reciprocal common ACK @merchant", async ({
   page,
 }) => {
   test.setTimeout(60_000)
+  let allowDelivery = false
   let signerCalls = 0
   const publishes: ObservedRelayPublish[] = []
-  await installRelayMock(page, publishes, () => true)
+  await installRelayMock(page, publishes, () => allowDelivery)
   await installValidTestSigner(page, () => {
     signerCalls += 1
   })
@@ -1137,57 +1126,57 @@ test("Merchant re-signs a rejected companion deletion only after its replacement
 
   await page.reload()
   await expect(
-    page.getByRole("button", { name: "Sign new delivery" })
-  ).toHaveCount(0)
+    page.getByRole("button", { name: "Retry delivery" })
+  ).toBeVisible()
   expect(signerCalls).toBe(0)
+  await page.getByRole("button", { name: "Retry delivery" }).click()
+  expect(publishes.some(({ event }) => event.id === originalDeletion.id)).toBe(
+    false
+  )
 
   await updateCompanionListing(false)
   await page.reload()
   await expect(
-    page.getByRole("button", { name: "Sign new delivery" })
-  ).toHaveCount(0)
+    page.getByRole("button", { name: "Retry delivery" })
+  ).toBeVisible()
   expect(signerCalls).toBe(0)
+  await page.getByRole("button", { name: "Retry delivery" }).click()
+  expect(publishes.some(({ event }) => event.id === originalDeletion.id)).toBe(
+    false
+  )
 
   await updateCompanionListing(true)
   await page.reload()
   await expect(
-    page.getByRole("button", { name: "Sign new delivery" })
+    page.getByRole("button", { name: "Retry delivery" })
   ).toBeVisible()
   const beforeRecovery = (await readDeletionState(page)).jobs
   expect(beforeRecovery).toHaveLength(1)
-  expect(beforeRecovery[0]?.deliveryAttemptCount).toBe(1)
+  expect(beforeRecovery[0]?.deliveryAttemptCount).toBeGreaterThanOrEqual(1)
 
-  await page.getByRole("button", { name: "Sign new delivery" }).click()
+  allowDelivery = true
+  await page.getByRole("button", { name: "Retry delivery" }).click()
   await expect
     .poll(async () => {
       const jobs = (await readDeletionState(page)).jobs
-      return (
-        jobs.length === 2 &&
-        jobs.some(
-          (job) => job.id !== originalDeletion.id && job.state === "delivered"
-        )
-      )
+      return jobs.length === 1 && jobs[0]?.state === "delivered"
     })
     .toBe(true)
   const jobs = (await readDeletionState(page)).jobs
-  const newJob = jobs.find((job) => job.id !== originalDeletion.id)!
-  expect(signerCalls).toBe(1)
-  expect(
-    jobs.find((job) => job.id === originalDeletion.id)?.deliveryAttemptCount
-  ).toBe(1)
-  expect(newJob.signedEvent.created_at).toBe(originalDeletion.created_at)
-  expect(newJob.signedEvent.id).not.toBe(originalDeletion.id)
-  expect(
-    newJob.signedEvent.tags.filter(([name]) => name === "e" || name === "a")
-  ).toEqual(
-    originalDeletion.tags.filter(([name]) => name === "e" || name === "a")
-  )
+  expect(signerCalls).toBe(0)
+  expect(jobs[0]?.id).toBe(originalDeletion.id)
+  expect(jobs[0]?.signedEvent).toMatchObject({
+    id: originalDeletion.id,
+    pubkey: originalDeletion.pubkey,
+    sig: originalDeletion.sig,
+    kind: originalDeletion.kind,
+    created_at: originalDeletion.created_at,
+    tags: originalDeletion.tags,
+    content: originalDeletion.content,
+  })
   expect(publishes.some(({ event }) => event.id === originalDeletion.id)).toBe(
-    false
+    true
   )
-  expect(
-    publishes.some(({ event }) => event.id === newJob.signedEvent.id)
-  ).toBe(true)
 })
 
 test("Merchant can re-sign an unchanged product after terminal relay rejection @merchant", async ({
