@@ -1113,22 +1113,32 @@ export type LightningInvoiceValidation =
 export function validateLightningInvoiceForPayment({
   invoice,
   expectedAmountMsats,
+  expectedNetwork,
   nowSeconds = Math.floor(Date.now() / 1000),
   allowExpired = false,
 }: {
   invoice: string
   expectedAmountMsats: number
+  /** When omitted, retain the deployment network and its compatibility rules. */
+  expectedNetwork?: Exclude<LightningInvoiceNetwork, "unknown">
   nowSeconds?: number
   /** Payment reports may preserve an invoice after it expired; payment may not. */
   allowExpired?: boolean
 }): LightningInvoiceValidation {
   const metadata = decodeLightningInvoiceMetadata(invoice)
-  if (!isInvoiceCompatibleWithCurrentNetwork(invoice)) {
+  const actualNetwork = getLightningInvoiceNetwork(invoice)
+  if (
+    expectedNetwork
+      ? actualNetwork !== expectedNetwork
+      : !isInvoiceCompatibleWithCurrentNetwork(invoice)
+  ) {
     return {
       ok: false,
       reason:
-        getLightningNetworkMismatchMessage(invoice) ??
-        "The invoice returned by the merchant is for a different Lightning network.",
+        expectedNetwork && actualNetwork !== "unknown"
+          ? `This invoice is for ${actualNetwork}, but ${expectedNetwork} was required.`
+          : (getLightningNetworkMismatchMessage(invoice) ??
+            "The invoice returned by the merchant is for a different Lightning network."),
       metadata,
     }
   }

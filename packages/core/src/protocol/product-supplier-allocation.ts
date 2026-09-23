@@ -12,8 +12,11 @@ import type { WalletNetwork } from "../wallets"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchLnurlPayMetadata,
+  getLightningInvoiceNetwork,
+  isValidLightningInvoice,
   isValidLud16Address,
   type LnurlPayMetadata,
+  validateLightningInvoiceForPayment,
 } from "./lightning"
 import {
   isValidNostrPublicKey,
@@ -89,11 +92,14 @@ export type ProductSupplierPaymentEndpointReason =
   | "nostr_unsupported"
   | "nostr_pubkey_invalid"
 
+export type ProductSupplierPaymentEndpointState =
+  "metadata_ready" | "unavailable" | "invalid"
+
 export type ProductSupplierPaymentEndpoint = {
   pubkey: string
   role: ProductSupplierAllocationRecipient["role"]
   weight: number
-  state: ProductSupplierAllocationEndpointState
+  state: ProductSupplierPaymentEndpointState
   reason?: ProductSupplierPaymentEndpointReason
   lud16?: string
   expectedNetwork?: WalletNetwork
@@ -106,7 +112,7 @@ export type ProductSupplierPaymentEndpoint = {
 }
 
 export interface ProductSupplierPaymentEndpointResolution {
-  state: ProductSupplierAllocationEndpointState | "not_configured"
+  state: ProductSupplierPaymentEndpointState | "not_configured"
   recipients: ProductSupplierPaymentEndpoint[]
   revisionEventId?: string
   revisionCreatedAt?: number
@@ -116,6 +122,18 @@ export interface ResolveProductSupplierPaymentEndpointsOptions {
   expectedNetwork: WalletNetwork
   fetchMetadata?: (lud16: string) => Promise<LnurlPayMetadata>
 }
+
+export type ProductSupplierPaymentInvoiceReadiness =
+  | { state: "ready"; verifiedNetwork: WalletNetwork }
+  | {
+      state: "invalid"
+      reason:
+        | "metadata_not_ready"
+        | "amount_out_of_range"
+        | "invoice_network_unknown"
+        | "invoice_network_mismatch"
+        | "invoice_invalid"
+    }
 
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/
 
@@ -703,11 +721,13 @@ export async function resolveProductSupplierPaymentEndpoints(
               allowsNostr: true,
             }
           }
+          // LNURL-pay metadata does not identify the Lightning network. The
+          // expected network is a requirement, not verified provider evidence.
           return {
             pubkey: recipient.pubkey,
             role: recipient.role,
             weight: recipient.weight,
-            state: "ready",
+            state: "metadata_ready",
             lud16: lud16.toLowerCase(),
             expectedNetwork: options.expectedNetwork,
             minSendableMsats: metadata.minSendable,
@@ -735,7 +755,7 @@ export async function resolveProductSupplierPaymentEndpoints(
     ? "invalid"
     : recipients.some((recipient) => recipient.state === "unavailable")
       ? "unavailable"
-      : "ready"
+      : "metadata_ready"
   return {
     state,
     recipients,
@@ -746,4 +766,51 @@ export async function resolveProductSupplierPaymentEndpoints(
       ? { revisionCreatedAt: allocation.revisionCreatedAt }
       : {}),
   }
+}
+
+/**
+ * An endpoint with valid metadata becomes invoice-ready only after the actual
+ * callback invoice satisfies its required network, amount, and expiry. The
+ * caller remains responsible for obtaining that invoice from the endpoint's
+ * callback and for any separate NIP-57 zap-request binding.
+ */
+export function validateProductSupplierPaymentInvoice(
+  endpoint: ProductSupplierPaymentEndpoint,
+  invoice: string,
+  expectedAmountMsats: number,
+  nowSeconds?: number
+): ProductSupplierPaymentInvoiceReadiness {
+  if (
+    endpoint.state !== "metadata_ready" ||
+    !endpoint.expectedNetwork ||
+    endpoint.minSendableMsats === undefined ||
+    endpoint.maxSendableMsats === undefined
+  ) {
+    return { state: "invalid", reason: "metadata_not_ready" }
+  }
+  if (
+    !Number.isSafeInteger(expectedAmountMsats) ||
+    expectedAmountMsats < endpoint.minSendableMsats ||
+    expectedAmountMsats > endpoint.maxSendableMsats
+  ) {
+    return { state: "invalid", reason: "amount_out_of_range" }
+  }
+
+  const invoiceNetwork = getLightningInvoiceNetwork(invoice)
+  if (invoiceNetwork === "unknown") {
+    return { state: "invalid", reason: "invoice_network_unknown" }
+  }
+  if (invoiceNetwork !== endpoint.expectedNetwork) {
+    return { state: "invalid", reason: "invoice_network_mismatch" }
+  }
+  const validation = validateLightningInvoiceForPayment({
+    invoice,
+    expectedAmountMsats,
+    expectedNetwork: endpoint.expectedNetwork,
+    ...(nowSeconds === undefined ? {} : { nowSeconds }),
+  })
+  if (!validation.ok || !isValidLightningInvoice(invoice)) {
+    return { state: "invalid", reason: "invoice_invalid" }
+  }
+  return { state: "ready", verifiedNetwork: invoiceNetwork }
 }

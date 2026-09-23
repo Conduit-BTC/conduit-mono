@@ -17,9 +17,16 @@ import {
   PRODUCT_SUPPLIER_ALLOCATION_VERSION_TAG,
   resolveProductSupplierAllocationEndpoints,
   resolveProductSupplierPaymentEndpoints,
+  validateProductSupplierPaymentInvoice,
   type ProductSchema,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import {
+  bolt11PaymentHashField,
+  makeBolt11Fixture,
+} from "./support/bolt11-fixture"
+import { makeSignedBolt11Fixture } from "./support/signed-bolt11-fixture"
+import { config } from "../packages/core/src/config"
 
 const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
@@ -529,7 +536,7 @@ describe("product supplier allocations", () => {
     ).toMatchObject({ state: "invalid" })
   })
 
-  it("resolves coordinator-ready endpoints with frozen revision, range, and network fields", async () => {
+  it("resolves metadata-ready endpoints without claiming network verification", async () => {
     const signedRevision = signedProductRevision(
       allocationTags(
         ["zap", MERCHANT, "wss://relay.conduit.market", "3"],
@@ -565,7 +572,7 @@ describe("product supplier allocations", () => {
     )
 
     expect(result).toMatchObject({
-      state: "ready",
+      state: "metadata_ready",
       revisionEventId: signedRevision.id,
       revisionCreatedAt: 1_800_000_000,
       recipients: [
@@ -573,7 +580,7 @@ describe("product supplier allocations", () => {
           pubkey: MERCHANT,
           role: "merchant",
           weight: 3,
-          state: "ready",
+          state: "metadata_ready",
           expectedNetwork: "mainnet",
           minSendableMsats: 1_000,
           maxSendableMsats: 100_000_000,
@@ -582,13 +589,106 @@ describe("product supplier allocations", () => {
           pubkey: SUPPLIER_A,
           role: "supplier",
           weight: 1,
-          state: "ready",
+          state: "metadata_ready",
           expectedNetwork: "mainnet",
           minSendableMsats: 1_000,
           maxSendableMsats: 100_000_000,
         },
       ],
     })
+
+    const endpoint = result.recipients[0]!
+    const invoiceFields = [bolt11PaymentHashField()]
+    const invoiceOptions = { fields: invoiceFields, createdAt: 1_800_000_000 }
+    const matchingInvoice = makeSignedBolt11Fixture({
+      hrp: "lnbc10n",
+      createdAt: 1_800_000_000,
+    })
+    expect(
+      validateProductSupplierPaymentInvoice(
+        { ...endpoint, state: "unavailable" },
+        matchingInvoice,
+        1_000,
+        1_800_000_000
+      )
+    ).toEqual({ state: "invalid", reason: "metadata_not_ready" })
+    expect(
+      validateProductSupplierPaymentInvoice(
+        endpoint,
+        matchingInvoice,
+        100,
+        1_800_000_000
+      )
+    ).toEqual({ state: "invalid", reason: "amount_out_of_range" })
+    expect(
+      validateProductSupplierPaymentInvoice(
+        endpoint,
+        makeBolt11Fixture({ ...invoiceOptions, hrp: "lnbcrt10n" }),
+        1_000,
+        1_800_000_000
+      )
+    ).toEqual({ state: "invalid", reason: "invoice_network_mismatch" })
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      expect(
+        validateProductSupplierPaymentInvoice(
+          { ...endpoint, expectedNetwork: "regtest" },
+          makeSignedBolt11Fixture({
+            hrp: "lnbcrt10n",
+            createdAt: 1_800_000_000,
+          }),
+          1_000,
+          1_800_000_000
+        )
+      ).toEqual({ state: "ready", verifiedNetwork: "regtest" })
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+    expect(
+      validateProductSupplierPaymentInvoice(
+        endpoint,
+        makeBolt11Fixture({ ...invoiceOptions, hrp: "lnfoo10n" }),
+        1_000,
+        1_800_000_000
+      )
+    ).toEqual({ state: "invalid", reason: "invoice_network_unknown" })
+    expect(
+      validateProductSupplierPaymentInvoice(
+        endpoint,
+        matchingInvoice,
+        1_000,
+        1_800_000_000
+      )
+    ).toEqual({ state: "ready", verifiedNetwork: "mainnet" })
+    expect(
+      validateProductSupplierPaymentInvoice(
+        endpoint,
+        makeSignedBolt11Fixture({
+          hrp: "lnbc10n",
+          createdAt: 1_800_000_000,
+          invalidSignature: true,
+        }),
+        1_000,
+        1_800_000_000
+      )
+    ).toEqual({ state: "invalid", reason: "invoice_invalid" })
+    expect(
+      validateProductSupplierPaymentInvoice(
+        endpoint,
+        makeBolt11Fixture({ ...invoiceOptions, hrp: "lnbc20n" }),
+        1_000,
+        1_800_000_000
+      )
+    ).toEqual({ state: "invalid", reason: "invoice_invalid" })
+    expect(
+      validateProductSupplierPaymentInvoice(
+        endpoint,
+        matchingInvoice,
+        1_000,
+        1_800_003_601
+      )
+    ).toEqual({ state: "invalid", reason: "invoice_invalid" })
 
     const mutatedAllocations = [
       {

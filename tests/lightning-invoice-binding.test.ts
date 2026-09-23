@@ -97,6 +97,37 @@ describe("BOLT11 network decoding", () => {
       config.lightningNetwork = previousNetwork
     }
   })
+
+  it("checks an explicitly required network without changing the deployment default", () => {
+    const regtest = makeBolt11Invoice({
+      hrp: "lnbcrt20n",
+      fields: [paymentHashField()],
+    })
+    const previousNetwork = config.lightningNetwork
+    config.lightningNetwork = "mainnet"
+    try {
+      const input = {
+        invoice: regtest,
+        expectedAmountMsats: 2_000,
+        nowSeconds: CREATED_AT,
+      }
+      expect(validateLightningInvoiceForPayment(input).ok).toBe(false)
+      expect(
+        validateLightningInvoiceForPayment({
+          ...input,
+          expectedNetwork: "regtest",
+        }).ok
+      ).toBe(true)
+      expect(
+        validateLightningInvoiceForPayment({
+          ...input,
+          expectedNetwork: "mainnet",
+        }).ok
+      ).toBe(false)
+    } finally {
+      config.lightningNetwork = previousNetwork
+    }
+  })
 })
 
 describe("BOLT11 payment hash decoding", () => {
