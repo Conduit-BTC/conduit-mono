@@ -43,6 +43,31 @@ describe("checkout completion navigation contracts", () => {
     expect(ordersRoute).toContain("View full order details")
   })
 
+  it("does not fall back from a missing focused order while reads are pending or unavailable", async () => {
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+
+    expect(ordersRoute).toContain("if (paymentFocused && selectedFromUrl) {")
+    expect(ordersRoute).toContain(
+      "return orders.some((order) => order.orderId === selectedFromUrl)"
+    )
+    expect(ordersRoute).toMatch(
+      /lifecyclesQuery\.isPending\s*\|\|\s*\(signerConnected\s*&&\s*\(messagesQuery\.isPending\s*\|\|\s*protectedOrdersReadState === "pending"\)\)/
+    )
+    expect(ordersRoute).toContain('{selected ? "Complete payment" : "Orders"}')
+    expect(ordersRoute).toContain('title="Order unavailable"')
+    expect(ordersRoute).toContain('<Link to="/orders">View all orders</Link>')
+    expect(ordersRoute).toContain('"Guest order not found"')
+    expect(ordersRoute).toContain('"Guest order session not found"')
+    expect(ordersRoute).toContain(
+      "(!paymentFocused || selected.orderId === selectedFromUrl)"
+    )
+    expect(ordersRoute).toMatch(
+      /!lifecyclesQuery\.isPending\s*&&\s*!hasOrders\s*&&\s*\(!signerConnected\s*\|\|\s*\(!paymentFocused\s*&&\s*protectedOrdersReadState\s*===\s*"complete"\)\)/
+    )
+  })
+
   it("scopes relay authentication to both foreground signed order sends", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"

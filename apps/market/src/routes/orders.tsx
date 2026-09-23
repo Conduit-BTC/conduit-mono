@@ -2478,6 +2478,11 @@ function OrdersPage() {
   }, [tab, merchantName, orders, searchValue])
 
   const selectedOrderId = useMemo(() => {
+    if (paymentFocused && selectedFromUrl) {
+      return orders.some((order) => order.orderId === selectedFromUrl)
+        ? selectedFromUrl
+        : null
+    }
     if (
       selectedFromUrl &&
       filteredOrders.some((o) => o.orderId === selectedFromUrl)
@@ -2485,7 +2490,7 @@ function OrdersPage() {
       return selectedFromUrl
     }
     return filteredOrders[0]?.orderId ?? null
-  }, [filteredOrders, selectedFromUrl])
+  }, [filteredOrders, orders, paymentFocused, selectedFromUrl])
 
   const selected = useMemo(
     () => orders.find((o) => o.orderId === selectedOrderId) ?? null,
@@ -2507,7 +2512,9 @@ function OrdersPage() {
   // subscribe to the live payment service so progress refreshes without reload.
   const paymentAttemptQuery = useQuery({
     queryKey: ["buyer-payment-attempt", selected?.orderId ?? "none"],
-    enabled: !!selected?.orderId,
+    enabled:
+      !!selected?.orderId &&
+      (!paymentFocused || selected.orderId === selectedFromUrl),
     queryFn: async () =>
       (await db.paymentAttempts.get(selected!.orderId)) ?? null,
   })
@@ -2543,13 +2550,21 @@ function OrdersPage() {
   }, [paymentAttemptQuery.data, selected])
 
   const hasOrders = orders.length > 0
+  const focusedOrderPending =
+    paymentFocused &&
+    !selected &&
+    (lifecyclesQuery.isPending ||
+      (signerConnected &&
+        (messagesQuery.isPending || protectedOrdersReadState === "pending")))
+  const focusedOrderUnavailable =
+    paymentFocused && signerConnected && !selected && !focusedOrderPending
 
   return (
     <div className="space-y-6">
-      {paymentFocused && activeBuyerPubkey && hasOrders && (
+      {paymentFocused && activeBuyerPubkey && (
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Complete payment
+            {selected ? "Complete payment" : "Orders"}
           </h1>
           <RefreshChip
             refreshing={ordersRefreshState.refreshing}
@@ -2611,7 +2626,8 @@ function OrdersPage() {
       {activeBuyerPubkey &&
         !lifecyclesQuery.isPending &&
         !hasOrders &&
-        protectedOrdersReadState === "complete" && (
+        (!signerConnected ||
+          (!paymentFocused && protectedOrdersReadState === "complete")) && (
           <EmptyState
             title={signerConnected ? "No orders yet" : "Guest order not found"}
             body={
@@ -2629,7 +2645,28 @@ function OrdersPage() {
           />
         )}
 
-      {activeBuyerPubkey && hasOrders && (
+      {activeBuyerPubkey && focusedOrderPending && (
+        <div
+          role="status"
+          className="mx-auto w-full max-w-3xl py-8 text-center text-sm text-[var(--text-secondary)]"
+        >
+          Checking order
+        </div>
+      )}
+
+      {activeBuyerPubkey && focusedOrderUnavailable && (
+        <EmptyState
+          title="Order unavailable"
+          body="This order isn't available in the order data currently on this device or from the available relay reads. Refresh to check again, or return to your full order list."
+          action={
+            <Button asChild variant="outline" className="h-11 px-4 text-sm">
+              <Link to="/orders">View all orders</Link>
+            </Button>
+          }
+        />
+      )}
+
+      {activeBuyerPubkey && hasOrders && (!paymentFocused || selectedRow) && (
         <div
           className={
             paymentFocused

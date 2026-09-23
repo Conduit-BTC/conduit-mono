@@ -765,6 +765,96 @@ function makeExpiredManualInvoice(): string {
 }
 
 test.describe("CND-162 mobile browser baseline", () => {
+  test("focused order does not fall back to another local payment action @market", async ({
+    page,
+  }) => {
+    const otherOrderId = "mobile-focused-existing-failed-order"
+    const missingOrderId = "mobile-focused-missing-order"
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
+    await page.goto(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { name: "No orders yet" })
+    ).toBeVisible()
+    await seedPaymentLifecycle(page, {
+      orderId: otherOrderId,
+      buyerPubkey,
+      paymentClaimId: "unused-focused-order-claim",
+      failedPayment: {
+        merchantPubkey: TEST_MERCHANT_PUBKEY,
+        address: "merchant@example.test",
+        checkoutMode: "private_checkout",
+        paymentTarget: { type: "manual" },
+      },
+    })
+
+    await page.goto(`${marketUrl}/orders?order=${missingOrderId}&focus=payment`)
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Orders", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("heading", {
+        level: 2,
+        name: "Order unavailable",
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(page.getByText("Checking order", { exact: true })).toHaveCount(
+      0
+    )
+    await expect(
+      page.getByRole("button", { name: "Browse products" })
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("button", { name: "Try payment again" })
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("link", { name: "View full order details", exact: true })
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("link", { name: "View all orders", exact: true })
+    ).toHaveAttribute("href", "/orders")
+    await assertMobileViewport(page)
+
+    await page
+      .getByRole("link", { name: "View all orders", exact: true })
+      .click()
+    await expect(page).toHaveURL(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Orders", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: /Mobile Recovery.*Payment failed/ })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("link", { name: "View all orders" })
+    ).toHaveCount(0)
+    await assertMobileViewport(page)
+
+    await page.goto(`${marketUrl}/orders?order=${otherOrderId}&focus=payment`)
+    await expect(
+      page.getByRole("link", { name: "View full order details", exact: true })
+    ).toHaveAttribute("href", `/orders?order=${otherOrderId}`)
+    await expect(
+      page.getByRole("button", { name: "Try payment again" })
+    ).toBeVisible()
+    await assertMobileViewport(page)
+
+    await page.goto(`${marketUrl}/orders`)
+    await expect(page).toHaveURL(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Orders", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Try payment again" })
+    ).toBeVisible()
+    await assertMobileViewport(page)
+  })
+
   test("market order messages stay clear of the returning mobile footer @market", async ({
     page,
   }) => {
