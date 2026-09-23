@@ -20,10 +20,10 @@ describe("Merchant publish live account authority", () => {
       /signAndPublishProductListing\(\{[\s\S]{0,180}shouldContinue: \(\) => isCurrentOrderAction\(authority\)/
     )
     expect(orders).toMatch(
-      /deliverSignedProductEvent\([\s\S]{0,220}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
+      /deliverQueuedProductListings\(queued\.id,\s*\{[\s\S]{0,180}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
     )
     expect(products).toMatch(
-      /ensureMerchantBoothPickup\(\{[\s\S]{0,140}shouldContinue,/
+      /ensureMerchantBoothPickup\(\{[\s\S]{0,260}shouldContinue: \(\) => \{\s*assertCurrentFamilyRevision\?\.\(\)/
     )
     expect(products).toMatch(
       /signAndPublishProductWriteBundle\(\{[\s\S]{0,100}shouldContinue,/

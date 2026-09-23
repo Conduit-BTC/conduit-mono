@@ -466,10 +466,10 @@ describe("app account-network read propagation", () => {
       /signAndPublishProductListing\(\{[\s\S]{0,100}merchantPubkey: pubkey,[\s\S]{0,100}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAction\(authority\)/
     )
     expect(stockMutation).toMatch(
-      /ensureSignedProductListingsQueued\(\{[\s\S]{0,180}merchantPubkey: pubkey,[\s\S]{0,180}authenticatedPubkey: signerConnected \? pubkey : null,[\s\S]{0,100}shouldContinue: \(\) => authGenerationRef.current === authGeneration/
+      /ensureSignedProductListingsQueued\(\{[\s\S]{0,180}merchantPubkey: pubkey,[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
     )
     expect(stockMutation).toMatch(
-      /deliverQueuedProductListings\(queued\.id, \{[\s\S]{0,120}authenticatedPubkey: signerConnected \? pubkey : null,[\s\S]{0,100}shouldContinue: \(\) => authGenerationRef.current === authGeneration/
+      /deliverQueuedProductListings\(queued\.id, \{[\s\S]{0,120}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
     )
     expect(lightning).toContain("accountPubkey,")
     expect(lightning).toContain("accountNetworkLocalStateRepository,")
