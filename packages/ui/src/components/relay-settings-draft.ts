@@ -31,27 +31,36 @@ export function baselineRolesFromRows(
 
 function rolesDiffer(
   baselineRoles: readonly AccountNetworkDesiredRelayRoles[],
-  desiredRoles: readonly AccountNetworkDesiredRelayRoles[],
-  select: (roles: AccountNetworkDesiredRelayRoles) => readonly boolean[]
+  desiredRoles: readonly AccountNetworkDesiredRelayRoles[]
 ): boolean {
   const baselineByUrl = new Map(
-    baselineRoles.flatMap((roles) => {
-      const selected = select(roles)
-      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
-    })
+    baselineRoles
+      .filter(
+        (roles) =>
+          roles.readEnabled || roles.publishEnabled || roles.privateInboxEnabled
+      )
+      .map((roles) => [roles.url, roles] as const)
   )
   const desiredByUrl = new Map(
-    desiredRoles.flatMap((roles) => {
-      const selected = select(roles)
-      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
-    })
+    desiredRoles
+      .filter(
+        (roles) =>
+          roles.readEnabled || roles.publishEnabled || roles.privateInboxEnabled
+      )
+      .map((roles) => [roles.url, roles] as const)
   )
   const urls = new Set([...baselineByUrl.keys(), ...desiredByUrl.keys()])
   for (const url of urls) {
-    const baseline = baselineByUrl.get(url) ?? []
-    const desired = desiredByUrl.get(url) ?? []
-    if (baseline.length !== desired.length) return true
-    if (baseline.some((value, index) => value !== desired[index])) return true
+    const baseline = baselineByUrl.get(url)
+    const desired = desiredByUrl.get(url)
+    if (
+      (baseline?.readEnabled ?? false) !== (desired?.readEnabled ?? false) ||
+      (baseline?.publishEnabled ?? false) !==
+        (desired?.publishEnabled ?? false) ||
+      (baseline?.privateInboxEnabled ?? false) !==
+        (desired?.privateInboxEnabled ?? false)
+    )
+      return true
   }
   return false
 }
@@ -159,13 +168,5 @@ export function hasUnpublishedRelayRoleChanges(
 ): boolean {
   const baselineRoles = baselineRolesFromRows(controllerRows)
   const desiredRoles = desiredRolesFromRows(localRows)
-  return (
-    rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-      roles.readEnabled,
-      roles.publishEnabled,
-    ]) ||
-    rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-      roles.privateInboxEnabled,
-    ])
-  )
+  return rolesDiffer(baselineRoles, desiredRoles)
 }

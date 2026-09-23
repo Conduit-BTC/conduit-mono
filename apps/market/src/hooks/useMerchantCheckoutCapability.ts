@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import {
   config,
-  getAuthSignerReadiness,
   getWalletNetworkFromLightningConfig,
   hasWebLN,
   resolveWalletPaymentInstance,
@@ -67,15 +66,7 @@ export function useMerchantCheckoutCapability(input: {
   enabled?: boolean
   wallets?: UseWalletsReturn
 }): MerchantCheckoutCapabilityView {
-  const {
-    accountPubkey,
-    pubkey,
-    restorePendingPubkey,
-    signer,
-    capabilities,
-    signerReadiness,
-    status: authStatus,
-  } = useAuth()
+  const { accountPubkey, restorePendingPubkey, signerReadiness } = useAuth()
   const enabled = input.enabled ?? true
   const ownedWallets = useWallets({
     enabled: !input.wallets && enabled && input.items.length > 0,
@@ -197,14 +188,7 @@ export function useMerchantCheckoutCapability(input: {
       }).ready
     )
   })()
-  const authSignerReady =
-    signerReadiness === "ready" &&
-    getAuthSignerReadiness({
-      status: authStatus,
-      pubkey,
-      signer,
-      capabilities,
-    }) === "ready"
+  const authSignerReady = signerReadiness === "ready"
 
   const capability = deriveMerchantCheckoutCapability({
     pickupReviewRequired: items.some(isPickupCartItem),
