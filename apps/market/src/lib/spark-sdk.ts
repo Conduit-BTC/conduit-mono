@@ -12,6 +12,7 @@ import {
 
 import {
   SparkWalletManager,
+  type SparkCheckoutLightningObligationInput,
   type SparkCheckoutReceiveInput,
   type SparkCheckoutReceiveFailureReason,
   type SparkCheckoutReceiveReconciliation,
@@ -555,7 +556,7 @@ function adaptFirstPartySparkWallet(input: {
     }
   }
 
-  return {
+  const client: SparkSdkClient = {
     async addEventListener(listener) {
       const listenerId = `spark-listener-${++nextListenerId}`
       const nativeListener = () => {
@@ -885,6 +886,45 @@ function adaptFirstPartySparkWallet(input: {
         return { status: "conflicting_evidence", reason }
       }
     },
+    async sendCheckoutLightningObligation(request) {
+      validateFrozenCheckoutLightningSend(request, input.network)
+      const transferId = input.module.parseTransferId(request.transferId)
+
+      // Another origin may have sent this exact leg already. Never issue a new
+      // provider send when exact history is paid, pending, unavailable, or in
+      // conflict; only an initial successful empty query may reach the send.
+      const prior = await client.reconcileLightningSend!(request)
+      if (prior.status !== "not_found") {
+        return resolvedCheckoutResult(prior)
+      }
+
+      const estimatedFeeSats = await input.wallet.getLightningSendFeeEstimate({
+        encodedInvoice: request.paymentRequest,
+      })
+      if (
+        !Number.isSafeInteger(estimatedFeeSats) ||
+        estimatedFeeSats < 0 ||
+        estimatedFeeSats > request.maxFeeSats
+      ) {
+        throw new Error("Spark fee is outside the frozen checkout limit.")
+      }
+
+      // The first-party SDK re-estimates the fee and rejects if this fixed
+      // maximum no longer covers it. Never substitute a new fee or transfer ID.
+      const initial = await input.wallet.payLightningInvoice({
+        invoice: request.paymentRequest,
+        maxFeeSats: request.maxFeeSats,
+        preferSpark: false,
+        transferId,
+      })
+      if (isNativeTransfer(initial)) return { status: "ambiguous" }
+
+      // The immediate send response is not independent settlement proof. An
+      // unavailable or lagging exact-history lookup remains ambiguous.
+      return resolvedCheckoutResult(
+        await client.reconcileLightningSend!(request)
+      )
+    },
     async receivePayment(request) {
       if (request.paymentMethod.type === "sparkAddress") {
         const paymentRequest = validateSparkReceiveAddress({
@@ -914,6 +954,47 @@ function adaptFirstPartySparkWallet(input: {
       }
     },
   }
+  return client
+}
+
+function validateFrozenCheckoutLightningSend(
+  request: SparkCheckoutLightningObligationInput,
+  network: SparkNativeNetwork
+): void {
+  const invoice = canonicalLightningInvoice(request.paymentRequest)
+  if (
+    request.network !== fromNativeNetwork(network) ||
+    !invoice ||
+    isAmountlessLightningInvoice(invoice) ||
+    getLightningInvoiceNetwork(invoice) !== request.network ||
+    !decodeLightningInvoicePaymentHash(invoice) ||
+    !Number.isSafeInteger(request.amountSats) ||
+    request.amountSats <= 0 ||
+    !Number.isSafeInteger(request.amountSats * 1_000) ||
+    decodeLightningInvoiceAmount(invoice).msats !==
+      request.amountSats * 1_000 ||
+    !Number.isSafeInteger(request.maxFeeSats) ||
+    request.maxFeeSats < 0
+  ) {
+    throw new Error("The frozen checkout Lightning leg is invalid.")
+  }
+}
+
+function resolvedCheckoutResult(
+  observation: Awaited<
+    ReturnType<NonNullable<SparkSdkClient["reconcileLightningSend"]>>
+  >
+): Awaited<
+  ReturnType<NonNullable<SparkSdkClient["sendCheckoutLightningObligation"]>>
+> {
+  if (observation.status !== "resolved") return { status: "ambiguous" }
+  if (observation.payment.status === "completed") {
+    return { status: "paid", payment: observation.payment }
+  }
+  if (observation.payment.status === "failed") {
+    return { status: "terminal_failure", payment: observation.payment }
+  }
+  return { status: "ambiguous" }
 }
 
 function validateCheckoutReceiveInput(

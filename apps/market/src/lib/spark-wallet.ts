@@ -111,6 +111,15 @@ export interface SparkLightningSendReconciliationInput {
   completionTimeoutSecs?: number
 }
 
+export interface SparkCheckoutLightningObligationInput extends SparkLightningSendReconciliationInput {
+  network: SparkWalletNetwork
+}
+
+export type SparkCheckoutLightningObligationSendResult =
+  | { status: "paid"; payment: SparkSdkPayment }
+  | { status: "terminal_failure"; payment: SparkSdkPayment }
+  | { status: "ambiguous" }
+
 export interface SparkLightningSendAttempt {
   readonly schemaVersion: 1
   readonly walletId: string
@@ -161,6 +170,9 @@ export interface SparkSdkClient {
   reconcileLightningSend?(
     request: SparkLightningSendReconciliationInput
   ): Promise<SparkLightningSendReconciliation>
+  sendCheckoutLightningObligation?(
+    request: SparkCheckoutLightningObligationInput
+  ): Promise<SparkCheckoutLightningObligationSendResult>
   receivePayment(request: {
     paymentMethod:
       | {
@@ -1024,6 +1036,43 @@ export class SparkWalletManager {
           "Spark payment recovery did not return classified provider evidence.",
       }
     }
+  }
+
+  /**
+   * Execute one already-approved, frozen checkout leg. Unlike payInvoice this
+   * does not re-quote a user-facing fee approval or choose a new transfer ID.
+   * The caller persists possible-send state before entering this method.
+   */
+  async sendCheckoutLightningObligation(
+    walletId: string,
+    request: SparkCheckoutLightningObligationInput
+  ): Promise<SparkCheckoutLightningObligationSendResult> {
+    if (request.network !== this.#factory.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    const conflict = getSparkLightningSendAttemptConflict(
+      walletId,
+      request.network,
+      {
+        schemaVersion: 1,
+        walletId,
+        network: request.network,
+        transferId: request.transferId,
+        paymentRequest: request.paymentRequest,
+        amountSats: request.amountSats,
+        maxFeeSats: request.maxFeeSats,
+        createdAt: this.#now(),
+        ...(request.completionTimeoutSecs === undefined
+          ? {}
+          : { completionTimeoutSecs: request.completionTimeoutSecs }),
+      }
+    )
+    if (conflict) throw new Error(conflict)
+    const client = this.#getClient(walletId)
+    if (!client.sendCheckoutLightningObligation) {
+      throw new Error("This Spark adapter cannot execute a checkout leg.")
+    }
+    return client.sendCheckoutLightningObligation(request)
   }
 
   async #payInvoice(
