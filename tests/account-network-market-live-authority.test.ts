@@ -97,7 +97,7 @@ describe("Market live account authority", () => {
       /authorizeCurrentCheckoutItems\([\s\S]{0,900}shouldContinue: shouldContinueBuyerSession/
     )
     expect(checkout).toMatch(
-      /const shouldContinueBuyerSession = signedBuyerPubkey[\s\S]{0,100}isAuthGenerationCurrent\(authGeneration\)/
+      /const shouldContinueBuyerSession = \(\) =>[\s\S]{0,100}isAuthGenerationCurrent\(authGeneration\)[\s\S]{0,100}isGuestGenerationCurrent\(authGeneration\)/
     )
   })
 })
