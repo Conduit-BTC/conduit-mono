@@ -323,12 +323,7 @@ export function EventProductPublisherDialog({
                 fallbackDestinationScope
               )
             }
-            if (
-              !isCurrentFreshAuthority(
-                authority.ownerPubkey,
-                authority.authGeneration
-              )
-            ) {
+            if (!isCurrentOwner(authority.ownerPubkey)) {
               return
             }
             setSignedEvent(event)

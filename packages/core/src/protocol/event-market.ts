@@ -7749,7 +7749,6 @@ async function signEventMarketDraft(input: {
   const override = eventMarketTestOverrides.signDraft
   if (override) {
     const signed = await override(input)
-    assertEventMarketSignerCurrent(input.shouldContinue)
     if (
       !isValidSignedPublicNostrEvent(signed) ||
       signed.pubkey.toLowerCase() !== input.organizerPubkey ||
@@ -7784,7 +7783,6 @@ async function signEventMarketDraft(input: {
   event.tags = input.draft.tags
   assertEventMarketSignerCurrent(input.shouldContinue)
   await event.sign(ndk.signer)
-  assertEventMarketSignerCurrent(input.shouldContinue)
   const signed = event.rawEvent() as SignedPublicNostrEvent
   if (
     !isValidSignedPublicNostrEvent(signed) ||

@@ -1049,6 +1049,10 @@ export async function signAndPublishProductWriteBundle(
     listings: readonly ProductListingPublishTarget[]
     deletions?: readonly ProductDeletionPublishTarget[]
     onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
+    onSignedEvent?: (
+      event: NDKEvent,
+      kind: ProductSignerRequestKind
+    ) => Promise<void>
     deletionDeliveryOptions?: DeliverQueuedProductDeletionOptions
     onSignerRequest?: (progress: ProductSignerRequestProgress) => void
     onSignerRequestsComplete?: () => void
@@ -1119,6 +1123,14 @@ export async function signAndPublishProductWriteBundle(
     await waitForSignerVisibility()
     assertSignerSessionCurrent()
     await event.sign(signer)
+    const signed = event.rawEvent() as SignedPublicNostrEvent
+    if (
+      !isValidSignedPublicNostrEvent(signed) ||
+      signed.pubkey !== signerPubkey
+    ) {
+      throw new Error("Signer returned invalid product event evidence.")
+    }
+    await input.onSignedEvent?.(event, kind)
     assertSignerSessionCurrent()
   }
 
@@ -1229,6 +1241,7 @@ export async function signAndPublishProductListing(input: {
   onSignedLocal: (event: NDKEvent) => Promise<void>
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 }): Promise<PublishWithPlannerResult> {
+  let signedLocally = false
   return signAndPublishProductWriteBundle({
     merchantPubkey: input.merchantPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
@@ -1242,9 +1255,14 @@ export async function signAndPublishProductListing(input: {
       },
     ],
     onSignerRequest: input.onSignerRequest,
+    onSignedEvent: async (event, kind) => {
+      if (kind !== "product") return
+      await input.onSignedLocal(event)
+      signedLocally = true
+    },
     onSignedLocal: async ({ events: [event] }) => {
       if (!event) throw new Error("Signed product event is missing")
-      await input.onSignedLocal(event)
+      if (!signedLocally) await input.onSignedLocal(event)
     },
   })
 }

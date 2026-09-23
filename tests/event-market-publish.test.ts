@@ -514,6 +514,7 @@ describe("organizer event-market publishing", () => {
   it("stops before a later signature when signer authority changes", async () => {
     const signedKinds: number[] = []
     const publishedKinds: number[] = []
+    const checkpoints: SignedPublicNostrEvent[] = []
     let authorityCurrent = true
     __setEventMarketTestOverrides({
       getNdk: connectedNdk,
@@ -533,11 +534,32 @@ describe("organizer event-market publishing", () => {
       publishOrganizerEventMarket({
         ...input(),
         shouldContinue: () => authorityCurrent,
+        onSignedEvent: ({ signedEvent }) => {
+          checkpoints.push(signedEvent)
+        },
       })
     ).rejects.toMatchObject({ name: "AbortError" })
 
     expect(signedKinds).toEqual([EVENT_KINDS.CALENDAR_TIME])
+    expect(checkpoints).toHaveLength(1)
     expect(publishedKinds).toEqual([])
+
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft: async () => {
+        throw new Error("exact retry must not request another signature")
+      },
+      publishWithPlanner: async (event: NDKEvent) => {
+        publishedKinds.push(event.kind!)
+        expect(event.id).toBe(checkpoints[0]!.id)
+        return publishResult(true)
+      },
+    })
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      signedEvent: checkpoints[0]!,
+    })
+    expect(publishedKinds).toEqual([EVENT_KINDS.CALENDAR_TIME])
   })
 
   it("rejects an empty pickup price before relay I/O", async () => {

@@ -1897,8 +1897,8 @@ function OrdersWorkspace() {
         previousEventCreatedAt: record.eventCreatedAt,
         fulfillmentIntent,
         onSignedLocal: async (event) => {
-          if (!isCurrentOrderAction(authority)) {
-            throw new Error("Product signer session changed.")
+          if (!isCurrentOrderAccount(pubkey)) {
+            throw new Error("Signed stock update belongs to another account.")
           }
           const rawEvent = event.rawEvent() as SignedPublicNostrEvent
           signedEvent = rawEvent
