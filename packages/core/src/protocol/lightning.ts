@@ -1036,12 +1036,11 @@ function isValidZapTargetCoordinate(value: string): boolean {
     return false
   }
   const kind = Number(match[1])
+  if (!Number.isSafeInteger(kind)) return false
+  if (kind >= 30_000 && kind < 40_000) return true
   return (
-    Number.isSafeInteger(kind) &&
-    (kind === 0 ||
-      kind === 3 ||
-      (kind >= 10_000 && kind < 20_000) ||
-      (kind >= 30_000 && kind < 40_000))
+    match[2] === "" &&
+    (kind === 0 || kind === 3 || (kind >= 10_000 && kind < 20_000))
   )
 }
 

@@ -408,6 +408,8 @@ describe("first-party Spark SDK adapter", () => {
       [...baseTags, ["e", "a".repeat(64)], ["e", "b".repeat(64)]],
       [...baseTags, ["a", "30402:not-a-pubkey:product"]],
       [...baseTags, ["a", `1:${pubkey}:product`]],
+      [...baseTags, ["a", `10000:${pubkey}:product`]],
+      [...baseTags, ["a", `0:${pubkey}:product`]],
       [...baseTags, ["a", validCoordinate], ["a", validCoordinate]],
       [...baseTags, ["P", "not-a-pubkey"]],
       [...baseTags, ["P", pubkey], ["P", pubkey]],
