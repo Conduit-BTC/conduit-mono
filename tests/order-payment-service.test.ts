@@ -890,11 +890,13 @@ describe("runOrderPayment", () => {
       invoice: "lnbc1expired",
       invoiceStatus: "failed",
       paymentStatus: "failed",
-      priorExpiredManualInvoice: {
-        invoice: "lnbc1expired",
-        paymentHash: "ab".repeat(32),
-        expiresAt: 1,
-      },
+      priorExpiredManualInvoices: [
+        {
+          invoice: "lnbc1expired",
+          paymentHash: "ab".repeat(32),
+          expiresAt: 1,
+        },
+      ],
     })
     const table = db.orderLifecycles
     const originalGet = table.get
@@ -913,7 +915,7 @@ describe("runOrderPayment", () => {
         original.buyerPubkey,
         () => true,
         () => true,
-        original.priorExpiredManualInvoice
+        original.priorExpiredManualInvoices?.[0]
       )
       expect(result).toBeUndefined()
       expect(reads).toBe(1)
@@ -947,7 +949,7 @@ describe("runOrderPayment", () => {
       invoice: undefined,
       invoiceStatus: "failed",
       paymentStatus: "failed",
-      priorExpiredManualInvoice: prior,
+      priorExpiredManualInvoices: [prior],
     })
     const table = db.orderLifecycles
     const attempts = db.paymentAttempts
@@ -1021,7 +1023,7 @@ describe("runOrderPayment", () => {
         paymentStatus: "manual_required",
         paymentHash,
         invoiceExpiresAt,
-        priorExpiredManualInvoice: prior,
+        priorExpiredManualInvoices: [prior],
       })
       const table = db.orderLifecycles
       const attempts = db.paymentAttempts
@@ -1410,6 +1412,16 @@ describe("runOrderPayment", () => {
     const originalGet = table.get
     const originalPut = table.put
     let requestedTarget: string | undefined
+    let backgroundSignerWorkStarted = 0
+    let releaseBackgroundSignerWork!: () => void
+    const backgroundSignerWork = new Promise<void>((resolve) => {
+      releaseBackgroundSignerWork = resolve
+    })
+    let observedProofBarrier: Promise<unknown> | undefined
+    let observerStarted!: () => void
+    const observerStart = new Promise<void>((resolve) => {
+      observerStarted = resolve
+    })
 
     table.get = (async () => stored) as typeof table.get
     table.put = (async (next: OrderLifecycle) => {
@@ -1426,6 +1438,10 @@ describe("runOrderPayment", () => {
           zapMode: "public_zap_as_shopper",
           zapContent,
           items: [{ productAddress, quantity: 1 }],
+          beforeBackgroundProofDelivery: () => {
+            backgroundSignerWorkStarted += 1
+            return backgroundSignerWork
+          },
         }),
         paymentDependencies({
           fetchLnurlPayMetadata: async () => lnurlMetadata(),
@@ -1433,20 +1449,49 @@ describe("runOrderPayment", () => {
             requestedTarget = params.zapTargetAddress
             return {
               invoice,
-              zapRelayUrls: [],
-              shouldWaitForZapReceipt: false,
+              zapRelayUrls: ["wss://relay.example"],
+              zapRequestId: "zap-request-id",
+              zapRequestCreatedAt: 1_800_000_000,
+              expectedLnurl: "lnurl1test",
+              lnurlNostrPubkey: "a".repeat(64),
+              shouldWaitForZapReceipt: true,
             }
           },
           payCheckoutInvoice: async () => ({
             status: "manual_required",
             reason: "Open the invoice in a Lightning wallet.",
           }),
+          observeOrderPublicZapReceipt: async (
+            _orderId,
+            _buyerIdentity,
+            _dependencies,
+            _accountPubkey,
+            _authenticatedPubkey,
+            _shouldContinue,
+            options
+          ) => {
+            observedProofBarrier = options?.proofDeliveryBarrier
+            observerStarted()
+          },
         })
       )
 
+      await observerStart
+      await Promise.resolve()
       expect(requestedTarget).toBe(productAddress)
       expect(state.lifecycle?.invoiceStatus).toBe("manual_required")
       expect(state.lifecycle?.paymentStatus).toBe("manual_required")
+      expect(backgroundSignerWorkStarted).toBe(1)
+      expect(observedProofBarrier).toBeDefined()
+      let proofBarrierSettled = false
+      void observedProofBarrier!.then(() => {
+        proofBarrierSettled = true
+      })
+      await Promise.resolve()
+      expect(proofBarrierSettled).toBe(false)
+      releaseBackgroundSignerWork()
+      await observedProofBarrier
+      expect(proofBarrierSettled).toBe(true)
     } finally {
       table.get = originalGet
       table.put = originalPut
@@ -3841,8 +3886,7 @@ describe("executor payment authority", () => {
           patchClaimedOrderLifecyclePaymentProduction,
         fenceClaimedOrderLifecyclePaymentAuthority: async (
           _fenceOrderId,
-          paymentClaimId,
-          _merchantPubkey
+          paymentClaimId
         ) => {
           if (stored.paymentClaimId !== paymentClaimId) {
             return { status: "claim_mismatch", lifecycle: stored }

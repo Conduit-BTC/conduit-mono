@@ -133,9 +133,10 @@ The exception is constrained as follows:
   durable order history.
 - Merchant clients must treat `buyerIdentityKind: "guest_ephemeral"` as
   outbound-only and use the structured recovery channel required by the exact
-  checkout flow for invoices, fulfillment updates, and other follow-up. Every
-  guest order requires both email and phone; shipping additionally requires its
-  address contract.
+  checkout flow for invoices, fulfillment updates, and other follow-up. New
+  guest orders require both email and phone; shipping additionally requires its
+  address contract. Historical pickup orders with one contact method remain
+  readable but do not define the new-order requirement.
 - Same-session recovery means local invoice/payment-report continuity only. It
   does not promise merchant status recovery, a private conversation, or durable
   order history.

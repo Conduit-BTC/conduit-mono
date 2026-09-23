@@ -108,10 +108,7 @@ import {
   getProductSelectionImages,
   type MarketProductFamily,
 } from "../lib/productVariations"
-import {
-  getPickupHandoffPrivacyCopy,
-  getPickupHandoffSummary,
-} from "../lib/pickup-handoff"
+import { getPickupHandoffSummary } from "../lib/pickup-handoff"
 
 type PriceFormatter = (
   price: CommercePriceLike,
@@ -716,11 +713,6 @@ function CartLineItem({
                   ? ` · ${pickup.option.location ?? pickup.option.geohash}`
                   : " · public location pending"}
               </div>
-              {pickupHandoff ? (
-                <p className="mt-1">
-                  {getPickupHandoffPrivacyCopy(pickupHandoff)}
-                </p>
-              ) : null}
             </div>
           </div>
         ) : null}

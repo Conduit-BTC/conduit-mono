@@ -52,10 +52,7 @@ import {
 } from "../../hooks/useProgressiveProducts"
 import { getProductAddAvailability, selectCartLine } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
-import {
-  getPickupHandoffPrivacyCopy,
-  getPickupHandoffSummary,
-} from "../../lib/pickup-handoff"
+import { getPickupHandoffSummary } from "../../lib/pickup-handoff"
 import {
   cartItemInputFromProductSelection,
   getProductSelection,
@@ -840,8 +837,7 @@ function ProductPage() {
                         <span>
                           {productPickupHandoff.label}. Handled by{" "}
                           <EventActorName identity={pickupHandlerIdentity} />.
-                          No delivery address is requested.{" "}
-                          {getPickupHandoffPrivacyCopy(productPickupHandoff)}
+                          No delivery address is requested.
                         </span>
                         <EventActorProvenance
                           pubkey={productPickupHandoff.handlerPubkey}

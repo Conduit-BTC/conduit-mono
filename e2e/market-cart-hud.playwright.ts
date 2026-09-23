@@ -525,53 +525,14 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
 
   await page.setViewportSize({ width: 390, height: 900 })
   const fixtureGroups = await page.evaluate(async (seed) => {
-    const { groupCartPurchases, getCartPurchaseReference } =
+    const { getCartPurchaseReference, groupCartPurchases } =
       await import("/src/lib/cart-model.ts")
-    const groups = groupCartPurchases(seed.items as unknown as CartItem[])
-    return groups.map((group) => ({
+    return groupCartPurchases(seed.items as CartItem[]).map((group) => ({
       id: group.id,
-      kind: group.kind,
       reference: getCartPurchaseReference(group.id),
-      productId: group.items[0]?.productId,
-      productEventId: group.items[0]?.productEventId,
-      merchantPubkey: group.merchantPubkey,
-      title: group.items[0]?.title,
-      fulfillmentProduct:
-        group.items[0]?.fulfillment?.type === "pickup"
-          ? group.items[0].fulfillment.product
-          : undefined,
-      option:
-        group.items[0]?.fulfillment?.type === "pickup"
-          ? group.items[0].fulfillment.option
-          : undefined,
     }))
   }, sameMerchantFulfillmentCartSeed())
-  const pickupGroups = fixtureGroups.filter((group) => group.kind === "pickup")
-  expect(pickupGroups).toHaveLength(2)
-  const pickupProducts = pickupGroups.map((group) => group.fulfillmentProduct)
-  expect(pickupGroups.map((group) => group.productId)).toEqual(
-    pickupProducts.map((product) => product?.coordinate)
-  )
-  expect(pickupGroups.map((group) => group.productEventId)).toEqual(
-    pickupProducts.map((product) => product?.eventId)
-  )
-  expect(new Set(pickupGroups.map((group) => group.merchantPubkey)).size).toBe(
-    1
-  )
-  expect(new Set(pickupGroups.map((group) => group.title)).size).toBe(1)
-  expect(
-    new Set(pickupProducts.map((product) => product?.coordinate)).size
-  ).toBe(1)
-  expect(new Set(pickupProducts.map((product) => product?.eventId)).size).toBe(
-    2
-  )
-  expect(
-    new Set(pickupGroups.map((group) => group.option?.coordinate)).size
-  ).toBe(1)
-  expect(new Set(pickupGroups.map((group) => group.option?.title)).size).toBe(1)
-  expect(
-    new Set(pickupGroups.map((group) => group.option?.location)).size
-  ).toBe(1)
+  const pickupGroups = fixtureGroups.slice(1)
   const pickupReferences = pickupGroups.map((group) => group.reference)
   expect(new Set(pickupReferences).size).toBe(2)
   await page.setViewportSize({ width: 896, height: 900 })

@@ -2284,7 +2284,7 @@ describe("order payload schema", () => {
     expect(parsed.items[0]?.fulfillment?.type).toBe("pickup")
   })
 
-  it("accepts either recovery contact method for guest pickup", () => {
+  it("parses historical guest pickup orders with one recovery contact", () => {
     expect(
       orderSchema.parse(
         pickupOrder("guest_ephemeral", { email: "alice@example.com" })

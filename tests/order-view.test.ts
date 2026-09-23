@@ -227,7 +227,7 @@ describe("payment failure details", () => {
 })
 
 describe("expired invoice history presentation", () => {
-  it("keeps ordered history and adapts legacy singular evidence without displaying it", () => {
+  it("keeps ordered prior invoice history", () => {
     const first = {
       invoice: "lnbc1first",
       paymentHash: "ab".repeat(32),
@@ -243,11 +243,6 @@ describe("expired invoice history presentation", () => {
       lifecycle: baseLifecycle({ priorExpiredManualInvoices: [first, second] }),
     })
     expect(multiple.priorExpiredManualInvoices).toEqual([first, second])
-    const legacy = buildOrderViewModel({
-      orderId: "order-1",
-      lifecycle: baseLifecycle({ priorExpiredManualInvoice: first }),
-    })
-    expect(legacy.priorExpiredManualInvoices).toEqual([first])
   })
 })
 

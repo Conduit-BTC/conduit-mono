@@ -19,9 +19,9 @@ import {
   formatNpub,
   formatPubkey,
   getNdk,
+  getOrderLifecycle,
   getProductImageCandidates,
   getOrderPublicZapSigner,
-  getOrderLifecycle,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
   hasWebLN,
@@ -29,8 +29,10 @@ import {
   ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
+  patchOrderLifecycle,
   pubkeyToNpub,
   replaceOrderPaymentTarget,
+  retryOrderRelayDelivery,
   resolveWalletPaymentInstance,
   selectProtectedReadRows,
   useAuth,
@@ -71,6 +73,7 @@ import {
   StatusStepper,
 } from "@conduit/ui"
 import {
+  Check,
   ChevronRight,
   LoaderCircle,
   MapPin,
@@ -80,6 +83,8 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { useCart } from "../hooks/useCart"
+import { groupCartPurchases } from "../lib/cart-model"
 import { CopyButton } from "../components/CopyButton"
 import { ExternalWalletPanel } from "../components/ExternalWalletPanel"
 import { EventActorName } from "../components/EventActorIdentity"
@@ -129,6 +134,7 @@ import {
 import {
   canObserveOrderPublicZapReceipt,
   getOrderPaymentState,
+  isOrderPaymentRunning,
   isMerchantInvoicePaymentActionBound,
   observeOrderPublicZapReceipt,
   prepareMerchantInvoicePaymentAction,
@@ -164,6 +170,12 @@ import {
   getSessionGuestOrderSigningIdentity,
   type GuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
+import {
+  doesCartMatchOrderAttempt,
+  forgetCheckoutOrderAttempt,
+  hasCheckoutPaymentProgress,
+  requiresAcceptedOrderPaymentContinuation,
+} from "../lib/checkout-order-attempt"
 import {
   doesAuthorizedAnonZapPricingMatchOrder,
   type CheckoutZapMode,
@@ -686,18 +698,21 @@ function OrderDetail({
     },
     []
   )
-  const { authGeneration, isAuthGenerationCurrent } = useAuth()
+  const { authGeneration, isAuthGenerationCurrent, isGuestGenerationCurrent } =
+    useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
-  const shouldContinueBuyerSession = guestIdentity
-    ? undefined
-    : () => isAuthGenerationCurrent(authGeneration)
+  const shouldContinueBuyerSession = () =>
+    guestIdentity
+      ? isGuestGenerationCurrent(authGeneration)
+      : isAuthGenerationCurrent(authGeneration)
   const actionsReady = !!guestIdentity || signerReady
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
+  const cart = useCart()
   const wallets = useWallets()
   const shopperPricing = useShopperPricing()
   const formatSats = (sats: number) =>
@@ -1126,6 +1141,107 @@ function OrderDetail({
     })
   }
 
+  async function finishAcceptedOrderRecovery(
+    lifecycle = row.lifecycle
+  ): Promise<void> {
+    if (
+      !lifecycle ||
+      lifecycle.orderDeliveryStatus !== "sent" ||
+      lifecycle.buyerPubkey !== buyerPubkey
+    ) {
+      throw new Error("The accepted order is unavailable for recovery.")
+    }
+    if (!shouldContinueBuyerSession()) {
+      throw new Error(
+        "The buyer session changed. Reopen this order to continue."
+      )
+    }
+    const matchingPurchase = groupCartPurchases(cart.items).find(
+      (purchase) =>
+        purchase.merchantPubkey === lifecycle.merchantPubkey &&
+        doesCartMatchOrderAttempt(purchase.items, lifecycle.items)
+    )
+    if (matchingPurchase) {
+      const claim = await cart.capturePurchase(
+        matchingPurchase.id,
+        matchingPurchase.items
+      )
+      if (!shouldContinueBuyerSession()) {
+        throw new Error(
+          "The buyer session changed. Reopen this order to continue."
+        )
+      }
+      await cart.consumePurchase(claim)
+    }
+    if (!shouldContinueBuyerSession()) {
+      throw new Error(
+        "The buyer session changed. Reopen this order to continue."
+      )
+    }
+    const resolved = await patchOrderLifecycle(lifecycle.orderId, {
+      checkoutRecoveryPending: false,
+    })
+    if (!resolved) {
+      throw new Error("The accepted order recovery state could not be saved.")
+    }
+    if (!shouldContinueBuyerSession()) {
+      await patchOrderLifecycle(lifecycle.orderId, {
+        checkoutRecoveryPending: true,
+      })
+      throw new Error(
+        "The buyer session changed. Reopen this order to continue."
+      )
+    }
+    forgetCheckoutOrderAttempt(lifecycle.orderId)
+    await queryClient.invalidateQueries({
+      queryKey: ["order-lifecycles", buyerPubkey],
+    })
+  }
+
+  async function retryStagedOrderDelivery(): Promise<void> {
+    const lifecycle = row.lifecycle
+    if (!lifecycle?.orderRelayDelivery) {
+      throw new Error("The saved encrypted order is unavailable for retry.")
+    }
+    const retried = await retryOrderRelayDelivery(
+      lifecycle.orderId,
+      buyerPubkey,
+      {
+        allowGuest: !!guestIdentity,
+        shouldContinue: shouldContinueBuyerSession,
+      }
+    )
+    await queryClient.invalidateQueries({
+      queryKey: ["order-lifecycles", buyerPubkey],
+    })
+    if (retried?.orderDeliveryStatus !== "sent") {
+      throw new Error(
+        "No merchant relay acknowledged the saved order yet. Retry the same order later."
+      )
+    }
+    if (requiresAcceptedOrderPaymentContinuation(retried)) return
+    await finishAcceptedOrderRecovery(retried)
+  }
+
+  async function continueAcceptedCheckoutPayment(): Promise<void> {
+    const lifecycle = row.lifecycle
+    if (!lifecycle || !requiresAcceptedOrderPaymentContinuation(lifecycle)) {
+      throw new Error("This checkout no longer needs pre-payment recovery.")
+    }
+
+    await retryPayment()
+    const current = await getOrderLifecycle(lifecycle.orderId)
+    if (!current) {
+      throw new Error("The saved checkout state could not be reloaded.")
+    }
+    if (!hasCheckoutPaymentProgress(current)) {
+      throw new Error(
+        "Payment did not start. This order remains recoverable; do not submit another order."
+      )
+    }
+    await finishAcceptedOrderRecovery(current)
+  }
+
   async function confirmPaymentAddressUpdate(): Promise<void> {
     const pending = paymentAddressUpdate
     if (!pending) return
@@ -1408,6 +1524,19 @@ function OrderDetail({
     vm.paymentStatus === "paid" &&
     (vm.proofDeliveryStatus === "retry_needed" ||
       vm.proofDeliveryStatus === "failed")
+  const showRetryOrderDelivery =
+    row.lifecycle?.orderDeliveryStatus === "pending" &&
+    !!row.lifecycle.orderRelayDelivery
+  const showContinueAcceptedCheckout =
+    !zeroCostPickupOrder &&
+    !!row.lifecycle &&
+    requiresAcceptedOrderPaymentContinuation(row.lifecycle)
+  const showFinishAcceptedOrderRecovery =
+    row.lifecycle?.orderDeliveryStatus === "sent" &&
+    row.lifecycle.checkoutRecoveryPending === true &&
+    !showContinueAcceptedCheckout
+  const showPaymentRecoveryAction =
+    showRetryPayment || showContinueAcceptedCheckout
 
   const replyMutation = useMutation({
     mutationFn: async () => {
@@ -1531,6 +1660,82 @@ function OrderDetail({
         <div>
           <OrderHeaderPill status={headerStatus} />
         </div>
+      )}
+
+      {showRetryOrderDelivery && (
+        <StatusNotice
+          variant="warning"
+          title="Order delivery not confirmed"
+          detail="Saved encrypted order"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            No merchant relay ACK was recorded. Retry reuses the exact encrypted
+            order and cannot create a second semantic order.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-4 h-10 px-4 text-sm"
+            disabled={busy}
+            onClick={() => void withBusy(retryStagedOrderDelivery)}
+          >
+            <RotateCw className="h-4 w-4" />
+            Retry saved order
+          </Button>
+          {recoveryError && (
+            <p
+              role="alert"
+              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+            >
+              {recoveryError}
+            </p>
+          )}
+        </StatusNotice>
+      )}
+
+      {showFinishAcceptedOrderRecovery && (
+        <StatusNotice
+          variant="warning"
+          title="Order accepted by a delivery relay"
+          detail="Merchant pickup pending"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            The order must be finalized on this device before this cart can be
+            submitted again. Relay acceptance does not prove the merchant has
+            read it.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-4 h-10 px-4 text-sm"
+            disabled={busy}
+            onClick={() => void withBusy(finishAcceptedOrderRecovery)}
+          >
+            <Check className="h-4 w-4" />
+            Finish order recovery
+          </Button>
+          {recoveryError && (
+            <p
+              role="alert"
+              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+            >
+              {recoveryError}
+            </p>
+          )}
+        </StatusNotice>
+      )}
+
+      {showContinueAcceptedCheckout && (
+        <StatusNotice
+          variant="warning"
+          title="Order accepted; payment has not started"
+          detail="Continue this checkout"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            A delivery relay accepted this order before checkout closed.
+            Continue payment for this same order below. Relay acceptance does
+            not prove the merchant has read it, and continuing will not send
+            another order.
+          </p>
+        </StatusNotice>
       )}
 
       {(manualInvoiceAccess === "report_only" ||
@@ -1667,14 +1872,16 @@ function OrderDetail({
         </div>
       )}
 
-      {(showRetryPayment || showAmbiguousPayment || showResendProof) && (
+      {(showPaymentRecoveryAction ||
+        showAmbiguousPayment ||
+        showResendProof) && (
         <StatusNotice
           variant={TONE_VARIANT[headerStatus.tone]}
           title={headerStatus.primaryLabel}
           detail={headerStatus.detailLabel}
         >
           <div className="flex flex-wrap items-end gap-3">
-            {showRetryPayment && (
+            {showPaymentRecoveryAction && (
               <div className="grid min-w-[15rem] gap-1.5">
                 <label
                   htmlFor={`retry-wallet-${vm.orderId}`}
@@ -1723,7 +1930,7 @@ function OrderDetail({
                 </Select>
               </div>
             )}
-            {showRetryPayment && (
+            {showPaymentRecoveryAction && (
               <Button
                 className="h-11 px-4 text-sm"
                 disabled={
@@ -1733,10 +1940,16 @@ function OrderDetail({
                   !selectedStoredPaymentTarget ||
                   !buildServiceCtx()
                 }
-                onClick={() => void withBusy(retryPayment)}
+                onClick={() =>
+                  void withBusy(
+                    showContinueAcceptedCheckout
+                      ? continueAcceptedCheckoutPayment
+                      : retryPayment
+                  )
+                }
               >
                 <RotateCw className="h-4 w-4" />
-                {recoveredBeforeWallet
+                {showContinueAcceptedCheckout || recoveredBeforeWallet
                   ? "Continue payment"
                   : "Try payment again"}
               </Button>
@@ -1785,19 +1998,22 @@ function OrderDetail({
                   ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays while this order remains available on this device."
                   : showAmbiguousPayment
                     ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
-                    : showRetryPayment && retryWalletTargetIsStale
+                    : showPaymentRecoveryAction && retryWalletTargetIsStale
                       ? "The previously selected saved wallet is unavailable. Explicitly choose another wallet, browser wallet, or manual payment."
-                      : showRetryPayment && !selectedStoredPaymentTarget
+                      : showPaymentRecoveryAction &&
+                          !selectedStoredPaymentTarget
                         ? "Choose the exact wallet or manual payment path for this retry."
-                        : showRetryPayment && !buildServiceCtx()
+                        : showPaymentRecoveryAction && !buildServiceCtx()
                           ? "The saved payment target is unavailable. Unlock or reconnect it, or explicitly choose another option."
-                          : showRetryPayment
-                            ? recoveredBeforeWallet
-                              ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
-                              : showAnonPaymentRecovery
-                                ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
-                                : "No funds moved. You can retry payment for this order."
-                            : "Payment went through; the receipt didn't reach the merchant."}
+                          : showContinueAcceptedCheckout
+                            ? "Continue payment for the accepted order. This does not resend the order."
+                            : showRetryPayment
+                              ? recoveredBeforeWallet
+                                ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
+                                : showAnonPaymentRecovery
+                                  ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
+                                  : "No funds moved. You can retry payment for this order."
+                              : "Payment went through; the receipt didn't reach the merchant."}
             </span>
             {paymentRecoveryError && (
               <p
@@ -1807,7 +2023,7 @@ function OrderDetail({
                 {paymentRecoveryError}
               </p>
             )}
-            {showRetryPayment && wallets.initializationError && (
+            {showPaymentRecoveryAction && wallets.initializationError && (
               <div
                 role="alert"
                 className="w-full rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
@@ -2405,6 +2621,7 @@ function OrdersPage() {
     const resumeReceiptObservers = () => {
       if (document.visibilityState === "hidden") return
       for (const lifecycle of lifecycles) {
+        if (isOrderPaymentRunning(lifecycle.orderId)) continue
         if (!canObserveOrderPublicZapReceipt(lifecycle)) continue
         const identity =
           guestIdentity?.orderId === lifecycle.orderId &&

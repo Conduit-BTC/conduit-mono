@@ -480,7 +480,6 @@ type ClaimedOrderLifecycleOverrides = Partial<
     | "publicZapFallback"
     | "zapContent"
     | "walletPaymentAttemptId"
-    | "priorExpiredManualInvoice"
     | "priorExpiredManualInvoices"
   >
 >
@@ -700,12 +699,7 @@ export async function claimExpiredOrderInvoiceForRetry(
           allowExpired: true,
         }).metadata.expiresAt!,
       }
-      const priorInvoices = [
-        ...(lifecycle.priorExpiredManualInvoices ?? []),
-        ...(lifecycle.priorExpiredManualInvoice
-          ? [lifecycle.priorExpiredManualInvoice]
-          : []),
-      ]
+      const priorInvoices = lifecycle.priorExpiredManualInvoices ?? []
       const currentInvoiceAlreadyRetained = priorInvoices.some(
         (entry) =>
           entry.invoice.toLowerCase() ===
@@ -1446,12 +1440,7 @@ export async function claimExternalOrderPaymentProof(
         !!lifecycle.invoice &&
         lifecycle.paymentStatus === "manual_required"
       const priorHistoryEntry = priorEvidence
-        ? [
-            ...(lifecycle.priorExpiredManualInvoices ?? []),
-            ...(lifecycle.priorExpiredManualInvoice
-              ? [lifecycle.priorExpiredManualInvoice]
-              : []),
-          ].find(
+        ? (lifecycle.priorExpiredManualInvoices ?? []).find(
             (entry) =>
               normalizeLightningInvoice(entry.invoice).toLowerCase() ===
                 normalizedPriorInvoice.toLowerCase() &&

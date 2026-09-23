@@ -5626,13 +5626,27 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
     await expect(page.getByText("Availability may still change")).toHaveCount(0)
     await expect(page.getByText("Pickup recovery")).toHaveCount(0)
     await expect(page.getByText("Merchant-only recovery")).toHaveCount(0)
-    await page.getByLabel(/^Phone/).fill("+14155552671")
-    await page.getByLabel(/^Email/).fill("guest@example.test")
     await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
     const submit = page.getByRole("button", {
       name: "Send order",
       exact: true,
     })
+    await page.getByLabel(/^Email/).fill("guest@example.test")
+    await submit.click()
+    await expect(
+      page
+        .locator("#ship-phone-error")
+        .getByText("Phone is required for guest checkout")
+    ).toBeVisible()
+    await page.getByLabel(/^Email/).fill("")
+    await page.getByLabel(/^Phone/).fill("+14155552671")
+    await submit.click()
+    await expect(
+      page
+        .locator("#ship-email-error")
+        .getByText("Email is required for guest checkout")
+    ).toBeVisible()
+    await page.getByLabel(/^Email/).fill("guest@example.test")
     await expect(submit).toBeEnabled({ timeout: 10_000 })
     const submitRequestsStart = relay.requests.length
     const orderAck = relay.holdNextPublicationAck(
@@ -8629,9 +8643,6 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     productCard.getByText("Pickup from merchant booth", { exact: true })
   ).toBeVisible()
   await productCard.getByText("Details", { exact: true }).click()
-  await expect(
-    productCard.getByText(/no organizer receipt is sent/i)
-  ).toBeVisible()
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
     page.getByRole("region", { name: "Cart inventory" })
@@ -8867,83 +8878,17 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
   await expect(page.getByLabel(/Email/i)).toHaveCount(0)
   await expect(page.getByLabel(/Phone/i)).toHaveCount(0)
-  const organizerDisclosure = page.getByText(
-    /organizer receives a minimal private pickup receipt/i
-  )
-  await expect(organizerDisclosure).toBeVisible()
-  await expect(organizerDisclosure).toContainText(
-    "Contact details, addresses, notes, invoices, and payment secrets are not shared."
-  )
-  await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
-    { timeout: 30_000 }
-  )
+  await expect(
+    page.getByText(/organizer receives a minimal private pickup receipt/i)
+  ).toHaveCount(0)
   const sendOrderButton = page.getByRole("button", { name: /^Send order$/i })
+  await expect(sendOrderButton).toBeEnabled({ timeout: 30_000 })
   await page.setViewportSize({ width: 390, height: 844 })
   await sendOrderButton.scrollIntoViewIfNeeded()
-  await expect(organizerDisclosure).toBeVisible()
   await expect(sendOrderButton).toBeVisible()
-  const sendOrderElement = await sendOrderButton.elementHandle()
-  if (!sendOrderElement) throw new Error("Send order button was not rendered.")
-  const mobileBounds = await organizerDisclosure.evaluate(
-    (disclosure, button) => {
-      const disclosureBounds = disclosure.getBoundingClientRect()
-      const buttonBounds = button.getBoundingClientRect()
-      const disclosureStyle = getComputedStyle(disclosure)
-      const disclosureRange = document.createRange()
-      disclosureRange.selectNodeContents(disclosure)
-      const textBounds = Array.from(disclosureRange.getClientRects())
-      return {
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
-        pageWidth: document.documentElement.scrollWidth,
-        disclosure: {
-          left: disclosureBounds.left,
-          right: disclosureBounds.right,
-          top: disclosureBounds.top,
-          bottom: disclosureBounds.bottom,
-          width: disclosureBounds.width,
-        },
-        button: {
-          left: buttonBounds.left,
-          right: buttonBounds.right,
-          top: buttonBounds.top,
-          bottom: buttonBounds.bottom,
-        },
-        textLineWidths: textBounds.map((bounds) => bounds.width),
-        fontSize: Number.parseFloat(disclosureStyle.fontSize),
-      }
-    },
-    sendOrderElement
-  )
-  expect(mobileBounds.viewportWidth).toBe(390)
-  expect(mobileBounds.viewportHeight).toBe(844)
-  expect(mobileBounds.pageWidth).toBeLessThanOrEqual(mobileBounds.viewportWidth)
-  expect(mobileBounds.disclosure.left).toBeGreaterThanOrEqual(0)
-  expect(mobileBounds.disclosure.right).toBeLessThanOrEqual(
-    mobileBounds.viewportWidth
-  )
-  expect(mobileBounds.button.left).toBeGreaterThanOrEqual(0)
-  expect(mobileBounds.button.right).toBeLessThanOrEqual(
-    mobileBounds.viewportWidth
-  )
-  expect(mobileBounds.disclosure.top).toBeGreaterThanOrEqual(0)
-  expect(mobileBounds.disclosure.bottom).toBeLessThanOrEqual(
-    mobileBounds.viewportHeight
-  )
-  expect(mobileBounds.button.top).toBeGreaterThanOrEqual(0)
-  expect(mobileBounds.button.bottom).toBeLessThanOrEqual(
-    mobileBounds.viewportHeight
-  )
-  expect(mobileBounds.disclosure.bottom).toBeLessThanOrEqual(
-    mobileBounds.button.top
-  )
-  expect(mobileBounds.textLineWidths.length).toBeGreaterThan(0)
-  expect(Math.max(...mobileBounds.textLineWidths)).toBeLessThanOrEqual(
-    mobileBounds.disclosure.width + 1
-  )
-  expect(mobileBounds.disclosure.width).toBeGreaterThanOrEqual(
-    mobileBounds.fontSize * 20
-  )
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth)
+  ).toBeLessThanOrEqual(390)
   await page.setViewportSize({ width: 1440, height: 900 })
 
   const orderPublishStart = relay.publications.length

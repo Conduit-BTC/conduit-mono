@@ -296,6 +296,8 @@ export interface OrderPaymentContext {
   paymentTarget: CheckoutPaymentTarget
   approveFee?: WalletPaymentFeeApproval
   formatSatsAmount?: (sats: number) => string
+  /** Caller-owned signer work that detached receipt proof delivery must follow. */
+  beforeBackgroundProofDelivery?: () => Promise<unknown>
 }
 
 export interface OrderPaymentRuntimeState {
@@ -340,6 +342,7 @@ export interface OrderPaymentDependencies {
   ) => ReturnType<typeof setInterval>
   cancelPaymentClaimHeartbeat: (timer: ReturnType<typeof setInterval>) => void
   reportPaymentClaimHeartbeatError: () => void
+  observeOrderPublicZapReceipt: typeof observeOrderPublicZapReceipt
 }
 
 const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
@@ -378,6 +381,7 @@ const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
       "Payment recovery lease renewal failed; guarded payment checkpoints remain active."
     )
   },
+  observeOrderPublicZapReceipt,
 }
 
 export interface OrderReceiptObservationDependencies {
@@ -391,6 +395,7 @@ export interface OrderReceiptObservationDependencies {
 
 export interface OrderReceiptObservationOptions {
   mode?: "observe_and_deliver" | "observe_only"
+  proofDeliveryBarrier?: Promise<unknown>
 }
 
 const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDependencies =
@@ -901,6 +906,7 @@ export async function observeOrderPublicZapReceipt(
 
     if (lifecycle.zapReceiptStatus === "observed" && lifecycle.zapReceiptId) {
       if (options.mode === "observe_only") return
+      await options.proofDeliveryBarrier?.catch(() => undefined)
       await dependencies.deliverReceiptLinkedProof(
         lifecycle as typeof lifecycle & {
           invoice: string
@@ -996,6 +1002,7 @@ export async function observeOrderPublicZapReceipt(
           !hasPublicReceiptContext(updated)
         )
           return
+        await options.proofDeliveryBarrier?.catch(() => undefined)
         await dependencies.deliverReceiptLinkedProof(
           updated as typeof updated & {
             zapReceiptId: string
@@ -1136,42 +1143,15 @@ function assertAdmittedPaymentAddress(
 async function assertOrderPaymentProfileAdmission(
   lifecycle: OrderLifecycle,
   ctx: OrderPaymentContext,
-  dependencies: OrderPaymentDependencies
+  dependencies: OrderPaymentDependencies,
+  checkAddress: OrderPaymentDependencies["checkOrderPaymentAddressUpdate"] = dependencies.checkOrderPaymentAddressUpdate
 ): Promise<void> {
   assertOrderPaymentSession(ctx)
-  const result = await dependencies.checkOrderPaymentAddressUpdate(
-    lifecycle,
-    ctx
-  )
+  const result = await checkAddress(lifecycle, ctx)
   assertOrderPaymentSession(ctx)
   assertAdmittedPaymentAddress(result.status)
   // Include stronger observations and local-storage failure that arrived while
   // the network read was pending, before the claim clears retained invoices.
-  const selected = await dependencies.loadSelectedProfileContext(
-    ctx.merchantPubkey
-  )
-  assertOrderPaymentSession(ctx)
-  assertAdmittedPaymentAddress(
-    assessOrderPaymentAddress(
-      selected,
-      ctx.merchantPubkey,
-      lifecycle.merchantLightningAddress ?? ""
-    )
-  )
-}
-
-async function assertOrderPaymentRenewalAddress(
-  lifecycle: OrderLifecycle,
-  ctx: OrderPaymentContext,
-  dependencies: OrderPaymentDependencies
-): Promise<void> {
-  assertOrderPaymentSession(ctx)
-  const result = await dependencies.checkOrderPaymentAddressForRenewal(
-    lifecycle,
-    ctx
-  )
-  assertOrderPaymentSession(ctx)
-  assertAdmittedPaymentAddress(result.status)
   const selected = await dependencies.loadSelectedProfileContext(
     ctx.merchantPubkey
   )
@@ -1367,7 +1347,12 @@ export async function runOrderPaymentWithRenewedInvoice(
     if (ctx.shouldContinueBeforePaymentClaim?.() === false) {
       throw new Error("Order payment details changed. Refresh before retrying.")
     }
-    await assertOrderPaymentRenewalAddress(lifecycle, ctx, dependencies)
+    await assertOrderPaymentProfileAdmission(
+      lifecycle,
+      ctx,
+      dependencies,
+      dependencies.checkOrderPaymentAddressForRenewal
+    )
     assertSession()
     if (ctx.shouldContinueBeforePaymentClaim?.() === false) {
       throw new Error("Order payment details changed. Refresh before retrying.")
@@ -2037,13 +2022,17 @@ async function runOrderPaymentInternal(
           { running: false, stage: null }
         )
         if (isPublicZap && zapRequestId) {
-          void observeOrderPublicZapReceipt(
+          const proofDeliveryBarrier = Promise.resolve().then(() =>
+            ctx.beforeBackgroundProofDelivery?.()
+          )
+          void dependencies.observeOrderPublicZapReceipt(
             orderId,
             ctx.buyerIdentity,
             {},
             ctx.accountPubkey,
             ctx.authenticatedPubkey,
-            ctx.shouldContinue
+            ctx.shouldContinue,
+            { proofDeliveryBarrier }
           )
         }
         return runtimeStates.get(orderId)!
@@ -2175,13 +2164,17 @@ async function runOrderPaymentInternal(
 
       if (validatedInvoice.request.shouldWaitForZapReceipt && zapRequestId) {
         emit(orderId, { stage: "checking_receipt" })
-        void observeOrderPublicZapReceipt(
+        const proofDeliveryBarrier = Promise.resolve().then(() =>
+          ctx.beforeBackgroundProofDelivery?.()
+        )
+        void dependencies.observeOrderPublicZapReceipt(
           orderId,
           ctx.buyerIdentity,
           {},
           ctx.accountPubkey,
           ctx.authenticatedPubkey,
-          ctx.shouldContinue
+          ctx.shouldContinue,
+          { proofDeliveryBarrier }
         )
       }
 
@@ -2579,12 +2572,7 @@ export async function submitExternalPaymentProof(
           (lifecycle.invoiceExpiresAt === undefined ||
             lifecycle.invoiceExpiresAt ===
               activeReplacementValidation.metadata.expiresAt))) &&
-      [
-        ...(lifecycle.priorExpiredManualInvoices ?? []),
-        ...(lifecycle.priorExpiredManualInvoice
-          ? [lifecycle.priorExpiredManualInvoice]
-          : []),
-      ].some(
+      (lifecycle.priorExpiredManualInvoices ?? []).some(
         (entry) =>
           entry.invoice.toLowerCase() ===
             priorExpiredManualInvoice.invoice.toLowerCase() &&
@@ -2617,12 +2605,9 @@ export async function submitExternalPaymentProof(
         authorizeClaim: (current) => {
           if (shouldContinue?.() === false) return false
           if (priorExpiredManualInvoice) {
-            const exactPriorEvidence = [
-              ...(current.priorExpiredManualInvoices ?? []),
-              ...(current.priorExpiredManualInvoice
-                ? [current.priorExpiredManualInvoice]
-                : []),
-            ].some(
+            const exactPriorEvidence = (
+              current.priorExpiredManualInvoices ?? []
+            ).some(
               (entry) =>
                 entry.invoice.toLowerCase() ===
                   priorExpiredManualInvoice.invoice.toLowerCase() &&

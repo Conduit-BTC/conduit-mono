@@ -155,7 +155,6 @@ export interface OrderViewModel {
   // Technical details (collapsed by default in the UI).
   invoice?: string
   paymentHash?: string
-  priorExpiredManualInvoice?: OrderLifecycle["priorExpiredManualInvoice"]
   priorExpiredManualInvoices: NonNullable<
     OrderLifecycle["priorExpiredManualInvoices"]
   >
@@ -779,13 +778,9 @@ export function buildOrderViewModel(
       merchantInvoiceAction?.invoice ??
       lifecycle?.invoice ??
       paymentAttempt?.invoice,
-    priorExpiredManualInvoice: lifecycle?.priorExpiredManualInvoice,
-    priorExpiredManualInvoices: [
-      ...(lifecycle?.priorExpiredManualInvoices ?? []),
-      ...(lifecycle?.priorExpiredManualInvoice
-        ? [lifecycle.priorExpiredManualInvoice]
-        : []),
-    ].filter(
+    priorExpiredManualInvoices: (
+      lifecycle?.priorExpiredManualInvoices ?? []
+    ).filter(
       (entry, index, entries) =>
         entries.findIndex(
           (candidate) =>

@@ -32,7 +32,7 @@ describe("Market event product layout", () => {
     )
   })
 
-  it("keeps pickup disclosure from stretching the standard product card", async () => {
+  it("keeps pickup details from stretching the standard product card", async () => {
     const [card, event] = await Promise.all([
       source("apps/market/src/components/ProductGridCard.tsx"),
       source("apps/market/src/routes/events/$collectionRef.tsx"),
@@ -42,7 +42,6 @@ describe("Market event product layout", () => {
     expect(event).toContain('className="h-auto"')
     expect(event).toContain('<details className="group/pickup')
     expect(event).toContain("[&::-webkit-details-marker]:hidden")
-    expect(event).toContain("getPickupHandoffPrivacyCopy(handoff)")
     expect(event).toContain("<EventActorName")
     expect(event).toContain("<EventActorProvenance")
     expect(event).toContain('copyLabel="Copy pickup handler npub"')

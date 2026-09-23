@@ -75,10 +75,7 @@ import {
   type EventCatalog,
 } from "../../lib/event-market-adapter"
 import { parseEventCatalogSearch } from "../../lib/event-catalog-search"
-import {
-  getPickupHandoffPrivacyCopy,
-  getPickupHandoffSummary,
-} from "../../lib/pickup-handoff"
+import { getPickupHandoffSummary } from "../../lib/pickup-handoff"
 
 export const Route = createFileRoute("/events/$collectionRef")({
   component: EventCatalogPage,
@@ -347,7 +344,6 @@ function EventCatalogProductCard({
             <p className="mt-2 break-words">
               Handled by <EventActorName identity={handlerIdentity} />
             </p>
-            <p className="mt-2">{getPickupHandoffPrivacyCopy(handoff)}</p>
             <div className="mt-2 flex justify-end">
               <EventActorProvenance
                 pubkey={handoff.handlerPubkey}

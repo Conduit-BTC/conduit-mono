@@ -402,10 +402,11 @@ Pickup checkout:
   organizer-handoff order;
 - requires snapshot parity before signing or retrying direct payment.
 
-Before signing, the buyer sees who performs handoff and, for organizer handoff,
-that a minimal fulfillment receipt will be shared after merchant payment
-confirmation. Mixed merchant- and organizer-handoff carts are blocked or split
-unless every physical line resolves to the same exact handler graph.
+Before signing, the buyer sees who performs handoff. Organizer handoff does not
+require a separate checkout disclosure about the minimal fulfillment receipt;
+the receipt remains limited to the operational fields defined above. Mixed
+merchant- and organizer-handoff carts are blocked or split unless every
+physical line resolves to the same exact handler graph.
 
 The order carries the selected shipping-option coordinate. Pickup orders do not
 require carrier or tracking actions. Merchant records `picked_up`/complete
@@ -450,11 +451,11 @@ ambiguous-payment reconciliation retain their independent safeguards.
 - A valid revocation known before handoff removes readiness and prevents
   handout. A hypothetical unseen revocation does not negate found authority; a
   valid organizer acknowledgement grants no merchant-only lifecycle authority.
-- Signed-in pickup completes without a contact form. Guest pickup requires both
-  merchant-only email and phone contact and never copies either to the
-  organizer.
+- Signed-in pickup completes without a contact form. New guest pickup orders
+  require both merchant-only email and phone contact and never copy either to
+  the organizer. Historical one-contact pickup orders remain readable.
 - Cross-app browser fixtures cover event creation, both handoff modes,
-  organizer acceptance, checkout disclosure/no address, paid or zero-cost ready
+  organizer acceptance, checkout handler/no address, paid or zero-cost ready
   delivery, organizer handoff acknowledgement, and merchant completion.
 - Ordinary shipping, digital products, legacy single-recipient orders, and
   non-event Gamma collections keep their prior behavior.

@@ -2020,7 +2020,7 @@ describe("order payment admission", () => {
       paymentStatus: "failed",
       proofDeliveryStatus: "not_started",
       invoice: undefined,
-      priorExpiredManualInvoice: prior,
+      priorExpiredManualInvoices: [prior],
     }
     await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
       const wrong = await claimExternalOrderPaymentProof(
@@ -2078,7 +2078,7 @@ describe("order payment admission", () => {
       invoiceStatus: "failed",
       paymentStatus: "failed",
       invoice: undefined,
-      priorExpiredManualInvoice: prior,
+      priorExpiredManualInvoices: [prior],
     }
     const wrongAmountInvoice = makeBolt11Fixture({
       hrp: "lnbc3n",
@@ -2109,10 +2109,12 @@ describe("order payment admission", () => {
       {
         lifecycle: {
           ...failed,
-          priorExpiredManualInvoice: {
-            ...prior,
-            invoice: "not-a-bolt11-invoice",
-          },
+          priorExpiredManualInvoices: [
+            {
+              ...prior,
+              invoice: "not-a-bolt11-invoice",
+            },
+          ],
         },
       },
       async () => {
@@ -2291,7 +2293,7 @@ describe("order payment admission", () => {
       invoiceStatus: "failed",
       paymentStatus: "failed",
       invoice: undefined,
-      priorExpiredManualInvoice: prior,
+      priorExpiredManualInvoices: [prior],
     }
     const replacement = {
       ...failed,
