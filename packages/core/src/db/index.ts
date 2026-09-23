@@ -1,4 +1,9 @@
-import Dexie, { liveQuery, type EntityTable, type Table } from "dexie"
+import Dexie, {
+  liveQuery,
+  type DexieOptions,
+  type EntityTable,
+  type Table,
+} from "dexie"
 import { config } from "../config"
 import type {
   OrderItemFulfillmentSchema,
@@ -6,6 +11,10 @@ import type {
   ProductZapMessagePolicy,
 } from "../schemas"
 import type { AccountNetworkRoutingPolicy } from "../protocol/account-network-routing-policy"
+import type {
+  CheckoutSparkReconciliation,
+  CheckoutSparkRetirementTombstone,
+} from "../protocol/checkout-spark-reconciliation"
 import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
@@ -967,7 +976,22 @@ export interface OrderLifecycle {
   completedAt?: number
 }
 
-class ConduitDB extends Dexie {
+export interface StoredCheckoutSparkPlanBinding {
+  checkoutId: string
+  planDigest: string
+}
+
+export interface StoredCheckoutSparkReconciliation {
+  checkoutId: string
+  revision: number
+  state: CheckoutSparkReconciliation
+}
+
+export interface StoredCheckoutSparkRetirement extends CheckoutSparkRetirementTombstone {
+  checkoutId: string
+}
+
+export class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   products!: EntityTable<CachedProduct, "id">
@@ -997,9 +1021,21 @@ class ConduitDB extends Dexie {
   wallets!: EntityTable<WalletDescriptor, "id">
   walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
   shoppingCarts!: EntityTable<StoredShoppingCart, "id">
+  checkoutSparkPlanBindings!: EntityTable<
+    StoredCheckoutSparkPlanBinding,
+    "checkoutId"
+  >
+  checkoutSparkReconciliations!: EntityTable<
+    StoredCheckoutSparkReconciliation,
+    "checkoutId"
+  >
+  checkoutSparkRetirements!: EntityTable<
+    StoredCheckoutSparkRetirement,
+    "checkoutId"
+  >
 
-  constructor() {
-    super("conduit")
+  constructor(databaseName = "conduit", options?: DexieOptions) {
+    super(databaseName, options)
 
     this.version(1).stores({
       orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
@@ -1185,6 +1221,14 @@ class ConduitDB extends Dexie {
       // Shared, signer-independent shopper state. Market owns the opaque
       // payload while Core supplies one serialized cross-tab transaction lane.
       shoppingCarts: "id, updatedAt",
+    })
+
+    this.version(20).stores({
+      // Payment recovery state is device-local, never relay-synced or pruned
+      // as a cache. The binding survives retirement to reject plan replay.
+      checkoutSparkPlanBindings: "checkoutId",
+      checkoutSparkReconciliations: "checkoutId",
+      checkoutSparkRetirements: "checkoutId",
     })
   }
 }
