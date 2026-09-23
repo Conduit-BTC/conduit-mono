@@ -624,6 +624,9 @@ export const orderSchema = z
       (item) => item.fulfillment?.type === "pickup"
     )?.fulfillment
     const hasPickup = firstPickup?.type === "pickup"
+    const pickupOnly = order.items.every(
+      (item) => item.fulfillment?.type === "pickup"
+    )
     const hasShipping = order.items.some(
       (item) =>
         item.fulfillment?.type === "shipping" ||
@@ -677,6 +680,7 @@ export const orderSchema = z
     }
     if (
       order.buyerIdentityKind === "guest_ephemeral" &&
+      !pickupOnly &&
       order.guestContact &&
       (!order.guestContact.email || !order.guestContact.phone)
     ) {

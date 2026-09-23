@@ -2284,17 +2284,17 @@ describe("order payload schema", () => {
     expect(parsed.items[0]?.fulfillment?.type).toBe("pickup")
   })
 
-  it("requires both merchant contact methods for guest pickup", () => {
-    expect(() =>
+  it("accepts either recovery contact method for guest pickup", () => {
+    expect(
       orderSchema.parse(
         pickupOrder("guest_ephemeral", { email: "alice@example.com" })
-      )
-    ).toThrow("Guest orders require both email and phone.")
-    expect(() =>
+      ).guestContact
+    ).toEqual({ email: "alice@example.com" })
+    expect(
       orderSchema.parse(
         pickupOrder("guest_ephemeral", { phone: "+18005551234" })
-      )
-    ).toThrow("Guest orders require both email and phone.")
+      ).guestContact
+    ).toEqual({ phone: "+18005551234" })
     expect(() => orderSchema.parse(pickupOrder("guest_ephemeral"))).toThrow(
       "Guest orders require a recovery contact."
     )
@@ -2309,6 +2309,102 @@ describe("order payload schema", () => {
       phone: "+18005551234",
     })
     expect(complete.shippingAddress).toBeUndefined()
+  })
+
+  it("requires both recovery methods when a guest order mixes pickup and digital items", () => {
+    const pickup = pickupOrder("guest_ephemeral", {
+      email: "alice@example.com",
+    })
+    const mixedOrder = {
+      ...pickup,
+      items: [
+        ...pickup.items,
+        {
+          productId: `30402:${pickup.merchantPubkey}:digital-guide`,
+          format: "digital" as const,
+          quantity: 1,
+          priceAtPurchase: 500,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1_500,
+    }
+
+    expect(orderSchema.safeParse(mixedOrder).success).toBe(false)
+    expect(
+      orderSchema.safeParse({
+        ...mixedOrder,
+        guestContact: { email: "alice@example.com", phone: "+18005551234" },
+      }).success
+    ).toBe(true)
+  })
+
+  it("requires both contact methods for guest delivery orders", () => {
+    const deliveryOrder = {
+      id: "delivery-guest",
+      merchantPubkey: "merchant",
+      buyerPubkey: "b".repeat(64),
+      buyerIdentityKind: "guest_ephemeral" as const,
+      items: [
+        {
+          productId: "product-1",
+          fulfillment: { type: "shipping" as const },
+          quantity: 1,
+          priceAtPurchase: 1000,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1000,
+      currency: "SATS",
+      createdAt: 1_700_000_000_000,
+    }
+
+    expect(
+      orderSchema.safeParse({
+        ...deliveryOrder,
+        guestContact: { email: "alice@example.com" },
+      }).success
+    ).toBe(false)
+    expect(
+      orderSchema.safeParse({
+        ...deliveryOrder,
+        guestContact: { phone: "+18005551234" },
+      }).success
+    ).toBe(false)
+  })
+
+  it("requires both contact methods for guest digital orders without fulfillment", () => {
+    const digitalOrder = {
+      id: "digital-guest",
+      merchantPubkey: "merchant",
+      buyerPubkey: "b".repeat(64),
+      buyerIdentityKind: "guest_ephemeral" as const,
+      items: [
+        {
+          productId: "digital-product",
+          format: "digital" as const,
+          quantity: 1,
+          priceAtPurchase: 1000,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1000,
+      currency: "SATS",
+      createdAt: 1_700_000_000_000,
+    }
+
+    expect(
+      orderSchema.safeParse({
+        ...digitalOrder,
+        guestContact: { email: "alice@example.com" },
+      }).success
+    ).toBe(false)
+    expect(
+      orderSchema.safeParse({
+        ...digitalOrder,
+        guestContact: { phone: "+18005551234" },
+      }).success
+    ).toBe(false)
   })
 
   it("keeps guest contact metadata out of signed-in orders", () => {
