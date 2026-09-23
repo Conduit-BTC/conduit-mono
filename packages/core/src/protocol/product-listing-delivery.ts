@@ -88,6 +88,8 @@ export interface ProductListingOutboxRepository {
   add(job: ProductListingDeliveryJob): Promise<void>
   get(id: string): Promise<ProductListingDeliveryJob | undefined>
   listUndelivered(): Promise<ProductListingDeliveryJob[]>
+  /** Optional for injected repositories that do not support terminal recovery. */
+  listFailed?(merchantPubkey: string): Promise<ProductListingDeliveryJob[]>
   update(
     id: string,
     updater: (current: ProductListingDeliveryJob) => ProductListingDeliveryJob
@@ -338,6 +340,15 @@ const dexieProductListingOutboxRepository: ProductListingOutboxRepository = {
   async listUndelivered() {
     const jobs = await db.productListingOutbox
       .filter((job) => job.state === "pending" || job.state === "partial")
+      .toArray()
+    return jobs.map(cloneJob)
+  },
+
+  async listFailed(merchantPubkey) {
+    const jobs = await db.productListingOutbox
+      .where("merchantPubkey")
+      .equals(merchantPubkey)
+      .filter((job) => job.state === "failed")
       .toArray()
     return jobs.map(cloneJob)
   },
@@ -841,6 +852,78 @@ export async function getProductListingDelivery(
 ): Promise<ProductListingDeliveryJob | undefined> {
   const job = await getRepository(options).get(id)
   return job ? cloneJob(job) : undefined
+}
+
+export function isFullyRejectedProductListingJob(
+  job: ProductListingDeliveryJob
+): boolean {
+  if (
+    job.state !== "failed" ||
+    job.readyForDelivery === false ||
+    job.deliveryAttemptCount < 1 ||
+    job.signedEvents.length === 0 ||
+    job.relayTargets.length === 0 ||
+    job.relayDelivery.length !==
+      job.signedEvents.length * job.relayTargets.length
+  ) {
+    return false
+  }
+
+  try {
+    assertSignedProductFamily(job)
+  } catch {
+    return false
+  }
+
+  const expectedPairs = new Set(
+    job.signedEvents.flatMap((event) =>
+      job.relayTargets.map((target) => `${event.id}:${target.relayUrl}`)
+    )
+  )
+  if (expectedPairs.size !== job.relayDelivery.length) return false
+
+  return job.relayDelivery.every((delivery) => {
+    const pair = `${delivery.eventId}:${delivery.relayUrl}`
+    if (
+      !expectedPairs.has(pair) ||
+      delivery.status !== "rejected" ||
+      delivery.attemptCount < 1
+    ) {
+      return false
+    }
+    expectedPairs.delete(pair)
+    return true
+  })
+}
+
+/**
+ * Inspect terminal, all-rejected listing families after restart. These jobs
+ * cannot be retried with their old relay plan; any recovery must explicitly
+ * sign and stage a fresh job after the merchant repairs their current plan.
+ * This is raw outbox history: callers must compare the signed family against
+ * current local product evidence before offering recovery for an older job.
+ */
+export async function getRejectedProductListingDeliveries(
+  merchantPubkey: string,
+  options: ProductListingDeliveryOptions = {}
+): Promise<ProductListingDeliveryJob[]> {
+  const normalizedPubkey = normalizeMerchantPubkey(merchantPubkey)
+  const repository = getRepository(options)
+  if (!repository.listFailed) {
+    throw new Error("Product listing outbox cannot inspect failed jobs")
+  }
+  const jobs = await repository.listFailed(normalizedPubkey)
+  return jobs
+    .filter(
+      (job) =>
+        job.merchantPubkey === normalizedPubkey &&
+        isFullyRejectedProductListingJob(job)
+    )
+    .sort(
+      (left, right) =>
+        left.createdAt - right.createdAt || left.id.localeCompare(right.id)
+    )
+    .map(cloneJob)
 }
 
 export async function getPendingProductListingDeliveries(

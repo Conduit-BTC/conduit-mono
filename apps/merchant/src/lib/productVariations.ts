@@ -1761,7 +1761,7 @@ function buildPreservedProductFamilyChangePlan<
         baseline: target.existing!.product,
       },
     })
-    return next !== previous
+    return input.forcePublishDTags?.includes(target.dTag) || next !== previous
   })
   return {
     desired,
@@ -1784,6 +1784,8 @@ export function buildProductFamilyChangePlan<
   preservationBaselineVariations?: ProductVariationFormState
   existing?: ProductListingFamily<TRecord>
   existingFamilyEvidenceComplete?: boolean
+  /** Explicit terminal-rejection recovery; never inferred from an unchanged form. */
+  forcePublishDTags?: readonly string[]
   now?: number
 }): ProductFamilyChangePlan<TRecord> {
   const now = input.now ?? Date.now()
@@ -1915,6 +1917,7 @@ export function buildProductFamilyChangePlan<
     )
   }
   const publish = desired.filter((target) => {
+    if (input.forcePublishDTags?.includes(target.dTag)) return true
     if (!target.existing?.dTag) return true
     const existingFulfillmentIntent =
       resolvePublishedProductFulfillmentIntentForTarget(target.existing.product)

@@ -1,4 +1,61 @@
-import type { PublishWithPlannerResult } from "@conduit/core"
+import {
+  EVENT_KINDS,
+  isFullyRejectedProductListingJob,
+  type ProductListingDeliveryJob,
+  type PublishWithPlannerResult,
+} from "@conduit/core"
+
+type ProductFamilyRecoveryRecord = {
+  eventId: string
+  dTag: string | null
+  product: { pubkey: string }
+}
+
+/**
+ * A failed outbox row is historical evidence, not permission to re-sign a
+ * stale product. Only the current, same-author local revision may be
+ * explicitly restarted against a new relay plan.
+ */
+export function getTerminalRejectedListingRecoveryDTags(
+  job: ProductListingDeliveryJob,
+  family: ProductFamilyRecoveryRecord & {
+    variations: readonly ProductFamilyRecoveryRecord[]
+  }
+): string[] | null {
+  if (
+    // A mixed family removal also owns a gated NIP-09 job. Re-signing only
+    // the listing half would silently drop that deletion from the restart.
+    !!job.companionDeletionJobId ||
+    !isFullyRejectedProductListingJob(job)
+  ) {
+    return null
+  }
+  const records = [family, ...family.variations]
+  if (records.some((record) => record.product.pubkey !== job.merchantPubkey)) {
+    return null
+  }
+  const byDTag = new Map(records.map((record) => [record.dTag, record]))
+  const dTags: string[] = []
+  for (const event of job.signedEvents) {
+    if (
+      event.kind !== EVENT_KINDS.PRODUCT ||
+      event.pubkey !== job.merchantPubkey
+    ) {
+      return null
+    }
+    const dTagsInEvent = event.tags.filter(([name]) => name === "d")
+    const dTag = dTagsInEvent.length === 1 ? dTagsInEvent[0]?.[1] : undefined
+    if (
+      !dTag ||
+      dTags.includes(dTag) ||
+      byDTag.get(dTag)?.eventId !== event.id
+    ) {
+      return null
+    }
+    dTags.push(dTag)
+  }
+  return dTags
+}
 
 export type ProductWriteAction = "publish" | "delete"
 
@@ -113,7 +170,9 @@ export function buildProductDeliveryNotice(
     retryableRelayUrls.length > 0
       ? `Use Retry delivery for ${getRelayCountLabel(retryableRelayUrls.length)}.`
       : rejectedRelayUrls.length > 0
-        ? `${getRelayCountLabel(rejectedRelayUrls.length)} rejected the signed event; there is nothing left to retry.`
+        ? state === "rejected"
+          ? `${getRelayCountLabel(rejectedRelayUrls.length)} rejected the signed event; there is nothing left to retry. Repair Network Settings, then sign a new delivery.`
+          : `${getRelayCountLabel(rejectedRelayUrls.length)} rejected the signed event; there is nothing left to retry.`
         : "No relay retry needed."
 
   return {

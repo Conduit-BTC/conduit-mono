@@ -14,13 +14,21 @@ import {
   compileProductFulfillmentIntent,
   evaluateListingSafety,
   getCachedMerchantStorefront,
+  getProductDeletionDelivery,
+  getProductListingDelivery,
+  getRejectedProductListingDeliveries,
+  getTerminalRejectedProductDeletionDeliveries,
+  isDeliveredCompanionListingForDeletion,
+  isTerminalRejectedProductDeletionJob,
   getListingSafetyDisplay,
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
   getNdk,
   isCommerceReadIncomplete,
+  isValidSignedPublicNostrEvent,
   prepareProductCatalog,
+  productDeletionEvidenceFromSignedEvent,
   recordBrowserTelemetryEvent,
   resolveEventMarketOrganizerInbox,
   waitForVisibleDocument,
@@ -29,6 +37,7 @@ import {
   type PreparedProductFamily,
   type ProductSchema,
   type ProductDeletionDeliveryJob,
+  type ProductListingDeliveryJob,
   type ProductZapMessagePolicy,
   type PublishWithPlannerResult,
   useAuth,
@@ -126,6 +135,7 @@ import {
   buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
   getProductDeliveryNoticeVariant,
+  getTerminalRejectedListingRecoveryDTags,
   reconcilePendingProductDeletionRetry,
   type ProductDeliveryNotice,
   type ProductWriteAction,
@@ -245,6 +255,8 @@ type ProductPublishMutationPayload = {
   dTag: string
   existing?: MerchantProductFamily
   familyEvidenceComplete?: boolean
+  /** Durable terminal job being replaced with a newly signed, current revision. */
+  recoveryJobId?: string
   signedBundle?: SignedProductWriteBundle
   previousNotice?: ProductDeliveryNotice
 }
@@ -253,6 +265,7 @@ type ProductDeleteMutationPayload = {
   merchantPubkey: string
   product?: MerchantProductFamily
   deliveryJobId?: string
+  recoveryJobId?: string
   previousNotice?: ProductDeliveryNotice
 }
 
@@ -501,10 +514,12 @@ function ProductDeliveryStatusNotice({
   notice,
   onDismiss,
   onRetry,
+  onStartOver,
 }: {
   notice: ProductDeliveryNotice
   onDismiss: () => void
   onRetry?: () => void
+  onStartOver?: () => void
 }) {
   const showRelayDetails =
     notice.attemptedRelayUrls.length > 0 ||
@@ -547,6 +562,16 @@ function ProductDeliveryStatusNotice({
               onClick={onRetry}
             >
               Retry delivery
+            </Button>
+          )}
+          {onStartOver && (
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 px-3 text-xs"
+              onClick={onStartOver}
+            >
+              Sign new delivery
             </Button>
           )}
           <Button
@@ -598,6 +623,28 @@ function ProductDeliveryStatusNotice({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function RejectedProductPublicationNotice({
+  onReview,
+}: {
+  onReview: () => void
+}) {
+  return (
+    <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs leading-5 text-[var(--text-secondary)]">
+      Every relay rejected this signed product revision. Repair Network
+      Settings, then review the listing and sign a new delivery.
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="mt-2 block h-7 px-2 text-xs"
+        onClick={onReview}
+      >
+        Review and republish
+      </Button>
     </div>
   )
 }
@@ -855,7 +902,8 @@ async function publishProduct(
   shouldContinue?: () => boolean,
   existingFamilyEvidenceComplete?: boolean,
   onDeliveryQueued?: (bundle: SignedProductWriteBundle) => Promise<void>,
-  assertCurrentFamilyRevision?: () => void
+  assertCurrentFamilyRevision?: () => void,
+  forcePublishDTags?: readonly string[]
 ): Promise<PublishWithPlannerResult> {
   const preserveFulfillment = form.fulfillment === "preserve"
   if (preserveFulfillment && !existing) {
@@ -1076,6 +1124,7 @@ async function publishProduct(
         }
       : undefined,
     existingFamilyEvidenceComplete,
+    forcePublishDTags,
     now,
   })
 
@@ -1159,14 +1208,6 @@ async function deleteProduct(
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean
 ): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
-  const ndk = getNdk()
-  if (!ndk.signer) throw new Error("Signer not connected")
-  const signerPubkey = (await ndk.signer.user()).pubkey
-  if (signerPubkey !== merchantPubkey) {
-    throw new Error("Active signer does not match current merchant pubkey")
-  }
-  const activeAuthenticatedPubkey =
-    authenticatedPubkey === undefined ? signerPubkey : authenticatedPubkey
   const familyRecords = [product, ...product.variations]
   if (
     familyRecords.some((record) => record.product.pubkey !== merchantPubkey)
@@ -1183,6 +1224,106 @@ async function deleteProduct(
     })),
     clientAppId: "merchant",
   })
+  return signAndDeliverProductDeletion(
+    merchantPubkey,
+    draft,
+    Array.from(
+      new Set(familyRecords.flatMap((record) => record.sourceRelayUrls))
+    ),
+    onSignedLocal,
+    onSignerRequest,
+    authenticatedPubkey,
+    shouldContinue
+  )
+}
+
+async function resignRejectedProductDeletion(
+  merchantPubkey: string,
+  rejectedJob: ProductDeletionDeliveryJob,
+  onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>,
+  onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean
+): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
+  if (
+    rejectedJob.signedEvent.pubkey !== merchantPubkey ||
+    !isTerminalRejectedProductDeletionJob(rejectedJob)
+  ) {
+    throw new Error("This signed deletion is not eligible for a new delivery")
+  }
+  if (rejectedJob.companionListingJobId) {
+    const listing = await getProductListingDelivery(
+      rejectedJob.companionListingJobId
+    )
+    if (!isDeliveredCompanionListingForDeletion(listing, rejectedJob)) {
+      throw new Error(
+        "The linked replacement listing has not reached a common relay yet"
+      )
+    }
+  }
+  const current =
+    await getTerminalRejectedProductDeletionDeliveries(merchantPubkey)
+  if (!current.some((job) => job.id === rejectedJob.id)) {
+    throw new Error("A newer deletion already replaced this rejected delivery")
+  }
+  const evidence = productDeletionEvidenceFromSignedEvent(
+    rejectedJob.signedEvent
+  )
+  const eventTargets = evidence?.filter((target) => target.target === "event")
+  const addressTargets = evidence?.filter(
+    (target) => target.target === "address"
+  )
+  const rawTargetCount = rejectedJob.signedEvent.tags.filter(
+    ([name]) => name === "e" || name === "a"
+  ).length
+  if (
+    !eventTargets?.length ||
+    !addressTargets ||
+    addressTargets.length > eventTargets.length ||
+    eventTargets.length + addressTargets.length !== rawTargetCount
+  ) {
+    throw new Error("The rejected deletion targets cannot be safely restored")
+  }
+  const draft = buildProductDeletionEventDraft({
+    merchantPubkey,
+    targets: eventTargets.map((target, index) => ({
+      eventId: target.eventId,
+      addressId: addressTargets[index]?.addressId,
+    })),
+    clientAppId: "merchant",
+  })
+  return signAndDeliverProductDeletion(
+    merchantPubkey,
+    draft,
+    rejectedJob.relayPlan
+      .filter((target) => target.roles.includes("source"))
+      .map((target) => target.relayUrl),
+    onSignedLocal,
+    onSignerRequest,
+    authenticatedPubkey,
+    shouldContinue,
+    rejectedJob.signedEvent
+  )
+}
+
+async function signAndDeliverProductDeletion(
+  merchantPubkey: string,
+  draft: ReturnType<typeof buildProductDeletionEventDraft>,
+  sourceRelayUrls: readonly string[],
+  onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>,
+  onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
+  authenticatedPubkey?: string | null,
+  shouldContinue?: () => boolean,
+  recoveryEvent?: ProductDeletionDeliveryJob["signedEvent"]
+): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
+  const ndk = getNdk()
+  if (!ndk.signer) throw new Error("Signer not connected")
+  const signerPubkey = (await ndk.signer.user()).pubkey
+  if (signerPubkey !== merchantPubkey || shouldContinue?.() === false) {
+    throw new Error("Active signer does not match current merchant pubkey")
+  }
+  const activeAuthenticatedPubkey =
+    authenticatedPubkey === undefined ? signerPubkey : authenticatedPubkey
   const currentWriteRelayPlan = await planCurrentProductDeletionWriteRelays(
     merchantPubkey,
     activeAuthenticatedPubkey,
@@ -1191,21 +1332,43 @@ async function deleteProduct(
 
   const deletion = new NDKEvent(ndk)
   deletion.kind = EVENT_KINDS.DELETION
-  deletion.created_at = Math.floor(Date.now() / 1000)
-  deletion.tags = draft.tags
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  if (recoveryEvent && recoveryEvent.created_at > nowSeconds + 60) {
+    throw new Error("The previous signed deletion is too far in the future")
+  }
+  // A NIP-09 `a` target only deletes revisions through the deletion's
+  // timestamp. A recovery must retain that cutoff, or it could erase a newer
+  // product revision written by another device after the original attempt.
+  deletion.created_at = recoveryEvent?.created_at ?? nowSeconds
+  deletion.tags =
+    recoveryEvent === undefined
+      ? draft.tags
+      : [
+          ...draft.tags,
+          ["conduit_recovery_attempt", recoveryEvent.id, crypto.randomUUID()],
+        ]
   deletion.content = draft.content
 
   onSignerRequest?.({ kind: "deletion", current: 1, total: 1 })
   await waitForVisibleDocument()
+  if (shouldContinue?.() === false) {
+    throw new Error("Product signer session changed before deletion signing")
+  }
   await deletion.sign(ndk.signer)
+  const signedEvent = deletion.rawEvent()
+  if (
+    !isValidSignedPublicNostrEvent(signedEvent) ||
+    signedEvent.pubkey !== merchantPubkey ||
+    shouldContinue?.() === false
+  ) {
+    throw new Error("Signer changed during product deletion signing")
+  }
   const deliveryJob = await persistSignedProductDeletion({
-    signedEvent: deletion.rawEvent(),
+    signedEvent,
     currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
     currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
     currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,
-    sourceRelayUrls: Array.from(
-      new Set(familyRecords.flatMap((record) => record.sourceRelayUrls))
-    ),
+    sourceRelayUrls: [...sourceRelayUrls],
   })
   await cacheSignedProductDeletionEvent(deletion)
   try {
@@ -1274,6 +1437,10 @@ function ProductsPage() {
     useState<ProductDeliveryNotice | null>(null)
   const [productDeliveryRetry, setProductDeliveryRetry] =
     useState<ProductDeliveryRetryState | null>(null)
+  const [dismissedRejectedDeletionJobId, setDismissedRejectedDeletionJobId] =
+    useState<string | null>(null)
+  const [rejectedDeletionNoticeJobId, setRejectedDeletionNoticeJobId] =
+    useState<string | null>(null)
   const [productSignerProgress, setProductSignerProgress] =
     useState<ProductSignerRequestProgress | null>(null)
   const [productSignerRequestsComplete, setProductSignerRequestsComplete] =
@@ -1414,10 +1581,56 @@ function ProductsPage() {
     () => pendingDeletionJobsQuery.data ?? [],
     [pendingDeletionJobsQuery.data]
   )
+  const rejectedListingJobsQuery = useQuery({
+    queryKey: ["merchant-product-rejected-listings", accountPubkey ?? "none"],
+    enabled: !!accountPubkey,
+    queryFn: () => getRejectedProductListingDeliveries(accountPubkey!),
+    staleTime: 5_000,
+  })
+  const rejectedDeletionJobsQuery = useQuery({
+    queryKey: ["merchant-product-rejected-deletions", accountPubkey ?? "none"],
+    enabled: !!accountPubkey,
+    queryFn: async () => {
+      const jobs = await getTerminalRejectedProductDeletionDeliveries(
+        accountPubkey!
+      )
+      const recoverable = await Promise.all(
+        jobs.map(async (job) => {
+          if (!job.companionListingJobId) return job
+          try {
+            const listing = await getProductListingDelivery(
+              job.companionListingJobId
+            )
+            return isDeliveredCompanionListingForDeletion(listing, job)
+              ? job
+              : null
+          } catch {
+            return null
+          }
+        })
+      )
+      return recoverable.filter(
+        (job): job is ProductDeletionDeliveryJob => job !== null
+      )
+    },
+    staleTime: 5_000,
+  })
+  const rejectedListingJobs = rejectedListingJobsQuery.data ?? []
+  const rejectedDeletionJobs = rejectedDeletionJobsQuery.data ?? []
   const merchantProductRecords = useMemo(
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
   )
+  function getRejectedListingRecovery(
+    family: MerchantProductFamily
+  ): { job: ProductListingDeliveryJob; dTags: string[] } | null {
+    for (let index = rejectedListingJobs.length - 1; index >= 0; index--) {
+      const job = rejectedListingJobs[index]!
+      const dTags = getTerminalRejectedListingRecoveryDTags(job, family)
+      if (dTags) return { job, dTags }
+    }
+    return null
+  }
   const merchantProductReadMeta =
     productsQuery.data?.meta ?? cachedProductsQuery.data?.meta
   const merchantProductReadIncomplete =
@@ -1603,6 +1816,18 @@ function ProductsPage() {
       queryClient.invalidateQueries({
         queryKey: ["merchant-product-deletion-jobs", merchantPubkey ?? "none"],
       }),
+      queryClient.invalidateQueries({
+        queryKey: [
+          "merchant-product-rejected-listings",
+          merchantPubkey ?? "none",
+        ],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: [
+          "merchant-product-rejected-deletions",
+          merchantPubkey ?? "none",
+        ],
+      }),
     ])
   }
 
@@ -1768,9 +1993,68 @@ function ProductsPage() {
         )
       }
 
+      let recoveryDTags: string[] | undefined
+      let recoveryFamilyRevision: string | undefined
+      if (payload.recoveryJobId) {
+        const job = await getProductListingDelivery(payload.recoveryJobId)
+        const currentFamily = merchantProductsRef.current.find(
+          (candidate) => candidate.addressId === payload.existing?.addressId
+        )
+        const dTags =
+          job && currentFamily
+            ? getTerminalRejectedListingRecoveryDTags(job, currentFamily)
+            : null
+        if (
+          !currentFamily ||
+          !dTags ||
+          !payload.existing ||
+          JSON.stringify(payload.form) !==
+            JSON.stringify(
+              productToForm(currentFamily, hasPresetShippingZone)
+            ) ||
+          getProductFamilySupplierAllocationRevisionKey({
+            root: currentFamily,
+            variations: currentFamily.variations,
+            orphanVariation: currentFamily.orphanVariation,
+          }) !==
+            getProductFamilySupplierAllocationRevisionKey({
+              root: payload.existing,
+              variations: payload.existing.variations,
+              orphanVariation: payload.existing.orphanVariation,
+            })
+        ) {
+          throw new Error(
+            "The rejected product revision changed. Refresh and reopen it before starting a newly signed delivery."
+          )
+        }
+        recoveryDTags = dTags
+        recoveryFamilyRevision = getProductFamilySupplierAllocationRevisionKey({
+          root: currentFamily,
+          variations: currentFamily.variations,
+          orphanVariation: currentFamily.orphanVariation,
+        })
+      }
+
       const boundAllocation = bindAllocationEditToCurrentProductFamily(payload)
       const currentPayload = boundAllocation.payload
       const assertCurrentFamilyRevision = () => {
+        if (recoveryFamilyRevision && payload.existing) {
+          const currentFamily = merchantProductsRef.current.find(
+            (candidate) => candidate.addressId === payload.existing?.addressId
+          )
+          if (
+            !currentFamily ||
+            getProductFamilySupplierAllocationRevisionKey({
+              root: currentFamily,
+              variations: currentFamily.variations,
+              orphanVariation: currentFamily.orphanVariation,
+            }) !== recoveryFamilyRevision
+          ) {
+            throw new Error(
+              "The product changed while preparing recovery. Refresh before signing a new revision."
+            )
+          }
+        }
         const expected = boundAllocation.expectedFamilyRevision
         if (!expected || !currentPayload.existing) return
         if (
@@ -1867,7 +2151,8 @@ function ProductsPage() {
               })
             }
           },
-          assertCurrentFamilyRevision
+          assertCurrentFamilyRevision,
+          recoveryDTags
         )
       } catch (error) {
         if (fallbackMovePrepared && !signedLocally) {
@@ -1980,6 +2265,37 @@ function ProductsPage() {
           "This signed deletion belongs to a different merchant account. Switch back before retrying delivery."
         )
       }
+      if (payload.recoveryJobId) {
+        const rejectedJob = await getProductDeletionDelivery(
+          payload.recoveryJobId
+        )
+        if (!rejectedJob) {
+          throw new Error("The rejected deletion job is no longer available")
+        }
+        return resignRejectedProductDeletion(
+          payload.merchantPubkey,
+          rejectedJob,
+          async (_event, deliveryJobId) => {
+            if (isCurrentProductOwner(payload.merchantPubkey)) {
+              setProductDeliveryRetry({
+                action: "delete",
+                payload: {
+                  merchantPubkey: payload.merchantPubkey,
+                  deliveryJobId,
+                },
+              })
+            }
+            await showLocalProductProjection("delete", payload.merchantPubkey)
+          },
+          (progress) => {
+            if (isCurrentProductOwner(payload.merchantPubkey)) {
+              setProductSignerProgress(progress)
+            }
+          },
+          authStatus === "connected" ? pubkey : null,
+          () => authGenerationRef.current === authGeneration
+        )
+      }
       if (payload.deliveryJobId) {
         return {
           delivery: await deliverQueuedProductDeletion(payload.deliveryJobId, {
@@ -2028,7 +2344,9 @@ function ProductsPage() {
       setProductDeliveryNotice(
         payload.deliveryJobId
           ? buildQueuedProductDeletionNotice("delivering")
-          : null
+          : payload.recoveryJobId
+            ? (payload.previousNotice ?? null)
+            : null
       )
     },
     onSuccess: async (data, variables) => {
@@ -2066,6 +2384,9 @@ function ProductsPage() {
         variables.previousNotice
       )
       setProductDeliveryNotice(notice)
+      setRejectedDeletionNoticeJobId(
+        notice.state === "rejected" ? data.deliveryJobId : null
+      )
       if (notice.state === "delivered" || notice.state === "rejected") {
         setProductDeliveryRetry(null)
       }
@@ -2095,6 +2416,8 @@ function ProductsPage() {
           variables.previousNotice ??
             buildQueuedProductDeletionNotice("retry_needed")
         )
+      } else if (variables.recoveryJobId) {
+        setProductDeliveryNotice(variables.previousNotice ?? null)
       } else {
         setProductDeliveryNotice((current) =>
           current?.action === "delete" && current.state === "delivering"
@@ -2155,6 +2478,29 @@ function ProductsPage() {
     (productDeliveryNotice?.state === "partial" ||
       productDeliveryNotice?.state === "retry_needed") &&
     productDeliveryRetry?.action === productDeliveryNotice.action
+  const rejectedDeletionRecoveryJob = [...rejectedDeletionJobs].reverse().at(0)
+  const noticeRejectedDeletionJob =
+    productDeliveryNotice?.action === "delete" &&
+    productDeliveryNotice.state === "rejected"
+      ? rejectedDeletionJobs.find(
+          (job) => job.id === rejectedDeletionNoticeJobId
+        )
+      : undefined
+  const visibleRejectedDeletionJob =
+    productDeliveryNotice?.action === "delete" &&
+    productDeliveryNotice.state === "rejected"
+      ? (noticeRejectedDeletionJob ?? null)
+      : rejectedDeletionRecoveryJob?.id === dismissedRejectedDeletionJobId
+        ? null
+        : rejectedDeletionRecoveryJob
+  const visibleProductDeliveryNotice =
+    productDeliveryNotice ??
+    (visibleRejectedDeletionJob
+      ? buildProductDeliveryNotice(
+          "delete",
+          productDeletionJobToPublishResult(visibleRejectedDeletionJob)
+        )
+      : null)
 
   function startProductSave(payload: ProductPublishMutationPayload): void {
     if (
@@ -2226,6 +2572,8 @@ function ProductsPage() {
     setProductSignerRequestsComplete(false)
     setProductDeliveryNotice(null)
     setProductDeliveryRetry(null)
+    setDismissedRejectedDeletionJobId(null)
+    setRejectedDeletionNoticeJobId(null)
     setSignerRestoredForDraft(false)
   }, [accountPubkey, hasPresetShippingZone])
   useEffect(() => {
@@ -2367,16 +2715,22 @@ function ProductsPage() {
       ))
       ? productFormValidation.errors.tags
       : null
-  const productCanSubmit = canSubmitProductForm(productFormValidation, {
-    isEditing: !!editing,
-    hasProductChanges,
-  })
+  const rejectedEditingRecovery =
+    editing && !hasProductChanges ? getRejectedListingRecovery(editing) : null
+  const productCanSubmit =
+    canSubmitProductForm(productFormValidation, {
+      isEditing: !!editing,
+      hasProductChanges,
+    }) ||
+    (!!rejectedEditingRecovery && productFormValidation.canPublish)
   const productStatusMessage = !productFormValidation.canPublish
     ? productFormValidation.firstError
     : editing
-      ? form.variations.enabled
-        ? "Save changes to publish only the parent or variations that changed."
-        : "Save changes to publish this listing update."
+      ? rejectedEditingRecovery
+        ? "This signed revision was rejected by every relay. After repairing Network Settings, sign a new delivery for the same product."
+        : form.variations.enabled
+          ? "Save changes to publish only the parent or variations that changed."
+          : "Save changes to publish this listing update."
       : "Publish this product to add it to your store."
   const productsInitialLoading =
     !!accountPubkey && productsQuery.isPending && cachedProductsQuery.isPending
@@ -3005,16 +3359,41 @@ function ProductsPage() {
           errorMessage={getPublishErrorMessage(deleteMutation.error, "delete")}
           className="mt-2"
         />
-        {productDeliveryNotice && (
+        {visibleProductDeliveryNotice && (
           <div className="mt-3">
             <ProductDeliveryStatusNotice
-              notice={productDeliveryNotice}
+              notice={visibleProductDeliveryNotice}
               onDismiss={() => {
                 setProductDeliveryNotice(null)
                 setProductDeliveryRetry(null)
+                setRejectedDeletionNoticeJobId(null)
+                if (
+                  visibleRejectedDeletionJob &&
+                  visibleProductDeliveryNotice.action === "delete"
+                ) {
+                  setDismissedRejectedDeletionJobId(
+                    visibleRejectedDeletionJob.id
+                  )
+                }
               }}
               onRetry={
                 productDeliveryCanRetry ? retryProductDelivery : undefined
+              }
+              onStartOver={
+                visibleProductDeliveryNotice.action === "delete" &&
+                visibleProductDeliveryNotice.state === "rejected" &&
+                visibleRejectedDeletionJob &&
+                !isDeleting &&
+                authStatus === "connected" &&
+                pubkey === visibleRejectedDeletionJob.signedEvent.pubkey
+                  ? () =>
+                      deleteMutation.mutate({
+                        merchantPubkey:
+                          visibleRejectedDeletionJob.signedEvent.pubkey,
+                        recoveryJobId: visibleRejectedDeletionJob.id,
+                        previousNotice: visibleProductDeliveryNotice,
+                      })
+                  : undefined
               }
             />
           </div>
@@ -3098,6 +3477,7 @@ function ProductsPage() {
               ? getProductFamilyStockDisplay(item.family.inventorySummary)
               : getProductStockDisplay(item.product.stock)
             const eventProductContext = eventProductContexts.get(item.addressId)
+            const rejectedListingRecovery = getRejectedListingRecovery(item)
 
             if (!item.safety.marketVisible && eventProductContext) {
               const eventMarket =
@@ -3135,6 +3515,11 @@ function ProductsPage() {
                       window.location.assign(eventUrl)
                     }}
                   />
+                  {rejectedListingRecovery && item.variationForm.supported && (
+                    <RejectedProductPublicationNotice
+                      onReview={() => openEditDialog(item)}
+                    />
+                  )}
                   <ProductCard
                     title={item.product.title}
                     titleAside={
@@ -3218,6 +3603,11 @@ function ProductsPage() {
             if (!item.safety.marketVisible) {
               return (
                 <div key={item.addressId} className="grid gap-2">
+                  {rejectedListingRecovery && item.variationForm.supported && (
+                    <RejectedProductPublicationNotice
+                      onReview={() => openEditDialog(item)}
+                    />
+                  )}
                   <ListingSafetySummary
                     item={item}
                     onEdit={
@@ -3260,6 +3650,11 @@ function ProductsPage() {
 
             return (
               <div key={item.addressId} className="grid gap-2">
+                {rejectedListingRecovery && item.variationForm.supported && (
+                  <RejectedProductPublicationNotice
+                    onReview={() => openEditDialog(item)}
+                  />
+                )}
                 {!isActive && (
                   <ListingSafetySummary
                     item={item}
@@ -3439,6 +3834,9 @@ function ProductsPage() {
                     editing?.dTag ??
                     `${slugify(form.title.trim()) || "product"}-${randomSuffix()}`,
                   existing: editing ?? undefined,
+                  ...(rejectedEditingRecovery
+                    ? { recoveryJobId: rejectedEditingRecovery.job.id }
+                    : {}),
                   familyEvidenceComplete: editing
                     ? editing.familyEvidenceComplete &&
                       merchantProductFamilyEvidenceComplete
@@ -4650,7 +5048,9 @@ function ProductsPage() {
                       : productImageUpload.isBusy
                         ? "Uploading images..."
                         : editing
-                          ? "Save changes"
+                          ? rejectedEditingRecovery
+                            ? "Sign new delivery"
+                            : "Save changes"
                           : "Publish product"}
                 </Button>
               </DialogFooter>

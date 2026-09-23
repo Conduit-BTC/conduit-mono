@@ -103,7 +103,12 @@ the same product coordinate.
 Delivery records per-relay acknowledgement, rejection, timeout, and retry
 state. Pending and partially delivered jobs survive route changes, page
 reloads, and browser restarts. A retry republishes the same signed event bytes;
-it never asks the signer to produce a replacement deletion event.
+it does not silently create a second semantic deletion. When every planned
+relay explicitly rejects the signed event, exact-byte retries stop. The
+rejected job remains inspectable, and after repairing relay settings the
+merchant can deliberately sign a new delivery. That replacement retains the
+original deletion's exact `e`/`a` targets and `created_at` cutoff, so it cannot
+delete product revisions authored after the original deletion request.
 
 For a mixed replacement and deletion, both exact signed jobs must be durable
 before either is sent. The deletion remains queued without relay attempts until
@@ -111,7 +116,10 @@ one relay has acknowledged every event in the replacement listing family.
 Explicit retry and background recovery apply the same gate after reload. A
 timeout or rejection on another relay cannot substitute for that common ACK;
 once it arrives, the original signed deletion can be retried without another
-signer request. Standalone deletions retain their independent delivery path.
+signer request. If that companion deletion is explicitly rejected by every
+planned relay, a new signed delivery is offered only after the reciprocal,
+same-author replacement family has a durable common relay acknowledgement.
+Standalone deletions retain their independent delivery path.
 
 Workers use a durable expiring claim to avoid duplicate cross-tab delivery.
 Acknowledgements are monotonic, so a late timeout or rejection from a stale

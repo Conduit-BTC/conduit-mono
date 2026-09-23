@@ -939,6 +939,39 @@ describe("merchant product variation planning", () => {
     expect(unchangedPlan.publish).toEqual([])
   })
 
+  it("signs an unchanged listing only for an explicit rejected-delivery restart", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct(),
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    const input = {
+      parentDTag: "conduit-tee",
+      baseProduct: existing.root.product,
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    }
+
+    expect(buildProductFamilyChangePlan(input).publish).toEqual([])
+    expect(
+      buildProductFamilyChangePlan({
+        ...input,
+        forcePublishDTags: ["conduit-tee"],
+      }).publish.map((target) => target.dTag)
+    ).toEqual(["conduit-tee"])
+    expect(
+      buildProductFamilyChangePlan({
+        ...input,
+        forcePublishDTags: ["another-product"],
+      }).publish
+    ).toEqual([])
+  })
+
   it("publishes a canonical pair when the existing listing is inline-only", () => {
     const initialPlan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",

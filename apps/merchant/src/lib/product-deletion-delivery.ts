@@ -159,6 +159,9 @@ export function productDeletionJobToPublishResult(
     attemptedRelayUrls,
     successfulRelayUrls,
     failedRelayUrls: outstandingDeliveries.map((delivery) => delivery.relayUrl),
+    rejectedRelayUrls: outstandingDeliveries
+      .filter((delivery) => delivery.status === "rejected")
+      .map((delivery) => delivery.relayUrl),
     relayFailureMessages: Object.fromEntries(
       outstandingDeliveries.map((delivery) => [
         delivery.relayUrl,

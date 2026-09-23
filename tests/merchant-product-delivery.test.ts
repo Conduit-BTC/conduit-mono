@@ -1,5 +1,13 @@
 import { describe, expect, it } from "bun:test"
-import type { PublishWithPlannerResult } from "@conduit/core"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import type {
+  ProductListingDeliveryJob,
+  PublishWithPlannerResult,
+} from "@conduit/core"
 import {
   buildLocalProductDeliveryNotice,
   buildLocalProductQueueFailureNotice,
@@ -7,8 +15,48 @@ import {
   buildProductDeliveryNotice,
   buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
+  getTerminalRejectedListingRecoveryDTags,
   reconcilePendingProductDeletionRetry,
 } from "../apps/merchant/src/lib/product-delivery"
+
+function rejectedListingRecoveryFixture() {
+  const merchantSecret = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecret)
+  const event = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: 1_700_000_000,
+      tags: [["d", "rejected-product"]],
+      content: "Recovery fixture",
+    },
+    merchantSecret
+  )
+  const job: ProductListingDeliveryJob = {
+    id: `product-listing:${event.id}`,
+    merchantPubkey,
+    signedEvents: [event],
+    relayTargets: [{ relayUrl: "wss://relay.example", ownerSelected: true }],
+    relayDelivery: [
+      {
+        eventId: event.id,
+        relayUrl: "wss://relay.example",
+        status: "rejected",
+        attemptCount: 1,
+      },
+    ],
+    state: "failed",
+    deliveryAttemptCount: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  const family = {
+    eventId: event.id,
+    dTag: "rejected-product",
+    product: { pubkey: merchantPubkey },
+    variations: [],
+  }
+  return { job, family }
+}
 
 function deliveryResult(
   overrides: Partial<PublishWithPlannerResult> = {}
@@ -29,6 +77,40 @@ function deliveryResult(
 }
 
 describe("merchant product delivery notices", () => {
+  it("permits a newly signed restart only for the current same-author rejected revision", () => {
+    const { job, family } = rejectedListingRecoveryFixture()
+    expect(getTerminalRejectedListingRecoveryDTags(job, family)).toEqual([
+      "rejected-product",
+    ])
+    expect(
+      getTerminalRejectedListingRecoveryDTags(job, {
+        ...family,
+        eventId: "a".repeat(64),
+      })
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(job, {
+        ...family,
+        product: { pubkey: "b".repeat(64) },
+      })
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        {
+          ...job,
+          relayDelivery: [{ ...job.relayDelivery[0]!, status: "timed_out" }],
+        },
+        family
+      )
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        { ...job, companionDeletionJobId: "linked-deletion" },
+        family
+      )
+    ).toBeNull()
+  })
+
   it("shows the signed local projection while relay delivery is pending", () => {
     const publish = buildLocalProductDeliveryNotice("publish")
     const deletion = buildLocalProductDeliveryNotice("delete")
