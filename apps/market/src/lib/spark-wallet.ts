@@ -118,6 +118,7 @@ export interface SparkCheckoutLightningObligationInput extends SparkLightningSen
 export type SparkCheckoutLightningObligationSendResult =
   | { status: "paid"; payment: SparkSdkPayment }
   | { status: "terminal_failure"; payment: SparkSdkPayment }
+  | { status: "not_sent"; reason: "fee_over_cap" | "fee_unavailable" }
   | { status: "ambiguous" }
 
 export type SparkCheckoutLightningObligationPreflight =
