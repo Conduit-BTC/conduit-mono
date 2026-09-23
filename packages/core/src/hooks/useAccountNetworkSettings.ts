@@ -441,10 +441,7 @@ export function useAccountNetworkSettings(
   const session = useConduitSession()
   const queryClient = useQueryClient()
   const accountPreferences = session.accountNetworkPreferences
-  const accountPubkey =
-    auth.status === "connected"
-      ? (auth.pubkey?.trim().toLowerCase() ?? null)
-      : null
+  const accountPubkey = auth.accountPubkey?.trim().toLowerCase() ?? null
   const [operation, setOperation] =
     useState<AccountNetworkSettingsOperationView>(EMPTY_OPERATION)
   const [local, setLocal] = useState<ScopedLocalState>({
@@ -512,7 +509,7 @@ export function useAccountNetworkSettings(
         error: operationErrorMessage(error),
       })
     }
-  }, [accountPubkey, auth.authGeneration, session.relayScope])
+  }, [accountPubkey, session.relayScope])
 
   const activeLocal = local.pubkey === accountPubkey ? local : null
   const reconciliation = accountPreferences.reconciliation
@@ -628,9 +625,9 @@ export function useAccountNetworkSettings(
     revisionRef.current = revision
   }, [revision])
 
-  const mediaServerPreferences = useMediaServerPreferences(auth.pubkey, {
+  const mediaServerPreferences = useMediaServerPreferences(accountPubkey, {
     enabled: session.relaySettingsReady,
-    authenticatedPubkey: auth.status === "connected" ? auth.pubkey : null,
+    authenticatedPubkey: auth.signerReadiness === "ready" ? auth.pubkey : null,
     signer: auth.signer,
     authMethod: auth.method,
     authGeneration: auth.authGeneration,
@@ -638,19 +635,24 @@ export function useAccountNetworkSettings(
   })
 
   const captureAccount = useCallback((): AccountFenceSnapshot => {
-    if (auth.status !== "connected" || !auth.pubkey) {
+    if (!accountPubkey) {
       throw new Error("Connect your signer to manage Network preferences.")
     }
     return {
       status: auth.status,
-      pubkey: auth.pubkey.trim().toLowerCase(),
+      pubkey: accountPubkey,
       generation: auth.authGeneration,
     }
-  }, [auth.authGeneration, auth.pubkey, auth.status])
+  }, [accountPubkey, auth.authGeneration, auth.status])
 
   const captureAuth = useCallback((): AuthFenceSnapshot => {
     const account = captureAccount()
-    if (!auth.signer || !auth.method) {
+    if (
+      auth.signerReadiness !== "ready" ||
+      !auth.signer ||
+      !auth.method ||
+      auth.pubkey?.trim().toLowerCase() !== account.pubkey
+    ) {
       throw new Error(
         "Connect a NIP-07 or NIP-46 signer to update Network preferences."
       )
@@ -660,14 +662,20 @@ export function useAccountNetworkSettings(
       signer: auth.signer,
       method: auth.method,
     }
-  }, [auth.method, auth.signer, captureAccount])
+  }, [
+    auth.method,
+    auth.pubkey,
+    auth.signer,
+    auth.signerReadiness,
+    captureAccount,
+  ])
 
   const accountFenceFor = useCallback((snapshot: AccountFenceSnapshot) => {
     return () => {
       const current = authRef.current
       return (
         current.status === snapshot.status &&
-        current.pubkey?.trim().toLowerCase() === snapshot.pubkey &&
+        current.accountPubkey?.trim().toLowerCase() === snapshot.pubkey &&
         current.authGeneration === snapshot.generation
       )
     }
@@ -680,6 +688,7 @@ export function useAccountNetworkSettings(
         const current = authRef.current
         return (
           accountFence() &&
+          current.signerReadiness === "ready" &&
           current.signer === snapshot.signer &&
           current.method === snapshot.method
         )

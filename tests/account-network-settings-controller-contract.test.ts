@@ -44,7 +44,7 @@ describe("account Network settings controller contract", () => {
       "const captureAccount = useCallback("
     )
     expect(mediaPreferences).toContain(
-      'auth.status === "connected" ? auth.pubkey : null'
+      'authenticatedPubkey: auth.signerReadiness === "ready" ? auth.pubkey : null'
     )
   })
 

@@ -141,6 +141,10 @@ export {
   SelectSeparator,
 } from "./Select"
 export { Skeleton } from "./Skeleton"
+export {
+  SignerRecoveryNotice,
+  type SignerRecoveryNoticeProps,
+} from "./SignerRecoveryNotice"
 export { Switch } from "./Switch"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
 export { SegmentedControl, SegmentedControlItem } from "./SegmentedControl"
