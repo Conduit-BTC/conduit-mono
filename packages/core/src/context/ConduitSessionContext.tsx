@@ -61,8 +61,22 @@ export function ConduitSessionProvider({
   allowGuest = appId === "market",
   children,
 }: ConduitSessionProviderProps) {
-  const { accountPubkey, authGeneration, signerReadiness } = useAuth()
+  const {
+    accountPubkey,
+    authGeneration,
+    capabilities,
+    pubkey,
+    signer,
+    signerReadiness,
+    status,
+  } = useAuth()
   const signedInPubkey = accountPubkey
+  const canAuthenticateAccountReads =
+    status === "connected" &&
+    !!accountPubkey &&
+    pubkey === accountPubkey &&
+    !!signer &&
+    capabilities.signEvent
   const profileAuthorityRef = useRef({
     authGeneration,
     pubkey: signedInPubkey,
@@ -90,7 +104,7 @@ export function ConduitSessionProvider({
       accountPubkey:
         session.mode === "signed_in" ? session.pubkey : null,
       authenticatedPubkey:
-        session.mode === "signed_in" && signerReadiness === "ready"
+        session.mode === "signed_in" && canAuthenticateAccountReads
           ? session.pubkey
           : null,
       shouldContinue: () =>
@@ -114,7 +128,7 @@ export function ConduitSessionProvider({
     accountNetworkPreferencesEnabled,
     accountNetworkPreferencesEnabled &&
       activatedRelayScope === session.relayScope &&
-      signerReadiness === "ready",
+      canAuthenticateAccountReads,
     authGeneration
   )
   const localRelayAuthorityReady =

@@ -31,27 +31,36 @@ export function baselineRolesFromRows(
 
 function rolesDiffer(
   baselineRoles: readonly AccountNetworkDesiredRelayRoles[],
-  desiredRoles: readonly AccountNetworkDesiredRelayRoles[],
-  select: (roles: AccountNetworkDesiredRelayRoles) => readonly boolean[]
+  desiredRoles: readonly AccountNetworkDesiredRelayRoles[]
 ): boolean {
   const baselineByUrl = new Map(
-    baselineRoles.flatMap((roles) => {
-      const selected = select(roles)
-      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
-    })
+    baselineRoles
+      .filter(
+        (roles) =>
+          roles.readEnabled || roles.publishEnabled || roles.privateInboxEnabled
+      )
+      .map((roles) => [roles.url, roles] as const)
   )
   const desiredByUrl = new Map(
-    desiredRoles.flatMap((roles) => {
-      const selected = select(roles)
-      return selected.some(Boolean) ? [[roles.url, selected] as const] : []
-    })
+    desiredRoles
+      .filter(
+        (roles) =>
+          roles.readEnabled || roles.publishEnabled || roles.privateInboxEnabled
+      )
+      .map((roles) => [roles.url, roles] as const)
   )
   const urls = new Set([...baselineByUrl.keys(), ...desiredByUrl.keys()])
   for (const url of urls) {
-    const baseline = baselineByUrl.get(url) ?? []
-    const desired = desiredByUrl.get(url) ?? []
-    if (baseline.length !== desired.length) return true
-    if (baseline.some((value, index) => value !== desired[index])) return true
+    const baseline = baselineByUrl.get(url)
+    const desired = desiredByUrl.get(url)
+    if (
+      (baseline?.readEnabled ?? false) !== (desired?.readEnabled ?? false) ||
+      (baseline?.publishEnabled ?? false) !==
+        (desired?.publishEnabled ?? false) ||
+      (baseline?.privateInboxEnabled ?? false) !==
+        (desired?.privateInboxEnabled ?? false)
+    )
+      return true
   }
   return false
 }
@@ -109,16 +118,42 @@ export function reconcileRelaySettingsDraftRows(input: {
         : nextRow.privateInboxEnabled,
     }
   })
-  const retainedLocalRows = input.localRows.filter((localRow) => {
-    if (nextUrls.has(localRow.url)) return false
-    if (localRow.candidate) return true
+  const retainedLocalRows = input.localRows.flatMap((localRow) => {
+    if (nextUrls.has(localRow.url)) return []
+    if (localRow.candidate) return [localRow]
     const previousControllerRow = previousByUrl.get(localRow.url)
-    if (!previousControllerRow) return false
-    return (
-      relayRoleWasEdited(localRow, previousControllerRow, "readEnabled") ||
-      relayRoleWasEdited(localRow, previousControllerRow, "publishEnabled") ||
-      relayRoleWasEdited(localRow, previousControllerRow, "privateInboxEnabled")
+    if (!previousControllerRow) return []
+    const retainedRow: AccountNetworkRelayRowView = {
+      ...localRow,
+      readEnabled: relayRoleWasEdited(
+        localRow,
+        previousControllerRow,
+        "readEnabled"
+      )
+        ? localRow.readEnabled
+        : false,
+      publishEnabled: relayRoleWasEdited(
+        localRow,
+        previousControllerRow,
+        "publishEnabled"
+      )
+        ? localRow.publishEnabled
+        : false,
+      privateInboxEnabled: relayRoleWasEdited(
+        localRow,
+        previousControllerRow,
+        "privateInboxEnabled"
+      )
+        ? localRow.privateInboxEnabled
+        : false,
+    }
+    if (
+      !retainedRow.readEnabled &&
+      !retainedRow.publishEnabled &&
+      !retainedRow.privateInboxEnabled
     )
+      return []
+    return [retainedRow]
   })
 
   return orderAccountNetworkRelayRows(
@@ -133,13 +168,5 @@ export function hasUnpublishedRelayRoleChanges(
 ): boolean {
   const baselineRoles = baselineRolesFromRows(controllerRows)
   const desiredRoles = desiredRolesFromRows(localRows)
-  return (
-    rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-      roles.readEnabled,
-      roles.publishEnabled,
-    ]) ||
-    rolesDiffer(baselineRoles, desiredRoles, (roles) => [
-      roles.privateInboxEnabled,
-    ])
-  )
+  return rolesDiffer(baselineRoles, desiredRoles)
 }

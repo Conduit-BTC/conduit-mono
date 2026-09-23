@@ -144,7 +144,9 @@ describe("critical signer recovery flows", () => {
     expect(ordersReconnect).not.toContain("retryPayment")
     expect(ordersReconnect).not.toContain("runOrderPayment")
     expect(ordersReconnect).not.toContain("replyMutation")
-    expect(orders).toContain('{ mode: "observe_only" }')
+    expect(orders).toMatch(
+      /mode:\s*identity\s*\|\|\s*signerConnected\s*\?\s*"observe_and_deliver"\s*:\s*"observe_only"/
+    )
   })
 
   it("rebuilds Orders payment authority only after explicit confirmation", async () => {
@@ -166,11 +168,12 @@ describe("critical signer recovery flows", () => {
       orders.indexOf("async function continuePrivateFallback")
     )
     expect(confirm.indexOf("await verifyRetryFreshness()")).toBeLessThan(
-      confirm.indexOf("await persistTargetAndBuildServiceCtx()")
+      confirm.indexOf("const ctx = buildServiceCtx()")
     )
-    expect(
-      confirm.indexOf("await persistTargetAndBuildServiceCtx()")
-    ).toBeLessThan(confirm.indexOf("await runRetryPayment(ctx, pending)"))
+    expect(confirm).not.toContain("persistTargetAndBuildServiceCtx")
+    expect(confirm.indexOf("const ctx = buildServiceCtx()")).toBeLessThan(
+      confirm.indexOf("await runRetryPayment(ctx, pending)")
+    )
     expect(confirm.indexOf("await runRetryPayment(ctx, pending)")).toBeLessThan(
       confirm.indexOf("setPaymentAddressUpdate")
     )

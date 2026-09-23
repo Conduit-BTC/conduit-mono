@@ -1042,7 +1042,12 @@ function OrderDetail({
       )
     }
     await verifyRetryFreshness()
-    const ctx = await persistTargetAndBuildServiceCtx()
+    const ctx = buildServiceCtx()
+    if (!ctx) {
+      throw new Error(
+        "Payment details are unavailable. Refresh before retrying."
+      )
+    }
     await runRetryPayment(ctx, pending)
     setPaymentAddressUpdate((current) => (current === pending ? null : current))
   }
@@ -2182,7 +2187,9 @@ function OrdersPage() {
       for (const lifecycle of lifecycles) {
         if (!canObserveOrderPublicZapReceipt(lifecycle)) continue
         const identity =
-          guestIdentity?.orderId === lifecycle.orderId
+          guestIdentity?.orderId === lifecycle.orderId &&
+          guestIdentity.pubkey === lifecycle.buyerPubkey &&
+          guestIdentity.merchantPubkey === lifecycle.merchantPubkey
             ? guestIdentity
             : undefined
         void observeOrderPublicZapReceipt(
@@ -2194,7 +2201,12 @@ function OrdersPage() {
           identity
             ? undefined
             : () => authGenerationRef.current === authGeneration,
-          { mode: "observe_only" }
+          {
+            mode:
+              identity || signerConnected
+                ? "observe_and_deliver"
+                : "observe_only",
+          }
         )
       }
     }

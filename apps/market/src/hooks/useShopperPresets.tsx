@@ -131,11 +131,23 @@ export async function fetchShopperPresetsForSession(
 }
 
 export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
-  const { accountPubkey, authGeneration, signerReadiness } = useAuth()
+  const {
+    accountPubkey,
+    authGeneration,
+    capabilities,
+    pubkey,
+    signer,
+    status,
+  } = useAuth()
   const { identityReady, relayScope, relaySettingsReady } = useConduitSession()
   const queryClient = useQueryClient()
   const identityPubkey = accountPubkey
-  const signerReady = signerReadiness === "ready"
+  const signerReady =
+    status === "connected" &&
+    !!accountPubkey &&
+    pubkey === accountPubkey &&
+    !!signer &&
+    capabilities.signEvent
   const signerAuthority = useMemo(
     () => ({ authGeneration, identityPubkey, signerReady }),
     [authGeneration, identityPubkey, signerReady]

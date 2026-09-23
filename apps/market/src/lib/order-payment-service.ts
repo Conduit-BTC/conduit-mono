@@ -376,6 +376,7 @@ export interface OrderReceiptObservationDependencies {
   recordObservedOrderPaymentReceipt: typeof recordObservedOrderPaymentReceipt
   recordOrderPaymentReceiptTimeout: typeof recordOrderPaymentReceiptTimeout
   savePaymentAttempt: typeof savePaymentAttempt
+  deliverReceiptLinkedProof: typeof deliverReceiptLinkedProof
 }
 
 export interface OrderReceiptObservationOptions {
@@ -389,6 +390,7 @@ const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDepende
     recordObservedOrderPaymentReceipt,
     recordOrderPaymentReceiptTimeout,
     savePaymentAttempt,
+    deliverReceiptLinkedProof,
   }
 
 function requirePreparedAnonZap(
@@ -889,7 +891,7 @@ export async function observeOrderPublicZapReceipt(
 
     if (lifecycle.zapReceiptStatus === "observed" && lifecycle.zapReceiptId) {
       if (options.mode === "observe_only") return
-      await deliverReceiptLinkedProof(
+      await dependencies.deliverReceiptLinkedProof(
         lifecycle as typeof lifecycle & {
           invoice: string
           zapRequestId: string
@@ -984,7 +986,7 @@ export async function observeOrderPublicZapReceipt(
           !hasPublicReceiptContext(updated)
         )
           return
-        await deliverReceiptLinkedProof(
+        await dependencies.deliverReceiptLinkedProof(
           updated as typeof updated & {
             zapReceiptId: string
           },
