@@ -65,6 +65,31 @@ export function requiresCheckoutOrderRecovery(input: {
   )
 }
 
+export function hasCheckoutPaymentProgress(input: {
+  paymentStatus: string
+  invoiceStatus: string
+}): boolean {
+  return !(
+    input.paymentStatus === "not_started" &&
+    input.invoiceStatus === "not_requested"
+  )
+}
+
+export function requiresAcceptedOrderPaymentContinuation(input: {
+  orderDeliveryStatus: string
+  checkoutRecoveryPending?: boolean
+  checkoutMode: string
+  paymentStatus: string
+  invoiceStatus: string
+}): boolean {
+  return (
+    input.orderDeliveryStatus === "sent" &&
+    input.checkoutRecoveryPending === true &&
+    input.checkoutMode !== "pay_later" &&
+    !hasCheckoutPaymentProgress(input)
+  )
+}
+
 function getLocalStorage(): StorageLike | null {
   if (typeof window === "undefined") return null
   try {

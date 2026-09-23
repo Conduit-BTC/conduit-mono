@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   doesCartMatchOrderAttempt,
   forgetCheckoutOrderAttempt,
+  hasCheckoutPaymentProgress,
   listCheckoutOrderAttemptIds,
   rememberCheckoutOrderAttempt,
   requiresCheckoutOrderRecovery,
@@ -75,6 +76,27 @@ describe("checkout order attempt locator", () => {
         checkoutRecoveryPending: true,
         hasAttemptLocator: true,
         hasGuestKey: false,
+      })
+    ).toBe(true)
+  })
+
+  it("retains pre-payment recovery until invoice or payment work advances", () => {
+    expect(
+      hasCheckoutPaymentProgress({
+        paymentStatus: "not_started",
+        invoiceStatus: "not_requested",
+      })
+    ).toBe(false)
+    expect(
+      hasCheckoutPaymentProgress({
+        paymentStatus: "not_started",
+        invoiceStatus: "requesting",
+      })
+    ).toBe(true)
+    expect(
+      hasCheckoutPaymentProgress({
+        paymentStatus: "manual_required",
+        invoiceStatus: "manual_required",
       })
     ).toBe(true)
   })
