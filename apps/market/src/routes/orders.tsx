@@ -2187,7 +2187,9 @@ function OrdersPage() {
       for (const lifecycle of lifecycles) {
         if (!canObserveOrderPublicZapReceipt(lifecycle)) continue
         const identity =
-          guestIdentity?.orderId === lifecycle.orderId
+          guestIdentity?.orderId === lifecycle.orderId &&
+          guestIdentity.pubkey === lifecycle.buyerPubkey &&
+          guestIdentity.merchantPubkey === lifecycle.merchantPubkey
             ? guestIdentity
             : undefined
         void observeOrderPublicZapReceipt(
@@ -2200,7 +2202,10 @@ function OrdersPage() {
             ? undefined
             : () => authGenerationRef.current === authGeneration,
           {
-            mode: signerConnected ? "observe_and_deliver" : "observe_only",
+            mode:
+              identity || signerConnected
+                ? "observe_and_deliver"
+                : "observe_only",
           }
         )
       }
