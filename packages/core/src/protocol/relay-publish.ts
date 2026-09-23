@@ -1029,8 +1029,10 @@ export async function publishWithPlannerProgressive(
       attemptedRelayUrls.add(relayUrl)
       const attempt = (attemptCounts.get(relayUrl) ?? 0) + 1
       attemptCounts.set(relayUrl, attempt)
+      // Once the foreground milestone has resolved, a later relay challenge
+      // must not trigger an account-signer prompt in the background.
       const authorization: ExactRelayWriteAuthorization | undefined =
-        input.relayAuthentication
+        input.relayAuthentication && !hasAccepted
           ? {
               expectedPubkey: input.relayAuthentication.expectedPubkey,
               signer: input.relayAuthentication.signer,

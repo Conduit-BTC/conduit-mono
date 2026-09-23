@@ -11,7 +11,10 @@ import {
   deriveOrderLifecyclePhase,
 } from "./order-lifecycle"
 import { publishSignedEventToRelay } from "./relay-publish"
-import { isApprovedCompatibilityOrderRelayPlan } from "./private-message-routing"
+import {
+  isApprovedCompatibilityOrderRelayPlan,
+  MAX_DECLARED_INBOX_WRITE_RELAYS,
+} from "./private-message-routing"
 import {
   normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
@@ -244,6 +247,38 @@ function hasValidOrderRelayRoutingAuthority(
   delivery: NonNullable<OrderLifecycle["orderRelayDelivery"]>,
   merchantPubkey: string
 ): boolean {
+  // Records staged before routingAuthority and compatibilityPlan were stored
+  // retain only their original exact relay list. Accept that historical shape
+  // for bounded retry, never as authority to discover or add a new target.
+  if (
+    delivery.routingAuthority === undefined &&
+    delivery.compatibilityPlan === undefined
+  ) {
+    const relayUrls = delivery.relayDelivery.map(({ relayUrl }) => relayUrl)
+    const recipients = delivery.signedRecipientWrap.tags.filter(
+      (tag) => tag[0] === "p" && typeof tag[1] === "string"
+    )
+    return (
+      isValidSignedPublicNostrEvent(delivery.signedRecipientWrap) &&
+      delivery.signedRecipientWrap.kind === EVENT_KINDS.GIFT_WRAP &&
+      recipients.length === 1 &&
+      recipients[0]![1]!.trim().toLowerCase() ===
+        merchantPubkey.trim().toLowerCase() &&
+      relayUrls.length > 0 &&
+      relayUrls.length <= MAX_DECLARED_INBOX_WRITE_RELAYS &&
+      new Set(relayUrls).size === relayUrls.length &&
+      sameValue(normalizeSecureOrIsolatedE2eRelayUrls(relayUrls), relayUrls) &&
+      (delivery.route === "declared_inbox"
+        ? delivery.relayDelivery.every(({ source }) => source === "declared")
+        : delivery.route === "compatibility_order" &&
+          isApprovedCompatibilityOrderRelayPlan(relayUrls) &&
+          delivery.relayDelivery.every(
+            ({ source }) =>
+              source === "recipient_nip65" ||
+              source === "compatibility_registry"
+          ))
+    )
+  }
   if (delivery.route === "compatibility_order") {
     const relayUrls = delivery.relayDelivery.map(({ relayUrl }) => relayUrl)
     return (

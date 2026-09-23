@@ -6,6 +6,7 @@ import {
 } from "nostr-tools/pure"
 import {
   emptyAccountNetworkLocalState,
+  resumePendingOrderRelayDeliveries,
   retryOrderRelayDelivery,
   type OrderLifecycle,
   type OrderRelayDeliveryRepository,
@@ -124,6 +125,100 @@ function repository(initial: OrderLifecycle): {
 }
 
 describe("order relay delivery retry", () => {
+  it("resumes a base-schema record on only saved, currently eligible targets", async () => {
+    const eligibleRelay = "wss://eligible.conduit.market"
+    const excludedRelay = "wss://excluded.conduit.market"
+    const candidate = lifecycle()
+    const delivery = candidate.orderRelayDelivery!
+    delete delivery.rumorId
+    delete delivery.routingAuthority
+    delivery.relayDelivery = [
+      delivery.relayDelivery[0]!,
+      {
+        relayUrl: excludedRelay,
+        source: "declared",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+      {
+        relayUrl: eligibleRelay,
+        source: "declared",
+        status: "timed_out",
+        attemptCount: 1,
+      },
+    ]
+    const store = repository(candidate)
+    const attempts: string[] = []
+    const accountNetworkLocalStateRepository = {
+      get: async (pubkey: string) => ({
+        ...emptyAccountNetworkLocalState(pubkey),
+        exclusions: [
+          {
+            relayUrl: excludedRelay,
+            committedAt: 1,
+            relayListFrontier: { eventId: null, createdAt: null },
+            inboxDeclarationFrontier: { eventId: null, createdAt: null },
+          },
+        ],
+      }),
+    }
+
+    await resumePendingOrderRelayDeliveries(BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository,
+      leaseOwner: "legacy-worker",
+      now: () => 100,
+      publisher: async ({ relayUrl, signedEvent }) => {
+        attempts.push(relayUrl)
+        expect(signedEvent).toEqual(structuredClone(signedWrap))
+        return "acked"
+      },
+    })
+
+    expect(attempts).toEqual([eligibleRelay])
+    expect(store.read().orderRelayDelivery?.expiresAt).toBe(10_000)
+    expect(store.read().orderRelayDelivery?.relayDelivery).toMatchObject([
+      { status: "acked" },
+      { relayUrl: excludedRelay, status: "timed_out" },
+      { relayUrl: eligibleRelay, status: "acked" },
+    ])
+
+    const widened = structuredClone(candidate)
+    widened.orderRelayDelivery!.relayDelivery.push({
+      relayUrl: "wss://new-target.example",
+      source: "declared",
+      status: "timed_out",
+      attemptCount: 1,
+    })
+    const widenedStore = repository(widened)
+    await resumePendingOrderRelayDeliveries(BUYER, {
+      repository: widenedStore.repository,
+      accountNetworkLocalStateRepository,
+      leaseOwner: "widened-worker",
+      now: () => 100,
+      publisher: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        return "acked"
+      },
+    })
+    expect(attempts).toEqual([eligibleRelay])
+
+    const unsafe = structuredClone(candidate)
+    unsafe.orderRelayDelivery!.relayDelivery[2]!.relayUrl =
+      "wss://127.0.0.1:8080/inbox"
+    await resumePendingOrderRelayDeliveries(BUYER, {
+      repository: repository(unsafe).repository,
+      accountNetworkLocalStateRepository,
+      leaseOwner: "unsafe-legacy-worker",
+      now: () => 100,
+      publisher: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        return "acked"
+      },
+    })
+    expect(attempts).toEqual([eligibleRelay])
+  })
+
   it("replays the exact wrap only to non-ACKed targets and converges", async () => {
     const store = repository(lifecycle())
     const attempts: Array<{

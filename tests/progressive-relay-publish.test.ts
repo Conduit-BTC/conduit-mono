@@ -246,6 +246,59 @@ describe("progressive relay publishing", () => {
     expect(attempted).toEqual([FAST_RELAY])
   })
 
+  it("does not pass signer authorization to relays started after the first ACK", async () => {
+    const accountSecret = generateSecretKey()
+    const accountPubkey = getPublicKey(accountSecret)
+    const firstWrite = deferred<ExactRelayWriteStatus>()
+    const attempted: string[] = []
+    let signerCalls = 0
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async ({ relayUrl, authorization }) => {
+        attempted.push(relayUrl)
+        if (relayUrl === FAST_RELAY) return await firstWrite.promise
+        // A challenge on this later connection must have no signer capability.
+        expect(authorization).toBeUndefined()
+        return "rejected"
+      },
+    })
+
+    const milestones = await publishWithPlannerProgressive(giftWrapEvent(), {
+      intent: "recipient_event",
+      authorPubkey: accountPubkey,
+      authenticatedPubkey: accountPubkey,
+      accountPubkey,
+      accountNetworkLocalStateRepository: {
+        get: async () => undefined,
+      },
+      exclusiveRelayUrls: [FAST_RELAY, SLOW_RELAY],
+      independentRelayUrls: [FAST_RELAY, SLOW_RELAY],
+      deliveryMode: "critical",
+      relayAuthentication: {
+        expectedPubkey: accountPubkey,
+        sessionScope: {},
+        signer: {
+          authMethod: "nip07",
+          getPublicKey: async () => accountPubkey,
+          signEvent: async (event) => {
+            signerCalls += 1
+            return finalizeEvent(event, accountSecret)
+          },
+        },
+      },
+    })
+
+    firstWrite.resolve("acked")
+    await expect(milestones.accepted).resolves.toMatchObject({
+      successfulRelayUrls: [FAST_RELAY],
+    })
+    await expect(milestones.settled).resolves.toMatchObject({
+      attemptedRelayUrls: [FAST_RELAY, SLOW_RELAY],
+      rejectedRelayUrls: [SLOW_RELAY],
+    })
+    expect(attempted).toEqual([FAST_RELAY, SLOW_RELAY])
+    expect(signerCalls).toBe(0)
+  })
+
   it("fails closed when the signer session changes before network I/O", async () => {
     let attempts = 0
     __setRelayPublishTestOverrides({
