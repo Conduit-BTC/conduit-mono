@@ -63,10 +63,10 @@ describe("app account-network read propagation", () => {
       )?.length
     ).toBeGreaterThanOrEqual(5)
     expect(orders).toMatch(
-      /const shouldContinueBuyerSession = guestIdentity\s+\? undefined\s+: \(\) => isAuthGenerationCurrent\(authGeneration\)/
+      /const shouldContinueBuyerSession = \(\) =>\s+guestIdentity\s+\? isGuestGenerationCurrent\(authGeneration\)\s+: isAuthGenerationCurrent\(authGeneration\)/
     )
     expect(checkout).toMatch(
-      /const shouldContinueBuyerSession = signedBuyerPubkey\s+\? \(\) => isAuthGenerationCurrent\(authGeneration\)/
+      /const shouldContinueBuyerSession = \(\) =>\s+signedBuyerPubkey\s+\? isAuthGenerationCurrent\(authGeneration\)\s+: isGuestGenerationCurrent\(authGeneration\)/
     )
     expect(orders).toContain(
       "async function continuePrivateFallback(): Promise<void> {\n    await verifyRetryFreshness()"

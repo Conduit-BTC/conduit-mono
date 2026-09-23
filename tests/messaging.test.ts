@@ -4,7 +4,12 @@ import {
   NDKPrivateKeySigner,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
-import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getEventHash,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   __resetInboxRelayCache,
   applyAccountNetworkRelayExclusion,
@@ -35,6 +40,7 @@ import {
   type GiftUnwrapFn,
   type InboxDeclarationEvidenceRepository,
   type OwnPrivateMessageRelayReadiness,
+  type ProgressivePublishSnapshot,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 
@@ -105,6 +111,33 @@ function orderRumor(overrides: Partial<NDKEvent> = {}): NDKEvent {
     ],
     content: JSON.stringify({ note: "Order update" }),
     ...overrides,
+  })
+}
+
+function initialOrderRumor(): NDKEvent {
+  return orderRumor({
+    tags: [
+      ["p", "recipient"],
+      ["type", "order"],
+      ["order", "order-id"],
+    ],
+    content: JSON.stringify({
+      id: "order-id",
+      merchantPubkey: "recipient",
+      buyerPubkey: "sender",
+      buyerIdentityKind: "signed_in",
+      items: [
+        {
+          productId: "product-id",
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1,
+      currency: "SATS",
+      createdAt: 1_000_000,
+    }),
   })
 }
 
@@ -557,6 +590,377 @@ describe("decryptLegacyDirectMessage", () => {
 })
 
 describe("publishPrivateMessage", () => {
+  function progressiveSnapshot(input: {
+    successful?: string[]
+    pending?: string[]
+    rejected?: string[]
+    timedOut?: string[]
+  }): ProgressivePublishSnapshot {
+    const successfulRelayUrls = input.successful ?? []
+    const pendingRelayUrls = input.pending ?? []
+    const rejectedRelayUrls = input.rejected ?? []
+    const timedOutRelayUrls = input.timedOut ?? []
+    const attemptedRelayUrls = [
+      ...successfulRelayUrls,
+      ...pendingRelayUrls,
+      ...rejectedRelayUrls,
+      ...timedOutRelayUrls,
+    ]
+    return {
+      plan: {
+        intent: "recipient_event",
+        primaryRelayUrls: attemptedRelayUrls,
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      },
+      attemptedRelayUrls,
+      successfulRelayUrls,
+      failedRelayUrls: [...rejectedRelayUrls, ...timedOutRelayUrls],
+      relayFailureMessages: Object.fromEntries([
+        ...rejectedRelayUrls.map((relayUrl) => [relayUrl, "blocked: test"]),
+        ...timedOutRelayUrls.map((relayUrl) => [
+          relayUrl,
+          "No acknowledgement before timeout",
+        ]),
+      ]),
+      pendingRelayUrls,
+      rejectedRelayUrls,
+      timedOutRelayUrls,
+    }
+  }
+
+  function signedOrderDeliveryFixture(relayUrls: string[], initial = true) {
+    __resetInboxRelayCache()
+    const senderPubkey = getPublicKey(generateSecretKey())
+    const recipientSecret = generateSecretKey()
+    const recipientPubkey = getPublicKey(recipientSecret)
+    const declaration = signedInboxDeclaration(recipientSecret, relayUrls)
+    const observedAt = Date.now()
+    mergeInboxDeclarationEvidenceInMemory({
+      pubkey: recipientPubkey,
+      signedEvent: declaration,
+      sourceRelayUrls: [SHARED_INBOX_RELAY],
+      sharedSourceRelayUrls: [SHARED_INBOX_RELAY],
+      observedAt,
+      completeObservedAt: observedAt,
+      lookup: {
+        observedAt,
+        coverage: "complete",
+        hadEvent: true,
+        eventId: declaration.id,
+      },
+    })
+    const order = initial ? initialOrderRumor() : orderRumor()
+    order.pubkey = senderPubkey
+    order.tags = order.tags.map((tag) =>
+      tag[0] === "p" ? ["p", recipientPubkey] : tag
+    )
+    if (initial) {
+      order.content = JSON.stringify({
+        ...JSON.parse(order.content),
+        merchantPubkey: recipientPubkey,
+        buyerPubkey: senderPubkey,
+      })
+    }
+    return {
+      rumor: order,
+      validatedOrderScope: createValidatedOrderRouteScope({
+        rumor: order,
+        orderId: "order-id",
+        senderPubkey,
+        recipientPubkey,
+      }),
+      senderPubkey,
+      recipientPubkey,
+      signer: {
+        user: async () => ({ pubkey: senderPubkey }),
+      } as unknown as NDKSigner,
+      recipientInboxRelays: undefined,
+    }
+  }
+
+  it("returns only after the first ACK is durable and settles remaining relays in background", async () => {
+    const firstRelay = "wss://first.inbox.conduit.market"
+    const slowRelay = "wss://slow.inbox.conduit.market"
+    const delivery = signedOrderDeliveryFixture([firstRelay, slowRelay])
+    let resolveAccepted!: (snapshot: ProgressivePublishSnapshot) => void
+    const accepted = new Promise<ProgressivePublishSnapshot>((resolve) => {
+      resolveAccepted = resolve
+    })
+    let resolveSettled!: (snapshot: ProgressivePublishSnapshot) => void
+    const settled = new Promise<ProgressivePublishSnapshot>((resolve) => {
+      resolveSettled = resolve
+    })
+    let releaseAcceptedPersistence!: () => void
+    const acceptedPersistence = new Promise<void>((resolve) => {
+      releaseAcceptedPersistence = resolve
+    })
+    let markAcceptedPersistenceStarted!: () => void
+    const acceptedPersistenceStarted = new Promise<void>((resolve) => {
+      markAcceptedPersistenceStarted = resolve
+    })
+    let markProgressiveStarted!: () => void
+    const progressiveStarted = new Promise<void>((resolve) => {
+      markProgressiveStarted = resolve
+    })
+    let markSettlementPersisted!: (snapshot: ProgressivePublishSnapshot) => void
+    const settlementPersisted = new Promise<ProgressivePublishSnapshot>(
+      (resolve) => {
+        markSettlementPersisted = resolve
+      }
+    )
+    const events: string[] = []
+    const signedRecipientWrap = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.GIFT_WRAP,
+          created_at: 1_700_000_000,
+          tags: [["p", delivery.recipientPubkey]],
+          content: "encrypted",
+        },
+        new Uint8Array(32).fill(21)
+      )
+    )
+    const publishing = publishPrivateMessage({
+      ...delivery,
+      rumorKind: EVENT_KINDS.ORDER,
+      recipientDeliveryBoundary: "accepted",
+      senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+      giftWrapFn: (async (_rumor, recipient) => {
+        events.push(`wrap:${recipient.pubkey}`)
+        return recipient.pubkey === delivery.recipientPubkey
+          ? signedRecipientWrap
+          : wrap(`wrap-${recipient.pubkey}`)
+      }) as never,
+      onRecipientPrepared: async () => {
+        events.push("prepared")
+      },
+      onRecipientPublishStarting: async () => {
+        events.push("started")
+      },
+      onRecipientPublishAccepted: async () => {
+        events.push("accepted:persisting")
+        markAcceptedPersistenceStarted()
+        await acceptedPersistence
+        events.push("accepted:persisted")
+      },
+      onRecipientPublishSettled: async (snapshot) => {
+        events.push("settled:persisted")
+        markSettlementPersisted(snapshot)
+      },
+      publishProgressiveFn: (async () => {
+        events.push("publish")
+        markProgressiveStarted()
+        return { accepted, settled }
+      }) as never,
+      publishFn: (async () => {
+        events.push("self:published")
+        return {
+          attemptedRelayUrls: ["wss://sender.inbox.conduit.market"],
+          successfulRelayUrls: ["wss://sender.inbox.conduit.market"],
+          failedRelayUrls: [],
+          relayFailureMessages: {},
+        } as never
+      }) as never,
+    })
+
+    await progressiveStarted
+    resolveAccepted(
+      progressiveSnapshot({ successful: [firstRelay], pending: [slowRelay] })
+    )
+    await acceptedPersistenceStarted
+    let foregroundSettled = false
+    void publishing.then(() => {
+      foregroundSettled = true
+    })
+    expect(foregroundSettled).toBe(false)
+    expect(events).toEqual([
+      `wrap:${delivery.recipientPubkey}`,
+      "prepared",
+      "started",
+      "publish",
+      "accepted:persisting",
+    ])
+
+    releaseAcceptedPersistence()
+    const result = await publishing
+    expect(result.recipientDelivery.pendingRelayUrls).toEqual([slowRelay])
+    expect(result.orderRelayDelivery?.relayDelivery).toEqual([
+      expect.objectContaining({ relayUrl: firstRelay, status: "acked" }),
+      expect.objectContaining({ relayUrl: slowRelay, status: "pending" }),
+    ])
+    expect(events).not.toContain(`wrap:${delivery.senderPubkey}`)
+
+    const firstPostWork = result.startPostAcceptanceWork!()
+    const duplicatePostWork = result.startPostAcceptanceWork!()
+    expect(duplicatePostWork).toBe(firstPostWork)
+    expect((await firstPostWork).selfCopyError).toBeNull()
+    expect(
+      events.filter((event) => event === `wrap:${delivery.senderPubkey}`)
+    ).toHaveLength(1)
+    expect(events.filter((event) => event === "self:published")).toHaveLength(1)
+
+    resolveSettled(
+      progressiveSnapshot({
+        successful: [firstRelay],
+        timedOut: [slowRelay],
+      })
+    )
+    expect((await settlementPersisted).timedOutRelayUrls).toEqual([slowRelay])
+    expect(events).toContain("settled:persisted")
+  })
+
+  it("waits for terminal persistence before rejecting a zero-ACK initial order", async () => {
+    const relayUrl = "wss://merchant.inbox.conduit.market"
+    const delivery = signedOrderDeliveryFixture([relayUrl])
+    let rejectAccepted!: (error: unknown) => void
+    const accepted = new Promise<ProgressivePublishSnapshot>(
+      (_resolve, reject) => {
+        rejectAccepted = reject
+      }
+    )
+    let resolveSettled!: (snapshot: ProgressivePublishSnapshot) => void
+    const settled = new Promise<ProgressivePublishSnapshot>((resolve) => {
+      resolveSettled = resolve
+    })
+    let releaseTerminalPersistence!: () => void
+    const terminalPersistence = new Promise<void>((resolve) => {
+      releaseTerminalPersistence = resolve
+    })
+    let terminalPersisted = false
+    const publishing = publishPrivateMessage({
+      ...delivery,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientDeliveryBoundary: "accepted",
+      giftWrapFn: (async () => wrap("recipient-wrap")) as never,
+      onRecipientPrepared: async () => {},
+      onRecipientPublishStarting: async () => {},
+      onRecipientPublishAccepted: async () => {
+        throw new Error("unexpected ACK")
+      },
+      onRecipientPublishSettled: async () => {
+        await terminalPersistence
+        terminalPersisted = true
+      },
+      publishProgressiveFn: (async () => ({ accepted, settled })) as never,
+    })
+    const final = progressiveSnapshot({ timedOut: [relayUrl] })
+    const diagnosticsError = new RelayPublishDiagnosticsError(
+      "No relay acknowledged the event.",
+      final,
+      new Error("timeout")
+    )
+    resolveSettled(final)
+    rejectAccepted(diagnosticsError)
+
+    let rejected = false
+    void publishing.catch(() => {
+      rejected = true
+    })
+    await Promise.resolve()
+    expect(rejected).toBe(false)
+    releaseTerminalPersistence()
+    await expect(publishing).rejects.toBe(diagnosticsError)
+    expect(terminalPersisted).toBe(true)
+  })
+
+  it("does not run accepted-order self-copy after the signer session changes", async () => {
+    const delivery = signedOrderDeliveryFixture([
+      "wss://merchant.inbox.conduit.market",
+    ])
+    const snapshot = progressiveSnapshot({
+      successful: ["wss://merchant.inbox.conduit.market"],
+    })
+    let sessionCurrent = true
+    let selfWraps = 0
+    let selfPublishes = 0
+    const result = await publishPrivateMessage({
+      ...delivery,
+      rumorKind: EVENT_KINDS.ORDER,
+      recipientDeliveryBoundary: "accepted",
+      senderInboxRelays: ["wss://sender.inbox.conduit.market"],
+      shouldContinue: () => sessionCurrent,
+      giftWrapFn: (async (_rumor, recipient) => {
+        if (recipient.pubkey === delivery.senderPubkey) selfWraps += 1
+        return wrap(`wrap-${recipient.pubkey}`)
+      }) as never,
+      onRecipientPrepared: async () => {},
+      onRecipientPublishStarting: async () => {},
+      onRecipientPublishAccepted: async () => {},
+      onRecipientPublishSettled: async () => {},
+      publishProgressiveFn: (async () => ({
+        accepted: Promise.resolve(snapshot),
+        settled: Promise.resolve(snapshot),
+      })) as never,
+      publishFn: (async () => {
+        selfPublishes += 1
+        return {} as never
+      }) as never,
+    })
+
+    sessionCurrent = false
+    const postWork = await result.startPostAcceptanceWork!()
+    expect(postWork.selfCopyError).toContain("session changed")
+    expect(selfWraps).toBe(0)
+    expect(selfPublishes).toBe(0)
+  })
+
+  it("rejects the accepted boundary for non-initial order messages", async () => {
+    let progressivePublishes = 0
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        recipientDeliveryBoundary: "accepted",
+        recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
+        onRecipientPrepared: async () => {},
+        onRecipientPublishStarting: async () => {},
+        onRecipientPublishAccepted: async () => {},
+        onRecipientPublishSettled: async () => {},
+        publishProgressiveFn: (async () => {
+          progressivePublishes += 1
+          throw new Error("unexpected")
+        }) as never,
+      })
+    ).rejects.toThrow("durably staged initial order")
+    expect(progressivePublishes).toBe(0)
+  })
+
+  it("requires recipient staging to finish before any relay publish", async () => {
+    const steps: string[] = []
+    const delivery = signedOrderDeliveryFixture(
+      ["wss://recipient.inbox.conduit.market"],
+      false
+    )
+
+    await expect(
+      publishPrivateMessage({
+        ...delivery,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        giftWrapFn: (async () => {
+          steps.push("wrap")
+          return wrap("recipient-wrap")
+        }) as never,
+        onRecipientPrepared: async () => {
+          steps.push("stage")
+          throw new Error("persistence failed")
+        },
+        publishFn: (async () => {
+          steps.push("publish")
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow("persistence failed")
+
+    expect(steps).toEqual(["wrap", "stage"])
+  })
+
   it("rejects a rumor kind mismatch before wrapping or publishing", async () => {
     const mismatchedOrderRumor = orderRumor({
       content: JSON.stringify({ message: "Order declined" }),
@@ -1901,7 +2305,7 @@ describe("publishPrivateMessage", () => {
     expect(encryptCalls).toBe(0)
   })
 
-  it("records an explicit recipient relay rejection in the durable order retry state", async () => {
+  it("does not turn caller-supplied relay hints into durable retry authority", async () => {
     const recipientA = "wss://recipient-a.inbox.conduit.market"
     const recipientB = "wss://recipient-b.inbox.conduit.market"
     const wrapSigner = NDKPrivateKeySigner.generate()
@@ -1933,10 +2337,151 @@ describe("publishPrivateMessage", () => {
       })) as never,
     })
 
-    expect(result.orderRelayDelivery?.relayDelivery).toEqual([
-      expect.objectContaining({ relayUrl: recipientA, status: "acked" }),
-      expect.objectContaining({ relayUrl: recipientB, status: "rejected" }),
-    ])
+    expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(result.recipientDelivery.rejectedRelayUrls).toEqual([recipientB])
+    expect(result.orderRelayDelivery).toBeUndefined()
+  })
+
+  it("rejects recoverable delivery without validated signed inbox authority", async () => {
+    let preparedCalls = 0
+    let publishCalls = 0
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        onRecipientPrepared: async () => {
+          preparedCalls += 1
+        },
+        giftWrapFn: (async () => wrap("must-not-wrap")) as never,
+        publishFn: (async () => {
+          publishCalls += 1
+          return {}
+        }) as never,
+      })
+    ).rejects.toThrow("validated recipient relay plan")
+
+    expect(preparedCalls).toBe(0)
+    expect(publishCalls).toBe(0)
+  })
+
+  it("prepares signed declared authority before recipient relay I/O", async () => {
+    __resetInboxRelayCache()
+    const senderPubkey = getPublicKey(generateSecretKey())
+    const recipientSecret = generateSecretKey()
+    const recipientPubkey = getPublicKey(recipientSecret)
+    const relayUrl = "wss://durable-orders.conduit.market"
+    const observedAt = Date.now()
+    const declaration = signedInboxDeclaration(recipientSecret, [relayUrl], 200)
+    mergeInboxDeclarationEvidenceInMemory({
+      pubkey: recipientPubkey,
+      signedEvent: declaration,
+      sourceRelayUrls: [SHARED_INBOX_RELAY],
+      sharedSourceRelayUrls: [SHARED_INBOX_RELAY],
+      observedAt,
+      completeObservedAt: observedAt,
+      lookup: {
+        observedAt,
+        coverage: "complete",
+        hadEvent: true,
+        eventId: declaration.id,
+      },
+    })
+    const order = new NDKEvent()
+    order.kind = EVENT_KINDS.ORDER
+    order.pubkey = senderPubkey
+    order.created_at = 200
+    order.tags = [
+      ["p", recipientPubkey],
+      ["type", "order"],
+      ["order", "staged-order"],
+    ]
+    order.content = JSON.stringify({
+      id: "staged-order",
+      merchantPubkey: recipientPubkey,
+      buyerPubkey: senderPubkey,
+      buyerIdentityKind: "signed_in",
+      items: [
+        {
+          productId: "product-id",
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1,
+      currency: "SATS",
+      createdAt: 200_000,
+    })
+    order.id = order.getEventHash()
+    const sequence: string[] = []
+    const wrapSigner = NDKPrivateKeySigner.generate()
+
+    try {
+      const result = await publishPrivateMessage({
+        rumor: order,
+        validatedOrderScope: createValidatedOrderRouteScope({
+          rumor: order,
+          orderId: "staged-order",
+          senderPubkey,
+          recipientPubkey,
+        }),
+        senderPubkey,
+        recipientPubkey,
+        signer: {
+          user: async () => ({ pubkey: senderPubkey }),
+        } as unknown as NDKSigner,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        giftWrapFn: (async () => {
+          const wrapped = new NDKEvent()
+          wrapped.kind = EVENT_KINDS.GIFT_WRAP
+          wrapped.created_at = 200
+          wrapped.tags = [["p", recipientPubkey]]
+          wrapped.content = "encrypted staged order"
+          await wrapped.sign(wrapSigner)
+          return wrapped
+        }) as never,
+        onRecipientPrepared: async (prepared) => {
+          sequence.push("prepared")
+          expect(prepared.routingAuthority).toEqual({
+            eventId: declaration.id,
+            eventCreatedAt: declaration.created_at,
+            pubkey: recipientPubkey,
+            kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+            relayUrls: [relayUrl],
+          })
+          expect(prepared.relayPlan).toEqual([{ relayUrl, source: "declared" }])
+        },
+        onRecipientPublishStarting: async () => {
+          sequence.push("starting")
+        },
+        onRecipientPublishSettled: async () => {
+          sequence.push("settled")
+        },
+        publishFn: (async () => {
+          sequence.push("publish")
+          return {
+            attemptedRelayUrls: [relayUrl],
+            successfulRelayUrls: [relayUrl],
+            failedRelayUrls: [],
+            rejectedRelayUrls: [],
+          }
+        }) as never,
+      })
+
+      expect(sequence).toEqual(["prepared", "starting", "publish", "settled"])
+      expect(result.orderRelayDelivery?.routingAuthority?.eventId).toBe(
+        declaration.id
+      )
+    } finally {
+      __resetInboxRelayCache()
+    }
   })
 
   it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
@@ -2271,6 +2816,90 @@ describe("publishPrivateMessage", () => {
         blockReason: "not_applicable",
       },
     ])
+  })
+
+  it("retains the approved compatibility plan and non-ACK outcome for exact retry", async () => {
+    const approvedRelays = [
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+    ] as const
+    const wrapped = new NDKEvent()
+    wrapped.kind = EVENT_KINDS.GIFT_WRAP
+    wrapped.created_at = 100
+    wrapped.tags = [["p", "recipient"]]
+    wrapped.content = "encrypted test fixture"
+    await wrapped.sign(NDKPrivateKeySigner.generate())
+    let preparedRelayUrls: string[] = []
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [],
+      compatibilityOrderRoute: { enabled: true },
+      resolveCompatibilityRecipientReadRelays: async () => approvedRelays,
+      onRecipientPrepared: async (prepared) => {
+        preparedRelayUrls = prepared.relayPlan.map(({ relayUrl }) => relayUrl)
+        expect(prepared.compatibilityPlan?.relayUrls).toEqual(approvedRelays)
+        expect(prepared.routingAuthority).toBeUndefined()
+      },
+      giftWrapFn: (async () => wrapped) as never,
+      publishFn: (async () => ({
+        successfulRelayUrls: [approvedRelays[0]],
+        failedRelayUrls: [approvedRelays[1]],
+        relayFailureMessages: {
+          [approvedRelays[1]]: "No acknowledgement before timeout",
+        },
+      })) as never,
+    })
+
+    expect(preparedRelayUrls).toEqual(approvedRelays)
+    expect(result.deliveryStatus).toBe("partial_success")
+    expect(result.orderRelayDelivery).toMatchObject({
+      route: "compatibility_order",
+      compatibilityPlan: { relayUrls: approvedRelays },
+      relayDelivery: [
+        { relayUrl: approvedRelays[0], status: "acked" },
+        {
+          relayUrl: approvedRelays[1],
+          source: "recipient_nip65",
+          status: "timed_out",
+        },
+      ],
+    })
+    expect(result.orderRelayDelivery?.routingAuthority).toBeUndefined()
+  })
+
+  it("does not stage caller-supplied compatibility relays outside the registry", async () => {
+    let writes = 0
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://caller-hint.example"],
+        },
+        resolveCompatibilityRecipientReadRelays: async () => [],
+        onRecipientPrepared: async () => {
+          throw new Error("Unapproved plan was prepared")
+        },
+        giftWrapFn: (async () => wrap("unapproved-wrap")) as never,
+        publishFn: (async () => {
+          writes += 1
+          return {}
+        }) as never,
+      })
+    ).rejects.toThrow("validated recipient relay plan")
+    expect(writes).toBe(0)
   })
 
   it("fails explicitly when every compatibility relay fails", async () => {

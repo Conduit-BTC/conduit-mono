@@ -75,6 +75,8 @@ export interface AuthContextValue {
   authGeneration: number
   /** Check provider-owned authority even after the calling route unmounts. */
   isAuthGenerationCurrent: (generation: number) => boolean
+  /** Check that an anonymous checkout has not acquired or switched accounts. */
+  isGuestGenerationCurrent: (generation: number) => boolean
   method: AuthMethod | null
   rememberedMethod: AuthMethod | null
   status: AuthStatus
@@ -591,6 +593,15 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     active: !!initialSessionRef.current,
     owner: initialSessionRef.current?.userPubkey ?? null,
   })
+  const isGuestGenerationCurrent = useCallback(
+    (generation: number) =>
+      authEpoch.current === generation &&
+      !connected.current &&
+      activeSession.current === null &&
+      recoverySession.current === null &&
+      readAuthSession() === null,
+    []
+  )
 
   const updateRemoteSignerRecovery = useCallback(
     (
@@ -1545,8 +1556,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       const idle = connection.signer.whenIdle()
       setRemoteSignerState("verifying")
       setCapabilities(NO_SIGNER_CAPABILITIES)
-      let deferred: Promise<void>
-      deferred = idle
+      const deferred: Promise<void> = idle
         .catch(() => undefined)
         .finally(() => {
           if (resumeVerification.current !== deferred) return
@@ -1849,6 +1859,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         signer,
         authGeneration,
         isAuthGenerationCurrent,
+        isGuestGenerationCurrent,
         method,
         rememberedMethod,
         status,

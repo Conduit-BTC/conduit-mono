@@ -739,10 +739,27 @@ export interface OrderRelayDelivery {
   source: "declared" | "recipient_nip65" | "compatibility_registry"
   status: OrderRelayDeliveryStatus
   attemptCount: number
+  /** Monotonic attempt fence for late relay outcomes. */
+  attemptGeneration?: number
   lastAttemptAt?: number
   acknowledgedAt?: number
   rejectedAt?: number
   timedOutAt?: number
+}
+
+export interface OrderRelayRoutingAuthority {
+  /** Validated merchant-authored kind:10050 event used for this plan. */
+  eventId: string
+  eventCreatedAt: number
+  pubkey: string
+  kind: 10_050
+  /** Exact secure relay projection authorized by the signed declaration. */
+  relayUrls: string[]
+}
+
+export interface OrderRelayCompatibilityPlan {
+  /** Exact validated-order targets selected from the approved registry. */
+  relayUrls: string[]
 }
 
 /**
@@ -751,10 +768,18 @@ export interface OrderRelayDelivery {
  * plaintext, signer material, or relay failure strings.
  */
 export interface OrderRelayDeliveryRecord {
+  /** Stable id of the plaintext rumor before it was gift-wrapped. */
+  rumorId?: string
   signedRecipientWrap: SignedPublicNostrEvent
   route: OrderDeliveryRoute
+  /** Signed kind:10050 authority for declared-inbox retries. */
+  routingAuthority?: OrderRelayRoutingAuthority
+  /** Exact bounded compatibility plan; never expanded by retry discovery. */
+  compatibilityPlan?: OrderRelayCompatibilityPlan
   relayDelivery: OrderRelayDelivery[]
   deliveryAttemptCount: number
+  /** Monotonic batch fence for late timeout and rejection outcomes. */
+  deliveryAttemptGeneration?: number
   retryCount: number
   nextRetryAt?: number
   deliveryLeaseOwner?: string
@@ -905,6 +930,8 @@ export interface OrderLifecycle {
   orderDeliveryRoute?: OrderDeliveryRoute
   /** Exact encrypted wrap + per-relay ACK state for bounded retry. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
+  /** Checkout must recover this exact staged order before another submit. */
+  checkoutRecoveryPending?: boolean
   /**
    * Opaque owner token for the currently claimed payment flow. The token fences
    * pre-wallet lifecycle writes so a resumed stale flow cannot cross the wallet
