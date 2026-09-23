@@ -1015,14 +1015,36 @@ export async function getPendingProductDeletionDeliveries(
 ): Promise<ProductDeletionDeliveryJob[]> {
   const timestamp = getNow(options)
   const jobs = await getRepository(options).listUndelivered()
-  return jobs
-    .filter(
-      (job) =>
-        !options.dueOnly ||
-        ((job.nextRetryAt === undefined || job.nextRetryAt <= timestamp) &&
-          (job.deliveryLeaseExpiresAt === undefined ||
-            job.deliveryLeaseExpiresAt <= timestamp))
-    )
+  const dueJobs = jobs.filter(
+    (job) =>
+      !options.dueOnly ||
+      ((job.nextRetryAt === undefined || job.nextRetryAt <= timestamp) &&
+        (job.deliveryLeaseExpiresAt === undefined ||
+          job.deliveryLeaseExpiresAt <= timestamp))
+  )
+  const actionableJobs = await Promise.all(
+    dueJobs.map(async (job) => {
+      if (!job.companionListingJobId) return job
+      let listing: ProductListingDeliveryJob | undefined
+      try {
+        listing = options.getCompanionListingJob
+          ? await options.getCompanionListingJob(job.companionListingJobId)
+          : await db.productListingOutbox.get(job.companionListingJobId)
+      } catch {
+        // A transient read must not starve unrelated jobs. The delivery gate
+        // rechecks this companion and still refuses an unsafe tombstone.
+        return job
+      }
+      // Keep the immutable tombstone for inspection, but a reciprocal
+      // replacement rejected by every relay cannot unblock this retry.
+      return listing?.companionDeletionJobId === job.id &&
+        listing.state === "failed"
+        ? null
+        : job
+    })
+  )
+  return actionableJobs
+    .filter((job): job is ProductDeletionDeliveryJob => job !== null)
     .sort(
       (left, right) =>
         left.createdAt - right.createdAt || left.id.localeCompare(right.id)

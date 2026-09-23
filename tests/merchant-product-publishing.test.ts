@@ -21,6 +21,7 @@ import {
   emptyAccountNetworkLocalState,
   EVENT_KINDS,
   getCachedMerchantStorefront,
+  getPendingProductDeletionDeliveries,
   parseProductEvent,
   persistProductListingDelivery,
   planProductDeletionRelays,
@@ -61,6 +62,7 @@ import {
   persistSignedProductDeletion,
   resumePendingProductDeletionDeliveries,
 } from "../apps/merchant/src/lib/product-deletion-delivery"
+import { buildProductDeliveryNotice } from "../apps/merchant/src/lib/product-delivery"
 import {
   deliverQueuedProductListings,
   ensureSignedProductListingsQueued,
@@ -1436,6 +1438,9 @@ describe("merchant product event delivery", () => {
 
     expect(initial.successfulRelayUrls).toEqual([])
     const rejectedListing = await listingRepository.get(listingJobId)
+    expect(buildProductDeliveryNotice("publish", initial).state).toBe(
+      "rejected"
+    )
     expect(rejectedListing?.state).toBe("failed")
     expect(rejectedListing?.relayDelivery).toHaveLength(2)
     expect(
@@ -1444,6 +1449,13 @@ describe("merchant product event delivery", () => {
       )
     ).toBe(true)
     expect(deletionAttempts).toBe(0)
+    expect((await deletionRepository.get(deletionJobId))?.state).toBe("pending")
+    expect(
+      await getPendingProductDeletionDeliveries({
+        repository: deletionRepository,
+        getCompanionListingJob: (jobId) => listingRepository.get(jobId),
+      })
+    ).toEqual([])
 
     const listingsAfterReload = new MemoryProductListingOutbox(listingStorage)
     const deletionsAfterReload = new MemoryProductDeletionOutbox(
@@ -1461,6 +1473,13 @@ describe("merchant product event delivery", () => {
         return { status: "acked" as const }
       },
     }
+    expect(await getPendingProductDeletionDeliveries(retryOptions)).toEqual([])
+    expect(
+      await getPendingProductDeletionDeliveries({
+        ...retryOptions,
+        dueOnly: true,
+      })
+    ).toEqual([])
     await deliverQueuedProductDeletion(deletionJobId, retryOptions)
     await resumePendingProductDeletionDeliveries(retryOptions)
 

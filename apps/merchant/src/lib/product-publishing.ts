@@ -1080,6 +1080,21 @@ export async function deliverSignedProductWriteBundle(
         expectedSignedEvents: rawListingEvents,
       })
     )
+    if (bundle.deletionDeliveryJobId) {
+      const listingJob = await getProductListingDelivery(
+        bundle.productListingDeliveryJobId,
+        deliveryOptions.productListingDeliveryOptions
+      )
+      if (
+        listingJob?.state === "failed" &&
+        listingJob.companionDeletionJobId === bundle.deletionDeliveryJobId
+      ) {
+        // The linked tombstone was not attempted and cannot be retried until a
+        // newly signed replacement family succeeds. Do not turn that gated
+        // job into a retryable failure in the combined publish notice.
+        return aggregateProductEventDeliveries(deliveries)
+      }
+    }
   }
   if (bundle.deletionDeliveryJobId) {
     deliveries.push(

@@ -235,6 +235,55 @@ describe("product deletion relay plan", () => {
 })
 
 describe("durable product deletion delivery", () => {
+  it("keeps unrelated retries moving when one companion listing read fails", async () => {
+    const repository = new MemoryProductDeletionOutbox()
+    const relayUrl = "wss://relay.conduit.market"
+    const linked = await persistProductDeletionDelivery(
+      {
+        signedEvent: signedDeletionEvent("a".repeat(64)),
+        currentWriteRelayUrls: [relayUrl],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: relayUrl,
+        companionListingJobId: "product-listing:unavailable",
+      },
+      { repository, now: () => NOW }
+    )
+    const unrelated = await persistProductDeletionDelivery(
+      {
+        signedEvent: signedDeletionEvent("b".repeat(64)),
+        currentWriteRelayUrls: [relayUrl],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: relayUrl,
+      },
+      { repository, now: () => NOW + 1 }
+    )
+    const options = withEligibleAccountRelays({
+      repository,
+      now: () => NOW + 2,
+      getCompanionListingJob: async () => {
+        throw new Error("temporary listing storage failure")
+      },
+    })
+
+    expect(
+      (await getPendingProductDeletionDeliveries(options)).map(({ id }) => id)
+    ).toEqual([linked.id, unrelated.id])
+    expect(
+      (
+        await getPendingProductDeletionDeliveries({ ...options, dueOnly: true })
+      ).map(({ id }) => id)
+    ).toEqual([linked.id, unrelated.id])
+
+    const attempted: string[] = []
+    await deliverPendingProductDeletions(async ({ signedEvent }) => {
+      attempted.push(signedEvent.id)
+      return { status: "acked" }
+    }, options)
+    expect(attempted).toEqual([unrelated.id])
+    expect((await repository.get(linked.id))?.state).toBe("pending")
+    expect((await repository.get(unrelated.id))?.state).toBe("delivered")
+  })
+
   it("admits an owner-selected ws target without admitting remote ws provenance", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent()
