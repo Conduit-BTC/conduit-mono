@@ -1965,7 +1965,7 @@ describe("publishPrivateMessage", () => {
           return {}
         }) as never,
       })
-    ).rejects.toThrow("validated recipient kind:10050 declaration")
+    ).rejects.toThrow("validated recipient relay plan")
 
     expect(preparedCalls).toBe(0)
     expect(publishCalls).toBe(0)
@@ -2417,6 +2417,90 @@ describe("publishPrivateMessage", () => {
         blockReason: "not_applicable",
       },
     ])
+  })
+
+  it("retains the approved compatibility plan and non-ACK outcome for exact retry", async () => {
+    const approvedRelays = [
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+    ] as const
+    const wrapped = new NDKEvent()
+    wrapped.kind = EVENT_KINDS.GIFT_WRAP
+    wrapped.created_at = 100
+    wrapped.tags = [["p", "recipient"]]
+    wrapped.content = "encrypted test fixture"
+    await wrapped.sign(NDKPrivateKeySigner.generate())
+    let preparedRelayUrls: string[] = []
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [],
+      compatibilityOrderRoute: { enabled: true },
+      resolveCompatibilityRecipientReadRelays: async () => approvedRelays,
+      onRecipientPrepared: async (prepared) => {
+        preparedRelayUrls = prepared.relayPlan.map(({ relayUrl }) => relayUrl)
+        expect(prepared.compatibilityPlan?.relayUrls).toEqual(approvedRelays)
+        expect(prepared.routingAuthority).toBeUndefined()
+      },
+      giftWrapFn: (async () => wrapped) as never,
+      publishFn: (async () => ({
+        successfulRelayUrls: [approvedRelays[0]],
+        failedRelayUrls: [approvedRelays[1]],
+        relayFailureMessages: {
+          [approvedRelays[1]]: "No acknowledgement before timeout",
+        },
+      })) as never,
+    })
+
+    expect(preparedRelayUrls).toEqual(approvedRelays)
+    expect(result.deliveryStatus).toBe("partial_success")
+    expect(result.orderRelayDelivery).toMatchObject({
+      route: "compatibility_order",
+      compatibilityPlan: { relayUrls: approvedRelays },
+      relayDelivery: [
+        { relayUrl: approvedRelays[0], status: "acked" },
+        {
+          relayUrl: approvedRelays[1],
+          source: "recipient_nip65",
+          status: "timed_out",
+        },
+      ],
+    })
+    expect(result.orderRelayDelivery?.routingAuthority).toBeUndefined()
+  })
+
+  it("does not stage caller-supplied compatibility relays outside the registry", async () => {
+    let writes = 0
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://caller-hint.example"],
+        },
+        resolveCompatibilityRecipientReadRelays: async () => [],
+        onRecipientPrepared: async () => {
+          throw new Error("Unapproved plan was prepared")
+        },
+        giftWrapFn: (async () => wrap("unapproved-wrap")) as never,
+        publishFn: (async () => {
+          writes += 1
+          return {}
+        }) as never,
+      })
+    ).rejects.toThrow("validated recipient relay plan")
+    expect(writes).toBe(0)
   })
 
   it("fails explicitly when every compatibility relay fails", async () => {

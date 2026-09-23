@@ -476,7 +476,12 @@ export async function publishBuyerOrderMessage(
                   signedRecipientWrap:
                     prepared.wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
                   route: prepared.deliveryRoute,
-                  routingAuthority: prepared.routingAuthority,
+                  ...(prepared.routingAuthority
+                    ? { routingAuthority: prepared.routingAuthority }
+                    : {}),
+                  ...(prepared.compatibilityPlan
+                    ? { compatibilityPlan: prepared.compatibilityPlan }
+                    : {}),
                   relayPlan: prepared.relayPlan,
                 },
               },

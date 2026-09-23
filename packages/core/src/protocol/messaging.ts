@@ -10,6 +10,7 @@ import type {
   OrderDeliveryRoute,
   OrderRelayDeliveryRecord,
   OrderRelayDeliveryStatus,
+  OrderRelayCompatibilityPlan,
   OrderRelayRoutingAuthority,
 } from "../db"
 import {
@@ -40,6 +41,7 @@ import {
   publicRelayHintUrls,
   readRetainedInboxDeclaration,
   resolveInboxDeclaration,
+  isApprovedCompatibilityOrderRelayPlan,
   selectPrivateMessageDeliveryRoute,
   sharedInboxDiscoveryRelayUrls,
   type DeliveryRouteSelection,
@@ -894,11 +896,12 @@ export interface PreparedPrivateMessageWraps {
 export interface PreparedPrivateMessageRecipientDelivery {
   rumorId: string
   wrappedToRecipient: NDKEvent
-  deliveryRoute: Extract<OrderDeliveryRoute, "declared_inbox">
-  routingAuthority: OrderRelayRoutingAuthority
+  deliveryRoute: OrderDeliveryRoute
+  routingAuthority?: OrderRelayRoutingAuthority
+  compatibilityPlan?: OrderRelayCompatibilityPlan
   relayPlan: Array<{
     relayUrl: string
-    source: "declared"
+    source: "declared" | "recipient_nip65" | "compatibility_registry"
   }>
 }
 
@@ -1211,14 +1214,24 @@ export async function publishPrivateMessage(
       route: recipientRoute,
     }
   )
+  const recoverableCompatibilityPlan =
+    validatedOrder &&
+    recipientRoute.route === "compatibility_order" &&
+    isApprovedCompatibilityOrderRelayPlan(recipientRoute.relayUrls)
+      ? { relayUrls: [...recipientRoute.relayUrls] }
+      : null
   const recoverableDeliveryRequested = Boolean(
     input.onRecipientPrepared ||
     input.onRecipientPublishStarting ||
     input.onRecipientPublishSettled
   )
-  if (recoverableDeliveryRequested && !recoverableRoutingAuthority) {
+  if (
+    recoverableDeliveryRequested &&
+    !recoverableRoutingAuthority &&
+    !recoverableCompatibilityPlan
+  ) {
     throw new Error(
-      "Recoverable order delivery requires a validated recipient kind:10050 declaration."
+      "Recoverable order delivery requires a validated recipient relay plan."
     )
   }
 
@@ -1330,18 +1343,24 @@ export async function publishPrivateMessage(
     })
     throw error
   }
-  const preparedRecipientDelivery = recoverableRoutingAuthority
-    ? {
-        rumorId: input.rumor.id,
-        wrappedToRecipient,
-        deliveryRoute: "declared_inbox" as const,
-        routingAuthority: recoverableRoutingAuthority,
-        relayPlan: recipientRoute.relayUrls.map((relayUrl) => ({
-          relayUrl,
-          source: "declared" as const,
-        })),
-      }
-    : null
+  const preparedRecipientDelivery: PreparedPrivateMessageRecipientDelivery | null =
+    recoverableRoutingAuthority || recoverableCompatibilityPlan
+      ? {
+          rumorId: input.rumor.id,
+          wrappedToRecipient,
+          deliveryRoute: recipientRoute.route as OrderDeliveryRoute,
+          ...(recoverableRoutingAuthority
+            ? { routingAuthority: recoverableRoutingAuthority }
+            : {}),
+          ...(recoverableCompatibilityPlan
+            ? { compatibilityPlan: recoverableCompatibilityPlan }
+            : {}),
+          relayPlan: recipientRoute.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            source: recipientRoute.relaySources[relayUrl] ?? "declared",
+          })),
+        }
+      : null
   if (preparedRecipientDelivery) {
     await input.onRecipientPrepared?.(preparedRecipientDelivery)
   }
@@ -1481,6 +1500,7 @@ export async function publishPrivateMessage(
           recipientRoute,
           recipientDelivery,
           routingAuthority: recoverableRoutingAuthority,
+          compatibilityPlan: recoverableCompatibilityPlan,
         })
       : undefined
   const selfCopySessionChangedError =
@@ -1632,9 +1652,16 @@ function buildOrderRelayDeliveryRecord(input: {
   recipientRoute: DeliveryRouteSelection
   recipientDelivery: Awaited<ReturnType<typeof publishWithPlanner>>
   routingAuthority: OrderRelayRoutingAuthority | null
+  compatibilityPlan: OrderRelayCompatibilityPlan | null
 }): OrderRelayDeliveryRecord | undefined {
   const route = input.recipientRoute.route
-  if (route !== "declared_inbox" || !input.routingAuthority) return undefined
+  if (
+    (route === "declared_inbox" && !input.routingAuthority) ||
+    (route === "compatibility_order" && !input.compatibilityPlan) ||
+    (route !== "declared_inbox" && route !== "compatibility_order")
+  ) {
+    return undefined
+  }
   let signedRecipientWrap: SignedPublicNostrEvent
   try {
     signedRecipientWrap =
@@ -1677,8 +1704,13 @@ function buildOrderRelayDeliveryRecord(input: {
   return {
     rumorId: input.rumorId,
     signedRecipientWrap,
-    route: "declared_inbox",
-    routingAuthority: structuredClone(input.routingAuthority),
+    route,
+    ...(input.routingAuthority
+      ? { routingAuthority: structuredClone(input.routingAuthority) }
+      : {}),
+    ...(input.compatibilityPlan
+      ? { compatibilityPlan: structuredClone(input.compatibilityPlan) }
+      : {}),
     relayDelivery,
     deliveryAttemptCount: 1,
     retryCount: 0,

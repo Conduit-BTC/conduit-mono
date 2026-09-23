@@ -156,6 +156,84 @@ describe("order relay delivery retry", () => {
     expect(store.read().orderRelayDelivery?.nextRetryAt).toBeUndefined()
   })
 
+  it("replays a partial compatibility order only to its original approved target", async () => {
+    const relayUrls = ["wss://relay.conduit.market", "wss://relay.ditto.pub"]
+    const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
+    candidate.orderRelayDelivery = {
+      ...candidate.orderRelayDelivery!,
+      route: "compatibility_order",
+      routingAuthority: undefined,
+      compatibilityPlan: { relayUrls },
+      relayDelivery: [
+        {
+          relayUrl: relayUrls[0]!,
+          source: "compatibility_registry",
+          status: "acked",
+          attemptCount: 1,
+          acknowledgedAt: 1,
+        },
+        {
+          relayUrl: relayUrls[1]!,
+          source: "recipient_nip65",
+          status: "timed_out",
+          attemptCount: 1,
+          timedOutAt: 1,
+        },
+      ],
+    }
+    const store = repository(candidate)
+    const attempts: string[] = []
+
+    await retryOrderRelayDelivery("order-id", BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      leaseOwner: "compatibility-worker",
+      now: () => 100,
+      publisher: async (input) => {
+        attempts.push(input.relayUrl)
+        expect(input.signedEvent).toEqual(structuredClone(signedWrap))
+        expect(input.appRelayUrls).toEqual([relayUrls[1]])
+        expect(input.independentRelayUrls).toEqual([])
+        return "acked"
+      },
+    })
+
+    expect(attempts).toEqual([relayUrls[1]])
+    expect(store.read().orderRelayDelivery?.relayDelivery).toMatchObject([
+      { relayUrl: relayUrls[0], status: "acked", attemptCount: 1 },
+      { relayUrl: relayUrls[1], status: "acked", attemptCount: 2 },
+    ])
+
+    const widened = lifecycle({ orderDeliveryRoute: "compatibility_order" })
+    widened.orderRelayDelivery = {
+      ...candidate.orderRelayDelivery,
+      compatibilityPlan: {
+        relayUrls: [...relayUrls, "wss://arbitrary.example"],
+      },
+      relayDelivery: [
+        ...candidate.orderRelayDelivery.relayDelivery,
+        {
+          relayUrl: "wss://arbitrary.example",
+          source: "compatibility_registry",
+          status: "timed_out",
+          attemptCount: 1,
+        },
+      ],
+    }
+    const unsafeStore = repository(widened)
+    await retryOrderRelayDelivery("order-id", BUYER, {
+      repository: unsafeStore.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      leaseOwner: "unsafe-worker",
+      now: () => 100,
+      publisher: async ({ relayUrl }) => {
+        attempts.push(relayUrl)
+        return "acked"
+      },
+    })
+    expect(attempts).toEqual([relayUrls[1]])
+  })
+
   it("never lets a later timeout overwrite an existing ACK", async () => {
     const store = repository(lifecycle())
     await retryOrderRelayDelivery("order-id", BUYER, {
@@ -292,7 +370,7 @@ describe("order relay delivery retry", () => {
   })
 
   it("blocks App compatibility retries without suppressing declared inbox retries", async () => {
-    const relayUrl = "wss://shared-route.conduit.market"
+    const relayUrl = "wss://relay.conduit.market"
     const accountState = emptyAccountNetworkLocalState(BUYER, () => 1)
     accountState.routingPolicy = {
       ...accountState.routingPolicy,
@@ -314,6 +392,10 @@ describe("order relay delivery retry", () => {
                 ...candidate.orderRelayDelivery!.routingAuthority!,
                 relayUrls: [relayUrl],
               }
+            : undefined,
+        compatibilityPlan:
+          route === "compatibility_order"
+            ? { relayUrls: [relayUrl] }
             : undefined,
         relayDelivery: [
           {

@@ -8,6 +8,7 @@ import {
   beginOrderRelayDeliveryAttempt,
   OrderRelayDeliveryStageConflictError,
   recordOrderRelayDeliveryOutcomes,
+  resumePendingOrderRelayDeliveries,
   stageOrderRelayDelivery,
   type OrderLifecycle,
   type OrderRelayDeliveryRepository,
@@ -197,6 +198,134 @@ describe("durable order delivery staging", () => {
     ).rejects.toBeInstanceOf(OrderRelayDeliveryStageConflictError)
   })
 
+  it("stages only the approved bounded compatibility plan", async () => {
+    const relayUrls = ["wss://relay.conduit.market", "wss://relay.ditto.pub"]
+    const compatibility = prepared({
+      route: "compatibility_order",
+      routingAuthority: undefined,
+      compatibilityPlan: { relayUrls },
+      relayPlan: relayUrls.map((relayUrl) => ({
+        relayUrl,
+        source: "compatibility_registry",
+      })),
+    })
+    const store = memoryRepository()
+    const staged = await stageOrderRelayDelivery(
+      {
+        lifecycle: lifecycleInput(),
+        prepared: compatibility,
+        leaseOwner: "foreground",
+      },
+      { repository: store.repository, now: () => 100 }
+    )
+
+    expect(staged.lifecycle.orderDeliveryRoute).toBe("compatibility_order")
+    expect(staged.lifecycle.orderRelayDelivery).toMatchObject({
+      route: "compatibility_order",
+      compatibilityPlan: { relayUrls },
+      relayDelivery: [
+        { relayUrl: relayUrls[0], status: "pending" },
+        { relayUrl: relayUrls[1], status: "pending" },
+      ],
+    })
+    expect(
+      staged.lifecycle.orderRelayDelivery?.routingAuthority
+    ).toBeUndefined()
+
+    const begun = await beginOrderRelayDeliveryAttempt(
+      {
+        orderId: "order-id",
+        buyerPubkey: BUYER,
+        leaseOwner: "foreground",
+        relayUrls,
+      },
+      { repository: store.repository, now: () => 110 }
+    )
+    await recordOrderRelayDeliveryOutcomes(
+      {
+        orderId: "order-id",
+        buyerPubkey: BUYER,
+        leaseOwner: "foreground",
+        wrapId: begun.wrapId,
+        outcomes: [
+          {
+            relayUrl: relayUrls[0]!,
+            status: "acked",
+            generation: begun.generationsByRelay[relayUrls[0]!]!,
+          },
+          {
+            relayUrl: relayUrls[1]!,
+            status: "timed_out",
+            generation: begun.generationsByRelay[relayUrls[1]!]!,
+          },
+        ],
+        releaseLease: true,
+      },
+      { repository: store.repository, now: () => 120 }
+    )
+    expect(store.read()?.orderDeliveryStatus).toBe("sent")
+    expect(store.read()?.orderRelayDelivery?.relayDelivery).toMatchObject([
+      { relayUrl: relayUrls[0], status: "acked" },
+      { relayUrl: relayUrls[1], status: "timed_out" },
+    ])
+
+    const retryTargets: Array<{
+      relayUrl: string
+      signedEvent: SignedPublicNostrEvent
+      appRelayUrls?: readonly string[]
+    }> = []
+    await resumePendingOrderRelayDeliveries(BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository: { get: async () => undefined },
+      leaseOwner: "worker",
+      now: () => 15_121,
+      publisher: async ({ relayUrl, signedEvent, appRelayUrls }) => {
+        retryTargets.push({ relayUrl, signedEvent, appRelayUrls })
+        return "acked"
+      },
+    })
+    expect(retryTargets).toMatchObject([
+      { relayUrl: relayUrls[1], appRelayUrls: [relayUrls[1]] },
+    ])
+    expect(JSON.stringify(retryTargets[0]?.signedEvent)).toBe(
+      JSON.stringify(WRAP)
+    )
+    expect(store.read()?.orderRelayDelivery?.relayDelivery).toMatchObject([
+      { relayUrl: relayUrls[0], status: "acked", attemptCount: 1 },
+      { relayUrl: relayUrls[1], status: "acked", attemptCount: 2 },
+    ])
+
+    await expect(
+      stageOrderRelayDelivery(
+        {
+          lifecycle: lifecycleInput(),
+          prepared: {
+            ...compatibility,
+            compatibilityPlan: {
+              relayUrls: [...relayUrls, "wss://arbitrary.example"],
+            },
+          },
+          leaseOwner: "another-document",
+        },
+        { repository: memoryRepository().repository, now: () => 100 }
+      )
+    ).rejects.toThrow("validated relay plan")
+
+    await expect(
+      stageOrderRelayDelivery(
+        {
+          lifecycle: lifecycleInput(),
+          prepared: {
+            ...compatibility,
+            relayPlan: compatibility.relayPlan.slice(0, 1),
+          },
+          leaseOwner: "another-document",
+        },
+        { repository: memoryRepository().repository, now: () => 100 }
+      )
+    ).rejects.toThrow("invalid order relay plan")
+  })
+
   it("rejects missing signed authority, widened plans, and guest plaintext", async () => {
     const invalidAuthority = prepared()
     invalidAuthority.routingAuthority = {
@@ -212,7 +341,7 @@ describe("durable order delivery staging", () => {
         },
         { repository: memoryRepository().repository, now: () => 100 }
       )
-    ).rejects.toThrow("signed inbox authority")
+    ).rejects.toThrow("validated relay plan")
 
     await expect(
       stageOrderRelayDelivery(
@@ -231,7 +360,7 @@ describe("durable order delivery staging", () => {
         },
         { repository: memoryRepository().repository, now: () => 100 }
       )
-    ).rejects.toThrow("invalid declared order relay plan")
+    ).rejects.toThrow("invalid order relay plan")
 
     await expect(
       stageOrderRelayDelivery(

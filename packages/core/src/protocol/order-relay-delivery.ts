@@ -11,6 +11,7 @@ import {
   deriveOrderLifecyclePhase,
 } from "./order-lifecycle"
 import { publishSignedEventToRelay } from "./relay-publish"
+import { isApprovedCompatibilityOrderRelayPlan } from "./private-message-routing"
 import {
   normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
@@ -27,13 +28,16 @@ export const ORDER_RELAY_DELIVERY_LEASE_MS = 30_000
 export type PreparedOrderRelayDelivery = {
   rumorId: string
   signedRecipientWrap: SignedPublicNostrEvent
-  route: "declared_inbox"
-  routingAuthority: NonNullable<
+  route: "declared_inbox" | "compatibility_order"
+  routingAuthority?: NonNullable<
     NonNullable<OrderLifecycle["orderRelayDelivery"]>["routingAuthority"]
+  >
+  compatibilityPlan?: NonNullable<
+    NonNullable<OrderLifecycle["orderRelayDelivery"]>["compatibilityPlan"]
   >
   relayPlan: Array<{
     relayUrl: string
-    source: "declared"
+    source: "declared" | "recipient_nip65" | "compatibility_registry"
   }>
 }
 
@@ -228,6 +232,7 @@ function immutableRelayPlan(
     signedRecipientWrap: delivery.signedRecipientWrap,
     route: delivery.route,
     routingAuthority: delivery.routingAuthority,
+    compatibilityPlan: delivery.compatibilityPlan,
     relayPlan: delivery.relayDelivery.map(({ relayUrl, source }) => ({
       relayUrl,
       source,
@@ -235,13 +240,27 @@ function immutableRelayPlan(
   }
 }
 
-function hasValidDeclaredRoutingAuthority(
+function hasValidOrderRelayRoutingAuthority(
   delivery: NonNullable<OrderLifecycle["orderRelayDelivery"]>,
   merchantPubkey: string
 ): boolean {
+  if (delivery.route === "compatibility_order") {
+    const relayUrls = delivery.relayDelivery.map(({ relayUrl }) => relayUrl)
+    return (
+      !delivery.routingAuthority &&
+      !!delivery.compatibilityPlan &&
+      sameValue(delivery.compatibilityPlan.relayUrls, relayUrls) &&
+      isApprovedCompatibilityOrderRelayPlan(relayUrls) &&
+      delivery.relayDelivery.every(
+        ({ source }) =>
+          source === "recipient_nip65" || source === "compatibility_registry"
+      )
+    )
+  }
   const authority = delivery.routingAuthority
   if (
     delivery.route !== "declared_inbox" ||
+    delivery.compatibilityPlan !== undefined ||
     !authority ||
     authority.kind !== EVENT_KINDS.PRIVATE_MESSAGE_RELAYS ||
     !/^[0-9a-f]{64}$/.test(authority.eventId) ||
@@ -278,20 +297,29 @@ export async function stageOrderRelayDelivery(
 ): Promise<OrderRelayDeliveryStageResult> {
   const merchantPubkey = input.lifecycle.merchantPubkey.trim().toLowerCase()
   const authority = input.prepared.routingAuthority
+  const compatibilityPlan = input.prepared.compatibilityPlan
+  const declared =
+    input.prepared.route === "declared_inbox" &&
+    !compatibilityPlan &&
+    authority?.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS &&
+    /^[0-9a-f]{64}$/.test(authority.eventId) &&
+    Number.isSafeInteger(authority.eventCreatedAt) &&
+    authority.eventCreatedAt >= 0 &&
+    authority.pubkey === merchantPubkey
+  const compatibility =
+    input.prepared.route === "compatibility_order" &&
+    !authority &&
+    !!compatibilityPlan &&
+    isApprovedCompatibilityOrderRelayPlan(compatibilityPlan.relayUrls)
   if (
     !/^[0-9a-f]{64}$/i.test(input.prepared.rumorId) ||
     input.leaseOwner.trim().length === 0 ||
     (input.lifecycle.buyerIdentityKind !== "signed_in" &&
       input.lifecycle.buyerIdentityKind !== "guest_ephemeral") ||
-    input.prepared.route !== "declared_inbox" ||
-    authority.kind !== EVENT_KINDS.PRIVATE_MESSAGE_RELAYS ||
-    !/^[0-9a-f]{64}$/.test(authority.eventId) ||
-    !Number.isSafeInteger(authority.eventCreatedAt) ||
-    authority.eventCreatedAt < 0 ||
-    authority.pubkey !== merchantPubkey
+    (!declared && !compatibility)
   ) {
     throw new Error(
-      "Cannot stage order delivery without signed inbox authority."
+      "Cannot stage order delivery without a validated relay plan."
     )
   }
   if (!isValidSignedPublicNostrEvent(input.prepared.signedRecipientWrap)) {
@@ -325,7 +353,11 @@ export async function stageOrderRelayDelivery(
   )
   if (
     relayUrls.length === 0 ||
-    input.prepared.relayPlan.some(({ source }) => source !== "declared") ||
+    input.prepared.relayPlan.some(({ source }) =>
+      declared
+        ? source !== "declared"
+        : source !== "recipient_nip65" && source !== "compatibility_registry"
+    ) ||
     normalizedRelayUrls.some(
       (normalized, index) =>
         !normalized.ok ||
@@ -337,9 +369,11 @@ export async function stageOrderRelayDelivery(
         normalized.ok ? [normalized.url] : []
       )
     ).size !== relayUrls.length ||
-    !sameValue(authority.relayUrls, relayUrls)
+    !(declared
+      ? sameValue(authority?.relayUrls, relayUrls)
+      : sameValue(compatibilityPlan?.relayUrls, relayUrls))
   ) {
-    throw new Error("Cannot stage an invalid declared order relay plan.")
+    throw new Error("Cannot stage an invalid order relay plan.")
   }
 
   const repository = options.repository ?? dexieRepository
@@ -351,11 +385,14 @@ export async function stageOrderRelayDelivery(
   const delivery: NonNullable<OrderLifecycle["orderRelayDelivery"]> = {
     rumorId: input.prepared.rumorId.toLowerCase(),
     signedRecipientWrap: structuredClone(input.prepared.signedRecipientWrap),
-    route: "declared_inbox",
-    routingAuthority: structuredClone(authority),
-    relayDelivery: input.prepared.relayPlan.map(({ relayUrl }) => ({
+    route: input.prepared.route,
+    ...(authority ? { routingAuthority: structuredClone(authority) } : {}),
+    ...(compatibilityPlan
+      ? { compatibilityPlan: structuredClone(compatibilityPlan) }
+      : {}),
+    relayDelivery: input.prepared.relayPlan.map(({ relayUrl, source }) => ({
       relayUrl,
-      source: "declared",
+      source,
       status: "pending",
       attemptCount: 0,
       attemptGeneration: 0,
@@ -374,7 +411,7 @@ export async function stageOrderRelayDelivery(
     createdAt,
     updatedAt: timestamp,
     orderDeliveryStatus: "pending" as const,
-    orderDeliveryRoute: "declared_inbox" as const,
+    orderDeliveryRoute: input.prepared.route,
     orderRelayDelivery: delivery,
     checkoutRecoveryPending: true,
     invoiceStatus: "not_requested" as const,
@@ -437,7 +474,7 @@ export async function beginOrderRelayDeliveryAttempt(
       (delivery.deliveryLeaseExpiresAt ?? 0) > timestamp
     if (
       !delivery ||
-      !hasValidDeclaredRoutingAuthority(delivery, current.merchantPubkey) ||
+      !hasValidOrderRelayRoutingAuthority(delivery, current.merchantPubkey) ||
       input.shouldContinue?.() === false ||
       current.buyerPubkey !== input.buyerPubkey ||
       activeOtherLease ||
@@ -543,7 +580,7 @@ export async function recordOrderRelayDeliveryOutcomes(
     const delivery = current.orderRelayDelivery
     if (
       !delivery ||
-      !hasValidDeclaredRoutingAuthority(delivery, current.merchantPubkey) ||
+      !hasValidOrderRelayRoutingAuthority(delivery, current.merchantPubkey) ||
       current.buyerPubkey !== input.buyerPubkey ||
       delivery.signedRecipientWrap.id !== input.wrapId
     ) {
@@ -631,7 +668,7 @@ export async function retryOrderRelayDelivery(
     const delivery = current.orderRelayDelivery
     if (
       !delivery ||
-      !hasValidDeclaredRoutingAuthority(delivery, current.merchantPubkey) ||
+      !hasValidOrderRelayRoutingAuthority(delivery, current.merchantPubkey) ||
       (current.buyerIdentityKind === "guest_ephemeral" &&
         !options.allowGuest) ||
       current.buyerPubkey !== activeBuyerPubkey ||
@@ -682,11 +719,18 @@ export async function retryOrderRelayDelivery(
 
     for (const { value: target } of orderedOutstanding) {
       if (options.shouldContinue?.() === false) break
-      const independentRelayUrls = [target.relayUrl]
+      const appRelayUrls =
+        claimed.orderRelayDelivery.route === "compatibility_order"
+          ? [target.relayUrl]
+          : []
+      const independentRelayUrls =
+        claimed.orderRelayDelivery.route === "declared_inbox"
+          ? [target.relayUrl]
+          : []
       const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
         accountPubkey: claimed.buyerPubkey,
         candidateRelayUrls: [target.relayUrl],
-        appRelayUrls: [],
+        appRelayUrls,
         personalRelayUrls: [],
         independentRelayUrls,
         repository: options.accountNetworkLocalStateRepository,
@@ -714,7 +758,7 @@ export async function retryOrderRelayDelivery(
           relayUrl: target.relayUrl,
           signedEvent,
           accountPubkey: claimed.buyerPubkey,
-          appRelayUrls: [],
+          appRelayUrls,
           personalRelayUrls: [],
           independentRelayUrls,
           accountNetworkLocalStateRepository:
@@ -779,7 +823,7 @@ export async function resumePendingOrderRelayDeliveries(
     if (
       !delivery ||
       lifecycle.buyerIdentityKind === "guest_ephemeral" ||
-      !hasValidDeclaredRoutingAuthority(delivery, lifecycle.merchantPubkey) ||
+      !hasValidOrderRelayRoutingAuthority(delivery, lifecycle.merchantPubkey) ||
       delivery.expiresAt <= timestamp ||
       (delivery.nextRetryAt ?? 0) > timestamp ||
       !hasRetryablePublicTarget(delivery)

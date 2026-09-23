@@ -748,6 +748,11 @@ export interface OrderRelayRoutingAuthority {
   relayUrls: string[]
 }
 
+export interface OrderRelayCompatibilityPlan {
+  /** Exact validated-order targets selected from the approved registry. */
+  relayUrls: string[]
+}
+
 /**
  * Content-safe retry state for the exact signed recipient gift wrap. The
  * encrypted wrap may be replayed to failed targets without retaining rumor
@@ -758,8 +763,10 @@ export interface OrderRelayDeliveryRecord {
   rumorId?: string
   signedRecipientWrap: SignedPublicNostrEvent
   route: OrderDeliveryRoute
-  /** Positive signed routing evidence required for durable exact retry. */
+  /** Signed kind:10050 authority for declared-inbox retries. */
   routingAuthority?: OrderRelayRoutingAuthority
+  /** Exact bounded compatibility plan; never expanded by retry discovery. */
+  compatibilityPlan?: OrderRelayCompatibilityPlan
   relayDelivery: OrderRelayDelivery[]
   deliveryAttemptCount: number
   /** Monotonic batch fence for late timeout and rejection outcomes. */
