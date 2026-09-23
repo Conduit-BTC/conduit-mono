@@ -1692,16 +1692,11 @@ function OrderDetail({
         </StatusNotice>
       )}
 
-      {showFinishAcceptedOrderRecovery && (
-        <StatusNotice
-          variant="warning"
-          title="Order accepted by a delivery relay"
-          detail="Merchant pickup pending"
-        >
+      {showFinishAcceptedOrderRecovery && !showExternalWallet && (
+        <StatusNotice variant="info" title="Finish saving this order">
           <p className="text-pretty text-sm text-[var(--text-secondary)]">
-            The order must be finalized on this device before this cart can be
-            submitted again. Relay acceptance does not prove the merchant has
-            read it.
+            Finish saving this order before starting another checkout from the
+            same cart.
           </p>
           <Button
             variant="outline"
@@ -1720,21 +1715,6 @@ function OrderDetail({
               {recoveryError}
             </p>
           )}
-        </StatusNotice>
-      )}
-
-      {showContinueAcceptedCheckout && (
-        <StatusNotice
-          variant="warning"
-          title="Order accepted; payment has not started"
-          detail="Continue this checkout"
-        >
-          <p className="text-pretty text-sm text-[var(--text-secondary)]">
-            A delivery relay accepted this order before checkout closed.
-            Continue payment for this same order below. Relay acceptance does
-            not prove the merchant has read it, and continuing will not send
-            another order.
-          </p>
         </StatusNotice>
       )}
 
@@ -1865,6 +1845,28 @@ function OrderDetail({
             <p
               role="alert"
               className="text-pretty text-sm text-[var(--destructive)]"
+            >
+              {recoveryError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {showFinishAcceptedOrderRecovery && showExternalWallet && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+          <Button
+            variant="outline"
+            className="h-10 w-full px-4 text-sm"
+            disabled={busy}
+            onClick={() => void withBusy(finishAcceptedOrderRecovery)}
+          >
+            <Check className="h-4 w-4" />
+            Finish saving this order
+          </Button>
+          {recoveryError && (
+            <p
+              role="alert"
+              className="mt-2 text-pretty text-sm text-[var(--destructive)]"
             >
               {recoveryError}
             </p>

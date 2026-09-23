@@ -332,6 +332,23 @@ for (const scenario of scenarios) {
     await expect(
       page.getByRole("link", { name: "Open Lightning wallet", exact: true })
     ).toHaveAttribute("href", `lightning:${generatedInvoice}`)
+    if (!scenario.stop && !scenario.legacyPublicZap) {
+      await page.setViewportSize({ width: 390, height: 844 })
+      await page.evaluate(() => window.scrollTo(0, 0))
+      const walletAction = page.getByRole("link", {
+        name: "Open Lightning wallet",
+        exact: true,
+      })
+      await expect(walletAction).toBeInViewport()
+      const recoveryAction = page.getByRole("button", {
+        name: "Finish saving this order",
+        exact: true,
+      })
+      await expect(recoveryAction).toBeVisible()
+      const walletBounds = await walletAction.boundingBox()
+      const recoveryBounds = await recoveryAction.boundingBox()
+      expect(recoveryBounds!.y).toBeGreaterThan(walletBounds!.y)
+    }
     await expect(
       page.getByRole("button", { name: "Use merchant invoice", exact: true })
     ).toHaveCount(0)

@@ -32,7 +32,7 @@ describe("Market event product layout", () => {
     )
   })
 
-  it("keeps pickup details from stretching the standard product card", async () => {
+  it("keeps pickup notices and clarification boxes outside the product grid", async () => {
     const [card, event] = await Promise.all([
       source("apps/market/src/components/ProductGridCard.tsx"),
       source("apps/market/src/routes/events/$collectionRef.tsx"),
@@ -40,11 +40,9 @@ describe("Market event product layout", () => {
 
     expect(card).toContain('className ?? "h-full"')
     expect(event).toContain('className="h-auto"')
-    expect(event).toContain('<details className="group/pickup')
-    expect(event).toContain("[&::-webkit-details-marker]:hidden")
-    expect(event).toContain("<EventActorName")
-    expect(event).toContain("<EventActorProvenance")
-    expect(event).toContain('copyLabel="Copy pickup handler npub"')
+    expect(event).not.toContain('<details className="group/pickup')
+    expect(event).not.toContain("Current pickup terms are being verified")
+    expect(event).toContain("cartActionDisabled={!cartAction.enabled}")
   })
 
   it("allows floating variation panels outside the event catalog on hover-capable desktops", async () => {
@@ -58,23 +56,9 @@ describe("Market event product layout", () => {
     expect(browser).not.toContain("overflow-hidden")
   })
 
-  it("keeps long handler names compact while Details reveals the full identity", async () => {
-    const event = await source(
-      "apps/market/src/routes/events/$collectionRef.tsx"
-    )
-    const pickupStart = event.indexOf('<details className="group/pickup')
-    const pickupEnd = event.indexOf("</details>", pickupStart)
-    const pickupDetails = event.slice(pickupStart, pickupEnd)
-
-    expect(pickupStart).toBeGreaterThan(-1)
-    expect(pickupEnd).toBeGreaterThan(pickupStart)
-    expect(pickupDetails).toContain('className="min-w-0 flex-1"')
-    expect(pickupDetails).toContain('className="block truncate"')
-    expect(pickupDetails).toContain(
-      "title={`Handled by ${handlerIdentity.displayName}`}"
-    )
-    expect(
-      pickupDetails.match(/<EventActorName identity=\{handlerIdentity\}\s*\/>/g)
-    ).toHaveLength(2)
+  it("shows the pickup handler in checkout review", async () => {
+    const checkout = await source("apps/market/src/routes/checkout.tsx")
+    expect(checkout).toContain("{pickupHandoff.label}")
+    expect(checkout).toContain("Handled by <EventActorName")
   })
 })

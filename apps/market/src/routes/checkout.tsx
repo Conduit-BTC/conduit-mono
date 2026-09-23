@@ -4856,6 +4856,13 @@ function CheckoutPage() {
                             : "Send order"}
                     </Button>
                   )}
+                  {pickupHandoff?.mode === "organizer_handoff" && (
+                    <p className="w-full text-pretty text-xs leading-4 text-[var(--text-muted)]">
+                      When your order is ready, the merchant privately shares
+                      its items, quantities, and pickup code with the event
+                      organizer.
+                    </p>
+                  )}
                 </div>
               </div>
             </>

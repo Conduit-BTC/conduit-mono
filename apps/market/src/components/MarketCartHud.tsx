@@ -64,6 +64,7 @@ type PurchaseContext = {
   Icon: LucideIcon
   compactLabel: string
   label: string
+  mobileLabel: string
   selectedLabel: string
 }
 
@@ -81,6 +82,7 @@ function getPurchaseContext(group: CartPurchaseGroup): PurchaseContext {
       Icon: Store,
       compactLabel: pickupDetail || "Event pickup",
       label: pickupDetail ? `Event pickup - ${pickupDetail}` : "Event pickup",
+      mobileLabel: "Pickup",
       selectedLabel: pickupDetail || "Event pickup",
     }
   }
@@ -92,6 +94,7 @@ function getPurchaseContext(group: CartPurchaseGroup): PurchaseContext {
     Icon: digitalOnly ? Download : Truck,
     compactLabel: digitalOnly ? "Digital delivery" : "Delivery",
     label: digitalOnly ? "Digital delivery" : "Delivery",
+    mobileLabel: digitalOnly ? "Digital" : "Delivery",
     selectedLabel: digitalOnly ? "Digital delivery" : "Delivery",
   }
 }
@@ -170,6 +173,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const [zapStarting, setZapStarting] = useState(false)
   const hudRef = useRef<HTMLElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const purchaseRailRef = useRef<HTMLDivElement>(null)
   const disclosureRef = useRef<HTMLButtonElement>(null)
   const detailsPanelId = useId()
   const previousQuantitiesRef = useRef(new Map<string, number>())
@@ -249,9 +253,24 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   // One activation path for pointer, Enter, and Space: selecting a merchant
   // while collapsed both selects it and expands the panel, including when the
   // activated merchant is already selected.
-  const activatePurchase = useCallback((purchaseId: string) => {
+  const activatePurchase = useCallback((purchaseId: string, index?: number) => {
     setActivePurchase(purchaseId)
     setExpanded(true)
+    const rail = purchaseRailRef.current
+    const tab = index === undefined ? null : rail?.children.item(index)
+    if (!rail || !(tab instanceof HTMLElement)) return
+    const railBounds = rail.getBoundingClientRect()
+    const tabBounds = tab.getBoundingClientRect()
+    rail.scrollTo({
+      left:
+        index === 0
+          ? 0
+          : rail.scrollLeft +
+            tabBounds.left -
+            railBounds.left -
+            (railBounds.width - tabBounds.width) / 2,
+      behavior: "smooth",
+    })
   }, [])
 
   useEffect(() => {
@@ -452,9 +471,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
 
           {groups.length > 1 ? (
             <div
+              ref={purchaseRailRef}
               role="group"
               aria-label="Cart purchases"
-              className="flex h-auto w-fit min-w-0 max-w-full justify-start justify-self-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="flex h-auto w-full min-w-0 max-w-full justify-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-[50%] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
                 maskImage:
                   "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
@@ -478,15 +498,15 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     type="button"
                     aria-pressed={selected}
                     aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}${contextCollides ? `, reference ${purchaseReference}` : ""}, purchase ${index + 1}`}
-                    onClick={() => activatePurchase(group.id)}
+                    onClick={() => activatePurchase(group.id, index)}
                     className={cn(
-                      "market-cart-hud-item flex min-h-11 max-w-60 shrink-0 items-center gap-2 rounded-lg border px-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:px-3",
+                      "market-cart-hud-item flex min-h-11 min-w-14 max-w-60 shrink-0 flex-col items-center justify-center gap-0.5 rounded-lg border px-1 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:min-w-0 sm:flex-row sm:gap-2 sm:px-3",
                       selected
                         ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
                         : "border-transparent text-[var(--text-secondary)] hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]"
                     )}
                   >
-                    <Avatar className="h-7 w-7 shrink-0">
+                    <Avatar className="hidden h-7 w-7 shrink-0 sm:flex">
                       <AvatarImage src={profile?.picture} alt="" />
                       <AvatarFallback>
                         <MerchantAvatarFallback iconClassName="h-4 w-4" />
@@ -506,21 +526,28 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         </span>
                       ) : null}
                     </span>
-                    <span className="min-w-0 text-left text-[0.68rem] leading-tight sm:hidden">
-                      <span className="block">
-                        {group.kind === "pickup" ? "Pickup" : "Delivery"}
-                      </span>
-                      <span
-                        data-testid="purchase-cue"
-                        className="block font-mono text-[var(--text-muted)]"
-                      >
-                        #{index + 1} {purchaseReference}
-                      </span>
+                    <span
+                      data-testid="mobile-purchase-count"
+                      className="text-xs font-semibold tabular-nums sm:hidden"
+                      aria-hidden="true"
+                    >
+                      {group.totalItems}
+                    </span>
+                    <span className="flex items-baseline gap-0.5 text-[0.65rem] leading-tight sm:hidden">
+                      <span>{context.mobileLabel}</span>
+                      {contextCollides ? (
+                        <span
+                          data-testid="purchase-cue"
+                          className="text-[var(--text-muted)] tabular-nums"
+                        >
+                          {index + 1}
+                        </span>
+                      ) : null}
                     </span>
                     <StatusPill
                       variant="neutral"
                       aria-label={`${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}`}
-                      className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
+                      className="hidden border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)] sm:inline-flex"
                     >
                       {group.totalItems}
                     </StatusPill>

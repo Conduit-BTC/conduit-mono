@@ -356,7 +356,12 @@ describe("checkout completion navigation contracts", () => {
     expect(recovery).toContain('input.invoiceStatus === "not_requested"')
     expect(ordersRoute).toContain("await retryPayment()")
     expect(ordersRoute).toContain("await finishAcceptedOrderRecovery(current)")
-    expect(ordersRoute).toContain("continuing will not send")
+    const continuation = ordersRoute.slice(
+      ordersRoute.indexOf("async function continueAcceptedCheckoutPayment()"),
+      ordersRoute.indexOf("async function confirmPaymentAddressUpdate()")
+    )
+    expect(continuation).not.toContain("placeOrder(")
+    expect(continuation).not.toContain("retryStagedOrderDelivery(")
   })
 
   it("retains direct-payment recovery after exact delivery retry", async () => {

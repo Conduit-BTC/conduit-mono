@@ -3232,41 +3232,7 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
   const longMerchantCard = cards.filter({
     has: page.getByRole("heading", { name: "Blue Tote", exact: true }),
   })
-  const longHandlerDetails = longMerchantCard.locator("details")
-  const longHandlerSummary = longHandlerDetails.locator("summary")
-  await expect(
-    longHandlerSummary.getByTitle(`Handled by ${longMerchantName}`)
-  ).toBeVisible()
-  await longHandlerSummary.focus()
-  await expect(longHandlerSummary).toBeFocused()
-  await longHandlerSummary.press("Enter")
-  await expect(longHandlerDetails).toHaveAttribute("open", "")
-  await expect(
-    longHandlerDetails
-      .locator(":scope > div")
-      .getByText(`Handled by ${longMerchantName}`, { exact: true })
-  ).toBeVisible()
-  await longHandlerSummary.click()
-  await expect(longHandlerDetails).not.toHaveAttribute("open", "")
-  // Geohash-only pickups retain their location; readable text takes precedence.
-  for (const [title, location] of [
-    ["Amber Mug", pickupGeohash],
-    ["Blue Tote", pickupLocation],
-  ] as const) {
-    const details = cards
-      .filter({
-        has: page.getByRole("heading", { name: title, exact: true }),
-      })
-      .locator("details")
-    await details.locator("summary").click()
-    await expect(details.getByText(location, { exact: true })).toBeVisible()
-    if (title === "Blue Tote") {
-      await expect(
-        details.getByText(pickupGeohash, { exact: true })
-      ).toHaveCount(0)
-    }
-    await details.locator("summary").click()
-  }
+  await expect(longMerchantCard.locator("details")).toHaveCount(0)
   for (const name of ["Alpine Goods", longMerchantName]) {
     const heading = page.getByRole("heading", { name, exact: true })
     await expect(heading).toBeVisible()
@@ -3429,26 +3395,7 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
       .click()
     await expect(titles).toHaveText(groupedProductTitles)
     await expect(technicalDetails).not.toHaveAttribute("open", "")
-    const collapsedHandler = longMerchantCard.getByTitle(
-      `Handled by ${longMerchantName}`
-    )
-    const handlerSize = await collapsedHandler.evaluate((element) => ({
-      clientWidth: element.clientWidth,
-      scrollWidth: element.scrollWidth,
-      whiteSpace: getComputedStyle(element).whiteSpace,
-    }))
-    expect(handlerSize.clientWidth).toBeGreaterThan(0)
-    expect(handlerSize.scrollWidth).toBeGreaterThan(handlerSize.clientWidth)
-    expect(handlerSize.whiteSpace).toBe("nowrap")
-    const pickupSummaryHeights = await cards
-      .locator("details > summary")
-      .evaluateAll((summaries) =>
-        summaries.map((summary) => summary.getBoundingClientRect().height)
-      )
-    expect(Math.max(...pickupSummaryHeights)).toBeCloseTo(
-      Math.min(...pickupSummaryHeights),
-      0
-    )
+    await expect(cards.locator("details")).toHaveCount(0)
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }))
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
     const layout = await page.evaluate(() => ({
@@ -5020,34 +4967,9 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
     .filter({ hasText: "Synthetic Owner Product" })
   await expect(
     productCard.getByText("Pickup from merchant booth", { exact: true })
-  ).toBeVisible({ timeout: 30_000 })
-  await expect(
-    productCard.getByText("Synthetic Pickup Host", { exact: true }).first()
-  ).toBeVisible({ timeout: 30_000 })
-  const pickupDetails = productCard
-    .locator("summary")
-    .filter({ hasText: "Handled by" })
-  await pickupDetails.focus()
-  await expect(pickupDetails).toBeFocused()
-  await pickupDetails.press("Enter")
-  await expect(productCard.locator("details")).toHaveAttribute("open", "")
-  await expect(
-    productCard.getByText("Synthetic Pickup Host", { exact: true }).last()
-  ).toBeVisible()
+  ).toHaveCount(0)
+  await expect(productCard.locator("details")).toHaveCount(0)
   const handlerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
-  await expect(productCard.locator(`a[href="/u/${handlerNpub}"]`)).toBeVisible()
-  await productCard
-    .getByRole("button", { name: "Copy pickup handler npub" })
-    .click()
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (window as typeof window & { __pickupCopiedNpub?: string })
-            .__pickupCopiedNpub
-      )
-    )
-    .toBe(handlerNpub)
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
     page.getByRole("region", { name: "Cart inventory" })
@@ -5306,7 +5228,7 @@ test("a stale event tab does not announce an add rejected at the stock limit @ma
         .getByRole("listitem")
         .filter({ hasText: "Synthetic last-stock product" })
         .getByText("Pickup from event organizer", { exact: true })
-    ).toBeVisible({ timeout: 30_000 })
+    ).toHaveCount(0)
   }
 
   await currentAdd.click()
@@ -5877,7 +5799,7 @@ test("cold event catalog shows a completed merchant product before a slower merc
     await expect(card).toBeVisible()
     await expect(
       card.getByText("Pickup from event organizer", { exact: true })
-    ).toBeVisible()
+    ).toHaveCount(0)
     await expect(
       card.getByRole("button", { name: "Add", exact: true })
     ).toBeEnabled()
@@ -6651,7 +6573,7 @@ test("verified event catalog keeps exact pickup ready while another merchant for
       slowCard.getByText(
         /Current pickup terms are being verified.*checkout stays locked/s
       )
-    ).toBeVisible()
+    ).toHaveCount(0)
     await expect(page.getByTestId("event-refresh-status")).toHaveCount(0)
     const slowExactReads = relay.requests.filter(isSlowExactRead)
     expect(slowExactReads.length).toBeGreaterThan(0)
@@ -6708,7 +6630,7 @@ test("verified event catalog keeps exact pickup ready while another merchant for
     await expect(card).toBeVisible()
     await expect(
       card.getByText("Pickup from event organizer", { exact: true })
-    ).toBeVisible()
+    ).toHaveCount(0)
     await expect(
       card.getByRole("button", { name: "Add", exact: true })
     ).toBeEnabled()
@@ -6841,7 +6763,7 @@ test("event catalog paints before held product reads and allows reversible cache
       card.getByText(
         /Current pickup terms are being verified.*checkout stays locked/s
       )
-    ).toBeVisible()
+    ).toHaveCount(0)
     await expect
       .poll(() =>
         relay.requests
@@ -7189,7 +7111,7 @@ test("mounted event catalog keeps a newer malformed product terminal without rel
       card.getByText(
         /Current pickup terms are being verified.*checkout stays locked/s
       )
-    ).toBeVisible()
+    ).toHaveCount(0)
     expect(catalogReads()).toBe(before)
   } finally {
     held.release()
@@ -7305,7 +7227,7 @@ for (const mounted of [true, false]) {
           card.getByText(
             /Current pickup terms are being verified.*checkout stays locked/s
           )
-        ).toBeVisible()
+        ).toHaveCount(0)
       }
       await expect(
         page
@@ -7458,7 +7380,7 @@ test("mounted event catalog scopes product and pickup removals to exact dependen
         card.getByText(
           /Current pickup terms are being verified.*checkout stays locked/s
         )
-      ).toBeVisible()
+      ).toHaveCount(0)
     }
     // The progressive reader can enqueue another stage after the first held
     // request and card paint. Establish a quiet baseline so that this assertion
@@ -7518,7 +7440,7 @@ test("mounted event catalog scopes product and pickup removals to exact dependen
       familyCard.getByText(
         /Current pickup terms are being verified.*checkout stays locked/s
       )
-    ).toBeVisible()
+    ).toHaveCount(0)
     await expect(
       organizerCard.getByRole("button", {
         name: "Pickup unavailable",
@@ -7966,7 +7888,7 @@ test("event variation choices remain stable while cached pickup authorization re
       card.getByText(
         /Current pickup terms are being verified.*checkout stays locked/s
       )
-    ).toBeVisible()
+    ).toHaveCount(0)
     await selector.click()
     await expect(
       page.getByRole("option", { name: "Small", exact: true })
@@ -7999,7 +7921,7 @@ test("event variation choices remain stable while cached pickup authorization re
     card.getByText(
       /Current pickup terms are being verified.*checkout stays locked/s
     )
-  ).toBeVisible()
+  ).toHaveCount(0)
 })
 
 test("failed event refresh retains cards with stale warning and a working retry @market", async ({
@@ -8081,7 +8003,7 @@ const loadRawEventCatalog = async (...args) => {
     card.getByText(
       /Current pickup terms are being verified.*checkout stays locked/s
     )
-  ).toBeVisible()
+  ).toHaveCount(0)
   await page
     .getByRole("button", { name: "Refresh evidence", exact: true })
     .click()
@@ -8158,7 +8080,7 @@ const loadRawEventCatalog = async (...args) => {
     card.getByText(
       /Current pickup terms are being verified.*checkout stays locked/s
     )
-  ).toBeVisible()
+  ).toHaveCount(0)
   await add.click()
   await expect
     .poll(() => readCanonicalCartLines(page))
@@ -8641,8 +8563,8 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
     .filter({ hasText: MERCHANT_PRODUCT_TITLE })
   await expect(
     productCard.getByText("Pickup from merchant booth", { exact: true })
-  ).toBeVisible()
-  await productCard.getByText("Details", { exact: true }).click()
+  ).toHaveCount(0)
+  await expect(productCard.locator("details")).toHaveCount(0)
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
     page.getByRole("region", { name: "Cart inventory" })
@@ -8697,6 +8619,11 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   await expect(page.getByText(/no organizer receipt is sent/i)).toHaveCount(0)
   await expect(
     page.getByText(/organizer receives a minimal private pickup receipt/i)
+  ).toHaveCount(0)
+  await expect(
+    page.getByText(
+      /merchant privately shares its items, quantities, and pickup code/i
+    )
   ).toHaveCount(0)
   await expect(page.getByText("Organizer pickup is not ready")).toHaveCount(0)
   await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
@@ -8829,7 +8756,7 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     .filter({ hasText: ORGANIZER_PRODUCT_TITLE })
   await expect(
     productCard.getByText("Pickup from event organizer", { exact: true })
-  ).toBeVisible()
+  ).toHaveCount(0)
   await expect(productCard.getByText("Free", { exact: true })).toBeVisible()
   await expect(productCard.getByText("0 sats", { exact: true })).toBeVisible()
   await productCard.getByRole("button", { name: "Add", exact: true }).click()
@@ -8878,14 +8805,23 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
   await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
   await expect(page.getByLabel(/Email/i)).toHaveCount(0)
   await expect(page.getByLabel(/Phone/i)).toHaveCount(0)
-  await expect(
-    page.getByText(/organizer receives a minimal private pickup receipt/i)
-  ).toHaveCount(0)
+  const disclosure = page.getByText(
+    /When your order is ready, the merchant privately shares its items, quantities, and pickup code with the event organizer/i
+  )
+  await expect(disclosure).toBeVisible()
   const sendOrderButton = page.getByRole("button", { name: /^Send order$/i })
   await expect(sendOrderButton).toBeEnabled({ timeout: 30_000 })
   await page.setViewportSize({ width: 390, height: 844 })
   await sendOrderButton.scrollIntoViewIfNeeded()
   await expect(sendOrderButton).toBeVisible()
+  await expect(disclosure).toBeVisible()
+  const buttonBounds = await sendOrderButton.boundingBox()
+  const disclosureBounds = await disclosure.boundingBox()
+  expect(buttonBounds).not.toBeNull()
+  expect(disclosureBounds).not.toBeNull()
+  expect(disclosureBounds!.y).toBeGreaterThanOrEqual(
+    buttonBounds!.y + buttonBounds!.height
+  )
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth)
   ).toBeLessThanOrEqual(390)

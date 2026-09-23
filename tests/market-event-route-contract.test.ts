@@ -69,9 +69,8 @@ describe("Market event catalog route", () => {
       "requiredEventRecordsResolved,\n    productAvailability.availableProductCount,\n    productAvailability.unresolvedProductCount"
     )
     expect(route).toContain("Organizer handoff details are unresolved")
-    expect(route).toContain("no current")
-    expect(route).toContain("exact merchant pickup link")
-    expect(route).toContain("Checkout is disabled")
+    expect(route).toContain("getEventCatalogPickupGate")
+    expect(route).toContain("cartActionDisabled={!cartAction.enabled}")
   })
 
   it("keeps recoverable pickup intent reversible until exact checkout authority resolves", async () => {
@@ -86,9 +85,7 @@ describe("Market event catalog route", () => {
       "const candidate = exactCandidate ?? pendingCandidate"
     )
     expect(route).toContain("allowPendingCart: pendingEvidenceMayRecover")
-    expect(route).toContain(
-      "checkout stays locked until this exact product is confirmed"
-    )
+    expect(route).not.toContain("Current pickup terms are being verified")
     expect(cartModel).toContain('type: "event_pickup_pending"')
     expect(cartModel).toContain(
       "if (isPendingEventPickupCartItem(item)) continue"

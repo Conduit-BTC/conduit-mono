@@ -332,11 +332,38 @@ test("market cart HUD keeps every fixed control inside the HUD across merchant-c
         )
         if (width === 390) {
           const firstTab = rail.getByRole("button").first()
-          await expect(firstTab.locator(".rounded-full").first()).toBeVisible()
           await expect(
-            firstTab.locator("[aria-label*='cart item']")
+            firstTab.getByTestId("mobile-purchase-count")
           ).toHaveText(/^[12]$/)
+          await expect(
+            firstTab.getByText("Digital", { exact: true })
+          ).toBeVisible()
           await expect(firstTab.getByText(/Digital delivery/)).toBeHidden()
+          if (merchantCount === 6) {
+            const fifthTab = rail.getByRole("button").nth(4)
+            await rail.evaluate((element) => {
+              element.scrollLeft = 0
+            })
+            await fifthTab.evaluate((element) => element.click())
+            await expect
+              .poll(() => rail.evaluate((element) => element.scrollLeft))
+              .toBeGreaterThan(0)
+            await expect
+              .poll(async () => {
+                const railBounds = await rail.boundingBox()
+                const tabBounds = await fifthTab.boundingBox()
+                return Math.abs(
+                  railBounds!.x +
+                    railBounds!.width / 2 -
+                    (tabBounds!.x + tabBounds!.width / 2)
+                )
+              })
+              .toBeLessThan(3)
+            await firstTab.evaluate((element) => element.click())
+            await expect
+              .poll(() => rail.evaluate((element) => element.scrollLeft))
+              .toBe(0)
+          }
         }
         const railBox = await rail.evaluate((element) => ({
           clientWidth: element.clientWidth,
@@ -584,17 +611,48 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
   const visibleCues = await selectors
     .locator("[data-testid='purchase-cue']")
     .allTextContents()
-  expect(visibleCues).toHaveLength(3)
-  expect(visibleCues.map((cue) => cue.trim())).toEqual(
-    fixtureGroups.map((group, index) => `#${index + 1} ${group.reference}`)
-  )
+  expect(visibleCues.map((cue) => cue.trim())).toEqual(["2", "3"])
+  await expect(
+    selectors.nth(0).getByTestId("mobile-purchase-count")
+  ).toHaveText("1")
+  await expect(
+    selectors.nth(0).getByText("Delivery", { exact: true }).last()
+  ).toBeVisible()
   for (let index = 0; index < 2; index += 1) {
     const selector = selectors.nth(index + 1)
     await expect(selector.getByText("Pickup", { exact: true })).toBeVisible()
+    await expect(selector.getByTestId("mobile-purchase-count")).toHaveText("1")
   }
-  await expect(selectors.nth(1)).not.toContainText(pickupReferences[1]!)
-  await expect(selectors.nth(2)).not.toContainText(pickupReferences[0]!)
+  await expect(selectors.nth(1).getByTestId("purchase-cue")).not.toContainText(
+    pickupReferences[0]!
+  )
+  await expect(selectors.nth(2).getByTestId("purchase-cue")).not.toContainText(
+    pickupReferences[1]!
+  )
   await expectInsideHud(page)
+
+  await rail.evaluate((element) => {
+    element.scrollLeft = 0
+  })
+  await selectors.nth(2).evaluate((element) => element.click())
+  await expect
+    .poll(() => rail.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(0)
+  await expect
+    .poll(async () => {
+      const railBounds = await rail.boundingBox()
+      const tabBounds = await selectors.nth(2).boundingBox()
+      return Math.abs(
+        railBounds!.x +
+          railBounds!.width / 2 -
+          (tabBounds!.x + tabBounds!.width / 2)
+      )
+    })
+    .toBeLessThan(3)
+  await selectors.nth(0).evaluate((element) => element.click())
+  await expect
+    .poll(() => rail.evaluate((element) => element.scrollLeft))
+    .toBe(0)
 
   const toggle = hud.locator("button[aria-expanded]")
   for (const [index, purchaseGroup] of pickupGroups.entries()) {
@@ -603,15 +661,15 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
       element.scrollIntoView({ block: "nearest", inline: "nearest" })
     })
     const visibleBounds = await rail.boundingBox()
-    const reference = selector.getByTestId("purchase-cue")
-    const referenceBounds = await reference.boundingBox()
+    const cue = selector.getByTestId("purchase-cue")
+    const cueBounds = await cue.boundingBox()
     expect(visibleBounds).not.toBeNull()
-    expect(referenceBounds).not.toBeNull()
-    expect(referenceBounds!.x).toBeGreaterThanOrEqual(visibleBounds!.x - 0.5)
-    expect(referenceBounds!.x + referenceBounds!.width).toBeLessThanOrEqual(
+    expect(cueBounds).not.toBeNull()
+    expect(cueBounds!.x).toBeGreaterThanOrEqual(visibleBounds!.x - 0.5)
+    expect(cueBounds!.x + cueBounds!.width).toBeLessThanOrEqual(
       visibleBounds!.x + visibleBounds!.width - 20 + 0.5
     )
-    await expect(reference).toBeVisible()
+    await expect(cue).toBeVisible()
     if ((await toggle.getAttribute("aria-expanded")) === "true") {
       await toggle.click()
     }
@@ -683,6 +741,48 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
       })
     )
     .toBe("contained")
+})
+
+test("all carts keep each purchase card and action contained on mobile @market", async ({
+  page,
+}) => {
+  await page.addInitScript((seed) => {
+    localStorage.setItem("conduit:cart", JSON.stringify(seed))
+  }, sameMerchantFulfillmentCartSeed())
+  await page.goto(`${marketUrl}/cart`)
+  await expect(
+    page.getByText("Conflicting fulfillment was separated")
+  ).toBeVisible()
+  await expect(
+    page.getByText(/Shipping and each exact event pickup/)
+  ).toHaveCount(0)
+  const clearActions = page.getByRole("button", {
+    name: /^Clear .* purchase, reference /,
+  })
+  await expect(clearActions).toHaveCount(3)
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 })
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(width)
+    for (let index = 0; index < 3; index += 1) {
+      const card = clearActions.nth(index).locator("xpath=ancestor::section[1]")
+      const cardBounds = await card.boundingBox()
+      const clearBounds = await clearActions.nth(index).boundingBox()
+      expect(cardBounds).not.toBeNull()
+      expect(clearBounds).not.toBeNull()
+      expect(clearBounds!.x).toBeGreaterThanOrEqual(cardBounds!.x)
+      expect(clearBounds!.x + clearBounds!.width).toBeLessThanOrEqual(
+        cardBounds!.x + cardBounds!.width
+      )
+      await expect(
+        card.getByRole("button", { name: "Order", exact: true })
+      ).toBeVisible()
+      await expect(
+        card.getByRole("button", { name: /Review 1 item/ })
+      ).toBeVisible()
+    }
+  }
 })
 
 test("market cart HUD shows one purchase's details when its compact tab is opened @market", async ({

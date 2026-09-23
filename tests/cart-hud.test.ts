@@ -34,7 +34,7 @@ describe("Market cart HUD policy", () => {
     ).toBeGreaterThanOrEqual(3)
     expect(source).toContain('aria-label="Cart products"')
     expect(source).toContain("linear-gradient(to right")
-    expect(source).toContain("rounded-xl border-0 p-1 pr-8")
+    expect(source).toContain("rounded-xl border-0 p-1 pr-[50%]")
     expect(source.match(/max-w-60/g)?.length).toBe(2)
     // Three-column header: shrink-free glyph, minmax(0,1fr) merchant rail,
     // shrink-free disclosure + CTA controls. No magic width subtraction.
@@ -85,7 +85,10 @@ describe("Market cart HUD policy", () => {
     // One activation path shared by pointer, Enter, and Space; activating a
     // purchase while collapsed selects and expands it.
     expect(source).toContain("const activatePurchase = useCallback")
-    expect(source).toContain("onClick={() => activatePurchase(group.id)}")
+    expect(source).toContain(
+      "onClick={() => activatePurchase(group.id, index)}"
+    )
+    expect(source).toContain("rail.scrollTo({")
     // The disclosure toggle controls the real details panel element.
     expect(source).toContain("aria-controls={detailsPanelId}")
     expect(source).toContain("id={detailsPanelId}")
