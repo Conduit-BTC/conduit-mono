@@ -4,7 +4,12 @@ import {
   NDKPrivateKeySigner,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
-import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getEventHash,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   __resetInboxRelayCache,
   applyAccountNetworkRelayExclusion,
@@ -1901,7 +1906,7 @@ describe("publishPrivateMessage", () => {
     expect(encryptCalls).toBe(0)
   })
 
-  it("records an explicit recipient relay rejection in the durable order retry state", async () => {
+  it("does not turn caller-supplied relay hints into durable retry authority", async () => {
     const recipientA = "wss://recipient-a.inbox.conduit.market"
     const recipientB = "wss://recipient-b.inbox.conduit.market"
     const wrapSigner = NDKPrivateKeySigner.generate()
@@ -1933,10 +1938,151 @@ describe("publishPrivateMessage", () => {
       })) as never,
     })
 
-    expect(result.orderRelayDelivery?.relayDelivery).toEqual([
-      expect.objectContaining({ relayUrl: recipientA, status: "acked" }),
-      expect.objectContaining({ relayUrl: recipientB, status: "rejected" }),
-    ])
+    expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(result.recipientDelivery.rejectedRelayUrls).toEqual([recipientB])
+    expect(result.orderRelayDelivery).toBeUndefined()
+  })
+
+  it("rejects recoverable delivery without validated signed inbox authority", async () => {
+    let preparedCalls = 0
+    let publishCalls = 0
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        onRecipientPrepared: async () => {
+          preparedCalls += 1
+        },
+        giftWrapFn: (async () => wrap("must-not-wrap")) as never,
+        publishFn: (async () => {
+          publishCalls += 1
+          return {}
+        }) as never,
+      })
+    ).rejects.toThrow("validated recipient relay plan")
+
+    expect(preparedCalls).toBe(0)
+    expect(publishCalls).toBe(0)
+  })
+
+  it("prepares signed declared authority before recipient relay I/O", async () => {
+    __resetInboxRelayCache()
+    const senderPubkey = getPublicKey(generateSecretKey())
+    const recipientSecret = generateSecretKey()
+    const recipientPubkey = getPublicKey(recipientSecret)
+    const relayUrl = "wss://durable-orders.conduit.market"
+    const observedAt = Date.now()
+    const declaration = signedInboxDeclaration(recipientSecret, [relayUrl], 200)
+    mergeInboxDeclarationEvidenceInMemory({
+      pubkey: recipientPubkey,
+      signedEvent: declaration,
+      sourceRelayUrls: [SHARED_INBOX_RELAY],
+      sharedSourceRelayUrls: [SHARED_INBOX_RELAY],
+      observedAt,
+      completeObservedAt: observedAt,
+      lookup: {
+        observedAt,
+        coverage: "complete",
+        hadEvent: true,
+        eventId: declaration.id,
+      },
+    })
+    const order = new NDKEvent()
+    order.kind = EVENT_KINDS.ORDER
+    order.pubkey = senderPubkey
+    order.created_at = 200
+    order.tags = [
+      ["p", recipientPubkey],
+      ["type", "order"],
+      ["order", "staged-order"],
+    ]
+    order.content = JSON.stringify({
+      id: "staged-order",
+      merchantPubkey: recipientPubkey,
+      buyerPubkey: senderPubkey,
+      buyerIdentityKind: "signed_in",
+      items: [
+        {
+          productId: "product-id",
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1,
+      currency: "SATS",
+      createdAt: 200_000,
+    })
+    order.id = order.getEventHash()
+    const sequence: string[] = []
+    const wrapSigner = NDKPrivateKeySigner.generate()
+
+    try {
+      const result = await publishPrivateMessage({
+        rumor: order,
+        validatedOrderScope: createValidatedOrderRouteScope({
+          rumor: order,
+          orderId: "staged-order",
+          senderPubkey,
+          recipientPubkey,
+        }),
+        senderPubkey,
+        recipientPubkey,
+        signer: {
+          user: async () => ({ pubkey: senderPubkey }),
+        } as unknown as NDKSigner,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        giftWrapFn: (async () => {
+          const wrapped = new NDKEvent()
+          wrapped.kind = EVENT_KINDS.GIFT_WRAP
+          wrapped.created_at = 200
+          wrapped.tags = [["p", recipientPubkey]]
+          wrapped.content = "encrypted staged order"
+          await wrapped.sign(wrapSigner)
+          return wrapped
+        }) as never,
+        onRecipientPrepared: async (prepared) => {
+          sequence.push("prepared")
+          expect(prepared.routingAuthority).toEqual({
+            eventId: declaration.id,
+            eventCreatedAt: declaration.created_at,
+            pubkey: recipientPubkey,
+            kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+            relayUrls: [relayUrl],
+          })
+          expect(prepared.relayPlan).toEqual([{ relayUrl, source: "declared" }])
+        },
+        onRecipientPublishStarting: async () => {
+          sequence.push("starting")
+        },
+        onRecipientPublishSettled: async () => {
+          sequence.push("settled")
+        },
+        publishFn: (async () => {
+          sequence.push("publish")
+          return {
+            attemptedRelayUrls: [relayUrl],
+            successfulRelayUrls: [relayUrl],
+            failedRelayUrls: [],
+            rejectedRelayUrls: [],
+          }
+        }) as never,
+      })
+
+      expect(sequence).toEqual(["prepared", "starting", "publish", "settled"])
+      expect(result.orderRelayDelivery?.routingAuthority?.eventId).toBe(
+        declaration.id
+      )
+    } finally {
+      __resetInboxRelayCache()
+    }
   })
 
   it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
@@ -2271,6 +2417,90 @@ describe("publishPrivateMessage", () => {
         blockReason: "not_applicable",
       },
     ])
+  })
+
+  it("retains the approved compatibility plan and non-ACK outcome for exact retry", async () => {
+    const approvedRelays = [
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+    ] as const
+    const wrapped = new NDKEvent()
+    wrapped.kind = EVENT_KINDS.GIFT_WRAP
+    wrapped.created_at = 100
+    wrapped.tags = [["p", "recipient"]]
+    wrapped.content = "encrypted test fixture"
+    await wrapped.sign(NDKPrivateKeySigner.generate())
+    let preparedRelayUrls: string[] = []
+
+    const result = await publishPrivateMessage({
+      ...validatedOrderInput(),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      recipientInboxRelays: [],
+      compatibilityOrderRoute: { enabled: true },
+      resolveCompatibilityRecipientReadRelays: async () => approvedRelays,
+      onRecipientPrepared: async (prepared) => {
+        preparedRelayUrls = prepared.relayPlan.map(({ relayUrl }) => relayUrl)
+        expect(prepared.compatibilityPlan?.relayUrls).toEqual(approvedRelays)
+        expect(prepared.routingAuthority).toBeUndefined()
+      },
+      giftWrapFn: (async () => wrapped) as never,
+      publishFn: (async () => ({
+        successfulRelayUrls: [approvedRelays[0]],
+        failedRelayUrls: [approvedRelays[1]],
+        relayFailureMessages: {
+          [approvedRelays[1]]: "No acknowledgement before timeout",
+        },
+      })) as never,
+    })
+
+    expect(preparedRelayUrls).toEqual(approvedRelays)
+    expect(result.deliveryStatus).toBe("partial_success")
+    expect(result.orderRelayDelivery).toMatchObject({
+      route: "compatibility_order",
+      compatibilityPlan: { relayUrls: approvedRelays },
+      relayDelivery: [
+        { relayUrl: approvedRelays[0], status: "acked" },
+        {
+          relayUrl: approvedRelays[1],
+          source: "recipient_nip65",
+          status: "timed_out",
+        },
+      ],
+    })
+    expect(result.orderRelayDelivery?.routingAuthority).toBeUndefined()
+  })
+
+  it("does not stage caller-supplied compatibility relays outside the registry", async () => {
+    let writes = 0
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: {
+          enabled: true,
+          relayUrls: ["wss://caller-hint.example"],
+        },
+        resolveCompatibilityRecipientReadRelays: async () => [],
+        onRecipientPrepared: async () => {
+          throw new Error("Unapproved plan was prepared")
+        },
+        giftWrapFn: (async () => wrap("unapproved-wrap")) as never,
+        publishFn: (async () => {
+          writes += 1
+          return {}
+        }) as never,
+      })
+    ).rejects.toThrow("validated recipient relay plan")
+    expect(writes).toBe(0)
   })
 
   it("fails explicitly when every compatibility relay fails", async () => {
