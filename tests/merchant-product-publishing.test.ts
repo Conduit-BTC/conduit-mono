@@ -67,6 +67,7 @@ import {
   buildProductDeliveryNotice,
   getRejectedMixedDeletionRecoveryTargets,
   getTerminalRejectedListingRecoveryDTags,
+  resolveProductWriteDeliveryNotice,
 } from "../apps/merchant/src/lib/product-delivery"
 import {
   deliverQueuedProductListings,
@@ -1388,6 +1389,126 @@ describe("merchant product event delivery", () => {
     expect((await deletionsAfterReload.get(deletionJobId))?.state).toBe(
       "delivered"
     )
+  })
+
+  it("offers the original signed deletion for retry when a mixed listing ACKs but deletion is rejected", async () => {
+    const relayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]!
+    const listingRepository = new MemoryProductListingOutbox()
+    const deletionRepository = new MemoryProductDeletionOutbox()
+    const signerDelegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let signerRequests = 0
+    setSigner({
+      user: () => signerDelegate.user(),
+      sign: async (event: NostrEvent) => {
+        signerRequests += 1
+        return await signerDelegate.sign(event)
+      },
+    } as NDKSigner)
+    let signedBundle: SignedProductWriteBundle | null = null
+    const sentDeletionBytes: string[] = []
+    const initial = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("accepted-replacement"),
+            dTag: "accepted-replacement",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "c".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+            sourceRelayUrls: [],
+          },
+        ]),
+        onSignedLocal: async (bundle) => {
+          signedBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingRepository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => ({ status: "acked" }),
+        },
+        deletionDeliveryOptions: {
+          repository: deletionRepository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ signedEvent }) => {
+            sentDeletionBytes.push(JSON.stringify(signedEvent))
+            return { status: "rejected" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget(relayUrl),
+        ],
+      }
+    )
+    if (!signedBundle?.deletionDeliveryJobId) {
+      throw new Error("Expected the signed companion deletion")
+    }
+    const deletionId = signedBundle.deletionDeliveryJobId
+    const signedDeletion = signedBundle.events.find(
+      (event) => event.kind === EVENT_KINDS.DELETION
+    )
+    expect(signedDeletion).toBeDefined()
+    expect(
+      (await listingRepository.get(signedBundle.productListingDeliveryJobId!))
+        ?.state
+    ).toBe("delivered")
+    expect((await deletionRepository.get(deletionId))?.state).toBe("partial")
+
+    const previousPublishNotice = buildProductDeliveryNotice("publish", {
+      ...initial,
+      successfulRelayUrls: [relayUrl],
+      failedRelayUrls: [],
+      rejectedRelayUrls: [],
+    })
+    const outcome = resolveProductWriteDeliveryNotice(
+      initial,
+      previousPublishNotice
+    )
+    expect(outcome.notice.action).toBe("delete")
+    expect(outcome.notice.state).toBe("retry_needed")
+    expect(outcome.notice.detail).toContain("Use Retry delivery")
+    expect(outcome.notice.successfulRelayUrls).toEqual([])
+    expect(outcome.retryDeletionJobId).toBe(deletionId)
+    expect(sentDeletionBytes.length).toBeGreaterThan(0)
+    expect(JSON.parse(sentDeletionBytes[0]!)).toEqual(
+      signedDeletion!.rawEvent()
+    )
+    expect(
+      sentDeletionBytes.every((bytes) => bytes === sentDeletionBytes[0])
+    ).toBe(true)
+    const initialSendCount = sentDeletionBytes.length
+    const requestsBeforeRetry = signerRequests
+
+    await deliverQueuedProductDeletion(deletionId, {
+      repository: deletionRepository,
+      getCompanionListingJob: (jobId) => listingRepository.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        sentDeletionBytes.push(JSON.stringify(signedEvent))
+        return { status: "acked" }
+      },
+    })
+    expect(sentDeletionBytes.length).toBeGreaterThan(initialSendCount)
+    expect(
+      sentDeletionBytes.every((bytes) => bytes === sentDeletionBytes[0])
+    ).toBe(true)
+    expect(signerRequests).toBe(requestsBeforeRetry)
+    expect((await deletionRepository.get(deletionId))?.state).toBe("delivered")
   })
 
   it("never attempts a mixed deletion after every replacement relay rejects the listing", async () => {

@@ -6,6 +6,7 @@ import {
   type ProductListingDeliveryJob,
   type PublishWithPlannerResult,
 } from "@conduit/core"
+import type { ProductWriteDeliveryResult } from "./product-publishing"
 
 type ProductFamilyRecoveryRecord = {
   eventId: string
@@ -160,13 +161,14 @@ function getDeliveryState(
   delivery: Pick<
     PublishWithPlannerResult,
     "successfulRelayUrls" | "failedRelayUrls" | "rejectedRelayUrls"
-  >
+  >,
+  hasOutstandingDeletion = false
 ): ProductDeliveryNotice["state"] {
   if (delivery.failedRelayUrls.length > 0) {
     // A NIP-09 deletion is converged only when every planned target ACKs.
     // Unlike a listing family, even an explicit relay rejection remains in
     // the exact signed deletion's durable retry lane.
-    if (action === "delete") {
+    if (action === "delete" || hasOutstandingDeletion) {
       return delivery.successfulRelayUrls.length > 0
         ? "partial"
         : "retry_needed"
@@ -186,7 +188,7 @@ function mergeRelayUrls(...groups: readonly (readonly string[])[]): string[] {
 
 export function buildProductDeliveryNotice(
   action: ProductWriteAction,
-  delivery: PublishWithPlannerResult,
+  delivery: ProductWriteDeliveryResult,
   previous?: ProductDeliveryNotice
 ): ProductDeliveryNotice {
   const attemptedRelayUrls = previous
@@ -212,11 +214,15 @@ export function buildProductDeliveryNotice(
       delivery.rejectedRelayUrls ?? []
     ).includes(url)
   )
-  const state = getDeliveryState(action, {
-    successfulRelayUrls,
-    failedRelayUrls,
-    rejectedRelayUrls,
-  })
+  const state = getDeliveryState(
+    action,
+    {
+      successfulRelayUrls,
+      failedRelayUrls,
+      rejectedRelayUrls,
+    },
+    !!delivery.outstandingDeletion
+  )
   const totalRelayCount = mergeRelayUrls(
     attemptedRelayUrls,
     successfulRelayUrls,
@@ -232,11 +238,14 @@ export function buildProductDeliveryNotice(
       ? `ACKed ${successfulRelayUrls.length} of ${getRelayCountLabel(totalRelayCount)}.`
       : "Relay delivery completed without per-relay ACK details."
   const retryableRelayUrls = failedRelayUrls.filter(
-    (url) => action === "delete" || !rejectedRelayUrls.includes(url)
+    (url) =>
+      action === "delete" ||
+      !!delivery.outstandingDeletion ||
+      !rejectedRelayUrls.includes(url)
   )
   const retrySummary =
     retryableRelayUrls.length > 0
-      ? `${action === "delete" && rejectedRelayUrls.length > 0 ? `${getRelayCountLabel(rejectedRelayUrls.length)} rejected the signed deletion. ` : ""}Use Retry delivery for ${getRelayCountLabel(retryableRelayUrls.length)}.`
+      ? `${(action === "delete" || delivery.outstandingDeletion) && rejectedRelayUrls.length > 0 ? `${getRelayCountLabel(rejectedRelayUrls.length)} rejected the signed deletion. ` : ""}Use Retry delivery for ${getRelayCountLabel(retryableRelayUrls.length)}.`
       : rejectedRelayUrls.length > 0
         ? state === "rejected"
           ? `${getRelayCountLabel(rejectedRelayUrls.length)} rejected the signed event; there is nothing left to retry. Repair Network Settings, then sign a new delivery.`
@@ -259,6 +268,31 @@ export function buildProductDeliveryNotice(
     successfulRelayUrls,
     failedRelayUrls,
     rejectedRelayUrls,
+  }
+}
+
+/** Choose the actionable signed job, without mixing listing ACKs into deletion truth. */
+export function resolveProductWriteDeliveryNotice(
+  delivery: ProductWriteDeliveryResult,
+  previous?: ProductDeliveryNotice
+): { notice: ProductDeliveryNotice; retryDeletionJobId?: string } {
+  if (delivery.outstandingDeletion) {
+    // This is the first notice for this job. Exact deletion retries merge their
+    // own prior delete notice through the deletion mutation instead.
+    return {
+      notice: buildProductDeliveryNotice(
+        "delete",
+        delivery.outstandingDeletion.delivery
+      ),
+      retryDeletionJobId: delivery.outstandingDeletion.jobId,
+    }
+  }
+  return {
+    notice: buildProductDeliveryNotice(
+      "publish",
+      delivery,
+      previous?.action === "publish" ? previous : undefined
+    ),
   }
 }
 

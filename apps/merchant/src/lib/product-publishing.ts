@@ -1024,11 +1024,19 @@ export interface ProductWriteDeliveryOptions extends DeliverQueuedProductDeletio
   productListingDeliveryOptions?: DeliverQueuedProductListingOptions
 }
 
+export interface ProductWriteDeliveryResult extends PublishWithPlannerResult {
+  /** An exact companion tombstone that remains actionable after a common listing ACK. */
+  outstandingDeletion?: {
+    jobId: string
+    delivery: PublishWithPlannerResult
+  }
+}
+
 export async function deliverSignedProductWriteBundle(
   bundle: SignedProductWriteBundle,
   merchantPubkey: string,
   deliveryOptions: ProductWriteDeliveryOptions = {}
-): Promise<PublishWithPlannerResult> {
+): Promise<ProductWriteDeliveryResult> {
   const listingEvents = bundle.events.filter(
     (event) => event.kind === EVENT_KINDS.PRODUCT
   )
@@ -1072,6 +1080,7 @@ export async function deliverSignedProductWriteBundle(
   }
 
   const deliveries: PublishWithPlannerResult[] = []
+  let companionListingReady = !bundle.productListingDeliveryJobId
   if (bundle.productListingDeliveryJobId) {
     deliveries.push(
       await deliverQueuedProductListings(bundle.productListingDeliveryJobId, {
@@ -1086,6 +1095,7 @@ export async function deliverSignedProductWriteBundle(
         bundle.productListingDeliveryJobId,
         deliveryOptions.productListingDeliveryOptions
       )
+      companionListingReady = listingJob?.state === "delivered"
       if (
         listingJob?.state === "failed" &&
         listingJob.companionDeletionJobId === bundle.deletionDeliveryJobId
@@ -1098,8 +1108,9 @@ export async function deliverSignedProductWriteBundle(
     }
   }
   if (bundle.deletionDeliveryJobId) {
-    deliveries.push(
-      await deliverQueuedProductDeletion(bundle.deletionDeliveryJobId, {
+    const deletionDelivery = await deliverQueuedProductDeletion(
+      bundle.deletionDeliveryJobId,
+      {
         ...deliveryOptions,
         getCompanionListingJob:
           deliveryOptions.getCompanionListingJob ??
@@ -1108,8 +1119,20 @@ export async function deliverSignedProductWriteBundle(
               jobId,
               deliveryOptions.productListingDeliveryOptions
             )),
-      })
+      }
     )
+    deliveries.push(deletionDelivery)
+    return {
+      ...aggregateProductEventDeliveries(deliveries),
+      ...(companionListingReady && deletionDelivery.failedRelayUrls.length > 0
+        ? {
+            outstandingDeletion: {
+              jobId: bundle.deletionDeliveryJobId,
+              delivery: deletionDelivery,
+            },
+          }
+        : {}),
+    }
   }
   return aggregateProductEventDeliveries(deliveries)
 }
@@ -1139,7 +1162,7 @@ export async function signAndPublishProductWriteBundle(
     waitForSignerVisibility?: () => Promise<void>
   },
   dependencies: Partial<ProductPublicationDependencies> = {}
-): Promise<PublishWithPlannerResult> {
+): Promise<ProductWriteDeliveryResult> {
   const ndk = getNdk()
   const assertSignerSessionCurrent = () => {
     if (input.shouldContinue?.() === false) {

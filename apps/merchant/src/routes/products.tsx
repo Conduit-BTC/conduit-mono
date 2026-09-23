@@ -134,6 +134,7 @@ import {
   getRejectedMixedDeletionRecoveryTargets,
   getTerminalRejectedListingRecoveryDTags,
   reconcilePendingProductDeletionRetry,
+  resolveProductWriteDeliveryNotice,
   type ProductDeliveryNotice,
   type ProductWriteAction,
 } from "../lib/product-delivery"
@@ -162,6 +163,7 @@ import {
   SignedProductDeliveryError,
   type ProductSignerRequestProgress,
   type SignedProductWriteBundle,
+  type ProductWriteDeliveryResult,
 } from "../lib/product-publishing"
 import {
   listOrganizerEventMarkets,
@@ -889,7 +891,7 @@ async function publishProduct(
   assertCurrentFamilyRevision?: () => void,
   forcePublishDTags?: readonly string[],
   recoveryDeletionJob?: ProductDeletionDeliveryJob
-): Promise<PublishWithPlannerResult> {
+): Promise<ProductWriteDeliveryResult> {
   const preserveFulfillment = form.fulfillment === "preserve"
   if (preserveFulfillment && !existing) {
     throw new Error(
@@ -2079,8 +2081,7 @@ function ProductsPage() {
     },
     onSuccess: async (data, variables) => {
       productPublishInFlightRef.current = false
-      const notice = buildProductDeliveryNotice(
-        "publish",
+      const { notice, retryDeletionJobId } = resolveProductWriteDeliveryNotice(
         data,
         variables.previousNotice
       )
@@ -2106,7 +2107,15 @@ function ProductsPage() {
       setProductSignerProgress(null)
       setProductSignerRequestsComplete(false)
       setProductDeliveryNotice(notice)
-      if (notice.state === "delivered" || notice.state === "rejected") {
+      if (retryDeletionJobId) {
+        setProductDeliveryRetry({
+          action: "delete",
+          payload: {
+            merchantPubkey: variables.merchantPubkey,
+            deliveryJobId: retryDeletionJobId,
+          },
+        })
+      } else if (notice.state === "delivered" || notice.state === "rejected") {
         setProductDeliveryRetry(null)
       }
       await refreshProductQueries(variables.merchantPubkey)

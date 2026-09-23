@@ -217,6 +217,27 @@ describe("merchant product delivery notices", () => {
     expect(notice.detail).not.toContain("Use Retry delivery")
   })
 
+  it("keeps a mixed publish retryable when its exact companion deletion is rejected", () => {
+    const rejectedDeletion = deliveryResult({
+      attemptedRelayUrls: ["wss://relay.one"],
+      failedRelayUrls: ["wss://relay.one"],
+      rejectedRelayUrls: ["wss://relay.one"],
+    })
+    const mixedDelivery = {
+      ...rejectedDeletion,
+      outstandingDeletion: {
+        jobId: "d".repeat(64),
+        delivery: rejectedDeletion,
+      },
+    }
+
+    const notice = buildProductDeliveryNotice("publish", mixedDelivery)
+
+    expect(notice.state).toBe("retry_needed")
+    expect(notice.detail).toContain("Use Retry delivery")
+    expect(notice.detail).not.toContain("nothing left to retry")
+  })
+
   it("keeps an all-rejected deletion in the exact-delivery retry state", () => {
     const rejected = buildProductDeliveryNotice(
       "delete",
