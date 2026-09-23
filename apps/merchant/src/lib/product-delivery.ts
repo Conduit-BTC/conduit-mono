@@ -1,6 +1,8 @@
 import {
   EVENT_KINDS,
   isFullyRejectedProductListingJob,
+  productDeletionEvidenceFromSignedEvent,
+  type ProductDeletionDeliveryJob,
   type ProductListingDeliveryJob,
   type PublishWithPlannerResult,
 } from "@conduit/core"
@@ -9,6 +11,42 @@ type ProductFamilyRecoveryRecord = {
   eventId: string
   dTag: string | null
   product: { pubkey: string }
+}
+
+export function getRejectedMixedDeletionRecoveryTargets(
+  job: ProductDeletionDeliveryJob,
+  merchantPubkey: string
+): { eventId: string; addressId: string; sourceRelayUrls: string[] }[] | null {
+  if (job.signedEvent.pubkey !== merchantPubkey) return null
+  const eventIds = job.signedEvent.tags
+    .filter(([name]) => name === "e")
+    .map(([, eventId]) => eventId)
+  const addresses = job.signedEvent.tags
+    .filter(([name]) => name === "a")
+    .map(([, addressId]) => addressId)
+  const evidence = productDeletionEvidenceFromSignedEvent(job.signedEvent)
+  if (
+    !eventIds.length ||
+    eventIds.length !== addresses.length ||
+    new Set(eventIds).size !== eventIds.length ||
+    new Set(addresses).size !== addresses.length ||
+    evidence?.length !== eventIds.length + addresses.length ||
+    eventIds.some((id) => !/^[0-9a-f]{64}$/.test(id ?? "")) ||
+    addresses.some(
+      (address) =>
+        !address?.startsWith(`${EVENT_KINDS.PRODUCT}:${merchantPubkey}:`)
+    )
+  ) {
+    return null
+  }
+  const sourceRelayUrls = job.relayPlan
+    .filter((target) => target.roles.includes("source"))
+    .map((target) => target.relayUrl)
+  return eventIds.map((eventId, index) => ({
+    eventId: eventId!,
+    addressId: addresses[index]!,
+    sourceRelayUrls,
+  }))
 }
 
 /**
@@ -20,14 +58,35 @@ export function getTerminalRejectedListingRecoveryDTags(
   job: ProductListingDeliveryJob,
   family: ProductFamilyRecoveryRecord & {
     variations: readonly ProductFamilyRecoveryRecord[]
-  }
+  },
+  companionDeletion?: ProductDeletionDeliveryJob
 ): string[] | null {
-  if (
-    // A mixed family removal also owns a gated NIP-09 job. Re-signing only
-    // the listing half would silently drop that deletion from the restart.
-    !!job.companionDeletionJobId ||
-    !isFullyRejectedProductListingJob(job)
-  ) {
+  if (!isFullyRejectedProductListingJob(job)) {
+    return null
+  }
+  if (job.companionDeletionJobId) {
+    // A failed mixed family must restart both signed intents together. Its
+    // original deletion is still queued, never independently actionable.
+    if (
+      !companionDeletion ||
+      companionDeletion.id !== job.companionDeletionJobId ||
+      companionDeletion.companionListingJobId !== job.id ||
+      companionDeletion.signedEvent.id !== companionDeletion.id ||
+      companionDeletion.signedEvent.pubkey !== job.merchantPubkey ||
+      companionDeletion.state !== "pending" ||
+      companionDeletion.deliveryAttemptCount !== 0 ||
+      companionDeletion.relayDelivery.some(
+        (delivery) =>
+          delivery.status !== "pending" || delivery.attemptCount !== 0
+      ) ||
+      !getRejectedMixedDeletionRecoveryTargets(
+        companionDeletion,
+        job.merchantPubkey
+      )
+    ) {
+      return null
+    }
+  } else if (companionDeletion) {
     return null
   }
   const records = [family, ...family.variations]

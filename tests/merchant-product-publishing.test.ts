@@ -22,6 +22,7 @@ import {
   EVENT_KINDS,
   getCachedMerchantStorefront,
   getPendingProductDeletionDeliveries,
+  getRejectedProductListingDeliveries,
   parseProductEvent,
   persistProductListingDelivery,
   planProductDeletionRelays,
@@ -62,7 +63,11 @@ import {
   persistSignedProductDeletion,
   resumePendingProductDeletionDeliveries,
 } from "../apps/merchant/src/lib/product-deletion-delivery"
-import { buildProductDeliveryNotice } from "../apps/merchant/src/lib/product-delivery"
+import {
+  buildProductDeliveryNotice,
+  getRejectedMixedDeletionRecoveryTargets,
+  getTerminalRejectedListingRecoveryDTags,
+} from "../apps/merchant/src/lib/product-delivery"
 import {
   deliverQueuedProductListings,
   ensureSignedProductListingsQueued,
@@ -187,6 +192,16 @@ class MemoryProductListingOutbox implements ProductListingOutboxRepository {
   async listUndelivered(): Promise<ProductListingDeliveryJob[]> {
     return Array.from(this.storage.values())
       .filter((job) => job.state === "pending" || job.state === "partial")
+      .map(cloneListingJob)
+  }
+
+  async listFailed(
+    merchantPubkey: string
+  ): Promise<ProductListingDeliveryJob[]> {
+    return Array.from(this.storage.values())
+      .filter(
+        (job) => job.state === "failed" && job.merchantPubkey === merchantPubkey
+      )
       .map(cloneListingJob)
   }
 
@@ -1492,6 +1507,162 @@ describe("merchant product event delivery", () => {
         (delivery) => delivery.attemptCount === 0
       )
     ).toBe(true)
+
+    // A reload must expose the exact failed local listing and its reciprocal
+    // untouched deletion as one deliberate start-over, not two retries.
+    const rejected = await getRejectedProductListingDeliveries(
+      MERCHANT_PUBKEY,
+      { repository: listingsAfterReload }
+    )
+    const oldListing = rejected[0]
+    if (!oldListing || !deletionAfterRetry) {
+      throw new Error("Expected durable rejected mixed-family evidence")
+    }
+    const currentFamily = {
+      eventId: oldListing.signedEvents[0]!.id,
+      dTag: "rejected-replacement",
+      product: { pubkey: MERCHANT_PUBKEY },
+      variations: [],
+    }
+    expect(
+      getTerminalRejectedListingRecoveryDTags(oldListing, currentFamily)
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        oldListing,
+        { ...currentFamily, eventId: "f".repeat(64) },
+        deletionAfterRetry
+      )
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(oldListing, currentFamily, {
+        ...deletionAfterRetry,
+        companionListingJobId: "different-family",
+      })
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        oldListing,
+        currentFamily,
+        deletionAfterRetry
+      )
+    ).toEqual(["rejected-replacement"])
+    const recoveryTargets = getRejectedMixedDeletionRecoveryTargets(
+      deletionAfterRetry,
+      MERCHANT_PUBKEY
+    )
+    if (!recoveryTargets) throw new Error("Expected signed deletion targets")
+
+    let recoveryBundle: SignedProductWriteBundle | null = null
+    let recoveryDeletionAttempts = 0
+    const recovered = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("rejected-replacement"),
+            dTag: "rejected-replacement",
+            previousEventCreatedAt: oldListing.signedEvents[0]!.created_at,
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        deletions: recoveryTargets,
+        recoveryDeletionEvent: deletionAfterRetry.signedEvent,
+        onSignedLocal: async (bundle) => {
+          recoveryBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingsAfterReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW + 20_000,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => ({ status: "timed_out" }),
+        },
+        deletionDeliveryOptions: {
+          repository: deletionsAfterReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW + 20_000,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => {
+            recoveryDeletionAttempts += 1
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget("wss://relay.repaired.example"),
+        ],
+      }
+    )
+    if (!recoveryBundle) throw new Error("Expected new signed pair")
+    const newListingId = recoveryBundle.productListingDeliveryJobId
+    const newDeletionId = recoveryBundle.deletionDeliveryJobId
+    if (!newListingId || !newDeletionId) {
+      throw new Error("Expected new reciprocal delivery jobs")
+    }
+    expect(newListingId).not.toBe(listingJobId)
+    expect(newDeletionId).not.toBe(deletionJobId)
+    expect(recovered.successfulRelayUrls).toEqual([])
+    expect(recoveryDeletionAttempts).toBe(0)
+    expect((await listingsAfterReload.get(listingJobId))?.state).toBe("failed")
+    expect(
+      (await deletionsAfterReload.get(deletionJobId))?.deliveryAttemptCount
+    ).toBe(0)
+    const newListing = await listingsAfterReload.get(newListingId)
+    const newDeletion = await deletionsAfterReload.get(newDeletionId)
+    expect(newListing?.companionDeletionJobId).toBe(newDeletionId)
+    expect(newDeletion?.companionListingJobId).toBe(newListingId)
+    expect(newDeletion?.signedEvent.created_at).toBe(
+      deletionAfterRetry.signedEvent.created_at
+    )
+    expect(newDeletion?.signedEvent.tags).toContainEqual([
+      "conduit_recovery_attempt",
+      deletionJobId,
+      expect.any(String),
+    ])
+    expect(newDeletion?.deliveryAttemptCount).toBe(0)
+
+    await resumePendingProductListingDeliveries({
+      repository: listingsAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 30_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        expect(signedEvent.id).toBe(newListing?.signedEvents[0]?.id)
+        return { status: "acked" }
+      },
+    })
+    expect((await listingsAfterReload.get(newListingId))?.state).toBe(
+      "delivered"
+    )
+    await resumePendingProductDeletionDeliveries({
+      repository: deletionsAfterReload,
+      getCompanionListingJob: (jobId) => listingsAfterReload.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 30_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        expect(signedEvent.id).toBe(newDeletionId)
+        recoveryDeletionAttempts += 1
+        return { status: "acked" }
+      },
+    })
+    expect(recoveryDeletionAttempts).toBeGreaterThan(0)
+    expect((await deletionsAfterReload.get(newDeletionId))?.state).toBe(
+      "delivered"
+    )
+    expect(
+      (await deletionsAfterReload.get(deletionJobId))?.deliveryAttemptCount
+    ).toBe(0)
   })
 
   it("resumes the exact signed product family after partial relay delivery and reload", async () => {

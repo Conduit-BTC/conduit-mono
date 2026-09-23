@@ -135,6 +135,7 @@ import {
   buildQueuedProductDeletionNotice,
   formatProductRelayUrls,
   getProductDeliveryNoticeVariant,
+  getRejectedMixedDeletionRecoveryTargets,
   getTerminalRejectedListingRecoveryDTags,
   reconcilePendingProductDeletionRetry,
   type ProductDeliveryNotice,
@@ -903,7 +904,8 @@ async function publishProduct(
   existingFamilyEvidenceComplete?: boolean,
   onDeliveryQueued?: (bundle: SignedProductWriteBundle) => Promise<void>,
   assertCurrentFamilyRevision?: () => void,
-  forcePublishDTags?: readonly string[]
+  forcePublishDTags?: readonly string[],
+  recoveryDeletionJob?: ProductDeletionDeliveryJob
 ): Promise<PublishWithPlannerResult> {
   const preserveFulfillment = form.fulfillment === "preserve"
   if (preserveFulfillment && !existing) {
@@ -1134,7 +1136,20 @@ async function publishProduct(
     previousEventCreatedAt: target.existing?.eventCreatedAt,
     fulfillmentIntent: target.fulfillmentIntent,
   }))
-  const deletions = buildProductRemovalDeletionTargets(plan.remove)
+  const recoveryDeletionTargets = recoveryDeletionJob
+    ? getRejectedMixedDeletionRecoveryTargets(
+        recoveryDeletionJob,
+        merchantPubkey
+      )
+    : null
+  if (
+    recoveryDeletionJob &&
+    (!recoveryDeletionTargets || plan.remove.length > 0 || !forcePublishDTags)
+  ) {
+    throw new Error("The rejected mixed product update changed before recovery")
+  }
+  const deletions =
+    recoveryDeletionTargets ?? buildProductRemovalDeletionTargets(plan.remove)
   const bundleSignerRequestTotal = getProductSignerRequestCount({
     listings,
     deletions,
@@ -1170,6 +1185,7 @@ async function publishProduct(
     shouldContinue,
     listings,
     deletions,
+    recoveryDeletionEvent: recoveryDeletionJob?.signedEvent,
     onSignerRequest: (progress) => {
       assertCurrentFamilyRevision?.()
       onSignerRequest?.({
@@ -1584,7 +1600,17 @@ function ProductsPage() {
   const rejectedListingJobsQuery = useQuery({
     queryKey: ["merchant-product-rejected-listings", accountPubkey ?? "none"],
     enabled: !!accountPubkey,
-    queryFn: () => getRejectedProductListingDeliveries(accountPubkey!),
+    queryFn: async () => {
+      const jobs = await getRejectedProductListingDeliveries(accountPubkey!)
+      return Promise.all(
+        jobs.map(async (job) => ({
+          job,
+          companionDeletion: job.companionDeletionJobId
+            ? await getProductDeletionDelivery(job.companionDeletionJobId)
+            : undefined,
+        }))
+      )
+    },
     staleTime: 5_000,
   })
   const rejectedDeletionJobsQuery = useQuery({
@@ -1621,13 +1647,19 @@ function ProductsPage() {
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
   )
-  function getRejectedListingRecovery(
-    family: MerchantProductFamily
-  ): { job: ProductListingDeliveryJob; dTags: string[] } | null {
+  function getRejectedListingRecovery(family: MerchantProductFamily): {
+    job: ProductListingDeliveryJob
+    dTags: string[]
+    companionDeletion?: ProductDeletionDeliveryJob
+  } | null {
     for (let index = rejectedListingJobs.length - 1; index >= 0; index--) {
-      const job = rejectedListingJobs[index]!
-      const dTags = getTerminalRejectedListingRecoveryDTags(job, family)
-      if (dTags) return { job, dTags }
+      const { job, companionDeletion } = rejectedListingJobs[index]!
+      const dTags = getTerminalRejectedListingRecoveryDTags(
+        job,
+        family,
+        companionDeletion
+      )
+      if (dTags) return { job, dTags, companionDeletion }
     }
     return null
   }
@@ -1995,14 +2027,22 @@ function ProductsPage() {
 
       let recoveryDTags: string[] | undefined
       let recoveryFamilyRevision: string | undefined
+      let recoveryDeletionJob: ProductDeletionDeliveryJob | undefined
       if (payload.recoveryJobId) {
         const job = await getProductListingDelivery(payload.recoveryJobId)
+        const companionDeletion = job?.companionDeletionJobId
+          ? await getProductDeletionDelivery(job.companionDeletionJobId)
+          : undefined
         const currentFamily = merchantProductsRef.current.find(
           (candidate) => candidate.addressId === payload.existing?.addressId
         )
         const dTags =
           job && currentFamily
-            ? getTerminalRejectedListingRecoveryDTags(job, currentFamily)
+            ? getTerminalRejectedListingRecoveryDTags(
+                job,
+                currentFamily,
+                companionDeletion
+              )
             : null
         if (
           !currentFamily ||
@@ -2028,6 +2068,7 @@ function ProductsPage() {
           )
         }
         recoveryDTags = dTags
+        recoveryDeletionJob = companionDeletion
         recoveryFamilyRevision = getProductFamilySupplierAllocationRevisionKey({
           root: currentFamily,
           variations: currentFamily.variations,
@@ -2152,7 +2193,8 @@ function ProductsPage() {
             }
           },
           assertCurrentFamilyRevision,
-          recoveryDTags
+          recoveryDTags,
+          recoveryDeletionJob
         )
       } catch (error) {
         if (fallbackMovePrepared && !signedLocally) {

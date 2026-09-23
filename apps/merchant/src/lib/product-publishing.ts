@@ -21,6 +21,7 @@ import {
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
   publishWithPlanner,
+  productDeletionEvidenceFromSignedEvent,
   RelayPublishDiagnosticsError,
   resolveProductFulfillment,
   waitForVisibleDocument,
@@ -1121,6 +1122,8 @@ export async function signAndPublishProductWriteBundle(
     shouldContinue?: () => boolean
     listings: readonly ProductListingPublishTarget[]
     deletions?: readonly ProductDeletionPublishTarget[]
+    /** Re-sign a rejected mixed family's original deletion without widening its NIP-09 cutoff. */
+    recoveryDeletionEvent?: SignedPublicNostrEvent
     onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
     onSignedEvent?: (
       event: NDKEvent,
@@ -1231,13 +1234,49 @@ export async function signAndPublishProductWriteBundle(
       targets: input.deletions ?? [],
       clientAppId: "merchant",
     })
+    const recoveryEvent = input.recoveryDeletionEvent
+    if (recoveryEvent) {
+      const targetTags = (tags: readonly (readonly string[])[]) =>
+        tags.filter(([name]) => name === "e" || name === "a")
+      if (
+        recoveryEvent.pubkey !== signerPubkey ||
+        !productDeletionEvidenceFromSignedEvent(recoveryEvent)?.length ||
+        JSON.stringify(targetTags(recoveryEvent.tags)) !==
+          JSON.stringify(targetTags(draft.tags)) ||
+        recoveryEvent.created_at > Math.floor(Date.now() / 1000) + 60
+      ) {
+        throw new Error("Rejected product deletion targets changed")
+      }
+    }
     const deletion = new NDKEvent(ndk)
     deletion.kind = draft.kind
-    deletion.created_at = Math.floor(Date.now() / 1000)
+    // NIP-09 `a` deletion is effective only through this timestamp. A new
+    // recovery signature must not erase a later product revision.
+    deletion.created_at =
+      recoveryEvent?.created_at ?? Math.floor(Date.now() / 1000)
     deletion.content = draft.content
-    deletion.tags = draft.tags
+    deletion.tags = recoveryEvent
+      ? [
+          ...draft.tags,
+          ["conduit_recovery_attempt", recoveryEvent.id, crypto.randomUUID()],
+        ]
+      : draft.tags
     await signEvent(deletion, "deletion")
+    if (
+      recoveryEvent &&
+      (deletion.created_at !== recoveryEvent.created_at ||
+        JSON.stringify(
+          deletion.tags.filter(([name]) => name === "e" || name === "a")
+        ) !==
+          JSON.stringify(
+            draft.tags.filter(([name]) => name === "e" || name === "a")
+          ))
+    ) {
+      throw new Error("Signer changed product deletion recovery targets")
+    }
     events.push(deletion)
+  } else if (input.recoveryDeletionEvent) {
+    throw new Error("Rejected product deletion recovery has no targets")
   }
 
   assertSignerSessionCurrent()

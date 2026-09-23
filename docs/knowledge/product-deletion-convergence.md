@@ -119,6 +119,14 @@ once it arrives, the original signed deletion can be retried without another
 signer request. If that companion deletion is explicitly rejected by every
 planned relay, a new signed delivery is offered only after the reciprocal,
 same-author replacement family has a durable common relay acknowledgement.
+If the replacement family itself is rejected by every relay, the untouched
+companion deletion cannot be delivered independently. After reload, Merchant
+compares the failed signed family with the current same-author local revision
+and offers a deliberate paired start-over. Both intents are newly signed and
+staged together; the replacement deletion retains the original NIP-09
+`created_at` cutoff and targets, and remains gated on a common ACK for the new
+listing family. Neither rejected listing bytes nor the old queued deletion are
+retried as the new operation.
 Standalone deletions retain their independent delivery path.
 
 Workers use a durable expiring claim to avoid duplicate cross-tab delivery.
