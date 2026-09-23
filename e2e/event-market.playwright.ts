@@ -5436,6 +5436,10 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
     await submission
     await expect(page).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
     await expect(
+      page.getByRole("heading", { name: "Orders", exact: true })
+    ).toHaveCount(0)
+    await expect(page.getByRole("button", { name: "Browse" })).toHaveCount(0)
+    await expect(
       page.getByRole("button", { name: "Copy invoice", exact: true })
     ).toBeVisible()
     await expect(

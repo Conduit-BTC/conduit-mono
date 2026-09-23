@@ -4,6 +4,7 @@ import {
   buildLightningPaymentProofMessage,
   claimExternalOrderPaymentProof,
   claimOrderLifecyclePayment,
+  claimExpiredOrderInvoiceForRetry,
   claimOrderLifecycleUpdatedAddressPayment,
   claimOrderLifecyclePrivateFallbackPayment,
   claimOrderPaymentProofDelivery,
@@ -75,6 +76,7 @@ import {
 } from "./order-payment-session"
 import {
   assessOrderPaymentAddress,
+  checkOrderPaymentAddressForRenewal,
   checkOrderPaymentAddressUpdate,
   type OrderPaymentAddressUpdate,
 } from "./order-payment-address"
@@ -274,6 +276,10 @@ export interface OrderPaymentContext {
   authenticatedPubkey?: string | null
   /** Live signed-in account authority; absent for guest orders. */
   shouldContinue?: () => boolean
+  /** View freshness gate used only until an explicit invoice retry is claimed. */
+  shouldContinueBeforePaymentClaim?: () => boolean
+  /** Current Orders-view authority for starting or continuing payment. */
+  shouldContinuePaymentAuthority?: () => boolean
   buyerIdentity?: BuyerOrderSigningIdentity
   merchantPubkey: string
   merchantLud16: string | null
@@ -305,7 +311,9 @@ export interface OrderPaymentDependencies {
   getOrderLifecyclePaymentAdmission: typeof getOrderLifecyclePaymentAdmission
   loadSelectedProfileContext: typeof loadSelectedProfileContext
   checkOrderPaymentAddressUpdate: typeof checkOrderPaymentAddressUpdate
+  checkOrderPaymentAddressForRenewal: typeof checkOrderPaymentAddressForRenewal
   claimOrderLifecycleUpdatedAddressPayment: typeof claimOrderLifecycleUpdatedAddressPayment
+  claimExpiredOrderInvoiceForRetry: typeof claimExpiredOrderInvoiceForRetry
   anonZapSignerPubkey: string | null
   fetchLnurlPayMetadata: typeof fetchLnurlPayMetadata
   requestCheckoutLnurlInvoice: typeof requestCheckoutLnurlInvoice
@@ -339,7 +347,9 @@ const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
   getOrderLifecyclePaymentAdmission,
   loadSelectedProfileContext,
   checkOrderPaymentAddressUpdate,
+  checkOrderPaymentAddressForRenewal,
   claimOrderLifecycleUpdatedAddressPayment,
+  claimExpiredOrderInvoiceForRetry,
   anonZapSignerPubkey: normalizePubkey(config.anonZapSignerPubkey),
   fetchLnurlPayMetadata,
   requestCheckoutLnurlInvoice,
@@ -1129,6 +1139,31 @@ async function assertOrderPaymentProfileAdmission(
   )
 }
 
+async function assertOrderPaymentRenewalAddress(
+  lifecycle: OrderLifecycle,
+  ctx: OrderPaymentContext,
+  dependencies: OrderPaymentDependencies
+): Promise<void> {
+  assertOrderPaymentSession(ctx)
+  const result = await dependencies.checkOrderPaymentAddressForRenewal(
+    lifecycle,
+    ctx
+  )
+  assertOrderPaymentSession(ctx)
+  assertAdmittedPaymentAddress(result.status)
+  const selected = await dependencies.loadSelectedProfileContext(
+    ctx.merchantPubkey
+  )
+  assertOrderPaymentSession(ctx)
+  assertAdmittedPaymentAddress(
+    assessOrderPaymentAddress(
+      selected,
+      ctx.merchantPubkey,
+      lifecycle.merchantLightningAddress ?? ""
+    )
+  )
+}
+
 /** Buyer-confirmed destination recovery; the ordinary snapshot gate stays strict. */
 export async function runOrderPaymentWithUpdatedAddress(
   ctx: OrderPaymentContext,
@@ -1225,11 +1260,132 @@ export async function runOrderPaymentWithUpdatedAddress(
       },
       update.expectedUpdatedAt,
       update.newAddress,
-      sessionIsCurrent
+      () =>
+        sessionIsCurrent() && ctx.shouldContinueBeforePaymentClaim?.() !== false
     )
     if (claim.status !== "claimed") {
       throw new Error(
         "Order payment state changed. Refresh before retrying with the updated address."
+      )
+    }
+  } catch (error) {
+    if (remembered)
+      dependencies.clearOrderPaymentClaim(ctx.orderId, paymentClaimId)
+    throw error
+  } finally {
+    paymentRecoveryTransitions.delete(ctx.orderId)
+  }
+  return runOrderPaymentInternal(ctx, dependencyOverrides, {
+    paymentClaimId,
+    lifecycle: claim.lifecycle,
+    preclaimLifecycle: claim.preclaimLifecycle ?? preclaimLifecycle,
+    assertSession,
+  })
+}
+
+/** Explicitly renew an exact expired manual invoice without releasing its evidence first. */
+export async function runOrderPaymentWithRenewedInvoice(
+  ctx: OrderPaymentContext,
+  expectedInvoice: string,
+  expectedUpdatedAt: number,
+  dependencyOverrides: Partial<OrderPaymentDependencies> = {}
+): Promise<OrderPaymentRuntimeState> {
+  const dependencies = {
+    ...defaultOrderPaymentDependencies,
+    ...dependencyOverrides,
+  }
+  const sessionIsCurrent = () => {
+    if (ctx.shouldContinue?.() === false) return false
+    if (ctx.buyerIdentity?.kind === "guest_ephemeral") {
+      return (
+        ctx.buyerIdentity.pubkey === ctx.buyerPubkey &&
+        ctx.buyerIdentity.orderId === ctx.orderId &&
+        ctx.buyerIdentity.merchantPubkey === ctx.merchantPubkey
+      )
+    }
+    return (
+      !!ctx.authenticatedPubkey && ctx.authenticatedPubkey === ctx.buyerPubkey
+    )
+  }
+  const assertSession = () => {
+    if (!sessionIsCurrent()) {
+      throw new Error(
+        "The connected account changed. Reopen the order before trying payment again."
+      )
+    }
+  }
+  assertSession()
+  if (isOrderPaymentRunning(ctx.orderId)) {
+    throw new Error("Payment is already in progress for this order.")
+  }
+  paymentRecoveryTransitions.add(ctx.orderId)
+  const paymentClaimId = generateId()
+  let remembered = false
+  let preclaimLifecycle: OrderLifecycle
+  let claim: OrderPaymentClaimResult
+  try {
+    const lifecycle = await dependencies.getOrderLifecycle(ctx.orderId)
+    assertSession()
+    if (
+      !lifecycle ||
+      lifecycle.updatedAt !== expectedUpdatedAt ||
+      lifecycle.invoice?.toLowerCase() !== expectedInvoice.toLowerCase() ||
+      lifecycle.buyerPubkey !== ctx.buyerPubkey ||
+      lifecycle.merchantPubkey !== ctx.merchantPubkey ||
+      lifecycle.paymentTarget?.type !== "manual" ||
+      ctx.paymentTarget.type !== "manual" ||
+      (lifecycle.checkoutMode !== "private_checkout" &&
+        lifecycle.checkoutMode !== "external_wallet") ||
+      ctx.zapMode !== "private_checkout" ||
+      lifecycle.publicZapSigner !== undefined ||
+      isGuestOrderDataExpired(lifecycle)
+    ) {
+      throw new Error("Order payment details changed. Refresh before retrying.")
+    }
+    preclaimLifecycle = lifecycle
+    if (ctx.shouldContinueBeforePaymentClaim?.() === false) {
+      throw new Error("Order payment details changed. Refresh before retrying.")
+    }
+    await assertOrderPaymentRenewalAddress(lifecycle, ctx, dependencies)
+    assertSession()
+    if (ctx.shouldContinueBeforePaymentClaim?.() === false) {
+      throw new Error("Order payment details changed. Refresh before retrying.")
+    }
+    remembered = dependencies.rememberOrderPaymentClaim(
+      ctx.orderId,
+      paymentClaimId
+    )
+    if (!remembered)
+      throw new Error("Recoverable payment storage is unavailable.")
+    claim = await dependencies.claimExpiredOrderInvoiceForRetry(
+      {
+        orderId: ctx.orderId,
+        paymentClaimId,
+        buyerPubkey: ctx.buyerPubkey,
+        merchantPubkey: ctx.merchantPubkey,
+        merchantLightningAddress: ctx.merchantLud16,
+        checkoutMode: ctx.zapMode,
+        zapContent: ctx.zapContent,
+        totalSats: ctx.totalSats,
+        totalMsats: ctx.totalMsats,
+        items: ctx.items,
+        paymentTarget: ctx.paymentTarget,
+      },
+      expectedInvoice,
+      expectedUpdatedAt,
+      () =>
+        sessionIsCurrent() && ctx.shouldContinueBeforePaymentClaim?.() !== false
+    )
+    if (claim.status !== "claimed") {
+      if (claim.status === "invoice_history_limit") {
+        throw new Error(
+          "This order has reached its limit for retaining expired invoices. Contact the merchant to arrange payment before retrying."
+        )
+      }
+      throw new Error(
+        claim.status === "missing"
+          ? "Order payment state is unavailable."
+          : "Payment state changed in another tab. Refresh before retrying."
       )
     }
   } catch (error) {
@@ -1392,7 +1548,12 @@ async function runOrderPaymentInternal(
     }
     const claim: OrderPaymentClaimResult = preparedClaim
       ? { status: "claimed", lifecycle: preparedClaim.lifecycle }
-      : await dependencies.claimOrderLifecyclePayment(claimInput)
+      : await dependencies.claimOrderLifecyclePayment(
+          claimInput,
+          () =>
+            ctx.shouldContinue?.() !== false &&
+            ctx.shouldContinueBeforePaymentClaim?.() !== false
+        )
     if (claim.status !== "claimed") {
       clearSessionClaim = true
       const message =
@@ -1490,6 +1651,7 @@ async function runOrderPaymentInternal(
     const assertPaymentAuthority = async () => {
       try {
         assertOrderPaymentSession(ctx)
+        assertPaymentViewAuthority()
         preparedClaim?.assertSession?.()
         const fence =
           await dependencies.fenceClaimedOrderLifecyclePaymentAuthority(
@@ -1503,6 +1665,7 @@ async function runOrderPaymentInternal(
         }
         emit(orderId, { lifecycle: fence.lifecycle })
         assertOrderPaymentSession(ctx)
+        assertPaymentViewAuthority()
         preparedClaim?.assertSession?.()
         if (invoiceForPayment) {
           const validation = validateLightningInvoiceForPayment({
@@ -1528,6 +1691,13 @@ async function runOrderPaymentInternal(
                 "Saved profile authority is unavailable. Restore local storage and check the payment address again."
               )
         await restorePreclaimPaymentContract(authorityError)
+      }
+    }
+    const assertPaymentViewAuthority = () => {
+      if (ctx.shouldContinuePaymentAuthority?.() === false) {
+        throw new OrderPaymentAuthorityError(
+          "This order no longer accepts a new payment attempt."
+        )
       }
     }
 
@@ -1830,6 +2000,7 @@ async function runOrderPaymentInternal(
       }
 
       if (payResult.status === "manual_required") {
+        await assertPaymentAuthority()
         // No automatic rail. Private invoices retain the buyer-attested report
         // flow. Public anon-zap invoices are observed by exact NIP-57 receipt
         // context instead, so the buyer never needs a manual confirmation step.
@@ -2151,8 +2322,12 @@ export async function runOrderPrivateFallback(
     // Every admitted legacy fallback is also an ordinary failed retry for the
     // profile check; only its subsequent atomic claim changes payment mode.
     await assertOrderPaymentProfileAdmission(snapshot, ctx, dependencies)
-    claim =
-      await dependencies.claimOrderLifecyclePrivateFallbackPayment(claimInput)
+    claim = await dependencies.claimOrderLifecyclePrivateFallbackPayment(
+      claimInput,
+      () =>
+        ctx.shouldContinue?.() !== false &&
+        ctx.shouldContinueBeforePaymentClaim?.() !== false
+    )
   } catch (error) {
     dependencies.clearOrderPaymentClaim(ctx.orderId, paymentClaimId)
     emit(ctx.orderId, {
@@ -2308,16 +2483,94 @@ export async function submitExternalPaymentProof(
   shouldContinue?: () => boolean,
   // Claim authorization ends before payment becomes paid; delivery keeps its
   // separate session guard so a successful claim can publish its own proof.
-  authorizeClaim?: (lifecycle: OrderLifecycle) => boolean
+  authorizeClaim?: (lifecycle: OrderLifecycle) => boolean,
+  priorExpiredManualInvoice?: {
+    invoice: string
+    paymentHash: string
+    expiresAt: number
+  }
 ): Promise<OrderPaymentRuntimeState | undefined> {
   if (inFlight.has(orderId)) return runtimeStates.get(orderId)
   inFlight.add(orderId)
   let stopProofDeliveryHeartbeat: (() => void) | null = null
   try {
+    if (shouldContinue?.() === false) return runtimeStates.get(orderId)
+    if (
+      buyerIdentity &&
+      ((authenticatedPubkey && buyerIdentity.pubkey !== authenticatedPubkey) ||
+        (buyerIdentity.kind === "guest_ephemeral" &&
+          buyerIdentity.orderId !== orderId))
+    ) {
+      return runtimeStates.get(orderId)
+    }
     if (merchantInvoiceAction && merchantInvoiceAction.orderId !== orderId) {
       throw new Error("The invoice does not belong to this order.")
     }
     const lifecycle = await getOrderLifecycle(orderId)
+    if (shouldContinue?.() === false) return runtimeStates.get(orderId)
+    const activeReplacementValidation = lifecycle?.invoice
+      ? validateLightningInvoiceForPayment({
+          invoice: lifecycle.invoice,
+          expectedAmountMsats: lifecycle.totalMsats,
+          allowExpired: true,
+        })
+      : null
+    const priorEvidenceMatches =
+      !!priorExpiredManualInvoice &&
+      !!lifecycle &&
+      (!!buyerIdentity || !!authenticatedPubkey || !!accountPubkey) &&
+      (!buyerIdentity || lifecycle.buyerPubkey === buyerIdentity.pubkey) &&
+      (buyerIdentity?.kind !== "guest_ephemeral" ||
+        lifecycle.merchantPubkey === buyerIdentity.merchantPubkey) &&
+      (!authenticatedPubkey || lifecycle.buyerPubkey === authenticatedPubkey) &&
+      (!accountPubkey || lifecycle.buyerPubkey === accountPubkey) &&
+      (!authenticatedPubkey ||
+        !accountPubkey ||
+        authenticatedPubkey === accountPubkey) &&
+      (lifecycle.checkoutMode === "private_checkout" ||
+        lifecycle.checkoutMode === "external_wallet") &&
+      lifecycle.publicZapSigner === undefined &&
+      lifecycle.paymentTarget?.type === "manual" &&
+      lifecycle.orderDeliveryStatus === "sent" &&
+      lifecycle.phase !== "completed" &&
+      lifecycle.walletPaymentAttemptId === undefined &&
+      lifecycle.proofDeliveryStatus === "not_started" &&
+      lifecycle.paymentClaimId === undefined &&
+      lifecycle.proofDeliveryClaimId === undefined &&
+      lifecycle.preimage === undefined &&
+      lifecycle.feeMsats === undefined &&
+      lifecycle.zapReceiptId === undefined &&
+      lifecycle.zapRequestId === undefined &&
+      ((lifecycle.paymentStatus === "failed" &&
+        lifecycle.invoiceStatus === "failed" &&
+        !lifecycle.invoice) ||
+        (lifecycle.paymentStatus === "manual_required" &&
+          lifecycle.invoiceStatus === "manual_required" &&
+          !!lifecycle.invoice &&
+          lifecycle.invoice.toLowerCase() !==
+            priorExpiredManualInvoice.invoice.toLowerCase() &&
+          decodeLightningInvoicePaymentHash(lifecycle.invoice) !== null &&
+          (lifecycle.paymentHash === undefined ||
+            decodeLightningInvoicePaymentHash(
+              lifecycle.invoice
+            )?.toLowerCase() === lifecycle.paymentHash.toLowerCase()) &&
+          activeReplacementValidation?.ok === true &&
+          (lifecycle.invoiceExpiresAt === undefined ||
+            lifecycle.invoiceExpiresAt ===
+              activeReplacementValidation.metadata.expiresAt))) &&
+      [
+        ...(lifecycle.priorExpiredManualInvoices ?? []),
+        ...(lifecycle.priorExpiredManualInvoice
+          ? [lifecycle.priorExpiredManualInvoice]
+          : []),
+      ].some(
+        (entry) =>
+          entry.invoice.toLowerCase() ===
+            priorExpiredManualInvoice.invoice.toLowerCase() &&
+          entry.paymentHash.toLowerCase() ===
+            priorExpiredManualInvoice.paymentHash.toLowerCase() &&
+          entry.expiresAt === priorExpiredManualInvoice.expiresAt
+      )
     const merchantInvoiceValidation = merchantInvoiceAction
       ? validateMerchantInvoicePaymentAction(lifecycle, merchantInvoiceAction, {
           allowExpired: true,
@@ -2327,7 +2580,11 @@ export async function submitExternalPaymentProof(
     if (merchantInvoiceValidation && !merchantInvoiceValidation.ok) {
       throw new Error(merchantInvoiceValidation.reason)
     }
-    if (!merchantInvoiceAction && !canSubmitExternalPaymentReport(lifecycle)) {
+    if (
+      !merchantInvoiceAction &&
+      !canSubmitExternalPaymentReport(lifecycle) &&
+      !priorEvidenceMatches
+    ) {
       return runtimeStates.get(orderId)
     }
 
@@ -2336,7 +2593,38 @@ export async function submitExternalPaymentProof(
       orderId,
       proofDeliveryClaimId,
       {
-        authorizeClaim,
+        authorizeClaim: (current) => {
+          if (shouldContinue?.() === false) return false
+          if (priorExpiredManualInvoice) {
+            const exactPriorEvidence = [
+              ...(current.priorExpiredManualInvoices ?? []),
+              ...(current.priorExpiredManualInvoice
+                ? [current.priorExpiredManualInvoice]
+                : []),
+            ].some(
+              (entry) =>
+                entry.invoice.toLowerCase() ===
+                  priorExpiredManualInvoice.invoice.toLowerCase() &&
+                entry.paymentHash.toLowerCase() ===
+                  priorExpiredManualInvoice.paymentHash.toLowerCase()
+            )
+            if (
+              (current.invoice
+                ? current.invoice.toLowerCase() ===
+                  priorExpiredManualInvoice.invoice.toLowerCase()
+                : false) ||
+              current.buyerPubkey !== lifecycle?.buyerPubkey ||
+              current.merchantPubkey !== lifecycle?.merchantPubkey ||
+              !exactPriorEvidence
+            ) {
+              return false
+            }
+          }
+          return authorizeClaim?.(current) ?? true
+        },
+        ...(priorExpiredManualInvoice
+          ? { priorExpiredManualInvoice: { ...priorExpiredManualInvoice } }
+          : {}),
         ...(merchantInvoiceAction && merchantInvoiceValidation?.ok && lifecycle
           ? {
               merchantInvoice: {
@@ -2353,7 +2641,14 @@ export async function submitExternalPaymentProof(
       }
     )
     emit(orderId, { lifecycle: proofClaim.lifecycle })
-    if (proofClaim.status !== "claimed") return runtimeStates.get(orderId)
+    if (proofClaim.status !== "claimed") {
+      if (priorExpiredManualInvoice) {
+        throw new Error(
+          "Payment state changed. Refresh before reporting this invoice."
+        )
+      }
+      return runtimeStates.get(orderId)
+    }
     const locked = proofClaim.lifecycle
     stopProofDeliveryHeartbeat = startProofDeliveryClaimHeartbeat(
       orderId,

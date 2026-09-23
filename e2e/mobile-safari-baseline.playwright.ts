@@ -643,7 +643,218 @@ async function readPaymentAddressRecovery(
   )
 }
 
+async function seedExpiredManualInvoice(
+  page: Page,
+  orderId: string,
+  invoice: string
+): Promise<void> {
+  await page.evaluate(
+    async ({ id, expiredInvoice }) => {
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction("orderLifecycles", "readwrite")
+        const store = transaction.objectStore("orderLifecycles")
+        const request = store.get(id)
+        request.onsuccess = () => {
+          const lifecycle = request.result
+          if (!lifecycle) {
+            reject(new Error("Expired invoice lifecycle is unavailable"))
+            return
+          }
+          delete lifecycle.paymentClaimId
+          delete lifecycle.paymentClaimedAt
+          delete lifecycle.paymentClaimLeaseExpiresAt
+          delete lifecycle.paymentHash
+          delete lifecycle.invoiceExpiresAt
+          lifecycle.paymentTarget = { type: "manual" }
+          lifecycle.invoice = expiredInvoice
+          lifecycle.invoiceStatus = "manual_required"
+          lifecycle.paymentStatus = "manual_required"
+          delete lifecycle.priorExpiredManualInvoice
+          delete lifecycle.priorExpiredManualInvoices
+          lifecycle.updatedAt = Date.now()
+          store.put(lifecycle)
+        }
+        request.onerror = () => reject(request.error)
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      })
+      database.close()
+    },
+    { id: orderId, expiredInvoice: invoice }
+  )
+}
+
+async function readExpiredManualInvoice(
+  page: Page,
+  orderId: string
+): Promise<{
+  count: number
+  invoice?: string
+  paymentHash?: string
+  paymentStatus?: string
+  proofDeliveryStatus?: string
+  invoiceStatus?: string
+  invoiceExpiresAt?: number
+  paymentTarget?: { type?: string }
+  hasPaymentClaim: boolean
+  hasPaymentHash: boolean
+  priorExpiredManualInvoices: Array<{
+    invoice: string
+    paymentHash: string
+    expiresAt: number
+  }>
+}> {
+  return page.evaluate(async (id) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("conduit")
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const records = await new Promise<Array<Record<string, unknown>>>(
+      (resolve, reject) => {
+        const request = database
+          .transaction("orderLifecycles", "readonly")
+          .objectStore("orderLifecycles")
+          .getAll()
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      }
+    )
+    database.close()
+    const row = records.find((record) => record.orderId === id)
+    return {
+      count: records.length,
+      invoice: row?.invoice as string | undefined,
+      paymentHash: row?.paymentHash as string | undefined,
+      paymentStatus: row?.paymentStatus as string | undefined,
+      proofDeliveryStatus: row?.proofDeliveryStatus as string | undefined,
+      invoiceStatus: row?.invoiceStatus as string | undefined,
+      invoiceExpiresAt: row?.invoiceExpiresAt as number | undefined,
+      paymentTarget: row?.paymentTarget as { type?: string } | undefined,
+      hasPaymentClaim: !!row?.paymentClaimId,
+      hasPaymentHash: !!row?.paymentHash,
+      priorExpiredManualInvoices: (row?.priorExpiredManualInvoices ??
+        []) as Array<{
+        invoice: string
+        paymentHash: string
+        expiresAt: number
+      }>,
+    }
+  }, orderId)
+}
+
+const expiredManualMetadata = JSON.stringify([
+  ["text/plain", "Synthetic recovery merchant"],
+])
+
+function makeExpiredManualInvoice(): string {
+  return makeBolt11Fixture({
+    hrp: "lntb10n",
+    createdAt: Math.floor(Date.now() / 1000) - 3601,
+    fields: [
+      bolt11PaymentHashField(new Uint8Array(32).fill(7)),
+      bolt11DescriptionHashField(expiredManualMetadata),
+    ],
+  })
+}
+
 test.describe("CND-162 mobile browser baseline", () => {
+  test("focused order does not fall back to another local payment action @market", async ({
+    page,
+  }) => {
+    const otherOrderId = "mobile-focused-existing-failed-order"
+    const missingOrderId = "mobile-focused-missing-order"
+    const secretKey = generateSecretKey()
+    const buyerPubkey = getPublicKey(secretKey)
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, buyerPubkey, { secretKey })
+    await page.goto(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { name: "No orders yet" })
+    ).toBeVisible()
+    await seedPaymentLifecycle(page, {
+      orderId: otherOrderId,
+      buyerPubkey,
+      paymentClaimId: "unused-focused-order-claim",
+      failedPayment: {
+        merchantPubkey: TEST_MERCHANT_PUBKEY,
+        address: "merchant@example.test",
+        checkoutMode: "private_checkout",
+        paymentTarget: { type: "manual" },
+      },
+    })
+
+    await page.goto(`${marketUrl}/orders?order=${missingOrderId}&focus=payment`)
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Orders", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("heading", {
+        level: 2,
+        name: "Order unavailable",
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(page.getByText("Checking order", { exact: true })).toHaveCount(
+      0
+    )
+    await expect(
+      page.getByRole("button", { name: "Browse products" })
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("button", { name: "Try payment again" })
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("link", { name: "View full order details", exact: true })
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("link", { name: "View all orders", exact: true })
+    ).toHaveAttribute("href", "/orders")
+    await assertMobileViewport(page)
+
+    await page
+      .getByRole("link", { name: "View all orders", exact: true })
+      .click()
+    await expect(page).toHaveURL(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Orders", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: /Mobile Recovery.*Payment failed/ })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("link", { name: "View all orders" })
+    ).toHaveCount(0)
+    await assertMobileViewport(page)
+
+    await page.goto(`${marketUrl}/orders?order=${otherOrderId}&focus=payment`)
+    await expect(
+      page.getByRole("link", { name: "View full order details", exact: true })
+    ).toHaveAttribute("href", `/orders?order=${otherOrderId}`)
+    await expect(
+      page.getByRole("button", { name: "Try payment again" })
+    ).toBeVisible()
+    await assertMobileViewport(page)
+
+    await page.goto(`${marketUrl}/orders`)
+    await expect(page).toHaveURL(`${marketUrl}/orders`)
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Orders", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Try payment again" })
+    ).toBeVisible()
+    await assertMobileViewport(page)
+  })
+
   test("market order messages stay clear of the returning mobile footer @market", async ({
     page,
   }) => {
@@ -1348,6 +1559,228 @@ test.describe("CND-162 mobile browser baseline", () => {
       hasInvoice: true,
     })
     expect(providerRequests).toHaveLength(4)
+  })
+
+  for (const mode of ["external_wallet", "private_checkout"] as const) {
+    test(`market renews an expired manual invoice without losing report history in ${mode} @market`, async ({
+      page,
+    }) => {
+      const orderId = `mobile-expired-manual-invoice-${mode}`
+      const expiredInvoice = makeExpiredManualInvoice()
+      const newInvoice = makeBolt11Fixture({
+        hrp: "lntb10n",
+        createdAt: Math.floor(Date.now() / 1000),
+        fields: [
+          bolt11PaymentHashField(new Uint8Array(32).fill(8)),
+          bolt11DescriptionHashField(expiredManualMetadata),
+        ],
+      })
+      await prepareUpdatedPaymentAddress(
+        page,
+        orderId,
+        false,
+        savedPaymentAddress,
+        mode,
+        true
+      )
+      await seedExpiredManualInvoice(page, orderId, expiredInvoice)
+      let callbackRequests = 0
+      await page.route(
+        /^https:\/\/old-payment-fixture\.dev\/callback(?:\?.*)?$/,
+        async (route) => {
+          callbackRequests += 1
+          const url = new URL(route.request().url())
+          expect(url.searchParams.get("amount")).toBe("1000")
+          expect(url.searchParams.has("nostr")).toBe(false)
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({ pr: newInvoice, routes: [] }),
+          })
+        }
+      )
+      await page.setViewportSize({ width: 390, height: 844 })
+      await page.goto(`${marketUrl}/orders?order=${orderId}`)
+      await expect(
+        page.getByRole("button", { name: "Get a new invoice" })
+      ).toBeVisible()
+      const seededLifecycle = await readExpiredManualInvoice(page, orderId)
+      expect({
+        count: seededLifecycle.count,
+        paymentStatus: seededLifecycle.paymentStatus,
+        invoiceStatus: seededLifecycle.invoiceStatus,
+        paymentTargetType: seededLifecycle.paymentTarget?.type,
+        hasPaymentClaim: seededLifecycle.hasPaymentClaim,
+        hasPaymentHash: seededLifecycle.hasPaymentHash,
+      }).toEqual({
+        count: 1,
+        paymentStatus: "manual_required",
+        invoiceStatus: "manual_required",
+        paymentTargetType: "manual",
+        hasPaymentClaim: false,
+        hasPaymentHash: false,
+      })
+      expect(seededLifecycle.invoice === expiredInvoice).toBe(true)
+
+      await page.getByRole("button", { name: "Get a new invoice" }).tap()
+      await expect(
+        page.getByRole("button", { name: "Copy invoice" })
+      ).toBeVisible()
+      await expect.poll(() => callbackRequests).toBe(1)
+      const lifecycle = await readExpiredManualInvoice(page, orderId)
+      expect({
+        count: lifecycle.count,
+        paymentStatus: lifecycle.paymentStatus,
+        invoiceStatus: lifecycle.invoiceStatus,
+        paymentTargetType: lifecycle.paymentTarget?.type,
+        hasPaymentClaim: lifecycle.hasPaymentClaim,
+      }).toEqual({
+        count: 1,
+        paymentStatus: "manual_required",
+        invoiceStatus: "manual_required",
+        paymentTargetType: "manual",
+        hasPaymentClaim: false,
+      })
+      expect(lifecycle.invoice === newInvoice).toBe(true)
+      expect(lifecycle.invoice !== expiredInvoice).toBe(true)
+      expect(lifecycle.priorExpiredManualInvoices.length === 1).toBe(true)
+      expect(
+        lifecycle.priorExpiredManualInvoices[0]?.invoice === expiredInvoice
+      ).toBe(true)
+      expect(
+        /^(07){32}$/.test(
+          lifecycle.priorExpiredManualInvoices[0]?.paymentHash ?? ""
+        )
+      ).toBe(true)
+      expect(lifecycle.priorExpiredManualInvoices[0]?.expiresAt).toBeLessThan(
+        Math.floor(Date.now() / 1_000)
+      )
+
+      const priorInvoiceWarning = page
+        .getByText("Report payment for an earlier invoice", { exact: true })
+        .locator("xpath=ancestor::section[1]")
+      await expect(priorInvoiceWarning).toBeVisible()
+      await expect(
+        priorInvoiceWarning.getByText(
+          "Do not pay the new invoice if your wallet already paid an earlier one. Select the earlier invoice expiry date to report it for merchant verification.",
+          { exact: true }
+        )
+      ).toBeVisible()
+      const priorInvoiceSelect = priorInvoiceWarning.getByRole("combobox", {
+        name: "Previously expired invoice",
+      })
+      await priorInvoiceSelect.click()
+      await page.getByRole("option", { name: /Invoice 1 \. Expires/ }).click()
+      await priorInvoiceWarning
+        .getByRole("button", {
+          name: "Report selected earlier invoice payment",
+        })
+        .tap()
+
+      await expect
+        .poll(async () => {
+          const reported = await readExpiredManualInvoice(page, orderId)
+          return {
+            count: reported.count,
+            invoiceIsPrior: reported.invoice === expiredInvoice,
+            paymentHashIsPrior: reported.paymentHash === "07".repeat(32),
+            paymentStatus: reported.paymentStatus,
+          }
+        })
+        .toEqual({
+          count: 1,
+          invoiceIsPrior: true,
+          paymentHashIsPrior: true,
+          paymentStatus: "paid",
+        })
+      const reportedLifecycle = await readExpiredManualInvoice(page, orderId)
+      expect(reportedLifecycle.invoice === expiredInvoice).toBe(true)
+      expect(reportedLifecycle.invoice !== newInvoice).toBe(true)
+      expect(reportedLifecycle.paymentHash === "07".repeat(32)).toBe(true)
+      expect(reportedLifecycle.invoiceExpiresAt).toBe(
+        reportedLifecycle.priorExpiredManualInvoices[0]?.expiresAt
+      )
+      expect(reportedLifecycle.proofDeliveryStatus).toMatch(
+        /^(pending|sent|retry_needed)$/
+      )
+      await assertMobileViewport(page)
+    })
+  }
+
+  test("market keeps an expired manual invoice report-only when renewal fails @market", async ({
+    page,
+  }) => {
+    const orderId = "mobile-expired-manual-invoice-failure"
+    const expiredInvoice = makeExpiredManualInvoice()
+    await prepareUpdatedPaymentAddress(
+      page,
+      orderId,
+      false,
+      savedPaymentAddress,
+      "private_checkout",
+      true
+    )
+    await seedExpiredManualInvoice(page, orderId, expiredInvoice)
+    let callbackRequests = 0
+    await page.route(
+      /^https:\/\/old-payment-fixture\.dev\/callback(?:\?.*)?$/,
+      async (route) => {
+        callbackRequests += 1
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            status: "ERROR",
+            reason: "Synthetic renewal failure",
+          }),
+        })
+      }
+    )
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto(`${marketUrl}/orders?order=${orderId}`)
+    await page.getByRole("button", { name: "Get a new invoice" }).tap()
+    await expect(
+      page.getByRole("alert").filter({ hasText: /invoice|payment/i })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", {
+        name: "Report selected earlier invoice payment",
+      })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Copy invoice" })
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("link", { name: "Open Lightning wallet" })
+    ).toHaveCount(0)
+    const failedLifecycle = await readExpiredManualInvoice(page, orderId)
+    expect({
+      count: failedLifecycle.count,
+      paymentStatus: failedLifecycle.paymentStatus,
+      invoiceStatus: failedLifecycle.invoiceStatus,
+      paymentTargetType: failedLifecycle.paymentTarget?.type,
+      hasPaymentClaim: failedLifecycle.hasPaymentClaim,
+      hasPaymentHash: failedLifecycle.hasPaymentHash,
+    }).toEqual({
+      count: 1,
+      paymentStatus: "failed",
+      invoiceStatus: "failed",
+      paymentTargetType: "manual",
+      hasPaymentClaim: false,
+      hasPaymentHash: false,
+    })
+    expect(failedLifecycle.priorExpiredManualInvoices.length === 1).toBe(true)
+    expect(
+      failedLifecycle.priorExpiredManualInvoices[0]?.invoice === expiredInvoice
+    ).toBe(true)
+    expect(
+      /^(07){32}$/.test(
+        failedLifecycle.priorExpiredManualInvoices[0]?.paymentHash ?? ""
+      )
+    ).toBe(true)
+    expect(
+      (await readExpiredManualInvoice(page, orderId)).invoice
+    ).toBeUndefined()
+    expect(callbackRequests).toBe(1)
+    await assertMobileViewport(page)
   })
 
   test("market blocks retry when the current signed profile removes its payment address @market", async ({

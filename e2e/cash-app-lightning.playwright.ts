@@ -149,11 +149,9 @@ for (const viewport of [
     const qr = page.locator("#cash-app-invoice-e2e svg", {
       has: page.locator("title", { hasText: "Lightning invoice" }),
     })
+    await expect(qr).toHaveCount(0)
+    await page.getByRole("button", { name: "Show QR code" }).click()
     await expect(qr).toHaveCount(1)
-    if (viewport.width < 640) {
-      await expect(qr).toBeHidden()
-      await page.getByRole("button", { name: "Show QR code" }).click()
-    }
     await expect(qr).toBeVisible()
   })
 }
