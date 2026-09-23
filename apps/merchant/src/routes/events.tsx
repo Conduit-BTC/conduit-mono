@@ -1120,6 +1120,14 @@ export function MyEventsPanel({
       }
       await refreshMarketQueries(input.reference)
     },
+    onError: async (_error, input) => {
+      if (!isCurrentOwner(input.ownerPubkey)) return
+      setSavedReferences(loadSavedOrganizerEventMarkets(input.ownerPubkey))
+      setDeliveriesByReference(
+        loadOrganizerEventMarketDeliveryOutbox(input.ownerPubkey)
+      )
+      await refreshMarketQueries(input.reference)
+    },
   })
 
   function retryDelivery(record: MerchantOrganizerRecordDelivery): void {

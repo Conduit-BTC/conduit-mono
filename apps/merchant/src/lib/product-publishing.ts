@@ -1241,7 +1241,6 @@ export async function signAndPublishProductListing(input: {
   onSignedLocal: (event: NDKEvent) => Promise<void>
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 }): Promise<PublishWithPlannerResult> {
-  let signedLocally = false
   return signAndPublishProductWriteBundle({
     merchantPubkey: input.merchantPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
@@ -1258,11 +1257,7 @@ export async function signAndPublishProductListing(input: {
     onSignedEvent: async (event, kind) => {
       if (kind !== "product") return
       await input.onSignedLocal(event)
-      signedLocally = true
     },
-    onSignedLocal: async ({ events: [event] }) => {
-      if (!event) throw new Error("Signed product event is missing")
-      if (!signedLocally) await input.onSignedLocal(event)
-    },
+    onSignedLocal: async () => undefined,
   })
 }

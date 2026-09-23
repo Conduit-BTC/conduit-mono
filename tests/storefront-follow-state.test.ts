@@ -189,7 +189,6 @@ describe("storefront follow state", () => {
     expect(state).toMatchObject({
       saveState: "idle",
       activeOperationId: null,
-      activeShouldFollow: null,
       retryFollowing: true,
       error: "Reconnect and review.",
     })

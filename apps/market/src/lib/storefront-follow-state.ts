@@ -12,7 +12,6 @@ export type StorefrontFollowState = {
   override: boolean | null
   error: string | null
   activeOperationId: number | null
-  activeShouldFollow: boolean | null
   retryFollowing: boolean | null
 }
 
@@ -66,7 +65,6 @@ export function createStorefrontFollowState(
     override: null,
     error: null,
     activeOperationId: null,
-    activeShouldFollow: null,
     retryFollowing: null,
   }
 }
@@ -124,7 +122,6 @@ export function storefrontFollowReducer(
         saveState: action.shouldFollow ? "saving_follow" : "saving_unfollow",
         error: null,
         activeOperationId: action.operationId,
-        activeShouldFollow: action.shouldFollow,
         retryFollowing: null,
       }
     case "publish_succeeded":
@@ -134,7 +131,6 @@ export function storefrontFollowReducer(
         saveState: "idle",
         override: action.shouldFollow,
         activeOperationId: null,
-        activeShouldFollow: null,
         retryFollowing: null,
       }
     case "operation_settled":
@@ -143,7 +139,6 @@ export function storefrontFollowReducer(
         ...state,
         saveState: "idle",
         activeOperationId: null,
-        activeShouldFollow: null,
       }
     case "operation_failed":
       if (!isCurrentOperation(state, action)) return state
@@ -153,8 +148,7 @@ export function storefrontFollowReducer(
         override: null,
         error: action.message,
         activeOperationId: null,
-        activeShouldFollow: null,
-        retryFollowing: state.activeShouldFollow,
+        retryFollowing: state.saveState === "saving_follow",
       }
     case "authority_changed":
       if (
@@ -168,8 +162,7 @@ export function storefrontFollowReducer(
         saveState: "idle",
         error: action.message,
         activeOperationId: null,
-        activeShouldFollow: null,
-        retryFollowing: state.activeShouldFollow,
+        retryFollowing: state.saveState === "saving_follow",
       }
   }
 }

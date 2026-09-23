@@ -88,7 +88,7 @@ export function useMerchantTrustContext({
   const shouldContinueAccountRead = () => {
     const current = authorityRef.current
     return (
-      isAuthGenerationCurrent(authGeneration) &&
+      (!accountPubkey || isAuthGenerationCurrent(authGeneration)) &&
       current.accountPubkey === accountPubkey &&
       current.signerPubkey === signerPubkey &&
       current.authGeneration === authGeneration &&

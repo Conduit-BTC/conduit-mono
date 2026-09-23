@@ -2227,62 +2227,40 @@ function OrdersWorkspace() {
     },
   })
 
-  const retryOrganizerReadyReceiptMutation = useMutation({
+  const retryOrganizerReadyDeliveryMutation = useMutation({
     mutationFn: (input: {
-      ownerPubkey: string
-      delivery: StoredEventMarketHandoffDelivery
-    }) =>
-      runExclusiveOrderAction(orderActionLockRef, async () => {
-        if (!isCurrentOrderAccount(input.ownerPubkey)) {
-          throw new Error("This organizer receipt belongs to another account.")
-        }
-        const delivery = await retryStoredOrganizerReadyReceipt({
-          merchantPubkey: input.ownerPubkey,
-          delivery: input.delivery,
-          transport: {
-            shouldContinue: () => isCurrentOrderAccount(input.ownerPubkey),
-          },
-        })
-        return { ownerPubkey: input.ownerPubkey, delivery }
-      }),
-    onSuccess: ({ ownerPubkey, delivery }) => {
-      if (!isCurrentOrderAccount(ownerPubkey)) return
-      setHandoffDeliveryRevision((revision) => revision + 1)
-      flash(
-        eventMarketHandoffDeliveryNeedsRetry(delivery)
-          ? "The exact organizer receipt still needs delivery attention"
-          : "The exact organizer receipt was delivered"
-      )
-    },
-  })
-
-  const retryOrganizerReadyRevocationMutation = useMutation({
-    mutationFn: (input: {
+      kind: "receipt" | "revocation"
       ownerPubkey: string
       delivery: StoredEventMarketHandoffDelivery
     }) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
         if (!isCurrentOrderAccount(input.ownerPubkey)) {
           throw new Error(
-            "This organizer revocation belongs to another account."
+            `This organizer ${input.kind} belongs to another account.`
           )
         }
-        const delivery = await retryStoredOrganizerReadyRevocation({
+        const retry =
+          input.kind === "receipt"
+            ? retryStoredOrganizerReadyReceipt
+            : retryStoredOrganizerReadyRevocation
+        const delivery = await retry({
           merchantPubkey: input.ownerPubkey,
           delivery: input.delivery,
           transport: {
             shouldContinue: () => isCurrentOrderAccount(input.ownerPubkey),
           },
         })
-        return { ownerPubkey: input.ownerPubkey, delivery }
+        return { kind: input.kind, ownerPubkey: input.ownerPubkey, delivery }
       }),
-    onSuccess: ({ ownerPubkey, delivery }) => {
+    onSuccess: ({ kind, ownerPubkey, delivery }) => {
       if (!isCurrentOrderAccount(ownerPubkey)) return
       setHandoffDeliveryRevision((revision) => revision + 1)
       flash(
         eventMarketHandoffDeliveryNeedsRetry(delivery)
-          ? "The exact organizer revocation still needs delivery attention"
-          : "The exact organizer revocation was delivered. Review the order before continuing."
+          ? `The exact organizer ${kind} still needs delivery attention`
+          : kind === "receipt"
+            ? "The exact organizer receipt was delivered"
+            : "The exact organizer revocation was delivered. Review the order before continuing."
       )
     },
   })
@@ -2721,8 +2699,7 @@ function OrdersWorkspace() {
     stockUpdateMutation.isPending ||
     confirmPaymentMutation.isPending ||
     organizerReceiptMutation.isPending ||
-    retryOrganizerReadyReceiptMutation.isPending ||
-    retryOrganizerReadyRevocationMutation.isPending ||
+    retryOrganizerReadyDeliveryMutation.isPending ||
     coordinatedFallbackMutation.isPending ||
     reopenOrderMutation.isPending ||
     isMerchantOrderActionSurfacePending({
@@ -2772,9 +2749,7 @@ function OrdersWorkspace() {
         ? stockUpdateMutation.error.message
         : "Failed to update listing stock"
       : null
-  const organizerExactRetryError =
-    retryOrganizerReadyReceiptMutation.error ??
-    retryOrganizerReadyRevocationMutation.error
+  const organizerExactRetryError = retryOrganizerReadyDeliveryMutation.error
 
   function updateStock(
     adjustment: OrderStockAdjustment,
@@ -4003,18 +3978,20 @@ function OrdersWorkspace() {
                               size="sm"
                               className="mt-3"
                               disabled={
-                                retryOrganizerReadyReceiptMutation.isPending ||
-                                retryOrganizerReadyRevocationMutation.isPending
+                                retryOrganizerReadyDeliveryMutation.isPending
                               }
                               onClick={() => {
                                 if (!pubkey) return
-                                retryOrganizerReadyReceiptMutation.mutate({
+                                retryOrganizerReadyDeliveryMutation.mutate({
+                                  kind: "receipt",
                                   ownerPubkey: pubkey,
                                   delivery: selectedReadyDelivery,
                                 })
                               }}
                             >
-                              {retryOrganizerReadyReceiptMutation.isPending
+                              {retryOrganizerReadyDeliveryMutation.isPending &&
+                              retryOrganizerReadyDeliveryMutation.variables
+                                ?.kind === "receipt"
                                 ? "Sending exact receipt..."
                                 : "Retry exact receipt"}
                             </Button>
@@ -4027,18 +4004,20 @@ function OrdersWorkspace() {
                               size="sm"
                               className="mt-3"
                               disabled={
-                                retryOrganizerReadyReceiptMutation.isPending ||
-                                retryOrganizerReadyRevocationMutation.isPending
+                                retryOrganizerReadyDeliveryMutation.isPending
                               }
                               onClick={() => {
                                 if (!pubkey) return
-                                retryOrganizerReadyRevocationMutation.mutate({
+                                retryOrganizerReadyDeliveryMutation.mutate({
+                                  kind: "revocation",
                                   ownerPubkey: pubkey,
                                   delivery: selectedRevocationDelivery,
                                 })
                               }}
                             >
-                              {retryOrganizerReadyRevocationMutation.isPending
+                              {retryOrganizerReadyDeliveryMutation.isPending &&
+                              retryOrganizerReadyDeliveryMutation.variables
+                                ?.kind === "revocation"
                                 ? "Sending exact revocation..."
                                 : "Retry exact revocation"}
                             </Button>

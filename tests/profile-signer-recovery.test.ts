@@ -49,15 +49,10 @@ describe("merchant order signer recovery", () => {
   it("keeps exact delivery retries owner-bound and signer-free", async () => {
     const contents = await source("apps/merchant/src/routes/orders.tsx")
     const exactRetryStart = contents.indexOf(
-      "const retryOrganizerReadyReceiptMutation"
-    )
-    const exactRevocationStart = contents.indexOf(
-      "const retryOrganizerReadyRevocationMutation"
+      "const retryOrganizerReadyDeliveryMutation"
     )
     const freshPaymentStart = contents.indexOf("const confirmPaymentMutation")
-    const exactRetryBlock =
-      contents.slice(exactRetryStart, exactRevocationStart) +
-      contents.slice(exactRevocationStart, freshPaymentStart)
+    const exactRetryBlock = contents.slice(exactRetryStart, freshPaymentStart)
 
     expect(exactRetryBlock).toContain("retryStoredOrganizerReadyReceipt")
     expect(exactRetryBlock).toContain("retryStoredOrganizerReadyRevocation")
