@@ -937,6 +937,136 @@ test("Merchant retries the same signed deletion after every relay rejects it @me
   ).toHaveCount(0)
 })
 
+test("Merchant immediately retries a rejected mixed-edit deletion without signing again @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  let allowDeletion = false
+  let signerCalls = 0
+  const publishes: ObservedRelayPublish[] = []
+  await installRelayMock(
+    page,
+    publishes,
+    (_relayUrl, event) => event.kind !== 5 || allowDeletion
+  )
+  await installValidTestSigner(page, () => {
+    signerCalls += 1
+  })
+  await page.goto(`${merchantUrl}/products`)
+  await page.getByRole("button", { name: "Add product" }).first().click()
+  const addDialog = page.getByRole("dialog", { name: "Add product" })
+  await addDialog.getByLabel("Title").fill("Mixed edit browser fixture")
+  await addDialog.getByLabel("Summary").fill("Tests exact companion retry")
+  await addDialog.getByLabel("Price").fill("10")
+  await addDialog.getByLabel("Stock quantity").fill("1")
+  await addDialog.locator("#product-currency").click()
+  await page.getByRole("option", { name: "SATS" }).click()
+  await addDialog.locator("#product-fulfillment").click()
+  await page.getByRole("option", { name: "Digital" }).click()
+  await addDialog.getByRole("button", { name: "Add by URL" }).click()
+  await addDialog
+    .getByLabel("Primary image URL")
+    .fill("https://media.conduit.market/mixed-edit.png")
+  const tags = addDialog.getByRole("combobox", { name: "Tags" })
+  for (const tag of ["merchant", "recovery", "regression"]) {
+    await tags.fill(tag)
+    await tags.press("Enter")
+  }
+  await addDialog
+    .getByRole("checkbox", { name: /This product has options/ })
+    .check()
+  await addDialog.getByLabel("Option name").fill("size")
+  await addDialog.getByRole("textbox", { name: "Values" }).fill("small, large")
+  await addDialog.getByRole("button", { name: "Make all available" }).click()
+  await addDialog.getByRole("button", { name: "Publish product" }).click()
+  const readinessDialog = page.getByRole("alertdialog")
+  if (await readinessDialog.isVisible()) {
+    await readinessDialog
+      .getByRole("button", { name: "Publish anyway" })
+      .click()
+  }
+  await expect
+    .poll(async () => {
+      const jobs = await readListingJobs(page)
+      return jobs.length === 1 && jobs[0]?.state === "delivered"
+    })
+    .toBe(true)
+  const firstListing = (await readListingJobs(page))[0]!
+  expect(firstListing.signedEvents.length).toBe(3)
+  const initialListingPublishCount = publishes.filter(
+    ({ event }) => event.kind === 30402
+  ).length
+
+  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+  const editDialog = page.getByRole("dialog", { name: "Edit product family" })
+  await expect(editDialog).toBeVisible()
+  await editDialog
+    .getByRole("textbox", { name: "Title", exact: true })
+    .fill("Mixed edit browser fixture updated")
+  await editDialog
+    .getByRole("button", { name: "Mark unavailable" })
+    .first()
+    .click()
+  await expect(
+    editDialog.getByText(
+      /Saving will remove 1 previously published combination/
+    )
+  ).toBeVisible()
+  await editDialog.getByRole("button", { name: "Save changes" }).click()
+  if (await readinessDialog.isVisible()) {
+    await readinessDialog
+      .getByRole("button", { name: "Publish anyway" })
+      .click()
+  }
+  await expect(
+    page.getByRole("button", { name: "Retry delivery" })
+  ).toBeVisible()
+  await expect
+    .poll(async () => {
+      const deletions = (await readDeletionState(page)).jobs
+      return (
+        deletions.length === 1 &&
+        deletions[0]?.relayDelivery.length > 0 &&
+        deletions[0]?.relayDelivery.every(
+          (delivery) => delivery.status === "rejected"
+        )
+      )
+    })
+    .toBe(true)
+  const deletion = (await readDeletionState(page)).jobs[0]!
+  expect(
+    publishes.filter(({ event }) => event.kind === 30402).length
+  ).toBeGreaterThan(initialListingPublishCount)
+  const signedDeletion = structuredClone(deletion.signedEvent)
+  const signerCallsBeforeRetry = signerCalls
+  await expect(
+    page.getByRole("button", { name: "Retry delivery" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Sign new delivery" })
+  ).toHaveCount(0)
+  expect(publishes.some(({ event }) => event.id === deletion.id)).toBe(true)
+
+  allowDeletion = true
+  await page.getByRole("button", { name: "Retry delivery" }).click()
+  await expect
+    .poll(async () => (await readDeletionState(page)).jobs[0]?.state)
+    .toBe("delivered")
+  const retried = (await readDeletionState(page)).jobs[0]!
+  expect(retried.id).toBe(deletion.id)
+  expect(signerCalls).toBe(signerCallsBeforeRetry)
+  expect(hasSameSerializedValue(retried.signedEvent, signedDeletion)).toBe(true)
+  const deletionPublishes = publishes.filter(
+    ({ event }) => event.id === deletion.id
+  )
+  expect(deletionPublishes.length).toBeGreaterThan(1)
+  expect(
+    deletionPublishes.every(({ event }) =>
+      hasSameSerializedValue(event, deletionPublishes[0]?.event)
+    )
+  ).toBe(true)
+})
+
 test("Merchant refuses a deletion signed by a switched account before staging @merchant", async ({
   page,
 }) => {
