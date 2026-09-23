@@ -2942,7 +2942,6 @@ function CheckoutPage() {
     let orderDelivered = false
     let guestOrderIdToClear: string | null = null
     let startOrderPostAcceptanceWork: (() => Promise<unknown>) | null = null
-    let paymentWorkStarted = false
     let directPaymentStarted = false
     let checkoutRevalidationCompleted = false
     let orderDeliveryStartedAt: number | null = null
@@ -3329,11 +3328,6 @@ function CheckoutPage() {
         stepName: "order_delivery",
       })
       clearCheckoutShippingSession()
-      if (!shouldContinueBuyerSession()) {
-        throw new Error(
-          "Order delivery stopped after relay acceptance because the buyer session changed."
-        )
-      }
 
       if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
       recordCheckoutSuccess({
@@ -3394,7 +3388,6 @@ function CheckoutPage() {
       }
 
       if (serviceCtx.approveFee) {
-        paymentWorkStarted = true
         try {
           await runOrderPayment(serviceCtx)
           await resolveCheckoutOrderAttemptAfterPaymentProgress(orderId)
@@ -3402,7 +3395,6 @@ function CheckoutPage() {
           void startOrderPostAcceptanceWork?.()
         }
       } else {
-        paymentWorkStarted = true
         void runOrderPayment(serviceCtx)
           .then(() => resolveCheckoutOrderAttemptAfterPaymentProgress(orderId))
           .catch(() => {})
@@ -3418,7 +3410,7 @@ function CheckoutPage() {
         replace: true,
       })
     } catch (e) {
-      if (!paymentWorkStarted) void startOrderPostAcceptanceWork?.()
+      void startOrderPostAcceptanceWork?.()
       const message = e instanceof Error ? e.message : "Payment failed"
       let stagedOrderReadFailed = false
       const stagedOrder = publishedOrderId

@@ -940,11 +940,6 @@ export interface PublishPrivateMessageResult {
   /** Present for a real signed kind-16 recipient wrap; content-safe and local. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
   /**
-   * Final merchant-relay outcomes. Present only for accepted-boundary sends;
-   * settlement continues independently after the foreground first ACK.
-   */
-  recipientSettlement?: Promise<ProgressivePublishSnapshot>
-  /**
    * Memoized, caller-started recovery work for an accepted initial order.
    * It never creates or republishes the semantic merchant order.
    */
@@ -1630,7 +1625,6 @@ export async function publishPrivateMessage(
       deliveryRelaySources: recipientRoute.relaySources,
       deliveryPlanTruncated: recipientRoute.truncated,
       orderRelayDelivery,
-      recipientSettlement: settledOutcome.then(({ snapshot }) => snapshot),
       startPostAcceptanceWork,
     }
   }

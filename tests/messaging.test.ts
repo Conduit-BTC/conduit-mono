@@ -703,6 +703,12 @@ describe("publishPrivateMessage", () => {
     const progressiveStarted = new Promise<void>((resolve) => {
       markProgressiveStarted = resolve
     })
+    let markSettlementPersisted!: (snapshot: ProgressivePublishSnapshot) => void
+    const settlementPersisted = new Promise<ProgressivePublishSnapshot>(
+      (resolve) => {
+        markSettlementPersisted = resolve
+      }
+    )
     const events: string[] = []
     const signedRecipientWrap = new NDKEvent(
       undefined,
@@ -739,8 +745,9 @@ describe("publishPrivateMessage", () => {
         await acceptedPersistence
         events.push("accepted:persisted")
       },
-      onRecipientPublishSettled: async () => {
+      onRecipientPublishSettled: async (snapshot) => {
         events.push("settled:persisted")
+        markSettlementPersisted(snapshot)
       },
       publishProgressiveFn: (async () => {
         events.push("publish")
@@ -800,9 +807,7 @@ describe("publishPrivateMessage", () => {
         timedOut: [slowRelay],
       })
     )
-    expect((await result.recipientSettlement)?.timedOutRelayUrls).toEqual([
-      slowRelay,
-    ])
+    expect((await settlementPersisted).timedOutRelayUrls).toEqual([slowRelay])
     expect(events).toContain("settled:persisted")
   })
 

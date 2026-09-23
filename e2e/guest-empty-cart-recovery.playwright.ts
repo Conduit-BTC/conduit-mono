@@ -1,3 +1,4 @@
+import path from "node:path"
 import { expect, test } from "@playwright/test"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
@@ -11,7 +12,8 @@ test("accepted guest order reopens after an empty-cart reload @market", async ({
     page.getByRole("heading", { name: "Cart is empty" })
   ).toBeVisible()
 
-  const orderId = await page.evaluate(async () => {
+  const orderId = await page.evaluate(async (rootPath) => {
+    const { db } = await import(`/@fs${rootPath}/packages/core/src/index.ts`)
     const modulePath = "/src/lib/guest-order-identity.ts"
     const { createSessionGuestOrderSigningIdentity } = (await import(
       /* @vite-ignore */ modulePath
@@ -53,87 +55,72 @@ test("accepted guest order reopens after an empty-cart reload @market", async ({
       merchantPubkey
     )
     const now = Date.now()
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("conduit")
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const transaction = database.transaction("orderLifecycles", "readwrite")
-        transaction.oncomplete = () => resolve()
-        transaction.onerror = () => reject(transaction.error)
-        transaction.onabort = () => reject(transaction.error)
-        transaction.objectStore("orderLifecycles").put({
-          orderId,
-          buyerPubkey: guest.pubkey,
-          buyerIdentityKind: "guest_ephemeral",
-          merchantPubkey,
-          checkoutMode: "external_wallet",
-          paymentTarget: { type: "manual" },
-          merchantLightningAddress: "merchant@merchant-fixture.dev",
-          items: [
-            {
-              productId: `30402:${merchantPubkey}:guest-recovery`,
-              title: "Guest recovery fixture",
-              format: "digital",
-              quantity: 1,
-              priceAtPurchase: 1_000,
-              currency: "SATS",
-            },
-          ],
-          itemSubtotalSats: 1_000,
-          shippingCostSats: 0,
-          totalSats: 1_000,
-          totalMsats: 1_000_000,
+    await db.orderLifecycles.put({
+      orderId,
+      buyerPubkey: guest.pubkey,
+      buyerIdentityKind: "guest_ephemeral",
+      merchantPubkey,
+      checkoutMode: "external_wallet",
+      paymentTarget: { type: "manual" },
+      merchantLightningAddress: "merchant@merchant-fixture.dev",
+      items: [
+        {
+          productId: `30402:${merchantPubkey}:guest-recovery`,
+          title: "Guest recovery fixture",
+          format: "digital",
+          quantity: 1,
+          priceAtPurchase: 1_000,
           currency: "SATS",
-          addressValidity: "not_required",
-          shippingZoneEligibility: "not_required",
-          orderDeliveryStatus: "sent",
-          orderDeliveryRoute: "declared_inbox",
-          orderRelayDelivery: {
-            rumorId: "f".repeat(64),
-            signedRecipientWrap: {
-              id: "e".repeat(64),
-              sig: "d".repeat(128),
-              pubkey: "c".repeat(64),
-              kind: 1059,
-              created_at: Math.floor(now / 1_000),
-              tags: [["p", merchantPubkey]],
-              content: "synthetic encrypted wrap",
-            },
-            route: "declared_inbox",
-            relayDelivery: [
-              {
-                relayUrl: "ws://127.0.0.1:7777",
-                source: "declared",
-                status: "acked",
-                attemptCount: 1,
-                acknowledgedAt: now,
-              },
-            ],
-            deliveryAttemptCount: 1,
-            retryCount: 0,
-            nextRetryAt: now + 10 * 60_000,
-            createdAt: now,
-            updatedAt: now,
-            expiresAt: now + 10 * 60_000,
+        },
+      ],
+      itemSubtotalSats: 1_000,
+      shippingCostSats: 0,
+      totalSats: 1_000,
+      totalMsats: 1_000_000,
+      currency: "SATS",
+      addressValidity: "not_required",
+      shippingZoneEligibility: "not_required",
+      orderDeliveryStatus: "sent",
+      orderDeliveryRoute: "declared_inbox",
+      orderRelayDelivery: {
+        rumorId: "f".repeat(64),
+        signedRecipientWrap: {
+          id: "e".repeat(64),
+          sig: "d".repeat(128),
+          pubkey: "c".repeat(64),
+          kind: 1059,
+          created_at: Math.floor(now / 1_000),
+          tags: [["p", merchantPubkey]],
+          content: "synthetic encrypted wrap",
+        },
+        route: "declared_inbox",
+        relayDelivery: [
+          {
+            relayUrl: "ws://127.0.0.1:7777",
+            source: "declared",
+            status: "acked",
+            attemptCount: 1,
+            acknowledgedAt: now,
           },
-          checkoutRecoveryPending: true,
-          invoiceStatus: "not_requested",
-          paymentStatus: "not_started",
-          proofDeliveryStatus: "not_started",
-          zapReceiptStatus: "not_applicable",
-          phase: "in_progress",
-          createdAt: now,
-          updatedAt: now,
-        })
-      })
-    } finally {
-      database.close()
-    }
+        ],
+        deliveryAttemptCount: 1,
+        retryCount: 0,
+        nextRetryAt: now + 10 * 60_000,
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: now + 10 * 60_000,
+      },
+      checkoutRecoveryPending: true,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+      zapReceiptStatus: "not_applicable",
+      phase: "in_progress",
+      createdAt: now,
+      updatedAt: now,
+    })
     return orderId
-  })
+  }, path.resolve(process.cwd()))
 
   await page.reload()
   await expect(page).toHaveURL(new RegExp(`/orders\\?order=${orderId}$`))
