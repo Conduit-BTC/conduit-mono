@@ -373,4 +373,72 @@ describe("checkout shipping session", () => {
       { value: draft, hasActiveDraft: true },
     ])
   })
+
+  it("clears account A contact data when account B replaces it", () => {
+    const storage = fakeStorage()
+    writeCheckoutShippingSession(
+      {
+        ...DEFAULT_CHECKOUT_SHIPPING,
+        street: "Account A private address",
+        email: "account-a@example.test",
+      },
+      storage,
+      1_700_000_000_000,
+      "buyer-a"
+    )
+
+    expect(
+      initializeCheckoutShippingSession(
+        null,
+        "buyer-b",
+        storage,
+        1_700_000_000_001
+      )
+    ).toEqual({ value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false })
+    expect(storage.length).toBe(0)
+  })
+
+  it("retires an armed HUD payment across signer loss or authority replacement", async () => {
+    const source = await Bun.file("apps/market/src/routes/checkout.tsx").text()
+    const retirementStart = source.indexOf(
+      "const authorityChanged =",
+      source.indexOf("const reconnectCheckoutSigner")
+    )
+    const retirementEnd = source.indexOf(
+      "useEffect(() => {",
+      retirementStart + 1
+    )
+    const retirement = source.slice(retirementStart, retirementEnd)
+    const automaticAttemptStart = source.indexOf(
+      "// The HUD arms zap out from capability-only readiness"
+    )
+    const automaticAttemptEnd = source.indexOf(
+      "// --- Full-screen transition states",
+      automaticAttemptStart
+    )
+    const automaticAttempt = source.slice(
+      automaticAttemptStart,
+      automaticAttemptEnd
+    )
+    const reconnectStart = source.indexOf(
+      "const reconnectCheckoutSigner = useCallback"
+    )
+    const reconnectEnd = source.indexOf("useEffect(() => {", reconnectStart)
+    const reconnect = source.slice(reconnectStart, reconnectEnd)
+
+    expect(retirement).toContain(
+      "autoZapAuthorizationGenerationRef.current !== authGeneration"
+    )
+    expect(retirement).toContain("signerConnected && !authorityChanged")
+    expect(retirement).toContain("setAutoZapAuthorization(null)")
+    expect(automaticAttempt).toContain(
+      "autoZapAuthorizationGenerationRef.current !== authGeneration"
+    )
+    expect(automaticAttempt.indexOf("!== authGeneration")).toBeLessThan(
+      automaticAttempt.indexOf("void payNowRef.current(autoZapAuthorization)")
+    )
+    expect(reconnect).toContain('connect({ mode: "restore" })')
+    expect(reconnect).not.toContain("payNow")
+    expect(reconnect).not.toContain("setAutoZapAuthorization")
+  })
 })

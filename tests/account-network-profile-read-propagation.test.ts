@@ -61,7 +61,7 @@ describe("authenticated account profile and storefront read propagation", () => 
     expect(checkout).toContain("authenticatedPubkey: string | null")
     expect(checkout).toContain("accountPubkey,\n    authenticatedPubkey,")
     expect(checkout).toContain("accountPubkey={draftOwnerIdentity}")
-    expect(checkout).toContain("authenticatedPubkey={draftOwnerIdentity}")
+    expect(checkout).toContain("authenticatedPubkey={signedBuyerPubkey}")
   })
 
   it("uses only explicit Merchant authentication for storefront and organizer profiles", async () => {

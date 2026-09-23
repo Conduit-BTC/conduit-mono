@@ -172,9 +172,9 @@ export function __resetShopperPricePreferenceForTests(): void {
 }
 
 export function useShopperPricePreference() {
-  const { pubkey, status } = useAuth()
+  const { accountPubkey } = useAuth()
   const { preset, unlockState } = useShopperPresets()
-  const identityPubkey = status === "connected" ? pubkey : null
+  const identityPubkey = accountPubkey
   const subscribeToIdentity = useCallback(
     (listener: Listener) => subscribe(identityPubkey, listener),
     [identityPubkey]

@@ -39,6 +39,17 @@ describe("guest order UI contracts", () => {
     expect(source).not.toContain("expectedCounterpartyPubkey")
   })
 
+  it("resumes receipt proof delivery only with the matching guest order signer", async () => {
+    const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
+
+    expect(source).toContain("guestIdentity?.orderId === lifecycle.orderId")
+    expect(source).toContain("guestIdentity.pubkey === lifecycle.buyerPubkey")
+    expect(source).toContain(
+      "guestIdentity.merchantPubkey === lifecycle.merchantPubkey"
+    )
+    expect(source).toContain("identity || signerConnected")
+  })
+
   it("records guest fulfillment without claiming a guest relay inbox", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
     const orderIdentity = await Bun.file(

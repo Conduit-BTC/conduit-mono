@@ -14,6 +14,10 @@ import {
   getRelayRemovalReviewCopy,
   persistRelayOrderPreference,
 } from "../packages/ui/src/components/RelaySettingsPanel"
+import {
+  hasUnpublishedRelayRoleChanges,
+  reconcileRelaySettingsDraftRows,
+} from "../packages/ui/src/components/relay-settings-draft"
 
 const EMPTY_FRONTIER = {
   state: "not_observed",
@@ -608,6 +612,147 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(inboxButton).not.toContain('disabled=""')
   })
 
+  it("adopts a signed relay added by a new controller revision", () => {
+    const existing = relayRow("wss://existing.example")
+    const added = relayRow("wss://added.example", {
+      signedPosition: 1,
+      reachability: "issue",
+    })
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [existing],
+      localRows: [existing],
+      nextControllerRows: [existing, added],
+    })
+
+    expect(reconciled.map((row) => row.url)).toContain(added.url)
+    expect(reconciled.find((row) => row.url === added.url)).toEqual(added)
+  })
+
+  it("adopts a signed relay removed by a new controller revision", () => {
+    const retained = relayRow("wss://retained.example")
+    const removed = relayRow("wss://removed.example", { signedPosition: 1 })
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [retained, removed],
+      localRows: [retained, removed],
+      nextControllerRows: [retained],
+    })
+
+    expect(reconciled.map((row) => row.url)).toEqual([retained.url])
+  })
+
+  it("preserves explicit role edits while adopting fresh controller metadata", () => {
+    const previous = relayRow("wss://edited.example", {
+      capability: {
+        configuredUses: [],
+        observedCommerce: false,
+        nip11: "available",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        relayName: "Stale relay name",
+      },
+    })
+    const local = { ...previous, publishEnabled: false }
+    const current = relayRow(previous.url, {
+      privateInboxEnabled: false,
+      privateInboxState: null,
+      signedPosition: 4,
+      reachability: "issue",
+      capability: {
+        configuredUses: [],
+        observedCommerce: false,
+        nip11: "available",
+        searchAdvertised: true,
+        authEvidence: "advertised",
+        relayName: "Fresh relay name",
+        observedAt: 42,
+      },
+    })
+
+    const [reconciled] = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [previous],
+      localRows: [local],
+      nextControllerRows: [current],
+    })
+
+    expect(reconciled?.publishEnabled).toBe(false)
+    expect(reconciled?.privateInboxEnabled).toBe(false)
+    expect(reconciled?.signedPosition).toBe(4)
+    expect(reconciled?.reachability).toBe("issue")
+    expect(reconciled?.capability.relayName).toBe("Fresh relay name")
+    expect(reconciled?.capability.observedAt).toBe(42)
+    expect(hasUnpublishedRelayRoleChanges([current], [reconciled!])).toBe(true)
+  })
+
+  it("keeps only explicitly enabled roles for a removed relay", () => {
+    const previous = relayRow("wss://removed.example")
+    const local = { ...previous, readEnabled: false }
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [previous],
+      localRows: [local],
+      nextControllerRows: [],
+    })
+
+    expect(reconciled).toEqual([])
+    expect(hasUnpublishedRelayRoleChanges([], reconciled)).toBe(false)
+  })
+
+  it("preserves a local relay candidate across controller revisions", () => {
+    const existing = relayRow("wss://existing.example")
+    const candidate = relayRow("wss://candidate.example", {
+      readEnabled: false,
+      publishEnabled: true,
+      privateInboxEnabled: false,
+      readState: null,
+      publishState: null,
+      privateInboxState: null,
+      signedPosition: null,
+      candidate: true,
+    })
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [existing],
+      localRows: [existing, candidate],
+      nextControllerRows: [existing],
+    })
+
+    expect(reconciled.find((row) => row.url === candidate.url)).toEqual(
+      candidate
+    )
+  })
+
+  it("does not create a hidden publish delta for a controller-only refresh", () => {
+    const retained = relayRow("wss://retained.example")
+    const removed = relayRow("wss://removed.example", { signedPosition: 1 })
+    const refreshed = relayRow(retained.url, {
+      reachability: "issue",
+      capability: {
+        configuredUses: [],
+        observedCommerce: false,
+        nip11: "unavailable",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        observedAt: 84,
+      },
+    })
+    const added = relayRow("wss://added.example", { signedPosition: 1 })
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [retained, removed],
+      localRows: [retained, removed],
+      nextControllerRows: [refreshed, added],
+    })
+
+    expect(new Set(reconciled.map((row) => row.url))).toEqual(
+      new Set([refreshed.url, added.url])
+    )
+    expect(hasUnpublishedRelayRoleChanges([refreshed, added], reconciled)).toBe(
+      false
+    )
+  })
+
   it("requires a warning review before disabling app relays", async () => {
     const panelSource = await Bun.file(
       "packages/ui/src/components/RelaySettingsPanel.tsx"
@@ -752,19 +897,44 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(rows.map((row) => row.url)).toEqual(latestPreferredOrder)
   })
 
-  it("keeps the relay editor reset key insensitive to local reordering", async () => {
+  it("preserves relay drafts by account while invalidating prepared signer work", async () => {
     const panelSource = await Bun.file(
       "packages/ui/src/components/RelaySettingsPanel.tsx"
     ).text()
-    const revisionHelper = panelSource.match(
-      /function getRelaySettingsEditorRevision\([\s\S]*?\n\}/
-    )?.[0]
-
-    expect(revisionHelper).toBeDefined()
-    expect(revisionHelper).toContain(
-      ".sort((left, right) => left[0].localeCompare(right[0]))"
+    const invalidationStart = panelSource.indexOf(
+      "useLayoutEffect(() => {",
+      panelSource.indexOf("const [removalPreparationError")
     )
-    expect(revisionHelper).toContain("Boolean(row.recoveryReadOnly)")
-    expect(panelSource).toContain("key={editorRevision}")
+    const invalidationEnd =
+      panelSource.indexOf("}, [signerReviewKey])", invalidationStart) +
+      "}, [signerReviewKey])".length
+    const invalidationEffect = panelSource.slice(
+      invalidationStart,
+      invalidationEnd
+    )
+
+    expect(panelSource).toContain('key={accountPubkey ?? "no-account"}')
+    expect(panelSource).toContain(
+      'key={`media:${accountPubkey ?? "no-account"}`}'
+    )
+    expect(panelSource).toContain("signerReviewKey={signerReviewKey}")
+    expect(panelSource).not.toContain("getRelaySettingsEditorRevision")
+    expect(invalidationEffect).toContain("setPublishDialogOpen(false)")
+    expect(invalidationEffect).toContain("setPreparedPublishChange(null)")
+    expect(invalidationEffect).toContain("setPreparedRemovalChange(null)")
+    expect(invalidationEffect).toContain("}, [signerReviewKey])")
+    expect(invalidationEffect).not.toContain("setRows(")
+
+    const [marketRoute, merchantRoute, controllerSource] = await Promise.all([
+      Bun.file("apps/market/src/routes/network.tsx").text(),
+      Bun.file("apps/merchant/src/routes/network.tsx").text(),
+      Bun.file("packages/core/src/hooks/useAccountNetworkSettings.ts").text(),
+    ])
+    for (const route of [marketRoute, merchantRoute]) {
+      expect(route).toContain(
+        'signerReviewKey={`${accountPubkey ?? "none"}:${authGeneration}:${signerReadiness}`}'
+      )
+    }
+    expect(controllerSource).toContain('current.signerReadiness === "ready"')
   })
 })

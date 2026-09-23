@@ -49,11 +49,9 @@ describe("app account-network read propagation", () => {
     )
     expect(authorization).toContain("input.authenticatedPubkey")
     expect(authorization).toContain("input.shouldContinue")
+    expect(checkout).toContain("const draftOwnerIdentity = accountPubkey")
     expect(checkout).toContain(
-      'const draftOwnerIdentity = authStatus === "connected" ? pubkey : null'
-    )
-    expect(checkout).toContain(
-      "accountPubkey: draftOwnerIdentity,\n        authenticatedPubkey: draftOwnerIdentity,"
+      "accountPubkey: draftOwnerIdentity,\n        authenticatedPubkey: signedBuyerPubkey,"
     )
     expect(checkout).toContain("authGenerationRef.current === authGeneration")
     expect(
@@ -154,7 +152,7 @@ describe("app account-network read propagation", () => {
     )
     expect(hook).toContain('normalizedAuthenticatedPubkey ?? "anonymous"')
     expect(controller).toContain(
-      'authenticatedPubkey: auth.status === "connected" ? auth.pubkey : null'
+      'authenticatedPubkey: auth.signerReadiness === "ready" ? auth.pubkey : null'
     )
     expect(marketNetwork).toContain(
       'useAccountNetworkSettings({ telemetryApp: "market" })'
@@ -232,7 +230,7 @@ describe("app account-network read propagation", () => {
       'const authenticatedPubkey = authStatus === "connected" ? pubkey : null'
     )
     expect(products).toMatch(
-      /listOrganizerEventMarkets\(\s*pubkey!,\s*authenticatedPubkey,\s*signal,\s*\(\) =>\s*!signal\.aborted && authGenerationRef\.current === authGeneration\s*\)/
+      /listOrganizerEventMarkets\(\s*accountPubkey!,\s*authenticatedPubkey,\s*signal,\s*\(\) =>\s*!signal\.aborted && authGenerationRef\.current === authGeneration\s*\)/
     )
     expect(products).toMatch(
       /"merchant-product-event-market",[\s\S]{0,180}authenticatedPubkey \?\? "disconnected"/
@@ -286,7 +284,7 @@ describe("app account-network read propagation", () => {
     expect(storeProducts).toContain("authenticatedPubkey?: string | null")
     expect(storeProducts).toContain("accountPubkey,\n    authenticatedPubkey,")
     expect(marketOrders).toMatch(
-      /fetchStoreProducts\(\s+row\.merchantPubkey,\s+authenticatedPubkey,\s+authenticatedPubkey,\s+\(\) => !signal\.aborted && shouldContinueAccountRead\(\)\s+\)/
+      /fetchStoreProducts\(\s+row\.merchantPubkey,\s+accountPubkey,\s+authenticatedPubkey,\s+\(\) => !signal\.aborted && shouldContinueAccountRead\(\)\s+\)/
     )
     expect(publicProfile).toMatch(
       /fetchStoreProducts\(\s*pubkey!,\s*accountPubkey,\s*authenticatedPubkey,\s*\(\) => !signal\.aborted && shouldContinueAccountRead\(\)\s*\)/
@@ -333,7 +331,7 @@ describe("app account-network read propagation", () => {
         ?.length ?? 0
     ).toBeGreaterThanOrEqual(2)
     expect(checkout).toContain("accountPubkey={draftOwnerIdentity}")
-    expect(checkout).toContain("authenticatedPubkey={draftOwnerIdentity}")
+    expect(checkout).toContain("authenticatedPubkey={signedBuyerPubkey}")
   })
 
   it("revalidates owner authority through profile refresh and publication", async () => {
@@ -382,7 +380,7 @@ describe("app account-network read propagation", () => {
       /assertCartPickupHandlerReady\([\s\S]{0,180}authenticatedPubkey: input.authenticatedPubkey,[\s\S]{0,80}shouldContinue: input.shouldContinue/
     )
     expect(products).toMatch(
-      /resolveEventMarketOrganizerInbox\([\s\S]{0,240}authenticatedPubkey:[\s\S]{0,80}signal,/
+      /resolveEventMarketOrganizerInbox\(localPickupQuery[\s\S]{0,240}requestingAccountPubkey: accountPubkey,[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,40}signal,/
     )
     expect(eventProduct).toContain("input.shouldContinue")
     expect(publisher).toContain("shouldContinue,")
