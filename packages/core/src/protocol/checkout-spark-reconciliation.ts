@@ -847,6 +847,9 @@ export function getCheckoutSparkNextAction(
   input: { actor: CheckoutSparkActor; now: number }
 ): CheckoutSparkNextAction {
   assertReconciliationIntegrity(state)
+  if (input.actor !== "shopper" && input.actor !== "merchant") {
+    throw new Error("Checkout Spark actor is invalid.")
+  }
   const now = normalizeTimestamp(input.now, "Checkout Spark action time")
   if (state.funding.state === "unreconciled") {
     return { type: "reconcile_funding" }
