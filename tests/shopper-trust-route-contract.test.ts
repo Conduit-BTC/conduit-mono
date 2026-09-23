@@ -9,7 +9,7 @@ describe("merchant shopper trust route contract", () => {
     expect(source).toContain("shopperPubkey: selectedShopperPubkey")
     expect(source).toContain("session.relaySettingsReady &&")
     expect(source).toContain(
-      "signerConnected && !isOrdersInitialHydration && buyerPubkeys.length > 0"
+      "hasAccount && !isOrdersInitialHydration && buyerPubkeys.length > 0"
     )
     expect(source).toContain("<ShopperTrustCard")
     expect(source).toContain("evidence={shopperTrustQuery.evidence}")
@@ -17,7 +17,7 @@ describe("merchant shopper trust route contract", () => {
     expect(source).toContain("onRefresh={shopperTrustQuery.refetch}")
     expect(source).toContain("relayScope: session.relayScope")
     expect(source).toContain(
-      "authenticatedPubkey: signerConnected ? pubkey : null"
+      "const authenticatedPubkey = signerConnected ? signerPubkey : null"
     )
 
     const trustCardPosition = source.indexOf("<ShopperTrustCard")

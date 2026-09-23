@@ -94,7 +94,10 @@ describe("Market live account authority", () => {
       expect(route).toContain("!signal.aborted && shouldContinueAccountRead()")
     }
     expect(checkout).toMatch(
-      /authorizeCurrentCheckoutItems\([\s\S]{0,900}shouldContinue: \(\) => authGenerationRef\.current === authGeneration/
+      /authorizeCurrentCheckoutItems\([\s\S]{0,900}shouldContinue: shouldContinueBuyerSession/
+    )
+    expect(checkout).toMatch(
+      /const shouldContinueBuyerSession = signedBuyerPubkey[\s\S]{0,100}isAuthGenerationCurrent\(authGeneration\)/
     )
   })
 })

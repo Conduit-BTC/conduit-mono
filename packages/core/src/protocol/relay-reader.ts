@@ -32,6 +32,8 @@ export interface SignedEventRelayReadResult {
   events: SignedPublicNostrEvent[]
   eventSourceRelayUrls: Record<string, string[]>
   relays: RelayReadSourceStatus[]
+  /** Exact final-I/O relays admitted into this completed bounded read. */
+  admittedRelayUrls?: string[]
   eventsVerified: boolean
 }
 
@@ -71,6 +73,7 @@ export async function fetchSignedEventsFanoutDetailed(
       events: [],
       eventSourceRelayUrls: {},
       relays: [],
+      admittedRelayUrls: [],
       eventsVerified: true,
     }
   }
@@ -92,6 +95,10 @@ export async function fetchSignedEventsFanoutDetailed(
       // Make authoritative absence explicit for replacement-sensitive reads.
       rejectedEventCount: relay.rejectedEventCount ?? 0,
     })),
+    admittedRelayUrls: [
+      ...(result.admittedRelayUrls ??
+        result.relays.map(({ relayUrl }) => relayUrl)),
+    ],
     eventsVerified: result.eventsVerified === true,
   }
 }

@@ -1343,9 +1343,20 @@ export async function loadRawEventCatalog(
     })
   }
 
-  const startProductRead = (coordinates: readonly string[]) => {
+  const startProductRead = (
+    coordinates: readonly string[],
+    relayHintsByAddressId?: Readonly<
+      Record<string, readonly string[] | undefined>
+    >
+  ) => {
     const targets = [...new Set(coordinates)].sort()
-    const key = JSON.stringify(targets)
+    const targetRelayHints = Object.fromEntries(
+      targets.flatMap((target) => {
+        const relayHints = relayHintsByAddressId?.[target] ?? []
+        return relayHints.length > 0 ? [[target, relayHints]] : []
+      })
+    )
+    const key = JSON.stringify([targets, targetRelayHints])
     if (productRead?.key === key) return productRead
     latestProductResult = undefined
     previewRecords = []
@@ -1358,6 +1369,7 @@ export async function loadRawEventCatalog(
     })
     const promise = getProductsByIds(targets, {
       includeMerchantHiddenProductIds: targets,
+      relayHintsByAddressId: targetRelayHints,
       authenticatedPubkey: options.authenticatedPubkey,
       shouldContinue: current,
       onCacheReady: (snapshot) => {
@@ -1404,7 +1416,10 @@ export async function loadRawEventCatalog(
     ) {
       // The organizer list is enough to read safe product cards. Exact
       // participation and pickup checks continue independently in core.
-      startProductRead(resolution.organizerProductCoordinates)
+      startProductRead(
+        resolution.organizerProductCoordinates,
+        resolution.collection?.productRelayHintsByCoordinate
+      )
     } else {
       ++productReadVersion
       productRead = undefined
@@ -1438,7 +1453,11 @@ export async function loadRawEventCatalog(
     let result: ProductsByIdsResult | undefined
     if (canHydrate && resolution.acceptedProductCoordinates.length > 0) {
       const read =
-        productRead ?? startProductRead(resolution.acceptedProductCoordinates)
+        productRead ??
+        startProductRead(
+          resolution.acceptedProductCoordinates,
+          resolution.collection?.productRelayHintsByCoordinate
+        )
       const outcome = await read.promise
       assertActive()
       if ("error" in outcome) throw outcome.error
@@ -1465,6 +1484,8 @@ export async function loadRawEventCatalog(
         result = await getProductsByIds(resolution.acceptedProductCoordinates, {
           includeMerchantHiddenProductIds:
             resolution.acceptedProductCoordinates,
+          relayHintsByAddressId:
+            resolution.collection?.productRelayHintsByCoordinate,
           authenticatedPubkey: options.authenticatedPubkey,
           shouldContinue: active,
         })
@@ -2040,6 +2061,7 @@ export async function verifyPickupFulfillmentFreshness(
 
   const productResult = await getProductsByIds([item.productId], {
     includeMerchantHiddenProductIds: [item.productId],
+    relayHintsByAddressId: resolution.collection?.productRelayHintsByCoordinate,
     authenticatedPubkey,
     shouldContinue,
   })

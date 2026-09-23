@@ -208,6 +208,21 @@ export async function handlePostHogProxyRequest(
     return corsJsonResponse({ error: "payload_too_large" }, 413, origin)
   }
 
+  if (requestUrl.searchParams.get("compression") === "base64") {
+    if (
+      !request.headers
+        .get("content-type")
+        ?.toLowerCase()
+        .startsWith("application/x-www-form-urlencoded")
+    ) {
+      return corsJsonResponse({ error: "invalid_payload" }, 400, origin)
+    }
+    requestBody = decodePostHogBeaconBody(requestBody)
+    if (!requestBody) {
+      return corsJsonResponse({ error: "invalid_payload" }, 400, origin)
+    }
+  }
+
   const rebuilt = rebuildPostHogIngestPayload(
     requestBody,
     originContext,
@@ -230,7 +245,15 @@ export async function handlePostHogProxyRequest(
     "content-type": "application/json",
   })
   const upstreamBody = JSON.stringify(
-    rebuilt.shape === "single" ? rebuilt.events[0] : rebuilt.events
+    rebuilt.shape === "capture-batch"
+      ? {
+          api_key: rebuilt.apiKey,
+          batch: rebuilt.events,
+          sent_at: rebuilt.sentAt,
+        }
+      : rebuilt.shape === "single"
+        ? rebuilt.events[0]
+        : rebuilt.events
   )
 
   try {
@@ -259,8 +282,10 @@ export async function handlePostHogProxyRequest(
 
 interface RebuiltIngestPayload {
   ok: true
-  shape: "single" | "batch"
+  shape: "single" | "batch" | "capture-batch"
   events: Record<string, unknown>[]
+  apiKey?: string
+  sentAt?: string
 }
 
 interface RejectedIngestPayload {
@@ -268,9 +293,33 @@ interface RejectedIngestPayload {
   error: string
 }
 
+function decodePostHogBeaconBody(body: ArrayBuffer): ArrayBuffer | null {
+  try {
+    const form = new URLSearchParams(
+      new TextDecoder("utf-8", { fatal: true }).decode(body)
+    )
+    const encoded = form.get("data")
+    if (
+      [...form.keys()].length !== 1 ||
+      !encoded ||
+      encoded.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)
+    ) {
+      return null
+    }
+    const decoded = atob(encoded)
+    const bytes = Uint8Array.from(decoded, (character) =>
+      character.charCodeAt(0)
+    )
+    return bytes.buffer
+  } catch {
+    return null
+  }
+}
+
 /**
- * Parse the supported PostHog browser ingest shapes (one event object or an
- * array of event objects) and rebuild a fresh payload that contains only the
+ * Parse the supported PostHog browser ingest shapes (one event object, an
+ * array, or the SDK's capture-body envelope) and rebuild a payload with only the
  * documented telemetry allowlist. Events with unknown keys, unknown
  * properties, out-of-range values, or a wrong identity are dropped whole,
  * never repaired.
@@ -287,8 +336,30 @@ export function rebuildPostHogIngestPayload(
     return { ok: false, error: "invalid_payload" }
   }
 
-  const shape = Array.isArray(parsed) ? "batch" : "single"
-  const candidates = Array.isArray(parsed) ? parsed : [parsed]
+  let shape: RebuiltIngestPayload["shape"] = Array.isArray(parsed)
+    ? "batch"
+    : "single"
+  let candidates = Array.isArray(parsed) ? parsed : [parsed]
+  let apiKey: string | undefined
+  let sentAt: string | undefined
+  if (isPlainObject(parsed) && Object.hasOwn(parsed, "batch")) {
+    if (
+      Object.keys(parsed).some(
+        (key) => key !== "api_key" && key !== "batch" && key !== "sent_at"
+      ) ||
+      !Array.isArray(parsed.batch) ||
+      typeof parsed.api_key !== "string" ||
+      !POSTHOG_PROJECT_TOKEN_PATTERN.test(parsed.api_key) ||
+      (pinnedToken && parsed.api_key !== pinnedToken) ||
+      !isCanonicalIsoTimestamp(parsed.sent_at)
+    ) {
+      return { ok: false, error: "invalid_payload" }
+    }
+    shape = "capture-batch"
+    candidates = parsed.batch
+    apiKey = pinnedToken ?? parsed.api_key
+    sentAt = parsed.sent_at
+  }
   if (candidates.length === 0 || candidates.length > MAX_EVENTS_PER_REQUEST) {
     return { ok: false, error: "invalid_payload" }
   }
@@ -296,12 +367,17 @@ export function rebuildPostHogIngestPayload(
   const events: Record<string, unknown>[] = []
   for (const candidate of candidates) {
     const event = rebuildIngestEvent(candidate, pinnedToken, originContext)
-    if (event) {
+    const eventProperties = event?.properties as
+      Record<string, unknown> | undefined
+    if (
+      event &&
+      (shape !== "capture-batch" || eventProperties?.token === apiKey)
+    ) {
       events.push(event)
     }
   }
 
-  return { ok: true, shape, events }
+  return { ok: true, shape, events, apiKey, sentAt }
 }
 
 function rebuildIngestEvent(

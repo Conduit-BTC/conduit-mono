@@ -19,6 +19,7 @@ import {
   publishMerchantOrganizerOrderAcceptance,
   reconcileMerchantOrganizerCollectionEvidence,
   retryMerchantOrganizerRecord,
+  saveOrganizerEventMarketDelivery,
   type MerchantOrganizerRecordDelivery,
 } from "../apps/merchant/src/lib/event-market"
 import { createEmptyOrganizerEventMarketForm } from "../apps/merchant/src/lib/event-market-form"
@@ -223,9 +224,19 @@ describe("merchant event lifecycle", () => {
         throw new Error("Retry must not sign")
       },
     })
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value)
+      },
+    }
+    saveOrganizerEventMarketDelivery(organizer, coordinate, retained!, storage)
     await retryMerchantOrganizerRecord({
       organizerPubkey: organizer,
+      reference: coordinate,
       record: retained!,
+      storage,
     })
     expect(retried[0]?.id).toBe(retained?.signedEvent?.id)
   })

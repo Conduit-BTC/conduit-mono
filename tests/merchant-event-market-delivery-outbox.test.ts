@@ -269,6 +269,48 @@ describe("merchant organizer delivery outbox", () => {
     ).toEqual({})
   })
 
+  it("does not overwrite completed same-event delivery with stale retry progress", () => {
+    const storage = new MemoryStorage()
+    const signedEvent = signedCollection()
+    saveOrganizerEventMarketDelivery(
+      ORGANIZER,
+      REFERENCE,
+      {
+        record: "collection",
+        acknowledgedRelayUrls: ["wss://ack.example/events"],
+        acknowledgedCount: 1,
+        rejectedCount: 0,
+        timedOutCount: 0,
+        signedEvent,
+      },
+      storage
+    )
+
+    saveOrganizerEventMarketDelivery(
+      ORGANIZER,
+      REFERENCE,
+      {
+        record: "collection",
+        acknowledgedCount: 0,
+        rejectedCount: 1,
+        timedOutCount: 0,
+        signedEvent,
+      },
+      storage
+    )
+
+    expect(
+      loadOrganizerEventMarketDeliveryOutbox(ORGANIZER, storage)[REFERENCE]
+    ).toEqual([
+      expect.objectContaining({
+        acknowledgedRelayUrls: ["wss://ack.example/events"],
+        acknowledgedCount: 1,
+        rejectedCount: 0,
+        timedOutCount: 0,
+      }),
+    ])
+  })
+
   it("drops tampered signed events when reloading browser storage", () => {
     const storage = new MemoryStorage()
     const signedEvent = signedCollection()
@@ -601,7 +643,9 @@ describe("merchant organizer delivery outbox", () => {
 
     const retried = await retryMerchantOrganizerRecord({
       organizerPubkey: ORGANIZER,
+      reference: REFERENCE,
       record: reloaded,
+      storage: new MemoryStorage(values),
     })
 
     expectExactSignedEvent(reloaded.signedEvent, signedEvent)
@@ -609,5 +653,59 @@ describe("merchant organizer delivery outbox", () => {
     expect(retried.acknowledgedRelayUrls).toEqual(["wss://relay.example"])
     expect(published).toHaveLength(1)
     expectExactSignedEvent(published[0] ?? null, signedEvent)
+  })
+
+  it("refuses removed or superseded organizer rows before relay transport", async () => {
+    const values = new Map<string, string>()
+    const storage = new MemoryStorage(values)
+    const original = {
+      record: "collection" as const,
+      acknowledgedCount: 0,
+      rejectedCount: 0,
+      timedOutCount: 1,
+      signedEvent: signedCollection(),
+    }
+    saveOrganizerEventMarketDelivery(ORGANIZER, REFERENCE, original, storage)
+    const published: SignedPublicNostrEvent[] = []
+    __setEventMarketTestOverrides({
+      getNdk: async () => new NDK(),
+      publishWithPlanner: async (event) => {
+        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        throw new Error("stale retry reached relay transport")
+      },
+    })
+
+    values.clear()
+    await expect(
+      retryMerchantOrganizerRecord({
+        organizerPubkey: ORGANIZER,
+        reference: REFERENCE,
+        record: original,
+        storage,
+      })
+    ).rejects.toThrow("changed")
+
+    const replacement = {
+      ...original,
+      signedEvent: finalizeEvent(
+        {
+          kind: 30405,
+          created_at: 1_800_000_001,
+          content: "New collection",
+          tags: [["d", "public-market"]],
+        },
+        SECRET
+      ),
+    }
+    saveOrganizerEventMarketDelivery(ORGANIZER, REFERENCE, replacement, storage)
+    await expect(
+      retryMerchantOrganizerRecord({
+        organizerPubkey: ORGANIZER,
+        reference: REFERENCE,
+        record: original,
+        storage,
+      })
+    ).rejects.toThrow("changed")
+    expect(published).toHaveLength(0)
   })
 })

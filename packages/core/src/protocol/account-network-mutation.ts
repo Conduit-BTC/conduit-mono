@@ -100,7 +100,8 @@ export interface AccountNetworkReviewFrontier {
   state: string
 }
 
-export type AccountNetworkReviewWarning = "single_relay_no_redundancy"
+export type AccountNetworkReviewWarning =
+  "single_relay_no_redundancy" | "scoped_absence_may_hide_signed_state"
 
 export interface ReviewedAccountNetworkMutation {
   pubkey: string
@@ -117,7 +118,6 @@ export interface ReviewedAccountNetworkMutation {
   changedKinds: AccountNetworkSignedKind[]
   signerRequestCount: number
   warnings: AccountNetworkReviewWarning[]
-  evidenceReady: boolean
 }
 
 export type AccountNetworkMutationErrorCode =
@@ -213,7 +213,9 @@ export interface AccountNetworkMutationDependencies {
     pubkey: string,
     relayUrls: readonly string[],
     ownerSelectedRelayUrls: readonly string[],
-    authenticatedPubkey: string | null
+    authenticatedPubkey: string | null,
+    appRelayUrls: readonly string[],
+    personalRelayUrls: readonly string[]
   ) => Promise<string[]>
   publishToRelay?: typeof publishSignedEventToRelay
   fetchEvents?: typeof fetchSignedEventsFanoutDetailed
@@ -535,6 +537,37 @@ function reviewFrontier(input: {
   }
 }
 
+function hasCompleteScopedOwnerRelayListAbsence(
+  reconciliation: AccountNetworkPreferencesReconciliation
+): boolean {
+  const resolution = reconciliation.ownerRelayList
+  return (
+    resolution.state === "not_observed" &&
+    resolution.lookup.coverage === "complete" &&
+    !resolution.current &&
+    !resolution.lastUsable &&
+    !resolution.pendingDistribution
+  )
+}
+
+function hasCompleteScopedInboxDeclarationAbsence(
+  reconciliation: AccountNetworkPreferencesReconciliation
+): boolean {
+  const resolution = reconciliation.inboxDeclaration
+  return (
+    resolution.state === "not_observed" &&
+    resolution.observation?.coverage === "complete" &&
+    resolution.eventId === undefined &&
+    resolution.eventCreatedAt === undefined &&
+    resolution.relayUrls.length === 0 &&
+    (resolution.retainedReadRelayUrls?.length ?? 0) === 0 &&
+    (resolution.cutoverRecoveryRelayUrls?.length ?? 0) === 0 &&
+    (resolution.pendingRelayUrls?.length ?? 0) === 0 &&
+    (resolution.pendingPublishRelayUrls?.length ?? 0) === 0 &&
+    (resolution.pendingRelayOutcomes?.length ?? 0) === 0
+  )
+}
+
 export function reviewAccountNetworkMutation(
   reconciliation: AccountNetworkPreferencesReconciliation,
   requestedAction: AccountNetworkMutationAction
@@ -598,6 +631,21 @@ export function reviewAccountNetworkMutation(
   const changedKinds: AccountNetworkSignedKind[] = []
   if (relayListChanged) changedKinds.push(EVENT_KINDS.RELAY_LIST)
   if (inboxChanged) changedKinds.push(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS)
+  const warnings: AccountNetworkReviewWarning[] = []
+  if (
+    desiredRelayPreferences.filter((preference) => preference.writeEnabled)
+      .length === 1
+  ) {
+    warnings.push("single_relay_no_redundancy")
+  }
+  if (
+    (changedKinds.includes(EVENT_KINDS.RELAY_LIST) &&
+      hasCompleteScopedOwnerRelayListAbsence(reconciliation)) ||
+    (changedKinds.includes(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS) &&
+      hasCompleteScopedInboxDeclarationAbsence(reconciliation))
+  ) {
+    warnings.push("scoped_absence_may_hide_signed_state")
+  }
 
   return {
     pubkey,
@@ -620,22 +668,8 @@ export function reviewAccountNetworkMutation(
     ),
     changedKinds,
     signerRequestCount: changedKinds.length,
-    warnings:
-      desiredRelayPreferences.filter((preference) => preference.writeEnabled)
-        .length === 1
-        ? ["single_relay_no_redundancy"]
-        : [],
-    evidenceReady:
-      reconciliation.ownerRelayList.lookup.coverage === "complete" &&
-      reconciliation.inboxDeclaration.observation?.coverage === "complete",
+    warnings,
   }
-}
-
-function sameReview(
-  left: ReviewedAccountNetworkMutation,
-  right: ReviewedAccountNetworkMutation
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function assertContinue(shouldContinue: (() => boolean) | undefined): void {
@@ -1091,6 +1125,8 @@ async function eligibleRelayUrls(
   authenticatedPubkey: string | null,
   relayUrls: readonly string[],
   ownerSelectedRelayUrls: readonly string[],
+  appRelayUrls: readonly string[],
+  personalRelayUrls: readonly string[],
   dependencies: AccountNetworkMutationDependencies
 ): Promise<string[]> {
   const authorizedOwnerSelectedRelayUrls =
@@ -1100,7 +1136,9 @@ async function eligibleRelayUrls(
       pubkey,
       relayUrls,
       authorizedOwnerSelectedRelayUrls,
-      authenticatedPubkey
+      authenticatedPubkey,
+      appRelayUrls,
+      personalRelayUrls
     )
   }
   return await filterEligibleAccountRelayUrls({
@@ -1108,8 +1146,49 @@ async function eligibleRelayUrls(
     authenticatedPubkey,
     candidateRelayUrls: relayUrls,
     ownerSelectedRelayUrls: authorizedOwnerSelectedRelayUrls,
+    appRelayUrls,
+    personalRelayUrls,
     repository: dexieAccountNetworkLocalStateRepository,
   })
+}
+
+function distributionRelaySources(input: {
+  kind: AccountNetworkSignedKind
+  signedEvent?: SignedPublicNostrEvent
+  relayUrls: readonly string[]
+  desiredPublishRelayUrls?: readonly string[]
+  sharedRelayUrls?: readonly string[]
+  ownerSelectedRelayUrls?: readonly string[]
+}): { appRelayUrls: string[]; personalRelayUrls: string[] } {
+  const relayUrlSet = new Set(input.relayUrls)
+  if (input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS) {
+    return {
+      // Publishing and confirming the owner's declaration uses Conduit's
+      // shared discovery registry plus the owner's NIP-65 Publish relays. Keep
+      // those sources independent so either live layer can retain an overlap
+      // without relabeling a Personal-only target as App-owned. Runtime reads
+      // from relays declared by kind 10050 remain independent of both toggles.
+      appRelayUrls: normalizeSecureOrIsolatedE2eRelayUrls(
+        input.sharedRelayUrls ?? []
+      ).filter((relayUrl) => relayUrlSet.has(relayUrl)),
+      personalRelayUrls: normalizeOwnerSelectedRelayUrls(
+        input.ownerSelectedRelayUrls ?? []
+      ).filter((relayUrl) => relayUrlSet.has(relayUrl)),
+    }
+  }
+
+  const personalCandidates = input.signedEvent
+    ? parseNip65RelayTags(input.signedEvent.tags).flatMap((preference) =>
+        preference.writeEnabled ? [preference.url] : []
+      )
+    : (input.desiredPublishRelayUrls ?? [])
+  const appRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls(
+    accountNetworkDiscoveryRelayUrls()
+  ).filter((relayUrl) => relayUrlSet.has(relayUrl))
+  const personalRelayUrls = normalizeOwnerSelectedRelayUrls(
+    personalCandidates
+  ).filter((relayUrl) => relayUrlSet.has(relayUrl))
+  return { appRelayUrls, personalRelayUrls }
 }
 
 async function resolveDistributionPlan(input: {
@@ -1154,11 +1233,20 @@ async function resolveDistributionPlan(input: {
   const requested = Array.from(
     new Set([...remoteOrCodeOwnedRelayUrls, ...ownerSelectedRelayUrls])
   ).filter((relayUrl) => !excluded.has(relayUrl))
+  const relaySources = distributionRelaySources({
+    kind: input.kind,
+    relayUrls: requested,
+    desiredPublishRelayUrls: input.desiredPublishRelayUrls,
+    sharedRelayUrls,
+    ownerSelectedRelayUrls,
+  })
   const eligible = await eligibleRelayUrls(
     input.pubkey,
     input.authenticatedPubkey,
     requested,
     ownerSelectedRelayUrls,
+    relaySources.appRelayUrls,
+    relaySources.personalRelayUrls,
     input.dependencies
   )
   const eligibleSet = new Set(
@@ -1248,10 +1336,28 @@ async function deliverPendingKind(input: {
     )
   }
   const signedEvent = structuredClone(pending.signedEvent)
+  const pendingPublishRelayUrls = [...pending.publishRelayUrls]
+  const pendingInboxDistribution =
+    input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+      ? snapshot.inboxDeclaration?.pendingDistribution
+      : undefined
   const ownerSelectedRelayUrls =
     input.authenticatedPubkey === input.pubkey
       ? ownerSelectedRelayUrlsFromSnapshot(input.pubkey, snapshot)
       : []
+  const relaySources = distributionRelaySources({
+    kind: input.kind,
+    signedEvent,
+    relayUrls: pendingPublishRelayUrls,
+    sharedRelayUrls:
+      input.kind === EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+        ? (pendingInboxDistribution?.confirmationRelayUrls ??
+          normalizePublicOrIsolatedE2eRelayHints(
+            sharedInboxDiscoveryRelayUrls()
+          ).filter((relayUrl) => pendingPublishRelayUrls.includes(relayUrl)))
+        : [],
+    ownerSelectedRelayUrls,
+  })
   const publishTargets = unresolvedNetworkPreferencePublishRelayUrls(
     pending.relayOutcomes
   )
@@ -1270,6 +1376,8 @@ async function deliverPendingKind(input: {
         input.authenticatedPubkey,
         [relayUrl],
         ownerSelectedRelayUrls,
+        relaySources.appRelayUrls,
+        relaySources.personalRelayUrls,
         input.dependencies
       )
       assertContinue(input.dependencies.shouldContinue)
@@ -1283,6 +1391,8 @@ async function deliverPendingKind(input: {
           authenticatedPubkey: input.authenticatedPubkey,
           accountPubkey: input.pubkey,
           ownerSelectedRelayUrls,
+          appRelayUrls: relaySources.appRelayUrls,
+          personalRelayUrls: relaySources.personalRelayUrls,
           shouldContinue: input.dependencies.shouldContinue,
         })
       } catch (error) {
@@ -1332,6 +1442,8 @@ async function deliverPendingKind(input: {
         input.authenticatedPubkey,
         [relayUrl],
         ownerSelectedRelayUrls,
+        relaySources.appRelayUrls,
+        relaySources.personalRelayUrls,
         input.dependencies
       )
       assertContinue(input.dependencies.shouldContinue)
@@ -1352,6 +1464,8 @@ async function deliverPendingKind(input: {
             accountPubkey: input.pubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             ownerSelectedRelayUrls,
+            appRelayUrls: relaySources.appRelayUrls,
+            personalRelayUrls: relaySources.personalRelayUrls,
             shouldContinue: input.dependencies.shouldContinue,
           }
         )
@@ -1410,51 +1524,39 @@ async function publishUnderLock(input: {
 }): Promise<AccountNetworkMutationResult> {
   const repository =
     input.dependencies.repository ?? dexieAccountNetworkMutationRepository
-  const reconcile =
-    input.dependencies.reconcile ?? reconcileAccountNetworkPreferences
   const now = input.dependencies.now ?? Date.now
   input.dependencies.onPhase?.("checking")
   assertContinue(input.dependencies.shouldContinue)
-  const reconciliation = await reconcile(input.pubkey, {
-    ...input.dependencies.reconcileOptions,
-    requestingAccountPubkey: input.pubkey,
-    authenticatedPubkey: input.authenticatedPubkey,
-    shouldContinue: input.dependencies.shouldContinue,
-  })
+  const snapshot = await repository.get(input.pubkey)
   assertContinue(input.dependencies.shouldContinue)
-  const currentReview = reviewAccountNetworkMutation(
-    reconciliation,
-    input.reviewed.action
-  )
-  if (!currentReview.evidenceReady) {
-    throw new AccountNetworkMutationError(
-      "evidence_unavailable",
-      "A complete fresh check of both signed Network frontiers is required."
-    )
-  }
-  if (!sameReview(input.reviewed, currentReview)) {
-    throw new AccountNetworkMutationError(
-      "evidence_changed",
-      "Signed Network evidence changed after review."
-    )
-  }
   requireExpectedLocalExclusions(
-    (await repository.get(input.pubkey)).localState,
-    currentReview.localExcludedRelayUrls
+    snapshot.localState,
+    input.reviewed.localExcludedRelayUrls
   )
 
   const desiredRelayPreferences = stablePreferenceOrder(
-    reconciliation.ownerRelayList.preferences,
-    relayPreferencesFromAction(currentReview.action)
+    snapshot.ownerRelayList?.current?.preferences ?? [],
+    relayPreferencesFromAction(input.reviewed.action)
   )
-  const currentInbox = currentInboxRelayUrls(
-    input.pubkey,
-    reconciliation.inboxDeclaration
-  )
+  const currentInbox = snapshot.inboxDeclaration?.current.secureRelayUrls ?? []
   const desiredInbox = stableInboxOrder(
     currentInbox,
-    inboxRelayUrlsFromAction(currentReview.action)
+    inboxRelayUrlsFromAction(input.reviewed.action)
   )
+  const removedRelayUrls = new Set(input.reviewed.action.removedRelayUrls)
+  if (
+    (snapshot.ownerRelayList?.current?.preferences.some((preference) =>
+      removedRelayUrls.has(preference.url)
+    ) &&
+      !input.reviewed.changedKinds.includes(EVENT_KINDS.RELAY_LIST)) ||
+    (currentInbox.some((relayUrl) => removedRelayUrls.has(relayUrl)) &&
+      !input.reviewed.changedKinds.includes(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS))
+  ) {
+    throw new AccountNetworkMutationError(
+      "evidence_changed",
+      "A newer signed Network preference includes a relay being removed. Review the current relay state before removal."
+    )
+  }
   const desiredPublishRelayUrls = desiredRelayPreferences.flatMap(
     (preference) => (preference.writeEnabled ? [preference.url] : [])
   )
@@ -1462,7 +1564,7 @@ async function publishUnderLock(input: {
     AccountNetworkSignedKind,
     Awaited<ReturnType<typeof resolveDistributionPlan>>
   >()
-  for (const kind of currentReview.changedKinds) {
+  for (const kind of input.reviewed.changedKinds) {
     plans.set(
       kind,
       await resolveDistributionPlan({
@@ -1470,13 +1572,13 @@ async function publishUnderLock(input: {
         authenticatedPubkey: input.authenticatedPubkey,
         kind,
         desiredPublishRelayUrls,
-        excludedRelayUrls: currentReview.action.removedRelayUrls,
+        excludedRelayUrls: input.reviewed.action.removedRelayUrls,
         dependencies: input.dependencies,
       })
     )
   }
 
-  if (currentReview.changedKinds.length > 0) {
+  if (input.reviewed.changedKinds.length > 0) {
     if (
       !input.signer ||
       (input.signer.authMethod !== "nip07" &&
@@ -1500,15 +1602,21 @@ async function publishUnderLock(input: {
   const unsignedEvents: Array<{
     kind: AccountNetworkSignedKind
     event: Omit<SignedPublicNostrEvent, "id" | "sig">
-  }> = currentReview.changedKinds.map((kind) => ({
+  }> = input.reviewed.changedKinds.map((kind) => ({
     kind,
     event: {
       pubkey: input.pubkey,
       kind,
       created_at: selectCreatedAt(
         kind === EVENT_KINDS.RELAY_LIST
-          ? currentReview.relayList.createdAt
-          : currentReview.inboxDeclaration.createdAt,
+          ? Math.max(
+              input.reviewed.relayList.createdAt ?? 0,
+              snapshot.ownerRelayList?.current?.signedEvent.created_at ?? 0
+            )
+          : Math.max(
+              input.reviewed.inboxDeclaration.createdAt ?? 0,
+              snapshot.inboxDeclaration?.current.signedEvent.created_at ?? 0
+            ),
         now()
       ),
       tags:
@@ -1542,7 +1650,7 @@ async function publishUnderLock(input: {
     })
   }
 
-  const localStateChanged = currentReview.action.removedRelayUrls.length > 0
+  const localStateChanged = input.reviewed.action.removedRelayUrls.length > 0
   if (checkpoints.length === 0 && !localStateChanged) {
     return {
       status: "no_change",
@@ -1554,19 +1662,24 @@ async function publishUnderLock(input: {
   input.dependencies.onPhase?.("staging")
   const staged = await repository.stage({
     pubkey: input.pubkey,
-    expectedRelayListEventId: currentReview.relayList.eventId,
-    expectedInboxDeclarationEventId: currentReview.inboxDeclaration.eventId,
-    expectedExcludedRelayUrls: currentReview.localExcludedRelayUrls,
+    expectedRelayListEventId:
+      snapshot.ownerRelayList?.current?.signedEvent.id ?? null,
+    expectedInboxDeclarationEventId:
+      snapshot.inboxDeclaration?.current.signedEvent.id ?? null,
+    expectedExcludedRelayUrls: input.reviewed.localExcludedRelayUrls,
     checkpoints,
-    previousInboxRelayUrls: currentReview.previousInboxRelayUrls,
-    removedRelayUrls: currentReview.action.removedRelayUrls,
+    previousInboxRelayUrls: normalizeOwnerSelectedRelayUrls([
+      ...input.reviewed.previousInboxRelayUrls,
+      ...currentInbox,
+    ]),
+    removedRelayUrls: input.reviewed.action.removedRelayUrls,
     stagedAt: now(),
   })
   assertContinue(input.dependencies.shouldContinue)
   await input.dependencies.refreshRuntime?.(input.pubkey)
 
   let delivered = staged
-  for (const kind of currentReview.changedKinds) {
+  for (const kind of input.reviewed.changedKinds) {
     delivered = await deliverPendingKind({
       pubkey: input.pubkey,
       authenticatedPubkey: input.authenticatedPubkey,
@@ -1577,7 +1690,7 @@ async function publishUnderLock(input: {
   }
   return resultFromSnapshot(
     delivered,
-    currentReview.changedKinds,
+    input.reviewed.changedKinds,
     localStateChanged
   )
 }

@@ -21,6 +21,7 @@ import {
   acknowledgeOrganizerHandoff,
   eventMarketHandoffDeliveryNeedsRetry,
   loadEventMarketHandoffDeliveries,
+  retryStoredOrganizerHandoffAck,
   resolveOrganizerHandoffAckReadiness,
 } from "../apps/merchant/src/lib/event-market-handoff"
 import { safePickupClaimCode } from "../apps/merchant/src/components/OrganizerHandoffReceiptQueue"
@@ -428,12 +429,19 @@ describe("merchant organizer handoff authorization", () => {
     expect(eventMarketHandoffDeliveryNeedsRetry(stored)).toBe(true)
 
     const publishedIds: string[] = []
-    const retried = await acknowledgeOrganizerHandoff({
+    await expect(
+      acknowledgeOrganizerHandoff({
+        organizerPubkey: ORGANIZER,
+        claim: CLAIM,
+        market: market(),
+        merchandise,
+        signer: {} as never,
+        storage,
+      })
+    ).rejects.toThrow("Retry its delivery")
+    const retried = await retryStoredOrganizerHandoffAck({
       organizerPubkey: ORGANIZER,
-      claim: CLAIM,
-      market: market(),
-      merchandise,
-      signer: {} as never,
+      delivery: stored,
       storage,
       transport: {
         accountNetworkLocalStateRepository:
@@ -453,6 +461,12 @@ describe("merchant organizer handoff authorization", () => {
     ])
     expect(retried.record).toEqual(stored.record)
     expect(eventMarketHandoffDeliveryNeedsRetry(retried)).toBe(false)
+    await expect(
+      retryStoredOrganizerHandoffAck({
+        organizerPubkey: MERCHANT,
+        delivery: stored,
+      })
+    ).rejects.toThrow("does not belong to this account")
   })
 
   it("persists initial ACK self-copy zero and partial diagnostics", async () => {
@@ -521,12 +535,9 @@ describe("merchant organizer handoff authorization", () => {
       ).toEqual(testCase.expected)
 
       const retriedIds: string[] = []
-      const retried = await acknowledgeOrganizerHandoff({
+      const retried = await retryStoredOrganizerHandoffAck({
         organizerPubkey: ORGANIZER,
-        claim: CLAIM,
-        market: market(),
-        merchandise,
-        signer: {} as never,
+        delivery: result,
         storage,
         transport: {
           accountNetworkLocalStateRepository:

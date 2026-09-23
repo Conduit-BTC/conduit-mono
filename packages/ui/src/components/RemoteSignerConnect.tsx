@@ -6,7 +6,7 @@ import type { SignerPlatform } from "./signer-platform"
 import { ManualSignerConnection } from "./ManualSignerConnection"
 
 const primaryClassName = "h-12 w-full rounded-xl text-base font-semibold"
-const appNames = { clave: "Clave", amber: "Amber", primal: "Primal" } as const
+const appNames = { clave: "Clave", amber: "Amber" } as const
 
 export function RemoteSignerConnect({
   platform,
@@ -141,7 +141,6 @@ export function RemoteSignerConnect({
           nostrConnectUri={nostrConnectUri}
           selectedApp={selectedApp}
           onSelectApp={setSelectedApp}
-          onChooseAnother={cancel}
           startButton={startButton}
         />
       )}
@@ -170,13 +169,6 @@ export function RemoteSignerConnect({
             connection link into the app. If you just installed it, finish setup
             there, then return here.
           </p>
-          {selectedApp === "primal" && (
-            <p>
-              Use an account held in Primal. Watch-only accounts and accounts
-              using an external signer cannot approve here. For those accounts,
-              use the app that holds your keys.
-            </p>
-          )}
           {copyButton}
         </div>
       )}
@@ -220,7 +212,7 @@ export function RemoteSignerConnect({
       )}
       {copyError && (
         <p role="alert" className="text-sm leading-6 text-error">
-          Copy was blocked. Open Other ways to connect → Copy link to select and
+          Copy was blocked. Open the connection options and select Copy link to
           copy it manually.
         </p>
       )}

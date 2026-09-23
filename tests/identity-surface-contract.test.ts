@@ -128,7 +128,7 @@ describe("identity surface contracts", () => {
     expect(store).toContain("<MerchantTrustSummary trust={merchantTrust} />")
   })
 
-  it("derives merchant trust only from the authenticated Conduit session", async () => {
+  it("keeps merchant trust owned by the retained account and authenticates only with a ready signer", async () => {
     const trustHook = await readFile(
       "apps/market/src/hooks/useMerchantTrustContext.ts",
       "utf8"
@@ -144,7 +144,10 @@ describe("identity surface contracts", () => {
     const marketRoot = await readFile("apps/market/src/main.tsx", "utf8")
 
     expect(trustHook).toContain("useConduitSession")
-    expect(trustHook).toContain('session.mode === "signed_in"')
+    expect(trustHook).toContain("const viewerPubkey = accountPubkey")
+    expect(trustHook).toContain("const authenticatedPubkey = signerReady")
+    expect(trustHook).toContain("current.accountPubkey === accountPubkey")
+    expect(trustHook).toContain("current.signerReadiness === signerReadiness")
     expect(trustHook).toContain(
       "authenticatedPubkey: getMerchantProfileAuthenticatedPubkey("
     )

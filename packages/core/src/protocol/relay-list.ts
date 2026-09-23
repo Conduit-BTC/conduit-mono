@@ -53,6 +53,8 @@ export interface RelayListLookupOptions {
   cacheOnly?: boolean
   /** Custom relay set to scan; defaults to user's general read relays. */
   relayUrls?: readonly string[]
+  /** Bound admitted relay attempts after live source-policy filtering. */
+  maxRelayAttempts?: number
   /**
    * Preserve local/private and ws:// relay URLs only when the requested
    * kind-10002 owner matches this authenticated pubkey. Third-party relay hints
@@ -65,6 +67,12 @@ export interface RelayListLookupOptions {
   authenticatedPubkey?: string | null
   /** Exact lookup-target subset selected by that authenticated account owner. */
   ownerSelectedRelayUrls?: readonly string[]
+  /** Exact lookup targets contributed by Conduit's app-owned layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact lookup targets contributed by the owner's NIP-65 layer. */
+  personalRelayUrls?: readonly string[]
+  /** Exact lookup targets independently authorized outside local source layers. */
+  independentRelayUrls?: readonly string[]
   /** Injectable durable policy reader for the final per-relay I/O gate. */
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   /** Live caller authority for final account-scoped relay admission. */
@@ -391,17 +399,26 @@ async function runFetch(
     | "accountPubkey"
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
+    | "appRelayUrls"
+    | "personalRelayUrls"
+    | "independentRelayUrls"
+    | "maxRelayAttempts"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
     | "signal"
   >
 ): Promise<NDKEvent[]> {
+  if (relayUrls.length === 0) return []
   const impl = testOverrides.fetchEventsFanout ?? fetchEventsFanout
   return (await impl(filter, {
-    relayUrls: relayUrls.length > 0 ? [...relayUrls] : undefined,
+    relayUrls: [...relayUrls],
     accountPubkey: options.accountPubkey,
     authenticatedPubkey: options.authenticatedPubkey,
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+    appRelayUrls: options.appRelayUrls,
+    personalRelayUrls: options.personalRelayUrls,
+    independentRelayUrls: options.independentRelayUrls,
+    maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,
@@ -419,6 +436,10 @@ async function runFetchDetailed(
     | "accountPubkey"
     | "authenticatedPubkey"
     | "ownerSelectedRelayUrls"
+    | "appRelayUrls"
+    | "personalRelayUrls"
+    | "independentRelayUrls"
+    | "maxRelayAttempts"
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
     | "signal"
@@ -433,6 +454,10 @@ async function runFetchDetailed(
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+      appRelayUrls: options.appRelayUrls,
+      personalRelayUrls: options.personalRelayUrls,
+      independentRelayUrls: options.independentRelayUrls,
+      maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       shouldContinue: options.shouldContinue,
@@ -448,6 +473,10 @@ async function runFetchDetailed(
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
       ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+      appRelayUrls: options.appRelayUrls,
+      personalRelayUrls: options.personalRelayUrls,
+      independentRelayUrls: options.independentRelayUrls,
+      maxRelayAttempts: options.maxRelayAttempts,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
       shouldContinue: options.shouldContinue,
@@ -471,6 +500,10 @@ async function runFetchDetailed(
     accountPubkey: options.accountPubkey,
     authenticatedPubkey: options.authenticatedPubkey,
     ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+    appRelayUrls: options.appRelayUrls,
+    personalRelayUrls: options.personalRelayUrls,
+    independentRelayUrls: options.independentRelayUrls,
+    maxRelayAttempts: options.maxRelayAttempts,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,
@@ -644,14 +677,17 @@ export async function getRelayListsDetailed(
     const statusByRelay = new Map(
       result.relays.map((relay) => [relay.relayUrl, relay.status] as const)
     )
+    const admittedRelayUrls = result.admittedRelayUrls ?? relayUrls
     const verified = result.eventsVerified === true
     const transportComplete =
       verified &&
-      relayUrls.length > 0 &&
-      relayUrls.every((relayUrl) => statusByRelay.get(relayUrl) === "success")
+      admittedRelayUrls.length > 0 &&
+      admittedRelayUrls.every(
+        (relayUrl) => statusByRelay.get(relayUrl) === "success"
+      )
     const transportUsable =
       verified &&
-      relayUrls.some((relayUrl) => {
+      admittedRelayUrls.some((relayUrl) => {
         const status = statusByRelay.get(relayUrl)
         return status === "success" || status === "partial"
       })

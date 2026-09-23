@@ -73,7 +73,7 @@ describe("Merchant event actor identity", () => {
       /<OrganizerHandoffReceiptQueue[\s\S]{0,240}authenticatedPubkey=\{authenticatedPubkey\}[\s\S]{0,80}shouldContinue=\{shouldContinue\}/
     )
     expect(orders).toMatch(
-      /<PickupFulfillmentCard[\s\S]{0,420}authenticatedPubkey=\{authenticatedPubkey\}[\s\S]{0,180}authGenerationRef\.current === authGeneration/
+      /<PickupFulfillmentCard[\s\S]{0,420}accountPubkey=\{pubkey\}[\s\S]{0,80}authenticatedPubkey=\{authenticatedPubkey\}[\s\S]{0,180}isCurrentOrderOwner\(pubkey, authGeneration\)/
     )
   })
 

@@ -226,7 +226,12 @@ describe("NDK relay worker verification fallback", () => {
       { relayUrls: [], skipHealthFilter: true }
     )
 
-    expect(result).toEqual({ events: [], relays: [], eventsVerified: true })
+    expect(result).toEqual({
+      events: [],
+      relays: [],
+      admittedRelayUrls: [],
+      eventsVerified: true,
+    })
     expect(openedRelayCount).toBe(0)
   })
 

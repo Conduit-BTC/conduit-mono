@@ -32,7 +32,7 @@ const contracts = [
     path: "packages/core/src/protocol/event-market.ts",
     calls: [
       {
-        intent: "author_event",
+        intent: "commerce_author_event",
         authorIdentity: "input.organizerPubkey",
         authenticatedPattern:
           "authenticatedPubkey\\s*===\\s*input\\.organizerPubkey\\s*\\?\\s*authenticatedPubkey\\s*:\\s*null",
@@ -67,7 +67,7 @@ const contracts = [
     path: "apps/merchant/src/lib/product-publishing.ts",
     calls: [
       {
-        intent: "author_event",
+        intent: "commerce_author_event",
         authorIdentity: "merchantPubkey",
         authenticatedPattern:
           "authenticatedPubkey\\s*===\\s*merchantPubkey\\.toLowerCase\\(\\)\\s*\\?\\s*authenticatedPubkey\\s*:\\s*null",
@@ -75,7 +75,7 @@ const contracts = [
         count: 1,
       },
       {
-        intent: "author_event",
+        intent: "commerce_author_event",
         authorIdentity: "signerPubkey",
         authenticatedIdentity: "authenticatedPubkey",
         authenticatedPropertyPattern: "authenticatedPubkey",

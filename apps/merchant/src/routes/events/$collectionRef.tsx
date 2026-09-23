@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react"
+import { useEffect, useMemo } from "react"
 import { ArrowLeft } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 
@@ -21,13 +21,14 @@ export const Route = createFileRoute("/events/$collectionRef")({
 
 function EventDetailPage() {
   const { collectionRef } = Route.useParams()
-  const { pubkey, status, authGeneration } = useAuth()
-  const authGenerationRef = useRef(authGeneration)
+  const {
+    accountPubkey,
+    pubkey,
+    signerReadiness,
+    authGeneration,
+    isAuthGenerationCurrent,
+  } = useAuth()
   const navigate = useNavigate({ from: Route.fullPath })
-
-  useLayoutEffect(() => {
-    authGenerationRef.current = authGeneration
-  }, [authGeneration])
 
   const eventReference = useMemo(() => {
     try {
@@ -77,9 +78,10 @@ function EventDetailPage() {
     )
   }
 
-  const merchantPubkey = pubkey ?? ""
-  const authenticatedPubkey = status === "connected" ? pubkey : null
-  const shouldContinue = () => authGenerationRef.current === authGeneration
+  const merchantPubkey = accountPubkey ?? ""
+  const authenticatedPubkey =
+    signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
+  const shouldContinue = () => isAuthGenerationCurrent(authGeneration)
   const organizerPubkey = eventReference.coordinate.split(":")[1]
   const selectedIsOwned = organizerPubkey === merchantPubkey
   const openEvent = (reference: string) => {

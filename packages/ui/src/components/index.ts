@@ -19,6 +19,12 @@ export {
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
 export {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  type CollapsibleProps,
+} from "./Collapsible"
+export {
   EventTimelineEntry,
   EventTimelineLoading,
   EventTimelineViewport,
@@ -135,6 +141,10 @@ export {
   SelectSeparator,
 } from "./Select"
 export { Skeleton } from "./Skeleton"
+export {
+  SignerRecoveryNotice,
+  type SignerRecoveryNoticeProps,
+} from "./SignerRecoveryNotice"
 export { Switch } from "./Switch"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
 export { SegmentedControl, SegmentedControlItem } from "./SegmentedControl"
@@ -174,16 +184,16 @@ export {
   type ProductImageUrlCollectionFieldProps,
 } from "./ProductImageUrlCollectionField"
 export {
+  ClaveConnectButton,
+  claveConnectUrl,
+  type ClaveConnectButtonProps,
+} from "./ClaveConnectButton"
+export {
   EventMarketCard,
   type EventMarketCardProps,
   type EventMarketCardStatusTone,
 } from "./EventMarketCard"
 export { EventPageHeader, type EventPageHeaderProps } from "./EventPageHeader"
-export {
-  ClaveConnectButton,
-  claveConnectUrl,
-  type ClaveConnectButtonProps,
-} from "./ClaveConnectButton"
 export {
   NoSignerSetupGuide,
   SignerConnectPanel,

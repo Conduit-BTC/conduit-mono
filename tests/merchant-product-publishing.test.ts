@@ -14,7 +14,6 @@ import {
   buildProductListingEventDraft,
   cacheSignedProductListingEvent,
   CANONICAL_APP_BACKPLANE_RELAYS,
-  CANONICAL_COMMERCE_DISCOVERY_RELAYS,
   config,
   EVENT_KINDS,
   getCachedMerchantStorefront,
@@ -44,6 +43,7 @@ import {
   resolveProductFulfillmentIntentForTarget,
   resolvePublishedProductFulfillmentIntentForTarget,
   signAndPublishProductWriteBundle,
+  signAndPublishProductListing,
   type CanonicalProductPublishDependencies,
   type SignedProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
@@ -284,6 +284,51 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
+  it("routes product and shipping events through the commerce author intent", async () => {
+    const relayUrl = "wss://relay.example"
+    const intents: string[] = []
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async (input) => {
+        intents.push(input.intent)
+        return {
+          intent: input.intent,
+          primaryRelayUrls: [relayUrl],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
+      new Set([{ url: `${relayUrl}/` }]) as never
+    )
+
+    try {
+      await signAndPublishProductWriteBundle({
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("commerce-intent"),
+            dTag: "commerce-intent",
+            fulfillmentIntent: {
+              kind: "fixed_standard",
+              amount: 5,
+              currency: "SATS",
+              countries: ["US"],
+            },
+          },
+        ],
+        onSignedLocal: async () => {},
+      })
+      expect(intents).toEqual([
+        "commerce_author_event",
+        "commerce_author_event",
+      ])
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
   it("revalidates live account authority before product relay I/O", async () => {
     const relayUrl = "wss://relay.example"
     __setRelayPublishTestOverrides({
@@ -507,7 +552,7 @@ describe("merchant product event delivery", () => {
 
   it("does not infer owner relay authority from a signed product author", async () => {
     const authenticatedPubkeys: Array<string | null | undefined> = []
-    const relayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const relayUrl = config.commerceRelayUrls[1]!
     __setRelayPublishTestOverrides({
       planPublishRelays: async (input) => {
         authenticatedPubkeys.push(input.authenticatedPubkey)
@@ -548,7 +593,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("retains a fallback-only listing ACK for an immediate deletion", async () => {
-    const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-single",
       acceptedRelayUrl: fallbackRelayUrl,
@@ -575,7 +620,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("preserves fallback provenance when its post-ACK cache write fails", async () => {
-    const fallbackRelayUrl = CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!
+    const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-volatile",
       acceptedRelayUrl: fallbackRelayUrl,
@@ -636,7 +681,7 @@ describe("merchant product event delivery", () => {
 
   it("retains per-listing fallback ACKs outside the bundle intersection", async () => {
     const [firstFallbackRelayUrl, secondFallbackRelayUrl] =
-      CANONICAL_COMMERCE_DISCOVERY_RELAYS
+      config.commerceRelayUrls
     const first = makeSignedProductEvent({
       dTag: "fallback-bundle-a",
       acceptedRelayUrl: firstFallbackRelayUrl!,
@@ -1014,6 +1059,65 @@ describe("merchant product event delivery", () => {
       expect(signRequests).toBe(2)
       expect(signedLocalCalls).toBe(1)
       expect(publishSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
+  it("retains a signer-returned product for exact retry after authority changes", async () => {
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let authorityCurrent = true
+    let signRequests = 0
+    let signedEvent: NDKEvent | null = null
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        const signed = await delegate.sign(event)
+        authorityCurrent = false
+        return signed
+      },
+    } as NDKSigner)
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishedIds: string[] = []
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+      async function (this: NDKEvent) {
+        publishedIds.push(this.id)
+        return new Set([{ url: "wss://relay.example/" }]) as never
+      }
+    )
+
+    try {
+      await expect(
+        signAndPublishProductListing({
+          merchantPubkey: MERCHANT_PUBKEY,
+          shouldContinue: () => authorityCurrent,
+          product: makeProduct("signed-before-recovery"),
+          dTag: "signed-before-recovery",
+          fulfillmentIntent: { kind: "coordinate_after_order" },
+          onSignedLocal: async (event) => {
+            signedEvent = event
+          },
+        })
+      ).rejects.toThrow("Product signer session changed")
+      expect(signRequests).toBe(1)
+      expect(signedEvent?.id).toBeTruthy()
+      expect(publishSpy).toHaveBeenCalledTimes(0)
+
+      authorityCurrent = true
+      await deliverSignedProductEvent(signedEvent!, MERCHANT_PUBKEY, {
+        shouldContinue: () => authorityCurrent,
+      })
+      expect(signRequests).toBe(1)
+      expect(publishSpy).toHaveBeenCalledTimes(1)
+      expect(publishedIds).toEqual([signedEvent!.id])
     } finally {
       publishSpy.mockRestore()
     }
