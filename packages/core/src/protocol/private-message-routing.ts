@@ -1749,6 +1749,29 @@ export function planCompatibilityOrderRelays(input: {
   }
 }
 
+/** Validate a persisted exact plan against the operator-owned write registry. */
+export function isApprovedCompatibilityOrderRelayPlan(
+  relayUrls: readonly string[]
+): boolean {
+  if (
+    relayUrls.length === 0 ||
+    relayUrls.length > MAX_COMPATIBILITY_ORDER_RELAYS
+  ) {
+    return false
+  }
+  const approved = new Set(
+    secureAutomaticRelayUrls(config.dmCompatibilityOrderRelayUrls)
+  )
+  return (
+    new Set(relayUrls).size === relayUrls.length &&
+    relayUrls.every(
+      (relayUrl) =>
+        secureAutomaticRelayUrls([relayUrl])[0] === relayUrl &&
+        approved.has(relayUrl)
+    )
+  )
+}
+
 /**
  * Select the delivery lane for one outgoing private message.
  *

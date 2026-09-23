@@ -6,7 +6,13 @@ import {
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
 import { buildMerchantOrderReviewUrl } from "../app-links"
-import type { OrderRelayDeliveryRecord, OrderRelayDeliveryStatus } from "../db"
+import type {
+  OrderDeliveryRoute,
+  OrderRelayDeliveryRecord,
+  OrderRelayDeliveryStatus,
+  OrderRelayCompatibilityPlan,
+  OrderRelayRoutingAuthority,
+} from "../db"
 import {
   recordBrowserTelemetryEvent,
   type ConduitTelemetryApp,
@@ -35,6 +41,7 @@ import {
   publicRelayHintUrls,
   readRetainedInboxDeclaration,
   resolveInboxDeclaration,
+  isApprovedCompatibilityOrderRelayPlan,
   selectPrivateMessageDeliveryRoute,
   sharedInboxDiscoveryRelayUrls,
   type DeliveryRouteSelection,
@@ -44,7 +51,9 @@ import {
 } from "./private-message-routing"
 import {
   publishWithPlanner,
+  publishWithPlannerProgressive,
   RelayPublishDiagnosticsError,
+  type ProgressivePublishSnapshot,
   type PublishWithPlannerResult,
 } from "./relay-publish"
 import { getRelayLists } from "./relay-list"
@@ -760,6 +769,25 @@ export interface PublishPrivateMessageInput {
    * write; callers may persist the signed ciphertext wraps, never plaintext.
    */
   onWrapped?: (prepared: PreparedPrivateMessageWraps) => void | Promise<void>
+  /** Persist the exact merchant wrap and signed route before relay I/O. */
+  onRecipientPrepared?: (
+    prepared: PreparedPrivateMessageRecipientDelivery
+  ) => void | Promise<void>
+  /** Commit the attempt fence immediately before recipient relay I/O. */
+  onRecipientPublishStarting?: (
+    prepared: PreparedPrivateMessageRecipientDelivery
+  ) => void | Promise<void>
+  /**
+   * Persist the first positive recipient relay ACK before an accepted-boundary
+   * send may return to its caller.
+   */
+  onRecipientPublishAccepted?: (
+    delivery: ProgressivePublishSnapshot
+  ) => void | Promise<void>
+  /** Persist terminal outcomes from the current recipient publish batch. */
+  onRecipientPublishSettled?: (
+    delivery: PublishWithPlannerResult | null
+  ) => void | Promise<void>
   /**
    * Recipient/sender kind-10050 inbox relays. NIP-17 delivery is exclusive to
    * these declarations; an empty recipient list means the peer is not ready.
@@ -783,6 +811,13 @@ export interface PublishPrivateMessageInput {
   validatedGuestOrderCompanionScope?: ValidatedGuestOrderCompanionScope
   /** Injectable relay publisher for focused transport tests. */
   publishFn?: typeof publishWithPlanner
+  /**
+   * Opt-in completion boundary for a durably staged initial order. All other
+   * private messages retain the settled boundary.
+   */
+  recipientDeliveryBoundary?: "settled" | "accepted"
+  /** Injectable progressive publisher for deterministic milestone tests. */
+  publishProgressiveFn?: typeof publishWithPlannerProgressive
   /**
    * One-use capability for a validated kind-16 order lifecycle send (locally created
    * checkout/order or a validated inbound order with matching order identity
@@ -874,6 +909,18 @@ export interface PreparedPrivateMessageWraps {
   wrappedToSelf: NDKEvent | null
 }
 
+export interface PreparedPrivateMessageRecipientDelivery {
+  rumorId: string
+  wrappedToRecipient: NDKEvent
+  deliveryRoute: OrderDeliveryRoute
+  routingAuthority?: OrderRelayRoutingAuthority
+  compatibilityPlan?: OrderRelayCompatibilityPlan
+  relayPlan: Array<{
+    relayUrl: string
+    source: "declared" | "recipient_nip65" | "compatibility_registry"
+  }>
+}
+
 export interface PublishPrivateMessageResult {
   wrappedToRecipient: NDKEvent
   wrappedToSelf: NDKEvent | null
@@ -892,6 +939,18 @@ export interface PublishPrivateMessageResult {
   deliveryPlanTruncated: boolean
   /** Present for a real signed kind-16 recipient wrap; content-safe and local. */
   orderRelayDelivery?: OrderRelayDeliveryRecord
+  /**
+   * Memoized, caller-started recovery work for an accepted initial order.
+   * It never creates or republishes the semantic merchant order.
+   */
+  startPostAcceptanceWork?: () => Promise<PrivateMessagePostAcceptanceResult>
+}
+
+export interface PrivateMessagePostAcceptanceResult {
+  wrappedToSelf: NDKEvent | null
+  selfDelivery: PublishWithPlannerResult | null
+  selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null
+  selfCopyError: string | null
 }
 
 export type PrivateMessageSelfDeliveryStatus =
@@ -931,6 +990,23 @@ function recoverPartialRelayPublishDiagnostics(
     error.diagnostics.successfulRelayUrls.length > 0
     ? error.diagnostics
     : null
+}
+
+function isCanonicalInitialOrderRumor(rumor: NDKEvent): boolean {
+  const typeTags = rumor.tags.filter((tag) => tag[0] === "type")
+  return typeTags.length === 1 && typeTags[0]?.[1] === "order"
+}
+
+function clonePrivateMessageRumor(rumor: NDKEvent): NDKEvent {
+  return new NDKEvent(rumor.ndk, {
+    kind: rumor.kind,
+    id: rumor.id,
+    pubkey: rumor.pubkey,
+    created_at: rumor.created_at,
+    tags: rumor.tags.map((tag) => [...tag]),
+    content: rumor.content,
+    sig: "",
+  })
 }
 
 const ORDER_RELAY_RETRY_RETENTION_MS = 24 * 60 * 60 * 1_000
@@ -1001,6 +1077,38 @@ function recordValidatedOrderCompatibilityOutcome(
   })
 }
 
+function buildRecoverableRecipientRoutingAuthority(input: {
+  recipientPubkey: string
+  declaration: InboxDeclarationResolution
+  route: DeliveryRouteSelection
+}): OrderRelayRoutingAuthority | null {
+  const eventId = input.declaration.eventId?.trim().toLowerCase()
+  const eventCreatedAt = input.declaration.eventCreatedAt
+  const pubkey = input.recipientPubkey.trim().toLowerCase()
+  if (
+    input.route.route !== "declared_inbox" ||
+    input.declaration.state !== "declared" ||
+    !eventId ||
+    !/^[0-9a-f]{64}$/.test(eventId) ||
+    !Number.isSafeInteger(eventCreatedAt) ||
+    (eventCreatedAt ?? -1) < 0 ||
+    input.route.relayUrls.length === 0 ||
+    input.route.relayUrls.some(
+      (relayUrl) => input.route.relaySources[relayUrl] !== "declared"
+    )
+  ) {
+    return null
+  }
+
+  return {
+    eventId,
+    eventCreatedAt: eventCreatedAt!,
+    pubkey,
+    kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+    relayUrls: [...input.route.relayUrls],
+  }
+}
+
 /**
  * Gift-wrap a rumor to the recipient (critical) and optionally to the sender as
  * a self-copy (non-critical), publishing both through the shared relay planner.
@@ -1060,6 +1168,8 @@ export async function publishPrivateMessage(
   const refreshRelayLists = input.refreshRelayLists ?? true
   const wrapParams = { rumorKind: input.rumorKind }
   const publishFn = input.publishFn ?? publishWithPlanner
+  const publishProgressiveFn =
+    input.publishProgressiveFn ?? publishWithPlannerProgressive
   const validatedGuestOrderCompanion = consumeValidatedGuestOrderCompanionScope(
     {
       scope: input.validatedGuestOrderCompanionScope,
@@ -1079,6 +1189,21 @@ export async function publishPrivateMessage(
     senderPubkey,
     recipientPubkey,
   })
+  const progressiveRecipientDelivery =
+    input.recipientDeliveryBoundary === "accepted"
+  if (
+    progressiveRecipientDelivery &&
+    (!validatedOrder ||
+      !isCanonicalInitialOrderRumor(input.rumor) ||
+      !input.onRecipientPrepared ||
+      !input.onRecipientPublishStarting ||
+      !input.onRecipientPublishAccepted ||
+      !input.onRecipientPublishSettled)
+  ) {
+    throw new Error(
+      "Accepted delivery requires a durably staged initial order send."
+    )
+  }
   const resolvedRecipientDeclaration = await resolveDeclarationForSend(
     input.recipientPubkey,
     input.recipientInboxRelays,
@@ -1144,44 +1269,74 @@ export async function publishPrivateMessage(
     })
     throw new PrivateMessageRelayReadinessError(readinessReason)
   }
-
-  let senderRoute: ReturnType<typeof selectPrivateMessageDeliveryRoute> | null =
-    null
+  const recoverableRoutingAuthority = buildRecoverableRecipientRoutingAuthority(
+    {
+      recipientPubkey,
+      declaration: recipientDeclaration,
+      route: recipientRoute,
+    }
+  )
+  const recoverableCompatibilityPlan =
+    validatedOrder &&
+    recipientRoute.route === "compatibility_order" &&
+    isApprovedCompatibilityOrderRelayPlan(recipientRoute.relayUrls)
+      ? { relayUrls: [...recipientRoute.relayUrls] }
+      : null
+  const recoverableDeliveryRequested = Boolean(
+    input.onRecipientPrepared ||
+    input.onRecipientPublishStarting ||
+    input.onRecipientPublishSettled
+  )
   if (
-    input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE &&
-    !validatedGuestOrderCompanion
+    recoverableDeliveryRequested &&
+    !recoverableRoutingAuthority &&
+    !recoverableCompatibilityPlan
   ) {
-    const senderReadiness = await (
-      input.inspectOwnInboxReadiness ??
-      inspectRetainedOwnPrivateMessageRelayReadiness
-    )(senderPubkey)
-    if (senderReadiness.state !== "ready") {
-      throw new PrivateMessageRelayReadinessError("sender_not_ready")
-    }
-    const senderRelayUrls = await filterRelayUrlsForAccount(
-      senderReadiness.relayUrls,
-      accountPubkey,
-      authenticatedOwnerPubkey,
-      input.accountNetworkLocalStateRepository,
-      senderReadiness.relayUrls
+    throw new Error(
+      "Recoverable order delivery requires a validated recipient relay plan."
     )
-    if (senderRelayUrls.length === 0) {
-      throw new PrivateMessageRelayReadinessError("sender_not_ready")
+  }
+
+  const resolveSenderRoute = async (): Promise<ReturnType<
+    typeof selectPrivateMessageDeliveryRoute
+  > | null> => {
+    if (
+      input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE &&
+      !validatedGuestOrderCompanion
+    ) {
+      const senderReadiness = await (
+        input.inspectOwnInboxReadiness ??
+        inspectRetainedOwnPrivateMessageRelayReadiness
+      )(senderPubkey)
+      if (senderReadiness.state !== "ready") {
+        throw new PrivateMessageRelayReadinessError("sender_not_ready")
+      }
+      const senderRelayUrls = await filterRelayUrlsForAccount(
+        senderReadiness.relayUrls,
+        accountPubkey,
+        authenticatedOwnerPubkey,
+        input.accountNetworkLocalStateRepository,
+        senderReadiness.relayUrls
+      )
+      if (senderRelayUrls.length === 0) {
+        throw new PrivateMessageRelayReadinessError("sender_not_ready")
+      }
+      return selectPrivateMessageDeliveryRoute({
+        rumorKind: input.rumorKind,
+        declaration: {
+          pubkey: senderPubkey,
+          state: "declared",
+          relayUrls: senderRelayUrls,
+          stale: senderReadiness.stale,
+          fetchedAt: Date.now(),
+        },
+        validatedOrder: false,
+        authenticatedOwnerPubkey,
+        ownerSelectedRelayUrls: senderRelayUrls,
+      })
     }
-    senderRoute = selectPrivateMessageDeliveryRoute({
-      rumorKind: input.rumorKind,
-      declaration: {
-        pubkey: senderPubkey,
-        state: "declared",
-        relayUrls: senderRelayUrls,
-        stale: senderReadiness.stale,
-        fetchedAt: Date.now(),
-      },
-      validatedOrder: false,
-      authenticatedOwnerPubkey,
-      ownerSelectedRelayUrls: senderRelayUrls,
-    })
-  } else if (selfCopy) {
+    if (!selfCopy) return null
+
     const senderDeclaration = await resolveDeclarationForSend(
       input.senderPubkey,
       input.senderInboxRelays,
@@ -1194,7 +1349,7 @@ export async function publishPrivateMessage(
     )
     // The compatibility lane is recipient-only: the non-critical sender self-copy
     // stays strict and fails soft instead of writing to compatibility relays.
-    senderRoute = selectPrivateMessageDeliveryRoute({
+    return selectPrivateMessageDeliveryRoute({
       rumorKind: input.rumorKind,
       declaration: senderDeclaration,
       validatedOrder: false,
@@ -1202,6 +1357,9 @@ export async function publishPrivateMessage(
       ownerSelectedRelayUrls: senderDeclaration.relayUrls,
     })
   }
+  const senderRoute: ReturnType<
+    typeof selectPrivateMessageDeliveryRoute
+  > | null = progressiveRecipientDelivery ? null : await resolveSenderRoute()
 
   // NDK's giftWrap builds and encrypts the seal from rumor.ndk. Attach the
   // shared instance before wrapping; attaching only at publish time is too late.
@@ -1253,6 +1411,223 @@ export async function publishPrivateMessage(
     })
     throw error
   }
+  const preparedRecipientDelivery: PreparedPrivateMessageRecipientDelivery | null =
+    recoverableRoutingAuthority || recoverableCompatibilityPlan
+      ? {
+          rumorId: input.rumor.id,
+          wrappedToRecipient,
+          deliveryRoute: recipientRoute.route as OrderDeliveryRoute,
+          ...(recoverableRoutingAuthority
+            ? { routingAuthority: recoverableRoutingAuthority }
+            : {}),
+          ...(recoverableCompatibilityPlan
+            ? { compatibilityPlan: recoverableCompatibilityPlan }
+            : {}),
+          relayPlan: recipientRoute.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            source: recipientRoute.relaySources[relayUrl] ?? "declared",
+          })),
+        }
+      : null
+  if (preparedRecipientDelivery) {
+    await input.onRecipientPrepared?.(preparedRecipientDelivery)
+  }
+
+  const recipientPublishInput = {
+    intent: "recipient_event" as const,
+    authorPubkey: input.senderPubkey,
+    authenticatedPubkey: authenticatedOwnerPubkey,
+    recipientPubkeys: [input.recipientPubkey],
+    exclusiveRelayUrls: recipientRoute.relayUrls,
+    appRelayUrls:
+      recipientRoute.route === "compatibility_order"
+        ? recipientRoute.relayUrls
+        : [],
+    personalRelayUrls: [],
+    independentRelayUrls:
+      recipientRoute.route === "compatibility_order"
+        ? []
+        : recipientRoute.relayUrls,
+    shouldContinue: input.shouldContinue,
+    refreshRelayLists,
+    deliveryMode: "critical" as const,
+    ...(relayAuthentication ? { relayAuthentication } : {}),
+    ...(accountPubkey
+      ? {
+          accountPubkey,
+          ...(input.accountNetworkLocalStateRepository
+            ? {
+                accountNetworkLocalStateRepository:
+                  input.accountNetworkLocalStateRepository,
+              }
+            : {}),
+        }
+      : {}),
+  }
+
+  if (progressiveRecipientDelivery) {
+    if (!preparedRecipientDelivery) {
+      throw new Error("Accepted delivery requires a staged recipient wrap.")
+    }
+    await input.onWrapped?.({
+      rumorId: input.rumor.id,
+      wrappedToRecipient,
+      wrappedToSelf: null,
+    })
+    await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
+    const milestones = await publishProgressiveFn(
+      wrappedToRecipient,
+      recipientPublishInput
+    )
+    const settledOutcome = milestones.settled.then(async (snapshot) => {
+      try {
+        await input.onRecipientPublishSettled?.(snapshot)
+        return { snapshot, persistenceError: null }
+      } catch (error) {
+        console.warn("Failed to persist final private-message relay outcomes", {
+          attemptedRelayCount: snapshot.attemptedRelayUrls.length,
+          successfulRelayCount: snapshot.successfulRelayUrls.length,
+        })
+        return { snapshot, persistenceError: error }
+      }
+    })
+
+    let recipientDelivery: ProgressivePublishSnapshot
+    try {
+      recipientDelivery = await milestones.accepted
+    } catch (error) {
+      const final = await settledOutcome
+      if (final.persistenceError) throw final.persistenceError
+      throw error
+    }
+    try {
+      await input.onRecipientPublishAccepted?.(recipientDelivery)
+    } catch (error) {
+      // If the first-ACK transaction failed, let the all-relay transaction
+      // finish before the caller re-reads durable state. Checkout may advance
+      // only if that durable read proves an ACK was committed.
+      await settledOutcome
+      throw error
+    }
+
+    const deliveryStatus =
+      recipientDelivery.failedRelayUrls.length > 0 ||
+      recipientDelivery.pendingRelayUrls.length > 0
+        ? "partial_success"
+        : "full_success"
+    const orderRelayDelivery = buildOrderRelayDeliveryRecord({
+      rumorId: input.rumor.id,
+      wrappedToRecipient,
+      recipientRoute,
+      recipientDelivery,
+      routingAuthority: recoverableRoutingAuthority,
+      compatibilityPlan: recoverableCompatibilityPlan,
+    })
+    const stableRumor = clonePrivateMessageRumor(input.rumor)
+    let postAcceptanceWork: Promise<PrivateMessagePostAcceptanceResult> | null =
+      null
+    const startPostAcceptanceWork = () => {
+      postAcceptanceWork ??= (async () => {
+        let selfCopyError: string | null = null
+        let selfDelivery: PublishWithPlannerResult | null = null
+        let selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null = null
+        let wrappedToSelf: NDKEvent | null = null
+        if (!selfCopy) {
+          return {
+            wrappedToSelf,
+            selfDelivery,
+            selfDeliveryStatus,
+            selfCopyError,
+          }
+        }
+        try {
+          if (input.shouldContinue?.() === false) {
+            throw new Error(
+              "Sender self-copy stopped because the signer session changed."
+            )
+          }
+          const currentSenderRoute = await resolveSenderRoute()
+          if (!currentSenderRoute || currentSenderRoute.route === "blocked") {
+            throw new Error(
+              "Sender has no usable NIP-17 inbox relay declaration."
+            )
+          }
+          if (input.shouldContinue?.() === false) {
+            throw new Error(
+              "Sender self-copy stopped because the signer session changed."
+            )
+          }
+          wrappedToSelf = await giftWrapFn(
+            stableRumor,
+            new NDKUser({ pubkey: input.senderPubkey }),
+            giftWrapSigner,
+            wrapParams
+          )
+          if (input.shouldContinue?.() === false) {
+            throw new Error(
+              "Sender self-copy stopped because the signer session changed."
+            )
+          }
+          try {
+            selfDelivery = await publishFn(wrappedToSelf, {
+              intent: "recipient_event",
+              authorPubkey: input.senderPubkey,
+              authenticatedPubkey: authenticatedOwnerPubkey,
+              recipientPubkeys: [input.senderPubkey],
+              exclusiveRelayUrls: currentSenderRoute.relayUrls,
+              ownerSelectedRelayUrls: currentSenderRoute.ownerSelectedRelayUrls,
+              shouldContinue: input.shouldContinue,
+              refreshRelayLists,
+              deliveryMode: "critical",
+              ...(accountPubkey
+                ? {
+                    accountPubkey,
+                    ...(input.accountNetworkLocalStateRepository
+                      ? {
+                          accountNetworkLocalStateRepository:
+                            input.accountNetworkLocalStateRepository,
+                        }
+                      : {}),
+                  }
+                : {}),
+            })
+          } catch (error) {
+            const partial = recoverPartialRelayPublishDiagnostics(error)
+            if (!partial) throw error
+            selfDelivery = partial
+          }
+          const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
+          selfDeliveryStatus = summary.status
+          selfCopyError = summary.error
+        } catch (error) {
+          selfCopyError =
+            error instanceof Error ? error.message : "Self-copy failed"
+        }
+        return {
+          wrappedToSelf,
+          selfDelivery,
+          selfDeliveryStatus,
+          selfCopyError,
+        }
+      })()
+      return postAcceptanceWork
+    }
+
+    return {
+      wrappedToRecipient,
+      wrappedToSelf: null,
+      selfDelivery: null,
+      selfDeliveryStatus: null,
+      selfCopyError: null,
+      deliveryRoute: recipientRoute.route,
+      recipientDelivery,
+      deliveryStatus,
+      deliveryRelaySources: recipientRoute.relaySources,
+      deliveryPlanTruncated: recipientRoute.truncated,
+      orderRelayDelivery,
+      startPostAcceptanceWork,
+    }
+  }
 
   // The self-copy is a non-critical local-recovery leg: a signer failure while
   // wrapping it must never block the critical recipient delivery below.
@@ -1290,6 +1665,10 @@ export async function publishPrivateMessage(
   }
 
   let recipientDelivery: PublishWithPlannerResult
+  let recipientDeliveryReported = false
+  if (preparedRecipientDelivery) {
+    await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
+  }
   try {
     recipientDelivery = await publishFn(wrappedToRecipient, {
       intent: "recipient_event",
@@ -1323,6 +1702,12 @@ export async function publishPrivateMessage(
         : {}),
     })
   } catch (error) {
+    if (preparedRecipientDelivery && input.onRecipientPublishSettled) {
+      await input.onRecipientPublishSettled(
+        error instanceof RelayPublishDiagnosticsError ? error.diagnostics : null
+      )
+      recipientDeliveryReported = true
+    }
     const partial = recoverPartialRelayPublishDiagnostics(error)
     if (partial) {
       // A planner diagnostic that includes a recipient ACK is durable delivery.
@@ -1342,6 +1727,13 @@ export async function publishPrivateMessage(
       })
       throw error
     }
+  }
+  if (
+    preparedRecipientDelivery &&
+    input.onRecipientPublishSettled &&
+    !recipientDeliveryReported
+  ) {
+    await input.onRecipientPublishSettled(recipientDelivery)
   }
   if (
     Array.isArray(recipientDelivery.successfulRelayUrls) &&
@@ -1367,9 +1759,12 @@ export async function publishPrivateMessage(
   const orderRelayDelivery =
     input.rumorKind === EVENT_KINDS.ORDER
       ? buildOrderRelayDeliveryRecord({
+          rumorId: input.rumor.id,
           wrappedToRecipient,
           recipientRoute,
           recipientDelivery,
+          routingAuthority: recoverableRoutingAuthority,
+          compatibilityPlan: recoverableCompatibilityPlan,
         })
       : undefined
   const selfCopySessionChangedError =
@@ -1516,12 +1911,22 @@ function consumeValidatedGuestOrderCompanionScope(input: {
 }
 
 function buildOrderRelayDeliveryRecord(input: {
+  rumorId: string
   wrappedToRecipient: NDKEvent
   recipientRoute: DeliveryRouteSelection
-  recipientDelivery: Awaited<ReturnType<typeof publishWithPlanner>>
+  recipientDelivery:
+    Awaited<ReturnType<typeof publishWithPlanner>> | ProgressivePublishSnapshot
+  routingAuthority: OrderRelayRoutingAuthority | null
+  compatibilityPlan: OrderRelayCompatibilityPlan | null
 }): OrderRelayDeliveryRecord | undefined {
   const route = input.recipientRoute.route
-  if (route === "blocked") return undefined
+  if (
+    (route === "declared_inbox" && !input.routingAuthority) ||
+    (route === "compatibility_order" && !input.compatibilityPlan) ||
+    (route !== "declared_inbox" && route !== "compatibility_order")
+  ) {
+    return undefined
+  }
   let signedRecipientWrap: SignedPublicNostrEvent
   try {
     signedRecipientWrap =
@@ -1533,6 +1938,11 @@ function buildOrderRelayDeliveryRecord(input: {
 
   const now = Date.now()
   const successful = new Set(input.recipientDelivery.successfulRelayUrls ?? [])
+  const pending = new Set(
+    "pendingRelayUrls" in input.recipientDelivery
+      ? input.recipientDelivery.pendingRelayUrls
+      : []
+  )
   const rejectedRelayUrls = new Set(
     input.recipientDelivery.rejectedRelayUrls ?? []
   )
@@ -1546,9 +1956,11 @@ function buildOrderRelayDeliveryRecord(input: {
       )
     const status: OrderRelayDeliveryStatus = acked
       ? "acked"
-      : rejected
-        ? "rejected"
-        : "timed_out"
+      : pending.has(relayUrl)
+        ? "pending"
+        : rejected
+          ? "rejected"
+          : "timed_out"
     return {
       relayUrl,
       source: input.recipientRoute.relaySources[relayUrl] ?? "declared",
@@ -1557,13 +1969,22 @@ function buildOrderRelayDeliveryRecord(input: {
       lastAttemptAt: now,
       ...(acked ? { acknowledgedAt: now } : {}),
       ...(rejected ? { rejectedAt: now } : {}),
-      ...(!acked && !rejected ? { timedOutAt: now } : {}),
+      ...(!acked && !rejected && !pending.has(relayUrl)
+        ? { timedOutAt: now }
+        : {}),
     }
   })
 
   return {
+    rumorId: input.rumorId,
     signedRecipientWrap,
     route,
+    ...(input.routingAuthority
+      ? { routingAuthority: structuredClone(input.routingAuthority) }
+      : {}),
+    ...(input.compatibilityPlan
+      ? { compatibilityPlan: structuredClone(input.compatibilityPlan) }
+      : {}),
     relayDelivery,
     deliveryAttemptCount: 1,
     retryCount: 0,
