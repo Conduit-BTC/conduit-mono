@@ -3,7 +3,7 @@
 ## Status
 
 - **Phase:** Draft
-- **Last updated:** 2026-08-21
+- **Last updated:** 2026-09-23
 - **Applies to:** Market, Merchant, shared runtime packages, Playwright, CI smoke
   selection, and pull request evidence
 
@@ -34,9 +34,10 @@ merchant credential and public infrastructure, but it is manual and cannot
 expose that credential to pull request code. It cannot be the required check
 for an unmerged candidate.
 
-Current CI also selects browser tests with lower-case title text. Untagged
-tests and tests with different title capitalization can be skipped silently.
-A selected shard does not currently prove that its intended tests ran.
+The earlier title-based selection problem has been repaired. Current CI uses
+explicit area tags and validates selected-test results. The remaining
+real-crypto and cross-app commerce goals below are still draft work; a green
+smoke shard must not be described as proof of those boundaries.
 
 Pull request descriptions list commands without consistently stating:
 
@@ -353,7 +354,7 @@ request. The scaffold must support at least:
 The stable aggregate `e2e-smoke` check remains the protected branch check.
 Individual shards may change behind it.
 
-The target shape is:
+The current area-tag shape is:
 
 - `@market`: Market behavior that does not require Merchant;
 - `@merchant`: Merchant behavior that does not require Market;
@@ -364,10 +365,10 @@ The target shape is:
 implemented. Until then, shared commerce changes must run the applicable
 current `@market` and `@merchant` shards.
 
-Use explicit Playwright tags or projects. Do not route a test through
+Current CI uses explicit Playwright tags. Keep ownership independent of
 human-readable title capitalization.
 
-The selector and validator must:
+The selector and validator must continue to:
 
 - fail when a selected shard discovers zero tests;
 - fail when a smoke test has no area tag;
@@ -482,7 +483,7 @@ production signer path.
       gaps, and one QA disposition.
 - [ ] **AC-GUIDE-2:** Contributor, reviewer, and agent guidance define when
       evidence sign-off is eligible and require higher-risk validation.
-- [ ] **AC-SELECT-1:** Smoke tests use explicit area tags, reject orphaned
+- [x] **AC-SELECT-1:** Smoke tests use explicit area tags, reject orphaned
       tests, and reject a selected shard with zero tests.
 - [ ] **AC-SELECT-2:** The selector runs the commerce shard for affected
       critical paths, keeps one aggregate required check, and runs every
@@ -525,7 +526,7 @@ production signer path.
 | Add a local NIP-46 emulator before making it the default       | It represents remote and mobile signer topology through the production path              | NIP-46 and current client support |
 | Keep actual extension and device UX manual                     | Test adapters do not prove third-party approval and handoff behavior                     | Signer boundary                   |
 | Keep protected live canaries separate                          | Pull request code must not receive long-lived signer or wallet credentials               | CI trust boundary                 |
-| Replace title-based smoke selection                            | Test titles are not stable ownership metadata and currently skip coverage                | Current CI audit                  |
+| Use area tags for smoke selection                              | Test titles are not stable ownership metadata; the current selector validates area tags  | Current CI implementation         |
 | Keep `main` as the integration branch                          | Candidate-SHA CI and previews already provide the required integration point             | Current Git and deployment flow   |
 | Treat evidence sign-off as a QA disposition, not self-approval | Human code review and high-risk ownership remain required                                | Repository review policy          |
 

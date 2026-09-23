@@ -10,6 +10,21 @@ This directory contains public implementation context for the `conduit-mono` cli
 - `docs/nips/*`: compact Nostr implementation notes linked to canonical public NIPs
 - `docs/knowledge/*`: public-safe implementation notes, research, interoperability references, and reusable agent context
 
+## Task routes
+
+Read `AGENTS.md` at startup. This index is for finding applicable context,
+not a required second startup read.
+
+| Task                                                                                   | Deeper guidance                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| UI, theming, shared controls                                                           | [Design](DESIGN.md)                                                                                                                                                                                      |
+| Architecture or cross-app data flow                                                    | [Architecture](ARCHITECTURE.md) and the relevant existing [spec](specs/)                                                                                                                                 |
+| Nostr, relay, signer, messaging, product events, payments, or signed-event persistence | [Network posture](knowledge/decentralized-network-product-posture.md), [external protocol references](knowledge/external-nostr-references.md), applicable [spec](specs/), and the relevant public source |
+| Checkout, orders, wallet, or guest flow                                                | Applicable [feature contracts](specs/), plus the protocol route when signed delivery or payments change                                                                                                  |
+| Telemetry                                                                              | [Telemetry policy](analytics/events.md)                                                                                                                                                                  |
+| CI, dependencies, preview, release, or PR evidence                                     | [Contributor guide](../CONTRIBUTING.md), affected workflow, and [E2E evidence contract](specs/testing-e2e.md) when smoke behavior changes                                                                |
+| Agent intake, dispatch, review, or hardening                                           | [Agent automation boundary](knowledge/agent-automation-boundary.md), affected workflow, and [contributor guide](../CONTRIBUTING.md)                                                                      |
+
 ## Working Model
 
 1. Use this repo's docs for implemented behavior, accepted implementation contracts, and agent preflight context.
@@ -77,15 +92,3 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - Add public-safe research notes, interop references, and non-authoritative supporting context under `docs/knowledge/`.
 
 Do not add product strategy, private commercial, private service, release coordination, or team operating-system notes to this repository.
-
-## Nostr Source Policy
-
-Before changing Nostr protocol, relay, signer, payment, messaging, product-event, cache, or outbox behavior, read `docs/knowledge/decentralized-network-product-posture.md`, `docs/knowledge/external-nostr-references.md`, any applicable existing repo contract, and the relevant public protocol source. Public protocol sources must be checked before implementation, not after review.
-
-## Public Repo Posture
-
-Tracked docs should remain safe for a public `conduit-mono` repo:
-
-- keep language centered on Market, Merchant, Store Builder, shared packages, and protocol/spec implementation
-- avoid private company planning language in tracked docs
-- keep non-implemented business plans and private service concepts outside this repository

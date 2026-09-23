@@ -130,8 +130,9 @@ jobs:
           metadata="$(gh pr view "${{ inputs.pr_number }}" --json isCrossRepository,labels)"
           is_cross_repo="$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.isCrossRepository ? "true" : "false")' "$metadata")"
           has_gate_label="$(node -e 'const data = JSON.parse(process.argv[1]); const labels = data.labels.map((label) => label.name); console.log(labels.includes("agent-ready") || labels.includes("agent-fix") ? "true" : "false")' "$metadata")"
+          has_high_risk_label="$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.labels.some((label) => label.name.toLowerCase() === "risk:c") ? "true" : "false")' "$metadata")"
 
-          if [[ "${{ inputs.risk_class }}" == "C" ]]; then
+          if [[ "${{ inputs.risk_class }}" == "C" || "$has_high_risk_label" == "true" ]]; then
             echo "Risk class C requires human-owned planning before agent code changes."
             exit 1
           fi
