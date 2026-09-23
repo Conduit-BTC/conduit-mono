@@ -1675,6 +1675,7 @@ function ProductsPage() {
       )
     },
     onSuccess: async (data, variables) => {
+      productPublishInFlightRef.current = false
       const notice = buildProductDeliveryNotice(
         "publish",
         data,
@@ -1706,6 +1707,7 @@ function ProductsPage() {
       await refreshProductQueries(variables.merchantPubkey)
     },
     onError: async (error, variables) => {
+      productPublishInFlightRef.current = false
       recordBrowserTelemetryEvent({
         app: "merchant",
         eventName: "product_publish_result",
@@ -1748,9 +1750,6 @@ function ProductsPage() {
         )
       }
       await refreshProductQueries(variables.merchantPubkey)
-    },
-    onSettled: () => {
-      productPublishInFlightRef.current = false
     },
   })
 
