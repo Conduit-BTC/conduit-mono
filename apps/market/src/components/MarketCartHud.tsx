@@ -49,6 +49,7 @@ import {
   getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
   getCartItemFulfillmentType,
+  getCartPurchaseReference,
   groupCartPurchases,
   isCartProductAvailabilityBlocking,
   type CartPurchaseGroup,
@@ -181,6 +182,18 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     groups.map((group) => group.id)
   )
   const currentGroup = groups.find((group) => group.id === currentPurchase)
+  const duplicatePurchaseContexts = useMemo(() => {
+    const contextCounts = new Map<string, number>()
+    for (const group of groups) {
+      const context = getPurchaseContext(group).label
+      contextCounts.set(context, (contextCounts.get(context) ?? 0) + 1)
+    }
+    return new Set(
+      Array.from(contextCounts)
+        .filter(([, count]) => count > 1)
+        .map(([context]) => context)
+    )
+  }, [groups])
   // Retain the last rendered cart so the dock can slide out instead of
   // disappearing when the cart empties or the route suppresses the HUD.
   const lastVisibleRef = useRef<{
@@ -449,10 +462,14 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                   "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
               }}
             >
-              {groups.map((group) => {
+              {groups.map((group, index) => {
                 const profile = profiles.data[group.merchantPubkey]
                 const selected = group.id === activeGroup.id
                 const context = getPurchaseContext(group)
+                const contextCollides = duplicatePurchaseContexts.has(
+                  context.label
+                )
+                const purchaseReference = getCartPurchaseReference(group.id)
                 const merchantLabel =
                   getProfileName(profile) ?? formatNpub(group.merchantPubkey, 6)
                 return (
@@ -460,7 +477,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     key={group.id}
                     type="button"
                     aria-pressed={selected}
-                    aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}`}
+                    aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}${contextCollides ? `, reference ${purchaseReference}` : ""}, purchase ${index + 1}`}
                     onClick={() => activatePurchase(group.id)}
                     className={cn(
                       "market-cart-hud-item flex min-h-11 max-w-60 shrink-0 items-center gap-2 rounded-lg border px-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:px-3",
@@ -475,11 +492,30 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         <MerchantAvatarFallback iconClassName="h-4 w-4" />
                       </AvatarFallback>
                     </Avatar>
-                    <span className="hidden min-w-0 text-left leading-tight sm:block">
+                    <span className="hidden min-w-0 max-w-full text-left leading-tight sm:block">
                       <span className="block max-w-32 truncate">
                         {merchantLabel}
                       </span>
                       <PurchaseContextLabel group={group} compact />
+                      {contextCollides ? (
+                        <span
+                          data-testid="desktop-purchase-reference"
+                          className="block whitespace-nowrap font-mono text-[0.625rem] leading-tight text-[var(--text-muted)]"
+                        >
+                          #{index + 1} {purchaseReference}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="min-w-0 text-left text-[0.68rem] leading-tight sm:hidden">
+                      <span className="block">
+                        {group.kind === "pickup" ? "Pickup" : "Delivery"}
+                      </span>
+                      <span
+                        data-testid="purchase-cue"
+                        className="block font-mono text-[var(--text-muted)]"
+                      >
+                        #{index + 1} {purchaseReference}
+                      </span>
                     </span>
                     <StatusPill
                       variant="neutral"

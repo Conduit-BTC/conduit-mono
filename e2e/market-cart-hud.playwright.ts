@@ -1,9 +1,11 @@
 import { expect, test, type Page } from "@playwright/test"
+import { nip19 } from "nostr-tools"
 import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
+import type { CartItem } from "../apps/market/src/lib/cart-model"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
@@ -33,7 +35,7 @@ function sameMerchantFulfillmentCartSeed() {
   const organizer = "a".repeat(64)
   const merchant = MERCHANT_A
   const pickup = (input: {
-    event: string
+    productEvent: string
     market: string
     option: string
     title: string
@@ -44,23 +46,23 @@ function sameMerchantFulfillmentCartSeed() {
     organizerPubkey: organizer,
     product: {
       coordinate: `30402:${merchant}:${input.product}`,
-      eventId: input.event,
+      eventId: input.productEvent,
       createdAt: 100,
       merchantPubkey: merchant,
     },
     calendar: {
       coordinate: `31922:${organizer}:event-${input.market}`,
-      eventId: input.event,
+      eventId: "f".repeat(64),
       createdAt: 101,
     },
     collection: {
       coordinate: `30405:${organizer}:market-${input.market}`,
-      eventId: input.event,
+      eventId: "e".repeat(64),
       createdAt: 102,
     },
     option: {
       coordinate: `30406:${organizer}:pickup-${input.option}`,
-      eventId: input.event,
+      eventId: "d".repeat(64),
       createdAt: 103,
       title: input.title,
       location: input.location,
@@ -96,32 +98,34 @@ function sameMerchantFulfillmentCartSeed() {
         priceSats: 1_200,
         format: "physical",
         fulfillment: pickup({
-          event: "1".repeat(64),
+          productEvent: "1".repeat(64),
           market: "main",
           option: "main",
           title: "Merchant pickup",
           product: "pickup-main",
           location: "Test location",
         }),
+        productEventId: "1".repeat(64),
         quantity: 1,
       },
       {
-        productId: `30402:${merchant}:pickup-booth`,
+        productId: `30402:${merchant}:pickup-main`,
         merchantPubkey: merchant,
         merchantAddedAt: 102,
-        title: "South booth item",
+        title: "Main entrance item",
         price: 1_200,
         currency: "SATS",
         priceSats: 1_200,
         format: "physical",
         fulfillment: pickup({
-          event: "2".repeat(64),
-          market: "south",
-          option: "south",
+          productEvent: "2".repeat(64),
+          market: "main",
+          option: "main",
           title: "Merchant pickup",
-          product: "pickup-booth",
-          location: "South booth pickup for late arrivals",
+          product: "pickup-main",
+          location: "Test location",
         }),
+        productEventId: "2".repeat(64),
         quantity: 1,
       },
     ],
@@ -512,35 +516,184 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
   expect(names.every((name) => name.includes("1 cart item"))).toBe(true)
   expect(names[0]).toContain("Delivery")
   expect(names[1]).toContain("Event pickup - Test location")
-  expect(names[2]).toContain(
-    "Event pickup - South booth pickup for late arrivals"
-  )
+  expect(names[2]).toContain("Event pickup - Test location")
   expect(new Set(names).size).toBe(3)
   await expect(selectors.nth(1)).toContainText("Test location")
   await expect(selectors.nth(1)).not.toContainText("Event pickup")
-  await expect(selectors.nth(2)).toContainText(
-    "South booth pickup for late arrivals"
-  )
+  await expect(selectors.nth(2)).toContainText("Test location")
   await expect(selectors.nth(2)).not.toContainText("Event pickup")
 
-  const secondPickup = selectors.nth(2)
-  await secondPickup.focus()
-  await page.keyboard.press("Enter")
-  await expect(secondPickup).toHaveAttribute("aria-pressed", "true")
-  await expect(hud.getByTestId("selected-purchase-context")).toContainText(
-    "South booth pickup for late arrivals"
+  await page.setViewportSize({ width: 390, height: 900 })
+  const fixtureGroups = await page.evaluate(async (seed) => {
+    const { groupCartPurchases, getCartPurchaseReference } =
+      await import("/src/lib/cart-model.ts")
+    const groups = groupCartPurchases(seed.items as unknown as CartItem[])
+    return groups.map((group) => ({
+      id: group.id,
+      kind: group.kind,
+      reference: getCartPurchaseReference(group.id),
+      productId: group.items[0]?.productId,
+      productEventId: group.items[0]?.productEventId,
+      merchantPubkey: group.merchantPubkey,
+      title: group.items[0]?.title,
+      fulfillmentProduct:
+        group.items[0]?.fulfillment?.type === "pickup"
+          ? group.items[0].fulfillment.product
+          : undefined,
+      option:
+        group.items[0]?.fulfillment?.type === "pickup"
+          ? group.items[0].fulfillment.option
+          : undefined,
+    }))
+  }, sameMerchantFulfillmentCartSeed())
+  const pickupGroups = fixtureGroups.filter((group) => group.kind === "pickup")
+  expect(pickupGroups).toHaveLength(2)
+  const pickupProducts = pickupGroups.map((group) => group.fulfillmentProduct)
+  expect(pickupGroups.map((group) => group.productId)).toEqual(
+    pickupProducts.map((product) => product?.coordinate)
   )
-  await expect(hud.getByTestId("selected-purchase-context")).not.toContainText(
-    "Event pickup"
+  expect(pickupGroups.map((group) => group.productEventId)).toEqual(
+    pickupProducts.map((product) => product?.eventId)
+  )
+  expect(new Set(pickupGroups.map((group) => group.merchantPubkey)).size).toBe(
+    1
+  )
+  expect(new Set(pickupGroups.map((group) => group.title)).size).toBe(1)
+  expect(
+    new Set(pickupProducts.map((product) => product?.coordinate)).size
+  ).toBe(1)
+  expect(new Set(pickupProducts.map((product) => product?.eventId)).size).toBe(
+    2
+  )
+  expect(
+    new Set(pickupGroups.map((group) => group.option?.coordinate)).size
+  ).toBe(1)
+  expect(new Set(pickupGroups.map((group) => group.option?.title)).size).toBe(1)
+  expect(
+    new Set(pickupGroups.map((group) => group.option?.location)).size
+  ).toBe(1)
+  const pickupReferences = pickupGroups.map((group) => group.reference)
+  expect(new Set(pickupReferences).size).toBe(2)
+  await page.setViewportSize({ width: 896, height: 900 })
+  const desktopReferences: string[] = []
+  for (let index = 0; index < 2; index += 1) {
+    const reference = selectors
+      .nth(index + 1)
+      .getByTestId("desktop-purchase-reference")
+    await expect(reference).toBeVisible()
+    const referenceGeometry = await reference.evaluate((element) => {
+      const referenceBox = element.getBoundingClientRect()
+      const buttonBox = element.closest("button")!.getBoundingClientRect()
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        left: referenceBox.left,
+        right: referenceBox.right,
+        top: referenceBox.top,
+        bottom: referenceBox.bottom,
+        buttonLeft: buttonBox.left,
+        buttonRight: buttonBox.right,
+        buttonTop: buttonBox.top,
+        buttonBottom: buttonBox.bottom,
+      }
+    })
+    expect(referenceGeometry.clientWidth).toBeGreaterThanOrEqual(
+      referenceGeometry.scrollWidth
+    )
+    expect(referenceGeometry.left).toBeGreaterThanOrEqual(
+      referenceGeometry.buttonLeft - 0.5
+    )
+    expect(referenceGeometry.right).toBeLessThanOrEqual(
+      referenceGeometry.buttonRight + 0.5
+    )
+    expect(referenceGeometry.top).toBeGreaterThanOrEqual(
+      referenceGeometry.buttonTop - 0.5
+    )
+    expect(referenceGeometry.bottom).toBeLessThanOrEqual(
+      referenceGeometry.buttonBottom + 0.5
+    )
+    desktopReferences.push((await reference.textContent())?.trim() ?? "")
+  }
+  expect(new Set(desktopReferences).size).toBe(2)
+  expect(desktopReferences).toEqual(
+    pickupGroups.map((group, index) => `#${index + 2} ${group.reference}`)
   )
 
   await page.setViewportSize({ width: 390, height: 900 })
-  await expect(
-    selectors.nth(2).getByText("South booth pickup for late arrivals")
-  ).toBeHidden()
-  await expect(
-    selectors.nth(2).locator("[aria-label='1 cart item']")
-  ).toHaveText("1")
+  const visibleCues = await selectors
+    .locator("[data-testid='purchase-cue']")
+    .allTextContents()
+  expect(visibleCues).toHaveLength(3)
+  expect(visibleCues.map((cue) => cue.trim())).toEqual(
+    fixtureGroups.map((group, index) => `#${index + 1} ${group.reference}`)
+  )
+  for (let index = 0; index < 2; index += 1) {
+    const selector = selectors.nth(index + 1)
+    await expect(selector.getByText("Pickup", { exact: true })).toBeVisible()
+  }
+  await expect(selectors.nth(1)).not.toContainText(pickupReferences[1]!)
+  await expect(selectors.nth(2)).not.toContainText(pickupReferences[0]!)
+  await expectInsideHud(page)
+
+  const toggle = hud.locator("button[aria-expanded]")
+  for (const [index, purchaseGroup] of pickupGroups.entries()) {
+    const selector = selectors.nth(index + 1)
+    await selector.evaluate((element) => {
+      element.scrollIntoView({ block: "nearest", inline: "nearest" })
+    })
+    const visibleBounds = await rail.boundingBox()
+    const reference = selector.getByTestId("purchase-cue")
+    const referenceBounds = await reference.boundingBox()
+    expect(visibleBounds).not.toBeNull()
+    expect(referenceBounds).not.toBeNull()
+    expect(referenceBounds!.x).toBeGreaterThanOrEqual(visibleBounds!.x - 0.5)
+    expect(referenceBounds!.x + referenceBounds!.width).toBeLessThanOrEqual(
+      visibleBounds!.x + visibleBounds!.width - 20 + 0.5
+    )
+    await expect(reference).toBeVisible()
+    if ((await toggle.getAttribute("aria-expanded")) === "true") {
+      await toggle.click()
+    }
+    await selector.click()
+    await expect(selector).toHaveAttribute("aria-pressed", "true")
+    await expect(toggle).toHaveAttribute("aria-expanded", "true")
+    const checkoutLink = hud.getByRole("link", { name: "Continue to checkout" })
+    await expect(checkoutLink).toBeVisible()
+    const checkoutUrl = new URL(
+      await checkoutLink.getAttribute("href")!,
+      marketUrl
+    )
+    expect(JSON.parse(checkoutUrl.searchParams.get("purchase") ?? "null")).toBe(
+      purchaseGroup.id
+    )
+    expect(checkoutUrl.searchParams.get("merchant")).toBe(
+      nip19.npubEncode(MERCHANT_A)
+    )
+    await checkoutLink.click()
+    await expect(page).toHaveURL(/\/checkout\?/)
+    expect(
+      JSON.parse(new URL(page.url()).searchParams.get("purchase") ?? "null")
+    ).toBe(purchaseGroup.id)
+    expect(new URL(page.url()).searchParams.get("merchant")).toBe(MERCHANT_A)
+    await page.goto(`${marketUrl}/products`)
+    await expect(hud).toBeVisible()
+  }
+  const keyboardTarget = selectors.nth(1)
+  await keyboardTarget.focus()
+  await page.keyboard.press("Enter")
+  await expect(keyboardTarget).toHaveAttribute("aria-pressed", "true")
+  const keyboardCheckout = new URL(
+    await hud
+      .getByRole("link", { name: "Continue to checkout" })
+      .getAttribute("href")!,
+    marketUrl
+  )
+  expect(
+    JSON.parse(keyboardCheckout.searchParams.get("purchase") ?? "null")
+  ).toBe(pickupGroups[0]!.id)
+  expect(keyboardCheckout.searchParams.get("merchant")).toBe(
+    nip19.npubEncode(MERCHANT_A)
+  )
   await expectInsideHud(page)
   await expect
     .poll(() =>
