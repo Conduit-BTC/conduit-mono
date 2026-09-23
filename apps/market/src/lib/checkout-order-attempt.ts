@@ -1,4 +1,7 @@
-import { GUEST_ORDER_LOCAL_RETENTION_MS } from "@conduit/core"
+import {
+  GUEST_ORDER_LOCAL_RETENTION_MS,
+  type OrderLifecycle,
+} from "@conduit/core"
 
 const CHECKOUT_ORDER_ATTEMPTS_STORAGE_KEY = "conduit:checkout-order-attempts:v1"
 
@@ -88,6 +91,93 @@ export function requiresAcceptedOrderPaymentContinuation(input: {
     input.checkoutMode !== "pay_later" &&
     !hasCheckoutPaymentProgress(input)
   )
+}
+
+export async function findCheckoutOrderRecovery(
+  input: {
+    purchase?: {
+      merchantPubkey: string
+      items: readonly OrderAttemptLine[]
+    }
+    accountPubkey: string | null
+    nowMs: number
+  },
+  source: {
+    listAttemptIds: (nowMs: number) => string[]
+    listGuestIds: (nowMs: number) => string[]
+    getGuestPubkey: (orderId: string, nowMs: number) => string | null
+    getOrder: (orderId: string) => Promise<OrderLifecycle | undefined>
+    listBuyerOrders: (buyerPubkey: string) => Promise<OrderLifecycle[]>
+  }
+): Promise<{ order: OrderLifecycle; ownsOrder: boolean } | null> {
+  const attemptIds = new Set(source.listAttemptIds(input.nowMs))
+  const guestIds = new Set(source.listGuestIds(input.nowMs))
+  const guestPubkeys = new Map(
+    [...guestIds].map((orderId) => [
+      orderId,
+      source.getGuestPubkey(orderId, input.nowMs),
+    ])
+  )
+  const located = await Promise.all(
+    [...new Set([...attemptIds, ...guestIds])].map((orderId) =>
+      source.getOrder(orderId)
+    )
+  )
+
+  const select = (
+    orders: readonly (OrderLifecycle | undefined)[],
+    includeBuyerIndex: boolean
+  ): { order: OrderLifecycle; ownsOrder: boolean } | null => {
+    const candidates = orders
+      .filter((order): order is OrderLifecycle => {
+        if (!order?.orderRelayDelivery) return false
+        if (order.orderRelayDelivery.expiresAt <= input.nowMs) return false
+        const ownedGuestOrder =
+          !input.accountPubkey &&
+          guestPubkeys.get(order.orderId) === order.buyerPubkey &&
+          order.buyerIdentityKind === "guest_ephemeral"
+        const unfinishedAcceptedGuestOrder =
+          !input.purchase &&
+          ownedGuestOrder &&
+          order.orderDeliveryStatus === "sent" &&
+          order.phase !== "cancelled" &&
+          order.phase !== "completed" &&
+          (order.paymentStatus !== "paid" ||
+            order.proofDeliveryStatus !== "sent")
+        if (
+          order.checkoutRecoveryPending !== true &&
+          !unfinishedAcceptedGuestOrder
+        ) {
+          return false
+        }
+        if (
+          input.purchase &&
+          (order.merchantPubkey !== input.purchase.merchantPubkey ||
+            !doesCartMatchOrderAttempt(input.purchase.items, order.items))
+        ) {
+          return false
+        }
+        return (
+          attemptIds.has(order.orderId) ||
+          guestIds.has(order.orderId) ||
+          (includeBuyerIndex && order.buyerPubkey === input.accountPubkey)
+        )
+      })
+      .map((order) => ({
+        order,
+        ownsOrder: input.accountPubkey
+          ? order.buyerPubkey === input.accountPubkey
+          : guestPubkeys.get(order.orderId) === order.buyerPubkey,
+      }))
+      .filter((candidate) => input.purchase || candidate.ownsOrder)
+      .sort((left, right) => right.order.updatedAt - left.order.updatedAt)
+    return candidates[0] ?? null
+  }
+
+  const found = select(located, false)
+  if (found || !input.accountPubkey) return found
+  const buyerOrders = await source.listBuyerOrders(input.accountPubkey)
+  return select([...located, ...buyerOrders], true)
 }
 
 function getLocalStorage(): StorageLike | null {

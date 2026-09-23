@@ -208,11 +208,10 @@ import {
 } from "../lib/checkout-payment"
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
-  doesCartMatchOrderAttempt,
+  findCheckoutOrderRecovery,
   forgetCheckoutOrderAttempt,
   hasCheckoutPaymentProgress,
   listCheckoutOrderAttemptIds,
-  requiresCheckoutOrderRecovery,
 } from "../lib/checkout-order-attempt"
 import {
   publishBuyerOrderMessage,
@@ -1375,7 +1374,7 @@ function CheckoutPage() {
       ? matchingMerchantPurchases[0]
       : undefined
   const selectedMerchant = selectedPurchase?.merchantPubkey
-  const checkoutRecoveryScope = `${authGeneration}:${selectedPurchase?.id ?? "none"}:${cart.mutationSequence}`
+  const checkoutRecoveryScope = `${authGeneration}:${search.merchant ?? "none"}:${search.purchase ?? "none"}:${selectedPurchase?.id ?? "none"}:${cart.mutationSequence}`
   const [checkoutRecoveryResolution, setCheckoutRecoveryResolution] = useState<{
     scope: string
     blockingMessage: string | null
@@ -1388,90 +1387,54 @@ function CheckoutPage() {
       : null
 
   useEffect(() => {
-    if (authPending || !selectedMerchant || !selectedPurchase) return
+    if (!cart.hydrated || authPending || paymentInFlightRef.current) return
+    if (!accountPubkey && !isGuestCheckout) return
     let active = true
     const resolveRecovery = async (): Promise<void> => {
       const now = Date.now()
-      const attemptIds = new Set(listCheckoutOrderAttemptIds(undefined, now))
-      const guestIds = new Set(listSessionGuestOrderIds(undefined, now))
-      const located = await Promise.all(
-        [...new Set([...attemptIds, ...guestIds])].map(async (orderId) => ({
-          orderId,
-          lifecycle: await getOrderLifecycle(orderId),
-        }))
+      const found = await findCheckoutOrderRecovery(
+        {
+          purchase: selectedPurchase,
+          accountPubkey,
+          nowMs: now,
+        },
+        {
+          listAttemptIds: (nowMs) =>
+            listCheckoutOrderAttemptIds(undefined, nowMs),
+          listGuestIds: (nowMs) => listSessionGuestOrderIds(undefined, nowMs),
+          getGuestPubkey: (orderId, nowMs) =>
+            getSessionGuestOrderSigningIdentity(orderId, undefined, nowMs)
+              ?.pubkey ?? null,
+          getOrder: getOrderLifecycle,
+          listBuyerOrders: listOrderLifecycles,
+        }
       )
-      const matching = located
-        .filter(
-          ({ orderId, lifecycle }) =>
-            lifecycle?.merchantPubkey === selectedMerchant &&
-            !!lifecycle.orderRelayDelivery &&
-            lifecycle.orderRelayDelivery.expiresAt > now &&
-            doesCartMatchOrderAttempt(
-              selectedPurchase.items,
-              lifecycle.items
-            ) &&
-            requiresCheckoutOrderRecovery({
-              checkoutRecoveryPending: lifecycle.checkoutRecoveryPending,
-              hasAttemptLocator: attemptIds.has(orderId),
-              hasGuestKey: guestIds.has(orderId),
-            })
-        )
-        .sort(
-          (left, right) =>
-            (right.lifecycle?.updatedAt ?? 0) - (left.lifecycle?.updatedAt ?? 0)
-        )[0]?.lifecycle
-      const fallback = matching
-        ? undefined
-        : (signedBuyerPubkey
-            ? await listOrderLifecycles(signedBuyerPubkey)
-            : []
-          )
-            .filter(
-              (lifecycle) =>
-                lifecycle.merchantPubkey === selectedMerchant &&
-                !!lifecycle.orderRelayDelivery &&
-                lifecycle.orderRelayDelivery.expiresAt > now &&
-                lifecycle.checkoutRecoveryPending === true &&
-                doesCartMatchOrderAttempt(
-                  selectedPurchase.items,
-                  lifecycle.items
-                )
-            )
-            .sort((left, right) => right.updatedAt - left.updatedAt)[0]
-      const order = matching ?? fallback
-      if (!active) return
-      if (!order) {
+      if (!active || authGenerationRef.current !== authGeneration) return
+      if (paymentInFlightRef.current) return
+      if (!found) {
         setCheckoutRecoveryResolution({
           scope: checkoutRecoveryScope,
           blockingMessage: null,
         })
         return
       }
-      const guestIdentity = getSessionGuestOrderSigningIdentity(
-        order.orderId,
-        undefined,
-        now
-      )
-      const ownsOrder = signedBuyerPubkey
-        ? order.buyerPubkey === signedBuyerPubkey
-        : guestIdentity?.pubkey === order.buyerPubkey
-      const blockingMessage = ownsOrder
-        ? "A saved order from this cart must be continued in Orders before creating another order."
+      const blockingMessage = found.ownsOrder
+        ? "A saved order must be continued in Orders before creating another order."
         : "This cart has a saved order under another buyer session. Switch back to that session and recover it in Orders."
       setCheckoutRecoveryResolution({
         scope: checkoutRecoveryScope,
         blockingMessage,
       })
-      if (ownsOrder) {
+      if (found.ownsOrder) {
         void navigate({
           to: "/orders",
-          search: { order: order.orderId },
+          search: { order: found.order.orderId },
           replace: true,
         })
       }
     }
     void resolveRecovery().catch(() => {
-      if (!active) return
+      if (!active || authGenerationRef.current !== authGeneration) return
       const blockingMessage =
         "Order recovery state could not be checked. Reload before creating another order."
       setCheckoutRecoveryResolution({
@@ -1484,12 +1447,14 @@ function CheckoutPage() {
       active = false
     }
   }, [
+    accountPubkey,
+    authGeneration,
     authPending,
+    cart.hydrated,
     checkoutRecoveryScope,
+    isGuestCheckout,
     navigate,
-    selectedMerchant,
     selectedPurchase,
-    signedBuyerPubkey,
   ])
 
   const rawCheckoutItems = useMemo(() => {
