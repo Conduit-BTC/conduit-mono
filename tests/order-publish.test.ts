@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 
 import {
   applyAccountNetworkRelayExclusion,
@@ -11,6 +16,9 @@ import {
   removeSigner,
   setSigner,
   unwrapGiftWrap,
+  type OrderLifecycle,
+  type OrderRelayDeliveryRepository,
+  type StagedOrderLifecycleInput,
 } from "@conduit/core"
 
 import { createGuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
@@ -85,10 +93,22 @@ describe("buyer order rumor preparation", () => {
       "https://fix-293.conduit-merchant-33n.pages.dev/orders?order=guest-order"
     )
   })
+
+  it("rejects a prefilled rumor id that does not match its content", () => {
+    const rumor = orderRumor({
+      id: "prefilled-id",
+      getEventHash: () => "derived-id",
+    })
+
+    expect(() => prepareBuyerRumor(rumor, "buyer-pubkey")).toThrow(
+      "does not match its content"
+    )
+  })
 })
 
 function orderRumor(overrides: Record<string, unknown> = {}) {
-  return {
+  const getEventHash = overrides.getEventHash
+  const rumor = {
     id: "order-rumor",
     kind: EVENT_KINDS.ORDER,
     pubkey: "",
@@ -100,6 +120,7 @@ function orderRumor(overrides: Record<string, unknown> = {}) {
       items: [
         {
           productId: "product-id",
+          format: "physical",
           quantity: 1,
           priceAtPurchase: 1,
           currency: "SATS",
@@ -107,6 +128,8 @@ function orderRumor(overrides: Record<string, unknown> = {}) {
       ],
       subtotal: 1,
       currency: "SATS",
+      shippingCostSats: 0,
+      shippingCostStatus: "not_required",
       createdAt: 100_000,
     }),
     tags: [
@@ -121,6 +144,11 @@ function orderRumor(overrides: Record<string, unknown> = {}) {
       ],
     ],
     ...overrides,
+  }
+  return {
+    ...rumor,
+    getEventHash:
+      typeof getEventHash === "function" ? getEventHash : () => rumor.id,
   } as never
 }
 
@@ -158,6 +186,186 @@ describe("buyer order publishing", () => {
       activeSignerLease = null
     }
     disconnectNdk()
+  })
+
+  it("stages and fences the exact merchant wrap before relay I/O", async () => {
+    const buyerSecret = generateSecretKey()
+    const buyerPubkey = getPublicKey(buyerSecret)
+    const merchantSecret = generateSecretKey()
+    const merchantPubkey = getPublicKey(merchantSecret)
+    const relayUrl = "wss://merchant-orders.conduit.market"
+    const orderId = "staged-order"
+    const createdAt = Date.now()
+    const declaration = finalizeEvent(
+      {
+        created_at: 100,
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        tags: [["relay", relayUrl]],
+        content: "",
+      },
+      merchantSecret
+    )
+    const recipientWrap = new NDKEvent()
+    recipientWrap.kind = EVENT_KINDS.GIFT_WRAP
+    recipientWrap.created_at = 100
+    recipientWrap.tags = [["p", merchantPubkey]]
+    recipientWrap.content = "encrypted staged order"
+    await recipientWrap.sign(NDKPrivateKeySigner.generate())
+
+    const rumor = new NDKEvent()
+    rumor.kind = EVENT_KINDS.ORDER
+    rumor.created_at = Math.floor(createdAt / 1_000)
+    rumor.tags = [
+      ["p", merchantPubkey],
+      ["type", "order"],
+      ["order", orderId],
+      ["amount", "1"],
+      ["currency", "SATS"],
+    ]
+    rumor.content = JSON.stringify({
+      id: orderId,
+      merchantPubkey,
+      buyerPubkey,
+      buyerIdentityKind: "signed_in",
+      items: [
+        {
+          productId: "product-id",
+          format: "physical",
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1,
+      currency: "SATS",
+      shippingCostSats: 0,
+      shippingCostStatus: "not_required",
+      createdAt,
+    })
+    const lifecycle: StagedOrderLifecycleInput = {
+      orderId,
+      createdAt,
+      buyerPubkey,
+      buyerIdentityKind: "signed_in",
+      merchantPubkey,
+      checkoutMode: "pay_later",
+      items: [
+        {
+          productId: "product-id",
+          format: "physical",
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      itemSubtotalSats: 1,
+      shippingCostSats: 0,
+      totalSats: 1,
+      totalMsats: 1_000,
+      currency: "SATS",
+      addressValidity: "not_required",
+      shippingZoneEligibility: "not_required",
+    }
+    let stored: OrderLifecycle | undefined
+    const repository: OrderRelayDeliveryRepository = {
+      get: async () => structuredClone(stored),
+      list: async () => (stored ? [structuredClone(stored)] : []),
+      update: async (_storedOrderId, updater) => {
+        if (!stored) return undefined
+        stored = updater(structuredClone(stored))
+        return structuredClone(stored)
+      },
+      stage: async (record, assertCompatible) => {
+        if (stored) {
+          assertCompatible(structuredClone(stored))
+          return { lifecycle: structuredClone(stored), inserted: false }
+        }
+        stored = structuredClone(record)
+        return { lifecycle: structuredClone(stored), inserted: true }
+      },
+    }
+    const locators: Array<{ orderId: string; expiresAt: number }> = []
+    let relayWrites = 0
+    const signer = { pubkey: buyerPubkey }
+
+    const result = await publishBuyerOrderMessage(
+      rumor,
+      { signer } as never,
+      merchantPubkey,
+      { kind: "signed_in", pubkey: buyerPubkey, signer: signer as never },
+      {
+        orderLifecycle: lifecycle,
+        orderRelayDeliveryRepository: repository,
+        rememberCheckoutOrderAttemptFn: (locatedOrderId, expiresAt) => {
+          locators.push({ orderId: locatedOrderId, expiresAt })
+        },
+        cacheBuyerOrderRumorFn: async () => null,
+        publishPrivateMessageFn: (async (input) => {
+          if (input.rumorKind === EVENT_KINDS.DIRECT_MESSAGE) {
+            return {
+              wrappedToRecipient: { id: "companion-wrap" },
+              wrappedToSelf: null,
+              selfCopyError: null,
+              deliveryRoute: "declared_inbox",
+            }
+          }
+
+          const prepared = {
+            rumorId: input.rumor.id,
+            wrappedToRecipient: recipientWrap,
+            deliveryRoute: "declared_inbox" as const,
+            routingAuthority: {
+              eventId: declaration.id,
+              eventCreatedAt: declaration.created_at,
+              pubkey: declaration.pubkey,
+              kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+              relayUrls: [relayUrl],
+            },
+            relayPlan: [{ relayUrl, source: "declared" as const }],
+          }
+          await input.onRecipientPrepared?.(prepared)
+          expect(stored?.orderRelayDelivery?.relayDelivery[0]).toMatchObject({
+            status: "pending",
+            attemptCount: 0,
+          })
+          await input.onRecipientPublishStarting?.(prepared)
+          expect(stored?.orderRelayDelivery?.relayDelivery[0]).toMatchObject({
+            status: "pending",
+            attemptCount: 1,
+            attemptGeneration: 1,
+          })
+          relayWrites += 1
+          const recipientDelivery = {
+            attemptedRelayUrls: [relayUrl],
+            successfulRelayUrls: [relayUrl],
+            failedRelayUrls: [],
+            rejectedRelayUrls: [],
+          }
+          await input.onRecipientPublishSettled?.(recipientDelivery as never)
+          return {
+            wrappedToRecipient: recipientWrap,
+            wrappedToSelf: null,
+            selfCopyError: null,
+            deliveryRoute: "declared_inbox",
+            recipientDelivery,
+          }
+        }) as never,
+      }
+    )
+
+    expect(relayWrites).toBe(1)
+    expect(locators).toEqual([
+      expect.objectContaining({ orderId, expiresAt: expect.any(Number) }),
+    ])
+    expect(stored?.orderDeliveryStatus).toBe("sent")
+    expect(stored?.checkoutRecoveryPending).toBe(false)
+    expect(stored?.orderRelayDelivery?.signedRecipientWrap).toEqual(
+      structuredClone(recipientWrap.rawEvent())
+    )
+    expect(stored?.orderRelayDelivery?.relayDelivery[0]?.status).toBe("acked")
+    expect(result.orderRelayDelivery?.signedRecipientWrap.id).toBe(
+      recipientWrap.id
+    )
   })
 
   it("publishes a recipient-only kind-14 companion after signed-in order delivery", async () => {
@@ -427,15 +635,7 @@ describe("buyer order publishing", () => {
     )
 
     expect(cacheAttempts).toBe(1)
-    expect(result.orderRelayDelivery?.signedRecipientWrap.id).toBe(
-      recipientWrapId
-    )
-    expect(result.orderRelayDelivery?.relayDelivery).toEqual([
-      expect.objectContaining({
-        relayUrl: merchantRelayUrl,
-        status: "acked",
-      }),
-    ])
+    expect(result.orderRelayDelivery).toBeUndefined()
     expect(result.buyerSelfCopyError).toBe(
       "Sender self-copy was skipped because the signer session changed after recipient delivery."
     )
@@ -639,16 +839,14 @@ describe("buyer order publishing", () => {
       }
     )
 
-    expect(calls.map((call) => call.rumorKind)).toEqual([
-      EVENT_KINDS.ORDER,
-      EVENT_KINDS.DIRECT_MESSAGE,
-    ])
+    expect(calls.map((call) => call.rumorKind)).toEqual([EVENT_KINDS.ORDER])
     const orderCall = calls[0]
     expect(orderCall?.senderPubkey).toBe("guest-pubkey")
     expect(orderCall?.signer).toBe(guestSigner)
     expect(orderCall?.selfCopy).toBe(false)
     expect(orderCall?.accountPubkey).toBeNull()
-    expect(orderCall?.shouldContinue).toBeUndefined()
+    expect(orderCall?.shouldContinue).toBeInstanceOf(Function)
+    expect((orderCall?.shouldContinue as () => boolean)()).toBe(false)
     expect(orderCall?.signerInteraction).toBe("application_owned")
     expect(orderCall?.validatedOrderScope).toMatchObject({
       rumorId: "order-rumor",
@@ -657,33 +855,8 @@ describe("buyer order publishing", () => {
       recipientPubkey: "merchant-pubkey",
     })
 
-    const companionCall = calls[1]
-    expect(companionCall?.senderPubkey).toBe("guest-pubkey")
-    expect(companionCall?.recipientPubkey).toBe("merchant-pubkey")
-    expect(companionCall?.signer).toBe(guestSigner)
-    expect(companionCall?.selfCopy).toBe(false)
-    expect(companionCall?.accountPubkey).toBeNull()
-    expect(companionCall?.shouldContinue).toBeUndefined()
-    expect(companionCall?.signerInteraction).toBe("application_owned")
-    expect(companionCall?.validatedOrderScope).toBeUndefined()
-    expect(companionCall?.validatedGuestOrderCompanionScope).toMatchObject({
-      rumorId: (companionCall?.rumor as { id: string }).id,
-      orderRumorId: "order-rumor",
-      orderId: "guest-order",
-      subject: "conduit-order-notification",
-      senderPubkey: "guest-pubkey",
-      recipientPubkey: "merchant-pubkey",
-    })
-    const companion = companionCall?.rumor as { content: string }
-    expect(companion.content).toBe(
-      "A new guest order was sent to you through Conduit Market.\n" +
-        "This buyer does not receive Nostr replies. Review the order and follow up using the email or phone provided there.\n" +
-        "Review it at: https://sell.conduit.market/orders?order=guest-order"
-    )
-    expect(companion.content).not.toContain("guest-private@example.com")
-    expect(companion.content).not.toContain("+1-555-0100")
     expect(cacheAttempts).toBe(0)
-    expect(await result.companionNotification).toBe("sent")
+    expect(await result.companionNotification).toBe("skipped_session_changed")
   })
 
   it("uses the real transport boundary without requiring a guest inbox", async () => {

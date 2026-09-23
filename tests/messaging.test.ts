@@ -4,7 +4,12 @@ import {
   NDKPrivateKeySigner,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
-import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getEventHash,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   __resetInboxRelayCache,
   applyAccountNetworkRelayExclusion,
@@ -1901,7 +1906,7 @@ describe("publishPrivateMessage", () => {
     expect(encryptCalls).toBe(0)
   })
 
-  it("records an explicit recipient relay rejection in the durable order retry state", async () => {
+  it("does not turn caller-supplied relay hints into durable retry authority", async () => {
     const recipientA = "wss://recipient-a.inbox.conduit.market"
     const recipientB = "wss://recipient-b.inbox.conduit.market"
     const wrapSigner = NDKPrivateKeySigner.generate()
@@ -1933,10 +1938,151 @@ describe("publishPrivateMessage", () => {
       })) as never,
     })
 
-    expect(result.orderRelayDelivery?.relayDelivery).toEqual([
-      expect.objectContaining({ relayUrl: recipientA, status: "acked" }),
-      expect.objectContaining({ relayUrl: recipientB, status: "rejected" }),
-    ])
+    expect(result.deliveryRoute).toBe("declared_inbox")
+    expect(result.recipientDelivery.rejectedRelayUrls).toEqual([recipientB])
+    expect(result.orderRelayDelivery).toBeUndefined()
+  })
+
+  it("rejects recoverable delivery without validated signed inbox authority", async () => {
+    let preparedCalls = 0
+    let publishCalls = 0
+
+    await expect(
+      publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
+        onRecipientPrepared: async () => {
+          preparedCalls += 1
+        },
+        giftWrapFn: (async () => wrap("must-not-wrap")) as never,
+        publishFn: (async () => {
+          publishCalls += 1
+          return {}
+        }) as never,
+      })
+    ).rejects.toThrow("validated recipient kind:10050 declaration")
+
+    expect(preparedCalls).toBe(0)
+    expect(publishCalls).toBe(0)
+  })
+
+  it("prepares signed declared authority before recipient relay I/O", async () => {
+    __resetInboxRelayCache()
+    const senderPubkey = getPublicKey(generateSecretKey())
+    const recipientSecret = generateSecretKey()
+    const recipientPubkey = getPublicKey(recipientSecret)
+    const relayUrl = "wss://durable-orders.conduit.market"
+    const observedAt = Date.now()
+    const declaration = signedInboxDeclaration(recipientSecret, [relayUrl], 200)
+    mergeInboxDeclarationEvidenceInMemory({
+      pubkey: recipientPubkey,
+      signedEvent: declaration,
+      sourceRelayUrls: [SHARED_INBOX_RELAY],
+      sharedSourceRelayUrls: [SHARED_INBOX_RELAY],
+      observedAt,
+      completeObservedAt: observedAt,
+      lookup: {
+        observedAt,
+        coverage: "complete",
+        hadEvent: true,
+        eventId: declaration.id,
+      },
+    })
+    const order = new NDKEvent()
+    order.kind = EVENT_KINDS.ORDER
+    order.pubkey = senderPubkey
+    order.created_at = 200
+    order.tags = [
+      ["p", recipientPubkey],
+      ["type", "order"],
+      ["order", "staged-order"],
+    ]
+    order.content = JSON.stringify({
+      id: "staged-order",
+      merchantPubkey: recipientPubkey,
+      buyerPubkey: senderPubkey,
+      buyerIdentityKind: "signed_in",
+      items: [
+        {
+          productId: "product-id",
+          quantity: 1,
+          priceAtPurchase: 1,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1,
+      currency: "SATS",
+      createdAt: 200_000,
+    })
+    order.id = order.getEventHash()
+    const sequence: string[] = []
+    const wrapSigner = NDKPrivateKeySigner.generate()
+
+    try {
+      const result = await publishPrivateMessage({
+        rumor: order,
+        validatedOrderScope: createValidatedOrderRouteScope({
+          rumor: order,
+          orderId: "staged-order",
+          senderPubkey,
+          recipientPubkey,
+        }),
+        senderPubkey,
+        recipientPubkey,
+        signer: {
+          user: async () => ({ pubkey: senderPubkey }),
+        } as unknown as NDKSigner,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        giftWrapFn: (async () => {
+          const wrapped = new NDKEvent()
+          wrapped.kind = EVENT_KINDS.GIFT_WRAP
+          wrapped.created_at = 200
+          wrapped.tags = [["p", recipientPubkey]]
+          wrapped.content = "encrypted staged order"
+          await wrapped.sign(wrapSigner)
+          return wrapped
+        }) as never,
+        onRecipientPrepared: async (prepared) => {
+          sequence.push("prepared")
+          expect(prepared.routingAuthority).toEqual({
+            eventId: declaration.id,
+            eventCreatedAt: declaration.created_at,
+            pubkey: recipientPubkey,
+            kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+            relayUrls: [relayUrl],
+          })
+          expect(prepared.relayPlan).toEqual([{ relayUrl, source: "declared" }])
+        },
+        onRecipientPublishStarting: async () => {
+          sequence.push("starting")
+        },
+        onRecipientPublishSettled: async () => {
+          sequence.push("settled")
+        },
+        publishFn: (async () => {
+          sequence.push("publish")
+          return {
+            attemptedRelayUrls: [relayUrl],
+            successfulRelayUrls: [relayUrl],
+            failedRelayUrls: [],
+            rejectedRelayUrls: [],
+          }
+        }) as never,
+      })
+
+      expect(sequence).toEqual(["prepared", "starting", "publish", "settled"])
+      expect(result.orderRelayDelivery?.routingAuthority?.eventId).toBe(
+        declaration.id
+      )
+    } finally {
+      __resetInboxRelayCache()
+    }
   })
 
   it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
