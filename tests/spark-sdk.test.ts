@@ -1771,7 +1771,7 @@ describe("first-party Spark SDK adapter", () => {
     expect(sends).toBe(1)
   })
 
-  it("rejects an over-cap frozen checkout fee before any provider send", async () => {
+  it("reports an over-cap frozen checkout fee as not sent", async () => {
     let sendCalls = 0
     const wallet = createNativeWallet({
       async getLightningSendFeeEstimate() {
@@ -1792,7 +1792,159 @@ describe("first-party Spark SDK adapter", () => {
         amountSats: 1_000,
         maxFeeSats: 5,
       })
-    ).rejects.toThrow("outside the frozen checkout limit")
+    ).resolves.toEqual({ status: "not_sent", reason: "fee_over_cap" })
+    expect(sendCalls).toBe(0)
+  })
+
+  it("retries the same frozen ID after fees change 2 to 6 to 2 before SDK send", async () => {
+    const feeCapError = new Error("maxFeeSats does not cover fee estimate")
+    const feeEstimates = [2, 2, 6, 2, 2, 2]
+    const feeReads: number[] = []
+    const transferIds: string[] = []
+    let irreversibleSends = 0
+    const wallet = createNativeWallet({
+      async getLightningSendFeeEstimate() {
+        const next = feeEstimates.shift()
+        if (next === undefined) throw new Error("unexpected fee estimate")
+        feeReads.push(next)
+        return next
+      },
+      async payLightningInvoice(input) {
+        // Model the pinned SDK's own fee check, which follows the adapter's
+        // second preflight but precedes selectLeavesAndExecute.
+        const sdkFee = await wallet.getLightningSendFeeEstimate({
+          encodedInvoice: input.invoice,
+        })
+        if (sdkFee > input.maxFeeSats) throw feeCapError
+        irreversibleSends += 1
+        transferIds.push(input.transferId?.toString() ?? "")
+        return {
+          id: "checkout-lightning-request",
+          status: "LIGHTNING_PAYMENT_INITIATED",
+          fee: { originalValue: sdkFee, originalUnit: "SATOSHI" },
+        }
+      },
+      async getTransferFromSsp(id) {
+        if (irreversibleSends === 0) return undefined
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "checkout-lightning-request",
+            status: "LIGHTNING_PAYMENT_SUCCEEDED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: ZERO_PREIMAGE,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: CHECKOUT_OUTGOING_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+    })
+    const client = await openClient(
+      createFactory(wallet, {
+        isPreSendFeeCapError: (error) => error === feeCapError,
+      })
+    )
+    const request = {
+      network: "mainnet" as const,
+      transferId: CHECKOUT_OUTGOING_ID,
+      paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+      amountSats: 1_000,
+      maxFeeSats: 5,
+      completionTimeoutSecs: 0,
+    }
+
+    await expect(
+      client.preflightCheckoutLightningObligation?.(request)
+    ).resolves.toBe("ready")
+    await expect(
+      client.sendCheckoutLightningObligation?.(request)
+    ).resolves.toEqual({ status: "not_sent", reason: "fee_over_cap" })
+    expect(irreversibleSends).toBe(0)
+
+    await expect(
+      client.preflightCheckoutLightningObligation?.(request)
+    ).resolves.toBe("ready")
+    await expect(
+      client.sendCheckoutLightningObligation?.(request)
+    ).resolves.toMatchObject({ status: "paid" })
+    expect(feeReads).toEqual([2, 2, 6, 2, 2, 2])
+    expect(transferIds).toEqual([CHECKOUT_OUTGOING_ID])
+  })
+
+  it.each([
+    "SDK internal fee estimate unavailable",
+    "response lost after provider send",
+  ])("does not classify an unproven SDK error: %s", async (message) => {
+    let feeReads = 0
+    const wallet = createNativeWallet({
+      async getLightningSendFeeEstimate() {
+        feeReads += 1
+        return 2
+      },
+      async payLightningInvoice() {
+        throw new Error(message)
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+    const request = {
+      network: "mainnet" as const,
+      transferId: CHECKOUT_OUTGOING_ID,
+      paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+      amountSats: 1_000,
+      maxFeeSats: 5,
+    }
+
+    await expect(
+      client.sendCheckoutLightningObligation?.(request)
+    ).rejects.toThrow(message)
+    expect(feeReads).toBe(1)
+  })
+
+  it("preflights a frozen fee without sending and can recheck the same ID", async () => {
+    let fee: number | "unavailable" = 6
+    let historyReads = 0
+    let sendCalls = 0
+    const wallet = createNativeWallet({
+      async getTransferFromSsp() {
+        historyReads += 1
+        return undefined
+      },
+      async getLightningSendFeeEstimate() {
+        if (fee === "unavailable") throw new Error("quote unavailable")
+        return fee
+      },
+      async payLightningInvoice() {
+        sendCalls += 1
+        throw new Error("preflight must never send")
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+    const request = {
+      network: "mainnet" as const,
+      transferId: CHECKOUT_OUTGOING_ID,
+      paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+      amountSats: 1_000,
+      maxFeeSats: 5,
+    }
+
+    await expect(
+      client.preflightCheckoutLightningObligation?.(request)
+    ).resolves.toBe("fee_over_cap")
+    fee = "unavailable"
+    await expect(
+      client.preflightCheckoutLightningObligation?.(request)
+    ).resolves.toBe("unavailable")
+    fee = 0
+    await expect(
+      client.preflightCheckoutLightningObligation?.(request)
+    ).resolves.toBe("ready")
+    fee = 2
+    await expect(
+      client.preflightCheckoutLightningObligation?.(request)
+    ).resolves.toBe("ready")
+    expect(historyReads).toBe(0)
     expect(sendCalls).toBe(0)
   })
 
@@ -1835,6 +1987,9 @@ describe("first-party Spark SDK adapter", () => {
         historyReads += 1
         return undefined
       },
+      async getLightningSendFeeEstimate() {
+        return 2
+      },
       async payLightningInvoice() {
         sendCalls += 1
         throw new Error("must not send an altered checkout leg")
@@ -1868,6 +2023,24 @@ describe("first-party Spark SDK adapter", () => {
         amountSats: 1_001,
       })
     ).rejects.toThrow("invalid Lightning invoice")
+    await expect(
+      manager.preflightCheckoutLightningObligation("wallet-personal", {
+        ...obligation,
+        network: "regtest",
+      })
+    ).rejects.toThrow("another network")
+    await expect(
+      manager.preflightCheckoutLightningObligation("wallet-personal", {
+        ...obligation,
+        amountSats: 1_001,
+      })
+    ).rejects.toThrow("invalid Lightning invoice")
+    await expect(
+      manager.preflightCheckoutLightningObligation(
+        "wallet-personal",
+        obligation
+      )
+    ).resolves.toBe("ready")
     expect(historyReads).toBe(0)
     expect(sendCalls).toBe(0)
     await manager.close("wallet-personal")
@@ -3008,6 +3181,7 @@ function createFactory(
     loadModule: async () => ({
       eventNames: ["balance:update"],
       parseTransferId: parseTestTransferId,
+      isPreSendFeeCapError: () => false,
       createPublicReadonlyClient: createHiddenPublicReadonlyClient,
       decodeSparkAddress: () => ({}),
       getNetworkFromSparkAddress: () => nativeNetwork,

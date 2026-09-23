@@ -22,6 +22,19 @@ export type CheckoutSparkOutgoingObservation = Omit<
   "type" | "observedAt"
 >
 
+/** Only return this when the current invocation provably never entered send. */
+export type CheckoutSparkKnownNotSent = {
+  status: "not_sent"
+  reason: "fee_over_cap" | "fee_unavailable"
+}
+
+function isKnownNotSent(value: unknown): value is CheckoutSparkKnownNotSent {
+  if (!value || typeof value !== "object") return false
+  if (!("status" in value) || value.status !== "not_sent") return false
+  if (!("reason" in value)) return false
+  return value.reason === "fee_over_cap" || value.reason === "fee_unavailable"
+}
+
 export interface CheckoutSparkOutgoingTarget {
   walletId: string
   network: CheckoutSparkReconciliation["plan"]["network"]
@@ -42,9 +55,13 @@ export interface CheckoutSparkOutgoingProvider {
   reconcile(
     target: CheckoutSparkOutgoingTarget
   ): Promise<CheckoutSparkOutgoingObservation>
+  /** Read-only fee check. No provider send may occur before this returns ready. */
+  preflight(
+    target: CheckoutSparkOutgoingTarget
+  ): Promise<"ready" | "fee_over_cap" | "unavailable">
   send(
     target: CheckoutSparkOutgoingTarget
-  ): Promise<CheckoutSparkOutgoingObservation>
+  ): Promise<CheckoutSparkOutgoingObservation | CheckoutSparkKnownNotSent>
 }
 
 /**
@@ -150,6 +167,22 @@ function markPossibleSend(
     updatedAt: observedAt,
   }
   return restoreCheckoutSparkReconciliation(next)
+}
+
+function clearOwnUnsentMarker(
+  state: CheckoutSparkReconciliation,
+  position: number,
+  observedAt: number
+): CheckoutSparkReconciliation {
+  return restoreCheckoutSparkReconciliation({
+    ...state,
+    obligations: state.obligations.map((progress, index) =>
+      index === position
+        ? { ...progress, state: "not_found", observedAt }
+        : progress
+    ),
+    updatedAt: observedAt,
+  })
 }
 
 function currentResult(
@@ -274,6 +307,29 @@ async function step(
     return currentResult(state, input, false)
   }
 
+  let preflight: Awaited<ReturnType<CheckoutSparkOutgoingProvider["preflight"]>>
+  try {
+    preflight = await input.provider.preflight(target)
+  } catch {
+    preflight = "unavailable"
+  }
+  if (preflight !== "ready") {
+    return {
+      state,
+      nextAction: {
+        type: "wait",
+        reason:
+          preflight === "fee_over_cap"
+            ? "fee_exceeds_frozen_limit"
+            : "fee_preflight_unavailable",
+      },
+      sendAttempted: false,
+    }
+  }
+  if (!hasSendAuthority(state, input.actor, input.now())) {
+    return currentResult(state, input, false)
+  }
+
   // Persist uncertainty before crossing the irreversible provider boundary.
   // If the tab dies between this save and send, recovery must not infer that
   // the payment was never attempted from an empty lookup alone.
@@ -287,29 +343,35 @@ async function step(
     // This invocation has not called `send`. If it is still alive after the
     // durable write, it can clear its own intent; a crash in this tiny gap
     // intentionally leaves ambiguity rather than risking a duplicate send.
-    const observedAt = observationTime(state, input.now())
-    state = restoreCheckoutSparkReconciliation({
-      ...state,
-      obligations: state.obligations.map((progress, index) =>
-        index === position
-          ? {
-              ...progress,
-              state: "not_found",
-              observedAt,
-            }
-          : progress
-      ),
-      updatedAt: observedAt,
-    })
-    state = await persist(state)
+    state = await persist(
+      clearOwnUnsentMarker(state, position, observationTime(state, input.now()))
+    )
     return currentResult(state, input, false)
   }
 
-  let sent: CheckoutSparkOutgoingObservation
+  let sent: CheckoutSparkOutgoingObservation | CheckoutSparkKnownNotSent
   try {
     sent = await input.provider.send(target)
   } catch {
     return currentResult(state, input, true)
+  }
+  if (isKnownNotSent(sent)) {
+    // Only a provider-certified pre-send rejection can clear this invocation's
+    // possible-send marker. A revision race leaves the marker intact.
+    state = await persist(
+      clearOwnUnsentMarker(state, position, observationTime(state, input.now()))
+    )
+    return {
+      state,
+      nextAction: {
+        type: "wait",
+        reason:
+          sent.reason === "fee_over_cap"
+            ? "fee_exceeds_frozen_limit"
+            : "fee_preflight_unavailable",
+      },
+      sendAttempted: false,
+    }
   }
   // Only positive settlement can clear the write-ahead ambiguity here.
   // Other send responses need an independent exact-history reconciliation.

@@ -158,6 +158,7 @@ interface SparkNativeInitializeInput {
 export interface SparkNativeModule {
   readonly eventNames: readonly string[]
   parseTransferId(value: string): SparkNativeTransferId
+  isPreSendFeeCapError(error: unknown): boolean
   createPublicReadonlyClient(options: {
     log: false
     network: SparkNativeNetwork
@@ -914,25 +915,36 @@ function adaptFirstPartySparkWallet(input: {
         return resolvedCheckoutResult(prior)
       }
 
-      const estimatedFeeSats = await input.wallet.getLightningSendFeeEstimate({
-        encodedInvoice: request.paymentRequest,
-      })
-      if (
-        !Number.isSafeInteger(estimatedFeeSats) ||
-        estimatedFeeSats < 0 ||
-        estimatedFeeSats > request.maxFeeSats
-      ) {
-        throw new Error("Spark fee is outside the frozen checkout limit.")
+      const feePreflight =
+        await client.preflightCheckoutLightningObligation!(request)
+      if (feePreflight !== "ready") {
+        return {
+          status: "not_sent",
+          reason:
+            feePreflight === "fee_over_cap"
+              ? "fee_over_cap"
+              : "fee_unavailable",
+        }
       }
 
       // The first-party SDK re-estimates the fee and rejects if this fixed
       // maximum no longer covers it. Never substitute a new fee or transfer ID.
-      const initial = await input.wallet.payLightningInvoice({
-        invoice: request.paymentRequest,
-        maxFeeSats: request.maxFeeSats,
-        preferSpark: false,
-        transferId,
-      })
+      let initial: SparkNativeLightningSendRequest | SparkNativeTransfer
+      try {
+        initial = await input.wallet.payLightningInvoice({
+          invoice: request.paymentRequest,
+          maxFeeSats: request.maxFeeSats,
+          preferSpark: false,
+          transferId,
+        })
+      } catch (error) {
+        // In pinned Spark SDK 0.11.0, this exact validation happens before
+        // selectLeavesAndExecute. All other SDK errors may follow a send.
+        if (input.module.isPreSendFeeCapError(error)) {
+          return { status: "not_sent", reason: "fee_over_cap" }
+        }
+        throw error
+      }
       if (isNativeTransfer(initial)) return { status: "ambiguous" }
 
       // The immediate send response is not independent settlement proof. An
@@ -940,6 +952,24 @@ function adaptFirstPartySparkWallet(input: {
       return resolvedCheckoutResult(
         await client.reconcileLightningSend!(request)
       )
+    },
+    async preflightCheckoutLightningObligation(request) {
+      validateFrozenCheckoutLightningSend(request, input.network)
+      input.module.parseTransferId(request.transferId)
+      let estimatedFeeSats: number
+      try {
+        estimatedFeeSats = await input.wallet.getLightningSendFeeEstimate({
+          encodedInvoice: request.paymentRequest,
+        })
+      } catch {
+        return "unavailable"
+      }
+      // A zero-sat estimate is valid in Spark SDK 0.11.0; only malformed or
+      // negative estimates prevent a safe comparison with the frozen cap.
+      if (!Number.isSafeInteger(estimatedFeeSats) || estimatedFeeSats < 0) {
+        return "unavailable"
+      }
+      return estimatedFeeSats > request.maxFeeSats ? "fee_over_cap" : "ready"
     },
     async receivePayment(request) {
       if (request.paymentMethod.type === "sparkAddress") {
@@ -1769,7 +1799,7 @@ function wait(milliseconds: number): Promise<void> {
   })
 }
 
-async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
+export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
   const module = await import("@buildonspark/spark-sdk")
   const eventNames = Object.values(module.SparkWalletEvent).filter(
     (eventName) => eventName !== module.SparkWalletEvent.All
@@ -1777,6 +1807,13 @@ async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
   return {
     eventNames,
     parseTransferId: (value) => module.UUID.parse(value),
+    isPreSendFeeCapError(error) {
+      return (
+        error instanceof module.SparkValidationError &&
+        error.getContext().field === "maxFeeSats" &&
+        error.message.startsWith("maxFeeSats does not cover fee estimate")
+      )
+    },
     createPublicReadonlyClient(options) {
       return module.SparkReadonlyClient.createPublic(options)
     },

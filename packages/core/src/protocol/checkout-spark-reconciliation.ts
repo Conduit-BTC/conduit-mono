@@ -242,6 +242,8 @@ export type CheckoutSparkNextAction =
         | "obligation_failed"
         | "execution_authority_transferred"
         | "execution_authority_not_started"
+        | "fee_exceeds_frozen_limit"
+        | "fee_preflight_unavailable"
     }
   | { type: "ready_to_retire" }
 
