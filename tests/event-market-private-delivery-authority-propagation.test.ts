@@ -38,14 +38,20 @@ describe("event-market private-delivery authority propagation", () => {
 
     expect(
       orders.match(
-        /transport:\s*\{\s*authenticatedPubkey:[\s\S]{0,160}?shouldContinue:\s*\(\) =>\s*authGenerationRef\.current === authGeneration/g
+        /transport:\s*\{\s*authenticatedPubkey,\s*shouldContinue:\s*\(\) =>\s*isCurrentOrderAction\(authority\)/g
       )
     ).toHaveLength(3)
+    expect(orders).toContain(
+      "shouldContinue: () => isCurrentOrderAccount(input.ownerPubkey)"
+    )
     expect(paymentRelease).toContain(
       "authenticatedPubkey: input.authenticatedPubkey,\n        shouldContinue: input.shouldContinue,"
     )
+    expect(events).toMatch(
+      /transport: \{\s*authenticatedPubkey: input\.ownerPubkey,\s*shouldContinue: \(\) =>\s*isCurrentFreshAuthority\(input\.ownerPubkey, input\.authGeneration\)/
+    )
     expect(events).toContain(
-      "transport: { authenticatedPubkey, shouldContinue }"
+      "authenticatedPubkey: null,\n          shouldContinue: () => isCurrentOwner(input.ownerPubkey)"
     )
   })
 })

@@ -57,6 +57,56 @@ export interface MerchantOrganizerRecordDelivery {
   signedEvent: SignedPublicNostrEvent | null
 }
 
+function deliveryIsComplete(
+  delivery: MerchantOrganizerRecordDelivery
+): boolean {
+  return (
+    delivery.acknowledgedCount > 0 &&
+    delivery.rejectedCount === 0 &&
+    delivery.timedOutCount === 0
+  )
+}
+
+/** Preserve monotonic relay progress for the same immutable signed record. */
+export function mergeMerchantOrganizerDeliveryProgress(
+  current: MerchantOrganizerRecordDelivery,
+  candidate: MerchantOrganizerRecordDelivery
+): MerchantOrganizerRecordDelivery {
+  if (
+    !current.signedEvent ||
+    !candidate.signedEvent ||
+    current.signedEvent.id !== candidate.signedEvent.id ||
+    current.record !== candidate.record
+  ) {
+    return candidate
+  }
+
+  const currentComplete = deliveryIsComplete(current)
+  const candidateComplete = deliveryIsComplete(candidate)
+  const selected =
+    currentComplete !== candidateComplete
+      ? currentComplete
+        ? current
+        : candidate
+      : current.acknowledgedCount > candidate.acknowledgedCount
+        ? current
+        : candidate
+  const acknowledgedRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls([
+    ...(current.acknowledgedRelayUrls ?? []),
+    ...(candidate.acknowledgedRelayUrls ?? []),
+  ])
+
+  return {
+    ...selected,
+    acknowledgedRelayUrls,
+    acknowledgedCount: Math.max(
+      current.acknowledgedCount,
+      candidate.acknowledgedCount,
+      acknowledgedRelayUrls.length
+    ),
+  }
+}
+
 export interface MerchantOrganizerParticipation {
   productCoordinate: string
   eventId?: string
@@ -408,11 +458,23 @@ export function saveOrganizerEventMarketDelivery(
       const current = latest.get(key)
       if (!current || stored.savedAt >= current.savedAt) latest.set(key, stored)
     }
-    latest.set(`${candidate.reference}:${candidate.delivery.record}`, candidate)
+    const candidateKey = `${candidate.reference}:${candidate.delivery.record}`
+    const currentCandidate = latest.get(candidateKey)
+    latest.set(
+      candidateKey,
+      currentCandidate
+        ? {
+            ...candidate,
+            delivery: mergeMerchantOrganizerDeliveryProgress(
+              currentCandidate.delivery,
+              candidate.delivery
+            ),
+          }
+        : candidate
+    )
     const sorted = Array.from(latest.values()).sort(
       (left, right) => right.savedAt - left.savedAt
     )
-    const candidateKey = `${candidate.reference}:${candidate.delivery.record}`
     const required = sorted.filter(
       (stored) =>
         stored.delivery.acknowledgedCount === 0 ||
@@ -1565,10 +1627,28 @@ export async function retryMerchantOrganizerRecord(input: {
   organizerPubkey: string
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
+  reference: string
   record: MerchantOrganizerRecordDelivery
+  storage?: Pick<Storage, "getItem"> | null
 }): Promise<MerchantOrganizerRecordDelivery> {
   if (!input.record.signedEvent) {
     throw new Error("Signed organizer record is unavailable for retry.")
+  }
+  const reference = parseOrganizerEventMarketReference(input.reference)
+  if (reference.coordinate.split(":")[1] !== input.organizerPubkey) {
+    throw new Error("Organizer delivery reference does not match this account.")
+  }
+  const currentRecord = () =>
+    loadOrganizerEventMarketDeliveryOutbox(
+      input.organizerPubkey,
+      input.storage
+    )[reference.coordinate]?.find(
+      (delivery) => delivery.record === input.record.record
+    )
+  if (currentRecord()?.signedEvent?.id !== input.record.signedEvent.id) {
+    throw new Error(
+      "The saved organizer delivery changed. Reload before retrying."
+    )
   }
   const result = await retryOrganizerEventMarketRecord({
     organizerPubkey: input.organizerPubkey,
@@ -1576,6 +1656,11 @@ export async function retryMerchantOrganizerRecord(input: {
     shouldContinue: input.shouldContinue,
     signedEvent: input.record.signedEvent,
   })
+  if (currentRecord()?.signedEvent?.id !== input.record.signedEvent.id) {
+    throw new Error(
+      "The saved organizer delivery changed. Reload before retrying."
+    )
+  }
   return projectDeliveryRecord(result)
 }
 
