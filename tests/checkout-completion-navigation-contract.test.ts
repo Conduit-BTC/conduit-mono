@@ -15,7 +15,8 @@ describe("checkout completion navigation contracts", () => {
 
     expect(checkoutRoute).toContain("const navigate = useNavigate()")
     expect(ordersNavigations.length).toBeGreaterThanOrEqual(2)
-    expect(checkoutRoute).toContain("createOrderLifecycle(")
+    expect(checkoutRoute).toContain("orderLifecycle,")
+    expect(checkoutRoute).toContain("resolveCheckoutOrderAttempt(orderId)")
   })
 
   it("does not offer cart as a terminal paid-checkout action", async () => {
@@ -198,7 +199,7 @@ describe("checkout completion navigation contracts", () => {
     )
     const payNowSource = checkoutRoute.slice(payNowIndex, payNowEnd)
     const availabilityIndex = payNowSource.search(
-      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode\s*\)/
+      /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode,\s*freshPricingRate\s*\)/
     )
     const authorizationIndex = payNowSource.indexOf(
       "assertClaimedZapAuthorization(",
@@ -209,7 +210,7 @@ describe("checkout completion navigation contracts", () => {
       authorizationIndex
     )
     const lifecycleIndex = payNowSource.indexOf(
-      "await createOrderLifecycle(",
+      "orderDelivered = true",
       orderPublishIndex
     )
     const sparkFeeApprovalIndex = payNowSource.indexOf(
@@ -239,6 +240,117 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).toContain(
       "items: buildLifecycleItems(checkoutPricing.items)"
     )
+  })
+
+  it("uses durable first-ACK completion without the former checkout delay floor", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const orderPublish = await Bun.file(
+      "apps/market/src/lib/order-publish.ts"
+    ).text()
+
+    expect(checkoutRoute).not.toContain(
+      "new Promise((resolve) => window.setTimeout(resolve, 900))"
+    )
+    expect(orderPublish).toContain('recipientDeliveryBoundary: "accepted"')
+    expect(orderPublish).toContain("onRecipientPublishAccepted:")
+    expect(orderPublish).toContain("ackOnly: true, releaseLease: false")
+    expect(orderPublish).toContain("ackOnly: false,")
+    expect(orderPublish).toContain("releaseLease: true")
+    expect(orderPublish).toContain("pending.has(relayUrl)")
+    expect(checkoutRoute).toContain("delivery.startPostAcceptanceWork ?? null")
+    expect(checkoutRoute).toContain(".finally(() => {")
+    expect(checkoutRoute).toContain("isAuthGenerationCurrent(authGeneration)")
+    expect(checkoutRoute).toContain(
+      "resolveCheckoutOrderAttemptAfterPaymentProgress(orderId)"
+    )
+    expect(checkoutRoute).toContain("hasCheckoutPaymentProgress(current)")
+    expect(checkoutRoute).toContain("beforeBackgroundProofDelivery:")
+    expect(checkoutRoute).not.toContain(
+      ".then(() => resolveCheckoutOrderAttempt(orderId))"
+    )
+  })
+
+  it("keeps Orders receipt observation behind active checkout payment work", async () => {
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+    const observerLoop = ordersRoute.slice(
+      ordersRoute.indexOf("const resumeReceiptObservers = () =>"),
+      ordersRoute.indexOf("resumeReceiptObservers()")
+    )
+    const runningGuard = observerLoop.indexOf(
+      "isOrderPaymentRunning(lifecycle.orderId)"
+    )
+    const observerStart = observerLoop.indexOf("observeOrderPublicZapReceipt(")
+
+    expect(runningGuard).toBeGreaterThan(-1)
+    expect(observerStart).toBeGreaterThan(runningGuard)
+  })
+
+  it("preserves exact-order recovery on ambiguous reads and resumes direct payment without republishing", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+    const recovery = await Bun.file(
+      "apps/market/src/lib/checkout-order-attempt.ts"
+    ).text()
+
+    expect(checkoutRoute.match(/stagedOrderReadFailed = true/g)).toHaveLength(2)
+    expect(
+      checkoutRoute.match(/shouldPreserveCheckoutOrderAttempt\(e\)/g)
+    ).toHaveLength(2)
+    expect(checkoutRoute).toContain("!preserveExactOrderAttempt &&")
+    expect(checkoutRoute).toContain(
+      "The staged order remains fenced for exact recovery; do not create another order."
+    )
+    expect(ordersRoute).toContain("const showContinueAcceptedCheckout =")
+    expect(ordersRoute).toContain(
+      "requiresAcceptedOrderPaymentContinuation(row.lifecycle)"
+    )
+    expect(recovery).toContain('input.paymentStatus === "not_started"')
+    expect(recovery).toContain('input.invoiceStatus === "not_requested"')
+    expect(ordersRoute).toContain("await retryPayment()")
+    expect(ordersRoute).toContain("await finishAcceptedOrderRecovery(current)")
+    expect(ordersRoute).toContain("continuing will not send")
+  })
+
+  it("retains direct-payment recovery after exact delivery retry", async () => {
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+    const delivery = await Bun.file(
+      "packages/core/src/protocol/order-relay-delivery.ts"
+    ).text()
+    const retryStart = ordersRoute.indexOf(
+      "async function retryStagedOrderDelivery(): Promise<void>"
+    )
+    const paymentStart = ordersRoute.indexOf(
+      "async function continueAcceptedCheckoutPayment(): Promise<void>",
+      retryStart
+    )
+    const retry = ordersRoute.slice(retryStart, paymentStart)
+    const continuePayment = ordersRoute.slice(
+      paymentStart,
+      ordersRoute.indexOf(
+        "async function confirmPaymentAddressUpdate()",
+        paymentStart
+      )
+    )
+
+    expect(delivery).toContain(
+      "checkoutRecoveryPending: current.checkoutRecoveryPending"
+    )
+    expect(retry).toContain(
+      "if (requiresAcceptedOrderPaymentContinuation(retried)) return"
+    )
+    expect(retry).toContain("await finishAcceptedOrderRecovery(retried)")
+    expect(continuePayment).toContain("await retryPayment()")
+    expect(continuePayment).not.toContain("publishBuyerOrderMessage(")
   })
 
   it("preflights and snapshots the authenticated signer before checkout work", async () => {

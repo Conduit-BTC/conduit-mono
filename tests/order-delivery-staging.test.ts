@@ -464,7 +464,7 @@ describe("durable order delivery staging", () => {
     )
     expect(secondGeneration).toBe(2)
     expect(store.read()?.orderDeliveryStatus).toBe("sent")
-    expect(store.read()?.checkoutRecoveryPending).toBe(false)
+    expect(store.read()?.checkoutRecoveryPending).toBe(true)
     expect(store.read()?.orderRelayDelivery?.relayDelivery[0]?.status).toBe(
       "acked"
     )
@@ -490,6 +490,116 @@ describe("durable order delivery staging", () => {
       "acked"
     )
   })
+
+  for (const callbackOrder of ["accepted_first", "settled_first"] as const) {
+    it(`converges accepted and settled transactions when ${callbackOrder}`, async () => {
+      const secondRelay = "wss://backup-orders.conduit.market"
+      const declaration = finalizeEvent(
+        {
+          created_at: 1_700_000_001,
+          kind: 10_050,
+          tags: [
+            ["relay", RELAY],
+            ["relay", secondRelay],
+          ],
+          content: "",
+        },
+        MERCHANT_SECRET
+      )
+      const store = memoryRepository()
+      await stageOrderRelayDelivery(
+        {
+          lifecycle: lifecycleInput(),
+          prepared: {
+            ...prepared(),
+            routingAuthority: {
+              eventId: declaration.id,
+              eventCreatedAt: declaration.created_at,
+              pubkey: declaration.pubkey,
+              kind: 10_050,
+              relayUrls: [RELAY, secondRelay],
+            },
+            relayPlan: [
+              prepared().relayPlan[0]!,
+              { relayUrl: secondRelay, source: "declared" },
+            ],
+          },
+          leaseOwner: "foreground",
+        },
+        { repository: store.repository, now: () => 100 }
+      )
+      const begun = await beginOrderRelayDeliveryAttempt(
+        {
+          orderId: "order-id",
+          buyerPubkey: BUYER,
+          leaseOwner: "foreground",
+          relayUrls: [RELAY, secondRelay],
+        },
+        { repository: store.repository, now: () => 110 }
+      )
+      const accepted = () =>
+        recordOrderRelayDeliveryOutcomes(
+          {
+            orderId: "order-id",
+            buyerPubkey: BUYER,
+            leaseOwner: "foreground",
+            wrapId: begun.wrapId,
+            outcomes: [
+              {
+                relayUrl: RELAY,
+                status: "acked",
+                generation: begun.generationsByRelay[RELAY]!,
+              },
+            ],
+            releaseLease: false,
+          },
+          { repository: store.repository, now: () => 120 }
+        )
+      const settled = () =>
+        recordOrderRelayDeliveryOutcomes(
+          {
+            orderId: "order-id",
+            buyerPubkey: BUYER,
+            leaseOwner: "foreground",
+            wrapId: begun.wrapId,
+            outcomes: [
+              {
+                relayUrl: RELAY,
+                status: "acked",
+                generation: begun.generationsByRelay[RELAY]!,
+              },
+              {
+                relayUrl: secondRelay,
+                status: "timed_out",
+                generation: begun.generationsByRelay[secondRelay]!,
+              },
+            ],
+            releaseLease: true,
+          },
+          { repository: store.repository, now: () => 130 }
+        )
+
+      if (callbackOrder === "accepted_first") {
+        await accepted()
+        expect(store.read()?.orderRelayDelivery?.deliveryLeaseOwner).toBe(
+          "foreground"
+        )
+        await settled()
+      } else {
+        await settled()
+        await accepted()
+      }
+
+      expect(store.read()?.orderDeliveryStatus).toBe("sent")
+      expect(store.read()?.orderRelayDelivery?.relayDelivery).toEqual([
+        expect.objectContaining({ relayUrl: RELAY, status: "acked" }),
+        expect.objectContaining({ relayUrl: secondRelay, status: "timed_out" }),
+      ])
+      expect(
+        store.read()?.orderRelayDelivery?.deliveryLeaseOwner
+      ).toBeUndefined()
+    })
+  }
 
   it("does not acquire an attempt after the active session changes", async () => {
     const store = memoryRepository()
