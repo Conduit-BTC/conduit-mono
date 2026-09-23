@@ -6,6 +6,7 @@ import {
   type ProductSupplierAllocationIssue,
   type ProductSupplierAllocationRecipient,
 } from "../schemas"
+import type { Product } from "../types"
 import { normalizePubkey } from "../utils"
 import type { WalletNetwork } from "../wallets"
 import { EVENT_KINDS } from "./kinds"
@@ -172,6 +173,43 @@ function hasExactSignedAllocationTerms(
       verifiedRecipient.role === recipient.role
     )
   })
+}
+
+export type ProductSupplierAllocationEvidenceState =
+  "absent" | "invalid" | "unverified" | "signed"
+
+/**
+ * A syntactically valid allocation is not necessarily evidence from this
+ * product's exact signed revision. Keep that distinction in read-side UI.
+ */
+export function getProductSupplierAllocationEvidenceState(
+  product: Pick<
+    Product,
+    "id" | "pubkey" | "sourceEventId" | "updatedAt" | "supplierAllocation"
+  >
+): ProductSupplierAllocationEvidenceState {
+  const allocation = product.supplierAllocation
+  if (!allocation || allocation.state === "absent") return "absent"
+  if (allocation.state === "invalid") return "invalid"
+  if (!hasExactSignedAllocationTerms(allocation)) return "unverified"
+
+  const revisionEvent = allocation.revisionEvent!
+  const dTags = revisionEvent.tags.filter((tag) => tag[0] === "d")
+  const dTag = dTags[0]?.[1]
+  if (
+    revisionEvent.kind !== EVENT_KINDS.PRODUCT ||
+    revisionEvent.pubkey !== product.pubkey ||
+    dTags.length !== 1 ||
+    !dTag ||
+    product.id !== `${EVENT_KINDS.PRODUCT}:${revisionEvent.pubkey}:${dTag}` ||
+    product.updatedAt !== revisionEvent.created_at * 1_000 ||
+    (product.sourceEventId !== undefined &&
+      product.sourceEventId !== allocation.revisionEventId)
+  ) {
+    return "unverified"
+  }
+
+  return "signed"
 }
 
 function uniqueIssues(

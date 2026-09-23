@@ -10,6 +10,7 @@ import {
   buildProductListingEventDraft,
   buildProductSupplierAllocation,
   emitProductSupplierAllocationTags,
+  getProductSupplierAllocationEvidenceState,
   parseProductSupplierAllocationTags,
   parseProductEvent,
   PRODUCT_SUPPLIER_ALLOCATION_VERSION,
@@ -83,6 +84,101 @@ function product(
 }
 
 describe("product supplier allocations", () => {
+  it("only displays terms as signed when they match the exact verified product revision", () => {
+    const signed = signedProductRevision(
+      [
+        ["d", "split-product"],
+        ["title", "Split product"],
+        ["price", "100", "SAT"],
+        ...allocationTags(
+          ["zap", MERCHANT, "wss://relay.conduit.market", "3"],
+          ["zap", SUPPLIER_A, "wss://nos.lol", "1"]
+        ),
+      ],
+      1_800_000_000
+    )
+    const verified = parseProductEvent(signed)
+    expect(verified.supplierAllocation?.state).toBe("valid")
+    expect(getProductSupplierAllocationEvidenceState(verified)).toBe("signed")
+
+    const unsigned = parseProductEvent({
+      content: signed.content,
+      pubkey: signed.pubkey,
+      created_at: signed.created_at,
+      tags: signed.tags,
+      id: signed.id,
+      kind: signed.kind,
+    })
+    const tamperedId = parseProductEvent({ ...signed, id: "a".repeat(64) })
+    const tamperedContent = parseProductEvent({
+      ...signed,
+      content: "Unsigned replacement content",
+    })
+    for (const projection of [unsigned, tamperedId, tamperedContent]) {
+      expect(projection.supplierAllocation?.state).toBe("valid")
+      expect(getProductSupplierAllocationEvidenceState(projection)).toBe(
+        "unverified"
+      )
+    }
+
+    expect(
+      getProductSupplierAllocationEvidenceState({
+        ...verified,
+        id: `30402:${MERCHANT}:other-product`,
+      })
+    ).toBe("unverified")
+    expect(
+      getProductSupplierAllocationEvidenceState({
+        ...verified,
+        updatedAt: verified.updatedAt + 1_000,
+      })
+    ).toBe("unverified")
+    expect(
+      getProductSupplierAllocationEvidenceState({
+        ...verified,
+        sourceEventId: "b".repeat(64),
+      })
+    ).toBe("unverified")
+    expect(
+      getProductSupplierAllocationEvidenceState({
+        ...verified,
+        supplierAllocation: {
+          ...verified.supplierAllocation!,
+          recipients: verified.supplierAllocation!.recipients.map(
+            (recipient, index) =>
+              index === 1
+                ? { ...recipient, weight: recipient.weight + 1 }
+                : recipient
+          ),
+        },
+      })
+    ).toBe("unverified")
+
+    const malformed = parseProductEvent(
+      signedProductRevision(
+        signed.tags.map((tag) =>
+          tag[0] === "zap" && tag[1] === SUPPLIER_A
+            ? [tag[0], tag[1], tag[2], "0"]
+            : tag
+        ),
+        signed.created_at
+      )
+    )
+    expect(getProductSupplierAllocationEvidenceState(malformed)).toBe("invalid")
+    expect(
+      getProductSupplierAllocationEvidenceState(
+        parseProductEvent(
+          signedProductRevision(
+            signed.tags.filter(
+              (tag) => tag[0] !== PRODUCT_SUPPLIER_ALLOCATION_VERSION_TAG
+            ),
+            signed.created_at
+          )
+        )
+      )
+    ).toBe("absent")
+  })
+
   it("normalizes npub and nprofile authoring identities into NIP-57 zap tags", () => {
     const result = buildProductSupplierAllocation({
       merchantPubkey: MERCHANT,

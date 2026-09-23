@@ -5,6 +5,7 @@ import {
   buildProductDetailActionTelemetryProperties,
   formatNpub,
   getListingSafetyDisplay,
+  getProductSupplierAllocationEvidenceState,
   getProfileName,
   isCommerceReadIncomplete,
   pubkeyToNpub,
@@ -139,8 +140,11 @@ function ProductPage() {
     ? getProductSelection(product, family, selectedProductId)
     : null
   const supplierAllocation = selectedProduct?.supplierAllocation
+  const supplierAllocationEvidence = selectedProduct
+    ? getProductSupplierAllocationEvidenceState(selectedProduct)
+    : "absent"
   const supplierAllocationTotalWeight =
-    supplierAllocation?.state === "valid"
+    supplierAllocationEvidence === "signed" && supplierAllocation
       ? supplierAllocation.recipients.reduce(
           (sum, recipient) => sum + recipient.weight,
           0
@@ -990,7 +994,8 @@ function ProductPage() {
                   </dl>
                 )}
 
-                {supplierAllocation?.state === "valid" ? (
+                {supplierAllocationEvidence === "signed" &&
+                supplierAllocation ? (
                   <section
                     aria-labelledby="product-revenue-allocation-title"
                     className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
@@ -1046,14 +1051,16 @@ function ProductPage() {
                       merchant.
                     </p>
                   </section>
-                ) : supplierAllocation?.state === "invalid" ? (
+                ) : supplierAllocationEvidence === "invalid" ||
+                  supplierAllocationEvidence === "unverified" ? (
                   <div
                     role="status"
                     className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-xs leading-5 text-[var(--text-secondary)]"
                   >
-                    This listing contains malformed signed allocation terms.
-                    Checkout must not use them until the merchant publishes a
-                    corrected product revision.
+                    {supplierAllocationEvidence === "invalid"
+                      ? "This listing contains malformed allocation terms. The merchant must publish a corrected product revision."
+                      : "This listing's allocation terms cannot be verified against its exact signed revision. Refresh to check for a valid listing."}{" "}
+                    Checkout cannot use unavailable allocation terms.
                   </div>
                 ) : null}
 
