@@ -164,7 +164,9 @@ jobs:
       matrix:
         area: ${{ fromJSON(needs.smoke-changes.outputs.shards) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The full market smoke shard runs close to 20 minutes after browser setup;
+    # retain the complete suite instead of cancelling near its final tests.
+    timeout-minutes: 30
     steps:
       - name: No browser smoke needed
         if: matrix.area == 'none'

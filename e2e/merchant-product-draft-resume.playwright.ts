@@ -736,3 +736,216 @@ test("merchant rejects a stale unrelated family edit before signing refreshed al
     )
   ).toEqual(expect.arrayContaining([refreshedTitle, `${refreshedTitle} Small`]))
 })
+
+test("merchant cannot sign changed allocation terms from a degraded family missing a child @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const merchantSecretKey = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecretKey)
+  const supplierPubkey = getPublicKey(generateSecretKey())
+  const suffix = Date.now().toString(36)
+  const parentDTag = `incomplete-allocation-${suffix}`
+  const parentCoordinate = `${PRODUCT_KIND}:${merchantPubkey}:${parentDTag}`
+  const createdAt = Math.floor(Date.now() / 1_000) - 60
+  const allocationTags = [
+    ["conduit_supplier_allocation", "1"],
+    ["zap", merchantPubkey, "wss://relay.conduit.market", "3"],
+    ["zap", supplierPubkey, "wss://nos.lol", "1"],
+  ]
+  const members = [
+    { dTag: parentDTag, title: `Incomplete family ${suffix}`, size: null },
+    {
+      dTag: `${parentDTag}-small`,
+      title: `Incomplete family ${suffix} Small`,
+      size: "Small",
+    },
+    {
+      dTag: `${parentDTag}-large`,
+      title: `Incomplete family ${suffix} Large`,
+      size: "Large",
+    },
+  ] as const
+  const signedMembers = members.map((member, index) =>
+    finalizeEvent(
+      {
+        kind: PRODUCT_KIND,
+        created_at: createdAt + index,
+        tags: [
+          ["d", member.dTag],
+          ["title", member.title],
+          ["summary", "A signed family with a missing cached variation."],
+          ["price", "10", "SATS"],
+          ["type", member.size ? "variation" : "variable", "digital"],
+          ["image", "https://media.conduit.market/incomplete-allocation.png"],
+          ["t", "allocation"],
+          ["t", "family"],
+          ["t", "regression"],
+          ...(member.size
+            ? [
+                ["a", parentCoordinate],
+                ["spec", "size", member.size],
+              ]
+            : []),
+          ...allocationTags,
+        ],
+        content: "A signed family with a missing cached variation.",
+      },
+      merchantSecretKey
+    )
+  )
+
+  await seedTestRelayIdentity(merchantSecretKey, { inboxDeclaration: "omit" })
+  await publishTestRelayEvents(signedMembers)
+  expect(
+    await readTestRelayEvents({
+      kinds: [PRODUCT_KIND],
+      authors: [merchantPubkey],
+    })
+  ).toHaveLength(3)
+  await installTestSigner(page, merchantPubkey, {
+    secretKey: merchantSecretKey,
+  })
+  // The backing relay has three signed coordinates, but this browser only has
+  // two cached members and cannot complete a relay read to discover the third.
+  await page.routeWebSocket(/^wss?:\/\//, (socket) => {
+    void socket.close()
+  })
+  await page.goto(`${merchantUrl}/products`)
+  await page.evaluate(
+    ({
+      merchantPubkey,
+      supplierPubkey,
+      parentCoordinate,
+      members,
+      eventIds,
+      createdAt,
+      relayUrl,
+    }) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction("products", "readwrite")
+          const cachedAt = Date.now()
+          for (const index of [0, 1]) {
+            const member = members[index]
+            transaction.objectStore("products").put({
+              id: `${30_402}:${merchantPubkey}:${member.dTag}`,
+              pubkey: merchantPubkey,
+              dTag: member.dTag,
+              title: member.title,
+              summary: "A signed family with a missing cached variation.",
+              price: 10,
+              currency: "SATS",
+              priceSats: 10,
+              type: member.size ? "variation" : "variable",
+              parentProductId: member.size ? parentCoordinate : undefined,
+              specifications: member.size
+                ? [{ key: "size", value: member.size }]
+                : [],
+              format: "digital",
+              visibility: "public",
+              stock: 1,
+              images: [
+                {
+                  url: "https://media.conduit.market/incomplete-allocation.png",
+                },
+              ],
+              tags: ["allocation", "family", "regression"],
+              publicZapEnabled: true,
+              zapMessagePolicy: "generic_only",
+              publicZapPolicyKnown: true,
+              supplierAllocation: {
+                state: "valid",
+                recipients: [
+                  {
+                    pubkey: merchantPubkey,
+                    relayHint: "wss://relay.conduit.market/",
+                    weight: 3,
+                    role: "merchant",
+                  },
+                  {
+                    pubkey: supplierPubkey,
+                    relayHint: "wss://nos.lol/",
+                    weight: 1,
+                    role: "supplier",
+                  },
+                ],
+                issues: [],
+                revisionEventId: eventIds[index],
+                revisionCreatedAt: createdAt + index,
+              },
+              eventId: eventIds[index],
+              eventCreatedAt: createdAt + index,
+              sourceRelayUrls: [relayUrl],
+              createdAt: cachedAt,
+              updatedAt: cachedAt,
+              cachedAt,
+            })
+          }
+          transaction.oncomplete = () => resolve()
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      }),
+    {
+      merchantPubkey,
+      supplierPubkey,
+      parentCoordinate,
+      members,
+      eventIds: signedMembers.map((event) => event.id),
+      createdAt,
+      relayUrl: TEST_RELAY_URL,
+    }
+  )
+  await page.reload()
+  await expect(page.getByText(members[0].title, { exact: true })).toBeVisible({
+    timeout: 35_000,
+  })
+  await expect(page.getByText(members[2].title, { exact: true })).toHaveCount(0)
+  await page.getByRole("button", { name: "Edit", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Edit product family" })
+  await expect(dialog).toBeVisible()
+  await page.evaluate((productKind) => {
+    const browserWindow = window as unknown as {
+      nostr: {
+        signEvent: (
+          event: Record<string, unknown>
+        ) => Promise<Record<string, unknown>>
+      }
+      __incompleteFamilyProductSignCount: number
+    }
+    const originalSignEvent = browserWindow.nostr.signEvent.bind(
+      browserWindow.nostr
+    )
+    browserWindow.__incompleteFamilyProductSignCount = 0
+    browserWindow.nostr.signEvent = async (event) => {
+      if (event.kind === productKind) {
+        browserWindow.__incompleteFamilyProductSignCount += 1
+      }
+      return originalSignEvent(event)
+    }
+  }, PRODUCT_KIND)
+  await dialog.getByLabel("Merchant weight").fill("4")
+  await dialog.getByRole("button", { name: "Save changes" }).click()
+  await expect(
+    dialog.getByText(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+  ).toBeVisible()
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __incompleteFamilyProductSignCount: number })
+          .__incompleteFamilyProductSignCount
+    )
+  ).toBe(0)
+  expect(
+    await readTestRelayEvents({
+      kinds: [PRODUCT_KIND],
+      authors: [merchantPubkey],
+    })
+  ).toHaveLength(3)
+})

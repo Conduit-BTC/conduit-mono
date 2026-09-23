@@ -9667,3 +9667,134 @@ test("open overtime event closes into history and reopens without changing picku
     await shopperContext.close()
   }
 })
+
+test("Orders keeps rejected stock unpublished across reload and re-signs without a second decrement @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  const now = Math.floor(Date.now() / 1000)
+  relay.seed(
+    createInboxDeclaration("organizer", now),
+    createInboxDeclaration("buyer", now + 1)
+  )
+  await installSyntheticEnvironment(page, relay)
+
+  const eventTitle = "Synthetic stock rejection market"
+  const productTitle = "Synthetic stock rejection item"
+  const market = await publishOrganizerMarket(page, relay, {
+    title: eventTitle,
+    organizerHandoffEnabled: true,
+  })
+  const initialProduct = await publishMerchantProductFromEvent(
+    page,
+    relay,
+    market,
+    {
+      eventTitle,
+      productTitle,
+      handoffMode: "merchant",
+      identity: "organizer",
+    }
+  )
+  expect(initialProduct.tags).toContainEqual(["stock", "3"])
+
+  await gotoAs(page, marketUrl, `/events/${market.canonicalNaddr}`, "buyer")
+  const productCard = page
+    .getByRole("listitem")
+    .filter({ hasText: productTitle })
+  await expect(productCard.getByRole("button", { name: "Add" })).toBeEnabled({
+    timeout: 30_000,
+  })
+  await productCard.getByRole("button", { name: "Add" }).click()
+  await gotoAs(page, marketUrl, "/checkout", "buyer", {
+    merchant: nip19.npubEncode(ORGANIZER_PUBKEY),
+  })
+  const sendOrder = page.getByRole("button", {
+    name: "Send order",
+    exact: true,
+  })
+  await expect(sendOrder).toBeEnabled({ timeout: 30_000 })
+  const orderPublishStart = relay.publications.length
+  await sendOrder.click()
+  await expect(page).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
+  const orderMessage = uniquePrivatePublications(
+    decryptPrivatePublications(
+      relay.publications,
+      ORGANIZER_SECRET,
+      orderPublishStart
+    )
+  ).find((message) => rumorType(message.rumor) === "order")
+  expect(orderMessage).toBeTruthy()
+  const orderId = (JSON.parse(orderMessage!.rumor.content) as { id: string }).id
+
+  await gotoAs(page, merchantUrl, "/orders", "organizer", { order: orderId })
+  const inventory = page
+    .getByRole("heading", { name: "Inventory", exact: true })
+    .locator("xpath=ancestor::section[1]")
+  await expect(
+    inventory.getByRole("button", { name: "Publish stock 2" })
+  ).toBeEnabled({
+    timeout: 30_000,
+  })
+
+  relay.rejectKind(30402, true)
+  const firstPublishStart = relay.publications.length
+  await inventory.getByRole("button", { name: "Publish stock 2" }).click()
+  await expect(
+    inventory.getByText("Not published", { exact: true })
+  ).toBeVisible({
+    timeout: 30_000,
+  })
+  const rejected = uniquePublishedEvents(
+    relay.publications.slice(firstPublishStart)
+  ).filter((event) => event.kind === 30402)
+  expect(rejected).toHaveLength(1)
+  expect(rejected[0]!.tags).toContainEqual(["stock", "2"])
+  expect(relay.events().some((event) => event.id === rejected[0]!.id)).toBe(
+    false
+  )
+
+  await page.reload()
+  await expect(
+    inventory.getByText("Not published", { exact: true })
+  ).toBeVisible({
+    timeout: 30_000,
+  })
+  await expect(
+    inventory.getByRole("button", { name: "Sign new listing for stock 2" })
+  ).toBeEnabled()
+  await expect(
+    inventory.getByRole("button", { name: "Publish stock 1" })
+  ).toHaveCount(0)
+  await expect(
+    inventory.getByRole("button", { name: "Retry delivery" })
+  ).toHaveCount(0)
+
+  relay.rejectKind(30402, false)
+  const republishStart = relay.publications.length
+  await inventory
+    .getByRole("button", { name: "Sign new listing for stock 2" })
+    .click()
+  await expect(inventory.getByText("Delivered", { exact: true })).toBeVisible({
+    timeout: 30_000,
+  })
+  const republished = uniquePublishedEvents(
+    relay.publications.slice(republishStart)
+  ).filter((event) => event.kind === 30402)
+  expect(republished).toHaveLength(1)
+  expect(republished[0]!.id).not.toBe(rejected[0]!.id)
+  expect(republished[0]!.tags).toContainEqual(["stock", "2"])
+  expect(relay.events().some((event) => event.id === republished[0]!.id)).toBe(
+    true
+  )
+
+  await page.reload()
+  await expect(
+    inventory.getByRole("button", { name: "Sign new listing for stock 2" })
+  ).toHaveCount(0)
+  await expect(
+    inventory.getByRole("button", { name: "Publish stock 1" })
+  ).toHaveCount(0)
+})
