@@ -25,9 +25,8 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(eventRoute).toContain(
       "allowZeroPrice={pickupFulfillment !== null || pendingEvidenceMayRecover}"
     )
-    expect(eventRoute).toContain(
-      "checkout stays locked until this exact product is confirmed"
-    )
+    expect(eventRoute).toContain("getEventCatalogPickupGate")
+    expect(eventRoute).toContain("cartActionDisabled={!cartAction.enabled}")
     expect(detail).toContain(
       'allowZero: productCartResolution?.status === "pickup"'
     )
