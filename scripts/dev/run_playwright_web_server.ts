@@ -29,6 +29,7 @@ export function resolvePlaywrightWebServerTarget(
   const sharedAppEnv = {
     VITE_DISABLE_DEVTOOLS: "true",
     VITE_E2E_RELAY_URL: relayUrl,
+    VITE_ENABLE_E2E_TEST_HOOKS: "true",
     VITE_ENABLE_TELEMETRY: "true",
     VITE_ENABLE_TELEMETRY_TEST_HOOKS: "true",
     VITE_PLAUSIBLE_SRC: "data:text/javascript,",

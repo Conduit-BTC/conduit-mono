@@ -1134,6 +1134,17 @@ async function installSyntheticEnvironment(
   )
 }
 
+async function installStableSyntheticPricing(page: Page): Promise<void> {
+  // An unrelated late rate quote changes the resolver's query key and causes
+  // a fresh read; these tests measure retry behavior for one stable key.
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "conduit:btc-usd-rate",
+      JSON.stringify({ rate: 100_000, fetchedAt: Date.now(), source: "env" })
+    )
+  })
+}
+
 type PublishedOrganizerMarket = {
   calendarEvent: SignedEvent
   pickupEvent?: SignedEvent
@@ -6366,6 +6377,7 @@ test("signed pickup withdrawal leaves pending cart blocked without background re
   test.setTimeout(120_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
+  await installStableSyntheticPricing(page)
   const market = await publishOrganizerMarket(page, relay, {
     title: "Synthetic withdrawn pending pickup",
     organizerHandoffEnabled: true,
@@ -6417,13 +6429,10 @@ test("signed pickup withdrawal leaves pending cart blocked without background re
     previewStock: 3,
   })
   await expect.poll(exactProductReads).toBeGreaterThan(firstReadStart)
-  await expect
-    .poll(async () => {
-      const before = exactProductReads()
-      await page.waitForTimeout(750)
-      return exactProductReads() === before
-    })
-    .toBe(true)
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-conduit-e2e-pending-pickup-resolution",
+    "settled-nonretryable"
+  )
   const terminalReadCount = exactProductReads()
 
   // A newer signed product revision removed the event references. Unlike a
@@ -6446,6 +6455,7 @@ test("signed merchant booth deletion leaves pending cart blocked without backgro
   test.setTimeout(120_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
+  await installStableSyntheticPricing(page)
   const market = await publishOrganizerMarket(page, relay, {
     title: "Synthetic deleted booth pending pickup",
     organizerHandoffEnabled: true,
@@ -6500,13 +6510,10 @@ test("signed merchant booth deletion leaves pending cart blocked without backgro
     previewStock: 3,
   })
   await expect.poll(pickupReads).toBeGreaterThan(firstReadStart)
-  await expect
-    .poll(async () => {
-      const before = pickupReads()
-      await page.waitForTimeout(750)
-      return pickupReads() === before
-    })
-    .toBe(true)
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-conduit-e2e-pending-pickup-resolution",
+    "settled-nonretryable"
+  )
   const terminalReadCount = pickupReads()
 
   await page.waitForTimeout(6_000)

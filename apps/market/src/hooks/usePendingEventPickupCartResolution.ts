@@ -71,6 +71,39 @@ export function usePendingEventPickupCartResolution() {
   })
 
   useEffect(() => {
+    if (
+      import.meta.env.MODE !== "mock" ||
+      import.meta.env.VITE_ENABLE_E2E_TEST_HOOKS !== "true"
+    ) {
+      return
+    }
+
+    // The smoke suite needs to distinguish a completed terminal read from a
+    // temporarily quiet relay request before asserting that polling stops.
+    const root = document.documentElement
+    const state =
+      pendingItems.length === 0
+        ? "none"
+        : query.isFetching || query.status === "pending"
+          ? "checking"
+          : query.status === "success" &&
+              !query.isPlaceholderData &&
+              query.data?.retryable === false
+            ? "settled-nonretryable"
+            : "retryable-or-error"
+    root.dataset.conduitE2ePendingPickupResolution = state
+    return () => {
+      delete root.dataset.conduitE2ePendingPickupResolution
+    }
+  }, [
+    pendingItems.length,
+    query.isFetching,
+    query.isPlaceholderData,
+    query.status,
+    query.data?.retryable,
+  ])
+
+  useEffect(() => {
     if (!query.data) return
     for (const upgrade of query.data.upgrades) {
       void upgradePendingEventPickupItem(upgrade.identity, upgrade.item)
