@@ -8,6 +8,7 @@ import {
   getPendingProductListingDeliveries,
   getProductListingDeliveryJobId,
   getRejectedProductListingDeliveries,
+  isTerminalRecoverableProductListingJob,
   type ProductListingDeliveryJob,
   type ProductListingOutboxRepository,
 } from "@conduit/core"
@@ -99,7 +100,7 @@ class MemoryProductListingOutbox implements ProductListingOutboxRepository {
 }
 
 describe("terminal product listing delivery inspection", () => {
-  it("returns only the merchant's zero-ACK fully rejected jobs after reload", async () => {
+  it("returns the merchant's terminal families after reload", async () => {
     const older = listingJob("older")
     const newer = listingJob("newer", { createdAt: older.createdAt + 1 })
     const otherMerchant = listingJob("other", {
@@ -122,7 +123,58 @@ describe("terminal product listing delivery inspection", () => {
     )
   })
 
-  it("excludes mixed ACK, timeout, missing, duplicate, unattempted, and corrupt evidence", async () => {
+  it("recovers a crossed ACK/rejection family only when no relay has the whole family", async () => {
+    const first = listingJob("crossed-first")
+    const second = listingJob("crossed-second")
+    const firstEvent = first.signedEvents[0]!
+    const secondEvent = second.signedEvents[0]!
+    const crossed: ProductListingDeliveryJob = {
+      ...first,
+      id: getProductListingDeliveryJobId([firstEvent, secondEvent]),
+      signedEvents: [firstEvent, secondEvent],
+      relayDelivery: [
+        {
+          ...first.relayDelivery[0]!,
+          status: "acked",
+          acknowledgedAt: first.updatedAt,
+        },
+        first.relayDelivery[1]!,
+        second.relayDelivery[0]!,
+        {
+          ...second.relayDelivery[1]!,
+          status: "acked",
+          acknowledgedAt: second.updatedAt,
+        },
+      ],
+    }
+    expect(isTerminalRecoverableProductListingJob(crossed)).toBe(true)
+    const found = await getRejectedProductListingDeliveries(MERCHANT, {
+      repository: new MemoryProductListingOutbox([crossed]),
+    })
+    expect(found.map((job) => job.id)).toEqual([crossed.id])
+
+    // A stale failed state cannot override an actual common ACK.
+    const commonAck = structuredClone(crossed)
+    commonAck.relayDelivery[2] = {
+      ...commonAck.relayDelivery[2]!,
+      status: "acked",
+      acknowledgedAt: crossed.updatedAt,
+    }
+    expect(isTerminalRecoverableProductListingJob(commonAck)).toBe(false)
+
+    const retryable = structuredClone(crossed)
+    retryable.relayDelivery[2] = {
+      ...retryable.relayDelivery[2]!,
+      status: "timed_out",
+    }
+    expect(isTerminalRecoverableProductListingJob(retryable)).toBe(false)
+
+    const unattemptedAck = structuredClone(crossed)
+    unattemptedAck.relayDelivery[0]!.attemptCount = 0
+    expect(isTerminalRecoverableProductListingJob(unattemptedAck)).toBe(false)
+  })
+
+  it("excludes common ACK, timeout, missing, duplicate, unattempted, and corrupt evidence", async () => {
     const valid = listingJob("valid")
     const mixedAck = listingJob("mixed-ack")
     mixedAck.relayDelivery[0]!.status = "acked"

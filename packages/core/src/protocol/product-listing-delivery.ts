@@ -854,7 +854,13 @@ export async function getProductListingDelivery(
   return job ? cloneJob(job) : undefined
 }
 
-export function isFullyRejectedProductListingJob(
+/**
+ * A failed signed family needs a new intentional delivery only when its exact
+ * relay matrix has no retryable pair and no relay acknowledged the whole
+ * family. Per-event ACKs on different relays do not release a companion
+ * deletion or make the family usable as a whole.
+ */
+export function isTerminalRecoverableProductListingJob(
   job: ProductListingDeliveryJob
 ): boolean {
   if (
@@ -881,12 +887,13 @@ export function isFullyRejectedProductListingJob(
     )
   )
   if (expectedPairs.size !== job.relayDelivery.length) return false
+  if (hasCommonAcknowledgedRelay(job)) return false
 
   return job.relayDelivery.every((delivery) => {
     const pair = `${delivery.eventId}:${delivery.relayUrl}`
     if (
       !expectedPairs.has(pair) ||
-      delivery.status !== "rejected" ||
+      (delivery.status !== "acked" && delivery.status !== "rejected") ||
       delivery.attemptCount < 1
     ) {
       return false
@@ -897,7 +904,7 @@ export function isFullyRejectedProductListingJob(
 }
 
 /**
- * Inspect terminal, all-rejected listing families after restart. These jobs
+ * Inspect terminal, no-common-ACK listing families after restart. These jobs
  * cannot be retried with their old relay plan; any recovery must explicitly
  * sign and stage a fresh job after the merchant repairs their current plan.
  * This is raw outbox history: callers must compare the signed family against
@@ -917,7 +924,7 @@ export async function getRejectedProductListingDeliveries(
     .filter(
       (job) =>
         job.merchantPubkey === normalizedPubkey &&
-        isFullyRejectedProductListingJob(job)
+        isTerminalRecoverableProductListingJob(job)
     )
     .sort(
       (left, right) =>

@@ -1,6 +1,6 @@
 import {
   EVENT_KINDS,
-  isFullyRejectedProductListingJob,
+  isTerminalRecoverableProductListingJob,
   productDeletionEvidenceFromSignedEvent,
   type ProductDeletionDeliveryJob,
   type ProductListingDeliveryJob,
@@ -61,7 +61,7 @@ export function getTerminalRejectedListingRecoveryDTags(
   },
   companionDeletion?: ProductDeletionDeliveryJob
 ): string[] | null {
-  if (!isFullyRejectedProductListingJob(job)) {
+  if (!isTerminalRecoverableProductListingJob(job)) {
     return null
   }
   if (job.companionDeletionJobId) {

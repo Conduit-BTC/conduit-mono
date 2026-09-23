@@ -1665,6 +1665,289 @@ describe("merchant product event delivery", () => {
     ).toBe(0)
   })
 
+  it("recovers a crossed ACK/reject family without releasing its linked deletion before a common ACK", async () => {
+    const firstRelayUrl = "wss://relay.damus.io"
+    const secondRelayUrl = "wss://relay.nostr.net"
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const deletionStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const listings = new MemoryProductListingOutbox(listingStorage)
+    const deletions = new MemoryProductDeletionOutbox(deletionStorage)
+    const dTags = ["cross-root", "cross-variation"]
+    let initialBundle: SignedProductWriteBundle | null = null
+    let deletionAttempts = 0
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+    await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: dTags.map((dTag) => ({
+          product: makeProduct(dTag),
+          dTag,
+          fulfillmentIntent: { kind: "coordinate_after_order" as const },
+        })),
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "c".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+            sourceRelayUrls: [],
+          },
+        ]),
+        onSignedLocal: async (bundle) => {
+          initialBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listings,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ relayUrl, signedEvent }) => {
+            const dTag = signedEvent.tags.find(([name]) => name === "d")?.[1]
+            return {
+              status:
+                (relayUrl === firstRelayUrl && dTag === dTags[0]) ||
+                (relayUrl === secondRelayUrl && dTag === dTags[1])
+                  ? ("acked" as const)
+                  : ("rejected" as const),
+            }
+          },
+        },
+        deletionDeliveryOptions: {
+          repository: deletions,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => {
+            deletionAttempts += 1
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget(firstRelayUrl),
+          personalListingTarget(secondRelayUrl),
+        ],
+      }
+    )
+    if (!initialBundle) throw new Error("Expected signed mixed mutation")
+    const oldListingId = initialBundle.productListingDeliveryJobId
+    const oldDeletionId = initialBundle.deletionDeliveryJobId
+    if (!oldListingId || !oldDeletionId) {
+      throw new Error("Expected reciprocal durable jobs")
+    }
+
+    const listingsAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionsAfterReload = new MemoryProductDeletionOutbox(
+      deletionStorage
+    )
+    const oldListing = await listingsAfterReload.get(oldListingId)
+    const oldDeletion = await deletionsAfterReload.get(oldDeletionId)
+    if (!oldListing || !oldDeletion) {
+      throw new Error("Expected durable crossed-family evidence")
+    }
+    expect(oldListing.state).toBe("failed")
+    expect(oldListing.relayDelivery).toHaveLength(4)
+    expect(
+      oldListing.relayDelivery.filter((pair) => pair.status === "acked")
+    ).toHaveLength(2)
+    expect(
+      oldListing.relayDelivery.filter((pair) => pair.status === "rejected")
+    ).toHaveLength(2)
+    expect(oldDeletion.state).toBe("pending")
+    expect(oldDeletion.deliveryAttemptCount).toBe(0)
+    expect(deletionAttempts).toBe(0)
+
+    const oldDeletionRetryOptions = {
+      repository: deletionsAfterReload,
+      getCompanionListingJob: (jobId: string) => listingsAfterReload.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        deletionAttempts += 1
+        return { status: "acked" as const }
+      },
+    }
+    await deliverQueuedProductDeletion(oldDeletionId, oldDeletionRetryOptions)
+    await resumePendingProductDeletionDeliveries(oldDeletionRetryOptions)
+    expect(deletionAttempts).toBe(0)
+
+    const rejected = await getRejectedProductListingDeliveries(
+      MERCHANT_PUBKEY,
+      { repository: listingsAfterReload }
+    )
+    expect(rejected.map((job) => job.id)).toContain(oldListingId)
+    const signedByDTag = new Map(
+      oldListing.signedEvents.map((event) => [
+        event.tags.find(([name]) => name === "d")?.[1],
+        event,
+      ])
+    )
+    const rootEvent = signedByDTag.get(dTags[0])
+    const variationEvent = signedByDTag.get(dTags[1])
+    if (!rootEvent || !variationEvent) {
+      throw new Error("Expected signed root and variation")
+    }
+    const currentFamily = {
+      eventId: rootEvent.id,
+      dTag: dTags[0]!,
+      product: { pubkey: MERCHANT_PUBKEY },
+      variations: [
+        {
+          eventId: variationEvent.id,
+          dTag: dTags[1]!,
+          product: { pubkey: MERCHANT_PUBKEY },
+        },
+      ],
+    }
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        oldListing,
+        currentFamily,
+        oldDeletion
+      )
+    ).toEqual(dTags)
+    expect(
+      getTerminalRejectedListingRecoveryDTags(oldListing, currentFamily)
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        oldListing,
+        {
+          ...currentFamily,
+          variations: [
+            { ...currentFamily.variations[0]!, eventId: "f".repeat(64) },
+          ],
+        },
+        oldDeletion
+      )
+    ).toBeNull()
+    const recoveryTargets = getRejectedMixedDeletionRecoveryTargets(
+      oldDeletion,
+      MERCHANT_PUBKEY
+    )
+    if (!recoveryTargets) throw new Error("Expected signed deletion targets")
+
+    let recoveryBundle: SignedProductWriteBundle | null = null
+    let recoveryDeletionAttempts = 0
+    await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: dTags.map((dTag) => ({
+          product: makeProduct(dTag),
+          dTag,
+          previousEventCreatedAt: signedByDTag.get(dTag)!.created_at,
+          fulfillmentIntent: { kind: "coordinate_after_order" as const },
+        })),
+        deletions: recoveryTargets,
+        recoveryDeletionEvent: oldDeletion.signedEvent,
+        onSignedLocal: async (bundle) => {
+          recoveryBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingsAfterReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW + 20_000,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ signedEvent }) => ({
+            status:
+              signedEvent.tags.find(([name]) => name === "d")?.[1] === dTags[0]
+                ? ("acked" as const)
+                : ("timed_out" as const),
+          }),
+        },
+        deletionDeliveryOptions: {
+          repository: deletionsAfterReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW + 20_000,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => {
+            recoveryDeletionAttempts += 1
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget("wss://relay.repaired.example"),
+        ],
+      }
+    )
+    if (!recoveryBundle) throw new Error("Expected new signed pair")
+    const newListingId = recoveryBundle.productListingDeliveryJobId
+    const newDeletionId = recoveryBundle.deletionDeliveryJobId
+    if (!newListingId || !newDeletionId) {
+      throw new Error("Expected new reciprocal durable jobs")
+    }
+    expect(newListingId).not.toBe(oldListingId)
+    expect(newDeletionId).not.toBe(oldDeletionId)
+    const newListing = await listingsAfterReload.get(newListingId)
+    const newDeletion = await deletionsAfterReload.get(newDeletionId)
+    expect(newListing?.signedEvents.map((event) => event.id)).not.toEqual(
+      oldListing.signedEvents.map((event) => event.id)
+    )
+    expect(newListing?.companionDeletionJobId).toBe(newDeletionId)
+    expect(newDeletion?.companionListingJobId).toBe(newListingId)
+    expect(newDeletion?.signedEvent.created_at).toBe(
+      oldDeletion.signedEvent.created_at
+    )
+    expect(newDeletion?.state).toBe("pending")
+    expect(newDeletion?.deliveryAttemptCount).toBe(0)
+    expect(recoveryDeletionAttempts).toBe(0)
+    await deliverQueuedProductDeletion(newDeletionId, {
+      ...oldDeletionRetryOptions,
+      now: () => NOW + 21_000,
+    })
+    expect(deletionAttempts).toBe(0)
+    expect(
+      (await deletionsAfterReload.get(newDeletionId))?.deliveryAttemptCount
+    ).toBe(0)
+
+    await resumePendingProductListingDeliveries({
+      repository: listingsAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 30_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        expect(signedEvent.id).toBe(
+          newListing?.signedEvents.find(
+            (event) =>
+              event.tags.find(([name]) => name === "d")?.[1] === dTags[1]
+          )?.id
+        )
+        return { status: "acked" }
+      },
+    })
+    expect((await listingsAfterReload.get(newListingId))?.state).toBe(
+      "delivered"
+    )
+    await resumePendingProductDeletionDeliveries({
+      ...oldDeletionRetryOptions,
+      now: () => NOW + 30_000,
+      publisher: async ({ signedEvent }) => {
+        expect(signedEvent.id).toBe(newDeletionId)
+        recoveryDeletionAttempts += 1
+        return { status: "acked" as const }
+      },
+    })
+    expect(recoveryDeletionAttempts).toBeGreaterThan(0)
+    expect((await deletionsAfterReload.get(newDeletionId))?.state).toBe(
+      "delivered"
+    )
+    expect(
+      (await deletionsAfterReload.get(oldDeletionId))?.deliveryAttemptCount
+    ).toBe(0)
+  })
+
   it("resumes the exact signed product family after partial relay delivery and reload", async () => {
     const firstRelayUrl = "wss://relay.damus.io"
     const secondRelayUrl = "wss://relay.nostr.net"

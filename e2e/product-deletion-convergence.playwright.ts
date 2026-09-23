@@ -216,6 +216,7 @@ async function readDeletionState(page: Page): Promise<{
       status: string
       attemptCount: number
     }>
+    companionListingJobId?: string
     state: string
     deliveryAttemptCount: number
     nextRetryAt?: number
@@ -256,7 +257,12 @@ async function readListingJobs(page: Page): Promise<
     id: string
     state: string
     signedEvents: Array<{ id: string; tags: string[][] }>
-    relayDelivery: Array<{ status: string; attemptCount: number }>
+    relayDelivery: Array<{
+      relayUrl: string
+      status: string
+      attemptCount: number
+    }>
+    companionDeletionJobId?: string
     deliveryAttemptCount: number
   }>
 > {
@@ -1267,6 +1273,230 @@ test("Merchant can re-sign an unchanged product after terminal relay rejection @
   await expect(
     page.getByRole("button", { name: "Review and republish" })
   ).toHaveCount(0)
+})
+
+test("Merchant deliberately re-signs a rejected mixed listing and deletion together after reload @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  let allowDelivery = false
+  let signerCalls = 0
+  let releaseListingAck: () => void = () => {}
+  const listingAckGate = new Promise<void>((resolve) => {
+    releaseListingAck = resolve
+  })
+  const publishes: ObservedRelayPublish[] = []
+  const responseGate: RelayResponseGate = {
+    errors: [],
+    wait: async (_relayUrl, event) => {
+      if (allowDelivery && event.kind === 30402) await listingAckGate
+    },
+  }
+  await installRelayMock(page, publishes, () => allowDelivery, responseGate)
+  await installValidTestSigner(page, () => {
+    signerCalls += 1
+  })
+  await page.goto(`${merchantUrl}/products`)
+  await page.getByRole("button", { name: "Add product" }).first().click()
+  const addDialog = page.getByRole("dialog", { name: "Add product" })
+  await addDialog.getByLabel("Title").fill("Rejected mixed browser fixture")
+  await addDialog.getByLabel("Summary").fill("Tests paired relay recovery")
+  await addDialog.getByLabel("Price").fill("10")
+  await addDialog.getByLabel("Stock quantity").fill("1")
+  await addDialog.locator("#product-currency").click()
+  await page.getByRole("option", { name: "SATS" }).click()
+  await addDialog.locator("#product-fulfillment").click()
+  await page.getByRole("option", { name: "Digital" }).click()
+  await addDialog.getByRole("button", { name: "Add by URL" }).click()
+  await addDialog
+    .getByLabel("Primary image URL")
+    .fill("https://media.conduit.market/rejected-mixed.png")
+  const tags = addDialog.getByRole("combobox", { name: "Tags" })
+  for (const tag of ["merchant", "recovery", "regression"]) {
+    await tags.fill(tag)
+    await tags.press("Enter")
+  }
+  await addDialog.getByRole("button", { name: "Publish product" }).click()
+  const readinessDialog = page.getByRole("alertdialog")
+  if (await readinessDialog.isVisible()) {
+    await readinessDialog
+      .getByRole("button", { name: "Publish anyway" })
+      .click()
+  }
+  await expect
+    .poll(async () => (await readListingJobs(page))[0]?.state)
+    .toBe("failed")
+  const originalListing = (await readListingJobs(page))[0]!
+  expect(originalListing.signedEvents).toHaveLength(1)
+  expect(signerCalls).toBe(1)
+
+  // The first listing is already a real locally authored, all-relay-rejected
+  // browser product. Add the reciprocal, untouched deletion that a mixed
+  // edit leaves queued when its listing never receives a common relay ACK.
+  const originalDeletion = finalizeEvent(
+    {
+      kind: 5,
+      created_at: Math.floor(Date.now() / 1000) - 60,
+      tags: [
+        ["e", "8".repeat(64)],
+        ["a", `30402:${MERCHANT_PUBKEY}:removed-variation`],
+        ["k", "30402"],
+      ],
+      content: "",
+    },
+    MERCHANT_SECRET
+  )
+  const originalRelayUrl = originalListing.relayDelivery[0]!.relayUrl
+  const stagedAt = Date.now()
+  await page.evaluate(
+    ({ listingId, deletionEvent, relayUrl, stagedAt }) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const transaction = request.result.transaction(
+            ["productListingOutbox", "productDeletionOutbox"],
+            "readwrite"
+          )
+          const listings = transaction.objectStore("productListingOutbox")
+          const listingRequest = listings.get(listingId)
+          listingRequest.onsuccess = () => {
+            listings.put({
+              ...listingRequest.result,
+              companionDeletionJobId: deletionEvent.id,
+              updatedAt: stagedAt,
+            })
+          }
+          transaction.objectStore("productDeletionOutbox").put({
+            id: deletionEvent.id,
+            signedEvent: deletionEvent,
+            relayPlan: [{ relayUrl, roles: ["author_write", "conduit"] }],
+            relayDelivery: [{ relayUrl, status: "pending", attemptCount: 0 }],
+            state: "pending",
+            deliveryAttemptCount: 0,
+            retryCount: 0,
+            companionListingJobId: listingId,
+            createdAt: stagedAt,
+            updatedAt: stagedAt,
+          })
+          transaction.oncomplete = () => resolve()
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      }),
+    {
+      listingId: originalListing.id,
+      deletionEvent: originalDeletion,
+      relayUrl: originalRelayUrl,
+      stagedAt,
+    }
+  )
+
+  await page.reload()
+  await expect(
+    page.getByRole("button", { name: "Review and republish" })
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Review and republish" }).click()
+  const editDialog = page.getByRole("dialog", { name: "Edit listing" })
+  await expect(editDialog.getByLabel("Title")).toHaveValue(
+    "Rejected mixed browser fixture"
+  )
+  await expect(
+    editDialog.getByRole("button", { name: "Sign new delivery" })
+  ).toBeEnabled()
+  expect((await readDeletionState(page)).jobs[0]?.deliveryAttemptCount).toBe(0)
+  expect(publishes.some(({ event }) => event.id === originalDeletion.id)).toBe(
+    false
+  )
+
+  allowDelivery = true
+  await editDialog.getByRole("button", { name: "Sign new delivery" }).click()
+  await expect
+    .poll(async () => {
+      const listings = await readListingJobs(page)
+      const deletions = (await readDeletionState(page)).jobs
+      return listings.length === 2 && deletions.length === 2
+    })
+    .toBe(true)
+  const listingsBeforeAck = await readListingJobs(page)
+  const deletionsBeforeAck = (await readDeletionState(page)).jobs
+  const newListing = listingsBeforeAck.find(
+    (job) => job.id !== originalListing.id
+  )!
+  const newDeletion = deletionsBeforeAck.find(
+    (job) => job.id !== originalDeletion.id
+  )!
+  expect(signerCalls).toBe(3)
+  expect(newListing.signedEvents[0]?.id).not.toBe(
+    originalListing.signedEvents[0]?.id
+  )
+  expect(newListing.companionDeletionJobId).toBe(newDeletion.id)
+  expect(newDeletion.companionListingJobId).toBe(newListing.id)
+  expect(newDeletion.signedEvent.created_at).toBe(originalDeletion.created_at)
+  expect(
+    newDeletion.signedEvent.tags.filter(
+      ([name]) => name === "e" || name === "a"
+    )
+  ).toEqual(
+    originalDeletion.tags.filter(([name]) => name === "e" || name === "a")
+  )
+  expect(newDeletion.signedEvent.tags).toContainEqual([
+    "conduit_recovery_attempt",
+    originalDeletion.id,
+    expect.any(String),
+  ])
+  expect(newDeletion.deliveryAttemptCount).toBe(0)
+  expect(
+    newDeletion.relayDelivery.every((entry) => entry.status === "pending")
+  ).toBe(true)
+  expect(publishes.some(({ event }) => event.id === newDeletion.id)).toBe(false)
+
+  releaseListingAck()
+  await expect
+    .poll(async () => {
+      const listings = await readListingJobs(page)
+      const deletions = (await readDeletionState(page)).jobs
+      return (
+        listings.find((job) => job.id === newListing.id)?.state ===
+          "delivered" &&
+        deletions.find((job) => job.id === newDeletion.id)?.state ===
+          "delivered"
+      )
+    })
+    .toBe(true)
+  const finalListings = await readListingJobs(page)
+  const finalDeletions = (await readDeletionState(page)).jobs
+  const deliveredListing = finalListings.find(
+    (job) => job.id === newListing.id
+  )!
+  const deliveredDeletion = finalDeletions.find(
+    (job) => job.id === newDeletion.id
+  )!
+  expect(
+    deliveredDeletion.relayDelivery.some((deletionRelay) =>
+      deliveredListing.relayDelivery.some(
+        (listingRelay) =>
+          listingRelay.relayUrl === deletionRelay.relayUrl &&
+          listingRelay.status === "acked" &&
+          deletionRelay.status === "acked"
+      )
+    )
+  ).toBe(true)
+  expect(
+    finalListings.find((job) => job.id === originalListing.id)?.state
+  ).toBe("failed")
+  expect(
+    finalListings.find((job) => job.id === originalListing.id)
+      ?.deliveryAttemptCount
+  ).toBe(originalListing.deliveryAttemptCount)
+  expect(
+    finalDeletions.find((job) => job.id === originalDeletion.id)
+      ?.deliveryAttemptCount
+  ).toBe(0)
+  expect(publishes.some(({ event }) => event.id === originalDeletion.id)).toBe(
+    false
+  )
+  expect(responseGate.errors).toEqual([])
 })
 
 test("Merchant resumes a timed-out deletion after browser restart without signing again @merchant", async ({
