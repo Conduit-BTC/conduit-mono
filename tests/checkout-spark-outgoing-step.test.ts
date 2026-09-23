@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test"
+import { IDBKeyRange, indexedDB } from "fake-indexeddb"
+
+import { ConduitDB } from "@conduit/core/db"
 
 import {
   applyCheckoutSparkEvidence,
+  CheckoutSparkRepositoryConflictError,
   createCheckoutSparkReconciliation,
+  DexieCheckoutSparkRepository,
   freezeCheckoutSparkPlan,
   getCheckoutSparkNextAction,
   runCheckoutSparkOutgoingStep,
@@ -14,6 +19,24 @@ import {
 } from "@conduit/core"
 
 const CREATED_AT = 1_800_000_000_000
+
+async function withDatabase(
+  run: (
+    repository: DexieCheckoutSparkRepository,
+    database: ConduitDB
+  ) => Promise<void>
+): Promise<void> {
+  const database = new ConduitDB(
+    `conduit-checkout-step-${crypto.randomUUID()}`,
+    { indexedDB, IDBKeyRange }
+  )
+  try {
+    await run(new DexieCheckoutSparkRepository(database), database)
+  } finally {
+    database.close()
+    await database.delete()
+  }
+}
 
 function fundedState(): CheckoutSparkReconciliation {
   const plan = freezeCheckoutSparkPlan({
@@ -78,20 +101,53 @@ function observation(
   }
 }
 
-function harness(initial = fundedState()) {
+function memoryStore(initial: CheckoutSparkReconciliation) {
   let state = structuredClone(initial)
+  let revision = 1
   let saves = 0
   let failSaveAt: number | null = null
+  let afterSave: ((count: number) => void) | null = null
   const store: CheckoutSparkOutgoingStateStore = {
-    async load() {
-      return structuredClone(state)
+    async load(checkoutId, planDigest) {
+      if (
+        checkoutId !== state.plan.checkoutId ||
+        planDigest !== state.plan.planDigest
+      ) {
+        throw new CheckoutSparkRepositoryConflictError()
+      }
+      return { status: "active", revision, state: structuredClone(state) }
     },
-    async save(next) {
+    async save(next, expectedRevision) {
       saves += 1
       if (saves === failSaveAt) throw new Error("local write failed")
+      if (expectedRevision !== revision) {
+        throw new CheckoutSparkRepositoryConflictError()
+      }
       state = structuredClone(next)
+      revision += 1
+      afterSave?.(saves)
+      return { status: "active", revision, state: structuredClone(state) }
     },
   }
+  return {
+    store,
+    get state() {
+      return state
+    },
+    get saves() {
+      return saves
+    },
+    setFailSaveAt(value: number) {
+      failSaveAt = value
+    },
+    onSave(callback: (count: number) => void) {
+      afterSave = callback
+    },
+  }
+}
+
+function harness(initial = fundedState()) {
+  const memory = memoryStore(initial)
   let now = CREATED_AT + 10
   const reads: CheckoutSparkOutgoingTarget[] = []
   const sends: CheckoutSparkOutgoingTarget[] = []
@@ -116,9 +172,10 @@ function harness(initial = fundedState()) {
   const step = (actor: "shopper" | "merchant" = "shopper") =>
     runCheckoutSparkOutgoingStep({
       planDigest: initial.plan.planDigest,
+      checkoutId: initial.plan.checkoutId,
       actor,
       now: () => now,
-      store,
+      store: memory.store,
       provider,
     })
   return {
@@ -126,10 +183,10 @@ function harness(initial = fundedState()) {
     reads,
     sends,
     get state() {
-      return state
+      return memory.state
     },
     get saves() {
-      return saves
+      return memory.saves
     },
     setNow(value: number) {
       now = value
@@ -150,7 +207,7 @@ function harness(initial = fundedState()) {
       sendFailure = true
     },
     failSaveAt(value: number) {
-      failSaveAt = value
+      memory.setFailSaveAt(value)
     },
     onLookup(callback: () => void) {
       onLookup = callback
@@ -171,16 +228,18 @@ describe("checkout Spark one-obligation step", () => {
     let accessed = false
     await expect(
       runCheckoutSparkOutgoingStep({
+        checkoutId: state.plan.checkoutId,
         planDigest: state.plan.planDigest,
         actor: "unexpected" as "shopper",
         now: () => CREATED_AT + 10,
         store: {
           async load() {
             accessed = true
-            return state
+            return { status: "active" as const, revision: 1, state }
           },
           async save() {
             accessed = true
+            return { status: "active" as const, revision: 2, state }
           },
         },
         provider: {
@@ -300,23 +359,17 @@ describe("checkout Spark one-obligation step", () => {
 
   it("clears its own unsent marker if takeover occurs during the durable save", async () => {
     const initial = fundedState()
-    let persisted = initial
+    const memory = memoryStore(initial)
     let now = initial.plan.takeoverAt - 1
-    let saves = 0
     let sends = 0
+    memory.onSave((count) => {
+      if (count === 2) now = initial.plan.takeoverAt
+    })
     const base = {
+      checkoutId: initial.plan.checkoutId,
       planDigest: initial.plan.planDigest,
       now: () => now,
-      store: {
-        async load() {
-          return persisted
-        },
-        async save(state: CheckoutSparkReconciliation) {
-          persisted = state
-          saves += 1
-          if (saves === 2) now = initial.plan.takeoverAt
-        },
-      },
+      store: memory.store,
       provider: {
         async reconcile(target: CheckoutSparkOutgoingTarget) {
           return observation(target, "not_found")
@@ -333,7 +386,7 @@ describe("checkout Spark one-obligation step", () => {
     })
     expect(shopper.sendAttempted).toBe(false)
     expect(shopper.state.obligations[0]!.state).toBe("not_found")
-    expect(saves).toBe(3)
+    expect(memory.saves).toBe(3)
     expect(sends).toBe(0)
 
     const merchant = await runCheckoutSparkOutgoingStep({
@@ -367,20 +420,15 @@ describe("checkout Spark one-obligation step", () => {
 
   it("rejects an out-of-scope provider lookup before send", async () => {
     const state = fundedState()
+    const memory = memoryStore(state)
     let sent = false
     await expect(
       runCheckoutSparkOutgoingStep({
+        checkoutId: state.plan.checkoutId,
         planDigest: state.plan.planDigest,
         actor: "shopper",
         now: () => CREATED_AT + 10,
-        store: {
-          async load() {
-            return state
-          },
-          async save() {
-            throw new Error("unreachable")
-          },
-        },
+        store: memory.store,
         provider: {
           async reconcile(target) {
             return { ...observation(target, "not_found"), outgoingId: "wrong" }
@@ -397,21 +445,15 @@ describe("checkout Spark one-obligation step", () => {
 
   it("rejects a lookup for another obligation in the same plan", async () => {
     const state = fundedState()
-    let saved = false
+    const memory = memoryStore(state)
     let sent = false
     await expect(
       runCheckoutSparkOutgoingStep({
+        checkoutId: state.plan.checkoutId,
         planDigest: state.plan.planDigest,
         actor: "shopper",
         now: () => CREATED_AT + 10,
-        store: {
-          async load() {
-            return state
-          },
-          async save() {
-            saved = true
-          },
-        },
+        store: memory.store,
         provider: {
           async reconcile(target) {
             const other = state.plan.obligations[1]!
@@ -424,27 +466,21 @@ describe("checkout Spark one-obligation step", () => {
         },
       })
     ).rejects.toThrow("out of scope")
-    expect(saved).toBe(false)
+    expect(memory.saves).toBe(0)
     expect(sent).toBe(false)
     expect(state.obligations[1]!.state).toBe("unreconciled")
   })
 
   it("keeps the possible-send marker when send returns another planned obligation", async () => {
     const state = fundedState()
-    let persisted = state
+    const memory = memoryStore(state)
     let sends = 0
     const input = {
+      checkoutId: state.plan.checkoutId,
       planDigest: state.plan.planDigest,
       actor: "shopper" as const,
       now: () => CREATED_AT + 10,
-      store: {
-        async load() {
-          return persisted
-        },
-        async save(next: CheckoutSparkReconciliation) {
-          persisted = next
-        },
-      },
+      store: memory.store,
       provider: {
         async reconcile(target: CheckoutSparkOutgoingTarget) {
           return observation(target, "not_found")
@@ -468,20 +504,14 @@ describe("checkout Spark one-obligation step", () => {
 
   it("keeps the durable marker when a send response has conflicting terms", async () => {
     const state = fundedState()
-    let persisted = state
+    const memory = memoryStore(state)
     let sends = 0
     const input = {
+      checkoutId: state.plan.checkoutId,
       planDigest: state.plan.planDigest,
       actor: "shopper" as const,
       now: () => CREATED_AT + 10,
-      store: {
-        async load() {
-          return persisted
-        },
-        async save(next: CheckoutSparkReconciliation) {
-          persisted = next
-        },
-      },
+      store: memory.store,
       provider: {
         async reconcile(target: CheckoutSparkOutgoingTarget) {
           return observation(target, "not_found")
@@ -504,20 +534,15 @@ describe("checkout Spark one-obligation step", () => {
 
   it("does not send from Merchant when another local tab owns recovery", async () => {
     const state = fundedState()
+    const memory = memoryStore(state)
     let providerCalled = false
     await expect(
       runCheckoutSparkOutgoingStep({
+        checkoutId: state.plan.checkoutId,
         planDigest: state.plan.planDigest,
         actor: "merchant",
         now: () => CREATED_AT + 101,
-        store: {
-          async load() {
-            return state
-          },
-          async save() {
-            throw new Error("unreachable")
-          },
-        },
+        store: memory.store,
         provider: {
           async reconcile(target) {
             providerCalled = true
@@ -536,5 +561,249 @@ describe("checkout Spark one-obligation step", () => {
       })
     ).rejects.toThrow("already active")
     expect(providerCalled).toBe(false)
+  })
+
+  it("lets only one competing invocation cross the durable write-ahead boundary", async () => {
+    await withDatabase(async (repository) => {
+      const initial = fundedState()
+      await repository.create(initial.plan)
+      await repository.save(initial, 1)
+      let lookups = 0
+      let releaseLookups!: () => void
+      const bothLoaded = new Promise<void>((resolve) => {
+        releaseLookups = resolve
+      })
+      const sends: string[] = []
+      const provider: CheckoutSparkOutgoingProvider = {
+        async reconcile(target) {
+          lookups += 1
+          if (lookups === 2) releaseLookups()
+          await bothLoaded
+          return observation(target, "not_found")
+        },
+        async send(target) {
+          sends.push(target.idempotencyKey)
+          return observation(target, "paid")
+        },
+      }
+      const input = {
+        checkoutId: initial.plan.checkoutId,
+        planDigest: initial.plan.planDigest,
+        actor: "shopper" as const,
+        now: () => CREATED_AT + 10,
+        store: repository,
+        provider,
+      }
+      const results = await Promise.allSettled([
+        runCheckoutSparkOutgoingStep(input),
+        runCheckoutSparkOutgoingStep(input),
+      ])
+      expect(lookups).toBe(2)
+      expect(
+        results.filter((result) => result.status === "fulfilled")
+      ).toHaveLength(1)
+      expect(
+        results.filter((result) => result.status === "rejected")
+      ).toHaveLength(1)
+      const rejected = results.find((result) => result.status === "rejected")
+      expect(rejected?.status).toBe("rejected")
+      if (rejected?.status === "rejected") {
+        expect(rejected.reason).toBeInstanceOf(
+          CheckoutSparkRepositoryConflictError
+        )
+      }
+      expect(sends).toEqual([initial.plan.obligations[0]!.outgoingId])
+      const latest = await repository.load(
+        initial.plan.checkoutId,
+        initial.plan.planDigest
+      )
+      expect(latest.status).toBe("active")
+      if (latest.status === "active") {
+        expect(latest.state.obligations[0]!.state).toBe("paid")
+      }
+    })
+  })
+
+  it("rejects a stale write-ahead revision before calling the provider send", async () => {
+    await withDatabase(async (repository) => {
+      const initial = fundedState()
+      await repository.create(initial.plan)
+      await repository.save(initial, 1)
+      let raced = false
+      let sends = 0
+      const store: CheckoutSparkOutgoingStateStore = {
+        load: (checkoutId, planDigest) =>
+          repository.load(checkoutId, planDigest),
+        async save(next, expectedRevision) {
+          if (!raced && next.obligations[0]?.state === "ambiguous") {
+            raced = true
+            const current = await repository.load(
+              initial.plan.checkoutId,
+              initial.plan.planDigest
+            )
+            expect(current.status).toBe("active")
+            if (current.status !== "active") {
+              throw new Error("active state was retired before the test race")
+            }
+            const obligation = initial.plan.obligations[0]!
+            await repository.save(
+              applyCheckoutSparkEvidence(current.state, {
+                type: "obligation",
+                ...observation(
+                  {
+                    walletId: initial.plan.walletId,
+                    network: initial.plan.network,
+                    obligation,
+                    idempotencyKey: obligation.outgoingId,
+                  },
+                  "pending"
+                ),
+                observedAt: CREATED_AT + 20,
+              }),
+              current.revision
+            )
+          }
+          return repository.save(next, expectedRevision)
+        },
+      }
+      await expect(
+        runCheckoutSparkOutgoingStep({
+          checkoutId: initial.plan.checkoutId,
+          planDigest: initial.plan.planDigest,
+          actor: "shopper",
+          now: () => CREATED_AT + 10,
+          store,
+          provider: {
+            async reconcile(target) {
+              return observation(target, "not_found")
+            },
+            async send(target) {
+              sends += 1
+              return observation(target, "paid")
+            },
+          },
+        })
+      ).rejects.toBeInstanceOf(CheckoutSparkRepositoryConflictError)
+      expect(raced).toBe(true)
+      expect(sends).toBe(0)
+      const latest = await repository.load(
+        initial.plan.checkoutId,
+        initial.plan.planDigest
+      )
+      expect(latest.status).toBe("active")
+      if (latest.status === "active") {
+        expect(latest.state.obligations[0]!.state).toBe("pending")
+      }
+    })
+  })
+
+  it("keeps ambiguous recovery after a post-send CAS conflict and reconciles exact history", async () => {
+    await withDatabase(async (repository, database) => {
+      const initial = fundedState()
+      await repository.create(initial.plan)
+      await repository.save(initial, 1)
+      let raced = false
+      let sends = 0
+      let providerState: CheckoutSparkOutgoingObservation["state"] = "not_found"
+      const store: CheckoutSparkOutgoingStateStore = {
+        load: (checkoutId, planDigest) =>
+          repository.load(checkoutId, planDigest),
+        async save(next, expectedRevision) {
+          if (!raced && next.obligations[0]?.state === "paid") {
+            raced = true
+            const current = await repository.load(
+              initial.plan.checkoutId,
+              initial.plan.planDigest
+            )
+            expect(current.status).toBe("active")
+            if (current.status !== "active") {
+              throw new Error("possible-send marker was not persisted")
+            }
+            expect(current.state.obligations[0]!.state).toBe("ambiguous")
+            await repository.save(current.state, current.revision)
+          }
+          return repository.save(next, expectedRevision)
+        },
+      }
+      const input = {
+        checkoutId: initial.plan.checkoutId,
+        planDigest: initial.plan.planDigest,
+        actor: "shopper" as const,
+        now: () => CREATED_AT + 10,
+        store,
+        provider: {
+          async reconcile(target: CheckoutSparkOutgoingTarget) {
+            return observation(target, providerState)
+          },
+          async send(target: CheckoutSparkOutgoingTarget) {
+            sends += 1
+            providerState = "paid"
+            return observation(target, "paid")
+          },
+        },
+      }
+      await expect(runCheckoutSparkOutgoingStep(input)).rejects.toBeInstanceOf(
+        CheckoutSparkRepositoryConflictError
+      )
+      expect(raced).toBe(true)
+      expect(sends).toBe(1)
+      const afterConflict = await repository.load(
+        initial.plan.checkoutId,
+        initial.plan.planDigest
+      )
+      expect(afterConflict.status).toBe("active")
+      if (afterConflict.status === "active") {
+        expect(afterConflict.state.obligations[0]!.state).toBe("ambiguous")
+      }
+
+      const reopened = new DexieCheckoutSparkRepository(database)
+      const recovered = await runCheckoutSparkOutgoingStep({
+        ...input,
+        store: reopened,
+      })
+      expect(recovered.sendAttempted).toBe(false)
+      expect(recovered.state.obligations[0]!.state).toBe("paid")
+      expect(sends).toBe(1)
+    })
+  })
+
+  it("reloads the durable ambiguous marker after a lost send response without resending", async () => {
+    await withDatabase(async (repository, database) => {
+      const initial = fundedState()
+      await repository.create(initial.plan)
+      await repository.save(initial, 1)
+      let sends = 0
+      const input = {
+        checkoutId: initial.plan.checkoutId,
+        planDigest: initial.plan.planDigest,
+        actor: "shopper" as const,
+        now: () => CREATED_AT + 10,
+        store: repository,
+        provider: {
+          async reconcile(target: CheckoutSparkOutgoingTarget) {
+            return observation(target, "not_found")
+          },
+          async send() {
+            sends += 1
+            throw new Error("response lost")
+          },
+        },
+      }
+      const first = await runCheckoutSparkOutgoingStep(input)
+      expect(first.sendAttempted).toBe(true)
+      expect(first.state.obligations[0]!.state).toBe("ambiguous")
+
+      const reopened = new DexieCheckoutSparkRepository(database)
+      const second = await runCheckoutSparkOutgoingStep({
+        ...input,
+        store: reopened,
+      })
+      expect(second.sendAttempted).toBe(false)
+      expect(second.nextAction).toEqual({
+        type: "wait",
+        reason: "obligation_ambiguous",
+      })
+      expect(sends).toBe(1)
+    })
   })
 })

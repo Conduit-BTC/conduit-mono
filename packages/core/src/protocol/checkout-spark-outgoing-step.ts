@@ -10,6 +10,10 @@ import {
   type CheckoutSparkObligationPlan,
   type CheckoutSparkReconciliation,
 } from "./checkout-spark-reconciliation"
+import {
+  CheckoutSparkRepositoryConflictError,
+  type CheckoutSparkRepositorySnapshot,
+} from "./checkout-spark-repository"
 
 type ObligationEvidence = Extract<CheckoutSparkEvidence, { type: "obligation" }>
 
@@ -44,16 +48,24 @@ export interface CheckoutSparkOutgoingProvider {
 }
 
 /**
- * Saves must finish durably before the caller can attempt a provider send.
- * The caller also serializes work on the selected wallet; the Merchant path
- * additionally acquires its local duplicate-tab lock below.
+ * Each save must compare the revision loaded for this checkout and finish
+ * durably before a provider send. A stale writer must reject, not overwrite
+ * another tab's possible-send marker. The caller also serializes work on the
+ * selected wallet; Merchant additionally acquires its local duplicate-tab lock.
  */
 export interface CheckoutSparkOutgoingStateStore {
-  load(planDigest: string): Promise<CheckoutSparkReconciliation | null>
-  save(state: CheckoutSparkReconciliation): Promise<void>
+  load(
+    checkoutId: string,
+    planDigest: string
+  ): Promise<CheckoutSparkRepositorySnapshot>
+  save(
+    state: CheckoutSparkReconciliation,
+    expectedRevision: number
+  ): Promise<CheckoutSparkRepositorySnapshot>
 }
 
 export interface CheckoutSparkOutgoingStepInput {
+  checkoutId: string
   planDigest: string
   actor: CheckoutSparkActor
   now(): number
@@ -168,13 +180,42 @@ function hasSendAuthority(
 async function step(
   input: CheckoutSparkOutgoingStepInput
 ): Promise<CheckoutSparkOutgoingStepResult> {
-  const stored = await input.store.load(input.planDigest)
-  if (!stored) {
+  const stored = await input.store.load(input.checkoutId, input.planDigest)
+  if (stored.status === "absent") {
     throw new Error("Checkout Spark reconciliation is not persisted.")
   }
-  let state = restoreCheckoutSparkReconciliation(stored)
-  if (state.plan.planDigest !== input.planDigest) {
+  if (stored.status === "retired") {
+    throw new Error("Checkout Spark reconciliation is already retired.")
+  }
+  let state = restoreCheckoutSparkReconciliation(stored.state)
+  let revision = stored.revision
+  if (
+    state.plan.checkoutId !== input.checkoutId ||
+    state.plan.planDigest !== input.planDigest
+  ) {
     throw new Error("Checkout Spark reconciliation plan does not match.")
+  }
+  async function persist(next: CheckoutSparkReconciliation) {
+    const saved = await input.store.save(next, revision)
+    if (
+      saved.status !== "active" ||
+      saved.revision !== revision + 1 ||
+      saved.state.plan.checkoutId !== input.checkoutId ||
+      saved.state.plan.planDigest !== input.planDigest ||
+      saved.state.updatedAt !== next.updatedAt ||
+      saved.state.funding.state !== next.funding.state ||
+      saved.state.funding.observedAt !== next.funding.observedAt ||
+      saved.state.obligations.length !== next.obligations.length ||
+      saved.state.obligations.some(
+        (progress, index) =>
+          progress.state !== next.obligations[index]?.state ||
+          progress.observedAt !== next.obligations[index]?.observedAt
+      )
+    ) {
+      throw new CheckoutSparkRepositoryConflictError()
+    }
+    revision = saved.revision
+    return restoreCheckoutSparkReconciliation(saved.state)
   }
   if (state.funding.state !== "spendable") {
     return currentResult(state, input, false)
@@ -218,8 +259,7 @@ async function step(
     return currentResult(state, input, false)
   }
 
-  state = reconciled
-  await input.store.save(state)
+  state = await persist(reconciled)
   const action = getCheckoutSparkNextAction(state, {
     actor: input.actor,
     now: input.now(),
@@ -242,8 +282,7 @@ async function step(
     position,
     observationTime(state, input.now())
   )
-  await input.store.save(possibleSend)
-  state = possibleSend
+  state = await persist(possibleSend)
   if (!hasSendAuthority(state, input.actor, input.now())) {
     // This invocation has not called `send`. If it is still alive after the
     // durable write, it can clear its own intent; a crash in this tiny gap
@@ -262,7 +301,7 @@ async function step(
       ),
       updatedAt: observedAt,
     })
-    await input.store.save(state)
+    state = await persist(state)
     return currentResult(state, input, false)
   }
 
@@ -288,7 +327,7 @@ async function step(
   } catch {
     return currentResult(possibleSend, input, true)
   }
-  await input.store.save(state)
+  state = await persist(state)
   return currentResult(state, input, true)
 }
 
