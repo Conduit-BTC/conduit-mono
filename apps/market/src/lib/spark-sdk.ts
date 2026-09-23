@@ -5,8 +5,10 @@ import {
   decodeLightningInvoicePaymentHash,
   getLightningInvoiceNetwork,
   getWalletNetworkFromLightningConfig,
+  hashSignedZapRequestDescription,
   isAmountlessLightningInvoice,
   normalizeLightningInvoice,
+  validateZapInvoiceDescriptionBinding,
   type WalletNetwork,
 } from "@conduit/core"
 
@@ -109,6 +111,7 @@ export interface SparkNativeWallet {
   createLightningInvoice(input: {
     amountSats: number
     memo?: string
+    descriptionHash?: string
     expirySeconds?: number
     includeSparkAddress?: boolean
     includeSparkInvoice?: boolean
@@ -472,9 +475,18 @@ function adaptFirstPartySparkWallet(input: {
     request: SparkCheckoutReceiveInput
   ): Promise<SparkCheckoutReceiveRequest> => {
     validateCheckoutReceiveInput(request)
+    const descriptionHash =
+      request.invoiceKind === "nip57_bound"
+        ? hashSignedZapRequestDescription({
+            zapRequestJson: request.signedZapRequestJson,
+            expectedAmountMsats: request.grossFundingSats * 1_000,
+          })
+        : undefined
     const result = await input.wallet.createLightningInvoice({
       amountSats: request.grossFundingSats,
-      memo: request.description,
+      ...(request.invoiceKind === "plain"
+        ? { memo: request.description }
+        : { descriptionHash }),
       expirySeconds: request.expirySecs,
       includeSparkAddress: false,
       includeSparkInvoice: false,
@@ -486,6 +498,10 @@ function adaptFirstPartySparkWallet(input: {
       requiredNetSats: request.requiredNetSats,
       grossFundingSats: request.grossFundingSats,
       expirySecs: request.expirySecs,
+      zapRequestJson:
+        request.invoiceKind === "nip57_bound"
+          ? request.signedZapRequestJson
+          : undefined,
     })
   }
 
@@ -916,8 +932,11 @@ function adaptFirstPartySparkWallet(input: {
   }
 }
 
-function validateCheckoutReceiveInput(
-  request: SparkCheckoutReceiveInput
+function validateCheckoutReceiveTerms(
+  request: Pick<
+    SparkCheckoutReceiveInput,
+    "requiredNetSats" | "grossFundingSats" | "expirySecs"
+  >
 ): void {
   if (
     !Number.isSafeInteger(request.requiredNetSats) ||
@@ -938,11 +957,27 @@ function validateCheckoutReceiveInput(
   }
 }
 
+function validateCheckoutReceiveInput(
+  request: SparkCheckoutReceiveInput
+): void {
+  validateCheckoutReceiveTerms(request)
+  if (
+    (request.invoiceKind === "plain" &&
+      typeof request.description === "string" &&
+      !("signedZapRequestJson" in request)) ||
+    (request.invoiceKind === "nip57_bound" &&
+      typeof request.signedZapRequestJson === "string" &&
+      !("description" in request))
+  ) {
+    return
+  }
+  throw new Error("Checkout receive invoice binding is invalid.")
+}
+
 function validateCheckoutReceiveRequest(
   request: SparkCheckoutReceiveRequest
 ): void {
-  validateCheckoutReceiveInput({
-    description: "",
+  validateCheckoutReceiveTerms({
     requiredNetSats: request.requiredNetSats,
     grossFundingSats: request.grossFundingSats,
     expirySecs: request.expirySecs,
@@ -975,6 +1010,7 @@ function mapNativeCheckoutReceive(input: {
   requiredNetSats: number
   grossFundingSats: number
   expirySecs: number
+  zapRequestJson?: string
 }): SparkCheckoutReceiveRequest {
   const id = input.native.id.trim()
   const providerStatus = input.native.status.trim()
@@ -992,6 +1028,17 @@ function mapNativeCheckoutReceive(input: {
     network: input.network,
     paymentRequest: input.native.invoice.encodedInvoice,
   })
+  if (input.zapRequestJson !== undefined) {
+    const binding = validateZapInvoiceDescriptionBinding({
+      invoice: paymentRequest,
+      zapRequestJson: input.zapRequestJson,
+    })
+    if (!binding.ok) {
+      throw new Error(
+        "Spark returned an invoice without the exact NIP-57 request binding."
+      )
+    }
+  }
   const invoicePaymentHash = decodeLightningInvoicePaymentHash(paymentRequest)
   const paymentHash = decodeHex32(
     invoicePaymentHash ?? "",

@@ -518,6 +518,7 @@ export async function prepareCheckoutSparkRouterFunding(
   await openWallet(wallet)
   try {
     const funding = await createFundingReceive(wallet, {
+      invoiceKind: "plain",
       description: "Conduit checkout funding",
       requiredNetSats,
       grossFundingSats: input.grossFundingSats,

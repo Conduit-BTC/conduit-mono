@@ -96,12 +96,23 @@ export interface SparkCheckoutReceiveReconciliation {
   funds: SparkFundsState
 }
 
-export interface SparkCheckoutReceiveInput {
-  description: string
+export type SparkCheckoutReceiveInput = {
   requiredNetSats: number
   grossFundingSats: number
   expirySecs: number
-}
+} & (
+  | {
+      invoiceKind: "plain"
+      description: string
+      signedZapRequestJson?: never
+    }
+  | {
+      invoiceKind: "nip57_bound"
+      /** Exact signed kind-9734 JSON; invoice binding only, not receipt delivery. */
+      signedZapRequestJson: string
+      description?: never
+    }
+)
 
 export interface SparkLightningSendReconciliationInput {
   transferId: string

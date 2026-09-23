@@ -4,7 +4,10 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, concatBytes } from "@noble/hashes/utils.js"
 
 import { config } from "../config"
-import { normalizePublicHttpsUrl } from "../network-target-safety"
+import {
+  normalizePublicHttpsUrl,
+  normalizePublicWebSocketUrl,
+} from "../network-target-safety"
 import {
   isSatsLikeCurrency,
   isUsdCurrencyCode,
@@ -1000,6 +1003,107 @@ export class ZapInvoiceBindingError extends Error {
     this.name = "ZapInvoiceBindingError"
     this.code = code
   }
+}
+
+function isSafeZapReceiptRelayUrl(value: string): boolean {
+  if (!value || value !== value.trim()) return false
+  try {
+    const parsed = new URL(value)
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+      return false
+    }
+    if (parsed.protocol === "wss:") {
+      return normalizePublicWebSocketUrl(value) !== null
+    }
+    return (
+      parsed.protocol === "ws:" &&
+      ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)
+    )
+  } catch {
+    return false
+  }
+}
+
+function isValidZapTargetCoordinate(value: string): boolean {
+  const match = /^(\d+):[0-9a-f]{64}:(.*)$/.exec(value)
+  if (
+    !match ||
+    [...match[2]!].some((character) => {
+      const code = character.charCodeAt(0)
+      return code < 32 || code === 127
+    })
+  ) {
+    return false
+  }
+  const kind = Number(match[1])
+  return (
+    Number.isSafeInteger(kind) &&
+    (kind === 0 ||
+      kind === 3 ||
+      (kind >= 10_000 && kind < 20_000) ||
+      (kind >= 30_000 && kind < 40_000))
+  )
+}
+
+/** Hash only the exact serialized, signed NIP-57 request for an invoice h tag. */
+export function hashSignedZapRequestDescription(input: {
+  zapRequestJson: string
+  expectedAmountMsats: number
+}): string {
+  const parsed = parseZapReceiptDescription(input.zapRequestJson)
+  const request = toSignedPublicNostrEvent(parsed)
+  if (
+    !request ||
+    request.kind !== EVENT_KINDS.ZAP_REQUEST ||
+    !isValidSignedPublicNostrEvent(request)
+  ) {
+    throw new Error(
+      "Checkout zap request must be an exact signed kind-9734 event."
+    )
+  }
+
+  const recipientTags = request.tags.filter((tag) => tag[0] === "p")
+  const amountTags = request.tags.filter((tag) => tag[0] === "amount")
+  const relayTags = request.tags.filter((tag) => tag[0] === "relays")
+  const eventTags = request.tags.filter((tag) => tag[0] === "e")
+  const coordinateTags = request.tags.filter((tag) => tag[0] === "a")
+  const receiptSignerTags = request.tags.filter((tag) => tag[0] === "P")
+  if (
+    recipientTags.length !== 1 ||
+    recipientTags[0]?.length !== 2 ||
+    !/^[0-9a-f]{64}$/i.test(recipientTags[0][1] ?? "") ||
+    amountTags.length !== 1 ||
+    amountTags[0]?.length !== 2 ||
+    !Number.isSafeInteger(input.expectedAmountMsats) ||
+    input.expectedAmountMsats <= 0 ||
+    amountTags[0][1] !== String(input.expectedAmountMsats)
+  ) {
+    throw new Error("Checkout zap request recipient or amount is invalid.")
+  }
+
+  if (
+    relayTags.length !== 1 ||
+    relayTags[0]!.length < 2 ||
+    !relayTags[0]!.slice(1).every(isSafeZapReceiptRelayUrl)
+  ) {
+    throw new Error("Checkout zap request receipt relays are invalid.")
+  }
+  if (
+    eventTags.length > 1 ||
+    (eventTags.length === 1 &&
+      !/^[0-9a-f]{64}$/i.test(eventTags[0]?.[1] ?? "")) ||
+    coordinateTags.length > 1 ||
+    (coordinateTags.length === 1 &&
+      !isValidZapTargetCoordinate(coordinateTags[0]?.[1] ?? "")) ||
+    receiptSignerTags.length > 1 ||
+    (receiptSignerTags.length === 1 &&
+      (receiptSignerTags[0]?.length !== 2 ||
+        !/^[0-9a-f]{64}$/i.test(receiptSignerTags[0]?.[1] ?? "")))
+  ) {
+    throw new Error("Checkout zap request target tags are invalid.")
+  }
+
+  return bytesToHex(sha256(new TextEncoder().encode(input.zapRequestJson)))
 }
 
 export function validateZapInvoiceDescriptionBinding({
