@@ -17,7 +17,7 @@ describe("Merchant publish live account authority", () => {
       "authenticatedPubkey,\n            shouldContinue: () => isCurrentOrderAction(authority)"
     )
     expect(orders).toMatch(
-      /signAndPublishProductListing\(\{[\s\S]{0,180}shouldContinue: \(\) => isCurrentOrderAction\(authority\)/
+      /signAndPublishProductWriteBundle\(\{\s*merchantPubkey: pubkey,\s*authenticatedPubkey,\s*shouldContinue: \(\) => isCurrentOrderAction\(authority\),\s*assertCurrentWriteBaseline,/
     )
     expect(orders).toMatch(
       /deliverQueuedProductListings\(queued\.id,\s*\{[\s\S]{0,180}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
