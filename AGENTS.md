@@ -94,8 +94,12 @@ Read only the rows the change actually touches. A route can cross several rows.
 - PRs target protected `main`, use Conventional Commit titles by default, and
   follow [`.github/pull_request_template.md`](.github/pull_request_template.md).
   Tie acceptance criteria to current-head evidence and name gaps. Human review
-  remains required. Protocol, auth, payment, privacy, security, migration,
-  secret, destructive-state, and release work needs maintainer-owned validation.
+  remains required. Authors propose one disposition: `Evidence sign-off` for
+  deterministic evidence with no separate product QA; `Targeted human QA` for
+  named visual, browser, preview, signer, or device checks; or
+  `Maintainer-owned validation` for protocol, auth, payment, privacy, security,
+  migration, secret, destructive-state, or release work. Agents cannot downgrade
+  high-risk work. Reviewers confirm the disposition.
 - Agent code-changing workflows require maintainer intent and a risk gate.
   High-risk work requires human-owned planning. Agent output never authorizes
   merge, release, or production changes.
