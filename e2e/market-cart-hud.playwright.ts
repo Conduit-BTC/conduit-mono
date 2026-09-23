@@ -326,6 +326,14 @@ test("market cart HUD keeps every fixed control inside the HUD across merchant-c
         await expect(rail.getByRole("button").first()).toHaveAccessibleName(
           /Digital delivery/
         )
+        if (width === 390) {
+          const firstTab = rail.getByRole("button").first()
+          await expect(firstTab.locator(".rounded-full").first()).toBeVisible()
+          await expect(
+            firstTab.locator("[aria-label*='cart item']")
+          ).toHaveText(/^[12]$/)
+          await expect(firstTab.getByText(/Digital delivery/)).toBeHidden()
+        }
         const railBox = await rail.evaluate((element) => ({
           clientWidth: element.clientWidth,
           scrollWidth: element.scrollWidth,
@@ -527,6 +535,12 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
   )
 
   await page.setViewportSize({ width: 390, height: 900 })
+  await expect(
+    selectors.nth(2).getByText("South booth pickup for late arrivals")
+  ).toBeHidden()
+  await expect(
+    selectors.nth(2).locator("[aria-label='1 cart item']")
+  ).toHaveText("1")
   await expectInsideHud(page)
   await expect
     .poll(() =>
@@ -557,7 +571,7 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
     .toBe("contained")
 })
 
-test("market cart HUD shows compact pickup context for one purchase @market", async ({
+test("market cart HUD shows one purchase's details when its compact tab is opened @market", async ({
   page,
 }) => {
   const seed = sameMerchantFulfillmentCartSeed()
@@ -577,13 +591,27 @@ test("market cart HUD shows compact pickup context for one purchase @market", as
   await expect(hud.getByRole("group", { name: "Cart purchases" })).toHaveCount(
     0
   )
-  const merchantLink = hud.getByRole("link", {
-    name: "Open Fixture Market merchant page",
-  })
-  await expect(merchantLink).toContainText("Test location")
-  await expect(merchantLink).not.toContainText("Event pickup")
-
   await page.setViewportSize({ width: 390, height: 900 })
+  const purchaseTab = hud.getByRole("button", {
+    name: /Fixture Market, 1 cart item, Event pickup - Test location/,
+  })
+  await expect(purchaseTab.locator(".rounded-full").first()).toBeVisible()
+  await expect(purchaseTab.locator("[aria-label='1 cart item']")).toHaveText(
+    "1"
+  )
+  await expect(purchaseTab.getByText("Fixture Market")).toBeHidden()
+  await expect(purchaseTab.getByText("Test location")).toBeHidden()
+  const toggle = hud.locator("button[aria-expanded]")
+  await toggle.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "false")
+  await purchaseTab.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await expect(hud.getByTestId("selected-purchase-context")).toContainText(
+    "Test location"
+  )
+  await expect(
+    hud.getByRole("link", { name: "Open Fixture Market merchant page" })
+  ).toBeVisible()
   await expectInsideHud(page)
 })
 

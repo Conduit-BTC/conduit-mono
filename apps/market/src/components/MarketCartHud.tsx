@@ -463,64 +463,60 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}`}
                     onClick={() => activatePurchase(group.id)}
                     className={cn(
-                      "market-cart-hud-item flex min-h-11 max-w-60 shrink-0 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none",
+                      "market-cart-hud-item flex min-h-11 max-w-60 shrink-0 items-center gap-2 rounded-lg border px-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:px-3",
                       selected
                         ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
                         : "border-transparent text-[var(--text-secondary)] hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]"
                     )}
                   >
-                    <Avatar className="h-7 w-7">
+                    <Avatar className="h-7 w-7 shrink-0">
                       <AvatarImage src={profile?.picture} alt="" />
                       <AvatarFallback>
                         <MerchantAvatarFallback iconClassName="h-4 w-4" />
                       </AvatarFallback>
                     </Avatar>
-                    <span className="min-w-0 text-left leading-tight">
-                      <span className="flex min-w-0 items-center gap-2">
-                        <span className="block max-w-32 truncate">
-                          {merchantLabel}
-                        </span>
-                        <StatusPill
-                          variant="neutral"
-                          aria-label={`${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}`}
-                          className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
-                        >
-                          {group.totalItems}
-                        </StatusPill>
+                    <span className="hidden min-w-0 text-left leading-tight sm:block">
+                      <span className="block max-w-32 truncate">
+                        {merchantLabel}
                       </span>
                       <PurchaseContextLabel group={group} compact />
                     </span>
+                    <StatusPill
+                      variant="neutral"
+                      aria-label={`${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}`}
+                      className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
+                    >
+                      {group.totalItems}
+                    </StatusPill>
                   </button>
                 )
               })}
             </div>
           ) : (
-            <Link
-              to="/store/$pubkey"
-              params={{ pubkey: selectedMerchant }}
-              aria-label={`Open ${merchantName} merchant page`}
-              className="flex min-h-11 w-fit min-w-0 max-w-60 items-center justify-self-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            <button
+              type="button"
+              aria-label={`${merchantName}, ${activeGroup.totalItems} cart ${activeGroup.totalItems === 1 ? "item" : "items"}, ${getPurchaseContext(activeGroup).label}`}
+              onClick={() => activatePurchase(activeGroup.id)}
+              className="flex min-h-11 w-fit min-w-0 max-w-60 items-center justify-self-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:px-3"
             >
-              <Avatar className="h-7 w-7">
+              <Avatar className="h-7 w-7 shrink-0">
                 <AvatarImage src={activeProfile?.picture} alt="" />
                 <AvatarFallback>
                   <MerchantAvatarFallback iconClassName="h-4 w-4" />
                 </AvatarFallback>
               </Avatar>
-              <span className="min-w-0 text-left text-sm font-medium leading-tight">
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="block truncate">{merchantName}</span>
-                  <StatusPill
-                    variant="neutral"
-                    aria-label={`${activeGroup.totalItems} cart ${activeGroup.totalItems === 1 ? "item" : "items"}`}
-                    className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
-                  >
-                    {activeGroup.totalItems}
-                  </StatusPill>
-                </span>
+              <span className="hidden min-w-0 text-left text-sm font-medium leading-tight sm:block">
+                <span className="block truncate">{merchantName}</span>
                 <PurchaseContextLabel group={activeGroup} compact />
               </span>
-            </Link>
+              <StatusPill
+                variant="neutral"
+                aria-label={`${activeGroup.totalItems} cart ${activeGroup.totalItems === 1 ? "item" : "items"}`}
+                className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
+              >
+                {activeGroup.totalItems}
+              </StatusPill>
+            </button>
           )}
 
           <div className="flex shrink-0 items-center gap-1 sm:gap-2">
@@ -612,30 +608,28 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
         >
           <div className="min-h-0 overflow-hidden">
             <div className="space-y-3 p-3 sm:p-4">
-              {groups.length > 1 ? (
-                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1">
-                  <Link
-                    to="/store/$pubkey"
-                    params={{ pubkey: selectedMerchant }}
-                    aria-label={`Open ${merchantName} merchant page`}
-                    className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-lg px-2 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                  >
-                    <Avatar className="h-7 w-7">
-                      <AvatarImage src={activeProfile?.picture} alt="" />
-                      <AvatarFallback>
-                        <MerchantAvatarFallback iconClassName="h-4 w-4" />
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="truncate">{merchantName}</span>
-                  </Link>
-                  <span
-                    data-testid="selected-purchase-context"
-                    className="min-w-0 max-w-full"
-                  >
-                    <PurchaseContextLabel group={activeGroup} />
-                  </span>
-                </div>
-              ) : null}
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1">
+                <Link
+                  to="/store/$pubkey"
+                  params={{ pubkey: selectedMerchant }}
+                  aria-label={`Open ${merchantName} merchant page`}
+                  className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-lg px-2 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                >
+                  <Avatar className="h-7 w-7">
+                    <AvatarImage src={activeProfile?.picture} alt="" />
+                    <AvatarFallback>
+                      <MerchantAvatarFallback iconClassName="h-4 w-4" />
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="truncate">{merchantName}</span>
+                </Link>
+                <span
+                  data-testid="selected-purchase-context"
+                  className="min-w-0 max-w-full"
+                >
+                  <PurchaseContextLabel group={activeGroup} />
+                </span>
+              </div>
               <div
                 role="region"
                 aria-label="Cart products"
