@@ -5296,6 +5296,14 @@ test("a stale event tab does not announce an add rejected at the stock limit @ma
     .getByRole("button", { name: "Add", exact: true })
   await expect(currentAdd).toBeEnabled({ timeout: 30_000 })
   await expect(staleAdd).toBeEnabled({ timeout: 30_000 })
+  for (const tab of [page, staleTab]) {
+    await expect(
+      tab
+        .getByRole("listitem")
+        .filter({ hasText: "Synthetic last-stock product" })
+        .getByText("Pickup from event organizer", { exact: true })
+    ).toBeVisible({ timeout: 30_000 })
+  }
 
   await currentAdd.click()
   await expect(
