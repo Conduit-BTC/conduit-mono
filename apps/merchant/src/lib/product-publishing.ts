@@ -1265,10 +1265,6 @@ export async function signAndPublishProductWriteBundle(
     ...(productListingDeliveryJobId ? { productListingDeliveryJobId } : {}),
     ...(deletionDeliveryJobId ? { deletionDeliveryJobId } : {}),
   }
-  await Promise.all(
-    listingEvents.map((event) => cacheSignedProductListingEvent(event))
-  )
-
   try {
     if (productListingDeliveryJobId) {
       await persistSignedProductListings(
@@ -1307,10 +1303,23 @@ export async function signAndPublishProductWriteBundle(
         },
         input.deletionDeliveryOptions
       )
-      await cacheSignedProductDeletionEvent(deletionEvent)
     }
   } catch (error) {
     throw asSignedProductDeliveryError(error, false)
+  }
+
+  // Both exact signed intents must be recoverable before a new local revision
+  // (or its companion deletion) is projected. Leave staged jobs unarmed when
+  // projection fails; startup recovery restores these same signed bytes.
+  await Promise.all(
+    listingEvents.map((event) => cacheSignedProductListingEvent(event))
+  )
+  if (deletionEvent) {
+    try {
+      await cacheSignedProductDeletionEvent(deletionEvent)
+    } catch (error) {
+      throw asSignedProductDeliveryError(error, false)
+    }
   }
 
   try {
