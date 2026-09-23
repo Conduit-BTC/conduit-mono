@@ -54,6 +54,7 @@ const SIGNED_ZAP_REQUEST_JSON = JSON.stringify(
     ZAP_TEST_KEY
   )
 )
+const CHECKOUT_OUTGOING_ID = "c7fb0ad2-c85c-5d93-b542-6dc9d10d8c00"
 
 describe("first-party Spark SDK adapter", () => {
   it("fails closed on networks without first-party production defaults", () => {
@@ -1572,6 +1573,304 @@ describe("first-party Spark SDK adapter", () => {
     expect(response.payment.details?.htlcDetails?.paymentHash).toBe(
       ZERO_PREIMAGE_PAYMENT_HASH
     )
+  })
+
+  it("recovers one frozen checkout leg by the same exact ID after reopening", async () => {
+    let sends = 0
+    let exactHistoryAvailable = false
+    const historyReads: string[] = []
+    const nativeSends: Array<{
+      invoice: string
+      maxFeeSats: number
+      preferSpark: boolean
+      transferId?: string
+    }> = []
+    const wallet = createNativeWallet({
+      async getLightningSendFeeEstimate() {
+        return 2
+      },
+      async payLightningInvoice(input) {
+        sends += 1
+        nativeSends.push({
+          invoice: input.invoice,
+          maxFeeSats: input.maxFeeSats,
+          preferSpark: input.preferSpark,
+          transferId: input.transferId?.toString(),
+        })
+        return {
+          id: "checkout-lightning-request",
+          status: "LIGHTNING_PAYMENT_INITIATED",
+          fee: { originalValue: 2, originalUnit: "SATOSHI" },
+        }
+      },
+      async getTransferFromSsp(id) {
+        historyReads.push(id)
+        if (sends === 0) return undefined
+        if (!exactHistoryAvailable) throw new Error("history still unavailable")
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "checkout-lightning-request",
+            status: "LIGHTNING_PAYMENT_SUCCEEDED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: ZERO_PREIMAGE,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: CHECKOUT_OUTGOING_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+    })
+    const obligation = {
+      network: "mainnet" as const,
+      transferId: CHECKOUT_OUTGOING_ID,
+      paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+      amountSats: 1_000,
+      maxFeeSats: 3,
+      completionTimeoutSecs: 0,
+    }
+    const firstClient = await openClient(createFactory(wallet))
+    await expect(
+      firstClient.sendCheckoutLightningObligation?.(obligation)
+    ).resolves.toEqual({ status: "ambiguous" })
+
+    exactHistoryAvailable = true
+    const reopenedClient = await openClient(createFactory(wallet))
+    await expect(
+      reopenedClient.sendCheckoutLightningObligation?.(obligation)
+    ).resolves.toMatchObject({
+      status: "paid",
+      payment: {
+        status: "completed",
+        fees: 2n,
+        details: {
+          htlcDetails: {
+            paymentHash: ZERO_PREIMAGE_PAYMENT_HASH,
+            preimage: ZERO_PREIMAGE,
+          },
+        },
+      },
+    })
+    expect(nativeSends).toEqual([
+      {
+        invoice: ZERO_PREIMAGE_FIXED_INVOICE,
+        maxFeeSats: 3,
+        preferSpark: false,
+        transferId: CHECKOUT_OUTGOING_ID,
+      },
+    ])
+    expect(historyReads).toEqual([
+      CHECKOUT_OUTGOING_ID,
+      CHECKOUT_OUTGOING_ID,
+      CHECKOUT_OUTGOING_ID,
+    ])
+  })
+
+  it("reports an exact matching failed checkout transfer as terminal without sending", async () => {
+    let feeReads = 0
+    let sendCalls = 0
+    const historyReads: string[] = []
+    const wallet = createNativeWallet({
+      async getTransferFromSsp(id) {
+        historyReads.push(id)
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "failed-checkout-lightning-request",
+            status: "LIGHTNING_PAYMENT_FAILED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: null,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: CHECKOUT_OUTGOING_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+      async getLightningSendFeeEstimate() {
+        feeReads += 1
+        return 2
+      },
+      async payLightningInvoice() {
+        sendCalls += 1
+        throw new Error("must not resend a terminal checkout transfer")
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.sendCheckoutLightningObligation?.({
+        network: "mainnet",
+        transferId: CHECKOUT_OUTGOING_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 3,
+        completionTimeoutSecs: 0,
+      })
+    ).resolves.toEqual({
+      status: "terminal_failure",
+      payment: {
+        id: "failed-checkout-lightning-request",
+        status: "failed",
+        fees: 2n,
+        details: { type: "lightning" },
+      },
+    })
+    expect(historyReads).toEqual([CHECKOUT_OUTGOING_ID])
+    expect(feeReads).toBe(0)
+    expect(sendCalls).toBe(0)
+  })
+
+  it("reports exact terminal failure after one frozen checkout send", async () => {
+    let sends = 0
+    const wallet = createNativeWallet({
+      async getLightningSendFeeEstimate() {
+        return 2
+      },
+      async payLightningInvoice() {
+        sends += 1
+        return {
+          id: "failed-after-send-request",
+          status: "LIGHTNING_PAYMENT_INITIATED",
+          fee: { originalValue: 2, originalUnit: "SATOSHI" },
+        }
+      },
+      async getTransferFromSsp(id) {
+        if (sends === 0) return undefined
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "failed-after-send-request",
+            status: "LIGHTNING_PAYMENT_FAILED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: null,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: CHECKOUT_OUTGOING_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.sendCheckoutLightningObligation?.({
+        network: "mainnet",
+        transferId: CHECKOUT_OUTGOING_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 3,
+        completionTimeoutSecs: 0,
+      })
+    ).resolves.toMatchObject({
+      status: "terminal_failure",
+      payment: { status: "failed", fees: 2n },
+    })
+    expect(sends).toBe(1)
+  })
+
+  it("rejects an over-cap frozen checkout fee before any provider send", async () => {
+    let sendCalls = 0
+    const wallet = createNativeWallet({
+      async getLightningSendFeeEstimate() {
+        return 6
+      },
+      async payLightningInvoice() {
+        sendCalls += 1
+        throw new Error("must not send above the frozen cap")
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.sendCheckoutLightningObligation?.({
+        network: "mainnet",
+        transferId: CHECKOUT_OUTGOING_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+      })
+    ).rejects.toThrow("outside the frozen checkout limit")
+    expect(sendCalls).toBe(0)
+  })
+
+  it("does not send a frozen leg when exact history is unavailable", async () => {
+    let feeReads = 0
+    let sendCalls = 0
+    const wallet = createNativeWallet({
+      async getTransferFromSsp() {
+        throw new Error("exact history unavailable")
+      },
+      async getLightningSendFeeEstimate() {
+        feeReads += 1
+        return 1
+      },
+      async payLightningInvoice() {
+        sendCalls += 1
+        throw new Error("must not send without exact history")
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.sendCheckoutLightningObligation?.({
+        network: "mainnet",
+        transferId: CHECKOUT_OUTGOING_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+      })
+    ).resolves.toEqual({ status: "ambiguous" })
+    expect(feeReads).toBe(0)
+    expect(sendCalls).toBe(0)
+  })
+
+  it("rejects a manager checkout leg with altered network or amount before provider access", async () => {
+    let historyReads = 0
+    let sendCalls = 0
+    const wallet = createNativeWallet({
+      async getTransferFromSsp() {
+        historyReads += 1
+        return undefined
+      },
+      async payLightningInvoice() {
+        sendCalls += 1
+        throw new Error("must not send an altered checkout leg")
+      },
+    })
+    const manager = new SparkWalletManager(createFactory(wallet), async () => ({
+      async release() {},
+    }))
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: MNEMONIC,
+      accountNumber: 1,
+    })
+    const obligation = {
+      network: "mainnet" as const,
+      transferId: CHECKOUT_OUTGOING_ID,
+      paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+      amountSats: 1_000,
+      maxFeeSats: 5,
+    }
+
+    await expect(
+      manager.sendCheckoutLightningObligation("wallet-personal", {
+        ...obligation,
+        network: "regtest",
+      })
+    ).rejects.toThrow("another network")
+    await expect(
+      manager.sendCheckoutLightningObligation("wallet-personal", {
+        ...obligation,
+        amountSats: 1_001,
+      })
+    ).rejects.toThrow("invalid Lightning invoice")
+    expect(historyReads).toBe(0)
+    expect(sendCalls).toBe(0)
+    await manager.close("wallet-personal")
   })
 
   it("applies Spark's proportional Lightning fee cap above the minimum", async () => {
