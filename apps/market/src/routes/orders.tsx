@@ -57,7 +57,10 @@ import {
   SearchInput,
   RefreshChip,
   Select,
+  SelectContent,
+  SelectItem,
   SelectTrigger,
+  SelectValue,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -132,6 +135,7 @@ import {
   runOrderPrivateFallback,
   runOrderPayment,
   runOrderPaymentWithUpdatedAddress,
+  runOrderPaymentWithRenewedInvoice,
   submitExternalPaymentProof,
   subscribeOrderPayment,
   validateMerchantInvoicePaymentAction,
@@ -665,9 +669,18 @@ function OrderDetail({
 }) {
   const { vm, headerStatus } = row
   const currentViewRef = useRef(vm)
+  const viewMountedRef = useRef(false)
   useLayoutEffect(() => {
+    viewMountedRef.current = true
     currentViewRef.current = vm
   }, [vm])
+  useLayoutEffect(
+    () => () => {
+      viewMountedRef.current = false
+      currentViewRef.current = { ...currentViewRef.current, orderId: "" }
+    },
+    []
+  )
   const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
@@ -741,6 +754,7 @@ function OrderDetail({
   const [retryTarget, setRetryTarget] = useState<OrderPaymentTarget | null>(
     persistedRetryTarget
   )
+  const [priorInvoiceIndex, setPriorInvoiceIndex] = useState("0")
   const sparkFeeApproval = useSparkFeeApproval()
   const queryClient = useQueryClient()
 
@@ -869,6 +883,9 @@ function OrderDetail({
       accountPubkey: authenticatedPubkey,
       authenticatedPubkey,
       shouldContinue: shouldContinueBuyerSession,
+      shouldContinuePaymentAuthority: () =>
+        viewMountedRef.current &&
+        isGeneralPaymentRetryEligible(currentViewRef.current),
       buyerIdentity: guestIdentity ?? undefined,
       merchantPubkey: row.merchantPubkey,
       merchantLud16: lc.merchantLightningAddress ?? null,
@@ -893,11 +910,25 @@ function OrderDetail({
     if (!selectedStoredPaymentTarget) {
       throw new Error("Choose how to pay before trying again.")
     }
+    assertGeneralPaymentRetryEligible()
     const replacement = await replaceOrderPaymentTarget(
       vm.orderId,
-      selectedStoredPaymentTarget
+      selectedStoredPaymentTarget,
+      () =>
+        viewMountedRef.current &&
+        isGeneralPaymentRetryEligible(currentViewRef.current) &&
+        shouldContinueAccountRead()
     )
     if (replacement.status !== "updated") {
+      if (
+        !viewMountedRef.current ||
+        !isGeneralPaymentRetryEligible(currentViewRef.current) ||
+        !shouldContinueAccountRead()
+      ) {
+        throw new Error(
+          "This order or account no longer has authority to change the payment target."
+        )
+      }
       throw new Error(
         replacement.status === "missing"
           ? "Order payment state is unavailable."
@@ -943,9 +974,12 @@ function OrderDetail({
   }
 
   async function retryPayment(): Promise<void> {
+    assertGeneralPaymentRetryEligible()
     await verifyRetryFreshness()
+    assertGeneralPaymentRetryEligible()
     const ctx = await persistTargetAndBuildServiceCtx()
     const lifecycle = await getOrderLifecycle(vm.orderId)
+    assertGeneralPaymentRetryEligible()
     if (
       lifecycle &&
       vm.phase !== "cancelled" &&
@@ -978,14 +1012,74 @@ function OrderDetail({
     setRecoveryError(null)
   }
 
+  async function renewExpiredInvoice(): Promise<void> {
+    assertGeneralPaymentRetryEligible()
+    await verifyRetryFreshness()
+    if (!vm.invoice) {
+      throw new Error("The expired invoice is no longer available.")
+    }
+    const expectedInvoice = vm.invoice
+    const ctx = buildServiceCtx()
+    if (
+      !ctx ||
+      ctx.paymentTarget.type !== "manual" ||
+      retryTarget?.type !== "manual"
+    ) {
+      throw new Error("Choose manual payment to renew this invoice.")
+    }
+    const lifecycle = await getOrderLifecycle(vm.orderId)
+    if (
+      !lifecycle ||
+      lifecycle.invoice?.toLowerCase() !== expectedInvoice.toLowerCase() ||
+      lifecycle.paymentTarget?.type !== "manual" ||
+      lifecycle.paymentTarget.type !== retryTarget.type ||
+      (lifecycle.checkoutMode !== ctx.zapMode &&
+        !(
+          lifecycle.checkoutMode === "external_wallet" &&
+          ctx.zapMode === "private_checkout"
+        )) ||
+      lifecycle.publicZapSigner !== undefined ||
+      currentViewRef.current.invoice?.toLowerCase() !==
+        expectedInvoice.toLowerCase()
+    ) {
+      throw new Error("Order payment details changed. Refresh before retrying.")
+    }
+    const shouldContinueView = () =>
+      viewMountedRef.current &&
+      currentViewRef.current.orderId === vm.orderId &&
+      currentViewRef.current.invoice?.toLowerCase() ===
+        expectedInvoice.toLowerCase() &&
+      isGeneralPaymentRetryEligible(currentViewRef.current)
+    await runOrderPaymentWithRenewedInvoice(
+      {
+        ...ctx,
+        shouldContinueBeforePaymentClaim: shouldContinueView,
+        shouldContinue: shouldContinueBuyerSession,
+      },
+      expectedInvoice,
+      lifecycle.updatedAt
+    )
+  }
+
   async function runRetryPayment(
     ctx: OrderPaymentContext,
     update?: OrderPaymentAddressUpdate
   ): Promise<void> {
     const run = (context: OrderPaymentContext) =>
       update
-        ? runOrderPaymentWithUpdatedAddress(context, update)
-        : runOrderPayment(context)
+        ? runOrderPaymentWithUpdatedAddress(
+            {
+              ...context,
+              shouldContinueBeforePaymentClaim: () =>
+                isGeneralPaymentRetryEligible(currentViewRef.current),
+            },
+            update
+          )
+        : runOrderPayment({
+            ...context,
+            shouldContinueBeforePaymentClaim: () =>
+              isGeneralPaymentRetryEligible(currentViewRef.current),
+          })
     if (ctx.zapMode !== "anonymous_public_zap") {
       await run(ctx)
       return
@@ -1018,6 +1112,7 @@ function OrderDetail({
     const pending = paymentAddressUpdate
     if (!pending) return
     setPaymentAddressUpdate(null)
+    assertGeneralPaymentRetryEligible()
     if (
       vm.phase === "cancelled" ||
       vm.phase === "completed" ||
@@ -1028,14 +1123,38 @@ function OrderDetail({
       )
     }
     await verifyRetryFreshness()
+    assertGeneralPaymentRetryEligible()
     await runRetryPayment(pending.ctx, pending.update)
   }
 
   async function continuePrivateFallback(): Promise<void> {
+    assertGeneralPaymentRetryEligible()
     await verifyRetryFreshness()
     const ctx = await persistTargetAndBuildServiceCtx()
     setPrivateFallbackOpen(false)
-    await runOrderPrivateFallback(ctx)
+    assertGeneralPaymentRetryEligible()
+    await runOrderPrivateFallback({
+      ...ctx,
+      shouldContinueBeforePaymentClaim: () =>
+        isGeneralPaymentRetryEligible(currentViewRef.current),
+    })
+  }
+
+  function isGeneralPaymentRetryEligible(current: OrderViewModel): boolean {
+    return (
+      current.orderId === vm.orderId &&
+      current.phase !== "cancelled" &&
+      current.phase !== "completed" &&
+      current.merchantStatus !== "cancelled" &&
+      current.merchantStatus !== "refund_requested" &&
+      !isBuyerOrderPaid(current)
+    )
+  }
+
+  function assertGeneralPaymentRetryEligible(): void {
+    if (!isGeneralPaymentRetryEligible(currentViewRef.current)) {
+      throw new Error("This order no longer accepts a new payment attempt.")
+    }
   }
 
   const manualInvoiceAccess = deriveManualInvoiceAccess(
@@ -1117,6 +1236,75 @@ function OrderDetail({
     )
   }
 
+  async function reportPriorExpiredInvoice(): Promise<void> {
+    const prior =
+      priorInvoiceChoices.find(
+        ({ index }) => index === Number(priorInvoiceIndex)
+      )?.entry ?? priorInvoiceChoices[0]?.entry
+    if (
+      !prior ||
+      vm.publicZapSigner ||
+      (row.lifecycle?.checkoutMode !== "private_checkout" &&
+        row.lifecycle?.checkoutMode !== "external_wallet") ||
+      row.lifecycle?.paymentTarget?.type !== "manual" ||
+      (vm.invoice
+        ? vm.invoiceStatus !== "manual_required" ||
+          vm.paymentStatus !== "manual_required" ||
+          vm.invoice.toLowerCase() === prior.invoice.toLowerCase()
+        : vm.invoiceStatus !== "failed" || vm.paymentStatus !== "failed") ||
+      vm.paymentStatus === "paid" ||
+      vm.paymentStatus === "paying" ||
+      vm.paymentStatus === "ambiguous" ||
+      vm.phase === "completed" ||
+      isBuyerOrderPaid(vm)
+    )
+      throw new Error("The previous invoice is no longer reportable.")
+    await submitExternalPaymentProof(
+      vm.orderId,
+      guestIdentity ?? undefined,
+      undefined,
+      undefined,
+      authenticatedPubkey ?? null,
+      authenticatedPubkey ?? null,
+      shouldContinueBuyerSession,
+      (lifecycle) =>
+        currentViewRef.current.orderId === vm.orderId &&
+        (currentViewRef.current.invoice === undefined ||
+          (currentViewRef.current.invoiceStatus === "manual_required" &&
+            currentViewRef.current.paymentStatus === "manual_required" &&
+            currentViewRef.current.invoice.toLowerCase() !==
+              prior.invoice.toLowerCase())) &&
+        currentViewRef.current.priorExpiredManualInvoices.some(
+          (entry) =>
+            entry.invoice.toLowerCase() === prior.invoice.toLowerCase() &&
+            entry.paymentHash.toLowerCase() === prior.paymentHash.toLowerCase()
+        ) &&
+        lifecycle.buyerPubkey === buyerPubkey &&
+        lifecycle.merchantPubkey === vm.merchantPubkey &&
+        (lifecycle.invoice === undefined
+          ? lifecycle.invoiceStatus === "failed" &&
+            lifecycle.paymentStatus === "failed"
+          : lifecycle.invoiceStatus === "manual_required" &&
+            lifecycle.paymentStatus === "manual_required" &&
+            lifecycle.invoice.toLowerCase() !== prior.invoice.toLowerCase()) &&
+        lifecycle.checkoutMode !== "pay_later" &&
+        lifecycle.publicZapSigner === undefined &&
+        lifecycle.paymentTarget?.type === "manual" &&
+        !lifecycle.paymentClaimId &&
+        !lifecycle.proofDeliveryClaimId &&
+        lifecycle.proofDeliveryStatus === "not_started" &&
+        !["paid", "completed"].includes(currentViewRef.current.paymentStatus) &&
+        !["paid", "completed"].includes(
+          currentViewRef.current.merchantStatus ?? ""
+        ),
+      {
+        invoice: prior.invoice,
+        paymentHash: prior.paymentHash,
+        expiresAt: prior.expiresAt,
+      }
+    )
+  }
+
   const merchantInvoicePrepared =
     !!vm.merchantInvoiceAction &&
     vm.merchantInvoiceAction.status === "payable" &&
@@ -1132,7 +1320,16 @@ function OrderDetail({
       ? (row.lifecycle.invoiceExpiresAt ?? null)
       : null
 
-  const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"
+  const generalPaymentRetryEligible =
+    vm.phase !== "cancelled" &&
+    vm.phase !== "completed" &&
+    vm.merchantStatus !== "cancelled" &&
+    vm.merchantStatus !== "refund_requested" &&
+    !isBuyerOrderPaid(vm)
+  const showRetryPayment =
+    !zeroCostPickupOrder &&
+    vm.paymentStatus === "failed" &&
+    generalPaymentRetryEligible
   const recoveredBeforeWallet =
     row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
   const paymentRecoveryError =
@@ -1152,6 +1349,28 @@ function OrderDetail({
     manualInvoiceAccess !== "report_only" &&
     manualInvoiceAccess !== "receipt_only" &&
     (vm.paymentStatus === "manual_required" || !!vm.merchantInvoiceAction)
+  const priorInvoiceChoices = vm.priorExpiredManualInvoices
+    .map((entry, index) => ({ entry, index }))
+    .filter(
+      ({ entry }) =>
+        !vm.invoice || entry.invoice.toLowerCase() !== vm.invoice.toLowerCase()
+    )
+  const showPriorExpiredInvoiceReport =
+    priorInvoiceChoices.length > 0 &&
+    !vm.publicZapSigner &&
+    (row.lifecycle?.checkoutMode === "private_checkout" ||
+      row.lifecycle?.checkoutMode === "external_wallet") &&
+    row.lifecycle?.paymentTarget?.type === "manual" &&
+    (vm.invoice
+      ? vm.invoiceStatus === "manual_required" &&
+        vm.paymentStatus === "manual_required" &&
+        priorInvoiceChoices.length > 0
+      : vm.invoiceStatus === "failed" && vm.paymentStatus === "failed") &&
+    vm.paymentStatus !== "paid" &&
+    vm.paymentStatus !== "paying" &&
+    vm.paymentStatus !== "ambiguous" &&
+    vm.phase !== "completed" &&
+    !isBuyerOrderPaid(vm)
   const autoDetectPublicReceipt =
     !zeroCostPickupOrder &&
     !!vm.publicZapSigner &&
@@ -1319,6 +1538,76 @@ function OrderDetail({
         </StatusNotice>
       )}
 
+      {showPriorExpiredInvoiceReport && (
+        <StatusNotice
+          variant="warning"
+          title="Report payment for an earlier invoice"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            Do not pay the new invoice if your wallet already paid an earlier
+            one. Select the earlier invoice expiry date to report it for
+            merchant verification.
+          </p>
+          <div className="mt-4 flex flex-wrap items-end gap-3">
+            <div className="grid min-w-[15rem] gap-1.5">
+              <label
+                htmlFor={`prior-invoice-${vm.orderId}`}
+                className="text-xs font-medium text-[var(--text-secondary)]"
+              >
+                Previously expired invoice
+              </label>
+              <Select
+                value={String(
+                  priorInvoiceChoices.find(
+                    ({ index }) => index === Number(priorInvoiceIndex)
+                  )?.index ??
+                    priorInvoiceChoices[0]?.index ??
+                    0
+                )}
+                onValueChange={setPriorInvoiceIndex}
+                disabled={busy}
+              >
+                <SelectTrigger
+                  id={`prior-invoice-${vm.orderId}`}
+                  className="h-10 w-full"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {priorInvoiceChoices.map(({ entry, index }) => (
+                    <SelectItem
+                      key={`${entry.paymentHash}-${entry.expiresAt}`}
+                      value={String(index)}
+                    >
+                      Invoice {index + 1} . Expires{" "}
+                      {new Date(entry.expiresAt * 1000).toLocaleString()}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              variant="outline"
+              className="h-10 px-4 text-sm"
+              disabled={busy}
+              onClick={() => void withBusy(reportPriorExpiredInvoice)}
+            >
+              Report selected earlier invoice payment
+            </Button>
+          </div>
+        </StatusNotice>
+      )}
+
+      {!showExternalWallet &&
+        showPriorExpiredInvoiceReport &&
+        recoveryError && (
+          <StatusNotice variant="warning" title="Payment report not sent">
+            <p className="text-pretty text-sm text-[var(--text-secondary)]">
+              {recoveryError}
+            </p>
+          </StatusNotice>
+        )}
+
       {showExternalWallet && (
         <div className="space-y-3">
           <ExternalWalletPanel
@@ -1329,6 +1618,14 @@ function OrderDetail({
             autoDetectReceipt={autoDetectPublicReceipt}
             onBeforeInvoiceUse={beginMerchantInvoicePayment}
             onPrepareMerchantInvoice={prepareCurrentMerchantInvoice}
+            onRenewExpiredInvoice={
+              (row.lifecycle?.checkoutMode === "private_checkout" ||
+                row.lifecycle?.checkoutMode === "external_wallet") &&
+              row.lifecycle.publicZapSigner === undefined &&
+              row.lifecycle.paymentTarget?.type === "manual"
+                ? () => withBusy(renewExpiredInvoice)
+                : undefined
+            }
             preparationScope={`${authGeneration}:${authenticatedPubkey ?? "guest"}:${buyerPubkey}:${vm.orderId}`}
             merchantInvoicePrepared={merchantInvoicePrepared}
             boundMerchantInvoiceExpiresAt={boundMerchantInvoiceExpiresAt}

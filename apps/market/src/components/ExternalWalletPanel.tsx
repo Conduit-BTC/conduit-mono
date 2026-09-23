@@ -15,6 +15,7 @@ export function ExternalWalletPanel({
   onMarkPaid,
   onBeforeInvoiceUse,
   onPrepareMerchantInvoice,
+  onRenewExpiredInvoice,
   preparationScope,
   merchantInvoicePrepared,
   boundMerchantInvoiceExpiresAt,
@@ -27,6 +28,7 @@ export function ExternalWalletPanel({
   onMarkPaid: () => void
   onBeforeInvoiceUse: () => boolean
   onPrepareMerchantInvoice: () => Promise<void>
+  onRenewExpiredInvoice?: () => Promise<void>
   preparationScope: string
   merchantInvoicePrepared: boolean
   boundMerchantInvoiceExpiresAt: number | null
@@ -152,12 +154,15 @@ export function ExternalWalletPanel({
     merchantInvoice?.status === "blocked"
       ? merchantInvoice.canReport
       : invoiceExpired
+  const invoiceCanRenew = invoiceExpired && !!onRenewExpiredInvoice
   const invoiceError =
     merchantInvoice?.status === "blocked"
       ? merchantInvoice.reason
       : invoiceExpiry === null
         ? "This invoice has an invalid expiry and cannot be used for payment."
-        : "This invoice has expired. Do not pay it again."
+        : invoiceCanRenew
+          ? "Get a new invoice before paying."
+          : "This invoice has expired and cannot be paid."
   const receiptNotice = (
     <p className="text-xs leading-5 text-[var(--text-secondary)]">
       {autoDetectReceipt
@@ -167,13 +172,24 @@ export function ExternalWalletPanel({
   )
   if (invoiceBlocked) {
     return (
-      <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
+      <section
+        className={`rounded-[1.5rem] border p-5 ${invoiceCanRenew ? "border-[var(--border)] bg-[var(--surface)]" : "border-amber-500/40 bg-amber-500/5"}`}
+      >
         <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-          Invoice unavailable
+          {invoiceCanRenew ? "Invoice expired" : "Invoice unavailable"}
         </h2>
         <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
           {invoiceError}
         </p>
+        {invoiceCanRenew && (
+          <Button
+            className="mt-4 h-10 w-full px-4 text-sm"
+            disabled={busy}
+            onClick={() => void onRenewExpiredInvoice()}
+          >
+            Get a new invoice
+          </Button>
+        )}
         {publicReceiptInvoice && <div className="mt-4">{receiptNotice}</div>}
         {invoiceCanReport && (
           <div className="mt-4 space-y-2">
