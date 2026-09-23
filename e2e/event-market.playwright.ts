@@ -2205,7 +2205,10 @@ async function publishMerchantProductFromEvent(
     .click()
   if (options.rejectAcceptanceOnce) {
     await expect(
-      editor.getByRole("button", { name: "Retry acceptance", exact: true })
+      editor.getByRole("button", {
+        name: "Retry exact acceptance",
+        exact: true,
+      })
     ).toBeVisible({ timeout: 30_000 })
     await expect(
       editor.getByRole("button", {
@@ -2220,7 +2223,7 @@ async function publishMerchantProductFromEvent(
     ).toHaveLength(1)
     relay.rejectKind(30405, false)
     await editor
-      .getByRole("button", { name: "Retry acceptance", exact: true })
+      .getByRole("button", { name: "Retry exact acceptance", exact: true })
       .click()
   }
   await expect(
