@@ -145,11 +145,13 @@ describe("profile query cache", () => {
       expect(route).toContain("canEditProfile")
       expect(route).toContain("isCommerceReadIncomplete(profileQuery.meta)")
       expect(route).toContain('evidenceScope: "profile_edit"')
-      expect(route).toContain("editingPubkey === pubkey")
+      expect(route).toContain("editingPubkey === accountPubkey")
+      expect(route).toContain("profileWorkOwnerRef.current = accountPubkey")
       expect(route).toContain(
-        "editingPubkey === null || editingPubkey === pubkey"
+        "if (!previousOwner || previousOwner === accountPubkey) return"
       )
-      expect(route).toContain("if (!editing || !hasProfileChanges")
+      expect(route).toContain("!editing ||\n      !signerReady ||")
+      expect(route).toContain("!hasProfileChanges ||")
     }
     expect(merchantRoute).toContain(
       "!profileQuery.isLoading &&\n              !complete"
