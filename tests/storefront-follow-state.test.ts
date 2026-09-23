@@ -141,4 +141,84 @@ describe("storefront follow state", () => {
 
     expect(state).toEqual(createStorefrontFollowState(disconnectedScope))
   })
+
+  it("retains the exact failed follow intent for explicit retry", () => {
+    const activeScope = scope(viewerA, merchantA)
+    let state = createStorefrontFollowState(activeScope)
+
+    state = storefrontFollowReducer(state, {
+      type: "operation_started",
+      scope: activeScope,
+      operationId: 3,
+      shouldFollow: false,
+    })
+    state = storefrontFollowReducer(state, {
+      type: "operation_failed",
+      scope: activeScope,
+      operationId: 3,
+      message: "The publish failed.",
+    })
+
+    expect(state.retryFollowing).toBe(false)
+    expect(
+      deriveStorefrontFollowControl({
+        override: state.override,
+        observedFollowing: true,
+        pendingFollowing: null,
+        retryFollowing: state.retryFollowing,
+      }).shouldFollowOnClick
+    ).toBe(false)
+  })
+
+  it("retains an interrupted operation intent across an authority change", () => {
+    const activeScope = scope(viewerA, merchantA)
+    let state = createStorefrontFollowState(activeScope)
+
+    state = storefrontFollowReducer(state, {
+      type: "operation_started",
+      scope: activeScope,
+      operationId: 4,
+      shouldFollow: true,
+    })
+    state = storefrontFollowReducer(state, {
+      type: "authority_changed",
+      scope: activeScope,
+      message: "Reconnect and review.",
+    })
+
+    expect(state).toMatchObject({
+      saveState: "idle",
+      activeOperationId: null,
+      retryFollowing: true,
+      error: "Reconnect and review.",
+    })
+  })
+
+  it("settles immediately after publication before authority can change", () => {
+    const activeScope = scope(viewerA, merchantA)
+    let state = createStorefrontFollowState(activeScope)
+
+    state = storefrontFollowReducer(state, {
+      type: "operation_started",
+      scope: activeScope,
+      operationId: 5,
+      shouldFollow: true,
+    })
+    state = storefrontFollowReducer(state, {
+      type: "publish_succeeded",
+      scope: activeScope,
+      operationId: 5,
+      shouldFollow: true,
+    })
+    state = storefrontFollowReducer(state, {
+      type: "authority_changed",
+      scope: activeScope,
+      message: "This must not become a retry.",
+    })
+
+    expect(state).toEqual({
+      ...createStorefrontFollowState(activeScope),
+      override: true,
+    })
+  })
 })

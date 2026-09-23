@@ -105,7 +105,7 @@ export async function deliverSignedProductEvent(
     }
 
     const delivery = await publishWithPlanner(publishableEvent, {
-      intent: "author_event",
+      intent: "commerce_author_event",
       authorPubkey: merchantPubkey,
       authenticatedPubkey:
         authenticatedPubkey === merchantPubkey.toLowerCase()
@@ -1049,6 +1049,10 @@ export async function signAndPublishProductWriteBundle(
     listings: readonly ProductListingPublishTarget[]
     deletions?: readonly ProductDeletionPublishTarget[]
     onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
+    onSignedEvent?: (
+      event: NDKEvent,
+      kind: ProductSignerRequestKind
+    ) => Promise<void>
     deletionDeliveryOptions?: DeliverQueuedProductDeletionOptions
     onSignerRequest?: (progress: ProductSignerRequestProgress) => void
     onSignerRequestsComplete?: () => void
@@ -1057,9 +1061,17 @@ export async function signAndPublishProductWriteBundle(
   dependencies: Partial<ProductPublicationDependencies> = {}
 ): Promise<PublishWithPlannerResult> {
   const ndk = getNdk()
+  const assertSignerSessionCurrent = () => {
+    if (input.shouldContinue?.() === false) {
+      throw new Error("Product signer session changed.")
+    }
+  }
+  assertSignerSessionCurrent()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signer = ndk.signer
+  assertSignerSessionCurrent()
   const signerPubkey = (await signer.user()).pubkey
+  assertSignerSessionCurrent()
   if (signerPubkey !== input.merchantPubkey) {
     throw new Error("Active signer does not match current merchant pubkey")
   }
@@ -1089,6 +1101,7 @@ export async function signAndPublishProductWriteBundle(
         dependencies.getShippingOptions ?? getShippingOptionsByCoordinates,
     }
   )
+  assertSignerSessionCurrent()
   const signerRequestTotal = getProductSignerRequestCount({
     listings,
     deletions: input.deletions,
@@ -1100,6 +1113,7 @@ export async function signAndPublishProductWriteBundle(
     event: NDKEvent,
     kind: ProductSignerRequestKind
   ): Promise<void> => {
+    assertSignerSessionCurrent()
     signerRequestCurrent += 1
     input.onSignerRequest?.({
       kind,
@@ -1107,7 +1121,17 @@ export async function signAndPublishProductWriteBundle(
       total: signerRequestTotal,
     })
     await waitForSignerVisibility()
+    assertSignerSessionCurrent()
     await event.sign(signer)
+    const signed = event.rawEvent() as SignedPublicNostrEvent
+    if (
+      !isValidSignedPublicNostrEvent(signed) ||
+      signed.pubkey !== signerPubkey
+    ) {
+      throw new Error("Signer returned invalid product event evidence.")
+    }
+    await input.onSignedEvent?.(event, kind)
+    assertSignerSessionCurrent()
   }
 
   const writes: SignedProductWrite[] = []
@@ -1133,12 +1157,14 @@ export async function signAndPublishProductWriteBundle(
     events.push(deletion)
   }
 
+  assertSignerSessionCurrent()
   input.onSignerRequestsComplete?.()
+  assertSignerSessionCurrent()
 
   for (const write of writes) {
     if (!write.shippingEvent) continue
     const delivery = await publishWithPlanner(write.shippingEvent, {
-      intent: "author_event",
+      intent: "commerce_author_event",
       authorPubkey: signerPubkey,
       authenticatedPubkey,
       accountPubkey: signerPubkey,
@@ -1164,7 +1190,7 @@ export async function signAndPublishProductWriteBundle(
 
   let deletionDeliveryJobId: string | undefined
   if (deletionEvent) {
-    const currentWriteRelayUrls = await planCurrentProductDeletionWriteRelays(
+    const currentWriteRelayPlan = await planCurrentProductDeletionWriteRelays(
       signerPubkey,
       signerPubkey,
       input.shouldContinue
@@ -1177,7 +1203,9 @@ export async function signAndPublishProductWriteBundle(
     const deliveryJob = await persistSignedProductDeletion(
       {
         signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
-        currentWriteRelayUrls,
+        currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
+        currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
+        currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,
         sourceRelayUrls,
       },
       input.deletionDeliveryOptions
@@ -1226,9 +1254,10 @@ export async function signAndPublishProductListing(input: {
       },
     ],
     onSignerRequest: input.onSignerRequest,
-    onSignedLocal: async ({ events: [event] }) => {
-      if (!event) throw new Error("Signed product event is missing")
+    onSignedEvent: async (event, kind) => {
+      if (kind !== "product") return
       await input.onSignedLocal(event)
     },
+    onSignedLocal: async () => undefined,
   })
 }

@@ -141,7 +141,7 @@ export type MerchantHandoffAckReadBlocker =
   | "unavailable"
   | "stale"
   | "decrypt_failure"
-  | "inbox_not_declared"
+  | "inbox_not_ready"
   | "coverage_incomplete"
 
 /**
@@ -180,7 +180,7 @@ export function resolveMerchantHandoffAckReadState<
       : input.read.decryptFailureCount > 0
         ? "decrypt_failure"
         : input.read.inbox?.declarationState !== "declared"
-          ? "inbox_not_declared"
+          ? "inbox_not_ready"
           : input.read.inbox.coverage !== "complete"
             ? "coverage_incomplete"
             : null
@@ -955,12 +955,110 @@ function pendingDelivery(
   }
 }
 
+function commitRetryDelivery(
+  principalPubkey: string,
+  original: StoredEventMarketHandoffDelivery,
+  attempted: StoredEventMarketHandoffDelivery,
+  storage: HandoffStorage | null
+): StoredEventMarketHandoffDelivery {
+  if (!storage) {
+    throw new Error("Durable private handoff retry storage is unavailable.")
+  }
+  const current = loadEventMarketHandoffDeliveries(
+    principalPubkey,
+    storage
+  ).find(
+    (candidate) => deliveryIdentity(candidate) === deliveryIdentity(original)
+  )
+  if (!current) {
+    throw new Error(
+      "The exact encrypted handoff update is no longer pending on this device. Reload before retrying."
+    )
+  }
+  if (!sameExactStoredDelivery(original, current)) {
+    throw new Error(
+      "The saved encrypted handoff update changed on this device. Reload before retrying."
+    )
+  }
+
+  const deliveryProgress = parseEventMarketPrivateDeliveryProgress(
+    {
+      ...current.deliveryProgress,
+      recipientAcknowledgedRelayRefs: Array.from(
+        new Set([
+          ...current.deliveryProgress.recipientAcknowledgedRelayRefs,
+          ...attempted.deliveryProgress.recipientAcknowledgedRelayRefs,
+        ])
+      ).sort(),
+      selfAcknowledgedRelayRefs: Array.from(
+        new Set([
+          ...current.deliveryProgress.selfAcknowledgedRelayRefs,
+          ...attempted.deliveryProgress.selfAcknowledgedRelayRefs,
+        ])
+      ).sort(),
+    },
+    current.record
+  )
+  const recipientAcknowledgedCount =
+    deliveryProgress.recipientAcknowledgedRelayRefs.length
+  const selfAcknowledgedCount =
+    deliveryProgress.selfAcknowledgedRelayRefs.length
+  // Failures describe this attempt; only ACK references are monotonic.
+  const recipientFailedCount = attempted.recipient.failedCount
+  const selfFailedCount = attempted.selfCopy.failedCount
+  // Preserve a completion written during this retry. An already-complete leg
+  // may still degrade when the new relay plan adds a failing target.
+  const recipientComplete =
+    attempted.recipient.status === "full_success" ||
+    (current.recipient.status === "full_success" &&
+      original.recipient.status !== "full_success")
+  const selfComplete =
+    attempted.selfCopy.status === "full_success" ||
+    (current.selfCopy.status === "full_success" &&
+      original.selfCopy.status !== "full_success")
+  const merged: StoredEventMarketHandoffDelivery = {
+    ...current,
+    record: attempted.record,
+    deliveryProgress,
+    recipient: {
+      status: recipientComplete
+        ? "full_success"
+        : recipientAcknowledgedCount > 0
+          ? recipientFailedCount > 0
+            ? "partial_success"
+            : "unknown"
+          : attempted.recipient.status === "pending"
+            ? current.recipient.status
+            : attempted.recipient.status,
+      acknowledgedCount: recipientAcknowledgedCount,
+      failedCount: recipientComplete ? 0 : recipientFailedCount,
+    },
+    selfCopy: {
+      status: selfComplete
+        ? "full_success"
+        : selfAcknowledgedCount > 0
+          ? selfFailedCount > 0
+            ? "partial_success"
+            : "unknown"
+          : attempted.selfCopy.status === "pending"
+            ? current.selfCopy.status
+            : attempted.selfCopy.status,
+      acknowledgedCount: selfAcknowledgedCount,
+      failedCount: selfComplete ? 0 : selfFailedCount,
+    },
+    savedAt: Math.max(current.savedAt, attempted.savedAt),
+  }
+  upsertDelivery(principalPubkey, merged, storage)
+  return merged
+}
+
 async function retryStoredDelivery(
   principalPubkey: string,
   stored: StoredEventMarketHandoffDelivery,
   storage: HandoffStorage | null,
   transport?: EventMarketPrivateTransportOptions
 ): Promise<StoredEventMarketHandoffDelivery> {
+  let result: RetryEventMarketPrivateDeliveryResult
   try {
     const retainedOwnerDeclaration = transport?.senderInboxRelays
       ? null
@@ -970,7 +1068,7 @@ async function retryStoredDelivery(
       (retainedOwnerDeclaration?.state === "declared"
         ? retainedOwnerDeclaration.relayUrls
         : [])
-    const result = await retryEventMarketPrivateDelivery({
+    result = await retryEventMarketPrivateDelivery({
       record: stored.record,
       authenticatedOwnerPubkey: transport?.authenticatedPubkey,
       ownerSelectedSenderInboxRelayUrls,
@@ -980,19 +1078,172 @@ async function retryStoredDelivery(
       shouldContinue: transport?.shouldContinue,
       publishFn: transport?.publishFn,
     })
-    const delivered = stateFromRetryResult(stored, result)
-    upsertDelivery(principalPubkey, delivered, storage)
-    return delivered
   } catch (error) {
     if (transport?.shouldContinue?.() !== false) {
-      upsertDelivery(
+      const retained = commitRetryDelivery(
         principalPubkey,
+        stored,
         stateFromDeliveryError(stored, error),
         storage
       )
+      if (!eventMarketHandoffDeliveryNeedsRetry(retained)) return retained
     }
     throw error
   }
+  return commitRetryDelivery(
+    principalPubkey,
+    stored,
+    stateFromRetryResult(stored, result),
+    storage
+  )
+}
+
+function exactStoredDeliveryForOwner(
+  principalPubkey: string,
+  delivery: StoredEventMarketHandoffDelivery,
+  messageType: EventMarketPrivateDeliveryRecord["messageType"]
+): StoredEventMarketHandoffDelivery {
+  const retained = validStoredDelivery(delivery, principalPubkey)
+  if (!retained || retained.record.messageType !== messageType) {
+    throw new Error(
+      "The exact encrypted handoff update does not belong to this account."
+    )
+  }
+  return retained
+}
+
+function sameExactStoredDelivery(
+  left: StoredEventMarketHandoffDelivery,
+  right: StoredEventMarketHandoffDelivery
+): boolean {
+  const leftRecord = left.record
+  const rightRecord = right.record
+  return (
+    leftRecord.messageType === rightRecord.messageType &&
+    leftRecord.rumorId.toLowerCase() === rightRecord.rumorId.toLowerCase() &&
+    leftRecord.readyReceiptId.toLowerCase() ===
+      rightRecord.readyReceiptId.toLowerCase() &&
+    leftRecord.claimRef === rightRecord.claimRef &&
+    leftRecord.senderPubkey.toLowerCase() ===
+      rightRecord.senderPubkey.toLowerCase() &&
+    leftRecord.recipientPubkey.toLowerCase() ===
+      rightRecord.recipientPubkey.toLowerCase() &&
+    leftRecord.orderCorrelationRef === rightRecord.orderCorrelationRef &&
+    leftRecord.createdAt === rightRecord.createdAt &&
+    sameHandoffEvidenceRevision(
+      leftRecord.graph.calendar,
+      rightRecord.graph.calendar
+    ) &&
+    sameHandoffEvidenceRevision(
+      leftRecord.graph.collection,
+      rightRecord.graph.collection
+    ) &&
+    sameHandoffEvidenceRevision(
+      leftRecord.graph.option,
+      rightRecord.graph.option
+    ) &&
+    leftRecord.signedRecipientWrap.id.toLowerCase() ===
+      rightRecord.signedRecipientWrap.id.toLowerCase() &&
+    leftRecord.signedRecipientWrap.sig.toLowerCase() ===
+      rightRecord.signedRecipientWrap.sig.toLowerCase() &&
+    leftRecord.signedSelfWrap.id.toLowerCase() ===
+      rightRecord.signedSelfWrap.id.toLowerCase() &&
+    leftRecord.signedSelfWrap.sig.toLowerCase() ===
+      rightRecord.signedSelfWrap.sig.toLowerCase()
+  )
+}
+
+async function retryExactStoredDelivery(input: {
+  principalPubkey: string
+  delivery: StoredEventMarketHandoffDelivery
+  messageType: EventMarketPrivateDeliveryRecord["messageType"]
+  storage?: HandoffStorage | null
+  transport?: EventMarketPrivateTransportOptions
+}): Promise<StoredEventMarketHandoffDelivery> {
+  const storage = input.storage === undefined ? browserStorage() : input.storage
+  const retained = exactStoredDeliveryForOwner(
+    input.principalPubkey,
+    input.delivery,
+    input.messageType
+  )
+  if (!storage) {
+    throw new Error(
+      "Durable private handoff retry storage is unavailable. Retry was stopped before relay delivery."
+    )
+  }
+  const current = loadEventMarketHandoffDeliveries(
+    input.principalPubkey,
+    storage
+  ).find(
+    (candidate) => deliveryIdentity(candidate) === deliveryIdentity(retained)
+  )
+  if (!current) {
+    throw new Error(
+      "The exact encrypted handoff update is no longer pending on this device. Reload before retrying."
+    )
+  }
+  if (!sameExactStoredDelivery(retained, current)) {
+    throw new Error(
+      "The saved encrypted handoff update changed on this device. Reload before retrying."
+    )
+  }
+  const strongest = { ...current, record: retained.record }
+  return eventMarketHandoffDeliveryNeedsRetry(strongest)
+    ? retryStoredDelivery(
+        input.principalPubkey,
+        strongest,
+        storage,
+        input.transport
+      )
+    : strongest
+}
+
+/** Retry one retained merchant-to-organizer receipt without signing again. */
+export function retryStoredOrganizerReadyReceipt(input: {
+  merchantPubkey: string
+  delivery: StoredEventMarketHandoffDelivery
+  storage?: HandoffStorage | null
+  transport?: EventMarketPrivateTransportOptions
+}): Promise<StoredEventMarketHandoffDelivery> {
+  return retryExactStoredDelivery({
+    principalPubkey: input.merchantPubkey,
+    delivery: input.delivery,
+    messageType: "organizer_fulfillment_receipt",
+    storage: input.storage,
+    transport: input.transport,
+  })
+}
+
+/** Retry one retained merchant revocation without signing again. */
+export function retryStoredOrganizerReadyRevocation(input: {
+  merchantPubkey: string
+  delivery: StoredEventMarketHandoffDelivery
+  storage?: HandoffStorage | null
+  transport?: EventMarketPrivateTransportOptions
+}): Promise<StoredEventMarketHandoffDelivery> {
+  return retryExactStoredDelivery({
+    principalPubkey: input.merchantPubkey,
+    delivery: input.delivery,
+    messageType: "organizer_fulfillment_revocation",
+    storage: input.storage,
+    transport: input.transport,
+  })
+}
+
+/** Retry one retained organizer-to-merchant acknowledgement without signing. */
+export function retryStoredOrganizerHandoffAck(input: {
+  organizerPubkey: string
+  delivery: StoredEventMarketHandoffDelivery
+  storage?: HandoffStorage | null
+  transport?: EventMarketPrivateTransportOptions
+}): Promise<StoredEventMarketHandoffDelivery> {
+  return retryExactStoredDelivery({
+    principalPubkey: input.organizerPubkey,
+    delivery: input.delivery,
+    messageType: "organizer_handoff_ack",
+    storage: input.storage,
+    transport: input.transport,
+  })
 }
 
 export async function issueOrganizerReadyReceipt(input: {
@@ -1028,14 +1279,12 @@ export async function issueOrganizerReadyReceipt(input: {
       delivery.record.messageType === "organizer_fulfillment_receipt"
   )
   if (existing) {
-    return !eventMarketHandoffDeliveryNeedsRetry(existing)
-      ? existing
-      : retryStoredDelivery(
-          input.merchantPubkey,
-          existing,
-          storage,
-          input.transport
-        )
+    if (eventMarketHandoffDeliveryNeedsRetry(existing)) {
+      throw new Error(
+        "An exact organizer-ready receipt is already saved. Retry its delivery instead of signing another receipt."
+      )
+    }
+    return existing
   }
 
   if (!input.authorizationConfirmed) {
@@ -1128,14 +1377,12 @@ export async function acknowledgeOrganizerHandoff(input: {
       delivery.record.messageType === "organizer_handoff_ack"
   )
   if (existing) {
-    return !eventMarketHandoffDeliveryNeedsRetry(existing)
-      ? existing
-      : retryStoredDelivery(
-          input.organizerPubkey,
-          existing,
-          storage,
-          input.transport
-        )
+    if (eventMarketHandoffDeliveryNeedsRetry(existing)) {
+      throw new Error(
+        "An exact organizer handoff acknowledgement is already saved. Retry its delivery instead of signing another acknowledgement."
+      )
+    }
+    return existing
   }
   const authorization = authorizeEventMarketHandoffAck({
     claim: input.claim,
@@ -1213,17 +1460,9 @@ export async function revokeOrganizerReadyReceipt(input: {
   }
   if (existing) {
     if (eventMarketHandoffDeliveryNeedsRetry(existing)) {
-      const retried = await retryStoredDelivery(
-        input.merchantPubkey,
-        existing,
-        storage,
-        input.transport
+      throw new Error(
+        "An exact organizer revocation is already saved. Retry its delivery instead of signing another revocation."
       )
-      if (eventMarketHandoffDeliveryNeedsRetry(retried)) {
-        throw new Error(
-          "The exact organizer revocation is still only partially delivered. Cancellation remains blocked."
-        )
-      }
     }
     return "revoked"
   }

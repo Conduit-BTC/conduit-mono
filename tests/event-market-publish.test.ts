@@ -105,6 +105,23 @@ afterEach(() => {
 })
 
 describe("organizer event-market publishing", () => {
+  it("routes organizer market events through the commerce author intent", async () => {
+    const intents: string[] = []
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft,
+      publishWithPlanner: async (_event, options) => {
+        intents.push(options.intent)
+        return publishResult(true)
+      },
+    })
+
+    await publishOrganizerEventMarket(input())
+
+    expect(intents).toHaveLength(3)
+    expect(new Set(intents)).toEqual(new Set(["commerce_author_event"]))
+  })
+
   it("publishes lifecycle changes only on the collection and retries the exact signed closure", async () => {
     const published: SignedPublicNostrEvent[] = []
     __setEventMarketTestOverrides({
@@ -492,6 +509,57 @@ describe("organizer event-market publishing", () => {
       EVENT_KINDS.SHIPPING_OPTION,
       EVENT_KINDS.PRODUCT_COLLECTION,
     ])
+  })
+
+  it("stops before a later signature when signer authority changes", async () => {
+    const signedKinds: number[] = []
+    const publishedKinds: number[] = []
+    const checkpoints: SignedPublicNostrEvent[] = []
+    let authorityCurrent = true
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft: async (draftInput) => {
+        signedKinds.push(draftInput.draft.kind)
+        const signed = await signDraft(draftInput)
+        authorityCurrent = false
+        return signed
+      },
+      publishWithPlanner: async (event: NDKEvent) => {
+        publishedKinds.push(event.kind!)
+        return publishResult(true)
+      },
+    })
+
+    await expect(
+      publishOrganizerEventMarket({
+        ...input(),
+        shouldContinue: () => authorityCurrent,
+        onSignedEvent: ({ signedEvent }) => {
+          checkpoints.push(signedEvent)
+        },
+      })
+    ).rejects.toMatchObject({ name: "AbortError" })
+
+    expect(signedKinds).toEqual([EVENT_KINDS.CALENDAR_TIME])
+    expect(checkpoints).toHaveLength(1)
+    expect(publishedKinds).toEqual([])
+
+    __setEventMarketTestOverrides({
+      getNdk: connectedNdk,
+      signDraft: async () => {
+        throw new Error("exact retry must not request another signature")
+      },
+      publishWithPlanner: async (event: NDKEvent) => {
+        publishedKinds.push(event.kind!)
+        expect(event.id).toBe(checkpoints[0]!.id)
+        return publishResult(true)
+      },
+    })
+    await retryOrganizerEventMarketRecord({
+      organizerPubkey: ORGANIZER_PUBKEY,
+      signedEvent: checkpoints[0]!,
+    })
+    expect(publishedKinds).toEqual([EVENT_KINDS.CALENDAR_TIME])
   })
 
   it("rejects an empty pickup price before relay I/O", async () => {

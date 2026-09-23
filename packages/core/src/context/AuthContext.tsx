@@ -28,6 +28,7 @@ import {
   abandonRemoteSignerConnection,
   canStartAuthConnection,
   cleanupInvalidatedAuthSession,
+  commitRemoteSignerConnection,
   forgetAuthSession,
   claimAuthRevision,
   logoutRemoteSigner,
@@ -41,6 +42,7 @@ import {
   restoreRemoteSigner,
   rollbackAndAbandonRemoteSignerConnection,
   shouldRetireAuthSessionAfterAuthorityChange,
+  verifyRemoteSignerConnection,
   writeAuthSession,
   type AuthSession,
   type RemoteSignerAdapterInvalidation,
@@ -55,6 +57,7 @@ import {
   createProtectedReadSessionLifecycle,
   type ProtectedReadSessionLifecycle,
 } from "../protocol/protected-read-session-lifecycle"
+import { RemoteSignerResumeController } from "../protocol/remote-signer-resume"
 
 export type AuthStatus =
   | "disconnected"
@@ -64,6 +67,8 @@ export type AuthStatus =
   | "error"
 
 export interface AuthContextValue {
+  /** Established account scope, retained while a NIP-46 route is recoverable. */
+  accountPubkey: string | null
   pubkey: string | null
   restorePendingPubkey: string | null
   signer: NDKSigner | null
@@ -75,6 +80,8 @@ export interface AuthContextValue {
   status: AuthStatus
   error: string | null
   remoteSignerRecovery: RemoteSignerRecoveryState | null
+  /** Live signer authority, distinct from retained account scope. */
+  signerReadiness: AuthSignerReadiness
   authUrl: string | null
   nostrConnectUri: string | null
   dismissAuthUrl: () => void
@@ -87,6 +94,12 @@ export interface AuthContextValue {
 export interface RemoteSignerRecoveryState {
   restoreError: string | null
 }
+
+type RemoteSignerState =
+  | "none"
+  | "verifying"
+  | "active"
+  | "recoverable"
 
 export type AuthMethod = "nip07" | "nip46"
 export interface AuthSignerCapabilities {
@@ -107,7 +120,10 @@ export function getAuthSignerReadiness(input: {
   pubkey: string | null
   signer: NDKSigner | null
   capabilities: AuthSignerCapabilities
+  remoteSignerState?: RemoteSignerState
 }): AuthSignerReadiness {
+  if (input.remoteSignerState === "verifying") return "pending"
+  if (input.remoteSignerState === "recoverable") return "unavailable"
   if (input.status === "restoring" || input.status === "connecting") {
     return "pending"
   }
@@ -222,6 +238,28 @@ function authSessionsEqual(
   right: AuthSession | null
 ): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
+}
+
+export function getRetainedAuthAccountPubkey(
+  session: AuthSession | null,
+  preserveSessionIdentity: boolean
+): string | null {
+  return preserveSessionIdentity && session?.type === "nip46"
+    ? session.userPubkey
+    : null
+}
+
+function isSameRemoteSignerCredential(
+  left: AuthSession | null,
+  right: AuthSession | null
+): boolean {
+  return (
+    left?.type === "nip46" &&
+    right?.type === "nip46" &&
+    left.clientKeyId === right.clientKeyId &&
+    left.remoteSignerPubkey === right.remoteSignerPubkey &&
+    left.userPubkey === right.userPubkey
+  )
 }
 
 export interface AuthProviderProps {
@@ -489,6 +527,9 @@ export async function resolveFailedAuthAttempt(options: {
 
 export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) {
   const initialSessionRef = useRef<AuthSession | null>(readAuthSession())
+  const [accountPubkey, setAccountPubkey] = useState<string | null>(() =>
+    getRetainedAuthAccountPubkey(initialSessionRef.current, true)
+  )
   const [pubkey, setPubkey] = useState<string | null>(
     () => initialSessionRef.current?.userPubkey ?? null
   )
@@ -508,6 +549,10 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const [error, setError] = useState<string | null>(null)
   const [remoteSignerRecovery, setRemoteSignerRecovery] =
     useState<RemoteSignerRecoveryState | null>(null)
+  const [remoteSignerState, setRemoteSignerState] =
+    useState<RemoteSignerState>(() =>
+      initialSessionRef.current?.type === "nip46" ? "verifying" : "none"
+    )
   const [authUrl, setAuthUrl] = useState<string | null>(null)
   const [nostrConnectUri, setNostrConnectUri] = useState<string | null>(null)
   const [capabilities, setCapabilities] = useState<AuthSignerCapabilities>(
@@ -536,6 +581,11 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const activeSessionSigner = useRef<SessionSigner | null>(null)
   const activeSession = useRef<AuthSession | null>(null)
   const activePairing = useRef<AbortController | null>(null)
+  const resumeVerification = useRef<Promise<void> | null>(null)
+  const resumeVerificationRunner = useRef<() => Promise<void>>(() =>
+    Promise.resolve()
+  )
+  const [resumeController] = useState(() => new RemoteSignerResumeController())
   const restorePending = useRef<AuthRestorePendingState>({
     attempt: 0,
     active: !!initialSessionRef.current,
@@ -587,6 +637,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     connected.current = false
     settleRestorePending()
     setAuthSigner(null)
+    setAccountPubkey(null)
     setPubkey(null)
     setMethod(null)
     setRememberedMethod(null)
@@ -594,6 +645,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     setError(null)
     recoverySession.current = null
     updateRemoteSignerRecovery(null)
+    setRemoteSignerState("none")
     setAuthUrl(null)
     setNostrConnectUri(null)
     setCapabilities(NO_SIGNER_CAPABILITIES)
@@ -621,14 +673,19 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     activeSignerLease.current = null
     activeSessionSigner.current = null
     activeSession.current = null
+    resumeController.reset()
+    resumeVerification.current = null
     protectedReadSessionLifecycle.current.deactivate()
     sessionSigner?.invalidateLocal()
     connection?.signer.invalidate()
     if (signerLease) removeSigner(signerLease)
     setAuthSigner(null)
-    setPubkey(
-      options.preserveSessionIdentity ? (session?.userPubkey ?? null) : null
+    const preservedRemotePubkey = getRetainedAuthAccountPubkey(
+      session,
+      options.preserveSessionIdentity === true
     )
+    setAccountPubkey(preservedRemotePubkey)
+    setPubkey(preservedRemotePubkey)
     setMethod(null)
     setRememberedMethod(
       options.preserveSessionIdentity ? (session?.type ?? null) : null
@@ -639,11 +696,16 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     recoverySession.current =
       nextRecovery && session?.type === "nip46" ? session : null
     updateRemoteSignerRecovery(nextRecovery)
+    const preservesRemoteAccount =
+      options.preserveSessionIdentity && session?.type === "nip46"
+    setRemoteSignerState(
+      nextRecovery || preservesRemoteAccount ? "recoverable" : "none"
+    )
     setAuthUrl(null)
     setNostrConnectUri(null)
     setCapabilities(NO_SIGNER_CAPABILITIES)
     return connection
-  }, [updateRemoteSignerRecovery])
+  }, [resumeController, updateRemoteSignerRecovery])
 
   const retireInvalidatedSession = useCallback(
     async (options: {
@@ -883,6 +945,9 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
 
     setStatus(mode === "restore" ? "restoring" : "connecting")
     setMethod(requestedMethod)
+    setRemoteSignerState(
+      requestedMethod === "nip46" ? "verifying" : "none"
+    )
     setError(null)
     setAuthUrl(null)
     setNostrConnectUri(null)
@@ -1038,6 +1103,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       if (!attemptIsCurrent()) {
         throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
       }
+      connectedRemote?.signer.assertUsable()
 
       const boundSession = session
       const hasSessionAuthority = () => {
@@ -1065,9 +1131,11 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       }
       activeSessionSigner.current = sessionSigner
       remoteConnection.current = connectedRemote
+      if (connectedRemote) void commitRemoteSignerConnection(connectedRemote)
       uncommittedRemote = null
       activeSession.current = session
       setAuthSigner(sessionSigner)
+      setAccountPubkey(pk)
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
@@ -1076,9 +1144,12 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       updateRemoteSignerRecovery(null)
       setStatus("connected")
       connected.current = true
+      resumeController.reset()
+      resumeVerification.current = null
+      setRemoteSignerState(session.type === "nip46" ? "active" : "none")
       setCapabilities(
         session.type === "nip46"
-          ? { signEvent: true, nip44: true, nip04: true }
+          ? { signEvent: true, nip44: true, nip04: false }
           : getNip07Capabilities()
       )
       setAuthUrl(null)
@@ -1161,11 +1232,31 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
           authorityWasRevoked: revocation.authorityRevoked,
           lockHeld: true,
         })
+      } else if (mode === "restore" && storedSession?.type === "nip46") {
+        const currentSession = readAuthSession()
+        const preservedSession = isSameRemoteSignerCredential(
+          storedSession,
+          currentSession
+        )
+          ? currentSession
+          : storedSession
+        deactivateLocalSigner({
+          preserveSessionIdentity: true,
+          preservedSession,
+          status: "error",
+          error: msg,
+          remoteSignerRecovery: { restoreError: msg },
+        })
       } else {
         setStatus("error")
         setError(msg)
+        setRemoteSignerState("none")
       }
-      if (mode === "restore" && !strictRemoteRestoreFailure) {
+      if (
+        mode === "restore" &&
+        !strictRemoteRestoreFailure &&
+        storedSession?.type !== "nip46"
+      ) {
         updateRemoteSignerRecovery((current) =>
           current ? { ...current, restoreError: msg } : null
         )
@@ -1184,6 +1275,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     deactivateLocalSigner,
     handleRemoteSignerAdapterInvalidated,
     handleSignerSessionInvalidated,
+    resumeController,
     retireInvalidatedSession,
     settleRestorePending,
     signerClientIcon,
@@ -1308,12 +1400,17 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         if (pendingRestoreAttempt !== undefined) {
           settleRestorePending(pendingRestoreAttempt)
         }
-        setStatus("error")
-        setError(lockError.message)
-        if (mode === "restore") {
-          updateRemoteSignerRecovery((current) =>
-            current ? { ...current, restoreError: lockError.message } : null
-          )
+        if (mode === "restore" && storedSession?.type === "nip46") {
+          deactivateLocalSigner({
+            preserveSessionIdentity: true,
+            preservedSession: storedSession,
+            status: "error",
+            error: lockError.message,
+            remoteSignerRecovery: { restoreError: lockError.message },
+          })
+        } else {
+          setStatus("error")
+          setError(lockError.message)
         }
         setAuthUrl(null)
         setNostrConnectUri(null)
@@ -1342,8 +1439,10 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     setMethod(null)
     setStatus("disconnected")
     setError(null)
+    setAccountPubkey(null)
     setAuthUrl(null)
     setNostrConnectUri(null)
+    setRemoteSignerState("none")
   }, [])
 
   const disconnectWithoutLock = useCallback(
@@ -1426,6 +1525,125 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     ]
   )
 
+  const verifyRemoteSignerAfterResume = useCallback((): Promise<void> => {
+    const connection = remoteConnection.current
+    const session = activeSession.current
+    const browserCanVerify =
+      (typeof document === "undefined" ||
+        document.visibilityState === "visible") &&
+      (typeof navigator === "undefined" || navigator.onLine !== false)
+    if (
+      !connection ||
+      session?.type !== "nip46" ||
+      !connected.current ||
+      !browserCanVerify
+    ) {
+      return Promise.resolve()
+    }
+    if (resumeVerification.current) return resumeVerification.current
+    if (connection.signer.hasPendingRequests()) {
+      const idle = connection.signer.whenIdle()
+      setRemoteSignerState("verifying")
+      setCapabilities(NO_SIGNER_CAPABILITIES)
+      let deferred: Promise<void>
+      deferred = idle
+        .catch(() => undefined)
+        .finally(() => {
+          if (resumeVerification.current !== deferred) return
+          resumeVerification.current = null
+          if (resumeController.requiresVerification) {
+            const canRetry =
+              (typeof document === "undefined" ||
+                document.visibilityState === "visible") &&
+              (typeof navigator === "undefined" || navigator.onLine !== false)
+            if (canRetry) {
+              queueMicrotask(() => {
+                void resumeVerificationRunner.current()
+              })
+            }
+          }
+        })
+      resumeVerification.current = deferred
+      return deferred
+    }
+    const verificationEpoch = resumeController.beginVerification()
+    if (verificationEpoch === null) return Promise.resolve()
+    if (!connection.signer.beginVerification()) {
+      resumeController.reset()
+      return Promise.resolve()
+    }
+
+    setRemoteSignerState("verifying")
+    setCapabilities(NO_SIGNER_CAPABILITIES)
+
+    let attemptCompleted = false
+    const acceptsCompletion = (): boolean => {
+      if (attemptCompleted) return false
+      attemptCompleted = true
+      const latestBoundary =
+        resumeController.completeVerification(verificationEpoch)
+      const stillCanVerify =
+        (typeof document === "undefined" ||
+          document.visibilityState === "visible") &&
+        (typeof navigator === "undefined" || navigator.onLine !== false)
+      if (latestBoundary && !stillCanVerify) {
+        resumeController.requireAnotherVerification()
+        return false
+      }
+      return latestBoundary && stillCanVerify
+    }
+
+    const verification = verifyRemoteSignerConnection(connection, {
+      timeoutMs: 10_000,
+    })
+      .then(() => {
+        if (
+          !acceptsCompletion() ||
+          remoteConnection.current !== connection ||
+          activeSession.current !== session ||
+          !connected.current ||
+          !connection.signer.completeVerification()
+        ) {
+          return
+        }
+        setRemoteSignerState("active")
+        setCapabilities({ signEvent: true, nip44: true, nip04: false })
+        setStatus("connected")
+        setError(null)
+      })
+      .catch(async (cause) => {
+        if (
+          acceptsCompletion() &&
+          remoteConnection.current === connection &&
+          activeSession.current === session
+        ) {
+          await connection.signer.failVerification(cause)
+        }
+      })
+      .finally(() => {
+        if (resumeVerification.current === verification) {
+          resumeVerification.current = null
+          if (resumeController.requiresVerification) {
+            const canRetry =
+              (typeof document === "undefined" ||
+                document.visibilityState === "visible") &&
+              (typeof navigator === "undefined" || navigator.onLine !== false)
+            if (canRetry) {
+              queueMicrotask(() => {
+                void resumeVerificationRunner.current()
+              })
+            }
+          }
+        }
+      })
+    resumeVerification.current = verification
+    return verification
+  }, [resumeController])
+
+  useEffect(() => {
+    resumeVerificationRunner.current = verifyRemoteSignerAfterResume
+  }, [verifyRemoteSignerAfterResume])
+
   const dismissAuthUrl = useCallback(() => setAuthUrl(null), [])
 
   useEffect(() => {
@@ -1445,6 +1663,65 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     },
     [deactivateLocalSigner]
   )
+
+  useEffect(() => {
+    const markResumeVerificationRequired = (
+      state: Extract<RemoteSignerState, "verifying" | "recoverable"> =
+        "verifying"
+    ) => {
+      const connection = remoteConnection.current
+      if (
+        !connection ||
+        activeSession.current?.type !== "nip46" ||
+        !connected.current
+      ) {
+        return
+      }
+      const shouldFenceImmediately = resumeController.markBoundary(
+        connection.signer.hasPendingRequests()
+      )
+      if (shouldFenceImmediately) {
+        connection.signer.beginVerification()
+      } else {
+        connection.signer.beginDraining()
+      }
+      setRemoteSignerState(state)
+      setCapabilities(NO_SIGNER_CAPABILITIES)
+    }
+    const verifyAfterResume = () => {
+      void verifyRemoteSignerAfterResume()
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") verifyAfterResume()
+      else markResumeVerificationRequired("verifying")
+    }
+    const handleOffline = () => {
+      markResumeVerificationRequired("recoverable")
+    }
+    const handleBlur = () => {
+      markResumeVerificationRequired("verifying")
+    }
+    const handlePageHide = () => {
+      markResumeVerificationRequired("verifying")
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    window.addEventListener("blur", handleBlur)
+    window.addEventListener("pagehide", handlePageHide)
+    window.addEventListener("focus", verifyAfterResume)
+    window.addEventListener("pageshow", verifyAfterResume)
+    window.addEventListener("online", verifyAfterResume)
+    window.addEventListener("offline", handleOffline)
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      window.removeEventListener("blur", handleBlur)
+      window.removeEventListener("pagehide", handlePageHide)
+      window.removeEventListener("focus", verifyAfterResume)
+      window.removeEventListener("pageshow", verifyAfterResume)
+      window.removeEventListener("online", verifyAfterResume)
+      window.removeEventListener("offline", handleOffline)
+    }
+  }, [resumeController, verifyRemoteSignerAfterResume])
 
   useEffect(() => {
     function handleStorage(event: StorageEvent): void {
@@ -1566,6 +1843,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   return (
     <AuthContext.Provider
       value={{
+        accountPubkey,
         pubkey,
         restorePendingPubkey,
         signer,
@@ -1576,6 +1854,13 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         status,
         error,
         remoteSignerRecovery,
+        signerReadiness: getAuthSignerReadiness({
+          status,
+          pubkey,
+          signer,
+          capabilities,
+          remoteSignerState,
+        }),
         authUrl,
         nostrConnectUri,
         dismissAuthUrl,

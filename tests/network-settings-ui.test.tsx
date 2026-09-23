@@ -4,11 +4,20 @@ import type {
   AccountNetworkRelayRowView,
   AccountNetworkSettingsController,
 } from "@conduit/core"
-import { RelaySettingsPanel } from "@conduit/ui"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  RelaySettingsPanel,
+} from "@conduit/ui"
 import {
   getRelayRemovalReviewCopy,
   persistRelayOrderPreference,
 } from "../packages/ui/src/components/RelaySettingsPanel"
+import {
+  hasUnpublishedRelayRoleChanges,
+  reconcileRelaySettingsDraftRows,
+} from "../packages/ui/src/components/relay-settings-draft"
 
 const EMPTY_FRONTIER = {
   state: "not_observed",
@@ -57,11 +66,21 @@ function controller(
     inbox?: AccountNetworkSettingsController["view"]["inbox"]
     status?: AccountNetworkSettingsController["status"]
     relayInformationRefreshing?: boolean
+    appRelays?: AccountNetworkSettingsController["view"]["appRelays"]
+    personalRelaysEnabled?: boolean
+    setupRecommendation?: AccountNetworkSettingsController["view"]["setupRecommendation"]
   } = {}
 ): AccountNetworkSettingsController {
   return {
     view: {
       rows: input.rows ?? [],
+      ...(input.appRelays ? { appRelays: input.appRelays } : {}),
+      ...(input.personalRelaysEnabled === undefined
+        ? {}
+        : { personalRelaysEnabled: input.personalRelaysEnabled }),
+      ...(input.setupRecommendation
+        ? { setupRecommendation: input.setupRecommendation }
+        : {}),
       relayList: input.relayList ?? EMPTY_FRONTIER,
       inbox: input.inbox ?? EMPTY_FRONTIER,
       pendingExactDeliveries: input.pendingExactDeliveries ?? [],
@@ -91,12 +110,51 @@ function controller(
     retryPendingUpdate: async () => undefined,
     redistributeExactInboxDeclaration: async () => undefined,
     reorderRelays: async () => undefined,
+    setAppRelaysEnabled: async () => undefined,
+    setPersonalRelaysEnabled: async () => undefined,
+    dismissSetupRecommendation: async () => undefined,
     refresh: async () => undefined,
     clearOperation: () => undefined,
   }
 }
 
 describe("RelaySettingsPanel account Network review", () => {
+  it("keeps explicit review available while background discovery is degraded", () => {
+    for (const status of ["reconciling", "error"] as const) {
+      const markup = renderToStaticMarkup(
+        <RelaySettingsPanel controller={controller({ status })} />
+      )
+      const reviewTextIndex = markup.indexOf("Review and publish")
+      const reviewTagStart = markup.lastIndexOf("<button", reviewTextIndex)
+      const reviewTagEnd = markup.indexOf(">", reviewTagStart)
+      expect(markup.slice(reviewTagStart, reviewTagEnd + 1)).not.toContain(
+        'disabled=""'
+      )
+    }
+  })
+
+  it("uses a shared accessible collapsible primitive", () => {
+    const closedMarkup = renderToStaticMarkup(
+      <Collapsible>
+        <CollapsibleTrigger>App Relays</CollapsibleTrigger>
+        <CollapsibleContent>Managed relays</CollapsibleContent>
+      </Collapsible>
+    )
+    const openMarkup = renderToStaticMarkup(
+      <Collapsible defaultOpen>
+        <CollapsibleTrigger>App Relays</CollapsibleTrigger>
+        <CollapsibleContent>Managed relays</CollapsibleContent>
+      </Collapsible>
+    )
+
+    expect(closedMarkup).toContain('type="button"')
+    expect(closedMarkup).toContain('aria-expanded="false"')
+    expect(closedMarkup).toContain("aria-controls=")
+    expect(closedMarkup).toContain('hidden=""')
+    expect(openMarkup).toContain('aria-expanded="true"')
+    expect(openMarkup).not.toContain('hidden=""')
+  })
+
   it("keeps initial empty reconciliation pending before offering settled recovery", () => {
     const notCheckedFrontier = {
       ...EMPTY_FRONTIER,
@@ -158,7 +216,10 @@ describe("RelaySettingsPanel account Network review", () => {
     const emptyMarkup = renderToStaticMarkup(
       <RelaySettingsPanel controller={controller()} />
     )
-    expect(emptyMarkup).toContain("at least one Publish relay")
+    expect(emptyMarkup).toContain(
+      "No relay preferences were found on the relays checked."
+    )
+    expect(emptyMarkup).toContain("one Publish relay")
     expect(emptyMarkup).toContain(
       "Select a Private inbox if you want to receive private messages."
     )
@@ -437,6 +498,307 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).toContain("group-open/published-preferences:rotate-180")
   })
 
+  it("presents app and personal relay groups with safe relay identity imagery", () => {
+    const personal = relayRow("wss://personal.example", {
+      capability: {
+        configuredUses: [],
+        observedCommerce: false,
+        nip11: "available",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        relayName: "Personal Relay",
+        relayIconUrl: "https://nostr.build/personal-relay.png",
+      },
+    })
+    const app = relayRow("wss://relay.conduit.market", {
+      capability: {
+        configuredUses: ["app_publishing"],
+        observedCommerce: false,
+        nip11: "unavailable",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        relayName: "Conduit Relay",
+        relayIconUrl: "https://nostr.build/stale-conduit-relay.png",
+        relayIconFallbackUrl: "/images/logo/logo-icon.svg",
+      },
+    })
+    const appRows = [
+      app,
+      ...[
+        ["wss://relay.ditto.pub", "Ditto Relay"],
+        ["wss://relay.dreamith.to", "Dreamith Relay"],
+        ["wss://relay.primal.net", "Primal Public Relay"],
+        ["wss://nos.lol", "nos.lol"],
+        ["wss://relay.plebeian.market", "Plebeian Market Relay"],
+      ].map(([url, relayName]) =>
+        relayRow(url, {
+          capability: {
+            configuredUses: [],
+            observedCommerce: false,
+            nip11: "not_checked",
+            searchAdvertised: false,
+            authEvidence: "untested",
+            relayName,
+          },
+        })
+      ),
+    ]
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [personal],
+          appRelays: {
+            enabled: true,
+            rows: appRows,
+            warning: "Your personal setup is missing important routes.",
+          },
+          personalRelaysEnabled: false,
+          setupRecommendation: {
+            title: "Match Conduit defaults",
+            description: "Prepare recommended roles for review.",
+            rows: [app],
+          },
+        })}
+      />
+    )
+
+    expect(markup).toContain("App Relays")
+    expect(markup).toContain("Your Relays")
+    expect(markup).toContain(
+      "6 managed routes for reliable commerce, discovery, and messaging."
+    )
+    expect(markup).toContain('aria-expanded="false"')
+    expect(markup).toContain('hidden=""')
+    expect(markup).toContain("Match Conduit defaults")
+    expect(markup.match(/\(Ditto backup\)/g)).toHaveLength(1)
+    expect(markup).not.toContain("relay.damus.io")
+    expect(markup).toContain(
+      'class="mt-3 divide-y divide-[var(--border)] border-t border-[var(--border)]"'
+    )
+    expect(markup).toContain('src="/images/logo/logo-icon.svg"')
+    expect(markup).toContain('src="https://nostr.build/personal-relay.png"')
+    expect(markup).toContain('loading="lazy"')
+    expect(markup).toContain('referrerPolicy="no-referrer"')
+    expect(markup).toContain('aria-label="Disable App Relays"')
+    expect(markup).toContain('aria-label="Enable Your Relays"')
+    expect(markup).toContain('aria-label="Dismiss relay setup recommendation"')
+    expect(markup.indexOf("Personal Relay")).toBeLessThan(
+      markup.indexOf("wss://personal.example")
+    )
+  })
+
+  it("keeps a kind-10050-only relay visible and editable while personal routing is off", () => {
+    const nip65 = relayRow("wss://nip65-only.example", {
+      privateInboxEnabled: false,
+      privateInboxState: null,
+    })
+    const inboxOnly = relayRow("wss://inbox-only.example", {
+      readEnabled: false,
+      publishEnabled: false,
+      privateInboxEnabled: true,
+      readState: null,
+      publishState: null,
+      privateInboxState: "published",
+      signedPosition: 1,
+    })
+    const markup = renderToStaticMarkup(
+      <RelaySettingsPanel
+        controller={controller({
+          rows: [nip65, inboxOnly],
+          appRelays: { enabled: true, rows: [] },
+          personalRelaysEnabled: false,
+        })}
+      />
+    )
+
+    expect(markup).toContain("wss://nip65-only.example")
+    expect(markup).toContain("wss://inbox-only.example")
+    expect(markup).toContain('aria-label="Enable Your Relays"')
+    const readButton = markup.match(
+      /<button[^>]*aria-label="Enable Read for wss:\/\/inbox-only\.example"[^>]*>/
+    )?.[0]
+    const inboxButton = markup.match(
+      /<button[^>]*aria-label="Disable Private inbox for wss:\/\/inbox-only\.example"[^>]*>/
+    )?.[0]
+    expect(readButton).toBeDefined()
+    expect(readButton).not.toContain('disabled=""')
+    expect(inboxButton).toBeDefined()
+    expect(inboxButton).not.toContain('disabled=""')
+  })
+
+  it("adopts a signed relay added by a new controller revision", () => {
+    const existing = relayRow("wss://existing.example")
+    const added = relayRow("wss://added.example", {
+      signedPosition: 1,
+      reachability: "issue",
+    })
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [existing],
+      localRows: [existing],
+      nextControllerRows: [existing, added],
+    })
+
+    expect(reconciled.map((row) => row.url)).toContain(added.url)
+    expect(reconciled.find((row) => row.url === added.url)).toEqual(added)
+  })
+
+  it("adopts a signed relay removed by a new controller revision", () => {
+    const retained = relayRow("wss://retained.example")
+    const removed = relayRow("wss://removed.example", { signedPosition: 1 })
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [retained, removed],
+      localRows: [retained, removed],
+      nextControllerRows: [retained],
+    })
+
+    expect(reconciled.map((row) => row.url)).toEqual([retained.url])
+  })
+
+  it("preserves explicit role edits while adopting fresh controller metadata", () => {
+    const previous = relayRow("wss://edited.example", {
+      capability: {
+        configuredUses: [],
+        observedCommerce: false,
+        nip11: "available",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        relayName: "Stale relay name",
+      },
+    })
+    const local = { ...previous, publishEnabled: false }
+    const current = relayRow(previous.url, {
+      privateInboxEnabled: false,
+      privateInboxState: null,
+      signedPosition: 4,
+      reachability: "issue",
+      capability: {
+        configuredUses: [],
+        observedCommerce: false,
+        nip11: "available",
+        searchAdvertised: true,
+        authEvidence: "advertised",
+        relayName: "Fresh relay name",
+        observedAt: 42,
+      },
+    })
+
+    const [reconciled] = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [previous],
+      localRows: [local],
+      nextControllerRows: [current],
+    })
+
+    expect(reconciled?.publishEnabled).toBe(false)
+    expect(reconciled?.privateInboxEnabled).toBe(false)
+    expect(reconciled?.signedPosition).toBe(4)
+    expect(reconciled?.reachability).toBe("issue")
+    expect(reconciled?.capability.relayName).toBe("Fresh relay name")
+    expect(reconciled?.capability.observedAt).toBe(42)
+    expect(hasUnpublishedRelayRoleChanges([current], [reconciled!])).toBe(true)
+  })
+
+  it("keeps the full edited row when background discovery omits its relay", () => {
+    const previous = relayRow("wss://removed.example")
+    const local = { ...previous, readEnabled: false }
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [previous],
+      localRows: [local],
+      nextControllerRows: [],
+    })
+
+    expect(reconciled).toEqual([
+      expect.objectContaining({
+        url: previous.url,
+        readEnabled: false,
+        publishEnabled: true,
+        privateInboxEnabled: true,
+        candidate: true,
+      }),
+    ])
+    expect(hasUnpublishedRelayRoleChanges([], reconciled)).toBe(true)
+  })
+
+  it("preserves a local relay candidate across controller revisions", () => {
+    const existing = relayRow("wss://existing.example")
+    const candidate = relayRow("wss://candidate.example", {
+      readEnabled: false,
+      publishEnabled: true,
+      privateInboxEnabled: false,
+      readState: null,
+      publishState: null,
+      privateInboxState: null,
+      signedPosition: null,
+      candidate: true,
+    })
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [existing],
+      localRows: [existing, candidate],
+      nextControllerRows: [existing],
+    })
+
+    expect(reconciled.find((row) => row.url === candidate.url)).toEqual(
+      candidate
+    )
+  })
+
+  it("does not create a hidden publish delta for a controller-only refresh", () => {
+    const retained = relayRow("wss://retained.example")
+    const removed = relayRow("wss://removed.example", { signedPosition: 1 })
+    const refreshed = relayRow(retained.url, {
+      reachability: "issue",
+      capability: {
+        configuredUses: [],
+        observedCommerce: false,
+        nip11: "unavailable",
+        searchAdvertised: false,
+        authEvidence: "untested",
+        observedAt: 84,
+      },
+    })
+    const added = relayRow("wss://added.example", { signedPosition: 1 })
+
+    const reconciled = reconcileRelaySettingsDraftRows({
+      previousControllerRows: [retained, removed],
+      localRows: [retained, removed],
+      nextControllerRows: [refreshed, added],
+    })
+
+    expect(new Set(reconciled.map((row) => row.url))).toEqual(
+      new Set([refreshed.url, added.url])
+    )
+    expect(hasUnpublishedRelayRoleChanges([refreshed, added], reconciled)).toBe(
+      false
+    )
+  })
+
+  it("requires a warning review before disabling app relays", async () => {
+    const panelSource = await Bun.file(
+      "packages/ui/src/components/RelaySettingsPanel.tsx"
+    ).text()
+
+    expect(panelSource).toContain("if (!enabled && disableWarning)")
+    expect(panelSource).toContain("Turn off App Relays?")
+    expect(panelSource).toContain("{disableWarning}")
+    expect(panelSource).toContain("controller.setAppRelaysEnabled(enabled)")
+    expect(panelSource).toContain(
+      "review.applySetupRecommendation(recommendation.rows)"
+    )
+    expect(panelSource).toContain("controller.dismissSetupRecommendation()")
+    expect(panelSource).toContain("<Collapsible defaultOpen={false}>")
+    expect(panelSource).toContain("appRelays.rows.length")
+    expect(panelSource).toContain("group-data-[state=open]:rotate-90")
+    expect(panelSource).not.toContain(
+      "gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"
+    )
+    expect(panelSource).toContain(
+      'controller.prepareChange({ type: "set_roles", rows: desiredRoles })'
+    )
+  })
+
   it("never labels an all-excluded exact plan as confirmed", () => {
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel
@@ -557,19 +919,44 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(rows.map((row) => row.url)).toEqual(latestPreferredOrder)
   })
 
-  it("keeps the relay editor reset key insensitive to local reordering", async () => {
+  it("preserves relay drafts by account while invalidating prepared signer work", async () => {
     const panelSource = await Bun.file(
       "packages/ui/src/components/RelaySettingsPanel.tsx"
     ).text()
-    const revisionHelper = panelSource.match(
-      /function getRelaySettingsEditorRevision\([\s\S]*?\n\}/
-    )?.[0]
-
-    expect(revisionHelper).toBeDefined()
-    expect(revisionHelper).toContain(
-      ".sort((left, right) => left[0].localeCompare(right[0]))"
+    const invalidationStart = panelSource.indexOf(
+      "useLayoutEffect(() => {",
+      panelSource.indexOf("const [removalPreparationError")
     )
-    expect(revisionHelper).toContain("Boolean(row.recoveryReadOnly)")
-    expect(panelSource).toContain("key={editorRevision}")
+    const invalidationEnd =
+      panelSource.indexOf("}, [signerReviewKey])", invalidationStart) +
+      "}, [signerReviewKey])".length
+    const invalidationEffect = panelSource.slice(
+      invalidationStart,
+      invalidationEnd
+    )
+
+    expect(panelSource).toContain('key={accountPubkey ?? "no-account"}')
+    expect(panelSource).toContain(
+      'key={`media:${accountPubkey ?? "no-account"}`}'
+    )
+    expect(panelSource).toContain("signerReviewKey={signerReviewKey}")
+    expect(panelSource).not.toContain("getRelaySettingsEditorRevision")
+    expect(invalidationEffect).toContain("setPublishDialogOpen(false)")
+    expect(invalidationEffect).toContain("setPreparedPublishChange(null)")
+    expect(invalidationEffect).toContain("setPreparedRemovalChange(null)")
+    expect(invalidationEffect).toContain("}, [signerReviewKey])")
+    expect(invalidationEffect).not.toContain("setRows(")
+
+    const [marketRoute, merchantRoute, controllerSource] = await Promise.all([
+      Bun.file("apps/market/src/routes/network.tsx").text(),
+      Bun.file("apps/merchant/src/routes/network.tsx").text(),
+      Bun.file("packages/core/src/hooks/useAccountNetworkSettings.ts").text(),
+    ])
+    for (const route of [marketRoute, merchantRoute]) {
+      expect(route).toContain(
+        'signerReviewKey={`${accountPubkey ?? "none"}:${authGeneration}:${signerReadiness}`}'
+      )
+    }
+    expect(controllerSource).toContain('current.signerReadiness === "ready"')
   })
 })

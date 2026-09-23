@@ -326,7 +326,7 @@ describe("Market shopper preset integration", () => {
       "const { identityReady, relayScope, relaySettingsReady } = useConduitSession()"
     )
     expect(source).toContain(
-      "enabled: !!identityPubkey && identityReady && relaySettingsReady"
+      "!!identityPubkey && identityReady && relaySettingsReady && signerReady"
     )
   })
 
@@ -612,16 +612,14 @@ describe("Market shopper preset integration", () => {
     expect(refresh).toContain(': "unavailable"')
   })
 
-  it("keeps capability drafts and clear policy bound to connected auth state", async () => {
+  it("keeps capability drafts and clear policy bound to established account ownership", async () => {
     const [capability, preferences, presets] = await Promise.all([
       Bun.file("apps/market/src/hooks/useMerchantCheckoutCapability.ts").text(),
       Bun.file("apps/market/src/routes/preferences.tsx").text(),
       Bun.file("apps/market/src/hooks/useShopperPresets.tsx").text(),
     ])
 
-    expect(capability).toContain(
-      'const identityPubkey = authStatus === "connected" ? pubkey : null'
-    )
+    expect(capability).toContain("const identityPubkey = accountPubkey")
     expect(capability).toMatch(
       /readCheckoutShippingCapabilityInitialization\([\s\S]*identityPubkey\s*\)\.value/u
     )
@@ -640,6 +638,7 @@ describe("Market shopper preset integration", () => {
     expect(presets).toContain(
       "unlockPolicyState.ownerPubkey === identityPubkey"
     )
+    expect(presets).toContain("const identityPubkey = accountPubkey")
   })
 
   it("stores an unlock password only after an explicit policy choice", () => {
@@ -983,7 +982,7 @@ describe("Market shopper preset integration", () => {
     expect(source).toContain(
       'authSignerReadiness === "pending" || restorePendingPubkey !== null'
     )
-    expect(source).not.toContain('authStatus === "restoring"')
+    expect(source).toContain('authStatus === "restoring"')
     expect(source).toContain("if (authPending) return")
     expect(source).toContain("initializeCheckoutShippingSession(")
     expect(source).not.toContain("readCheckoutShippingInitialization(")
@@ -1072,9 +1071,7 @@ describe("Market shopper preset integration", () => {
       "apps/market/src/routes/checkout.tsx"
     ).text()
 
-    expect(checkout).toContain(
-      'const draftOwnerIdentity = authStatus === "connected" ? pubkey : null'
-    )
+    expect(checkout).toContain("const draftOwnerIdentity = accountPubkey")
     expect(checkout).toContain(
       "getIdentityBoundShippingPreset(\n      draftOwnerIdentity,"
     )
@@ -1140,9 +1137,7 @@ describe("Market shopper preset integration", () => {
       "apps/market/src/hooks/useMerchantCheckoutCapability.ts"
     ).text()
 
-    expect(capability).toContain(
-      'const identityPubkey = authStatus === "connected" ? pubkey : null'
-    )
+    expect(capability).toContain("const identityPubkey = accountPubkey")
     expect(capability).toContain("restorePendingPubkey")
     expect(capability).toContain("DEFAULT_CHECKOUT_SHIPPING")
     expect(capability).toContain("const shippingPreset = restorePendingPubkey")

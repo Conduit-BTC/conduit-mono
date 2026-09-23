@@ -34,8 +34,10 @@ describe("Merchant live account authority", () => {
 
     const generationGuard =
       /!signal\.aborted && authGenerationRef\.current === authGeneration/g
+    const orderGenerationGuard =
+      /!signal\.aborted &&\s+!!pubkey &&\s+isCurrentOrderOwner\(pubkey, authGeneration\)/g
     expect(dashboard.match(generationGuard)).toHaveLength(1)
-    expect(orders.match(generationGuard)).toHaveLength(2)
+    expect(orders.match(orderGenerationGuard)).toHaveLength(2)
     expect(products.match(generationGuard)).toHaveLength(5)
     expect(
       events.match(/!signal\.aborted && shouldContinue\(\)/g)
@@ -69,8 +71,8 @@ describe("Merchant live account authority", () => {
     for (const contents of sources) {
       expect(contents).toContain("shouldContinue:")
     }
-    expect(sources[7]).toContain(
-      "shouldContinue: () => authGenerationRef.current === authGeneration"
+    expect(sources[7]).toMatch(
+      /shouldContinue: \(\) =>\s+!!pubkey && isCurrentOrderOwner\(pubkey, authGeneration\)/
     )
     expect(sources[7]).toMatch(
       /useShopperTrustEvidence\([\s\S]{0,520}shouldContinue:/
@@ -105,7 +107,7 @@ describe("Merchant live account authority", () => {
     expect(hydration).toContain("input.signal?.aborted")
     expect(hydration).toContain('stop("caller")')
     expect(component).toMatch(
-      /useProfiles\([\s\S]{0,100}accountPubkey: authenticatedPubkey,[\s\S]{0,50}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => authGenerationRef.current === authGeneration/
+      /useProfiles\([\s\S]{0,100}accountPubkey,[\s\S]{0,50}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) =>[\s\S]{0,80}authGenerationRef\.current === authGeneration &&[\s\S]{0,80}isAuthGenerationCurrent\(authGeneration\)/
     )
   })
 

@@ -5,6 +5,13 @@ import {
   type AccountNetworkLocalState,
   type AccountNetworkRelayExclusion,
 } from "../db"
+import {
+  createDefaultAccountNetworkRoutingPolicy,
+  isAccountNetworkRoutingSourceEnabled,
+  migrateLegacyAccountNetworkRoutingPolicy,
+  normalizeAccountNetworkRoutingPolicy,
+  type AccountNetworkRoutingPolicy,
+} from "./account-network-routing-policy"
 import { EVENT_KINDS } from "./kinds"
 import {
   getConfiguredIsolatedE2eRelayUrl,
@@ -26,7 +33,8 @@ export type {
   AccountNetworkRelayExclusion,
 } from "../db"
 
-export const ACCOUNT_NETWORK_LOCAL_STATE_VERSION = 1
+export const ACCOUNT_NETWORK_LOCAL_STATE_VERSION = 2
+const LEGACY_ACCOUNT_NETWORK_LOCAL_STATE_VERSION = 1
 
 const HEX_64 = /^[0-9a-f]{64}$/
 
@@ -44,6 +52,18 @@ export interface AccountNetworkLocalStateRepository {
   update(
     pubkey: string,
     updater: (current: AccountNetworkLocalState) => AccountNetworkLocalState
+  ): Promise<AccountNetworkLocalState>
+  replaceRoutingPolicy(
+    pubkey: string,
+    routingPolicy: AccountNetworkRoutingPolicy,
+    updatedAt?: number
+  ): Promise<AccountNetworkLocalState>
+  updateRoutingPolicy(
+    pubkey: string,
+    updater: (
+      current: AccountNetworkRoutingPolicy
+    ) => AccountNetworkRoutingPolicy,
+    updatedAt?: number
   ): Promise<AccountNetworkLocalState>
 }
 
@@ -221,6 +241,7 @@ function normalizeRelayScan(value: unknown): RelayScanResult {
         commerceProfileVersion: value.commerceProfileVersion,
         scannedAt,
         relayName: value.relayName,
+        relayIconUrl: value.relayIconUrl,
       },
     ],
     updatedAt: scannedAt,
@@ -234,6 +255,7 @@ function normalizeRelayScan(value: unknown): RelayScanResult {
     url,
     reachable: value.reachable,
     ...(entry.relayName ? { relayName: entry.relayName } : {}),
+    ...(entry.relayIconUrl ? { relayIconUrl: entry.relayIconUrl } : {}),
     capabilities: entry.capabilities,
     warnings: entry.warnings,
     observations: entry.observations,
@@ -305,7 +327,10 @@ export function normalizeAccountNetworkLocalState(
   }
 
   const version = assertVersion(value.version, "Account network state version")
-  if (version !== ACCOUNT_NETWORK_LOCAL_STATE_VERSION) {
+  if (
+    version !== LEGACY_ACCOUNT_NETWORK_LOCAL_STATE_VERSION &&
+    version !== ACCOUNT_NETWORK_LOCAL_STATE_VERSION
+  ) {
     throw new Error(`Unsupported account network state version: ${version}`)
   }
   if (!Array.isArray(value.exclusions)) {
@@ -325,7 +350,11 @@ export function normalizeAccountNetworkLocalState(
 
   return {
     pubkey,
-    version,
+    version: ACCOUNT_NETWORK_LOCAL_STATE_VERSION,
+    routingPolicy:
+      version === LEGACY_ACCOUNT_NETWORK_LOCAL_STATE_VERSION
+        ? migrateLegacyAccountNetworkRoutingPolicy()
+        : normalizeAccountNetworkRoutingPolicy(value.routingPolicy),
     exclusions,
     preferredRelayOrder: normalizeRelayUrlsStrict(
       value.preferredRelayOrder,
@@ -346,6 +375,7 @@ export function emptyAccountNetworkLocalState(
   return {
     pubkey: requireAccountPubkey(pubkey),
     version: ACCOUNT_NETWORK_LOCAL_STATE_VERSION,
+    routingPolicy: createDefaultAccountNetworkRoutingPolicy(),
     exclusions: [],
     preferredRelayOrder: [],
     relayScans: [],
@@ -356,7 +386,7 @@ export function emptyAccountNetworkLocalState(
 function createDexieRepository(
   now: () => number = Date.now
 ): AccountNetworkLocalStateRepository {
-  return {
+  const repository: AccountNetworkLocalStateRepository = {
     async get(pubkey) {
       const normalizedPubkey = requireAccountPubkey(pubkey)
       const record = await db.accountNetworkLocalState.get(normalizedPubkey)
@@ -403,7 +433,24 @@ function createDexieRepository(
         }
       )
     },
+
+    async replaceRoutingPolicy(pubkey, routingPolicy, updatedAt = now()) {
+      return await repository.update(pubkey, (current) =>
+        replaceAccountNetworkRoutingPolicy(current, routingPolicy, updatedAt)
+      )
+    },
+
+    async updateRoutingPolicy(pubkey, updater, updatedAt = now()) {
+      return await repository.update(pubkey, (current) =>
+        replaceAccountNetworkRoutingPolicy(
+          current,
+          updater(structuredClone(current.routingPolicy)),
+          updatedAt
+        )
+      )
+    },
   }
+  return repository
 }
 
 export const dexieAccountNetworkLocalStateRepository = createDexieRepository()
@@ -444,7 +491,7 @@ export function createInMemoryAccountNetworkLocalStateRepository(
     records.set(normalized.pubkey, cloneState(normalized))
   }
 
-  return {
+  const repository: AccountNetworkLocalStateRepository = {
     async get(pubkey) {
       const normalizedPubkey = requireAccountPubkey(pubkey)
       const record = records.get(normalizedPubkey)
@@ -476,7 +523,48 @@ export function createInMemoryAccountNetworkLocalStateRepository(
       records.set(normalizedPubkey, cloneState(next))
       return cloneState(next)
     },
+
+    async replaceRoutingPolicy(pubkey, routingPolicy, updatedAt = now()) {
+      return await repository.update(pubkey, (current) =>
+        replaceAccountNetworkRoutingPolicy(current, routingPolicy, updatedAt)
+      )
+    },
+
+    async updateRoutingPolicy(pubkey, updater, updatedAt = now()) {
+      return await repository.update(pubkey, (current) =>
+        replaceAccountNetworkRoutingPolicy(
+          current,
+          updater(structuredClone(current.routingPolicy)),
+          updatedAt
+        )
+      )
+    },
   }
+  return repository
+}
+
+export function replaceAccountNetworkRoutingPolicy(
+  state: AccountNetworkLocalState,
+  routingPolicy: AccountNetworkRoutingPolicy,
+  updatedAt: number = Date.now()
+): AccountNetworkLocalState {
+  const current = normalizeAccountNetworkLocalState(state)
+  const normalizedRoutingPolicy =
+    normalizeAccountNetworkRoutingPolicy(routingPolicy)
+  if (
+    JSON.stringify(current.routingPolicy) ===
+    JSON.stringify(normalizedRoutingPolicy)
+  ) {
+    return current
+  }
+  return normalizeAccountNetworkLocalState({
+    ...current,
+    routingPolicy: normalizedRoutingPolicy,
+    updatedAt: Math.max(
+      current.updatedAt,
+      assertTimestamp(updatedAt, "Account network routing policy updatedAt")
+    ),
+  })
 }
 
 export function applyAccountNetworkRelayExclusion(
@@ -689,6 +777,16 @@ export async function filterEligibleAccountRelayUrls(input: {
    * explicit Network selection. Never populate this from remote relay hints.
    */
   ownerSelectedRelayUrls?: readonly string[]
+  /** Exact candidates whose provenance includes Conduit's app-owned layer. */
+  appRelayUrls?: readonly string[]
+  /** Exact candidates whose provenance includes the owner's NIP-65 layer. */
+  personalRelayUrls?: readonly string[]
+  /**
+   * Exact candidates with authority independent from both local source
+   * switches, such as a remote author's signed NIP-65 hint or retained public
+   * event-source provenance.
+   */
+  independentRelayUrls?: readonly string[]
   repository?: Pick<AccountNetworkLocalStateRepository, "get">
 }): Promise<string[]> {
   const accountPubkey = normalizeAccountNetworkPubkey(input.accountPubkey)
@@ -708,13 +806,54 @@ export async function filterEligibleAccountRelayUrls(input: {
     const state = stored
       ? normalizeAccountNetworkLocalState(stored, accountPubkey)
       : undefined
+    const routingPolicy =
+      state?.routingPolicy ?? createDefaultAccountNetworkRoutingPolicy()
     const excluded = new Set(
       state?.exclusions.map((exclusion) => exclusion.relayUrl) ?? []
     )
-    return normalizeCandidateRelayUrls(
+    const candidates = normalizeCandidateRelayUrls(
       input.candidateRelayUrls,
       ownerSelectedRelayUrls
-    ).filter((relayUrl) => !excluded.has(relayUrl))
+    )
+    if (
+      input.appRelayUrls === undefined &&
+      input.personalRelayUrls === undefined
+    ) {
+      return candidates.filter((relayUrl) => !excluded.has(relayUrl))
+    }
+
+    const appRelayUrls = new Set(
+      normalizeCandidateRelayUrls(input.appRelayUrls ?? [])
+    )
+    const personalRelayUrls = new Set(
+      normalizeCandidateRelayUrls(
+        input.personalRelayUrls ?? [],
+        ownerSelectedRelayUrls
+      )
+    )
+    const independentRelayUrls = new Set(
+      normalizeCandidateRelayUrls(input.independentRelayUrls ?? [])
+    )
+    const appEnabled = isAccountNetworkRoutingSourceEnabled(
+      routingPolicy,
+      "app"
+    )
+    const personalEnabled = isAccountNetworkRoutingSourceEnabled(
+      routingPolicy,
+      "personal"
+    )
+    return candidates.filter((relayUrl) => {
+      if (excluded.has(relayUrl)) return false
+      const isAppRelay = appRelayUrls.has(relayUrl)
+      const isPersonalRelay = personalRelayUrls.has(relayUrl)
+      if (
+        independentRelayUrls.has(relayUrl) ||
+        (!isAppRelay && !isPersonalRelay)
+      ) {
+        return true
+      }
+      return (isAppRelay && appEnabled) || (isPersonalRelay && personalEnabled)
+    })
   } catch {
     // Durable local policy is the authority for whole-relay contact cutoffs.
     return []

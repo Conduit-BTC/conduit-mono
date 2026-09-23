@@ -890,6 +890,7 @@ describe("candidate-first followed event-market discovery", () => {
   it("carries only explicit owner relay transport authority into candidate reads", async () => {
     const ownerRelay = "ws://127.0.0.1:4888"
     const disabledRelay = "ws://127.0.0.1:4889"
+    const repository = { get: async () => null }
     const readRelays: string[] = []
     __setFollowedEventMarketDiscoveryTestOverrides({
       readAccountRelaySettingsPlanningSnapshot: async (account) => {
@@ -940,6 +941,7 @@ describe("candidate-first followed event-market discovery", () => {
     await discoverPerspectiveEventMarkets({
       organizerPubkeys: [ORGANIZER],
       authenticatedPubkey: MERCHANT,
+      accountNetworkLocalStateRepository: repository,
       perspective: {
         source: "conduit",
         coverage: "complete",
