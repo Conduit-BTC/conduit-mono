@@ -11,7 +11,11 @@ import type {
   ProductSchema,
 } from "@conduit/core"
 import { applyProductFulfillmentIntentForPublication } from "../apps/merchant/src/lib/product-publishing"
-import { prepareOrderStockUpdate } from "../apps/merchant/src/lib/order-stock-fulfillment"
+import {
+  assertOrderStockRevisionCurrent,
+  captureOrderStockRevision,
+  prepareOrderStockUpdate,
+} from "../apps/merchant/src/lib/order-stock-fulfillment"
 import {
   getOrderStockDecisionKey,
   type OrderStockAdjustment,
@@ -90,6 +94,44 @@ function prepare(
 }
 
 describe("merchant-owned order stock mutation", () => {
+  it("rejects a changed exact listing revision before a stock signature can be staged", () => {
+    const baseline = record()
+    const expected = captureOrderStockRevision(baseline)
+    expect(() =>
+      assertOrderStockRevisionCurrent({
+        merchantPubkey: MERCHANT,
+        expected,
+        current: { ...record(), eventId: "a".repeat(64) },
+      })
+    ).toThrow("changed while preparing the stock update")
+    expect(() =>
+      assertOrderStockRevisionCurrent({
+        merchantPubkey: MERCHANT,
+        expected,
+        current: { ...record(), product: { ...baseline.product, stock: 4 } },
+      })
+    ).toThrow("changed while preparing the stock update")
+    expect(() =>
+      assertOrderStockRevisionCurrent({
+        merchantPubkey: MERCHANT,
+        expected,
+        current: {
+          ...record(),
+          product: {
+            ...baseline.product,
+            supplierAllocation: { state: "absent", recipients: [], issues: [] },
+          },
+        },
+      })
+    ).toThrow("changed while preparing the stock update")
+    expect(() =>
+      assertOrderStockRevisionCurrent({
+        merchantPubkey: MERCHANT,
+        expected,
+        current: baseline,
+      })
+    ).not.toThrow()
+  })
   it("rebases calculated stock onto the current local listing and preserves its exact fulfillment", () => {
     const baseline = record()
     const result = prepare({ record: baseline })

@@ -77,6 +77,10 @@ import {
   resumeStagedProductListingDeliveries,
 } from "../apps/merchant/src/lib/product-listing-delivery"
 import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
+import {
+  assertOrderStockRevisionCurrent,
+  captureOrderStockRevision,
+} from "../apps/merchant/src/lib/order-stock-fulfillment"
 
 const MERCHANT_SECRET = new Uint8Array(32).fill(4)
 const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
@@ -3482,6 +3486,216 @@ describe("merchant product event delivery", () => {
     } finally {
       publishSpy.mockRestore()
     }
+  })
+
+  it("discards a stock signature when the source revision changes during signing", async () => {
+    for (const stockAction of ["update", "republish"] as const) {
+      const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+      const listingStorage = new Map<string, ProductListingDeliveryJob>()
+      const dTag = `stock-${stockAction}`
+      const supplierPubkey = getPublicKey(OTHER_MERCHANT_SECRET)
+      const allocation = (merchantWeight: number) => ({
+        state: "valid" as const,
+        recipients: [
+          {
+            pubkey: MERCHANT_PUBKEY,
+            relayHint: "wss://relay.conduit.market/",
+            role: "merchant" as const,
+            weight: merchantWeight,
+          },
+          {
+            pubkey: supplierPubkey,
+            relayHint: "wss://relay.conduit.market/",
+            role: "supplier" as const,
+            weight: 1,
+          },
+        ],
+        issues: [],
+      })
+      const sourceProduct = {
+        ...makeProduct(dTag),
+        stock: 5,
+        supplierAllocation: allocation(4),
+      }
+      const signedListing = (product: ProductSchema, createdAt: number) => {
+        const draft = buildProductListingEventDraft({
+          product,
+          dTag,
+          clientAppId: "merchant",
+        })
+        return finalizeEvent(
+          { ...draft, created_at: createdAt },
+          MERCHANT_SECRET
+        )
+      }
+      const original = signedListing(sourceProduct, Math.floor(NOW / 1000))
+      const rotated = signedListing(
+        { ...sourceProduct, supplierAllocation: allocation(3) },
+        Math.floor(NOW / 1000) + 1
+      )
+      await cacheSignedProductListingEvent(new NDKEvent(undefined, original))
+      const sourceRecord = (
+        await getCachedMerchantStorefront({
+          merchantPubkey: MERCHANT_PUBKEY,
+          includeMarketHidden: true,
+        })
+      ).data.find((record) => record.dTag === dTag)
+      expect(sourceRecord?.eventId).toBe(original.id)
+      const expectedRevision = captureOrderStockRevision(sourceRecord!)
+      let signRequests = 0
+      let localCalls = 0
+      let relayAttempts = 0
+      setSigner({
+        user: () => delegate.user(),
+        sign: async (event: NostrEvent) => {
+          signRequests += 1
+          const signed = await delegate.sign(event)
+          await cacheSignedProductListingEvent(new NDKEvent(undefined, rotated))
+          return signed
+        },
+      } as NDKSigner)
+
+      await expect(
+        signAndPublishProductWriteBundle(
+          {
+            merchantPubkey: MERCHANT_PUBKEY,
+            listings: [
+              {
+                product: { ...sourceRecord!.product, stock: 3 },
+                dTag,
+                fulfillmentIntent: {
+                  kind: "preserve_existing",
+                  baseline: sourceRecord!.product,
+                },
+              },
+            ],
+            assertCurrentWriteBaseline: async () => {
+              const latest = await getCachedMerchantStorefront({
+                merchantPubkey: MERCHANT_PUBKEY,
+                includeMarketHidden: true,
+              })
+              assertOrderStockRevisionCurrent({
+                merchantPubkey: MERCHANT_PUBKEY,
+                expected: expectedRevision,
+                current: latest.data.find((record) => record.dTag === dTag),
+              })
+            },
+            onSignedLocal: async () => {
+              localCalls += 1
+            },
+            productListingDeliveryOptions: {
+              repository: new MemoryProductListingOutbox(listingStorage),
+              accountNetworkLocalStateRepository:
+                allowAllAccountNetworkLocalStateRepository,
+              now: () => NOW,
+              retryDelayMs: 1,
+              publisher: async () => {
+                relayAttempts += 1
+                return { status: "acked" }
+              },
+            },
+          },
+          createProductListingRelayPlanningDependencies()
+        )
+      ).rejects.toThrow("changed while preparing the stock update")
+      expect(signRequests).toBe(1)
+      expect(localCalls).toBe(0)
+      expect(listingStorage.size).toBe(0)
+      expect(
+        (
+          await getCachedMerchantStorefront({
+            merchantPubkey: MERCHANT_PUBKEY,
+            includeMarketHidden: true,
+          })
+        ).data.find((record) => record.dTag === dTag)?.eventId
+      ).toBe(rotated.id)
+      expect(relayAttempts).toBe(0)
+    }
+  })
+
+  it("stops a stock write before signing when relay preparation exposes a newer revision", async () => {
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    let currentRevision = "original"
+    let signRequests = 0
+    let localCalls = 0
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        return delegate.sign(event)
+      },
+    } as NDKSigner)
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("stock-pre-sign"),
+              dTag: "stock-pre-sign",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          assertCurrentWriteBaseline: async () => {
+            if (currentRevision !== "original") {
+              throw new Error("stock source revision changed")
+            }
+          },
+          onSignedLocal: async () => {
+            localCalls += 1
+          },
+          productListingDeliveryOptions: {
+            ...createAckedProductListingDeliveryOptions(),
+            repository: new MemoryProductListingOutbox(listingStorage),
+          },
+        },
+        {
+          planProductListingRelayTargets: async () => {
+            currentRevision = "changed"
+            return [personalListingTarget("wss://relay.example")]
+          },
+        }
+      )
+    ).rejects.toThrow("stock source revision changed")
+    expect(signRequests).toBe(0)
+    expect(localCalls).toBe(0)
+    expect(listingStorage.size).toBe(0)
+  })
+
+  it("publishes stock when the source revision remains current through staging", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    let checks = 0
+    let localCalls = 0
+    const result = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: { ...makeProduct("stock-current"), stock: 3 },
+            dTag: "stock-current",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        assertCurrentWriteBaseline: async () => {
+          checks += 1
+        },
+        onSignedLocal: async () => {
+          localCalls += 1
+        },
+        productListingDeliveryOptions: {
+          ...createAckedProductListingDeliveryOptions(),
+          repository: new MemoryProductListingOutbox(listingStorage),
+        },
+      },
+      createProductListingRelayPlanningDependencies()
+    )
+    expect(checks).toBeGreaterThanOrEqual(2)
+    expect(localCalls).toBe(1)
+    expect(listingStorage.size).toBe(1)
+    expect(result.successfulRelayUrls).toContain("wss://relay.example")
   })
 
   it("keeps durable family-removal delivery on loopback in E2E isolation", async () => {

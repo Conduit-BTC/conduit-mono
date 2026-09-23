@@ -1124,6 +1124,8 @@ export async function signAndPublishProductWriteBundle(
     deletions?: readonly ProductDeletionPublishTarget[]
     /** Re-sign a rejected mixed family's original deletion without widening its NIP-09 cutoff. */
     recoveryDeletionEvent?: SignedPublicNostrEvent
+    /** Optional owner-supplied source-revision check for concurrent local edits. */
+    assertCurrentWriteBaseline?: () => Promise<void>
     onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
     onSignedEvent?: (
       event: NDKEvent,
@@ -1200,6 +1202,8 @@ export async function signAndPublishProductWriteBundle(
   ): Promise<void> => {
     assertSignerSessionCurrent()
     await waitForSignerVisibility()
+    assertSignerSessionCurrent()
+    await input.assertCurrentWriteBaseline?.()
     assertSignerSessionCurrent()
     signerRequestCurrent += 1
     input.onSignerRequest?.({
@@ -1282,6 +1286,8 @@ export async function signAndPublishProductWriteBundle(
   assertSignerSessionCurrent()
   input.onSignerRequestsComplete?.()
   assertSignerSessionCurrent()
+  await input.assertCurrentWriteBaseline?.()
+  assertSignerSessionCurrent()
 
   for (const write of writes) {
     if (!write.shippingEvent) continue
@@ -1319,6 +1325,11 @@ export async function signAndPublishProductWriteBundle(
     ...(productListingDeliveryJobId ? { productListingDeliveryJobId } : {}),
     ...(deletionDeliveryJobId ? { deletionDeliveryJobId } : {}),
   }
+  // Relay preparation or shipping publication may have yielded after signing.
+  // Check again before either exact outbox or local cache can project a stale
+  // listing revision.
+  await input.assertCurrentWriteBaseline?.()
+  assertSignerSessionCurrent()
   try {
     if (productListingDeliveryJobId) {
       await persistSignedProductListings(

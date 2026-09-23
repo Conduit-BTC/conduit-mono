@@ -268,4 +268,19 @@ describe("merchant order stock UI", () => {
     )
     expect(source).toContain("onRepublish={republishStock}")
   })
+
+  it("binds both fresh stock actions to the current signed listing before staging", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+    const mutation = source.slice(
+      source.indexOf("const stockUpdateMutation ="),
+      source.indexOf("const confirmPaymentMutation =")
+    )
+    expect(mutation).toContain('payload.action === "republish"')
+    expect(mutation).toContain("captureOrderStockRevision(record)")
+    expect(mutation).toContain("assertOrderStockRevisionCurrent({")
+    expect(mutation).toContain("signAndPublishProductWriteBundle({")
+    expect(mutation).toContain("assertCurrentWriteBaseline,")
+    expect(mutation).toContain("onSignedLocal: async (bundle) => {")
+    expect(mutation).not.toContain("onSignedEvent:")
+  })
 })

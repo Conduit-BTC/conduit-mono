@@ -150,14 +150,18 @@ import {
 } from "../lib/product-delivery"
 import {
   getRelayPublishDiagnosticsError,
-  signAndPublishProductListing,
+  signAndPublishProductWriteBundle,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
 import {
   deliverQueuedProductListings,
   ensureSignedProductListingsQueued,
 } from "../lib/product-listing-delivery"
-import { prepareOrderStockUpdate } from "../lib/order-stock-fulfillment"
+import {
+  assertOrderStockRevisionCurrent,
+  captureOrderStockRevision,
+  prepareOrderStockUpdate,
+} from "../lib/order-stock-fulfillment"
 import {
   applyOrderStockTarget,
   buildOrderStockAdjustments,
@@ -1920,23 +1924,47 @@ function OrdersWorkspace() {
           "This stock update is already applied or awaiting delivery."
         )
       }
+      const expectedRevision = captureOrderStockRevision(record)
+      const assertCurrentWriteBaseline = async () => {
+        if (!isCurrentOrderAccount(pubkey)) {
+          throw new Error("Stock update belongs to another account.")
+        }
+        const currentLocal = await getCachedMerchantStorefront({
+          merchantPubkey: pubkey,
+          includeMarketHidden: true,
+        })
+        assertOrderStockRevisionCurrent({
+          merchantPubkey: pubkey,
+          expected: expectedRevision,
+          current: currentLocal.data.find(
+            (candidate) => candidate.addressId === expectedRevision.addressId
+          ),
+        })
+      }
       let signedEvent: SignedPublicNostrEvent | null = null
-      const delivery = await signAndPublishProductListing({
+      const delivery = await signAndPublishProductWriteBundle({
         merchantPubkey: pubkey,
         authenticatedPubkey,
         shouldContinue: () => isCurrentOrderAction(authority),
-        product: {
-          ...record.product,
-          stock: effectiveAdjustment.nextStock,
-          updatedAt: Date.now(),
-        },
-        dTag: record.dTag,
-        previousEventCreatedAt: record.eventCreatedAt,
-        fulfillmentIntent,
-        onSignedLocal: async (event) => {
+        assertCurrentWriteBaseline,
+        listings: [
+          {
+            product: {
+              ...record.product,
+              stock: effectiveAdjustment.nextStock,
+              updatedAt: Date.now(),
+            },
+            dTag: record.dTag,
+            previousEventCreatedAt: record.eventCreatedAt,
+            fulfillmentIntent,
+          },
+        ],
+        onSignedLocal: async (bundle) => {
           if (!isCurrentOrderAccount(pubkey)) {
             throw new Error("Signed stock update belongs to another account.")
           }
+          const event = bundle.events[0]
+          if (!event) throw new Error("No signed stock update was prepared.")
           const rawEvent = event.rawEvent() as SignedPublicNostrEvent
           signedEvent = rawEvent
           pendingStockDeliveryStoreRef.current.set(pubkey, {
