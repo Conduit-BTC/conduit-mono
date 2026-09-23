@@ -118,7 +118,6 @@ export interface ReviewedAccountNetworkMutation {
   changedKinds: AccountNetworkSignedKind[]
   signerRequestCount: number
   warnings: AccountNetworkReviewWarning[]
-  evidenceReady: boolean
 }
 
 export type AccountNetworkMutationErrorCode =
@@ -625,10 +624,9 @@ export function reviewAccountNetworkMutation(
     normalizedPreferenceSemantics(currentRelayPreferences) !==
       normalizedPreferenceSemantics(desiredRelayPreferences)
   const inboxChanged =
-    (desiredInbox.length > 0 &&
-      reconciliation.inboxDeclaration.state !== "declared" &&
-      reconciliation.inboxDeclaration.state !== "distribution_pending") ||
-    !sameInboxSemantics(currentInbox, desiredInbox)
+    !["declared", "distribution_pending", "signed_empty"].includes(
+      reconciliation.inboxDeclaration.state
+    ) || !sameInboxSemantics(currentInbox, desiredInbox)
   const changedKinds: AccountNetworkSignedKind[] = []
   if (relayListChanged) changedKinds.push(EVENT_KINDS.RELAY_LIST)
   if (inboxChanged) changedKinds.push(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS)
@@ -670,17 +668,7 @@ export function reviewAccountNetworkMutation(
     changedKinds,
     signerRequestCount: changedKinds.length,
     warnings,
-    evidenceReady:
-      reconciliation.ownerRelayList.lookup.coverage === "complete" &&
-      reconciliation.inboxDeclaration.observation?.coverage === "complete",
   }
-}
-
-function sameReview(
-  left: ReviewedAccountNetworkMutation,
-  right: ReviewedAccountNetworkMutation
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function assertContinue(shouldContinue: (() => boolean) | undefined): void {
@@ -1535,50 +1523,24 @@ async function publishUnderLock(input: {
 }): Promise<AccountNetworkMutationResult> {
   const repository =
     input.dependencies.repository ?? dexieAccountNetworkMutationRepository
-  const reconcile =
-    input.dependencies.reconcile ?? reconcileAccountNetworkPreferences
   const now = input.dependencies.now ?? Date.now
   input.dependencies.onPhase?.("checking")
   assertContinue(input.dependencies.shouldContinue)
-  const reconciliation = await reconcile(input.pubkey, {
-    ...input.dependencies.reconcileOptions,
-    requestingAccountPubkey: input.pubkey,
-    authenticatedPubkey: input.authenticatedPubkey,
-    shouldContinue: input.dependencies.shouldContinue,
-  })
+  const snapshot = await repository.get(input.pubkey)
   assertContinue(input.dependencies.shouldContinue)
-  const currentReview = reviewAccountNetworkMutation(
-    reconciliation,
-    input.reviewed.action
-  )
-  if (!currentReview.evidenceReady) {
-    throw new AccountNetworkMutationError(
-      "evidence_unavailable",
-      "A complete fresh check of both signed Network frontiers is required."
-    )
-  }
-  if (!sameReview(input.reviewed, currentReview)) {
-    throw new AccountNetworkMutationError(
-      "evidence_changed",
-      "Signed Network evidence changed after review."
-    )
-  }
   requireExpectedLocalExclusions(
-    (await repository.get(input.pubkey)).localState,
-    currentReview.localExcludedRelayUrls
+    snapshot.localState,
+    input.reviewed.localExcludedRelayUrls
   )
 
   const desiredRelayPreferences = stablePreferenceOrder(
-    reconciliation.ownerRelayList.preferences,
-    relayPreferencesFromAction(currentReview.action)
+    snapshot.ownerRelayList?.current?.preferences ?? [],
+    relayPreferencesFromAction(input.reviewed.action)
   )
-  const currentInbox = currentInboxRelayUrls(
-    input.pubkey,
-    reconciliation.inboxDeclaration
-  )
+  const currentInbox = snapshot.inboxDeclaration?.current.secureRelayUrls ?? []
   const desiredInbox = stableInboxOrder(
     currentInbox,
-    inboxRelayUrlsFromAction(currentReview.action)
+    inboxRelayUrlsFromAction(input.reviewed.action)
   )
   const desiredPublishRelayUrls = desiredRelayPreferences.flatMap(
     (preference) => (preference.writeEnabled ? [preference.url] : [])
@@ -1587,7 +1549,7 @@ async function publishUnderLock(input: {
     AccountNetworkSignedKind,
     Awaited<ReturnType<typeof resolveDistributionPlan>>
   >()
-  for (const kind of currentReview.changedKinds) {
+  for (const kind of input.reviewed.changedKinds) {
     plans.set(
       kind,
       await resolveDistributionPlan({
@@ -1595,13 +1557,13 @@ async function publishUnderLock(input: {
         authenticatedPubkey: input.authenticatedPubkey,
         kind,
         desiredPublishRelayUrls,
-        excludedRelayUrls: currentReview.action.removedRelayUrls,
+        excludedRelayUrls: input.reviewed.action.removedRelayUrls,
         dependencies: input.dependencies,
       })
     )
   }
 
-  if (currentReview.changedKinds.length > 0) {
+  if (input.reviewed.changedKinds.length > 0) {
     if (
       !input.signer ||
       (input.signer.authMethod !== "nip07" &&
@@ -1625,15 +1587,21 @@ async function publishUnderLock(input: {
   const unsignedEvents: Array<{
     kind: AccountNetworkSignedKind
     event: Omit<SignedPublicNostrEvent, "id" | "sig">
-  }> = currentReview.changedKinds.map((kind) => ({
+  }> = input.reviewed.changedKinds.map((kind) => ({
     kind,
     event: {
       pubkey: input.pubkey,
       kind,
       created_at: selectCreatedAt(
         kind === EVENT_KINDS.RELAY_LIST
-          ? currentReview.relayList.createdAt
-          : currentReview.inboxDeclaration.createdAt,
+          ? Math.max(
+              input.reviewed.relayList.createdAt ?? 0,
+              snapshot.ownerRelayList?.current?.signedEvent.created_at ?? 0
+            )
+          : Math.max(
+              input.reviewed.inboxDeclaration.createdAt ?? 0,
+              snapshot.inboxDeclaration?.current.signedEvent.created_at ?? 0
+            ),
         now()
       ),
       tags:
@@ -1667,7 +1635,7 @@ async function publishUnderLock(input: {
     })
   }
 
-  const localStateChanged = currentReview.action.removedRelayUrls.length > 0
+  const localStateChanged = input.reviewed.action.removedRelayUrls.length > 0
   if (checkpoints.length === 0 && !localStateChanged) {
     return {
       status: "no_change",
@@ -1679,19 +1647,24 @@ async function publishUnderLock(input: {
   input.dependencies.onPhase?.("staging")
   const staged = await repository.stage({
     pubkey: input.pubkey,
-    expectedRelayListEventId: currentReview.relayList.eventId,
-    expectedInboxDeclarationEventId: currentReview.inboxDeclaration.eventId,
-    expectedExcludedRelayUrls: currentReview.localExcludedRelayUrls,
+    expectedRelayListEventId:
+      snapshot.ownerRelayList?.current?.signedEvent.id ?? null,
+    expectedInboxDeclarationEventId:
+      snapshot.inboxDeclaration?.current.signedEvent.id ?? null,
+    expectedExcludedRelayUrls: input.reviewed.localExcludedRelayUrls,
     checkpoints,
-    previousInboxRelayUrls: currentReview.previousInboxRelayUrls,
-    removedRelayUrls: currentReview.action.removedRelayUrls,
+    previousInboxRelayUrls: normalizeOwnerSelectedRelayUrls([
+      ...input.reviewed.previousInboxRelayUrls,
+      ...currentInbox,
+    ]),
+    removedRelayUrls: input.reviewed.action.removedRelayUrls,
     stagedAt: now(),
   })
   assertContinue(input.dependencies.shouldContinue)
   await input.dependencies.refreshRuntime?.(input.pubkey)
 
   let delivered = staged
-  for (const kind of currentReview.changedKinds) {
+  for (const kind of input.reviewed.changedKinds) {
     delivered = await deliverPendingKind({
       pubkey: input.pubkey,
       authenticatedPubkey: input.authenticatedPubkey,
@@ -1702,7 +1675,7 @@ async function publishUnderLock(input: {
   }
   return resultFromSnapshot(
     delivered,
-    currentReview.changedKinds,
+    input.reviewed.changedKinds,
     localStateChanged
   )
 }

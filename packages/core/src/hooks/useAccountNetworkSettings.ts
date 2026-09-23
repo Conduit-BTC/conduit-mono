@@ -619,12 +619,6 @@ export function useAccountNetworkSettings(
       }),
     [accountPubkey, activeLocal?.state, baseView, reconciliation]
   )
-  const revisionRef = useRef(revision)
-
-  useLayoutEffect(() => {
-    revisionRef.current = revision
-  }, [revision])
-
   const mediaServerPreferences = useMediaServerPreferences(accountPubkey, {
     enabled: session.relaySettingsReady,
     authenticatedPubkey: auth.signerReadiness === "ready" ? auth.pubkey : null,
@@ -700,11 +694,13 @@ export function useAccountNetworkSettings(
   const requireReviewState = useCallback(() => {
     if (
       !reconciliation ||
-      accountPreferences.status !== "ready" ||
+      !accountPreferences.localReady ||
       !activeLocal?.ready ||
       !activeLocal.state
     ) {
-      throw new Error("Finish the fresh Network check before making changes.")
+      throw new Error(
+        "Wait for saved Network settings to load before making changes."
+      )
     }
     if (
       baseView.pendingExactDeliveries.some((pending) => pending.retryAvailable)
@@ -715,7 +711,7 @@ export function useAccountNetworkSettings(
     }
     return { reconciliation, localState: activeLocal.state }
   }, [
-    accountPreferences.status,
+    accountPreferences.localReady,
     activeLocal?.ready,
     activeLocal?.state,
     reconciliation,
@@ -729,7 +725,9 @@ export function useAccountNetworkSettings(
       if (!reconciliation || !activeLocal?.ready || !activeLocal.state) {
         return {
           valid: false,
-          errors: ["Finish the fresh Network check before making changes."],
+          errors: [
+            "Wait for saved Network settings to load before making changes.",
+          ],
           warnings: [],
         }
       }
@@ -756,7 +754,6 @@ export function useAccountNetworkSettings(
       kind: "save" | "remove",
       reviewed: ReviewedAccountNetworkMutation,
       authenticatedPubkey: string,
-      preparedRevision: string,
       shouldContinue: () => boolean,
       signer?: ReturnType<typeof createNdkNostrEventSigner>
     ): Promise<void> => {
@@ -766,11 +763,6 @@ export function useAccountNetworkSettings(
         if (!shouldContinue()) {
           throw new Error(
             "The active account or signer changed after this Network review."
-          )
-        }
-        if (revisionRef.current !== preparedRevision) {
-          throw new Error(
-            "Network evidence changed after review. Review the current preferences again."
           )
         }
         const result = await observeAccountNetworkInboxRepair({
@@ -850,16 +842,10 @@ export function useAccountNetworkSettings(
         ready.reconciliation,
         action
       )
-      if (!reviewed.evidenceReady) {
-        throw new Error(
-          "A complete fresh check of both signed Network preferences is required."
-        )
-      }
       const summary = preparedChangeSummary(reviewed)
       if (summary.changedObjects.length === 0) {
         throw new Error("These Network preferences are already current.")
       }
-      const preparedRevision = revision
       let shouldContinue: () => boolean
       let signer: ReturnType<typeof createNdkNostrEventSigner> | undefined
       let authenticatedPubkey: string
@@ -896,7 +882,6 @@ export function useAccountNetworkSettings(
             kind,
             reviewed,
             authenticatedPubkey,
-            preparedRevision,
             shouldContinue,
             signer
           )
@@ -911,7 +896,6 @@ export function useAccountNetworkSettings(
       captureAuth,
       executePreparedMutation,
       requireReviewState,
-      revision,
       validate,
     ]
   )

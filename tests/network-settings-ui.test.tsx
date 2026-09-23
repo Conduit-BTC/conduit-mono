@@ -119,6 +119,20 @@ function controller(
 }
 
 describe("RelaySettingsPanel account Network review", () => {
+  it("keeps explicit review available while background discovery is degraded", () => {
+    for (const status of ["reconciling", "error"] as const) {
+      const markup = renderToStaticMarkup(
+        <RelaySettingsPanel controller={controller({ status })} />
+      )
+      const reviewTextIndex = markup.indexOf("Review and publish")
+      const reviewTagStart = markup.lastIndexOf("<button", reviewTextIndex)
+      const reviewTagEnd = markup.indexOf(">", reviewTagStart)
+      expect(markup.slice(reviewTagStart, reviewTagEnd + 1)).not.toContain(
+        'disabled=""'
+      )
+    }
+  })
+
   it("uses a shared accessible collapsible primitive", () => {
     const closedMarkup = renderToStaticMarkup(
       <Collapsible>
@@ -685,7 +699,7 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(hasUnpublishedRelayRoleChanges([current], [reconciled!])).toBe(true)
   })
 
-  it("keeps only explicitly enabled roles for a removed relay", () => {
+  it("keeps the full edited row when background discovery omits its relay", () => {
     const previous = relayRow("wss://removed.example")
     const local = { ...previous, readEnabled: false }
 
@@ -695,8 +709,16 @@ describe("RelaySettingsPanel account Network review", () => {
       nextControllerRows: [],
     })
 
-    expect(reconciled).toEqual([])
-    expect(hasUnpublishedRelayRoleChanges([], reconciled)).toBe(false)
+    expect(reconciled).toEqual([
+      expect.objectContaining({
+        url: previous.url,
+        readEnabled: false,
+        publishEnabled: true,
+        privateInboxEnabled: true,
+        candidate: true,
+      }),
+    ])
+    expect(hasUnpublishedRelayRoleChanges([], reconciled)).toBe(true)
   })
 
   it("preserves a local relay candidate across controller revisions", () => {
