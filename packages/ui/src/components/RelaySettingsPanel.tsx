@@ -1329,7 +1329,7 @@ function useRelaySettingsReview(
     (delivery) => delivery.retryAvailable
   )
   const busy = operationIsBusy(controller.operation.phase) || reordering
-  const metadataReady = controller.status === "ready" && !busy
+  const metadataReady = !busy
   const mutationReady = metadataReady && !pendingRetry && signerReady
   const inboxCount = presentationRows.filter(
     (row) => row.privateInboxEnabled

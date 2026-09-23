@@ -123,37 +123,26 @@ export function reconcileRelaySettingsDraftRows(input: {
     if (localRow.candidate) return [localRow]
     const previousControllerRow = previousByUrl.get(localRow.url)
     if (!previousControllerRow) return []
-    const retainedRow: AccountNetworkRelayRowView = {
-      ...localRow,
-      readEnabled: relayRoleWasEdited(
-        localRow,
-        previousControllerRow,
-        "readEnabled"
-      )
-        ? localRow.readEnabled
-        : false,
-      publishEnabled: relayRoleWasEdited(
-        localRow,
-        previousControllerRow,
-        "publishEnabled"
-      )
-        ? localRow.publishEnabled
-        : false,
-      privateInboxEnabled: relayRoleWasEdited(
-        localRow,
-        previousControllerRow,
-        "privateInboxEnabled"
-      )
-        ? localRow.privateInboxEnabled
-        : false,
-    }
+    const edited = (
+      ["readEnabled", "publishEnabled", "privateInboxEnabled"] as const
+    ).some((role) => relayRoleWasEdited(localRow, previousControllerRow, role))
+    if (!edited) return []
     if (
-      !retainedRow.readEnabled &&
-      !retainedRow.publishEnabled &&
-      !retainedRow.privateInboxEnabled
+      !localRow.readEnabled &&
+      !localRow.publishEnabled &&
+      !localRow.privateInboxEnabled
     )
       return []
-    return [retainedRow]
+    // A missing discovery result cannot erase an in-progress explicit edit.
+    return [
+      {
+        ...localRow,
+        candidate: true,
+        readState: null,
+        publishState: null,
+        privateInboxState: null,
+      },
+    ]
   })
 
   return orderAccountNetworkRelayRows(

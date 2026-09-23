@@ -35,7 +35,7 @@ describe("account Network hook authority timing", () => {
     )
   })
 
-  it("updates profile and Network guard refs during the layout phase", async () => {
+  it("updates profile and Network authority refs during the layout phase", async () => {
     const [session, networkSettings, inboxDeclaration] = await Promise.all([
       source("packages/core/src/context/ConduitSessionContext.tsx"),
       source("packages/core/src/hooks/useAccountNetworkSettings.ts"),
@@ -52,9 +52,7 @@ describe("account Network hook authority timing", () => {
     expect(networkSettings).toMatch(
       /useLayoutEffect\(\(\) => \{\s*authRef\.current = auth/
     )
-    expect(networkSettings).toMatch(
-      /useLayoutEffect\(\(\) => \{\s*revisionRef\.current = revision/
-    )
+    expect(networkSettings).not.toContain("revisionRef.current")
     expect(networkSettings).not.toMatch(
       /useEffect\(\(\) => \{\s*authRef\.current = auth/
     )
