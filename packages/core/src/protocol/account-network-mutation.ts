@@ -624,9 +624,10 @@ export function reviewAccountNetworkMutation(
     normalizedPreferenceSemantics(currentRelayPreferences) !==
       normalizedPreferenceSemantics(desiredRelayPreferences)
   const inboxChanged =
-    !["declared", "distribution_pending", "signed_empty"].includes(
-      reconciliation.inboxDeclaration.state
-    ) || !sameInboxSemantics(currentInbox, desiredInbox)
+    (desiredInbox.length > 0 &&
+      reconciliation.inboxDeclaration.state !== "declared" &&
+      reconciliation.inboxDeclaration.state !== "distribution_pending") ||
+    !sameInboxSemantics(currentInbox, desiredInbox)
   const changedKinds: AccountNetworkSignedKind[] = []
   if (relayListChanged) changedKinds.push(EVENT_KINDS.RELAY_LIST)
   if (inboxChanged) changedKinds.push(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS)
@@ -1542,6 +1543,20 @@ async function publishUnderLock(input: {
     currentInbox,
     inboxRelayUrlsFromAction(input.reviewed.action)
   )
+  const removedRelayUrls = new Set(input.reviewed.action.removedRelayUrls)
+  if (
+    (snapshot.ownerRelayList?.current?.preferences.some((preference) =>
+      removedRelayUrls.has(preference.url)
+    ) &&
+      !input.reviewed.changedKinds.includes(EVENT_KINDS.RELAY_LIST)) ||
+    (currentInbox.some((relayUrl) => removedRelayUrls.has(relayUrl)) &&
+      !input.reviewed.changedKinds.includes(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS))
+  ) {
+    throw new AccountNetworkMutationError(
+      "evidence_changed",
+      "A newer signed Network preference includes a relay being removed. Review the current relay state before removal."
+    )
+  }
   const desiredPublishRelayUrls = desiredRelayPreferences.flatMap(
     (preference) => (preference.writeEnabled ? [preference.url] : [])
   )
