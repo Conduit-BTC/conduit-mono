@@ -1440,11 +1440,14 @@ test("Merchant deliberately re-signs a rejected mixed listing and deletion toget
   ).toEqual(
     originalDeletion.tags.filter(([name]) => name === "e" || name === "a")
   )
-  expect(newDeletion.signedEvent.tags).toContainEqual([
-    "conduit_recovery_attempt",
-    originalDeletion.id,
-    expect.any(String),
-  ])
+  expect(
+    newDeletion.signedEvent.tags.some(
+      ([name, originalId, marker]) =>
+        name === "conduit_recovery_attempt" &&
+        originalId === originalDeletion.id &&
+        typeof marker === "string"
+    )
+  ).toBe(true)
   expect(newDeletion.deliveryAttemptCount).toBe(0)
   expect(
     newDeletion.relayDelivery.every((entry) => entry.status === "pending")
