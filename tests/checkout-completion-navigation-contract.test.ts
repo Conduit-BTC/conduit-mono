@@ -5,16 +5,18 @@ describe("checkout completion navigation contracts", () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
-    // CND-122: completed checkout flows navigate to the status-first Orders
-    // tracker via a deep link (`?order=<id>`), so Orders can render the order
-    // immediately from durable local lifecycle state.
+    // CND-122: completed checkout flows navigate to the selected durable order.
+    // Payment checkout asks Orders to put the payment action first.
     const ordersNavigations =
       checkoutRoute.match(
-        /navigate\(\{\s*to: "\/orders",\s*search: \{ order: orderId \},\s*replace: true,?\s*\}\)/g
+        /navigate\(\{\s*to: "\/orders",\s*search: \{ order: orderId(?:, focus: "payment")? \},\s*replace: true,?\s*\}\)/g
       ) ?? []
 
     expect(checkoutRoute).toContain("const navigate = useNavigate()")
     expect(ordersNavigations.length).toBeGreaterThanOrEqual(2)
+    expect(checkoutRoute).toContain(
+      'search: { order: orderId, focus: "payment" }'
+    )
     expect(checkoutRoute).toContain("createOrderLifecycle(")
   })
 
@@ -25,6 +27,45 @@ describe("checkout completion navigation contracts", () => {
 
     expect(paymentTracker).toContain('<Link to="/orders">View orders</Link>')
     expect(paymentTracker).not.toContain('<Link to="/cart">Back to cart</Link>')
+  })
+
+  it("opens payment checkout on a focused Orders surface", async () => {
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+
+    expect(ordersRoute).toContain('focus?: "payment"')
+    expect(ordersRoute).toContain(
+      'const paymentFocused = focus === "payment" && !!selectedFromUrl'
+    )
+    expect(ordersRoute).toContain('"mx-auto max-w-3xl"')
+    expect(ordersRoute).toContain("paymentFocused={paymentFocused}")
+    expect(ordersRoute).toContain("View full order details")
+  })
+
+  it("does not fall back from a missing focused order while reads are pending or unavailable", async () => {
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+
+    expect(ordersRoute).toContain("if (paymentFocused && selectedFromUrl) {")
+    expect(ordersRoute).toContain(
+      "return orders.some((order) => order.orderId === selectedFromUrl)"
+    )
+    expect(ordersRoute).toMatch(
+      /lifecyclesQuery\.isPending\s*\|\|\s*\(signerConnected\s*&&\s*\(messagesQuery\.isPending\s*\|\|\s*protectedOrdersReadState === "pending"\)\)/
+    )
+    expect(ordersRoute).toContain('{selected ? "Complete payment" : "Orders"}')
+    expect(ordersRoute).toContain('title="Order unavailable"')
+    expect(ordersRoute).toContain('<Link to="/orders">View all orders</Link>')
+    expect(ordersRoute).toContain('"Guest order not found"')
+    expect(ordersRoute).toContain('"Guest order session not found"')
+    expect(ordersRoute).toContain(
+      "(!paymentFocused || selected.orderId === selectedFromUrl)"
+    )
+    expect(ordersRoute).toMatch(
+      /!lifecyclesQuery\.isPending\s*&&\s*!hasOrders\s*&&\s*\(!signerConnected\s*\|\|\s*\(!paymentFocused\s*&&\s*protectedOrdersReadState\s*===\s*"complete"\)\)/
+    )
   })
 
   it("scopes relay authentication to both foreground signed order sends", async () => {
@@ -179,12 +220,10 @@ describe("checkout completion navigation contracts", () => {
     )
     expect(checkoutRoute).toContain("selectedMerchantReadiness?.readDecision")
     expect(checkoutRoute).toContain(
-      'checkoutAvailability.readDecision.coverage === "partial"'
-    )
-    expect(checkoutRoute).toContain(
       'if (refreshResult.decision.status === "unverified")'
     )
-    expect(checkoutRoute).toContain("<CheckoutAvailabilityNotice")
+    expect(checkoutRoute).not.toContain("<CheckoutAvailabilityNotice")
+    expect(checkoutRoute).not.toContain("Availability may still change")
   })
 
   it("keeps every payment rail behind final availability and durable order delivery", async () => {
@@ -304,33 +343,28 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).toContain('"Send order"')
     expect(checkoutRoute).toContain("!manualInvoiceEligible")
     expect(checkoutRoute).toContain("Connect signer to send order")
-    expect(checkoutRoute).toContain("Send order and show invoice")
+    expect(checkoutRoute).toContain("manualInvoiceEligible &&")
     expect(checkoutRoute).toContain(
       "walletPayCapable: !isGuestCheckout && canAttemptLightningPayment"
     )
     expect(checkoutRoute).toContain("<SignerSwitch")
   })
 
-  it("warns guests about tab-scoped recovery before and during payment", async () => {
+  it("keeps guest checkout on one concise review and contact screen", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
-    const ordersRoute = await Bun.file(
-      "apps/market/src/routes/orders.tsx"
-    ).text()
 
-    const invoicePanel = await Bun.file(
-      "apps/market/src/components/ExternalWalletPanel.tsx"
-    ).text()
+    const summary = checkoutRoute.indexOf("<OrderSummary")
+    const details = checkoutRoute.indexOf("<section", summary)
 
-    expect(checkoutRoute).toContain(
-      "Keep this tab open until the payment is reported"
-    )
-    expect(invoicePanel).toContain("Closing it ends")
-    expect(invoicePanel).toContain("local access to this guest order")
-    expect(invoicePanel).toContain(
-      "merchant can use the private recovery contact"
-    )
-    expect(ordersRoute).toContain("disabled={!activeBuyerPubkey}")
+    expect(summary).toBeGreaterThan(-1)
+    expect(details).toBeGreaterThan(summary)
+    expect(checkoutRoute).toContain("validateCheckoutDetailsForSubmit()")
+    expect(checkoutRoute).toContain("Phone and email are required")
+    expect(checkoutRoute).not.toContain("Pickup recovery")
+    expect(checkoutRoute).not.toContain("Merchant-only recovery")
+    expect(checkoutRoute).not.toContain("Continue to Send Order")
+    expect(checkoutRoute).not.toContain("Keep this tab open")
   })
 })

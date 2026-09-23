@@ -140,7 +140,7 @@ for (const scenario of scenarios) {
         }
         signedZapRequest = signedZap ?? ""
         generatedInvoice = makeBolt11Fixture({
-          hrp: "lnbc10u",
+          hrp: "lntb10u",
           createdAt,
           fields: [
             bolt11PaymentHashField(),
@@ -287,7 +287,7 @@ for (const scenario of scenarios) {
 
     await page.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
     await expect(
-      page.getByRole("heading", { name: "Send Order", exact: true })
+      page.getByRole("heading", { name: "Checkout", exact: true })
     ).toBeVisible()
     const paymentTarget = page.getByRole("combobox", { name: "Pay with" })
     await expect(paymentTarget).toContainText("Browser wallet (WebLN)")
@@ -320,6 +320,9 @@ for (const scenario of scenarios) {
     await page.keyboard.up("Space")
 
     await expect(page).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
+    await expect(
+      page.getByRole("heading", { name: "Orders", exact: true })
+    ).toHaveCount(0)
     await expect(
       page.getByRole("heading", { name: "Pay with an external wallet" })
     ).toBeVisible()
@@ -371,6 +374,9 @@ for (const scenario of scenarios) {
       await page.reload()
       await expect(
         page.getByRole("heading", { name: "Orders", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("heading", { name: "Complete payment", exact: true })
       ).toBeVisible()
       await expectRetainedCart()
     }
@@ -462,6 +468,9 @@ for (const scenario of scenarios) {
       await page.reload()
       await expect(
         page.getByRole("heading", { name: "Orders", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("heading", { name: "Complete payment", exact: true })
       ).toBeVisible()
       await expectStoppedInvoice()
       await page
@@ -504,7 +513,7 @@ for (const scenario of scenarios) {
         merchantSecret
       )
     const unrelatedInvoice = makeBolt11Fixture({
-      hrp: "lnbc10u",
+      hrp: "lntb10u",
       createdAt,
       fields: [
         bolt11PaymentHashField(new Uint8Array(32).fill(8)),

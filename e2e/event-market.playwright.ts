@@ -5207,7 +5207,7 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
   const metadata = JSON.stringify([["text/plain", "Synthetic booth merchant"]])
   let callbackRequests = 0
   const invoice = makeBolt11Fixture({
-    hrp: "lnbc20u",
+    hrp: "lntb20u",
     createdAt: Math.floor(Date.now() / 1000),
     fields: [bolt11PaymentHashField(), bolt11DescriptionHashField(metadata)],
   })
@@ -5381,18 +5381,33 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
       .getByRole("button", { name: "Order", exact: true })
       .click()
     await expect(
-      page.getByText("Merchant-only recovery", { exact: true })
+      page.getByRole("heading", { name: "Checkout", exact: true })
     ).toBeVisible()
-    await page.getByLabel("Email", { exact: true }).fill("guest@example.test")
-    const continueButton = page.getByRole("button", {
-      name: "Continue to Send Order",
+    const summaryHeading = page.getByRole("heading", {
+      name: "Order summary",
       exact: true,
     })
-    await expect(continueButton).toBeEnabled({ timeout: 10_000 })
+    const contactHeading = page.getByRole("heading", {
+      name: "Contact",
+      exact: true,
+    })
+    await expect(summaryHeading).toBeVisible()
+    await expect(contactHeading).toBeAttached()
+    expect(
+      await summaryHeading.evaluate(
+        (node) =>
+          node.compareDocumentPosition(document.querySelector("#ship-phone")!) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+      )
+    ).toBeTruthy()
+    await expect(page.getByText("Availability may still change")).toHaveCount(0)
+    await expect(page.getByText("Pickup recovery")).toHaveCount(0)
+    await expect(page.getByText("Merchant-only recovery")).toHaveCount(0)
+    await page.getByLabel(/^Phone/).fill("+14155552671")
+    await page.getByLabel(/^Email/).fill("guest@example.test")
     await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
-    await continueButton.click()
     const submit = page.getByRole("button", {
-      name: "Send order and show invoice",
+      name: "Send order",
       exact: true,
     })
     await expect(submit).toBeEnabled({ timeout: 10_000 })
@@ -5423,6 +5438,10 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
     orderAck.release()
     await submission
     await expect(page).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
+    await expect(
+      page.getByRole("heading", { name: "Orders", exact: true })
+    ).toHaveCount(0)
+    await expect(page.getByRole("button", { name: "Browse" })).toHaveCount(0)
     await expect(
       page.getByRole("button", { name: "Copy invoice", exact: true })
     ).toBeVisible()
@@ -8416,14 +8435,12 @@ test("organizer offer off publishes an empty catalog and permits booth handoff @
   })
   await expect(cartHud).toBeHidden()
   await expect(
-    page.getByRole("heading", { name: "Send Order", exact: true })
+    page.getByRole("heading", { name: "Checkout", exact: true })
   ).toBeVisible({ timeout: 30_000 })
   await expect(
     page.getByText("Pickup from merchant booth", { exact: true }).first()
   ).toBeVisible()
-  await expect(
-    page.getByText(/no organizer receipt is sent/i).first()
-  ).toBeVisible()
+  await expect(page.getByText(/no organizer receipt is sent/i)).toHaveCount(0)
   await expect(page.getByText("Organizer pickup is not ready")).toHaveCount(0)
   await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
   await expect(page.getByLabel(/Email/i)).toHaveCount(0)
@@ -8567,12 +8584,12 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     merchant: nip19.npubEncode(MERCHANT_PUBKEY),
   })
   await expect(
-    page.getByRole("heading", { name: "Send Order", exact: true })
+    page.getByRole("heading", { name: "Checkout", exact: true })
   ).toBeVisible({ timeout: 30_000 })
   await expect(
     page.getByText("Pickup from event organizer", { exact: true }).first()
   ).toBeVisible()
-  await expect(page.getByText(/No payment is required/).first()).toBeVisible()
+  await expect(page.getByText(/No payment is required/)).toHaveCount(0)
   await expect(page.getByText("Free", { exact: true }).first()).toBeVisible()
   await expect(page.getByText("0 sats", { exact: true }).first()).toBeVisible()
   await expect(page.getByText("Zap out with Lightning")).toHaveCount(0)

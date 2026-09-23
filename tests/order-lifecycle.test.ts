@@ -14,6 +14,8 @@ import {
   bindMerchantInvoiceForPayment,
   config,
   claimExternalOrderPaymentProof,
+  claimExpiredOrderInvoiceForRetry,
+  MAX_PRIOR_EXPIRED_MANUAL_INVOICES,
   claimOrderLifecyclePayment,
   claimOrderLifecyclePrivateFallbackPayment,
   claimOrderLifecycleUpdatedAddressPayment,
@@ -322,6 +324,7 @@ describe("order payment admission", () => {
   describe("updated merchant payment address", () => {
     const failed: OrderLifecycle = {
       ...lifecycle,
+      orderDeliveryStatus: "sent",
       invoiceStatus: "failed",
       paymentStatus: "failed",
       lastError: "Invoice preparation failed.",
@@ -560,6 +563,18 @@ describe("order payment admission", () => {
       })
     })
 
+    it("preserves the previous target when the transaction-time authority callback vetoes", async () => {
+      await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
+        const result = await replaceOrderPaymentTarget(
+          failed.orderId,
+          { type: "manual" },
+          () => false
+        )
+        expect(result.status).toBe("unsafe_state")
+        expect(state.lifecycle()).toBe(failed)
+      })
+    })
+
     it("rejects any retained payment or report attempt, even if incomplete", async () => {
       const attempt: StoredPaymentAttempt = {
         id: failed.orderId,
@@ -768,9 +783,381 @@ describe("order payment admission", () => {
     })
   })
 
+  it("does not clear a retained invoice when the final payment-claim fence fails", async () => {
+    const retained = {
+      ...lifecycle,
+      invoice: "lnbc1retained",
+      invoiceStatus: "failed" as const,
+      paymentStatus: "failed" as const,
+    }
+    await withMockOrderPaymentDb({ lifecycle: retained }, async (state) => {
+      const result = await claimOrderLifecyclePayment(
+        { ...input, orderId: retained.orderId },
+        () => false
+      )
+      expect(result.status).toBe("unsafe_state")
+      expect(state.lifecycle()).toEqual(retained)
+    })
+  })
+
+  describe("expired manual invoice retry", () => {
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc20n",
+      createdAt: 1_700_000_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(17)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    const expired: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      paymentTarget: { type: "manual" },
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      zapReceiptStatus: "not_applicable",
+      invoice,
+      paymentHash: "11".repeat(32),
+      invoiceExpiresAt: 1_700_003_600,
+    }
+
+    it("claims legacy expired private invoices when optional metadata is absent", async () => {
+      const previousNetwork = config.lightningNetwork
+      config.lightningNetwork = "mainnet"
+      try {
+        const legacy = {
+          ...expired,
+          paymentHash: undefined,
+          invoiceExpiresAt: undefined,
+        }
+        await withMockOrderPaymentDb({ lifecycle: legacy }, async (state) => {
+          const result = await claimExpiredOrderInvoiceForRetry(
+            {
+              ...input,
+              checkoutMode: "private_checkout",
+              paymentTarget: { type: "manual" },
+            },
+            invoice,
+            legacy.updatedAt
+          )
+          expect(result.status).toBe("claimed")
+          expect(state.lifecycle()?.invoice).toBeUndefined()
+          const history = state.lifecycle()?.priorExpiredManualInvoices
+          expect(history).toHaveLength(1)
+          expect(history?.[0]?.invoice === invoice).toBe(true)
+          expect(history?.[0]?.paymentHash === "11".repeat(32)).toBe(true)
+          expect(history?.[0]?.expiresAt).toBe(1_700_003_600)
+        })
+      } finally {
+        config.lightningNetwork = previousNetwork
+      }
+    })
+
+    it("appends a second renewal invoice without replacing the first", async () => {
+      const previousNetwork = config.lightningNetwork
+      config.lightningNetwork = "mainnet"
+      const secondInvoice = makeBolt11Fixture({
+        hrp: "lnbc20n",
+        createdAt: 1_700_010_000,
+        fields: [
+          bolt11PaymentHashField(new Uint8Array(32).fill(18)),
+          bolt11PlainDescriptionField(),
+        ],
+      })
+      const first = {
+        invoice,
+        paymentHash: "11".repeat(32),
+        expiresAt: 1_700_003_600,
+      }
+      const secondExpiry = 1_700_013_600
+      const second: OrderLifecycle = {
+        ...expired,
+        invoice: secondInvoice,
+        paymentHash: "12".repeat(32),
+        invoiceExpiresAt: secondExpiry,
+        priorExpiredManualInvoices: [first],
+      }
+      try {
+        await withMockOrderPaymentDb({ lifecycle: second }, async (state) => {
+          const result = await claimExpiredOrderInvoiceForRetry(
+            {
+              ...input,
+              checkoutMode: "private_checkout",
+              paymentTarget: { type: "manual" },
+            },
+            secondInvoice,
+            second.updatedAt
+          )
+          expect(result.status).toBe("claimed")
+          const history = state.lifecycle()?.priorExpiredManualInvoices
+          expect(history).toHaveLength(2)
+          expect(history?.[0]?.invoice === first.invoice).toBe(true)
+          expect(history?.[0]?.paymentHash === first.paymentHash).toBe(true)
+          expect(history?.[0]?.expiresAt).toBe(first.expiresAt)
+          expect(history?.[1]?.invoice === secondInvoice).toBe(true)
+          expect(history?.[1]?.paymentHash === "12".repeat(32)).toBe(true)
+          expect(history?.[1]?.expiresAt).toBe(secondExpiry)
+        })
+      } finally {
+        config.lightningNetwork = previousNetwork
+      }
+    })
+
+    it("vetoes a distinct renewal at the history limit without changing evidence", async () => {
+      const previousNetwork = config.lightningNetwork
+      config.lightningNetwork = "mainnet"
+      const history = Array.from(
+        { length: MAX_PRIOR_EXPIRED_MANUAL_INVOICES },
+        (_, index) => ({
+          invoice: `retained-invoice-${index}`,
+          paymentHash: index.toString(16).padStart(64, "0"),
+          expiresAt: 1_700_000_000 + index,
+        })
+      )
+      const atLimit = { ...expired, priorExpiredManualInvoices: history }
+      try {
+        await withMockOrderPaymentDb({ lifecycle: atLimit }, async (state) => {
+          const result = await claimExpiredOrderInvoiceForRetry(
+            {
+              ...input,
+              checkoutMode: "private_checkout",
+              paymentTarget: { type: "manual" },
+            },
+            invoice,
+            atLimit.updatedAt
+          )
+          expect(result.status).toBe("invoice_history_limit")
+          expect(state.lifecycle() === atLimit).toBe(true)
+        })
+
+        const duplicateHistory = [
+          ...history.slice(0, MAX_PRIOR_EXPIRED_MANUAL_INVOICES - 1),
+          {
+            invoice,
+            paymentHash: "11".repeat(32),
+            expiresAt: 1_700_003_600,
+          },
+        ]
+        const duplicateAtLimit = {
+          ...expired,
+          priorExpiredManualInvoices: duplicateHistory,
+        }
+        await withMockOrderPaymentDb(
+          { lifecycle: duplicateAtLimit },
+          async (state) => {
+            const result = await claimExpiredOrderInvoiceForRetry(
+              {
+                ...input,
+                checkoutMode: "private_checkout",
+                paymentTarget: { type: "manual" },
+              },
+              invoice,
+              duplicateAtLimit.updatedAt
+            )
+            expect(result.status).toBe("claimed")
+            expect(
+              result.status === "claimed" &&
+                result.lifecycle.priorExpiredManualInvoices
+            ).toHaveLength(MAX_PRIOR_EXPIRED_MANUAL_INVOICES)
+            expect(state.lifecycle()?.priorExpiredManualInvoices).toHaveLength(
+              MAX_PRIOR_EXPIRED_MANUAL_INVOICES
+            )
+          }
+        )
+      } finally {
+        config.lightningNetwork = previousNetwork
+      }
+    })
+
+    it("vetoes mismatched metadata, malformed or nonexpired invoices", async () => {
+      const previousNetwork = config.lightningNetwork
+      config.lightningNetwork = "mainnet"
+      try {
+        const wrongHash = { ...expired, paymentHash: "22".repeat(32) }
+        const wrongExpiry = { ...expired, invoiceExpiresAt: 1_700_003_599 }
+        const freshInvoice = makeBolt11Fixture({
+          hrp: "lnbc20n",
+          createdAt: Math.floor(Date.now() / 1_000),
+          fields: [
+            bolt11PaymentHashField(new Uint8Array(32).fill(17)),
+            bolt11PlainDescriptionField(),
+          ],
+        })
+        for (const candidate of [wrongHash, wrongExpiry, expired]) {
+          await withMockOrderPaymentDb(
+            { lifecycle: candidate },
+            async (state) => {
+              const result = await claimExpiredOrderInvoiceForRetry(
+                {
+                  ...input,
+                  checkoutMode: "private_checkout",
+                  paymentTarget: { type: "manual" },
+                },
+                candidate === expired ? "not-a-bolt11-invoice" : invoice,
+                candidate.updatedAt
+              )
+              expect(result.status).toBe("unsafe_state")
+              expect(state.lifecycle()?.invoice === candidate.invoice).toBe(
+                true
+              )
+            }
+          )
+        }
+        await withMockOrderPaymentDb(
+          { lifecycle: { ...expired, invoice: freshInvoice } },
+          async (state) => {
+            const candidate = state.lifecycle()!
+            const result = await claimExpiredOrderInvoiceForRetry(
+              {
+                ...input,
+                checkoutMode: "private_checkout",
+                paymentTarget: { type: "manual" },
+              },
+              freshInvoice,
+              candidate.updatedAt
+            )
+            expect(result.status).toBe("unsafe_state")
+            expect(state.lifecycle()?.invoice === freshInvoice).toBe(true)
+          }
+        )
+      } finally {
+        config.lightningNetwork = previousNetwork
+      }
+    })
+
+    it("claims expired external-wallet invoices atomically and retains the old invoice on veto", async () => {
+      const previousNetwork = config.lightningNetwork
+      config.lightningNetwork = "mainnet"
+      const external: OrderLifecycle = {
+        ...expired,
+        checkoutMode: "external_wallet",
+      }
+      const externalInput = {
+        ...input,
+        checkoutMode: "private_checkout" as const,
+        paymentTarget: { type: "manual" as const },
+      }
+      try {
+        await withMockOrderPaymentDb({ lifecycle: external }, async (state) => {
+          const result = await claimExpiredOrderInvoiceForRetry(
+            externalInput,
+            invoice,
+            external.updatedAt
+          )
+          expect(result.status).toBe("claimed")
+          expect(state.lifecycle()?.invoiceStatus).toBe("requesting")
+          expect(state.lifecycle()?.invoice).toBeUndefined()
+        })
+
+        await withMockOrderPaymentDb({ lifecycle: expired }, async (state) => {
+          const result = await claimExpiredOrderInvoiceForRetry(
+            {
+              ...input,
+              checkoutMode: "private_checkout",
+              paymentTarget: { type: "manual" },
+            },
+            invoice,
+            expired.updatedAt,
+            () => false
+          )
+          expect(result.status).toBe("unsafe_state")
+          expect(state.lifecycle()?.invoice === invoice).toBe(true)
+        })
+      } finally {
+        config.lightningNetwork = previousNetwork
+      }
+    })
+
+    it("vetoes attempts and stale snapshots without changing the invoice", async () => {
+      const previousNetwork = config.lightningNetwork
+      config.lightningNetwork = "mainnet"
+      try {
+        const attempt: StoredPaymentAttempt = {
+          id: expired.orderId,
+          orderId: expired.orderId,
+          buyerPubkey: expired.buyerPubkey,
+          merchantPubkey: expired.merchantPubkey,
+          amountMsats: expired.totalMsats,
+          currency: "SATS",
+          invoice,
+          proofDeliveryStatus: "pending",
+          createdAt: 1,
+          updatedAt: 1,
+        }
+        await withMockOrderPaymentDb(
+          { lifecycle: expired, paymentAttempt: attempt },
+          async (state) => {
+            const result = await claimExpiredOrderInvoiceForRetry(
+              {
+                ...input,
+                checkoutMode: "private_checkout",
+                paymentTarget: { type: "manual" },
+              },
+              invoice,
+              expired.updatedAt
+            )
+            expect(result.status).toBe("unsafe_state")
+            expect(state.lifecycle()?.invoice === invoice).toBe(true)
+          }
+        )
+
+        await withMockOrderPaymentDb({ lifecycle: expired }, async (state) => {
+          const result = await claimExpiredOrderInvoiceForRetry(
+            {
+              ...input,
+              checkoutMode: "private_checkout",
+              paymentTarget: { type: "manual" },
+            },
+            invoice,
+            expired.updatedAt - 1
+          )
+          expect(result.status).toBe("snapshot_mismatch")
+          expect(state.lifecycle()?.invoice === invoice).toBe(true)
+        })
+
+        await withMockOrderPaymentDb({ lifecycle: expired }, async (state) => {
+          const results = await Promise.all([
+            claimExpiredOrderInvoiceForRetry(
+              {
+                ...input,
+                checkoutMode: "private_checkout",
+                paymentTarget: { type: "manual" },
+              },
+              invoice,
+              expired.updatedAt
+            ),
+            claimExpiredOrderInvoiceForRetry(
+              {
+                ...input,
+                paymentClaimId: "second-claim",
+                checkoutMode: "private_checkout",
+                paymentTarget: { type: "manual" },
+              },
+              invoice,
+              expired.updatedAt
+            ),
+          ])
+          expect(results.map((result) => result.status)).toEqual([
+            "claimed",
+            "snapshot_mismatch",
+          ])
+          expect(state.lifecycle()?.invoice).toBeUndefined()
+        })
+      } finally {
+        config.lightningNetwork = previousNetwork
+      }
+    })
+  })
+
   it("atomically claims only one legacy anonymous private fallback", async () => {
     const failed: OrderLifecycle = {
       ...lifecycle,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      paymentTarget: { type: "manual" },
+      zapContent: undefined,
+      orderDeliveryStatus: "sent",
       invoiceStatus: "failed",
       paymentStatus: "failed",
       lastError: "Legacy anonymous zap failed.",
@@ -779,6 +1166,7 @@ describe("order payment admission", () => {
       ...input,
       checkoutMode: "private_checkout",
       zapContent: "",
+      paymentTarget: { type: "manual" },
     }
 
     await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
@@ -867,6 +1255,72 @@ describe("order payment admission", () => {
       )
       expect(terminal.status).toBe("patched")
       expect(state.lifecycle()?.paymentClaimId).toBeUndefined()
+    })
+  })
+
+  it("refuses claimed payment restoration and authority renewal after terminal transition", async () => {
+    const claimed: OrderLifecycle = {
+      ...lifecycle,
+      paymentClaimId: input.paymentClaimId,
+      invoiceStatus: "requesting",
+      paymentStatus: "not_started",
+    }
+
+    for (const phase of ["cancelled", "completed"] as const) {
+      const terminal = {
+        ...claimed,
+        phase,
+        ...(phase === "completed" ? { completedAt: Date.now() } : {}),
+      }
+      await withMockOrderPaymentDb({ lifecycle: terminal }, async (state) => {
+        const patch = await patchClaimedOrderLifecyclePayment(
+          terminal.orderId,
+          input.paymentClaimId,
+          {
+            phase: claimed.phase,
+            completedAt: claimed.completedAt,
+            invoiceStatus: "requesting",
+            paymentStatus: "not_started",
+          }
+        )
+        expect(patch.status).toBe("claim_mismatch")
+        expect(state.lifecycle()).toBe(terminal)
+
+        const fence = await fenceClaimedOrderLifecyclePaymentAuthority(
+          terminal.orderId,
+          input.paymentClaimId,
+          terminal.merchantPubkey
+        )
+        expect(fence.status).toBe("claim_mismatch")
+        expect(state.lifecycle()).toBe(terminal)
+      })
+    }
+  })
+
+  it("preserves paid and completed proof outcomes from stale claimed patches", async () => {
+    const paid: OrderLifecycle = {
+      ...lifecycle,
+      paymentClaimId: input.paymentClaimId,
+      invoiceStatus: "received",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "sent",
+    }
+    await withMockOrderPaymentDb({ lifecycle: paid }, async (state) => {
+      const patch = await patchClaimedOrderLifecyclePayment(
+        paid.orderId,
+        input.paymentClaimId,
+        { paymentStatus: "failed", proofDeliveryStatus: "retry_needed" }
+      )
+      expect(patch.status).toBe("claim_mismatch")
+      expect(state.lifecycle()).toBe(paid)
+
+      const fence = await fenceClaimedOrderLifecyclePaymentAuthority(
+        paid.orderId,
+        input.paymentClaimId,
+        paid.merchantPubkey
+      )
+      expect(fence.status).toBe("claim_mismatch")
+      expect(state.lifecycle()).toBe(paid)
     })
   })
 
@@ -1424,6 +1878,370 @@ describe("order payment admission", () => {
         proofDeliveryStatus: "retry_needed",
       })
     })
+  })
+
+  it("claims report-only proof for exact retained expired invoice once", async () => {
+    const priorInvoice = makeBolt11Fixture({
+      hrp: "lnbc20n",
+      createdAt: 1_700_000_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(171)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    const prior = {
+      invoice: priorInvoice,
+      paymentHash: "ab".repeat(32),
+      expiresAt: 1_700_003_600,
+    }
+    const failed: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      paymentTarget: { type: "manual" },
+      orderDeliveryStatus: "sent",
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      proofDeliveryStatus: "not_started",
+      invoice: undefined,
+      priorExpiredManualInvoice: prior,
+    }
+    await withMockOrderPaymentDb({ lifecycle: failed }, async (state) => {
+      const wrong = await claimExternalOrderPaymentProof(
+        failed.orderId,
+        "wrong",
+        {
+          priorExpiredManualInvoice: {
+            invoice: prior.invoice,
+            paymentHash: "cd".repeat(32),
+            expiresAt: prior.expiresAt,
+          },
+        }
+      )
+      expect(wrong.status).toBe("preserved")
+      const first = await claimExternalOrderPaymentProof(
+        failed.orderId,
+        "prior-proof",
+        {
+          priorExpiredManualInvoice: prior,
+        }
+      )
+      expect(first.status).toBe("claimed")
+      expect(first.lifecycle.invoice === prior.invoice).toBe(true)
+      expect(first.lifecycle.paymentHash === prior.paymentHash).toBe(true)
+      expect(
+        (
+          await claimExternalOrderPaymentProof(failed.orderId, "duplicate", {
+            priorExpiredManualInvoice: prior,
+          })
+        ).status
+      ).toBe("preserved")
+      expect(state.lifecycle()?.invoice === prior.invoice).toBe(true)
+    })
+  })
+
+  it("rejects retained invoices with a wrong hash, amount, or expiry", async () => {
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc20n",
+      createdAt: 1_700_000_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(171)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    const prior = {
+      invoice,
+      paymentHash: "ab".repeat(32),
+      expiresAt: 1_700_003_600,
+    }
+    const failed: OrderLifecycle = {
+      ...lifecycle,
+      paymentTarget: { type: "manual" },
+      orderDeliveryStatus: "sent",
+      checkoutMode: "private_checkout",
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      invoice: undefined,
+      priorExpiredManualInvoice: prior,
+    }
+    const wrongAmountInvoice = makeBolt11Fixture({
+      hrp: "lnbc3n",
+      createdAt: 1_700_000_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(171)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    for (const selected of [
+      { ...prior, paymentHash: "cd".repeat(32) },
+      { ...prior, invoice: wrongAmountInvoice },
+      { ...prior, expiresAt: prior.expiresAt + 1 },
+      { ...prior, expiresAt: prior.expiresAt - 1 },
+    ]) {
+      await withMockOrderPaymentDb({ lifecycle: failed }, async () => {
+        const result = await claimExternalOrderPaymentProof(
+          failed.orderId,
+          "invalid-prior",
+          {
+            priorExpiredManualInvoice: selected,
+          }
+        )
+        expect(result.status).toBe("preserved")
+      })
+    }
+    await withMockOrderPaymentDb(
+      {
+        lifecycle: {
+          ...failed,
+          priorExpiredManualInvoice: {
+            ...prior,
+            invoice: "not-a-bolt11-invoice",
+          },
+        },
+      },
+      async () => {
+        const result = await claimExternalOrderPaymentProof(
+          failed.orderId,
+          "malformed-history",
+          {
+            priorExpiredManualInvoice: {
+              ...prior,
+              invoice: "not-a-bolt11-invoice",
+            },
+          }
+        )
+        expect(result.status).toBe("preserved")
+      }
+    )
+  })
+
+  it("retains both renewal invoices and reports only the exact selected history entry", async () => {
+    const firstInvoice = makeBolt11Fixture({
+      hrp: "lnbc20n",
+      createdAt: 1_700_000_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(171)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    const secondInvoice = makeBolt11Fixture({
+      hrp: "lnbc20n",
+      createdAt: 1_700_010_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(205)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    const first = {
+      invoice: firstInvoice,
+      paymentHash: "ab".repeat(32),
+      expiresAt: 1_700_003_600,
+    }
+    const second = {
+      invoice: secondInvoice,
+      paymentHash: "cd".repeat(32),
+      expiresAt: 1_700_013_600,
+    }
+    const failed: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      paymentTarget: { type: "manual" },
+      orderDeliveryStatus: "sent",
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      invoice: undefined,
+      priorExpiredManualInvoices: [first, second],
+    }
+    for (const selected of [first, second]) {
+      await withMockOrderPaymentDb({ lifecycle: failed }, async () => {
+        const result = await claimExternalOrderPaymentProof(
+          failed.orderId,
+          `proof-${selected.paymentHash}`,
+          {
+            priorExpiredManualInvoice: selected,
+          }
+        )
+        expect(result.status).toBe("claimed")
+        expect(result.lifecycle.invoice === selected.invoice).toBe(true)
+        expect(result.lifecycle.paymentHash === selected.paymentHash).toBe(true)
+      })
+    }
+    const replacementInvoice = makeBolt11Fixture({
+      hrp: "lnbc20n",
+      createdAt: 1_700_020_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(19)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    const renewed: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      paymentTarget: { type: "manual" },
+      orderDeliveryStatus: "sent",
+      invoiceStatus: "manual_required",
+      paymentStatus: "manual_required",
+      invoice: replacementInvoice,
+      paymentHash: "13".repeat(32),
+      invoiceExpiresAt: 1_700_023_600,
+      priorExpiredManualInvoices: [first, second],
+    }
+    await withMockOrderPaymentDb({ lifecycle: renewed }, async (state) => {
+      const reported = await claimExternalOrderPaymentProof(
+        renewed.orderId,
+        "prior-during-replacement",
+        {
+          priorExpiredManualInvoice: first,
+        }
+      )
+      expect(reported.status).toBe("claimed")
+      if (reported.status !== "claimed")
+        throw new Error("prior report not claimed")
+      expect(reported.lifecycle.invoice === first.invoice).toBe(true)
+      expect(reported.lifecycle.paymentHash === first.paymentHash).toBe(true)
+      expect(reported.lifecycle.invoiceExpiresAt).toBe(first.expiresAt)
+      expect(state.lifecycle()?.invoice === first.invoice).toBe(true)
+      const history = state.lifecycle()?.priorExpiredManualInvoices
+      expect(history).toHaveLength(2)
+      expect(history?.[0]?.invoice === first.invoice).toBe(true)
+      expect(history?.[0]?.paymentHash === first.paymentHash).toBe(true)
+      expect(history?.[0]?.expiresAt).toBe(first.expiresAt)
+      expect(history?.[1]?.invoice === second.invoice).toBe(true)
+      expect(history?.[1]?.paymentHash === second.paymentHash).toBe(true)
+      expect(history?.[1]?.expiresAt).toBe(second.expiresAt)
+    })
+  })
+
+  it("allows report-only proof for a cancelled lifecycle without allowing renewal", async () => {
+    const priorInvoice = makeBolt11Fixture({
+      hrp: "lnbc20n",
+      createdAt: 1_700_000_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(171)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    const prior = {
+      invoice: priorInvoice,
+      paymentHash: "ab".repeat(32),
+      expiresAt: 1_700_003_600,
+    }
+    const cancelled: OrderLifecycle = {
+      ...lifecycle,
+      phase: "cancelled",
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      paymentTarget: { type: "manual" },
+      orderDeliveryStatus: "sent",
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      invoice: undefined,
+      priorExpiredManualInvoices: [prior],
+    }
+    await withMockOrderPaymentDb({ lifecycle: cancelled }, async () => {
+      const report = await claimExternalOrderPaymentProof(
+        cancelled.orderId,
+        "cancelled-report",
+        {
+          priorExpiredManualInvoice: prior,
+        }
+      )
+      expect(report.status).toBe("claimed")
+    })
+  })
+
+  it("vetoes retained-invoice reports when a replacement invoice or attempt exists", async () => {
+    const priorInvoice = makeBolt11Fixture({
+      hrp: "lnbc20n",
+      createdAt: 1_700_000_000,
+      fields: [
+        bolt11PaymentHashField(new Uint8Array(32).fill(171)),
+        bolt11PlainDescriptionField(),
+      ],
+    })
+    const prior = {
+      invoice: priorInvoice,
+      paymentHash: "ab".repeat(32),
+      expiresAt: 1_700_003_600,
+    }
+    const failed: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      paymentTarget: { type: "manual" },
+      orderDeliveryStatus: "sent",
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      invoice: undefined,
+      priorExpiredManualInvoice: prior,
+    }
+    const replacement = {
+      ...failed,
+      invoice: "lnbc2nreplacement",
+      invoiceStatus: "manual_required" as const,
+      paymentStatus: "manual_required" as const,
+    }
+    await withMockOrderPaymentDb({ lifecycle: replacement }, async () => {
+      expect(
+        (
+          await claimExternalOrderPaymentProof(failed.orderId, "newer", {
+            priorExpiredManualInvoice: prior,
+          })
+        ).status
+      ).toBe("preserved")
+    })
+    const paidReplacement = { ...replacement, paymentStatus: "paid" as const }
+    await withMockOrderPaymentDb({ lifecycle: paidReplacement }, async () => {
+      expect(
+        (
+          await claimExternalOrderPaymentProof(failed.orderId, "already-paid", {
+            priorExpiredManualInvoice: prior,
+          })
+        ).status
+      ).toBe("preserved")
+    })
+    await withMockOrderPaymentDb(
+      { lifecycle: { ...replacement, invoice: prior.invoice } },
+      async () => {
+        expect(
+          (
+            await claimExternalOrderPaymentProof(
+              failed.orderId,
+              "current-selected",
+              { priorExpiredManualInvoice: prior }
+            )
+          ).status
+        ).toBe("preserved")
+      }
+    )
+    await withMockOrderPaymentDb(
+      {
+        lifecycle: failed,
+        paymentAttempt: {
+          id: failed.orderId,
+          orderId: failed.orderId,
+          buyerPubkey: failed.buyerPubkey,
+          merchantPubkey: failed.merchantPubkey,
+          amountMsats: failed.totalMsats,
+          currency: "SATS",
+          invoice: prior.invoice,
+          proofDeliveryStatus: "pending",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+      async () => {
+        expect(
+          (
+            await claimExternalOrderPaymentProof(failed.orderId, "attempt", {
+              priorExpiredManualInvoice: prior,
+            })
+          ).status
+        ).toBe("preserved")
+      }
+    )
   })
 
   it("rejects completed manual reports before claiming payment evidence", async () => {

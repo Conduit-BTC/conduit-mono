@@ -1035,7 +1035,7 @@ test("market checkout explains missing merchant Lightning setup without blocking
 
   await page.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
   await expect(
-    page.getByRole("heading", { name: "Send Order", exact: true })
+    page.getByRole("heading", { name: "Checkout", exact: true })
   ).toBeVisible({ timeout: 30_000 })
   await expect(
     page.getByText("Merchant Lightning payments are not set up", {

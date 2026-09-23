@@ -392,8 +392,8 @@ Pickup checkout:
 - does not request or emit a buyer delivery address;
 - does not show a universal contact form for a signed-in buyer with a usable
   private reply path;
-- keeps a bounded merchant-only recovery contact for guest/manual order-first
-  cases that cannot receive a private reply;
+- keeps bounded merchant-only email and phone contact for guest/manual
+  order-first cases that cannot receive a private reply;
 - blocks or explicitly splits carts that mix pickup and shipped fulfillment;
 - snapshots pickup coordinate/revision, price/currency, title, public location,
   organizer pubkey, merchant pubkey, event coordinate, collection coordinate,
@@ -450,8 +450,9 @@ ambiguous-payment reconciliation retain their independent safeguards.
 - A valid revocation known before handoff removes readiness and prevents
   handout. A hypothetical unseen revocation does not negate found authority; a
   valid organizer acknowledgement grants no merchant-only lifecycle authority.
-- Signed-in pickup completes without a contact form. Guest pickup requires one
-  merchant-only recovery method and never copies it to the organizer.
+- Signed-in pickup completes without a contact form. Guest pickup requires both
+  merchant-only email and phone contact and never copies either to the
+  organizer.
 - Cross-app browser fixtures cover event creation, both handoff modes,
   organizer acceptance, checkout disclosure/no address, paid or zero-cost ready
   delivery, organizer handoff acknowledgement, and merchant completion.

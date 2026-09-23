@@ -15,6 +15,7 @@ export function ExternalWalletPanel({
   onMarkPaid,
   onBeforeInvoiceUse,
   onPrepareMerchantInvoice,
+  onRenewExpiredInvoice,
   preparationScope,
   merchantInvoicePrepared,
   boundMerchantInvoiceExpiresAt,
@@ -27,6 +28,7 @@ export function ExternalWalletPanel({
   onMarkPaid: () => void
   onBeforeInvoiceUse: () => boolean
   onPrepareMerchantInvoice: () => Promise<void>
+  onRenewExpiredInvoice?: () => Promise<void>
   preparationScope: string
   merchantInvoicePrepared: boolean
   boundMerchantInvoiceExpiresAt: number | null
@@ -152,12 +154,15 @@ export function ExternalWalletPanel({
     merchantInvoice?.status === "blocked"
       ? merchantInvoice.canReport
       : invoiceExpired
+  const invoiceCanRenew = invoiceExpired && !!onRenewExpiredInvoice
   const invoiceError =
     merchantInvoice?.status === "blocked"
       ? merchantInvoice.reason
       : invoiceExpiry === null
         ? "This invoice has an invalid expiry and cannot be used for payment."
-        : "This invoice has expired. Do not pay it again."
+        : invoiceCanRenew
+          ? "Get a new invoice before paying."
+          : "This invoice has expired and cannot be paid."
   const receiptNotice = (
     <p className="text-xs leading-5 text-[var(--text-secondary)]">
       {autoDetectReceipt
@@ -167,13 +172,24 @@ export function ExternalWalletPanel({
   )
   if (invoiceBlocked) {
     return (
-      <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
+      <section
+        className={`rounded-[1.5rem] border p-5 ${invoiceCanRenew ? "border-[var(--border)] bg-[var(--surface)]" : "border-amber-500/40 bg-amber-500/5"}`}
+      >
         <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-          Invoice unavailable
+          {invoiceCanRenew ? "Invoice expired" : "Invoice unavailable"}
         </h2>
         <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
           {invoiceError}
         </p>
+        {invoiceCanRenew && (
+          <Button
+            className="mt-4 h-10 w-full px-4 text-sm"
+            disabled={busy}
+            onClick={() => void onRenewExpiredInvoice()}
+          >
+            Get a new invoice
+          </Button>
+        )}
         {publicReceiptInvoice && <div className="mt-4">{receiptNotice}</div>}
         {invoiceCanReport && (
           <div className="mt-4 space-y-2">
@@ -203,50 +219,48 @@ export function ExternalWalletPanel({
     return onBeforeInvoiceUse()
   }
   return (
-    <section className="rounded-[1.5rem] border border-amber-500/40 bg-amber-500/5 p-5">
-      <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-        {isMerchantInvoice
-          ? "Pay merchant invoice"
-          : "Pay with an external wallet"}
-      </h2>
-      <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-        {publicReceiptInvoice
-          ? "Check your wallet first if an automatic payment was already attempted. Otherwise scan or copy this invoice and pay it once. Conduit will keep checking for a public Lightning receipt, and you can report the payment to the merchant directly."
-          : isMerchantInvoice
-            ? "Scan, copy, or open this merchant invoice. After your wallet confirms payment, report it to the merchant for verification."
-            : "Automatic payment did not complete. Check your wallet first, then pay this same invoice once and report it to the merchant for verification. This invoice can only settle once, so paying it again is safe if nothing was sent."}
-      </p>
-      {guestSession && (
-        <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
+    <div className="space-y-3">
+      <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+        <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
+          {isMerchantInvoice
+            ? "Pay merchant invoice"
+            : "Pay with an external wallet"}
+        </h2>
+        <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
           {publicReceiptInvoice
-            ? "Return to this same tab after paying and report it once your wallet confirms. Conduit will keep checking for a receipt while this tab remains open. Closing it ends local access to this guest order."
-            : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant can use the private recovery contact submitted at checkout."}
+            ? "Use one payment option below. Conduit will keep checking for the matching receipt."
+            : "Choose one option below, then return here after your wallet confirms payment."}
         </p>
-      )}
-      <InvoicePayment
-        key={invoice}
-        invoice={invoice}
-        expectedAmountSats={vm.totalSats}
-        preference={pricing.preference}
-        quote={pricing.quote}
-        guestSession={guestSession}
-        onBeforeInvoiceUse={canUseInvoice}
-      />
-      <div className="mt-4 space-y-3">
+        {guestSession && (
+          <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">
+            Return to this tab after paying.
+          </p>
+        )}
+        <InvoicePayment
+          key={invoice}
+          invoice={invoice}
+          expectedAmountSats={vm.totalSats}
+          preference={pricing.preference}
+          quote={pricing.quote}
+          guestSession={guestSession}
+          onBeforeInvoiceUse={canUseInvoice}
+        />
+      </section>
+      <section className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)] p-4">
         {publicReceiptInvoice && receiptNotice}
         <Button
-          variant="primary"
-          className="h-10 px-4 text-sm"
+          variant="outline"
+          className={`${publicReceiptInvoice ? "mt-3" : ""} h-10 w-full px-4 text-sm`}
           disabled={busy}
           onClick={onMarkPaid}
         >
           Report payment to merchant
         </Button>
-        <p className="text-xs text-[var(--text-secondary)]">
-          Only report after your wallet confirms payment. This does not verify
-          settlement; the merchant will confirm it.
+        <p className="mt-2 text-xs text-[var(--text-secondary)]">
+          Report only after your wallet confirms this payment. The merchant
+          still verifies settlement.
         </p>
-      </div>
-    </section>
+      </section>
+    </div>
   )
 }
