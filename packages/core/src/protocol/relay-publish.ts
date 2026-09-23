@@ -1104,6 +1104,36 @@ export async function publishWithPlannerProgressive(
         )
         break
       }
+
+      // Authentication can delay the previous write. Reapply the account's
+      // current source switches, whole-relay exclusions, and URL authority
+      // before opening the next exact connection.
+      let freshlyEligibleRelayUrls: string[]
+      try {
+        assertPublishSessionCurrent(input.shouldContinue)
+        freshlyEligibleRelayUrls =
+          targetInput.accountPubkey === undefined ||
+          targetInput.accountPubkey === null
+            ? [relayUrl]
+            : await filterEligibleAccountRelayUrls({
+                accountPubkey: targetInput.accountPubkey,
+                authenticatedPubkey: targetInput.authenticatedPubkey,
+                candidateRelayUrls: [relayUrl],
+                ownerSelectedRelayUrls: targetInput.ownerSelectedRelayUrls,
+                appRelayUrls: targetInput.appRelayUrls,
+                personalRelayUrls: targetInput.personalRelayUrls,
+                independentRelayUrls: targetInput.independentRelayUrls,
+                repository: targets.accountNetworkLocalStateRepository,
+              })
+        assertPublishSessionCurrent(input.shouldContinue)
+      } catch {
+        markUnattemptedErrors(relayUrls.slice(index), "Publish session changed")
+        break
+      }
+      if (!freshlyEligibleRelayUrls.includes(relayUrl)) {
+        markUnattemptedErrors([relayUrl], "Relay no longer eligible")
+        continue
+      }
       await attemptRelay(relayUrl, timeoutMs)
     }
   }

@@ -178,6 +178,74 @@ describe("progressive relay publishing", () => {
     expect(attempted).toEqual([FAST_RELAY])
   })
 
+  it("skips an authenticated target excluded after the previous exact write starts", async () => {
+    const accountSecret = generateSecretKey()
+    const accountPubkey = getPublicKey(accountSecret)
+    const firstWriterStarted = deferred<void>()
+    const firstWrite = deferred<ExactRelayWriteStatus>()
+    let slowRelayExcluded = false
+    const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
+      get: async (pubkey) => ({
+        ...emptyAccountNetworkLocalState(pubkey),
+        exclusions: slowRelayExcluded
+          ? [
+              {
+                relayUrl: SLOW_RELAY,
+                committedAt: 1,
+                relayListFrontier: { eventId: null, createdAt: null },
+                inboxDeclarationFrontier: { eventId: null, createdAt: null },
+              },
+            ]
+          : [],
+      }),
+    }
+    const attempted: string[] = []
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async ({ relayUrl }) => {
+        attempted.push(relayUrl)
+        if (relayUrl === FAST_RELAY) {
+          firstWriterStarted.resolve()
+          return await firstWrite.promise
+        }
+        return "acked"
+      },
+    })
+
+    const milestones = await publishWithPlannerProgressive(giftWrapEvent(), {
+      intent: "recipient_event",
+      authorPubkey: accountPubkey,
+      authenticatedPubkey: accountPubkey,
+      accountPubkey,
+      accountNetworkLocalStateRepository: repository,
+      exclusiveRelayUrls: [FAST_RELAY, SLOW_RELAY],
+      independentRelayUrls: [FAST_RELAY, SLOW_RELAY],
+      deliveryMode: "critical",
+      relayAuthentication: {
+        expectedPubkey: accountPubkey,
+        sessionScope: {},
+        signer: {
+          authMethod: "nip07",
+          getPublicKey: async () => accountPubkey,
+          signEvent: async (event) => finalizeEvent(event, accountSecret),
+        },
+      },
+    })
+
+    await firstWriterStarted.promise
+    slowRelayExcluded = true
+    firstWrite.resolve("acked")
+
+    await expect(milestones.accepted).resolves.toMatchObject({
+      successfulRelayUrls: [FAST_RELAY],
+    })
+    await expect(milestones.settled).resolves.toMatchObject({
+      attemptedRelayUrls: [FAST_RELAY],
+      erroredRelayUrls: [SLOW_RELAY],
+      relayFailureMessages: { [SLOW_RELAY]: "Relay no longer eligible" },
+    })
+    expect(attempted).toEqual([FAST_RELAY])
+  })
+
   it("fails closed when the signer session changes before network I/O", async () => {
     let attempts = 0
     __setRelayPublishTestOverrides({
