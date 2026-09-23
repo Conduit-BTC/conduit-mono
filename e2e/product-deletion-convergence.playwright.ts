@@ -924,7 +924,9 @@ test("Merchant retries the same signed deletion after every relay rejects it @me
   const recovered = (await readDeletionState(page)).jobs
   expect(signerCalls).toBe(1)
   expect(recovered[0]?.id).toBe(first.id)
-  expect(recovered[0]?.signedEvent).toEqual(first.signedEvent)
+  expect(
+    hasSameSerializedValue(recovered[0]?.signedEvent, first.signedEvent)
+  ).toBe(true)
   expect(recovered[0]?.deliveryAttemptCount).toBeGreaterThan(1)
   expect(
     publishes.filter(({ event }) => event.id === first.id).length
@@ -1165,15 +1167,29 @@ test("Merchant retries a rejected companion deletion only after its replacement 
   const jobs = (await readDeletionState(page)).jobs
   expect(signerCalls).toBe(0)
   expect(jobs[0]?.id).toBe(originalDeletion.id)
-  expect(jobs[0]?.signedEvent).toMatchObject({
-    id: originalDeletion.id,
-    pubkey: originalDeletion.pubkey,
-    sig: originalDeletion.sig,
-    kind: originalDeletion.kind,
-    created_at: originalDeletion.created_at,
-    tags: originalDeletion.tags,
-    content: originalDeletion.content,
-  })
+  const retriedEvent = jobs[0]?.signedEvent
+  expect(
+    hasSameSerializedValue(
+      [
+        retriedEvent?.id,
+        retriedEvent?.pubkey,
+        retriedEvent?.sig,
+        retriedEvent?.kind,
+        retriedEvent?.created_at,
+        retriedEvent?.tags,
+        retriedEvent?.content,
+      ],
+      [
+        originalDeletion.id,
+        originalDeletion.pubkey,
+        originalDeletion.sig,
+        originalDeletion.kind,
+        originalDeletion.created_at,
+        originalDeletion.tags,
+        originalDeletion.content,
+      ]
+    )
+  ).toBe(true)
   expect(publishes.some(({ event }) => event.id === originalDeletion.id)).toBe(
     true
   )
