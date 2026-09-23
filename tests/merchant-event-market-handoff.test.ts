@@ -20,6 +20,8 @@ import {
   loadEventMarketHandoffDeliveries,
   releaseCompletedEventMarketHandoffReceipt,
   rememberEventMarketHandoffDelivery,
+  retryStoredOrganizerReadyReceipt,
+  retryStoredOrganizerReadyRevocation,
   resolveMerchantHandoffAckEvidence,
   resolveMerchantHandoffAckReadState,
   revokeOrganizerReadyReceipt,
@@ -422,6 +424,233 @@ function seedDeliveries(
 }
 
 describe("merchant organizer handoff workflow", () => {
+  it("rejects exact ready and revocation retries owned by another account", async () => {
+    const ready = readyDelivery()
+    const revocation = revocationDelivery(ready)
+
+    await expect(
+      retryStoredOrganizerReadyReceipt({
+        merchantPubkey: OTHER,
+        delivery: ready,
+      })
+    ).rejects.toThrow("does not belong to this account")
+    await expect(
+      retryStoredOrganizerReadyRevocation({
+        merchantPubkey: OTHER,
+        delivery: revocation,
+      })
+    ).rejects.toThrow("does not belong to this account")
+  })
+
+  it("reloads exact retry progress instead of overwriting a newer stored checkpoint", async () => {
+    const storage = new MemoryStorage()
+    const retryable = withDeliveryState(
+      readyDelivery(),
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 },
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 }
+    )
+    const current = {
+      ...withDeliveryState(
+        retryable,
+        { status: "partial_success", acknowledgedCount: 1, failedCount: 1 },
+        { status: "full_success", acknowledgedCount: 1, failedCount: 0 }
+      ),
+      savedAt: retryable.savedAt + 1,
+    }
+    seedDeliveries(storage, [current])
+
+    const retried = await retryStoredOrganizerReadyReceipt({
+      merchantPubkey: MERCHANT,
+      delivery: retryable,
+      storage,
+      transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
+        publishFn: (async (_event, options) =>
+          plannerResult({
+            attempted: options.exclusiveRelayUrls ?? [],
+            successful: [],
+            failed: options.exclusiveRelayUrls ?? [],
+          })) as never,
+      },
+    })
+
+    expect(retried.deliveryProgress.recipientAcknowledgedRelayRefs).toEqual(
+      current.deliveryProgress.recipientAcknowledgedRelayRefs
+    )
+    expect(retried.deliveryProgress.selfAcknowledgedRelayRefs).toEqual(
+      current.deliveryProgress.selfAcknowledgedRelayRefs
+    )
+  })
+
+  it("keeps another tab's completed delivery when an older retry settles", async () => {
+    const storage = new MemoryStorage()
+    const retryable = withDeliveryState(
+      readyDelivery(),
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 },
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 }
+    )
+    const completed = {
+      ...withDeliveryState(
+        retryable,
+        { status: "full_success", acknowledgedCount: 1, failedCount: 0 },
+        { status: "full_success", acknowledgedCount: 1, failedCount: 0 }
+      ),
+      savedAt: retryable.savedAt + 1,
+    }
+    seedDeliveries(storage, [retryable])
+    let concurrentWrite = false
+
+    const retried = await retryStoredOrganizerReadyReceipt({
+      merchantPubkey: MERCHANT,
+      delivery: retryable,
+      storage,
+      transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
+        publishFn: (async (_event, options) => {
+          if (!concurrentWrite) {
+            concurrentWrite = true
+            seedDeliveries(storage, [completed])
+          }
+          return plannerResult({
+            attempted: options.exclusiveRelayUrls ?? [],
+            successful: [],
+            failed: options.exclusiveRelayUrls ?? [],
+          })
+        }) as never,
+      },
+    })
+
+    expect(concurrentWrite).toBe(true)
+    expect(retried.recipient.status).toBe("full_success")
+    expect(retried.selfCopy.status).toBe("full_success")
+    expect(
+      JSON.stringify(loadEventMarketHandoffDeliveries(MERCHANT, storage))
+    ).toBe(JSON.stringify([retried]))
+  })
+
+  it("unions ACK references written by another tab during retry", async () => {
+    const storage = new MemoryStorage()
+    const retryable = withDeliveryState(
+      readyDelivery(),
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 },
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 }
+    )
+    const concurrent = withDeliveryState(
+      retryable,
+      { status: "partial_success", acknowledgedCount: 1, failedCount: 1 },
+      { status: "partial_success", acknowledgedCount: 1, failedCount: 1 }
+    )
+    seedDeliveries(storage, [retryable])
+    let concurrentWrite = false
+
+    const retried = await retryStoredOrganizerReadyReceipt({
+      merchantPubkey: MERCHANT,
+      delivery: retryable,
+      storage,
+      transport: {
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+        senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
+        publishFn: (async (_event, options) => {
+          if (!concurrentWrite) {
+            concurrentWrite = true
+            seedDeliveries(storage, [concurrent])
+          }
+          const relays = options.exclusiveRelayUrls ?? []
+          return plannerResult({
+            attempted: relays,
+            successful: relays,
+            failed: [],
+          })
+        }) as never,
+      },
+    })
+
+    expect(concurrentWrite).toBe(true)
+    expect(
+      retried.deliveryProgress.recipientAcknowledgedRelayRefs
+    ).toHaveLength(2)
+    expect(retried.deliveryProgress.selfAcknowledgedRelayRefs).toHaveLength(2)
+    expect(
+      JSON.stringify(loadEventMarketHandoffDeliveries(MERCHANT, storage))
+    ).toBe(JSON.stringify([retried]))
+  })
+
+  it("does not resurrect a handoff row removed during relay retry", async () => {
+    const storage = new MemoryStorage()
+    const retryable = withDeliveryState(
+      readyDelivery(),
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 },
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 }
+    )
+    seedDeliveries(storage, [retryable])
+    let removed = false
+
+    await expect(
+      retryStoredOrganizerReadyReceipt({
+        merchantPubkey: MERCHANT,
+        delivery: retryable,
+        storage,
+        transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
+          publishFn: (async (_event, options) => {
+            if (!removed) {
+              removed = true
+              storage.clear()
+            }
+            return plannerResult({
+              attempted: options.exclusiveRelayUrls ?? [],
+              successful: [],
+              failed: options.exclusiveRelayUrls ?? [],
+            })
+          }) as never,
+        },
+      })
+    ).rejects.toThrow("no longer pending")
+    expect(removed).toBe(true)
+    expect(loadEventMarketHandoffDeliveries(MERCHANT, storage)).toEqual([])
+  })
+
+  it("does not resurrect an exact retry that another tab removed", async () => {
+    const storage = new MemoryStorage()
+    const retryable = withDeliveryState(
+      readyDelivery(),
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 },
+      { status: "zero_ack", acknowledgedCount: 0, failedCount: 1 }
+    )
+    let publishCalls = 0
+
+    await expect(
+      retryStoredOrganizerReadyReceipt({
+        merchantPubkey: MERCHANT,
+        delivery: retryable,
+        storage,
+        transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
+          publishFn: (async () => {
+            publishCalls += 1
+            return plannerResult({ attempted: [], successful: [], failed: [] })
+          }) as never,
+        },
+      })
+    ).rejects.toThrow("no longer pending")
+    expect(publishCalls).toBe(0)
+    expect(loadEventMarketHandoffDeliveries(MERCHANT, storage)).toEqual([])
+  })
+
   it("builds only the minimal receipt and excludes private order fields", () => {
     const receipt = buildOrganizerReadyReceiptPayload(
       order(),
@@ -697,7 +926,7 @@ describe("merchant organizer handoff workflow", () => {
     expect(resolve({ stale: true }).blocker).toBe("stale")
     expect(resolve({ decryptFailureCount: 1 }).blocker).toBe("decrypt_failure")
     expect(resolve({ declarationState: "not_declared" }).blocker).toBe(
-      "inbox_not_declared"
+      "inbox_not_ready"
     )
     expect(resolve({ coverage: "partial" }).blocker).toBe("coverage_incomplete")
     for (const result of [
@@ -793,13 +1022,20 @@ describe("merchant organizer handoff workflow", () => {
     expect(eventMarketHandoffDeliveryNeedsRetry(migrated)).toBe(true)
 
     const publishedIds: string[] = []
-    const converged = await issueOrganizerReadyReceipt({
+    await expect(
+      issueOrganizerReadyReceipt({
+        merchantPubkey: MERCHANT,
+        order: sourceOrder,
+        paymentAuthenticated: true,
+        authorizationConfirmed: true,
+        market: market(),
+        signer: {} as never,
+        storage,
+      })
+    ).rejects.toThrow("Retry its delivery")
+    const converged = await retryStoredOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
-      order: sourceOrder,
-      paymentAuthenticated: true,
-      authorizationConfirmed: true,
-      market: market(),
-      signer: {} as never,
+      delivery: migrated,
       storage,
       transport: {
         accountNetworkLocalStateRepository:
@@ -945,13 +1181,9 @@ describe("merchant organizer handoff workflow", () => {
     expect(storage.serialized()).not.toContain("wss://")
 
     const retryTargets: string[][] = []
-    const retried = await issueOrganizerReadyReceipt({
+    const retried = await retryStoredOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
-      order: sourceOrder,
-      paymentAuthenticated: true,
-      authorizationConfirmed: true,
-      market: market(),
-      signer: {} as never,
+      delivery: initial,
       storage,
       transport: {
         accountNetworkLocalStateRepository:
@@ -1029,13 +1261,9 @@ describe("merchant organizer handoff workflow", () => {
       relayUrls: string[]
       ownerSelectedRelayUrls: string[]
     }> = []
-    const retried = await issueOrganizerReadyReceipt({
+    const retried = await retryStoredOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
-      order: sourceOrder,
-      paymentAuthenticated: true,
-      authorizationConfirmed: true,
-      market: market(),
-      signer: {} as never,
+      delivery: initial,
       storage,
       transport: {
         authenticatedPubkey: MERCHANT,
@@ -1117,13 +1345,9 @@ describe("merchant organizer handoff workflow", () => {
     expect(zero.deliveryProgress.recipientAcknowledgedRelayRefs).toEqual([])
     expect(storage.serialized()).not.toContain("wss://")
 
-    const partial = await issueOrganizerReadyReceipt({
+    const partial = await retryStoredOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
-      order: sourceOrder,
-      paymentAuthenticated: true,
-      authorizationConfirmed: true,
-      market: market(),
-      signer: {} as never,
+      delivery: zero,
       storage,
       transport: {
         accountNetworkLocalStateRepository:
@@ -1162,7 +1386,7 @@ describe("merchant organizer handoff workflow", () => {
     const relayA = "wss://organizer-a.relay.dev"
     const relayB = "wss://organizer-b.relay.dev"
     const relayC = "wss://organizer-c.relay.dev"
-    await issueOrganizerReadyReceipt({
+    const initial = await issueOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
       order: sourceOrder,
       paymentAuthenticated: true,
@@ -1195,13 +1419,9 @@ describe("merchant organizer handoff workflow", () => {
     })
 
     const changedInboxAttempts: string[][] = []
-    const changedInbox = await issueOrganizerReadyReceipt({
+    const changedInbox = await retryStoredOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
-      order: sourceOrder,
-      paymentAuthenticated: true,
-      authorizationConfirmed: true,
-      market: market(),
-      signer: {} as never,
+      delivery: initial,
       storage,
       transport: {
         accountNetworkLocalStateRepository:
@@ -1225,13 +1445,9 @@ describe("merchant organizer handoff workflow", () => {
     ).toHaveLength(2)
 
     const readdedInboxAttempts: string[][] = []
-    const converged = await issueOrganizerReadyReceipt({
+    const converged = await retryStoredOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
-      order: sourceOrder,
-      paymentAuthenticated: true,
-      authorizationConfirmed: true,
-      market: market(),
-      signer: {} as never,
+      delivery: changedInbox,
       storage,
       transport: {
         accountNetworkLocalStateRepository:
@@ -1348,13 +1564,9 @@ describe("merchant organizer handoff workflow", () => {
 
       if (testCase.retryable) {
         const retriedIds: string[] = []
-        const retried = await issueOrganizerReadyReceipt({
+        const retried = await retryStoredOrganizerReadyReceipt({
           merchantPubkey: MERCHANT,
-          order: sourceOrder,
-          paymentAuthenticated: true,
-          authorizationConfirmed: true,
-          market: market(),
-          signer: {} as never,
+          delivery: result,
           storage,
           transport: {
             accountNetworkLocalStateRepository:
@@ -1504,13 +1716,9 @@ describe("merchant organizer handoff workflow", () => {
 
     const reloaded = loadEventMarketHandoffDeliveries(MERCHANT, storage)[0]!
     const retriedIds: string[] = []
-    const retried = await issueOrganizerReadyReceipt({
+    const retried = await retryStoredOrganizerReadyReceipt({
       merchantPubkey: MERCHANT,
-      order: order(),
-      paymentAuthenticated: true,
-      authorizationConfirmed: true,
-      market: market(),
-      signer: {} as never,
+      delivery: reloaded,
       storage,
       transport: {
         accountNetworkLocalStateRepository:
@@ -2153,23 +2361,28 @@ describe("merchant organizer handoff workflow", () => {
           signer: {} as never,
           matchingAckReceiptIds: new Set(),
           storage,
-          transport: {
-            accountNetworkLocalStateRepository:
-              allowAllAccountNetworkLocalStateRepository,
-            recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
-            senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
-            publishFn: (async (event, options) => {
-              publishedIds.push(event.id)
-              const relays = options.exclusiveRelayUrls ?? []
-              return plannerResult({
-                attempted: relays,
-                successful: relays,
-                failed: [],
-              })
-            }) as never,
-          },
         })
-      ).resolves.toBe("revoked")
+      ).rejects.toThrow("Retry its delivery")
+      const retried = await retryStoredOrganizerReadyRevocation({
+        merchantPubkey: MERCHANT,
+        delivery: revocation,
+        storage,
+        transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          recipientInboxRelays: ["wss://organizer-inbox.relay.dev"],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
+          publishFn: (async (event, options) => {
+            publishedIds.push(event.id)
+            const relays = options.exclusiveRelayUrls ?? []
+            return plannerResult({
+              attempted: relays,
+              successful: relays,
+              failed: [],
+            })
+          }) as never,
+        },
+      })
 
       expect(publishedIds).toEqual([
         revocation.record.signedRecipientWrap.id,
@@ -2183,6 +2396,7 @@ describe("merchant organizer handoff workflow", () => {
         JSON.stringify(revocation.record)
       )
       expect(eventMarketHandoffDeliveryNeedsRetry(reloaded)).toBe(false)
+      expect(retried.record).toEqual(revocation.record)
     }
   })
 
@@ -2232,52 +2446,49 @@ describe("merchant organizer handoff workflow", () => {
       rememberEventMarketHandoffDelivery(MERCHANT, ready, storage)
       rememberEventMarketHandoffDelivery(MERCHANT, revocation, storage)
 
-      await expect(
-        revokeOrganizerReadyReceipt({
-          merchantPubkey: MERCHANT,
-          orderId: order().id,
-          signer: {} as never,
-          matchingAckReceiptIds: new Set(),
-          storage,
-          transport: {
-            accountNetworkLocalStateRepository:
-              allowAllAccountNetworkLocalStateRepository,
-            recipientInboxRelays: [
-              "wss://organizer-primary.relay.dev",
-              "wss://organizer-backup.relay.dev",
-            ],
-            senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
-            publishFn: (async (_event, options) => {
-              const relays = options.exclusiveRelayUrls ?? []
-              if (
-                failureLeg === "self" &&
-                options.recipientPubkeys?.[0] === MERCHANT
-              ) {
-                throw new Error("self copy failed")
-              }
-              return plannerResult({
-                attempted: relays,
-                successful:
-                  failureLeg === "recipient" &&
-                  options.recipientPubkeys?.[0] === ORGANIZER
-                    ? relays.slice(0, 1)
-                    : relays,
-                failed:
-                  failureLeg === "recipient" &&
-                  options.recipientPubkeys?.[0] === ORGANIZER
-                    ? relays.slice(1)
-                    : [],
-              })
-            }) as never,
-          },
-        })
-      ).rejects.toThrow("Cancellation remains blocked")
+      const retried = await retryStoredOrganizerReadyRevocation({
+        merchantPubkey: MERCHANT,
+        delivery: revocation,
+        storage,
+        transport: {
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          recipientInboxRelays: [
+            "wss://organizer-primary.relay.dev",
+            "wss://organizer-backup.relay.dev",
+          ],
+          senderInboxRelays: ["wss://merchant-inbox.relay.dev"],
+          publishFn: (async (_event, options) => {
+            const relays = options.exclusiveRelayUrls ?? []
+            if (
+              failureLeg === "self" &&
+              options.recipientPubkeys?.[0] === MERCHANT
+            ) {
+              throw new Error("self copy failed")
+            }
+            return plannerResult({
+              attempted: relays,
+              successful:
+                failureLeg === "recipient" &&
+                options.recipientPubkeys?.[0] === ORGANIZER
+                  ? relays.slice(0, 1)
+                  : relays,
+              failed:
+                failureLeg === "recipient" &&
+                options.recipientPubkeys?.[0] === ORGANIZER
+                  ? relays.slice(1)
+                  : [],
+            })
+          }) as never,
+        },
+      })
 
       const reloaded = loadEventMarketHandoffDeliveries(MERCHANT, storage).find(
         (delivery) =>
           delivery.record.messageType === "organizer_fulfillment_revocation"
       )!
       expect(eventMarketHandoffDeliveryNeedsRetry(reloaded)).toBe(true)
+      expect(eventMarketHandoffDeliveryNeedsRetry(retried)).toBe(true)
       expect(reloaded.record.signedRecipientWrap.id).toBe(
         revocation.record.signedRecipientWrap.id
       )

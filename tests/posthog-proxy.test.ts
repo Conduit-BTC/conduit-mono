@@ -587,6 +587,143 @@ describe("PostHog reverse proxy", () => {
     })
   })
 
+  it("accepts the SDK capture-body envelope and rebuilds each event", async () => {
+    let forwarded: unknown
+    const sentAt = "2026-09-18T14:44:00.000Z"
+    const response = await handlePostHogProxyRequest(
+      ingestRequest({
+        api_key: PROJECT_TOKEN,
+        batch: [
+          makeEvent({ timestamp: "2026-09-18T14:43:59.000Z" }),
+          makeEvent({}, { shippingAddress: "must never reach PostHog" }),
+        ],
+        sent_at: sentAt,
+      }),
+      async (request) => {
+        forwarded = await request.json()
+        expect(request.url).toBe("https://us.i.posthog.com/e/?ip=0")
+        return new Response('{"status":"Ok"}')
+      },
+      { POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN }
+    )
+
+    expect(response.status).toBe(200)
+    expect(forwarded).toEqual({
+      api_key: PROJECT_TOKEN,
+      batch: [
+        {
+          ...makeEvent({ timestamp: "2026-09-18T14:43:59.000Z" }),
+          properties: {
+            ...makeEvent().properties,
+          },
+        },
+      ],
+      sent_at: sentAt,
+    })
+    expect(JSON.stringify(forwarded)).not.toContain("shippingAddress")
+  })
+
+  it("rejects malformed SDK envelopes and foreign project tokens", async () => {
+    let upstreamCalls = 0
+    const fetcher = async () => {
+      upstreamCalls += 1
+      return new Response("ok")
+    }
+    const valid = {
+      api_key: PROJECT_TOKEN,
+      batch: [makeEvent()],
+      sent_at: "2026-09-18T14:44:00.000Z",
+    }
+    for (const invalid of [
+      { ...valid, api_key: `phc_${"x".repeat(32)}` },
+      { ...valid, sent_at: "not-a-time" },
+      { ...valid, secret: "must never reach PostHog" },
+      { ...valid, batch: [] },
+    ]) {
+      const response = await handlePostHogProxyRequest(
+        ingestRequest(invalid),
+        fetcher,
+        { POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN }
+      )
+      expect(response.status).toBe(400)
+    }
+    expect(upstreamCalls).toBe(0)
+  })
+
+  it("decodes the SDK's base64 page-exit beacon before applying the allowlist", async () => {
+    const envelope = {
+      api_key: PROJECT_TOKEN,
+      batch: [makeEvent()],
+      sent_at: "2026-09-18T14:44:00.000Z",
+    }
+    const beacon = new Request(
+      "https://e.conduit.market/e/?compression=base64",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: "https://shop.conduit.market",
+        },
+        body: `data=${encodeURIComponent(btoa(JSON.stringify(envelope)))}`,
+      }
+    )
+    let forwarded: unknown
+    const response = await handlePostHogProxyRequest(
+      beacon,
+      async (request) => {
+        forwarded = await request.json()
+        return new Response('{"status":"Ok"}')
+      },
+      { POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN }
+    )
+
+    expect(response.status).toBe(200)
+    expect(forwarded).toEqual(envelope)
+  })
+
+  it("rejects malformed or privacy-unsafe base64 beacons", async () => {
+    let upstreamCalls = 0
+    const fetcher = async () => {
+      upstreamCalls += 1
+      return new Response("ok")
+    }
+    for (const body of ["data=invalid*base64", "data=YQ%3D%3D&extra=1"]) {
+      const response = await handlePostHogProxyRequest(
+        new Request("https://e.conduit.market/e/?compression=base64", {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            origin: "https://shop.conduit.market",
+          },
+          body,
+        }),
+        fetcher,
+        { POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN }
+      )
+      expect(response.status).toBe(400)
+    }
+    const unsafe = {
+      api_key: PROJECT_TOKEN,
+      batch: [makeEvent({}, { shippingAddress: "must never reach PostHog" })],
+      sent_at: "2026-09-18T14:44:00.000Z",
+    }
+    const response = await handlePostHogProxyRequest(
+      new Request("https://e.conduit.market/e/?compression=base64", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: "https://shop.conduit.market",
+        },
+        body: `data=${encodeURIComponent(btoa(JSON.stringify(unsafe)))}`,
+      }),
+      fetcher,
+      { POSTHOG_PROJECT_TOKEN: PROJECT_TOKEN }
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ status: "dropped" })
+    expect(upstreamCalls).toBe(0)
+  })
+
   it("drops disallowed payloads without contacting the provider", async () => {
     let upstreamCalls = 0
     const fetcher = async (): Promise<Response> => {

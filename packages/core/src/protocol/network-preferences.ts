@@ -33,6 +33,10 @@ import {
   type RelaySettingsState,
 } from "./relay-settings"
 import { getAccountRelayScope } from "./session"
+import {
+  classifyAccountNetworkPersonalRelayEvidence,
+  reconcileAccountNetworkRoutingPolicy,
+} from "./account-network-routing-policy"
 
 export type NetworkRoleMembership = "published" | "pending" | null
 
@@ -447,6 +451,20 @@ export async function reconcileAccountNetworkPreferences(
     repository: localStateRepository,
     updatedAt: Date.now(),
   })
+  try {
+    await localStateRepository.updateRoutingPolicy(
+      normalizedPubkey,
+      (current) =>
+        reconcileAccountNetworkRoutingPolicy(
+          current,
+          classifyAccountNetworkPersonalRelayEvidence(ownerRelayList)
+        ),
+      ownerRelayList.lookup.observedAt
+    )
+  } catch {
+    // Signed frontier projection remains usable when browser storage is
+    // unavailable. Runtime final-I/O policy reads still fail closed.
+  }
   const projection = projectAccountNetworkPreferences({
     pubkey: normalizedPubkey,
     relayScope: accountScope,

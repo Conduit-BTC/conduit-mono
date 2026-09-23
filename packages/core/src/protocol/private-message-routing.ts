@@ -1842,6 +1842,20 @@ export function selectPrivateMessageDeliveryRoute(
       ? ("recipient_not_ready" as const)
       : ("recipient_lookup_failed" as const)
 
+  // Compatibility is a bounded bootstrap for a complete, fresh absence only.
+  // Partial or unavailable evidence cannot prove that the recipient has no
+  // private inbox declaration, so it must never authorize fallback writes.
+  if (declaration.state !== "not_observed") {
+    return {
+      route: "blocked",
+      relayUrls: [],
+      ownerSelectedRelayUrls: [],
+      relaySources: {},
+      truncated: false,
+      blockedReason: strictBlockedReason,
+    }
+  }
+
   const isOrderMessage = input.rumorKind === EVENT_KINDS.ORDER
   if (!isOrderMessage || !input.validatedOrder) {
     return {

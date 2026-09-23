@@ -22,7 +22,15 @@ function localState(
 ): AccountNetworkLocalState {
   return {
     pubkey: PUBKEY,
-    version: 1,
+    version: 2,
+    routingPolicy: {
+      policyVersion: 1,
+      appRelaysEnabled: true,
+      personalRelaysEnabled: false,
+      appRelaysTouched: false,
+      personalRelaysTouched: false,
+      setupPromptState: "untouched",
+    },
     exclusions: [],
     preferredRelayOrder: [],
     relayScans: [],
@@ -141,6 +149,7 @@ function scan(
     url,
     reachable: options.reachable ?? true,
     relayName: "Example relay",
+    relayIconUrl: "https://nostr.build/example-relay.png",
     capabilities: {
       nip11: true,
       search: false,
@@ -293,12 +302,261 @@ describe("network settings view", () => {
     expect(configured?.capability).toMatchObject({
       observedCommerce: false,
       nip11: "available",
+      relayName: "Example relay",
+      relayIconUrl: "https://nostr.build/example-relay.png",
+      relayIconFallbackUrl: "/images/logo/logo-icon.svg",
     })
     expect(configured?.capability.configuredUses).toContain("app_publishing")
     expect(observed?.capability).toMatchObject({
       configuredUses: [],
       observedCommerce: true,
     })
+  })
+
+  it("projects app relay policy separately and prepares an exact reviewed recommendation", () => {
+    const view = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        rows: [],
+        owner: {
+          state: "not_observed",
+          current: null,
+          lastUsable: null,
+          pendingDistribution: null,
+          lookup: {
+            coverage: "complete",
+            observedAt: 20_000,
+            hadEvent: false,
+          },
+        },
+        inbox: {
+          state: "not_observed",
+          relayUrls: [],
+          eventId: undefined,
+          eventCreatedAt: undefined,
+          observation: {
+            coverage: "complete",
+            attemptedRelayUrls: [],
+            successfulRelayUrls: [],
+            failedRelayUrls: [],
+            eventId: null,
+            eventSourceRelayUrls: [],
+          },
+        },
+      }),
+      localState: localState({
+        relayScans: [scan("wss://relay.conduit.market", { reachable: false })],
+      }),
+    })
+
+    expect(view.appRelays?.enabled).toBe(true)
+    expect(view.personalRelaysEnabled).toBe(false)
+    expect(view.appRelays?.warning).toContain(
+      "Your personal relays are currently disabled"
+    )
+    expect(
+      view.appRelays?.rows.map((row) => [row.capability.relayName, row.url])
+    ).toEqual([
+      ["Conduit Relay", "wss://relay.conduit.market"],
+      ["Ditto Relay", "wss://relay.ditto.pub"],
+      ["Dreamith Relay", "wss://relay.dreamith.to"],
+      ["Primal Public Relay", "wss://relay.primal.net"],
+      ["nos.lol", "wss://nos.lol"],
+      ["Plebeian Market Relay", "wss://relay.plebeian.market"],
+    ])
+    expect(view.appRelays?.rows[0]).toMatchObject({
+      url: "wss://relay.conduit.market",
+      readEnabled: true,
+      publishEnabled: true,
+      privateInboxEnabled: true,
+      reachability: "issue",
+      capability: {
+        nip11: "unavailable",
+        relayName: "Conduit Relay",
+        relayIconUrl: "https://nostr.build/example-relay.png",
+        relayIconFallbackUrl: "/images/logo/logo-icon.svg",
+      },
+    })
+    expect(view.setupRecommendation).toMatchObject({
+      title: "Match Conduit defaults",
+      description:
+        "No signed relay setup was found on the relays checked. Review Conduit’s recommended roles before anything is signed.",
+    })
+    expect(view.setupRecommendation?.rows.map((row) => row.url)).toEqual([
+      "wss://relay.conduit.market",
+      "wss://relay.ditto.pub",
+      "wss://relay.dreamith.to",
+      "wss://relay.primal.net",
+    ])
+    expect(
+      [
+        ...(view.appRelays?.rows ?? []),
+        ...(view.setupRecommendation?.rows ?? []),
+      ].map((row) => row.url)
+    ).not.toContain("wss://relay.damus.io")
+
+    const enabledButIncomplete = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({ rows: [] }),
+      localState: localState({
+        routingPolicy: {
+          ...localState().routingPolicy,
+          personalRelaysEnabled: true,
+        },
+      }),
+    })
+    expect(enabledButIncomplete.appRelays?.warning).toContain(
+      "a commerce-qualified Publish relay, a current Private inbox"
+    )
+
+    const dismissed = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        rows: [],
+        owner: {
+          state: "not_observed",
+          current: null,
+          lastUsable: null,
+          pendingDistribution: null,
+          lookup: {
+            coverage: "complete",
+            observedAt: 20_000,
+            hadEvent: false,
+          },
+        },
+        inbox: {
+          state: "not_observed",
+          relayUrls: [],
+          eventId: undefined,
+          eventCreatedAt: undefined,
+          observation: {
+            coverage: "complete",
+            attemptedRelayUrls: [],
+            successfulRelayUrls: [],
+            failedRelayUrls: [],
+            eventId: null,
+            eventSourceRelayUrls: [],
+          },
+        },
+      }),
+      localState: localState({
+        routingPolicy: {
+          ...localState().routingPolicy,
+          setupPromptState: "dismissed",
+          setupPromptUpdatedAt: 20_001,
+        },
+      }),
+    })
+    expect(dismissed.setupRecommendation).toBeUndefined()
+  })
+
+  it("does not present scoped setup absence from partial or retained inbox evidence", () => {
+    const incompleteOwnerLookup = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        rows: [],
+        owner: {
+          state: "lookup_partial",
+          current: null,
+          lastUsable: null,
+          pendingDistribution: null,
+          lookup: {
+            coverage: "partial",
+            observedAt: 20_000,
+            hadEvent: false,
+          },
+        },
+        inbox: {
+          state: "not_observed",
+          relayUrls: [],
+          eventId: undefined,
+          eventCreatedAt: undefined,
+          observation: {
+            coverage: "complete",
+            attemptedRelayUrls: [],
+            successfulRelayUrls: [],
+            failedRelayUrls: [],
+            eventSourceRelayUrls: [],
+          },
+        },
+      }),
+      localState: localState(),
+    })
+    expect(incompleteOwnerLookup.setupRecommendation).toBeUndefined()
+
+    const retainedInbox = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        rows: [],
+        owner: {
+          state: "not_observed",
+          current: null,
+          lastUsable: null,
+          pendingDistribution: null,
+          lookup: {
+            coverage: "complete",
+            observedAt: 20_000,
+            hadEvent: false,
+          },
+        },
+        inbox: {
+          state: "not_observed",
+          relayUrls: [],
+          retainedReadRelayUrls: ["wss://retained-inbox.example"],
+          eventId: undefined,
+          eventCreatedAt: undefined,
+          observation: {
+            coverage: "complete",
+            attemptedRelayUrls: [],
+            successfulRelayUrls: [],
+            failedRelayUrls: [],
+            eventSourceRelayUrls: [],
+          },
+        },
+      }),
+      localState: localState(),
+    })
+    expect(retainedInbox.setupRecommendation).toBeUndefined()
+  })
+
+  it("warns honestly when commerce is unverified and a pending inbox is not current", () => {
+    const personalRelayUrl = "wss://personal.example"
+    const view = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        rows: [
+          {
+            url: personalRelayUrl,
+            position: 0,
+            read: "published",
+            write: "published",
+            privateInbox: "pending",
+          },
+        ],
+        inbox: {
+          state: "distribution_pending",
+          relayUrls: [],
+          pendingRelayUrls: [personalRelayUrl],
+          eventId: null,
+          eventCreatedAt: null,
+          observation: {
+            coverage: "complete",
+            attemptedRelayUrls: [],
+            successfulRelayUrls: [],
+            failedRelayUrls: [],
+            eventId: null,
+            eventSourceRelayUrls: [],
+          },
+        },
+      }),
+      localState: localState({
+        routingPolicy: {
+          ...localState().routingPolicy,
+          personalRelaysEnabled: true,
+        },
+      }),
+    })
+
+    expect(view.appRelays?.warning).toContain(
+      "does not currently include a current Private inbox"
+    )
+    expect(view.appRelays?.warning).toContain(
+      "could not verify a commerce-qualified Publish relay"
+    )
   })
 
   it("presents stale signed frontiers as retained without relabeling refresh time", () => {

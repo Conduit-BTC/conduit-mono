@@ -3,7 +3,6 @@ import { describe, expect, it } from "bun:test"
 import {
   androidSignerConnectUrl,
   getSignerPlatform,
-  type AndroidSigner,
 } from "../packages/ui/src/components/signer-platform"
 
 function connectionFixture(): string {
@@ -71,28 +70,21 @@ describe("signer platform", () => {
 })
 
 describe("Android signer handoff", () => {
-  it("targets each known package and preserves the complete encoded request", () => {
+  it("targets Amber and preserves the complete encoded request", () => {
     const request = connectionFixture()
-    const packages: Record<AndroidSigner, string> = {
-      amber: "com.greenart7c3.nostrsigner",
-      primal: "net.primal.android",
-    }
+    const handoff = androidSignerConnectUrl(request)
+    const marker = handoff.indexOf("#Intent;")
+    const recoveredRequest = `nostrconnect:${handoff.slice("intent:".length, marker)}`
 
-    for (const signer of ["amber", "primal"] as const) {
-      const handoff = androidSignerConnectUrl(signer, request)
-      const marker = handoff.indexOf("#Intent;")
-      const recoveredRequest = `nostrconnect:${handoff.slice("intent:".length, marker)}`
-
-      // Boolean comparisons keep connection credentials out of failure output.
-      expect(handoff.startsWith("intent://")).toBe(true)
-      expect(recoveredRequest === request).toBe(true)
-      expect(
-        handoff.slice(marker) ===
-          `#Intent;scheme=nostrconnect;package=${packages[signer]};end`
-      ).toBe(true)
-      expect(handoff.includes("browser_fallback_url")).toBe(false)
-      expect(handoff.indexOf("#") === handoff.lastIndexOf("#")).toBe(true)
-    }
+    // Boolean comparisons keep connection credentials out of failure output.
+    expect(handoff.startsWith("intent://")).toBe(true)
+    expect(recoveredRequest === request).toBe(true)
+    expect(
+      handoff.slice(marker) ===
+        "#Intent;scheme=nostrconnect;package=com.greenart7c3.nostrsigner;end"
+    ).toBe(true)
+    expect(handoff.includes("browser_fallback_url")).toBe(false)
+    expect(handoff.indexOf("#") === handoff.lastIndexOf("#")).toBe(true)
   })
 
   it("rejects non-NIP-46 schemes and malformed scheme prefixes", () => {
@@ -103,7 +95,7 @@ describe("Android signer handoff", () => {
       "intent:request",
       "nostrconnect:request",
     ]) {
-      expect(() => androidSignerConnectUrl("amber", request)).toThrow(TypeError)
+      expect(() => androidSignerConnectUrl(request)).toThrow(TypeError)
     }
   })
 
@@ -114,27 +106,18 @@ describe("Android signer handoff", () => {
       "#section",
       "#Intent;package=example.untrusted;S.browser_fallback_url=https%3A%2F%2Fexample.test;end",
     ]) {
-      expect(() =>
-        androidSignerConnectUrl("primal", request + fragment)
-      ).toThrow(TypeError)
+      expect(() => androidSignerConnectUrl(request + fragment)).toThrow(
+        TypeError
+      )
     }
   })
 
   it("rejects raw whitespace and controls that browsers could normalize", () => {
     const request = connectionFixture()
     for (const control of [" ", "\n", "\r", "\t", "\u0000", "\u007f"]) {
-      expect(() => androidSignerConnectUrl("amber", request + control)).toThrow(
+      expect(() => androidSignerConnectUrl(request + control)).toThrow(
         TypeError
       )
-    }
-  })
-
-  it("rejects arbitrary packages and inherited object keys at runtime", () => {
-    const request = connectionFixture()
-    for (const signer of ["example.untrusted", "__proto__", "toString"]) {
-      expect(() =>
-        androidSignerConnectUrl(signer as AndroidSigner, request)
-      ).toThrow(TypeError)
     }
   })
 })

@@ -1,6 +1,7 @@
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import type { EventMarketReadyReceiptSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
+import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import {
   fetchEventsFanoutDetailed,
@@ -339,11 +340,24 @@ export async function getEventMarketReceiptMerchandise(
     ) ?? []
   )
   const lookup = testOverrides.getRelayLists ?? getRelayLists
+  const relayListReadPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    settings: ownerSettingsSnapshot?.settings,
+    signedRelayListAuthoritative:
+      ownerSettingsSnapshot?.signedRelayListAuthoritative,
+  })
   const relayLists = await lookup([merchant], {
     signal: input.signal,
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
-    ownerSelectedRelayUrls,
+    relayUrls: relayListReadPlan.candidateRelayUrls,
+    maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
+    ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
+    appRelayUrls: relayListReadPlan.appRelayUrls,
+    personalRelayUrls: relayListReadPlan.personalRelayUrls,
+    independentRelayUrls: relayListReadPlan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
@@ -359,7 +373,19 @@ export async function getEventMarketReceiptMerchandise(
     signedRelayListAuthoritative:
       ownerSettingsSnapshot?.signedRelayListAuthoritative,
   })
-  const relayUrls = plan.relayUrls.slice(0, MAX_RECEIPT_READ_RELAYS)
+  const admittedRelayUrls = authenticatedPubkey
+    ? await filterEligibleAccountRelayUrls({
+        accountPubkey: authenticatedPubkey,
+        authenticatedPubkey,
+        candidateRelayUrls: plan.candidateRelayUrls,
+        ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
+        appRelayUrls: plan.appRelayUrls,
+        personalRelayUrls: plan.personalRelayUrls,
+        independentRelayUrls: plan.independentRelayUrls,
+        repository: input.accountNetworkLocalStateRepository,
+      })
+    : plan.candidateRelayUrls
+  const relayUrls = admittedRelayUrls.slice(0, MAX_RECEIPT_READ_RELAYS)
   const productIds = Array.from(
     new Set(input.receipt.items.map((item) => item.product.eventId))
   )
@@ -396,6 +422,7 @@ export async function getEventMarketReceiptMerchandise(
     index += RECEIPT_READ_CONCURRENCY
   ) {
     const batch = filters.slice(index, index + RECEIPT_READ_CONCURRENCY)
+    const remainingRelayUrlSet = new Set(remainingRelayUrls)
     const batchResults = await Promise.all(
       batch.map((filter) =>
         fetch(filter, {
@@ -403,7 +430,16 @@ export async function getEventMarketReceiptMerchandise(
           accountPubkey: authenticatedPubkey,
           authenticatedPubkey,
           ownerSelectedRelayUrls: (plan.ownerSelectedRelayUrls ?? []).filter(
-            (relayUrl) => remainingRelayUrls.includes(relayUrl)
+            (relayUrl) => remainingRelayUrlSet.has(relayUrl)
+          ),
+          appRelayUrls: (plan.appRelayUrls ?? []).filter((relayUrl) =>
+            remainingRelayUrlSet.has(relayUrl)
+          ),
+          personalRelayUrls: (plan.personalRelayUrls ?? []).filter((relayUrl) =>
+            remainingRelayUrlSet.has(relayUrl)
+          ),
+          independentRelayUrls: (plan.independentRelayUrls ?? []).filter(
+            (relayUrl) => remainingRelayUrlSet.has(relayUrl)
           ),
           accountNetworkLocalStateRepository:
             input.accountNetworkLocalStateRepository,

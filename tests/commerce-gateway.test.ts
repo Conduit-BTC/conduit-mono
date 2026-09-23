@@ -99,6 +99,17 @@ async function durableMerchantRelayListRepository(tags: string[][]) {
   return repository
 }
 
+function boundedTestRelayUrls(options?: {
+  relayUrls?: readonly string[]
+  maxRelayAttempts?: number
+}): string[] {
+  const relayUrls = [...(options?.relayUrls ?? [])]
+  const maxRelayAttempts = options?.maxRelayAttempts
+  return typeof maxRelayAttempts === "number" && maxRelayAttempts > 0
+    ? relayUrls.slice(0, maxRelayAttempts)
+    : relayUrls
+}
+
 function makeFollowListRead(input: {
   pubkey: string
   event?: SignedPublicNostrEvent
@@ -567,7 +578,7 @@ describe("commerce gateway", () => {
         fetchEventsFanout: async (filter, options) => {
           if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
           attempts.push({
-            relays: [...(options?.relayUrls ?? [])],
+            relays: boundedTestRelayUrls(options),
             family: !!filter["#a"],
           })
           return events.filter(
@@ -628,7 +639,7 @@ describe("commerce gateway", () => {
     })
     __setCommerceTestOverrides({
       fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           attempts.push(relayUrls)
         }
@@ -801,7 +812,7 @@ describe("commerce gateway", () => {
       fetchEventsFanout: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const dTags = filter["#d"] ?? []
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         attempts.push({ dTags: [...dTags], relayUrls })
         return [
           ...(dTags.includes("first-hinted-product") &&
@@ -858,7 +869,7 @@ describe("commerce gateway", () => {
       fetchEventsFanout: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const dTags = filter["#d"] ?? []
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         attempts.push({ dTags: [...dTags], relayUrls })
         return products
           .filter(
@@ -931,7 +942,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         const dTags = [...(filter["#d"] ?? [])]
         const parentAddresses = [...(filter["#a"] ?? [])]
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
@@ -1183,7 +1194,7 @@ describe("commerce gateway", () => {
 
       __setCommerceTestOverrides({
         fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-          const relayUrls = [...(options?.relayUrls ?? [])]
+          const relayUrls = boundedTestRelayUrls(options)
           const dTags = [...(filter["#d"] ?? [])]
           const parentAddresses = [...(filter["#a"] ?? [])]
           const parentRead = families.some(({ parentDTag }) =>
@@ -5643,9 +5654,15 @@ describe("commerce gateway", () => {
       })
     }
 
+    const generalAppRelayUrls = Array.from(
+      new Set([
+        ...config.appReadRelayUrls,
+        ...config.corePublicFallbackRelayUrls,
+      ])
+    )
     expect(genericReadRelayPlans).toEqual([
-      [],
-      [writeOnlyRelayUrl, readOnlyRelayUrl],
+      generalAppRelayUrls,
+      [writeOnlyRelayUrl, readOnlyRelayUrl, ...generalAppRelayUrls],
     ])
     expect(genericReadRelayPlans.flat()).not.toContain(staleSelfRelayUrl)
     expect(genericReadOwnerSelections).toEqual([
@@ -5692,6 +5709,63 @@ describe("commerce gateway", () => {
     })
 
     expect(relayListFanoutCount).toBe(0)
+  })
+
+  it("keeps app relay discovery for remote authors when the owner relay list is signed empty", async () => {
+    const remotePubkey = getPublicKey(MERCHANT_B_SECRET)
+    const remoteRelayUrl = "wss://relay.remote-author.dev"
+    const relayListLookupAuthors: string[][] = []
+    const relayListLookupAppRelays: string[][] = []
+    let profileReadRelayUrls: string[] = []
+
+    __setCommerceTestOverrides({
+      ownerRelayListEvidenceRepository:
+        await durableMerchantRelayListRepository([]),
+      getRelayLists: async (pubkeys, options) => {
+        relayListLookupAuthors.push([...pubkeys])
+        relayListLookupAppRelays.push([...(options?.appRelayUrls ?? [])])
+        if ((options?.appRelayUrls?.length ?? 0) === 0) return new Map()
+        return new Map([
+          [
+            remotePubkey,
+            {
+              pubkey: remotePubkey,
+              readRelayUrls: [],
+              writeRelayUrls: [remoteRelayUrl],
+              eventCreatedAt: 10,
+              lookupState: "network",
+              sourceRelayUrls: [options?.appRelayUrls?.[0] ?? ""],
+              cachedAt: FIXED_NOW,
+            },
+          ],
+        ])
+      },
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
+        profileReadRelayUrls = [...(options?.relayUrls ?? [])]
+        if (!profileReadRelayUrls.includes(remoteRelayUrl)) return []
+        return [
+          {
+            id: "remote-profile-through-discovered-relay",
+            pubkey: remotePubkey,
+            created_at: 10,
+            content: JSON.stringify({ name: "Remote merchant" }),
+            tags: [],
+          },
+        ] as never
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: [MERCHANT_A_PUBKEY, remotePubkey],
+      authenticatedPubkey: MERCHANT_A_PUBKEY,
+      skipCache: true,
+    })
+
+    expect(relayListLookupAuthors).toEqual([[remotePubkey]])
+    expect(relayListLookupAppRelays[0]?.length).toBeGreaterThan(0)
+    expect(profileReadRelayUrls).toContain(remoteRelayUrl)
+    expect(result.data[remotePubkey]?.name).toBe("Remote merchant")
   })
 
   it("reads visible profiles through explicit planned relay fanout", async () => {
@@ -5841,7 +5915,7 @@ describe("commerce gateway", () => {
     let seenRelayUrls: string[] | undefined
     __setCommerceTestOverrides({
       fetchEventsFanout: async (_filter, options) => {
-        seenRelayUrls = options?.relayUrls
+        seenRelayUrls = boundedTestRelayUrls(options)
         return []
       },
     })
@@ -5862,7 +5936,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter, options) => {
-        seenRelayUrls = options?.relayUrls
+        seenRelayUrls = boundedTestRelayUrls(options)
         if (
           filter.kinds?.includes(EVENT_KINDS.PROFILE) &&
           options?.relayUrls?.[0] === "wss://live-product-source.conduit.market"
@@ -7146,6 +7220,45 @@ describe("getProductsByIds diagnostics", () => {
     expect(result.meta.degraded).toBe(false)
   })
 
+  it("routes an exact product read through a coordinate-scoped relay hint", async () => {
+    const relayHint = "wss://relay.nostr.band"
+    const liveEvent = makeSignedProductEvent({
+      dTag: "hinted-event-product",
+      createdAt: 100,
+      title: "Hinted event product",
+    })
+    const hintedAddressId = `30402:${liveEvent.pubkey}:hinted-event-product`
+    const productRelayPlans: string[][] = []
+    __setCommerceTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          productRelayPlans.push(relayUrls)
+        }
+        return {
+          events:
+            filter.kinds?.includes(EVENT_KINDS.PRODUCT) &&
+            relayUrls.includes(relayHint)
+              ? [liveEvent]
+              : [],
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+
+    const result = await getProductsByIds([hintedAddressId], {
+      relayHintsByAddressId: { [hintedAddressId]: [relayHint] },
+    })
+
+    expect(productRelayPlans).not.toHaveLength(0)
+    expect(productRelayPlans[0]).toContain(relayHint)
+    expect(result.data[0]?.eventId).toBe(liveEvent.id)
+    expect(result.diagnostics[0]?.issue).toBeNull()
+  })
+
   it("types malformed references without dropping valid coordinates", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) =>
@@ -7359,7 +7472,7 @@ describe("getProductsByIds diagnostics", () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async () => [],
       fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         expect(relayUrls).not.toContain(parkedRelayUrl)
         return {
           events: filter.kinds?.includes(EVENT_KINDS.PRODUCT)
@@ -7408,6 +7521,8 @@ describe("getProductsByIds diagnostics", () => {
     })
     const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-parked-fallback`
     config.defaultRelays = []
+    config.appReadRelayUrls = []
+    config.appCommerceRelayUrls = []
     config.appBackplaneRelayUrls = []
     config.commerceDiscoveryRelayUrls = []
     config.corePublicFallbackRelayUrls = []
@@ -7446,7 +7561,7 @@ describe("getProductsByIds diagnostics", () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async () => [],
       fetchEventsFanoutWithDiagnostics: async (filter, options) => {
-        const relayUrls = [...(options?.relayUrls ?? [])]
+        const relayUrls = boundedTestRelayUrls(options)
         expect(relayUrls).not.toContain(parkedRelayUrl)
         expect(relayUrls).toEqual(ambientRelayUrls.slice(0, 6))
         return {

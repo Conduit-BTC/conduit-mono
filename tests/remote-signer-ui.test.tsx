@@ -11,7 +11,7 @@ import {
   claveConnectUrl,
 } from "../packages/ui/src/components/ClaveConnectButton"
 import { SignerAuthUrlNotice } from "../packages/ui/src/components/SignerAuthUrlNotice"
-import { ProductSignerRecoveryNotice } from "../apps/merchant/src/components/ProductSignerRecoveryNotice"
+import { SignerRecoveryNotice } from "../packages/ui/src/components/SignerRecoveryNotice"
 
 const commonProps = {
   description: "Connect to continue.",
@@ -91,7 +91,7 @@ describe("remote signer UI", () => {
     ).toBe(true)
   })
 
-  it("keeps the iOS Clave action disabled until its connection is ready", () => {
+  it("keeps the one-tap iOS Clave action disabled until its connection is ready", () => {
     const markup = renderToStaticMarkup(
       <SignerConnectPanel
         {...commonProps}
@@ -106,14 +106,13 @@ describe("remote signer UI", () => {
     expect(markup.includes("clave.casa/connect")).toBe(false)
     expect(markup.includes("Connect Extension (NIP-07)")).toBe(false)
     expect(markup.includes("Amber")).toBe(false)
-    expect(markup.includes("Primal")).toBe(false)
     expect(markup.includes('aria-expanded="false"')).toBe(true)
     expect(markup.includes("Other ways to connect")).toBe(true)
     expect(markup.includes('role="tablist"')).toBe(false)
     expect(markup.includes("Nostr Connect connection QR code")).toBe(false)
   })
 
-  it("offers only Clave as the iOS app handoff once its connection is ready", () => {
+  it("preserves the one-tap Clave Universal Link once setup is ready", () => {
     const markup = renderToStaticMarkup(
       <SignerConnectPanel
         {...commonProps}
@@ -138,7 +137,6 @@ describe("remote signer UI", () => {
       true
     )
     expect(markup.includes("Amber")).toBe(false)
-    expect(markup.includes("Primal")).toBe(false)
     expect(markup.includes("github.com")).toBe(false)
     expect(markup.includes('href="nostrconnect:')).toBe(false)
     expect(markup.includes('href="intent:')).toBe(false)
@@ -146,13 +144,12 @@ describe("remote signer UI", () => {
     expect(markup.includes("Other ways to connect")).toBe(true)
   })
 
-  it("keeps both Android app choices disabled until the connection is ready", () => {
+  it("keeps the Amber Android action disabled until the connection is ready", () => {
     const markup = renderToStaticMarkup(
       <SignerConnectPanel {...commonProps} platform="android" />
     )
 
     expect(hasDisabledButton(markup, "Use Amber")).toBe(true)
-    expect(hasDisabledButton(markup, "Use Primal")).toBe(true)
     expect(markup.includes('href="intent:')).toBe(false)
     expect(markup.includes("Connect with Clave")).toBe(false)
     expect(markup.includes("Connect Extension (NIP-07)")).toBe(false)
@@ -168,10 +165,7 @@ describe("remote signer UI", () => {
         nostrConnectUri={nostrConnectUri}
       />
     )
-    const choices = [
-      ["Use Amber", "com.greenart7c3.nostrsigner"],
-      ["Use Primal", "net.primal.android"],
-    ] as const
+    const choices = [["Use Amber", "com.greenart7c3.nostrsigner"]] as const
 
     for (const [label, packageName] of choices) {
       const attributes = linkAttributes(markup, label)
@@ -188,34 +182,26 @@ describe("remote signer UI", () => {
       expect(attributes.includes('target="_self"')).toBe(true)
       expect(href.includes("browser_fallback_url")).toBe(false)
     }
-    expect(markup.match(/href="intent:/g)?.length).toBe(2)
+    expect(markup.match(/href="intent:/g)?.length).toBe(1)
     expect(markup.includes("Connect with Clave")).toBe(false)
     expect(markup.includes('href="nostrconnect:')).toBe(false)
     expect(markup.includes("github.com")).toBe(false)
     expect(markup.includes('role="tablist"')).toBe(false)
   })
 
-  it("links Android installation to the official app listings", () => {
+  it("links Android installation to Amber's official listing", () => {
     const markup = renderToStaticMarkup(
       <SignerConnectPanel {...commonProps} platform="android" />
     )
     const amber = linkAttributes(markup, "Get Amber on F-Droid")
-    const primal = linkAttributes(markup, "Get Primal on Google Play")
 
     expect(
       amber.includes(
         'href="https://f-droid.org/en/packages/com.greenart7c3.nostrsigner/"'
       )
     ).toBe(true)
-    expect(
-      primal.includes(
-        'href="https://play.google.com/store/apps/details?id=net.primal.android"'
-      )
-    ).toBe(true)
-    for (const attributes of [amber, primal]) {
-      expect(attributes.includes('target="_blank"')).toBe(true)
-      expect(attributes.includes('rel="noopener noreferrer"')).toBe(true)
-    }
+    expect(amber.includes('target="_blank"')).toBe(true)
+    expect(amber.includes('rel="noopener noreferrer"')).toBe(true)
   })
 
   it("keeps manual connections available on an unknown mobile platform", () => {
@@ -232,7 +218,6 @@ describe("remote signer UI", () => {
     expect(markup.includes("Connect Extension (NIP-07)")).toBe(false)
     expect(markup.includes("Connect with Clave")).toBe(false)
     expect(markup.includes("Use Amber")).toBe(false)
-    expect(markup.includes("Use Primal")).toBe(false)
   })
 
   it("renders the supplied ephemeral connection as an accessible QR code", () => {
@@ -377,6 +362,10 @@ describe("remote signer UI", () => {
 
     expect(markup.includes("Reconnect your account")).toBe(true)
     expect(markup.includes("Forget remote signer")).toBe(true)
+    expect(markup.includes("Start new connection")).toBe(false)
+    expect(markup.includes("Scan QR")).toBe(false)
+    expect(markup.includes("Paste bunker")).toBe(false)
+    expect(markup.includes("Connect Extension (NIP-07)")).toBe(false)
   })
 
   it("retains the bunker draft when the pairing promise resolves or rejects", async () => {
@@ -497,10 +486,10 @@ describe("remote signer UI", () => {
     }
   })
 
-  it("renders truthful accessible recovery actions without an awaiting flash", () => {
+  it("renders shared, truthful recovery actions without an awaiting flash", async () => {
     const savedMarkup = renderToStaticMarkup(
-      <ProductSignerRecoveryNotice
-        draftStorageAvailable
+      <SignerRecoveryNotice
+        description="Your draft is saved on this device."
         reconnecting={false}
         restoreFailed={false}
         changingSigner={false}
@@ -510,10 +499,11 @@ describe("remote signer UI", () => {
       />
     )
     const savedFailedMarkup = renderToStaticMarkup(
-      <ProductSignerRecoveryNotice
-        draftStorageAvailable
+      <SignerRecoveryNotice
+        description="Your draft is saved on this device."
         reconnecting={false}
         restoreFailed
+        restoreFailureDescription="Your draft will remain saved for this account."
         changingSigner={false}
         changeSignerError={null}
         onReconnect={async () => undefined}
@@ -521,15 +511,19 @@ describe("remote signer UI", () => {
       />
     )
     const unsavedFailedMarkup = renderToStaticMarkup(
-      <ProductSignerRecoveryNotice
-        draftStorageAvailable={false}
+      <SignerRecoveryNotice
+        description="Keep this page open because this draft could not be saved."
         reconnecting={false}
         restoreFailed
+        restoreFailureDescription="This draft is not saved on this device, so another signer cannot be opened safely."
         changingSigner={false}
         changeSignerError={null}
         onReconnect={async () => undefined}
-        onUseDifferentSigner={async () => undefined}
       />
+    )
+    const productsSource = await readFile(
+      "apps/merchant/src/routes/products.tsx",
+      "utf8"
     )
 
     expect(savedMarkup).toContain('role="alert"')
@@ -542,6 +536,10 @@ describe("remote signer UI", () => {
     expect(unsavedFailedMarkup).not.toContain("Use a different signer")
     expect(unsavedFailedMarkup).toContain(
       "another signer cannot be opened safely"
+    )
+    expect(productsSource).toContain("<SignerRecoveryNotice")
+    expect(productsSource).toContain(
+      "draftStorageAvailable\n                      ? useDifferentProductSigner\n                      : undefined"
     )
   })
 })

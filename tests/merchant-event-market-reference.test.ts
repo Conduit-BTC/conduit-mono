@@ -68,6 +68,16 @@ function signedEvent(
   )
 }
 
+function boundedRelayUrls(options: {
+  relayUrls?: readonly string[]
+  maxRelayAttempts?: number
+}): string[] {
+  const relayUrls = [...(options.relayUrls ?? [])]
+  return options.maxRelayAttempts === undefined
+    ? relayUrls
+    : relayUrls.slice(0, options.maxRelayAttempts)
+}
+
 describe("merchant organizer event-market references", () => {
   it("accepts only an exact collection naddr from the Merchant route query", () => {
     const imported = encodeEventMarketNaddr(COLLECTION, [HINT_RELAY])
@@ -698,7 +708,7 @@ describe("merchant organizer event-market references", () => {
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
       fetchEventsFanoutDetailed: async (rawFilter, options) => {
-        const relayUrls = [...(options.relayUrls ?? [])]
+        const relayUrls = boundedRelayUrls(options)
         readPlans.push(relayUrls)
         const events = relayUrls.includes(FALLBACK_RELAY)
           ? graph.filter((event) => {
@@ -863,7 +873,7 @@ describe("merchant organizer event-market references", () => {
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
       fetchEventsFanoutDetailed: async (rawFilter, options) => {
-        const relayUrls = [...(options.relayUrls ?? [])]
+        const relayUrls = boundedRelayUrls(options)
         readPlans.push(relayUrls)
         const filter = rawFilter as NDKFilter
         const events = relayUrls.includes(FALLBACK_RELAY)
@@ -959,7 +969,7 @@ describe("merchant organizer event-market references", () => {
           ],
         ]),
       fetchEventsFanoutDetailed: async (rawFilter, options) => {
-        const relayUrls = [...(options.relayUrls ?? [])]
+        const relayUrls = boundedRelayUrls(options)
         readPlans.push(relayUrls)
         const filter = rawFilter as NDKFilter
         const fallbackAvailable = relayUrls.includes(FALLBACK_RELAY)

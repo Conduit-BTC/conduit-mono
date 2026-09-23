@@ -123,7 +123,7 @@ export type EventMarketOrganizerInboxResolution =
       organizerPubkey: string
       reason:
         | "invalid_organizer"
-        | "not_declared"
+        | "not_observed"
         | "distribution_pending"
         | "signed_empty"
         | "malformed"
@@ -152,7 +152,7 @@ export async function resolveEventMarketOrganizerInbox(
       organizerPubkey: normalized,
       reason:
         declaration.state === "not_observed"
-          ? "not_declared"
+          ? "not_observed"
           : declaration.state,
     }
   }

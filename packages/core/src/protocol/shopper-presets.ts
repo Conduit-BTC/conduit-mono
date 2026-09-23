@@ -565,18 +565,25 @@ export async function fetchShopperPresets(
     ) ?? []
   )
   const resolveRelayLists = dependencies.getRelayLists ?? getRelayLists
-  const relayListDiscoveryUrls = Array.from(
-    new Set([
-      ...config.appWriteRelayUrls,
-      ...config.corePublicFallbackRelayUrls,
-    ])
-  ).slice(0, SHOPPER_PRESETS_MAX_READ_RELAYS)
-  const relayLists = await resolveRelayLists([owner], {
-    cacheOnly: false,
-    relayUrls: relayListDiscoveryUrls,
-    accountPubkey: owner,
+  const relayListReadPlan = planRelayReads({
+    intent: "relay_lists",
     authenticatedPubkey: authenticatedOwnerPubkey,
     ownerSelectedRelayUrls,
+    settings: ownerSettingsSnapshot?.settings,
+    signedRelayListAuthoritative:
+      ownerSettingsSnapshot?.signedRelayListAuthoritative,
+    maxRelays: SHOPPER_PRESETS_MAX_READ_RELAYS,
+  })
+  const relayLists = await resolveRelayLists([owner], {
+    cacheOnly: false,
+    relayUrls: relayListReadPlan.candidateRelayUrls,
+    maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
+    accountPubkey: owner,
+    authenticatedPubkey: authenticatedOwnerPubkey,
+    ownerSelectedRelayUrls: relayListReadPlan.ownerSelectedRelayUrls,
+    appRelayUrls: relayListReadPlan.appRelayUrls,
+    personalRelayUrls: relayListReadPlan.personalRelayUrls,
+    independentRelayUrls: relayListReadPlan.independentRelayUrls,
     accountNetworkLocalStateRepository:
       dependencies.accountNetworkLocalStateRepository,
     shouldContinue: dependencies.shouldContinue,
@@ -606,11 +613,24 @@ export async function fetchShopperPresets(
   const relayUrls = applyShopperRelayTransportAuthority(
     plannedRelayUrls,
     ownerSelectedRelayUrls
-  ).slice(0, SHOPPER_PRESETS_MAX_READ_RELAYS)
+  )
   const executableRelaySet = new Set(relayUrls)
   const executableOwnerSelectedRelayUrls = ownerSelectedRelayUrls.filter(
     (relayUrl) => executableRelaySet.has(relayUrl)
   )
+  const appRelaySet = new Set([
+    ...config.appWriteRelayUrls,
+    ...config.corePublicFallbackRelayUrls,
+    ...(plan.appRelayUrls ?? []),
+  ])
+  const personalRelaySet = new Set([
+    ...ownerSelectedRelayUrls,
+    ...(plan.personalRelayUrls ?? []),
+    ...getCommerceWriteRelayUrls({
+      settings: ownerSettingsSnapshot?.settings,
+    }),
+  ])
+  const independentRelaySet = new Set(plan.independentRelayUrls ?? [])
   if (relayUrls.length === 0)
     return { state: "unavailable", reason: "relay_read" }
 
@@ -625,9 +645,17 @@ export async function fetchShopperPresets(
   try {
     result = await fetchEvents(filter, {
       relayUrls,
+      maxRelayAttempts: SHOPPER_PRESETS_MAX_READ_RELAYS,
       accountPubkey: owner,
       authenticatedPubkey: authenticatedOwnerPubkey,
       ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+      appRelayUrls: relayUrls.filter((relayUrl) => appRelaySet.has(relayUrl)),
+      personalRelayUrls: relayUrls.filter((relayUrl) =>
+        personalRelaySet.has(relayUrl)
+      ),
+      independentRelayUrls: relayUrls.filter((relayUrl) =>
+        independentRelaySet.has(relayUrl)
+      ),
       accountNetworkLocalStateRepository:
         dependencies.accountNetworkLocalStateRepository,
       shouldContinue: dependencies.shouldContinue,

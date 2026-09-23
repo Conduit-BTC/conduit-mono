@@ -391,6 +391,7 @@ export async function publishProfileContext(
     accountPubkey: authenticatedPubkey,
     shouldContinue: options.shouldContinue,
   })
+  assertCurrentSession()
 
   const publishedProfile = parseProfileEvent({ pubkey, content: event.content })
 

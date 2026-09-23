@@ -16,11 +16,21 @@ failure-state handling were incomplete.
 
 ## Canonical behavior
 
-A valid kind `10050` declaration is the preferred and eventual exclusive
-delivery route. Network settings own declaration setup and repair; Messages and
-Orders link there and never publish declarations themselves. Declaration
-evidence is durable and account-scoped so a restart, relay omission, or relay
+A valid kind `10050` declaration is the exclusive delivery route. Network
+settings own declaration setup and repair; Messages and Orders link there and
+never publish declarations themselves. Declaration evidence is durable and
+account-scoped so a restart, relay omission, relay-layer toggle, or relay
 settings change cannot silently erase a previously validated signed event.
+
+The shared Network surface exposes enabled-by-default App Relays separately
+from personal NIP-65 routes. A valid owner's `kind:10050` remains active for
+inbox reads and remains visibly editable in Your Relays even when personal
+NIP-65 routing is disabled. When complete bounded reconciliation observes
+neither setup event and retains no valid frontier, an exact reviewed **Match
+Conduit defaults** action may publish both NIP-65 and NIP-17 events through the
+sole Network mutation owner. The review warns that signed preferences may exist
+outside the queried plan. This setup path does not make App Relays a replacement
+for NIP-17 authority.
 
 The principal's own compatibility/declared inbox read is an explicitly
 protected operation when the client is signed in. It uses the NDK-neutral
@@ -124,6 +134,8 @@ Invariants:
   `config.dmCompatibilityOrderRelayUrls` and the bounded compatibility inbox
   read set. Eligible write targets are reserved ahead of optional local/public
   read sources inside the read fanout, so Conduit clients poll every target.
+  The configured URLs are an explicit role within the versioned App Relay
+  registry; other App Relay roles do not become private-message fallbacks.
 - Recipient signed NIP-65 read relays may move matching eligible relays to the
   front. They never add a relay. Remaining entries keep registry order; URLs
   are normalized/deduplicated and the result is capped at three.
@@ -201,9 +213,11 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
   gift-unwrap edges; exact file names follow the implementation slice.
 - Network-owned readiness, repair, and pending cutover: one shared core/UI
   Network feature rendered by thin Market and Merchant `network.tsx` route
-  shells. Repair observations wrap the existing mutation/retry/redistribution
-  operations in `useAccountNetworkSettings`; `useInboxDeclaration` remains
-  read-only. The observation adapter owns no signing, relay I/O, or persistence.
+  shells. Its App Relays and Your Relays sections keep signed inbox membership
+  visible independently of the personal NIP-65 toggle. Repair observations
+  wrap the existing mutation/retry/redistribution operations in
+  `useAccountNetworkSettings`; `useInboxDeclaration` remains read-only. The
+  observation adapter owns no signing, relay I/O, or persistence.
 - Order provenance: `orderLifecycles.orderDeliveryRoute`
   (`declared_inbox` | `compatibility_order`), with the exact encrypted wrap and
   per-relay outcomes in `orderLifecycles.orderRelayDelivery`
@@ -237,10 +251,11 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 - Whole-relay removal of `declared-a`: after every required signature is staged,
   no read, write, or recovery batch uses `declared-a`, even while ACK/readback is
   pending. The warning explains that stale-client sends there can be missed.
-- Reconnect or reset: reconstruct membership from validated published
-  `kind:10002` and `kind:10050` evidence. Unpublished legacy local settings and
-  migration records are ignored. If valid published state is absent, the user
-  explicitly sets up or repairs their configuration in Network.
+- Reconnect or reset: reconstruct personal membership from validated published
+  `kind:10002` and `kind:10050` evidence and compose it with the enabled App
+  Relay policy. Unpublished legacy membership and migration records are ignored.
+  Complete scoped absence may offer exact reviewed Match Conduit defaults with
+  an unseen-state warning; partial or unavailable discovery offers Retry instead.
 - Complete-empty or partial rediscovery after a valid declaration: the retained
   frontier becomes stale/degraded but remains the declared route; it is not
   deleted.

@@ -104,7 +104,9 @@ The boundary provides:
   wrap recipient's declared kind-10050 relays, except the bounded validated
   order compatibility lane below. NIP-65, configured relay lists, commerce
   capability order, and general relay defaults are not secure-message write
-  fallbacks.
+  fallbacks. The only App Relay write exception is the explicit, separately
+  flagged compatibility registry for a validated kind-16 send whose completed
+  bounded declaration lookup resolved to `not_observed`.
   Kind `10002` never supplies a gift-wrap write target. A `signed_empty` or
   `malformed` declaration is an explicit blocking state that the client never
   overrides with retained relay tags.
@@ -185,6 +187,9 @@ The boundary provides:
   partial failure. Reads report `complete`, `partial`, or `unavailable` coverage
   and an explicit source such as `declared`, `pending_declared`,
   `cutover_recovery`, `compatibility`, `mixed`, or `cache`.
+  A valid owner `kind:10050` declaration stays active for inbox reads even when
+  the Conduit-local Your Relays NIP-65 layer is disabled. Neither App Relays nor
+  Your Relays changes the signed declaration.
 - **Signed recovery boundary.** Unpublished legacy local Network settings and
   migration records never supply inbox routes or recovery. A persisted
   singleton cutover record from the current signed protocol up-converts to one
@@ -214,12 +219,15 @@ The boundary provides:
   visibility wait, and a dispatched signer request keeps its slot until it
   settles so a later relay cannot open an overlapping prompt.
 - **Validated-order compatibility routing (temporary, CND-208).** When a validated
-  kind-16 order-lifecycle send finds no usable recipient declaration, the write
-  may use a maximum of three relays from the explicit private-inbox
-  compatibility registry. A signed recipient NIP-65 read list may rank matches
-  inside that registry but cannot widen it. Kind-14 general DMs never use this
-  lane; a valid declaration always outranks it. A one-use order scope binds the
-  rumor, order, sender, and recipient. The lane is recipient-only:
+  kind-16 order-lifecycle send completes its bounded recipient declaration
+  lookup as `not_observed` with no retained signed frontier, the write may use a
+  maximum of three relays from the explicit private-inbox compatibility
+  registry. `signed_empty`, `malformed`, `lookup_partial`, and
+  `lookup_unavailable` cannot enter the lane. A signed recipient NIP-65 read
+  list may rank matches inside that registry but cannot widen it. Kind-14
+  general DMs never use this lane; a valid declaration always outranks it. A
+  one-use order scope binds the rumor, order, sender, and recipient. The lane is
+  recipient-only:
   the non-critical sender self-copy leg stays strict and fails soft. A
   bounded complete-empty observation never erases a retained signed frontier.
   A current `signed_empty` or `malformed` frontier still blocks the lane, and a
@@ -260,7 +268,9 @@ Messaging surfaces must render explicit states, never silent gaps:
   (surfaced from the query `meta`, not inferred).
 - **Not ready / relay unavailable** when the required principal or recipient
   kind-10050 declaration is absent or its declared relays are unusable. Do not
-  hide this state behind NIP-65 or configured-relay fallback. Distinguish
+  hide this state behind NIP-65 or an unnamed configured-relay fallback. A
+  validated kind-16 send may report the named compatibility route only for
+  `not_observed`; this does not make the recipient NIP-17-ready. Distinguish
   lookup failure (`lookup_partial` / `lookup_unavailable`, retryable), bounded
   complete-empty discovery (`not_observed`), a signed no-inbox frontier
   (`signed_empty`), and structurally unusable signed evidence (`malformed`).
@@ -314,9 +324,11 @@ material, wallet credentials or recovery material, or wallet balances.
 - Map decrypt/unwrap failure into a visible degraded state; retry targets only
   failed wrap ids.
 - Resolve NIP-17 writes exclusively through the recipient kind-10050
-  declaration; only validated kind-16 order sends may use the flagged bounded
-  compatibility plan, and kind-14 is excluded from it. One relay ACK is a
-  successful partial delivery; zero ACKs is an explicit failure.
+  declaration; only validated kind-16 order sends with a completed
+  `not_observed` lookup and no retained signed frontier may use the flagged
+  bounded compatibility plan. Signed-empty, malformed, partial, unavailable,
+  and kind-14 cases are excluded. One relay ACK is a successful partial
+  delivery; zero ACKs is an explicit failure.
 - Allow an authenticated owner's explicit new or existing Network `ws://`
   selection for eligible operations on that owner's account, with a
   non-blocking **Unencrypted connection** notice. Filter remotely learned,

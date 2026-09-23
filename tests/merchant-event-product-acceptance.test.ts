@@ -5,7 +5,10 @@ import {
   buildEventMarketPickupDraft,
   resolveEventMarketEvidence,
 } from "@conduit/core"
-import { acceptOwnEventProduct } from "../apps/merchant/src/lib/event-product-acceptance"
+import {
+  acceptOwnEventProduct,
+  retryOwnEventProductAcceptance,
+} from "../apps/merchant/src/lib/event-product-acceptance"
 import type {
   MerchantOrganizerEventMarket,
   MerchantOrganizerRecordDelivery,
@@ -249,11 +252,12 @@ describe("organizer own-product acceptance", () => {
     expect(h.published).toHaveLength(0)
   })
   it("retries the same signed acceptance instead of creating a new revision", async () => {
-    const h = harness()
     const shouldContinue = () => true
+    const pending = { ...record, acknowledgedCount: 0 }
+    const h = harness(market, pending)
     expect(
-      await acceptOwnEventProduct(
-        { ...input, signedAcceptance: record, shouldContinue },
+      await retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: pending, shouldContinue },
         h.deps
       )
     ).toBe(true)
@@ -263,9 +267,88 @@ describe("organizer own-product acceptance", () => {
         organizerPubkey: OWNER,
         authenticatedPubkey: OWNER,
         shouldContinue,
-        record,
+        reference: COLLECTION,
+        record: { ...pending, acknowledgedRelayUrls: [] },
       },
     ])
+  })
+
+  it("refuses a removed acceptance before retry transport", async () => {
+    const pending = { ...record, acknowledgedCount: 0 }
+    const h = harness()
+    await expect(
+      retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: pending },
+        h.deps
+      )
+    ).rejects.toThrow("changed")
+    expect(h.retried).toHaveLength(0)
+    expect(h.saved).toHaveLength(0)
+  })
+
+  it("does not restore an acceptance removed during retry", async () => {
+    const pending = { ...record, acknowledgedCount: 0 }
+    const h = harness(market, pending)
+    h.deps.retry = async (retryInput: unknown) => {
+      h.retried.push(retryInput)
+      h.deps.load = () => ({})
+      return record
+    }
+    await expect(
+      retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: pending },
+        h.deps
+      )
+    ).rejects.toThrow("changed")
+    expect(h.retried).toHaveLength(1)
+    expect(h.saved).toHaveLength(0)
+  })
+
+  it("does not retry a stale pending row after the same signed acceptance completed", async () => {
+    const pending = { ...record, acknowledgedCount: 0 }
+    const completed = {
+      ...record,
+      acknowledgedRelayUrls: ["wss://relay.example/events"],
+    }
+    const h = harness(market, completed)
+
+    expect(
+      await retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: pending },
+        h.deps
+      )
+    ).toBe(true)
+    expect(h.retried).toHaveLength(0)
+    expect(h.saved).toHaveLength(0)
+  })
+
+  it("preserves same-event completion recorded while an exact retry is in flight", async () => {
+    const pending = { ...record, acknowledgedCount: 0 }
+    const completed = {
+      ...record,
+      acknowledgedRelayUrls: ["wss://relay.example/events"],
+    }
+    const retryResult = {
+      ...pending,
+      rejectedCount: 1,
+    }
+    const h = harness()
+    let stored: MerchantOrganizerRecordDelivery = pending
+    h.deps.load = () => ({ [COLLECTION]: [stored] })
+    h.deps.retry = async (retryInput: unknown) => {
+      h.retried.push(retryInput)
+      stored = completed
+      return retryResult
+    }
+
+    expect(
+      await retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: pending },
+        h.deps
+      )
+    ).toBe(true)
+    expect(h.retried).toHaveLength(1)
+    expect(h.saved).toEqual([[OWNER, COLLECTION, completed]])
   })
 
   it("keeps live session authority on the read and acceptance publish", async () => {
@@ -280,41 +363,34 @@ describe("organizer own-product acceptance", () => {
     ])
     expect(h.published[0]).toEqual(expect.objectContaining({ shouldContinue }))
   })
-  it("publishes from a newer collection instead of retrying an old acceptance", async () => {
-    const h = harness({
-      ...market,
-      collectionCreatedAt: 13_000,
-      source: {
-        collection: { eventId: "current", createdAt: 13_000 },
-      },
-    } as MerchantOrganizerEventMarket)
-    expect(
-      await acceptOwnEventProduct(
+  it("refuses an exact retry after the collection changes without publishing", async () => {
+    const h = harness(
+      {
+        ...market,
+        collectionCreatedAt: 13_000,
+        source: {
+          collection: { eventId: "current", createdAt: 13_000 },
+        },
+      } as MerchantOrganizerEventMarket,
+      record
+    )
+    await expect(
+      retryOwnEventProductAcceptance(
         { ...input, signedAcceptance: record },
         h.deps
       )
-    ).toBe(true)
+    ).rejects.toThrow("changed")
     expect(h.retried).toHaveLength(0)
-    expect(h.published).toHaveLength(1)
-    const publishInput = h.published[0] as {
-      market: MerchantOrganizerEventMarket
-    }
-    expect(publishInput.market.productCoordinates).toEqual([])
-    expect(publishInput.market.collectionCreatedAt).toBe(13_000)
+    expect(h.published).toHaveLength(0)
   })
-  it("retries a prior zero-ACK collection instead of signing over it", async () => {
+  it("refuses to sign over a prior zero-ACK collection", async () => {
     const pending = { ...record, acknowledgedCount: 0 }
     const h = harness(market, pending)
-    expect(await acceptOwnEventProduct(input, h.deps)).toBe(true)
+    await expect(acceptOwnEventProduct(input, h.deps)).rejects.toThrow(
+      "Retry that exact acceptance"
+    )
     expect(h.published).toHaveLength(0)
-    expect(h.retried).toEqual([
-      {
-        organizerPubkey: OWNER,
-        authenticatedPubkey: OWNER,
-        shouldContinue: undefined,
-        record: pending,
-      },
-    ])
+    expect(h.retried).toHaveLength(0)
   })
   it("publishes the next own product over a partially acknowledged current collection", async () => {
     const partialEvent = signedCollection([PRIOR_PRODUCT])
@@ -495,7 +571,10 @@ describe("organizer own-product acceptance", () => {
     }
     const h = harness(market, pending)
     await expect(
-      acceptOwnEventProduct({ ...input, signedAcceptance: record }, h.deps)
+      retryOwnEventProductAcceptance(
+        { ...input, signedAcceptance: record },
+        h.deps
+      )
     ).rejects.toThrow("changed")
     expect(h.retried).toHaveLength(0)
     expect(h.published).toHaveLength(0)
