@@ -75,6 +75,7 @@ import { requireAuth } from "../lib/auth"
 import { getProductUrl } from "../lib/market-links"
 import {
   clearProductVariationAuthoringState,
+  getProductDraftStorageKey,
   isProductDraftOwnedBySigner,
   isProductDraftPublishAuthorized,
   loadProductVariationAuthoringState,
@@ -1181,6 +1182,7 @@ function ProductsPage() {
   const resumeProductDraftButtonRef = useRef<HTMLButtonElement | null>(null)
   const focusProductTitleOnOpenRef = useRef(false)
   const productDraftStoreRef = useRef(new ProductDraftStore())
+  const discardedProductDraftKeyRef = useRef<string | null>(null)
   const productPublishStartedAtRef = useRef<number | null>(null)
   const productPublishInFlightRef = useRef(false)
   const dirtyCreateDraftKeyRef = useRef<string | null>(null)
@@ -1984,6 +1986,10 @@ function ProductsPage() {
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
     [form, savedProductForm]
   )
+  function isDiscardedProductDraft(target: ProductDraftTarget | null): boolean {
+    const key = target ? getProductDraftStorageKey(target) : null
+    return !!key && key === discardedProductDraftKeyRef.current
+  }
   useLayoutEffect(() => {
     const previousOwner = productWorkOwnerRef.current
     productWorkOwnerRef.current = accountPubkey
@@ -2004,6 +2010,12 @@ function ProductsPage() {
   }, [accountPubkey, hasPresetShippingZone])
   useEffect(() => {
     if (!productDialogOpen || !activeProductDraftTarget) return
+    if (
+      isDiscardedProductDraft(activeProductDraftTarget) &&
+      hasProductChanges
+    ) {
+      return
+    }
     const isCreateDraft = !activeProductDraftTarget.productAddressId
     const createDraftKey = isCreateDraft
       ? `${activeProductDraftTarget.merchantPubkey}:${productImageUploadScopeId}`
@@ -2024,10 +2036,13 @@ function ProductsPage() {
       if (dirtyCreateDraftKeyRef.current === createDraftKey) {
         dirtyCreateDraftKeyRef.current = null
       }
-      setDraftStorageAvailable(
-        returnIntentCleared &&
-          productDraftStoreRef.current.clear(activeProductDraftTarget)
+      const draftCleared = productDraftStoreRef.current.clear(
+        activeProductDraftTarget
       )
+      if (draftCleared && isDiscardedProductDraft(activeProductDraftTarget)) {
+        discardedProductDraftKeyRef.current = null
+      }
+      setDraftStorageAvailable(returnIntentCleared && draftCleared)
       if (isCreateDraft) setHasResumableCreateDraft(false)
       return
     }
@@ -2249,7 +2264,13 @@ function ProductsPage() {
   )
 
   function persistCurrentProductDraft(): boolean {
-    if (!activeProductDraftTarget || !hasProductChanges) return true
+    if (
+      !activeProductDraftTarget ||
+      !hasProductChanges ||
+      isDiscardedProductDraft(activeProductDraftTarget)
+    ) {
+      return true
+    }
     const saved = productDraftStoreRef.current.save(
       activeProductDraftTarget,
       form
@@ -2362,10 +2383,15 @@ function ProductsPage() {
         setDraftStorageAvailable(false)
         return
       }
+      const previousDiscardedDraftKey = discardedProductDraftKeyRef.current
+      discardedProductDraftKeyRef.current = getProductDraftStorageKey(
+        activeProductDraftTarget
+      )
       const cleared = productDraftStoreRef.current.clear(
         activeProductDraftTarget
       )
       if (!cleared) {
+        discardedProductDraftKeyRef.current = previousDiscardedDraftKey
         setDraftStorageAvailable(false)
         return
       }
@@ -2422,7 +2448,8 @@ function ProductsPage() {
       activeProductDraftTarget.merchantPubkey === accountPubkey &&
       !activeProductDraftTarget.productAddressId &&
       !editing &&
-      hasProductChanges
+      hasProductChanges &&
+      !isDiscardedProductDraft(activeProductDraftTarget)
     ) {
       setProductDialogOpen(true)
       return
@@ -2490,7 +2517,8 @@ function ProductsPage() {
       activeProductDraftTarget?.productAddressId === item.addressId &&
       activeProductDraftTarget.baseEventId === item.eventId &&
       editing?.addressId === item.addressId &&
-      hasProductChanges
+      hasProductChanges &&
+      !isDiscardedProductDraft(activeProductDraftTarget)
     ) {
       setProductDialogOpen(true)
       return
