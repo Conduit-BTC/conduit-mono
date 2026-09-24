@@ -674,9 +674,9 @@ export async function recordOrderRelayDeliveryOutcomes(
     const next = {
       ...current,
       orderDeliveryStatus: anyAcked ? ("sent" as const) : ("pending" as const),
-      checkoutRecoveryPending: anyAcked
-        ? false
-        : current.checkoutRecoveryPending,
+      // Relay acceptance commits delivery, not checkout completion. The
+      // caller clears this fence only after cart or payment recovery finishes.
+      checkoutRecoveryPending: current.checkoutRecoveryPending,
       orderRelayDelivery: nextDelivery,
       updatedAt: timestamp,
     }

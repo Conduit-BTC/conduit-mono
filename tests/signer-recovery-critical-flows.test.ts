@@ -43,18 +43,28 @@ describe("critical signer recovery flows", () => {
       "const previousOwner = checkoutWorkOwnerRef.current"
     )
     const checkoutOwnerEffect = checkout.slice(
-      checkoutOwnerEffectStart,
+      checkout.lastIndexOf("useLayoutEffect(() => {", checkoutOwnerEffectStart),
       checkout.indexOf(
         "const preset = getIdentityBoundShippingPreset(",
         checkoutOwnerEffectStart
       )
     )
     expect(checkout).toContain("const draftOwnerIdentity = accountPubkey")
+    expect(checkoutOwnerEffect).toContain("if (authPending) return")
+    expect(checkoutOwnerEffect).toContain(
+      "if (!checkoutWorkOwnerInitializedRef.current)"
+    )
     expect(
       checkoutOwnerEffect.indexOf("previousOwner === draftOwnerIdentity")
     ).toBeLessThan(checkoutOwnerEffect.indexOf('setStep("shipping")'))
     expect(checkoutOwnerEffect).toContain(
-      "setShipping(DEFAULT_CHECKOUT_SHIPPING)"
+      "if (previousOwner !== null) {\n      setShipping(DEFAULT_CHECKOUT_SHIPPING)"
+    )
+    expect(checkoutOwnerEffect).toContain('setNote("")')
+    expect(checkoutOwnerEffect).toContain("setPaymentTargetSelection(null)")
+    expect(checkoutOwnerEffect).toContain("sparkFeeApproval.decline()")
+    expect(checkoutOwnerEffect).not.toContain(
+      "setShipping(DEFAULT_CHECKOUT_SHIPPING)\n    setNote"
     )
 
     const presetOwnerEffect = presets.slice(
@@ -197,6 +207,38 @@ describe("critical signer recovery flows", () => {
     expect(presets).toContain("setDecryptedPreset(null)")
     expect(orders).toContain(
       "key={`${activeBuyerPubkey}:${selectedRow.orderId}`}"
+    )
+  })
+
+  it("clears guest work on account arrival but establishes pending auth as baseline", async () => {
+    const checkout = await source("apps/market/src/routes/checkout.tsx")
+    const ownerEffectStart = checkout.indexOf(
+      "useLayoutEffect(() => {\n    if (authPending) return",
+      checkout.indexOf("const draftOwnerIdentity = accountPubkey")
+    )
+    const ownerEffect = checkout.slice(
+      ownerEffectStart,
+      checkout.indexOf(
+        "const preset = getIdentityBoundShippingPreset(",
+        ownerEffectStart
+      )
+    )
+
+    expect(ownerEffect).toContain("if (authPending) return")
+    expect(ownerEffect).toContain(
+      "if (!checkoutWorkOwnerInitializedRef.current) {\n      checkoutWorkOwnerInitializedRef.current = true\n      return"
+    )
+    expect(ownerEffect).toContain(
+      "if (previousOwner === draftOwnerIdentity) return"
+    )
+    expect(ownerEffect).toContain('setNote("")')
+    expect(ownerEffect).toContain("setPaymentTargetSelection(null)")
+    expect(ownerEffect).toContain("sparkFeeApproval.decline()")
+    expect(ownerEffect).toContain(
+      "if (previousOwner !== null) {\n      setShipping(DEFAULT_CHECKOUT_SHIPPING)"
+    )
+    expect(ownerEffect).not.toContain(
+      "if (previousOwner === null) {\n      setShipping(DEFAULT_CHECKOUT_SHIPPING)"
     )
   })
 })

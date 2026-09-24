@@ -287,6 +287,15 @@ export function getSessionGuestOrderSigningIdentity(
   }
 }
 
+/** Only opaque order locators leave the same-tab guest signer registry. */
+export function listSessionGuestOrderIds(
+  storage: SessionStorageLike | null = getSessionStorage(),
+  nowMs = Date.now()
+): string[] {
+  pruneExpiredSessionGuestOrderSigningIdentities(storage, nowMs)
+  return Object.keys(readGuestOrderSignerRegistry(storage))
+}
+
 export function clearSessionGuestOrderSigningIdentity(
   orderId: string,
   storage: SessionStorageLike | null = getSessionStorage()

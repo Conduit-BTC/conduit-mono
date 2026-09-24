@@ -63,13 +63,41 @@ describe("app account-network read propagation", () => {
       )?.length
     ).toBeGreaterThanOrEqual(5)
     expect(orders).toMatch(
-      /const shouldContinueBuyerSession = guestIdentity\s+\? undefined\s+: \(\) => isAuthGenerationCurrent\(authGeneration\)/
+      /const shouldContinueBuyerSession = \(\) =>\s+guestIdentity\s+\? isGuestGenerationCurrent\(authGeneration\)\s+: isAuthGenerationCurrent\(authGeneration\)/
     )
     expect(checkout).toMatch(
-      /const shouldContinueBuyerSession = signedBuyerPubkey\s+\? \(\) => isAuthGenerationCurrent\(authGeneration\)/
+      /const shouldContinueBuyerSession = \(\) =>\s+signedBuyerPubkey\s+\? isAuthGenerationCurrent\(authGeneration\)\s+: isGuestGenerationCurrent\(authGeneration\)/
     )
-    expect(orders).toContain(
-      "async function continuePrivateFallback(): Promise<void> {\n    await verifyRetryFreshness()"
+    const privateFallbackStart = orders.indexOf(
+      "async function continuePrivateFallback(): Promise<void> {"
+    )
+    const privateFallbackEnd = orders.indexOf(
+      "\n  function assertGeneralPaymentRetryEligible()",
+      privateFallbackStart
+    )
+    const privateFallback = orders.slice(
+      privateFallbackStart,
+      privateFallbackEnd
+    )
+    const retryEligibility = privateFallback.indexOf(
+      "assertGeneralPaymentRetryEligible()"
+    )
+    const retryFreshness = privateFallback.indexOf(
+      "await verifyRetryFreshness()"
+    )
+    const fallbackAction = privateFallback.indexOf(
+      "await runOrderPrivateFallback({"
+    )
+
+    expect(privateFallbackStart).toBeGreaterThan(-1)
+    expect(privateFallbackEnd).toBeGreaterThan(privateFallbackStart)
+    expect(retryEligibility).toBeGreaterThan(-1)
+    expect(retryEligibility).toBeLessThan(retryFreshness)
+    expect(retryFreshness).toBeGreaterThan(-1)
+    expect(retryFreshness).toBeLessThan(fallbackAction)
+    expect(fallbackAction).toBeGreaterThan(-1)
+    expect(privateFallback).toMatch(
+      /shouldContinueBeforePaymentClaim:\s*\(\) =>\s*isGeneralPaymentRetryEligible\(currentViewRef\.current\)/
     )
   })
 

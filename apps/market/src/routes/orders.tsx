@@ -19,9 +19,9 @@ import {
   formatNpub,
   formatPubkey,
   getNdk,
+  getOrderLifecycle,
   getProductImageCandidates,
   getOrderPublicZapSigner,
-  getOrderLifecycle,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
   hasWebLN,
@@ -29,8 +29,10 @@ import {
   ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR,
   pruneExpiredGuestOrderData,
   prepareProtectedReadRefreshState,
+  patchOrderLifecycle,
   pubkeyToNpub,
   replaceOrderPaymentTarget,
+  retryOrderRelayDelivery,
   resolveWalletPaymentInstance,
   selectProtectedReadRows,
   useAuth,
@@ -58,7 +60,10 @@ import {
   SignerRecoveryNotice,
   RefreshChip,
   Select,
+  SelectContent,
+  SelectItem,
   SelectTrigger,
+  SelectValue,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -68,6 +73,7 @@ import {
   StatusStepper,
 } from "@conduit/ui"
 import {
+  Check,
   ChevronRight,
   LoaderCircle,
   MapPin,
@@ -77,12 +83,11 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { useCart } from "../hooks/useCart"
+import { groupCartPurchases } from "../lib/cart-model"
 import { CopyButton } from "../components/CopyButton"
 import { ExternalWalletPanel } from "../components/ExternalWalletPanel"
-import {
-  EventActorName,
-  EventActorProvenance,
-} from "../components/EventActorIdentity"
+import { EventActorName } from "../components/EventActorIdentity"
 import { getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME,
@@ -119,7 +124,6 @@ import { verifyPickupCartFreshness } from "../lib/event-market-adapter"
 import {
   assertCartPickupHandlerReady,
   getOrganizerPickupClaimCode,
-  getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
 } from "../lib/pickup-handoff"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
@@ -130,6 +134,7 @@ import {
 import {
   canObserveOrderPublicZapReceipt,
   getOrderPaymentState,
+  isOrderPaymentRunning,
   isMerchantInvoicePaymentActionBound,
   observeOrderPublicZapReceipt,
   prepareMerchantInvoicePaymentAction,
@@ -137,6 +142,7 @@ import {
   runOrderPrivateFallback,
   runOrderPayment,
   runOrderPaymentWithUpdatedAddress,
+  runOrderPaymentWithRenewedInvoice,
   submitExternalPaymentProof,
   subscribeOrderPayment,
   validateMerchantInvoicePaymentAction,
@@ -165,6 +171,12 @@ import {
   type GuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
 import {
+  doesCartMatchOrderAttempt,
+  forgetCheckoutOrderAttempt,
+  hasCheckoutPaymentProgress,
+  requiresAcceptedOrderPaymentContinuation,
+} from "../lib/checkout-order-attempt"
+import {
   doesAuthorizedAnonZapPricingMatchOrder,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
@@ -174,7 +186,12 @@ import {
   getCheckoutPaymentTargetValue,
 } from "../lib/checkout-payment-target"
 
-const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
+type OrdersSearch = {
+  order?: string
+  focus?: "payment"
+}
+
+const ORDERS_SEARCH_DEFAULT: OrdersSearch = {}
 
 function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
   if (
@@ -192,11 +209,12 @@ function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
 }
 
 export const Route = createFileRoute("/orders")({
-  validateSearch: (search: Record<string, unknown>): { order?: string } => {
+  validateSearch: (search: Record<string, unknown>): OrdersSearch => {
     const order = search.order
-    return typeof order === "string" && order.length > 0
-      ? { order }
-      : ORDERS_SEARCH_DEFAULT
+    if (typeof order !== "string" || order.length === 0) {
+      return ORDERS_SEARCH_DEFAULT
+    }
+    return search.focus === "payment" ? { order, focus: "payment" } : { order }
   },
   component: OrdersPage,
 })
@@ -655,6 +673,7 @@ function OrderDetail({
   guestIdentity,
   accountPubkey,
   authenticatedPubkey,
+  paymentFocused = false,
   signerReady,
 }: {
   row: OrderRow
@@ -662,25 +681,38 @@ function OrderDetail({
   guestIdentity?: GuestOrderSigningIdentity | null
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
+  paymentFocused?: boolean
   signerReady: boolean
 }) {
   const { vm, headerStatus } = row
   const currentViewRef = useRef(vm)
+  const viewMountedRef = useRef(false)
   useLayoutEffect(() => {
+    viewMountedRef.current = true
     currentViewRef.current = vm
   }, [vm])
-  const { authGeneration, isAuthGenerationCurrent } = useAuth()
+  useLayoutEffect(
+    () => () => {
+      viewMountedRef.current = false
+      currentViewRef.current = { ...currentViewRef.current, orderId: "" }
+    },
+    []
+  )
+  const { authGeneration, isAuthGenerationCurrent, isGuestGenerationCurrent } =
+    useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
-  const shouldContinueBuyerSession = guestIdentity
-    ? undefined
-    : () => isAuthGenerationCurrent(authGeneration)
+  const shouldContinueBuyerSession = () =>
+    guestIdentity
+      ? isGuestGenerationCurrent(authGeneration)
+      : isAuthGenerationCurrent(authGeneration)
   const actionsReady = !!guestIdentity || signerReady
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
+  const cart = useCart()
   const wallets = useWallets()
   const shopperPricing = useShopperPricing()
   const formatSats = (sats: number) =>
@@ -696,10 +728,9 @@ function OrderDetail({
     () =>
       Array.from(
         new Set(
-          vm.pickupFulfillments.flatMap((pickup) => [
-            getPickupHandoffSummary(pickup).handlerPubkey,
-            normalizeEventActorPubkey(pickup.organizerPubkey),
-          ])
+          vm.pickupFulfillments.map(
+            (pickup) => getPickupHandoffSummary(pickup).handlerPubkey
+          )
         )
       ),
     [vm.pickupFulfillments]
@@ -742,6 +773,7 @@ function OrderDetail({
   const [retryTarget, setRetryTarget] = useState<OrderPaymentTarget | null>(
     persistedRetryTarget
   )
+  const [priorInvoiceIndex, setPriorInvoiceIndex] = useState("0")
   const sparkFeeApproval = useSparkFeeApproval()
   const queryClient = useQueryClient()
 
@@ -875,6 +907,9 @@ function OrderDetail({
       accountPubkey: authenticatedPubkey,
       authenticatedPubkey,
       shouldContinue: shouldContinueBuyerSession,
+      shouldContinuePaymentAuthority: () =>
+        viewMountedRef.current &&
+        isGeneralPaymentRetryEligible(currentViewRef.current),
       buyerIdentity: guestIdentity ?? undefined,
       merchantPubkey: row.merchantPubkey,
       merchantLud16: lc.merchantLightningAddress ?? null,
@@ -899,11 +934,25 @@ function OrderDetail({
     if (!selectedStoredPaymentTarget) {
       throw new Error("Choose how to pay before trying again.")
     }
+    assertGeneralPaymentRetryEligible()
     const replacement = await replaceOrderPaymentTarget(
       vm.orderId,
-      selectedStoredPaymentTarget
+      selectedStoredPaymentTarget,
+      () =>
+        viewMountedRef.current &&
+        isGeneralPaymentRetryEligible(currentViewRef.current) &&
+        shouldContinueAccountRead()
     )
     if (replacement.status !== "updated") {
+      if (
+        !viewMountedRef.current ||
+        !isGeneralPaymentRetryEligible(currentViewRef.current) ||
+        !shouldContinueAccountRead()
+      ) {
+        throw new Error(
+          "This order or account no longer has authority to change the payment target."
+        )
+      }
       throw new Error(
         replacement.status === "missing"
           ? "Order payment state is unavailable."
@@ -958,9 +1007,12 @@ function OrderDetail({
   }
 
   async function retryPayment(): Promise<void> {
+    assertGeneralPaymentRetryEligible()
     await verifyRetryFreshness()
+    assertGeneralPaymentRetryEligible()
     const ctx = await persistTargetAndBuildServiceCtx()
     const lifecycle = await getOrderLifecycle(vm.orderId)
+    assertGeneralPaymentRetryEligible()
     if (
       lifecycle &&
       vm.phase !== "cancelled" &&
@@ -993,14 +1045,74 @@ function OrderDetail({
     setRecoveryError(null)
   }
 
+  async function renewExpiredInvoice(): Promise<void> {
+    assertGeneralPaymentRetryEligible()
+    await verifyRetryFreshness()
+    if (!vm.invoice) {
+      throw new Error("The expired invoice is no longer available.")
+    }
+    const expectedInvoice = vm.invoice
+    const ctx = buildServiceCtx()
+    if (
+      !ctx ||
+      ctx.paymentTarget.type !== "manual" ||
+      retryTarget?.type !== "manual"
+    ) {
+      throw new Error("Choose manual payment to renew this invoice.")
+    }
+    const lifecycle = await getOrderLifecycle(vm.orderId)
+    if (
+      !lifecycle ||
+      lifecycle.invoice?.toLowerCase() !== expectedInvoice.toLowerCase() ||
+      lifecycle.paymentTarget?.type !== "manual" ||
+      lifecycle.paymentTarget.type !== retryTarget.type ||
+      (lifecycle.checkoutMode !== ctx.zapMode &&
+        !(
+          lifecycle.checkoutMode === "external_wallet" &&
+          ctx.zapMode === "private_checkout"
+        )) ||
+      lifecycle.publicZapSigner !== undefined ||
+      currentViewRef.current.invoice?.toLowerCase() !==
+        expectedInvoice.toLowerCase()
+    ) {
+      throw new Error("Order payment details changed. Refresh before retrying.")
+    }
+    const shouldContinueView = () =>
+      viewMountedRef.current &&
+      currentViewRef.current.orderId === vm.orderId &&
+      currentViewRef.current.invoice?.toLowerCase() ===
+        expectedInvoice.toLowerCase() &&
+      isGeneralPaymentRetryEligible(currentViewRef.current)
+    await runOrderPaymentWithRenewedInvoice(
+      {
+        ...ctx,
+        shouldContinueBeforePaymentClaim: shouldContinueView,
+        shouldContinue: shouldContinueBuyerSession,
+      },
+      expectedInvoice,
+      lifecycle.updatedAt
+    )
+  }
+
   async function runRetryPayment(
     ctx: OrderPaymentContext,
     update?: OrderPaymentAddressUpdate
   ): Promise<void> {
     const run = (context: OrderPaymentContext) =>
       update
-        ? runOrderPaymentWithUpdatedAddress(context, update)
-        : runOrderPayment(context)
+        ? runOrderPaymentWithUpdatedAddress(
+            {
+              ...context,
+              shouldContinueBeforePaymentClaim: () =>
+                isGeneralPaymentRetryEligible(currentViewRef.current),
+            },
+            update
+          )
+        : runOrderPayment({
+            ...context,
+            shouldContinueBeforePaymentClaim: () =>
+              isGeneralPaymentRetryEligible(currentViewRef.current),
+          })
     if (ctx.zapMode !== "anonymous_public_zap") {
       await run(ctx)
       return
@@ -1029,9 +1141,111 @@ function OrderDetail({
     })
   }
 
+  async function finishAcceptedOrderRecovery(
+    lifecycle = row.lifecycle
+  ): Promise<void> {
+    if (
+      !lifecycle ||
+      lifecycle.orderDeliveryStatus !== "sent" ||
+      lifecycle.buyerPubkey !== buyerPubkey
+    ) {
+      throw new Error("The accepted order is unavailable for recovery.")
+    }
+    if (!shouldContinueBuyerSession()) {
+      throw new Error(
+        "The buyer session changed. Reopen this order to continue."
+      )
+    }
+    const matchingPurchase = groupCartPurchases(cart.items).find(
+      (purchase) =>
+        purchase.merchantPubkey === lifecycle.merchantPubkey &&
+        doesCartMatchOrderAttempt(purchase.items, lifecycle.items)
+    )
+    if (matchingPurchase) {
+      const claim = await cart.capturePurchase(
+        matchingPurchase.id,
+        matchingPurchase.items
+      )
+      if (!shouldContinueBuyerSession()) {
+        throw new Error(
+          "The buyer session changed. Reopen this order to continue."
+        )
+      }
+      await cart.consumePurchase(claim)
+    }
+    if (!shouldContinueBuyerSession()) {
+      throw new Error(
+        "The buyer session changed. Reopen this order to continue."
+      )
+    }
+    const resolved = await patchOrderLifecycle(lifecycle.orderId, {
+      checkoutRecoveryPending: false,
+    })
+    if (!resolved) {
+      throw new Error("The accepted order recovery state could not be saved.")
+    }
+    if (!shouldContinueBuyerSession()) {
+      await patchOrderLifecycle(lifecycle.orderId, {
+        checkoutRecoveryPending: true,
+      })
+      throw new Error(
+        "The buyer session changed. Reopen this order to continue."
+      )
+    }
+    forgetCheckoutOrderAttempt(lifecycle.orderId)
+    await queryClient.invalidateQueries({
+      queryKey: ["order-lifecycles", buyerPubkey],
+    })
+  }
+
+  async function retryStagedOrderDelivery(): Promise<void> {
+    const lifecycle = row.lifecycle
+    if (!lifecycle?.orderRelayDelivery) {
+      throw new Error("The saved encrypted order is unavailable for retry.")
+    }
+    const retried = await retryOrderRelayDelivery(
+      lifecycle.orderId,
+      buyerPubkey,
+      {
+        allowGuest: !!guestIdentity,
+        shouldContinue: shouldContinueBuyerSession,
+      }
+    )
+    await queryClient.invalidateQueries({
+      queryKey: ["order-lifecycles", buyerPubkey],
+    })
+    if (retried?.orderDeliveryStatus !== "sent") {
+      throw new Error(
+        "No merchant relay acknowledged the saved order yet. Retry the same order later."
+      )
+    }
+    if (requiresAcceptedOrderPaymentContinuation(retried)) return
+    await finishAcceptedOrderRecovery(retried)
+  }
+
+  async function continueAcceptedCheckoutPayment(): Promise<void> {
+    const lifecycle = row.lifecycle
+    if (!lifecycle || !requiresAcceptedOrderPaymentContinuation(lifecycle)) {
+      throw new Error("This checkout no longer needs pre-payment recovery.")
+    }
+
+    await retryPayment()
+    const current = await getOrderLifecycle(lifecycle.orderId)
+    if (!current) {
+      throw new Error("The saved checkout state could not be reloaded.")
+    }
+    if (!hasCheckoutPaymentProgress(current)) {
+      throw new Error(
+        "Payment did not start. This order remains recoverable; do not submit another order."
+      )
+    }
+    await finishAcceptedOrderRecovery(current)
+  }
+
   async function confirmPaymentAddressUpdate(): Promise<void> {
     const pending = paymentAddressUpdate
     if (!pending) return
+    assertGeneralPaymentRetryEligible()
     if (
       vm.phase === "cancelled" ||
       vm.phase === "completed" ||
@@ -1042,6 +1256,7 @@ function OrderDetail({
       )
     }
     await verifyRetryFreshness()
+    assertGeneralPaymentRetryEligible()
     const ctx = buildServiceCtx()
     if (!ctx) {
       throw new Error(
@@ -1053,10 +1268,33 @@ function OrderDetail({
   }
 
   async function continuePrivateFallback(): Promise<void> {
+    assertGeneralPaymentRetryEligible()
     await verifyRetryFreshness()
     const ctx = await persistTargetAndBuildServiceCtx()
-    await runOrderPrivateFallback(ctx)
+    assertGeneralPaymentRetryEligible()
+    await runOrderPrivateFallback({
+      ...ctx,
+      shouldContinueBeforePaymentClaim: () =>
+        isGeneralPaymentRetryEligible(currentViewRef.current),
+    })
     setPrivateFallbackOpen(false)
+  }
+
+  function isGeneralPaymentRetryEligible(current: OrderViewModel): boolean {
+    return (
+      current.orderId === vm.orderId &&
+      current.phase !== "cancelled" &&
+      current.phase !== "completed" &&
+      current.merchantStatus !== "cancelled" &&
+      current.merchantStatus !== "refund_requested" &&
+      !isBuyerOrderPaid(current)
+    )
+  }
+
+  function assertGeneralPaymentRetryEligible(): void {
+    if (!isGeneralPaymentRetryEligible(currentViewRef.current)) {
+      throw new Error("This order no longer accepts a new payment attempt.")
+    }
   }
 
   const manualInvoiceAccess = deriveManualInvoiceAccess(
@@ -1138,6 +1376,75 @@ function OrderDetail({
     )
   }
 
+  async function reportPriorExpiredInvoice(): Promise<void> {
+    const prior =
+      priorInvoiceChoices.find(
+        ({ index }) => index === Number(priorInvoiceIndex)
+      )?.entry ?? priorInvoiceChoices[0]?.entry
+    if (
+      !prior ||
+      vm.publicZapSigner ||
+      (row.lifecycle?.checkoutMode !== "private_checkout" &&
+        row.lifecycle?.checkoutMode !== "external_wallet") ||
+      row.lifecycle?.paymentTarget?.type !== "manual" ||
+      (vm.invoice
+        ? vm.invoiceStatus !== "manual_required" ||
+          vm.paymentStatus !== "manual_required" ||
+          vm.invoice.toLowerCase() === prior.invoice.toLowerCase()
+        : vm.invoiceStatus !== "failed" || vm.paymentStatus !== "failed") ||
+      vm.paymentStatus === "paid" ||
+      vm.paymentStatus === "paying" ||
+      vm.paymentStatus === "ambiguous" ||
+      vm.phase === "completed" ||
+      isBuyerOrderPaid(vm)
+    )
+      throw new Error("The previous invoice is no longer reportable.")
+    await submitExternalPaymentProof(
+      vm.orderId,
+      guestIdentity ?? undefined,
+      undefined,
+      undefined,
+      authenticatedPubkey ?? null,
+      authenticatedPubkey ?? null,
+      shouldContinueBuyerSession,
+      (lifecycle) =>
+        currentViewRef.current.orderId === vm.orderId &&
+        (currentViewRef.current.invoice === undefined ||
+          (currentViewRef.current.invoiceStatus === "manual_required" &&
+            currentViewRef.current.paymentStatus === "manual_required" &&
+            currentViewRef.current.invoice.toLowerCase() !==
+              prior.invoice.toLowerCase())) &&
+        currentViewRef.current.priorExpiredManualInvoices.some(
+          (entry) =>
+            entry.invoice.toLowerCase() === prior.invoice.toLowerCase() &&
+            entry.paymentHash.toLowerCase() === prior.paymentHash.toLowerCase()
+        ) &&
+        lifecycle.buyerPubkey === buyerPubkey &&
+        lifecycle.merchantPubkey === vm.merchantPubkey &&
+        (lifecycle.invoice === undefined
+          ? lifecycle.invoiceStatus === "failed" &&
+            lifecycle.paymentStatus === "failed"
+          : lifecycle.invoiceStatus === "manual_required" &&
+            lifecycle.paymentStatus === "manual_required" &&
+            lifecycle.invoice.toLowerCase() !== prior.invoice.toLowerCase()) &&
+        lifecycle.checkoutMode !== "pay_later" &&
+        lifecycle.publicZapSigner === undefined &&
+        lifecycle.paymentTarget?.type === "manual" &&
+        !lifecycle.paymentClaimId &&
+        !lifecycle.proofDeliveryClaimId &&
+        lifecycle.proofDeliveryStatus === "not_started" &&
+        !["paid", "completed"].includes(currentViewRef.current.paymentStatus) &&
+        !["paid", "completed"].includes(
+          currentViewRef.current.merchantStatus ?? ""
+        ),
+      {
+        invoice: prior.invoice,
+        paymentHash: prior.paymentHash,
+        expiresAt: prior.expiresAt,
+      }
+    )
+  }
+
   const merchantInvoicePrepared =
     !!vm.merchantInvoiceAction &&
     vm.merchantInvoiceAction.status === "payable" &&
@@ -1153,7 +1460,16 @@ function OrderDetail({
       ? (row.lifecycle.invoiceExpiresAt ?? null)
       : null
 
-  const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"
+  const generalPaymentRetryEligible =
+    vm.phase !== "cancelled" &&
+    vm.phase !== "completed" &&
+    vm.merchantStatus !== "cancelled" &&
+    vm.merchantStatus !== "refund_requested" &&
+    !isBuyerOrderPaid(vm)
+  const showRetryPayment =
+    !zeroCostPickupOrder &&
+    vm.paymentStatus === "failed" &&
+    generalPaymentRetryEligible
   const recoveredBeforeWallet =
     row.lifecycle?.lastError === ORDER_PAYMENT_INTERRUPTED_BEFORE_WALLET_ERROR
   const paymentRecoveryError =
@@ -1173,6 +1489,28 @@ function OrderDetail({
     manualInvoiceAccess !== "report_only" &&
     manualInvoiceAccess !== "receipt_only" &&
     (vm.paymentStatus === "manual_required" || !!vm.merchantInvoiceAction)
+  const priorInvoiceChoices = vm.priorExpiredManualInvoices
+    .map((entry, index) => ({ entry, index }))
+    .filter(
+      ({ entry }) =>
+        !vm.invoice || entry.invoice.toLowerCase() !== vm.invoice.toLowerCase()
+    )
+  const showPriorExpiredInvoiceReport =
+    priorInvoiceChoices.length > 0 &&
+    !vm.publicZapSigner &&
+    (row.lifecycle?.checkoutMode === "private_checkout" ||
+      row.lifecycle?.checkoutMode === "external_wallet") &&
+    row.lifecycle?.paymentTarget?.type === "manual" &&
+    (vm.invoice
+      ? vm.invoiceStatus === "manual_required" &&
+        vm.paymentStatus === "manual_required" &&
+        priorInvoiceChoices.length > 0
+      : vm.invoiceStatus === "failed" && vm.paymentStatus === "failed") &&
+    vm.paymentStatus !== "paid" &&
+    vm.paymentStatus !== "paying" &&
+    vm.paymentStatus !== "ambiguous" &&
+    vm.phase !== "completed" &&
+    !isBuyerOrderPaid(vm)
   const autoDetectPublicReceipt =
     !zeroCostPickupOrder &&
     !!vm.publicZapSigner &&
@@ -1186,6 +1524,19 @@ function OrderDetail({
     vm.paymentStatus === "paid" &&
     (vm.proofDeliveryStatus === "retry_needed" ||
       vm.proofDeliveryStatus === "failed")
+  const showRetryOrderDelivery =
+    row.lifecycle?.orderDeliveryStatus === "pending" &&
+    !!row.lifecycle.orderRelayDelivery
+  const showContinueAcceptedCheckout =
+    !zeroCostPickupOrder &&
+    !!row.lifecycle &&
+    requiresAcceptedOrderPaymentContinuation(row.lifecycle)
+  const showFinishAcceptedOrderRecovery =
+    row.lifecycle?.orderDeliveryStatus === "sent" &&
+    row.lifecycle.checkoutRecoveryPending === true &&
+    !showContinueAcceptedCheckout
+  const showPaymentRecoveryAction =
+    showRetryPayment || showContinueAcceptedCheckout
 
   const replyMutation = useMutation({
     mutationFn: async () => {
@@ -1252,56 +1603,120 @@ function OrderDetail({
   return (
     <div className="space-y-4">
       {/* Hero */}
-      <>
-        <section className="hidden rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 xl:block">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="flex min-w-0 items-center gap-3">
-              <MerchantAvatar
-                pubkey={row.merchantPubkey}
-                name={merchantName}
-                picture={profile?.picture}
-              />
-              <div className="min-w-0">
-                <Link
-                  to="/store/$pubkey"
-                  params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
-                  className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
-                >
-                  {merchantName}
-                </Link>
-                <div className="mt-0.5 text-sm text-[var(--text-secondary)]">
-                  {vm.items[0]?.displayTitle ?? "Order"}
-                </div>
-                {typeof vm.totalSats === "number" && (
-                  <div className="text-sm font-medium text-secondary-300">
-                    {formatOrderTotal(vm, formatSats)}
+      {!paymentFocused && (
+        <>
+          <section className="hidden rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 xl:block">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <MerchantAvatar
+                  pubkey={row.merchantPubkey}
+                  name={merchantName}
+                  picture={profile?.picture}
+                />
+                <div className="min-w-0">
+                  <Link
+                    to="/store/$pubkey"
+                    params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
+                    className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+                  >
+                    {merchantName}
+                  </Link>
+                  <div className="mt-0.5 text-sm text-[var(--text-secondary)]">
+                    {vm.items[0]?.displayTitle ?? "Order"}
                   </div>
-                )}
-                <div className="mt-2">
-                  <OrderHeaderPill status={headerStatus} />
+                  {typeof vm.totalSats === "number" && (
+                    <div className="text-sm font-medium text-secondary-300">
+                      {formatOrderTotal(vm, formatSats)}
+                    </div>
+                  )}
+                  <div className="mt-2">
+                    <OrderHeaderPill status={headerStatus} />
+                  </div>
                 </div>
               </div>
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                {messageMerchant}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2 lg:justify-end">
-              {messageMerchant}
-            </div>
-          </div>
-        </section>
+          </section>
 
-        <section className="xl:hidden">
-          <OrderItemsSection
-            vm={vm}
-            productsById={productsById}
-            formatPrice={(price, options) =>
-              shopperPricing.formatPrice(price, {
-                ...options,
-                settledSatsAreAuthoritative: true,
-              })
-            }
-            formatSats={formatSats}
-          />
-        </section>
-      </>
+          <section className="xl:hidden">
+            <OrderItemsSection
+              vm={vm}
+              productsById={productsById}
+              formatPrice={(price, options) =>
+                shopperPricing.formatPrice(price, {
+                  ...options,
+                  settledSatsAreAuthoritative: true,
+                })
+              }
+              formatSats={formatSats}
+            />
+          </section>
+        </>
+      )}
+
+      {paymentFocused && !showExternalWallet && !headerStatus.actionNeeded && (
+        <div>
+          <OrderHeaderPill status={headerStatus} />
+        </div>
+      )}
+
+      {showRetryOrderDelivery && (
+        <StatusNotice
+          variant="warning"
+          title="Order delivery not confirmed"
+          detail="Saved encrypted order"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            No merchant relay ACK was recorded. Retry reuses the exact encrypted
+            order and cannot create a second semantic order.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-4 h-10 px-4 text-sm"
+            disabled={busy}
+            onClick={() => void withBusy(retryStagedOrderDelivery)}
+          >
+            <RotateCw className="h-4 w-4" />
+            Retry saved order
+          </Button>
+          {recoveryError && (
+            <p
+              role="alert"
+              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+            >
+              {recoveryError}
+            </p>
+          )}
+        </StatusNotice>
+      )}
+
+      {showFinishAcceptedOrderRecovery && !showExternalWallet && (
+        <StatusNotice variant="info" title="Finish saving this order">
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            Finish saving this order before starting another checkout from the
+            same cart.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-4 h-10 px-4 text-sm"
+            disabled={busy}
+            onClick={() => void withBusy(finishAcceptedOrderRecovery)}
+          >
+            <Check className="h-4 w-4" />
+            Finish order recovery
+          </Button>
+          {recoveryError && (
+            <p
+              role="alert"
+              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+            >
+              {recoveryError}
+            </p>
+          )}
+        </StatusNotice>
+      )}
 
       {(manualInvoiceAccess === "report_only" ||
         manualInvoiceAccess === "receipt_only") && (
@@ -1333,45 +1748,78 @@ function OrderDetail({
         </StatusNotice>
       )}
 
-      {showExternalWallet && (
-        <div className="space-y-3">
-          <StatusNotice
-            variant="warning"
-            title={
-              autoDetectPublicReceipt
-                ? "Pay with any Lightning wallet"
-                : vm.merchantInvoiceAction?.status === "blocked"
-                  ? "Invoice needs review"
-                  : vm.merchantInvoiceAction
-                    ? "Merchant invoice ready"
-                    : vm.publicZapFallback
-                      ? "Checkout continued privately"
-                      : "Action needed"
-            }
-            detail={
-              autoDetectPublicReceipt
-                ? "Receipt detection is automatic"
-                : vm.merchantInvoiceAction?.status === "blocked"
-                  ? "Payment unavailable"
-                  : vm.merchantInvoiceAction
-                    ? "Pay from Orders"
-                    : vm.publicZapFallback
-                      ? "Optional public note unavailable"
-                      : "Pay with an external wallet"
-            }
-          >
+      {showPriorExpiredInvoiceReport && (
+        <StatusNotice
+          variant="warning"
+          title="Report payment for an earlier invoice"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            Do not pay the new invoice if your wallet already paid an earlier
+            one. Select the earlier invoice expiry date to report it for
+            merchant verification.
+          </p>
+          <div className="mt-4 flex flex-wrap items-end gap-3">
+            <div className="grid min-w-[15rem] gap-1.5">
+              <label
+                htmlFor={`prior-invoice-${vm.orderId}`}
+                className="text-xs font-medium text-[var(--text-secondary)]"
+              >
+                Previously expired invoice
+              </label>
+              <Select
+                value={String(
+                  priorInvoiceChoices.find(
+                    ({ index }) => index === Number(priorInvoiceIndex)
+                  )?.index ??
+                    priorInvoiceChoices[0]?.index ??
+                    0
+                )}
+                onValueChange={setPriorInvoiceIndex}
+                disabled={busy}
+              >
+                <SelectTrigger
+                  id={`prior-invoice-${vm.orderId}`}
+                  className="h-10 w-full"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {priorInvoiceChoices.map(({ entry, index }) => (
+                    <SelectItem
+                      key={`${entry.paymentHash}-${entry.expiresAt}`}
+                      value={String(index)}
+                    >
+                      Invoice {index + 1} . Expires{" "}
+                      {new Date(entry.expiresAt * 1000).toLocaleString()}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              variant="outline"
+              className="h-10 px-4 text-sm"
+              disabled={busy}
+              onClick={() => void withBusy(reportPriorExpiredInvoice)}
+            >
+              Report selected earlier invoice payment
+            </Button>
+          </div>
+        </StatusNotice>
+      )}
+
+      {!showExternalWallet &&
+        showPriorExpiredInvoiceReport &&
+        recoveryError && (
+          <StatusNotice variant="warning" title="Payment report not sent">
             <p className="text-pretty text-sm text-[var(--text-secondary)]">
-              {autoDetectPublicReceipt
-                ? "Pay the invoice below. Conduit is watching for the matching public receipt and will notify the merchant automatically."
-                : vm.merchantInvoiceAction?.status === "blocked"
-                  ? "Orders checked the latest merchant invoice but could not make it payable."
-                  : vm.merchantInvoiceAction
-                    ? "Orders checked the merchant invoice against this saved order. Payment details appear automatically below."
-                    : vm.publicZapFallback
-                      ? "Your order is still ready. The optional public checkout note was unavailable, so this invoice is private. Pay it once, then report the payment so the merchant can verify it."
-                      : "No automatic wallet was available. Pay the invoice below, then report the payment to the merchant for verification."}
+              {recoveryError}
             </p>
           </StatusNotice>
+        )}
+
+      {showExternalWallet && (
+        <div className="space-y-3">
           <ExternalWalletPanel
             vm={vm}
             pricing={shopperPricing}
@@ -1380,6 +1828,14 @@ function OrderDetail({
             autoDetectReceipt={autoDetectPublicReceipt}
             onBeforeInvoiceUse={beginMerchantInvoicePayment}
             onPrepareMerchantInvoice={prepareCurrentMerchantInvoice}
+            onRenewExpiredInvoice={
+              (row.lifecycle?.checkoutMode === "private_checkout" ||
+                row.lifecycle?.checkoutMode === "external_wallet") &&
+              row.lifecycle.publicZapSigner === undefined &&
+              row.lifecycle.paymentTarget?.type === "manual"
+                ? () => withBusy(renewExpiredInvoice)
+                : undefined
+            }
             preparationScope={`${authGeneration}:${authenticatedPubkey ?? "guest"}:${buyerPubkey}:${vm.orderId}`}
             merchantInvoicePrepared={merchantInvoicePrepared}
             boundMerchantInvoiceExpiresAt={boundMerchantInvoiceExpiresAt}
@@ -1396,14 +1852,38 @@ function OrderDetail({
         </div>
       )}
 
-      {(showRetryPayment || showAmbiguousPayment || showResendProof) && (
+      {showFinishAcceptedOrderRecovery && showExternalWallet && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+          <Button
+            variant="outline"
+            className="h-10 w-full px-4 text-sm"
+            disabled={busy}
+            onClick={() => void withBusy(finishAcceptedOrderRecovery)}
+          >
+            <Check className="h-4 w-4" />
+            Finish saving this order
+          </Button>
+          {recoveryError && (
+            <p
+              role="alert"
+              className="mt-2 text-pretty text-sm text-[var(--destructive)]"
+            >
+              {recoveryError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {(showPaymentRecoveryAction ||
+        showAmbiguousPayment ||
+        showResendProof) && (
         <StatusNotice
           variant={TONE_VARIANT[headerStatus.tone]}
           title={headerStatus.primaryLabel}
           detail={headerStatus.detailLabel}
         >
           <div className="flex flex-wrap items-end gap-3">
-            {showRetryPayment && (
+            {showPaymentRecoveryAction && (
               <div className="grid min-w-[15rem] gap-1.5">
                 <label
                   htmlFor={`retry-wallet-${vm.orderId}`}
@@ -1452,7 +1932,7 @@ function OrderDetail({
                 </Select>
               </div>
             )}
-            {showRetryPayment && (
+            {showPaymentRecoveryAction && (
               <Button
                 className="h-11 px-4 text-sm"
                 disabled={
@@ -1462,10 +1942,16 @@ function OrderDetail({
                   !selectedStoredPaymentTarget ||
                   !buildServiceCtx()
                 }
-                onClick={() => void withBusy(retryPayment)}
+                onClick={() =>
+                  void withBusy(
+                    showContinueAcceptedCheckout
+                      ? continueAcceptedCheckoutPayment
+                      : retryPayment
+                  )
+                }
               >
                 <RotateCw className="h-4 w-4" />
-                {recoveredBeforeWallet
+                {showContinueAcceptedCheckout || recoveredBeforeWallet
                   ? "Continue payment"
                   : "Try payment again"}
               </Button>
@@ -1514,19 +2000,22 @@ function OrderDetail({
                   ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays while this order remains available on this device."
                   : showAmbiguousPayment
                     ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
-                    : showRetryPayment && retryWalletTargetIsStale
+                    : showPaymentRecoveryAction && retryWalletTargetIsStale
                       ? "The previously selected saved wallet is unavailable. Explicitly choose another wallet, browser wallet, or manual payment."
-                      : showRetryPayment && !selectedStoredPaymentTarget
+                      : showPaymentRecoveryAction &&
+                          !selectedStoredPaymentTarget
                         ? "Choose the exact wallet or manual payment path for this retry."
-                        : showRetryPayment && !buildServiceCtx()
+                        : showPaymentRecoveryAction && !buildServiceCtx()
                           ? "The saved payment target is unavailable. Unlock or reconnect it, or explicitly choose another option."
-                          : showRetryPayment
-                            ? recoveredBeforeWallet
-                              ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
-                              : showAnonPaymentRecovery
-                                ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
-                                : "No funds moved. You can retry payment for this order."
-                            : "Payment went through; the receipt didn't reach the merchant."}
+                          : showContinueAcceptedCheckout
+                            ? "Continue payment for the accepted order. This does not resend the order."
+                            : showRetryPayment
+                              ? recoveredBeforeWallet
+                                ? "Conduit closed before the invoice reached a wallet. Continuing reuses this order; no funds moved."
+                                : showAnonPaymentRecovery
+                                  ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
+                                  : "No funds moved. You can retry payment for this order."
+                              : "Payment went through; the receipt didn't reach the merchant."}
             </span>
             {paymentRecoveryError && (
               <p
@@ -1536,7 +2025,7 @@ function OrderDetail({
                 {paymentRecoveryError}
               </p>
             )}
-            {showRetryPayment && wallets.initializationError && (
+            {showPaymentRecoveryAction && wallets.initializationError && (
               <div
                 role="alert"
                 className="w-full rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
@@ -1666,288 +2155,236 @@ function OrderDetail({
         }
       />
 
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <OrderTimeline vm={vm} formatSats={formatSats} />
-
+      {paymentFocused ? (
         <div className="space-y-4">
-          <div className="hidden xl:block">
-            <OrderItemsSection
-              vm={vm}
-              productsById={productsById}
-              formatPrice={(price, options) =>
-                shopperPricing.formatPrice(price, {
-                  ...options,
-                  settledSatsAreAuthoritative: true,
-                })
-              }
-              formatSats={formatSats}
-            />
-          </div>
+          {!showExternalWallet && (
+            <OrderTimeline vm={vm} formatSats={formatSats} />
+          )}
+          <OrderItemsSection
+            vm={vm}
+            productsById={productsById}
+            formatPrice={(price, options) =>
+              shopperPricing.formatPrice(price, {
+                ...options,
+                settledSatsAreAuthoritative: true,
+              })
+            }
+            formatSats={formatSats}
+          />
+          <Button asChild variant="outline" className="h-10 w-full text-sm">
+            <Link to="/orders" search={{ order: vm.orderId }}>
+              View full order details
+            </Link>
+          </Button>
+        </div>
+      ) : (
+        <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <OrderTimeline vm={vm} formatSats={formatSats} />
 
-          {/* Shipping address */}
-          {vm.pickupFulfillments.map((pickup) => {
-            const handoff = getPickupHandoffSummary(pickup)
-            const pickupClaimCode = getOrganizerPickupClaimCode(
-              row.orderId,
-              pickup
-            )
-            const collectionRef = encodeEventMarketNaddr(
-              pickup.collection.coordinate
-            )
-            const pickupCost =
-              typeof pickup.costSats === "number"
-                ? formatSats(pickup.costSats)
-                : pickup.sourceCost
-                  ? `${pickup.sourceCost.amount.toLocaleString()} ${pickup.sourceCost.currency}`
-                  : "Not available"
-            return (
-              <section
-                key={pickup.option.coordinate}
-                className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-400">
-                    <MapPin className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                      {handoff.label}
-                    </h3>
-                    <div className="mt-2 text-sm font-medium text-[var(--text-primary)]">
-                      {pickup.option.title}
+          <div className="space-y-4">
+            <div className="hidden xl:block">
+              <OrderItemsSection
+                vm={vm}
+                productsById={productsById}
+                formatPrice={(price, options) =>
+                  shopperPricing.formatPrice(price, {
+                    ...options,
+                    settledSatsAreAuthoritative: true,
+                  })
+                }
+                formatSats={formatSats}
+              />
+            </div>
+
+            {/* Shipping address */}
+            {vm.pickupFulfillments.map((pickup) => {
+              const handoff = getPickupHandoffSummary(pickup)
+              const pickupClaimCode = getOrganizerPickupClaimCode(
+                row.orderId,
+                pickup
+              )
+              const collectionRef = encodeEventMarketNaddr(
+                pickup.collection.coordinate
+              )
+              return (
+                <section
+                  key={pickup.option.coordinate}
+                  className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-400">
+                      <MapPin className="h-4 w-4" />
                     </div>
-                    <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
-                      {pickup.option.location ??
-                        pickup.option.geohash ??
-                        "Public pickup location was not published."}
-                    </div>
-                    <dl className="mt-4 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-4 text-xs sm:grid-cols-2 xl:grid-cols-1">
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Resolved pickup cost
-                        </dt>
-                        <dd className="mt-1 font-medium text-[var(--text-primary)]">
-                          {pickupCost}
-                        </dd>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                        {handoff.label}
+                      </h3>
+                      <div className="mt-2 text-sm font-medium text-[var(--text-primary)]">
+                        {pickup.option.title}
                       </div>
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Pickup handler
-                        </dt>
-                        <dd className="mt-1 min-w-0">
-                          <EventActorName
-                            identity={eventActorIdentity(handoff.handlerPubkey)}
-                            className="block truncate"
-                          />
-                          <EventActorProvenance
-                            pubkey={handoff.handlerPubkey}
-                            copyLabel="Copy pickup handler npub"
-                            className="mt-1"
-                          />
-                        </dd>
+                      <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+                        {pickup.option.location ??
+                          pickup.option.geohash ??
+                          "Public pickup location was not published."}
+                      </div>
+                      <div className="mt-2 text-xs text-[var(--text-muted)]">
+                        Handled by{" "}
+                        <EventActorName
+                          identity={eventActorIdentity(handoff.handlerPubkey)}
+                        />
                       </div>
                       {pickupClaimCode && (
-                        <div>
-                          <dt className="text-[var(--text-muted)]">
+                        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
+                          <span className="text-[var(--text-secondary)]">
                             Pickup code
-                          </dt>
-                          <dd className="mt-1 flex items-center gap-2 font-mono font-semibold tracking-wide text-[var(--text-primary)]">
-                            <span>{pickupClaimCode}</span>
+                          </span>
+                          <span className="flex items-center gap-2 font-mono font-semibold tracking-wide text-[var(--text-primary)]">
+                            {pickupClaimCode}
                             <CopyButton
                               value={pickupClaimCode}
                               npub={false}
                               label="Copy organizer pickup code"
                             />
-                          </dd>
+                          </span>
                         </div>
                       )}
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Event organizer
-                        </dt>
-                        <dd className="mt-1 min-w-0">
-                          <EventActorName
-                            identity={eventActorIdentity(
-                              pickup.organizerPubkey
-                            )}
-                            className="block truncate"
-                          />
-                          <EventActorProvenance
-                            pubkey={pickup.organizerPubkey}
-                            copyLabel="Copy event organizer npub"
-                            className="mt-1"
-                          />
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Calendar revision
-                        </dt>
-                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
-                          <span>
-                            {formatPubkey(pickup.calendar.eventId, 8)}
-                          </span>
-                          <CopyButton
-                            value={pickup.calendar.eventId}
-                            npub={false}
-                            label="Copy calendar event id"
-                          />
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-[var(--text-muted)]">
-                          Pickup revision
-                        </dt>
-                        <dd className="mt-1 flex items-center gap-2 font-mono text-[var(--text-secondary)]">
-                          <span>{formatPubkey(pickup.option.eventId, 8)}</span>
-                          <CopyButton
-                            value={pickup.option.eventId}
-                            npub={false}
-                            label="Copy pickup event id"
-                          />
-                        </dd>
-                      </div>
-                    </dl>
-                    <p className="mt-4 border-t border-[var(--border)] pt-4 text-xs leading-5 text-[var(--text-secondary)]">
-                      {getPickupHandoffPrivacyCopy(handoff)}
-                    </p>
-                    {pickupClaimCode && (
-                      <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">
-                        Show this code to the organizer only after the merchant
-                        says your pickup is ready.
-                      </p>
-                    )}
-                    <Button asChild variant="outline" className="mt-4 h-9">
-                      <Link
-                        to="/events/$collectionRef"
-                        params={{ collectionRef }}
-                      >
-                        View event catalog
-                      </Link>
-                    </Button>
+                      <Button asChild variant="outline" className="mt-4 h-9">
+                        <Link
+                          to="/events/$collectionRef"
+                          params={{ collectionRef }}
+                        >
+                          View event catalog
+                        </Link>
+                      </Button>
+                    </div>
                   </div>
+                </section>
+              )
+            })}
+
+            {/* Shipping address */}
+            {vm.shippingAddress && (
+              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    Shipping address
+                  </h3>
+                  {!guestIdentity && (
+                    <Button
+                      variant="ghost"
+                      className="h-8 px-3 text-xs"
+                      onClick={() => setMessagesOpen(true)}
+                    >
+                      Send correction
+                    </Button>
+                  )}
+                </div>
+                <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                  <div className="text-[var(--text-primary)]">
+                    {vm.shippingAddress.name}
+                  </div>
+                  <div>{vm.shippingAddress.street}</div>
+                  <div>
+                    {vm.shippingAddress.city}
+                    {vm.shippingAddress.state
+                      ? `, ${vm.shippingAddress.state}`
+                      : ""}{" "}
+                    {vm.shippingAddress.postalCode}
+                  </div>
+                  <div>{vm.shippingAddress.country}</div>
                 </div>
               </section>
-            )
-          })}
+            )}
 
-          {/* Shipping address */}
-          {vm.shippingAddress && (
-            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                  Shipping address
-                </h3>
-                {!guestIdentity && (
-                  <Button
-                    variant="ghost"
-                    className="h-8 px-3 text-xs"
-                    onClick={() => setMessagesOpen(true)}
+            {/* Order details (technical, collapsed) */}
+            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
+              <button
+                type="button"
+                onClick={() => setDetailsOpen((open) => !open)}
+                aria-expanded={detailsOpen}
+                aria-controls="market-order-details-panel"
+                className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
+              >
+                <span className="text-sm font-semibold text-[var(--text-primary)]">
+                  Order details
+                </span>
+                <ChevronRight
+                  className={`h-4 w-4 text-[var(--text-muted)] transition-transform ${detailsOpen ? "rotate-90" : ""}`}
+                />
+              </button>
+              {detailsOpen && (
+                <div
+                  id="market-order-details-panel"
+                  className="space-y-2 border-t border-[var(--border)] px-5 py-4 text-sm"
+                >
+                  <DetailRow label="Order ID">
+                    <span className="font-mono text-xs">
+                      {formatPubkey(vm.orderId, 8)}
+                    </span>
+                    <CopyButton value={vm.orderId} label="Copy order id" />
+                  </DetailRow>
+                  <DetailRow label="Merchant npub">
+                    <span className="font-mono text-xs">
+                      {formatNpub(row.merchantPubkey, 8)}
+                    </span>
+                    <CopyButton
+                      value={row.merchantPubkey}
+                      label="Copy pubkey"
+                    />
+                  </DetailRow>
+                  {typeof vm.totalSats === "number" && (
+                    <DetailRow
+                      label={zeroCostPickupOrder ? "Total" : "Payment"}
+                    >
+                      <span>{formatOrderTotal(vm, formatSats)}</span>
+                    </DetailRow>
+                  )}
+                  <DetailRow
+                    label={zeroCostPickupOrder ? "Payment" : "Paid with"}
                   >
-                    Send correction
-                  </Button>
-                )}
-              </div>
-              <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-                <div className="text-[var(--text-primary)]">
-                  {vm.shippingAddress.name}
+                    <span>{getOrderPaymentMethodLabel(vm)}</span>
+                  </DetailRow>
+                  <DetailRow label="Ordered">
+                    <span>{new Date(vm.createdAt).toLocaleString()}</span>
+                  </DetailRow>
                 </div>
-                <div>{vm.shippingAddress.street}</div>
-                <div>
-                  {vm.shippingAddress.city}
-                  {vm.shippingAddress.state
-                    ? `, ${vm.shippingAddress.state}`
-                    : ""}{" "}
-                  {vm.shippingAddress.postalCode}
-                </div>
-                <div>{vm.shippingAddress.country}</div>
+              )}
+            </section>
+
+            <section className="flex items-center gap-3 px-1 xl:hidden">
+              <MerchantAvatar
+                pubkey={row.merchantPubkey}
+                name={merchantName}
+                picture={profile?.picture}
+              />
+              <div className="min-w-0">
+                <Link
+                  to="/store/$pubkey"
+                  params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
+                  className="truncate text-base font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+                >
+                  {merchantName}
+                </Link>
               </div>
             </section>
-          )}
 
-          {/* Order details (technical, collapsed) */}
-          <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
-            <button
-              type="button"
-              onClick={() => setDetailsOpen((open) => !open)}
-              aria-expanded={detailsOpen}
-              aria-controls="market-order-details-panel"
-              className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
-            >
-              <span className="text-sm font-semibold text-[var(--text-primary)]">
-                Order details
-              </span>
-              <ChevronRight
-                className={`h-4 w-4 text-[var(--text-muted)] transition-transform ${detailsOpen ? "rotate-90" : ""}`}
-              />
-            </button>
-            {detailsOpen && (
-              <div
-                id="market-order-details-panel"
-                className="space-y-2 border-t border-[var(--border)] px-5 py-4 text-sm"
-              >
-                <DetailRow label="Order ID">
-                  <span className="font-mono text-xs">
-                    {formatPubkey(vm.orderId, 8)}
-                  </span>
-                  <CopyButton value={vm.orderId} label="Copy order id" />
-                </DetailRow>
-                <DetailRow label="Merchant npub">
-                  <span className="font-mono text-xs">
-                    {formatNpub(row.merchantPubkey, 8)}
-                  </span>
-                  <CopyButton value={row.merchantPubkey} label="Copy pubkey" />
-                </DetailRow>
-                {typeof vm.totalSats === "number" && (
-                  <DetailRow label={zeroCostPickupOrder ? "Total" : "Payment"}>
-                    <span>{formatOrderTotal(vm, formatSats)}</span>
-                  </DetailRow>
-                )}
-                <DetailRow
-                  label={zeroCostPickupOrder ? "Payment" : "Paid with"}
-                >
-                  <span>{getOrderPaymentMethodLabel(vm)}</span>
-                </DetailRow>
-                <DetailRow label="Ordered">
-                  <span>{new Date(vm.createdAt).toLocaleString()}</span>
-                </DetailRow>
-              </div>
-            )}
-          </section>
-
-          <section className="flex items-center gap-3 px-1 xl:hidden">
-            <MerchantAvatar
-              pubkey={row.merchantPubkey}
-              name={merchantName}
-              picture={profile?.picture}
-            />
-            <div className="min-w-0">
-              <Link
-                to="/store/$pubkey"
-                params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
-                className="truncate text-base font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
-              >
-                {merchantName}
-              </Link>
-            </div>
-          </section>
-
-          {/* Need help */}
-          <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-              Need help?
-            </h3>
-            <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              {guestIdentity
-                ? vm.requiresPickup
-                  ? "The merchant can use the email or phone submitted at checkout only if guest pickup recovery is needed."
-                  : "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
-                : "Message the merchant for any questions or issues."}
-            </p>
-            {messageMerchant && <div className="mt-3">{messageMerchant}</div>}
-          </section>
+            {/* Need help */}
+            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                Need help?
+              </h3>
+              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                {guestIdentity
+                  ? vm.requiresPickup
+                    ? "The merchant can use the email or phone submitted at checkout only if guest pickup recovery is needed."
+                    : "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
+                  : "Message the merchant for any questions or issues."}
+              </p>
+              {messageMerchant && <div className="mt-3">{messageMerchant}</div>}
+            </section>
+          </div>
         </div>
-      </div>
+      )}
 
       {!guestIdentity && (
         <OrderMessagesWidget
@@ -2042,7 +2479,8 @@ function OrdersPage() {
   const shopperPricing = useShopperPricing()
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
-  const { order: selectedFromUrl } = Route.useSearch()
+  const { order: selectedFromUrl, focus } = Route.useSearch()
+  const paymentFocused = focus === "payment" && !!selectedFromUrl
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
   const [changeOrderOpen, setChangeOrderOpen] = useState(false)
@@ -2185,6 +2623,7 @@ function OrdersPage() {
     const resumeReceiptObservers = () => {
       if (document.visibilityState === "hidden") return
       for (const lifecycle of lifecycles) {
+        if (isOrderPaymentRunning(lifecycle.orderId)) continue
         if (!canObserveOrderPublicZapReceipt(lifecycle)) continue
         const identity =
           guestIdentity?.orderId === lifecycle.orderId &&
@@ -2316,6 +2755,11 @@ function OrdersPage() {
   }, [tab, merchantName, orders, searchValue])
 
   const selectedOrderId = useMemo(() => {
+    if (paymentFocused && selectedFromUrl) {
+      return orders.some((order) => order.orderId === selectedFromUrl)
+        ? selectedFromUrl
+        : null
+    }
     if (
       selectedFromUrl &&
       filteredOrders.some((o) => o.orderId === selectedFromUrl)
@@ -2323,7 +2767,7 @@ function OrdersPage() {
       return selectedFromUrl
     }
     return filteredOrders[0]?.orderId ?? null
-  }, [filteredOrders, selectedFromUrl])
+  }, [filteredOrders, orders, paymentFocused, selectedFromUrl])
 
   const selected = useMemo(
     () => orders.find((o) => o.orderId === selectedOrderId) ?? null,
@@ -2345,7 +2789,9 @@ function OrdersPage() {
   // subscribe to the live payment service so progress refreshes without reload.
   const paymentAttemptQuery = useQuery({
     queryKey: ["buyer-payment-attempt", selected?.orderId ?? "none"],
-    enabled: !!selected?.orderId,
+    enabled:
+      !!selected?.orderId &&
+      (!paymentFocused || selected.orderId === selectedFromUrl),
     queryFn: async () =>
       (await db.paymentAttempts.get(selected!.orderId)) ?? null,
   })
@@ -2381,28 +2827,51 @@ function OrdersPage() {
   }, [paymentAttemptQuery.data, selected])
 
   const hasOrders = orders.length > 0
+  const focusedOrderPending =
+    paymentFocused &&
+    !selected &&
+    (lifecyclesQuery.isPending ||
+      (signerConnected &&
+        (messagesQuery.isPending || protectedOrdersReadState === "pending")))
+  const focusedOrderUnavailable =
+    paymentFocused && signerConnected && !selected && !focusedOrderPending
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Orders
+      {paymentFocused && activeBuyerPubkey && (
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
+            {selected ? "Complete payment" : "Orders"}
           </h1>
-          <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-            {hasAccount
-              ? "Track your purchases, payment status, and shipping progress."
-              : "Review this guest order and its locally saved checkout status. The merchant can use your submitted private recovery contact."}
-          </p>
+          <RefreshChip
+            refreshing={ordersRefreshState.refreshing}
+            stale={ordersRefreshState.stale}
+            onRefresh={refetchAll}
+            doneDurationMs={900}
+          />
         </div>
-        <RefreshChip
-          refreshing={ordersRefreshState.refreshing}
-          stale={ordersRefreshState.stale}
-          onRefresh={refetchAll}
-          doneDurationMs={900}
-          disabled={!activeBuyerPubkey}
-        />
-      </div>
+      )}
+      {!paymentFocused && (
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+              Orders
+            </h1>
+            <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
+              {signerConnected
+                ? "Track your purchases, payment status, and shipping progress."
+                : "Review this guest order and its locally saved checkout status. The merchant can use your submitted private recovery contact."}
+            </p>
+          </div>
+          <RefreshChip
+            refreshing={ordersRefreshState.refreshing}
+            stale={ordersRefreshState.stale}
+            onRefresh={refetchAll}
+            doneDurationMs={900}
+            disabled={!activeBuyerPubkey}
+          />
+        </div>
+      )}
 
       {remoteSignerRecovery ? (
         <SignerRecoveryNotice
@@ -2429,20 +2898,23 @@ function OrdersPage() {
         />
       )}
 
-      {signerConnected && protectedOrdersReadState !== "pending" && (
-        <ProtectedInboxNotice
-          state={protectedOrdersReadState}
-          subject="orders"
-          decryptFailureCount={messagesMeta?.decryptFailures?.length ?? 0}
-          onRetry={refetchAll}
-          retrying={messagesQuery.isRefetching}
-        />
-      )}
+      {!paymentFocused &&
+        signerConnected &&
+        protectedOrdersReadState !== "pending" && (
+          <ProtectedInboxNotice
+            state={protectedOrdersReadState}
+            subject="orders"
+            decryptFailureCount={messagesMeta?.decryptFailures?.length ?? 0}
+            onRetry={refetchAll}
+            retrying={messagesQuery.isRefetching}
+          />
+        )}
 
       {activeBuyerPubkey &&
         !lifecyclesQuery.isPending &&
         !hasOrders &&
-        protectedOrdersReadState === "complete" && (
+        (!signerConnected ||
+          (!paymentFocused && protectedOrdersReadState === "complete")) && (
           <EmptyState
             title={hasAccount ? "No orders yet" : "Guest order not found"}
             body={
@@ -2460,60 +2932,42 @@ function OrdersPage() {
           />
         )}
 
-      {activeBuyerPubkey && hasOrders && (
-        <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
-          {/* Desktop left rail */}
-          <aside className="hidden xl:block">
-            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
-              <div className="text-sm font-medium text-[var(--text-primary)]">
-                Your orders
-              </div>
-              <SearchBox value={searchValue} onChange={setSearchValue} />
-              <MobileOrderFilterPills tab={tab} onChange={setTab} />
-              <OrderList
-                rows={filteredOrders}
-                selectedOrderId={selectedOrderId}
-                merchantName={merchantName}
-                merchantPicture={(pk) =>
-                  merchantProfilesQuery.data?.[pk]?.picture
-                }
-                formatSats={formatSats}
-                onSelect={selectOrder}
-              />
-            </section>
-          </aside>
+      {activeBuyerPubkey && focusedOrderPending && (
+        <div
+          role="status"
+          className="mx-auto w-full max-w-3xl py-8 text-center text-sm text-[var(--text-secondary)]"
+        >
+          Checking order
+        </div>
+      )}
 
-          {/* Mobile: filter pills + browse sheet + horizontal orders */}
-          <div className="min-w-0 space-y-4 overflow-visible xl:hidden">
-            <Sheet open={changeOrderOpen} onOpenChange={setChangeOrderOpen}>
-              <div className="flex flex-wrap items-center gap-2 overflow-visible">
-                <div className="min-w-full flex-1 overflow-visible sm:min-w-[14rem]">
-                  <MobileOrderFilterPills tab={tab} onChange={setTab} />
+      {activeBuyerPubkey && focusedOrderUnavailable && (
+        <EmptyState
+          title="Order unavailable"
+          body="This order isn't available in the order data currently on this device or from the available relay reads. Refresh to check again, or return to your full order list."
+          action={
+            <Button asChild variant="outline" className="h-11 px-4 text-sm">
+              <Link to="/orders">View all orders</Link>
+            </Button>
+          }
+        />
+      )}
+
+      {activeBuyerPubkey && hasOrders && (!paymentFocused || selectedRow) && (
+        <div
+          className={
+            paymentFocused
+              ? "mx-auto max-w-3xl"
+              : "grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]"
+          }
+        >
+          {/* Desktop left rail */}
+          {!paymentFocused && (
+            <aside className="hidden xl:block">
+              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+                <div className="text-sm font-medium text-[var(--text-primary)]">
+                  Your orders
                 </div>
-                <SheetTrigger asChild>
-                  <button
-                    type="button"
-                    className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"
-                  >
-                    Browse
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                </SheetTrigger>
-              </div>
-              <MobileOrdersScroller
-                rows={filteredOrders}
-                selectedOrderId={selectedOrderId}
-                merchantName={merchantName}
-                formatSats={formatSats}
-                onSelect={selectOrder}
-              />
-              <SheetContent
-                side="bottom"
-                className="h-[100dvh] overflow-y-auto"
-              >
-                <SheetHeader>
-                  <SheetTitle>Your orders</SheetTitle>
-                </SheetHeader>
                 <SearchBox value={searchValue} onChange={setSearchValue} />
                 <MobileOrderFilterPills tab={tab} onChange={setTab} />
                 <OrderList
@@ -2526,9 +2980,58 @@ function OrdersPage() {
                   formatSats={formatSats}
                   onSelect={selectOrder}
                 />
-              </SheetContent>
-            </Sheet>
-          </div>
+              </section>
+            </aside>
+          )}
+
+          {/* Mobile: filter pills + browse sheet + horizontal orders */}
+          {!paymentFocused && (
+            <div className="min-w-0 space-y-4 overflow-visible xl:hidden">
+              <Sheet open={changeOrderOpen} onOpenChange={setChangeOrderOpen}>
+                <div className="flex flex-wrap items-center gap-2 overflow-visible">
+                  <div className="min-w-full flex-1 overflow-visible sm:min-w-[14rem]">
+                    <MobileOrderFilterPills tab={tab} onChange={setTab} />
+                  </div>
+                  <SheetTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"
+                    >
+                      Browse
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </SheetTrigger>
+                </div>
+                <MobileOrdersScroller
+                  rows={filteredOrders}
+                  selectedOrderId={selectedOrderId}
+                  merchantName={merchantName}
+                  formatSats={formatSats}
+                  onSelect={selectOrder}
+                />
+                <SheetContent
+                  side="bottom"
+                  className="h-[100dvh] overflow-y-auto"
+                >
+                  <SheetHeader>
+                    <SheetTitle>Your orders</SheetTitle>
+                  </SheetHeader>
+                  <SearchBox value={searchValue} onChange={setSearchValue} />
+                  <MobileOrderFilterPills tab={tab} onChange={setTab} />
+                  <OrderList
+                    rows={filteredOrders}
+                    selectedOrderId={selectedOrderId}
+                    merchantName={merchantName}
+                    merchantPicture={(pk) =>
+                      merchantProfilesQuery.data?.[pk]?.picture
+                    }
+                    formatSats={formatSats}
+                    onSelect={selectOrder}
+                  />
+                </SheetContent>
+              </Sheet>
+            </div>
+          )}
 
           {/* Detail */}
           <section className="min-w-0">
@@ -2540,6 +3043,7 @@ function OrdersPage() {
                 guestIdentity={guestIdentity}
                 accountPubkey={hasAccount ? activeBuyerPubkey : null}
                 authenticatedPubkey={signerConnected ? activeBuyerPubkey : null}
+                paymentFocused={paymentFocused}
                 signerReady={signerConnected}
               />
             ) : (

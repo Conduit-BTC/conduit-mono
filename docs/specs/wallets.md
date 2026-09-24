@@ -62,17 +62,17 @@ The portable recovery bundle is the BIP39 mnemonic, explicit Spark account
 number, and network. Market can restore the same account from that bundle
 without Conduit services or a connected Nostr signer. Compatibility with
 another application must be verified for that specific application before it
-is advertised. Market must show all three values when a wallet is created and
-when an authenticated local user requests its recovery details.
+is advertised. Market presents all three values to the wallet owner when a
+wallet is created and on an authenticated local recovery request, before the
+owner relies on that recovery path.
 
-The standard production restore flow is phrase-first. On Mainnet it assumes
-Spark account number `1`, shows Mainnet as fixed deployment context, and does
-not require either value as a routine form entry. A collapsed **Advanced
-recovery settings** section may override the **Spark account number** when the
-source wallet used a non-standard account. Network is not editable while the
-Spark runtime is configured as one manager for the deployment network. These
-form defaults do not remove account number or network from the displayed and
-exported recovery bundle.
+The standard production restore flow accepts the phrase and assumes Spark
+account number `1` on Mainnet. The owner can override the account number when
+the source wallet used a non-standard account. Network is fixed while the Spark
+runtime is configured as one manager for the deployment network. These defaults
+do not remove account number or network from the recovery bundle available to
+the owner. The owner must know the network and any non-standard account number
+needed to restore the intended wallet.
 
 ## Multi-wallet registry
 
@@ -176,64 +176,56 @@ local state and must not be sent to merchants or analytics.
 WebLN and manual invoice payment remain explicit fallbacks.
 
 Spark invoice and direct-transfer sends use a prepare/review/send boundary.
-Before the irreversible send call, Market shows the selected wallet, amount,
-provider fee, and total and requires explicit approval. Cancel, Escape, close,
-or any other dismissal performs no send. If re-preparing changes the fee or
+Before the irreversible send call, Market presents the selected wallet, amount,
+provider fee, and total and requires explicit approval of those values. Dismissal
+without approval performs no send. If re-preparing changes the fee or
 total, the user must approve the new values. A missing approval callback fails
 closed.
 
 An ambiguous result remains attached to the original wallet instance and
-attempt. The UI directs the user to inspect that wallet's payment history and
-must not expose an automatic retry until the result can be classified safely.
+attempt. The owner is directed to inspect that wallet's payment history, and
+no automatic retry is available until the result can be classified safely.
 For direct Spark transfers, a content-free, device-local safety marker survives
 dialog dismissal and page reload. The marker is cleared automatically only
 when Spark reports a terminal success or failure; otherwise, the user must
 explicitly acknowledge that they inspected wallet history before a new direct
 transfer can be prepared.
 
-## Wallets UX
+## Wallet owner experience
 
-The `/wallet` route is titled **Wallets** and groups every instance under:
-
-- **Portable**
-- **Connected**
-
-Rows identify the provider and the user's label. Actions use ownership-aware
-language:
-
-- `Add portable wallet`
-- `Connect wallet`
-- `Disconnect` for Connected Wallets
-- `Remove from this device` for Portable Wallets
+The `/wallet` route lets the owner distinguish Portable and Connected Wallet
+instances by provider and device-local label. Actions must make clear whether
+they create, connect, disconnect, or remove a wallet from this device. Removal
+must not imply that network funds were deleted.
 
 Removing a Portable Wallet requires recovery acknowledgement. A default marker
 belongs to an instance, not to a provider. Removal acknowledgement is scoped to
 the selected wallet instance and never carries over to another row.
 
-Spark setup and restore use Spark-specific network framing, such as **Spark
-wallet · Mainnet**, and state that a Mainnet wallet uses real bitcoin and
-supports Lightning and Spark payments. Restore presents the recovery phrase
-before collapsed advanced derivation settings. Optional **Wallet nickname** and
-required local password controls are grouped under **On this device**. The UI
-must explain that the nickname is local and not backed up, and that the password
-encrypts the recovery phrase in this browser, is not the source wallet's
-password, and is not needed elsewhere.
+Spark setup and restore identify the actual network. Before a Mainnet wallet is
+created or restored, the owner is informed that it uses real bitcoin and
+supports Lightning and Spark payments. Restore accepts the recovery phrase and
+any non-standard account number needed for the intended wallet. The owner is
+informed that a nickname is local and not backed up, and that the local password
+encrypts the recovery phrase in this browser; it is neither the source wallet's
+password nor required for recovery elsewhere.
 
 The route is a device-owned surface and must render while signed out. Identity
 sign-in may still be required for order messaging and other Nostr workflows,
 but never merely to create, restore, unlock, receive with, or remove a local
 Portable Wallet.
 
-Sensitive and destructive dialog state resets on every close path, including
-Cancel, the close button, Escape, and outside dismissal. Reopening a dialog must
-not retain unlock passwords, recovery text, generated invoices/addresses, fee
-approval, or removal acknowledgement from the previous session.
+Sensitive and destructive flow state resets whenever the flow is dismissed or
+closed, including Cancel, close, Escape, and outside dismissal where supported.
+Reopening it must not retain unlock passwords, recovery text, generated
+invoices/addresses, fee approval, or removal acknowledgement from the previous
+session.
 
-While a provider operation is in flight, dismissal requests must be ignored
-rather than implying cancellation. Once a direct transfer settles as
-ambiguous, the dialog may be dismissed so the user can inspect wallet history,
-but dismissal must retain the device-local safety marker. Reopening the send
-flow restores the unresolved state; only explicit acknowledgement may clear it.
+While a provider operation is in flight, dismissal must not imply cancellation
+or clear its state. Once a direct transfer settles as ambiguous, the owner may
+leave the flow to inspect wallet history, but the device-local safety marker
+remains. Returning to the send flow restores the unresolved state; only the
+specified terminal provider result or explicit acknowledgement may clear it.
 
 ## Nostr backup interoperability
 

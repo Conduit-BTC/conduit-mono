@@ -71,6 +71,34 @@ export async function checkOrderPaymentAddressUpdate(
   authority: OrderPaymentAddressAuthority,
   dependencyOverrides: Partial<OrderPaymentAddressDependencies> = {}
 ): Promise<OrderPaymentAddressCheck> {
+  return checkOrderPaymentAddress(
+    lifecycle,
+    authority,
+    dependencyOverrides,
+    true
+  )
+}
+
+/** Check signed address evidence for renewing a retained manual invoice. */
+export async function checkOrderPaymentAddressForRenewal(
+  lifecycle: OrderLifecycle,
+  authority: OrderPaymentAddressAuthority,
+  dependencyOverrides: Partial<OrderPaymentAddressDependencies> = {}
+): Promise<OrderPaymentAddressCheck> {
+  return checkOrderPaymentAddress(
+    lifecycle,
+    authority,
+    dependencyOverrides,
+    false
+  )
+}
+
+async function checkOrderPaymentAddress(
+  lifecycle: OrderLifecycle,
+  authority: OrderPaymentAddressAuthority,
+  dependencyOverrides: Partial<OrderPaymentAddressDependencies>,
+  requireReplacementAdmission: boolean
+): Promise<OrderPaymentAddressCheck> {
   const assertCurrentSession = () => {
     if (authority.shouldContinue?.() === false) {
       throw new Error(
@@ -82,7 +110,8 @@ export async function checkOrderPaymentAddressUpdate(
   // Every ordinary retry must inspect current authority, even when retained
   // payment evidence prevents replacing the saved destination.
   if (
-    getOrderPaymentTargetReplacementAdmission(lifecycle) !== "replaceable" ||
+    (requireReplacementAdmission &&
+      getOrderPaymentTargetReplacementAdmission(lifecycle) !== "replaceable") ||
     !lifecycle.merchantLightningAddress?.trim()
   ) {
     return { status: "not_eligible" }
@@ -142,7 +171,10 @@ export async function checkOrderPaymentAddressUpdate(
   if (newAddress === previousAddress) {
     return { status: "unchanged" }
   }
-  if (getOrderPaymentAddressReplacementAdmission(lifecycle) !== "replaceable") {
+  if (
+    requireReplacementAdmission &&
+    getOrderPaymentAddressReplacementAdmission(lifecycle) !== "replaceable"
+  ) {
     return { status: "current_address_changed" }
   }
   return { status: "updated", update: { ...snapshot, newAddress } }

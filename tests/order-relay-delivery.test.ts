@@ -12,6 +12,7 @@ import {
   type OrderRelayDeliveryRepository,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { requiresAcceptedOrderPaymentContinuation } from "../apps/market/src/lib/checkout-order-attempt"
 
 const BUYER = getPublicKey(generateSecretKey())
 const MERCHANT_SECRET = generateSecretKey()
@@ -125,6 +126,61 @@ function repository(initial: OrderLifecycle): {
 }
 
 describe("order relay delivery retry", () => {
+  it("keeps direct payment available after zero-ACK exact-wrap recovery", async () => {
+    const initial = lifecycle({
+      checkoutMode: "private_checkout",
+      orderDeliveryStatus: "pending",
+      checkoutRecoveryPending: true,
+    })
+    initial.orderRelayDelivery!.relayDelivery = DEFAULT_RELAY_URLS.map(
+      (relayUrl) => ({
+        relayUrl,
+        source: "declared" as const,
+        status: "timed_out" as const,
+        attemptCount: 1,
+        timedOutAt: 1,
+      })
+    )
+    const store = repository(initial)
+    const attempts: string[] = []
+
+    const retried = await retryOrderRelayDelivery("order-id", BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      leaseOwner: "direct-checkout-retry",
+      now: () => 100,
+      publisher: async ({ relayUrl, signedEvent }) => {
+        attempts.push(relayUrl)
+        expect(signedEvent).toEqual(structuredClone(signedWrap))
+        return relayUrl === DEFAULT_RELAY_URLS[0] ? "acked" : "timed_out"
+      },
+    })
+
+    expect(attempts).toEqual(DEFAULT_RELAY_URLS)
+    expect(retried?.orderId).toBe(initial.orderId)
+    expect(retried?.orderDeliveryStatus).toBe("sent")
+    expect(retried?.checkoutRecoveryPending).toBe(true)
+    expect(retried?.orderRelayDelivery?.relayDelivery).toMatchObject([
+      { status: "acked" },
+      { status: "timed_out" },
+    ])
+    expect(requiresAcceptedOrderPaymentContinuation(retried!)).toBe(true)
+
+    const paymentStarted = await store.repository.update(
+      "order-id",
+      (current) => ({
+        ...current,
+        invoiceStatus: "manual_required",
+        paymentStatus: "manual_required",
+      })
+    )
+    expect(paymentStarted?.orderId).toBe(initial.orderId)
+    expect(requiresAcceptedOrderPaymentContinuation(paymentStarted!)).toBe(
+      false
+    )
+    expect(attempts).toEqual(DEFAULT_RELAY_URLS)
+  })
+
   it("resumes a base-schema record on only saved, currently eligible targets", async () => {
     const eligibleRelay = "wss://eligible.conduit.market"
     const excludedRelay = "wss://excluded.conduit.market"
