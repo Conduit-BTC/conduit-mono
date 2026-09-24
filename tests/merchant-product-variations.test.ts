@@ -13,6 +13,7 @@ import {
   generateProductVariationRows,
   getProductVariationCartesianCount,
   getProductVariationCombinations,
+  getProductFamilySupplierAllocationRevisionKey,
   getProductVariationFormError,
   getProductVariationFormState,
   getProductVariationMatrix,
@@ -22,6 +23,10 @@ import {
   mergeProductVariationAuthoringState,
   parseProductVariationImageInput,
   parseProductVariationFormState,
+  productFamilySnapshotsMatch,
+  productFamilyReadSupportsAllocationChange,
+  productFamilySupplierAllocationChangeRequested,
+  validateProductFamilySupplierAllocationSaveSnapshot,
   reconcileProductVariationDraftResolution,
   reconcileProductVariationForm,
   removeProductVariationAxis,
@@ -36,6 +41,8 @@ import {
 
 const MERCHANT_PUBKEY = "a".repeat(64)
 const ORGANIZER_PUBKEY = "b".repeat(64)
+const SUPPLIER_PUBKEY =
+  "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 const NOW = 1_800_000_000_000
 
 function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
@@ -932,6 +939,39 @@ describe("merchant product variation planning", () => {
     expect(unchangedPlan.publish).toEqual([])
   })
 
+  it("signs an unchanged listing only for an explicit rejected-delivery restart", () => {
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct(),
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initialPlan)
+    const input = {
+      parentDTag: "conduit-tee",
+      baseProduct: existing.root.product,
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      existing,
+      now: NOW + 60_000,
+    }
+
+    expect(buildProductFamilyChangePlan(input).publish).toEqual([])
+    expect(
+      buildProductFamilyChangePlan({
+        ...input,
+        forcePublishDTags: ["conduit-tee"],
+      }).publish.map((target) => target.dTag)
+    ).toEqual(["conduit-tee"])
+    expect(
+      buildProductFamilyChangePlan({
+        ...input,
+        forcePublishDTags: ["another-product"],
+      }).publish
+    ).toEqual([])
+  })
+
   it("publishes a canonical pair when the existing listing is inline-only", () => {
     const initialPlan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
@@ -1155,6 +1195,654 @@ describe("merchant product variation planning", () => {
           !buildProductListingEventDraft({ product, dTag }).tags.some(
             (tag) => tag[0] === "visibility"
           )
+      )
+    ).toBe(true)
+  })
+
+  it("fails allocation changes closed when Merchant family evidence is incomplete", async () => {
+    const completeMeta = { stale: false, degraded: false, capped: false }
+    expect(
+      productFamilyReadSupportsAllocationChange({ meta: completeMeta })
+    ).toBe(true)
+    for (const input of [
+      { meta: { ...completeMeta, stale: true } },
+      { meta: { ...completeMeta, degraded: true } },
+      { meta: { ...completeMeta, capped: true } },
+      { meta: completeMeta, readFailed: true },
+      { meta: completeMeta, readPaused: true },
+      { meta: undefined },
+    ]) {
+      expect(productFamilyReadSupportsAllocationChange(input)).toBe(false)
+    }
+
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct(),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const family = toFamily(initialPlan)
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    ).state
+    const supplierAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+    }
+    const changedInput = {
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...family.root.product,
+        supplierAllocation,
+      },
+      variations: restored,
+      currency: "USD",
+      existing: family,
+      now: NOW + 60_000,
+    }
+
+    expect(() =>
+      buildProductFamilyChangePlan({
+        ...changedInput,
+        existingFamilyEvidenceComplete: false,
+      })
+    ).toThrow(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+    expect(
+      buildProductFamilyChangePlan({
+        ...changedInput,
+        existingFamilyEvidenceComplete: true,
+      }).desired.every(
+        ({ product }) => product.supplierAllocation === supplierAllocation
+      )
+    ).toBe(true)
+    expect(() =>
+      buildProductFamilyChangePlan({
+        ...changedInput,
+        baseProduct: { ...family.root.product, title: "Updated title" },
+        existingFamilyEvidenceComplete: false,
+      })
+    ).not.toThrow()
+
+    const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
+    expect(route).toContain("productFamilyReadSupportsAllocationChange")
+    expect(route).toContain("editing.familyEvidenceComplete &&")
+    expect(route).toContain("merchantProductFamilyEvidenceComplete")
+    expect(route).toContain("merchantProductsRef.current.find")
+    expect(route).toContain(
+      "validateProductFamilySupplierAllocationSaveSnapshot"
+    )
+
+    const divergentChild = family.variations[0]!
+    const childDivergedFamily = {
+      ...family,
+      variations: [
+        {
+          ...divergentChild,
+          product: {
+            ...divergentChild.product,
+            supplierAllocation,
+          },
+        },
+        ...family.variations.slice(1),
+      ],
+    }
+    const childRepairInput = {
+      ...changedInput,
+      baseProduct: family.root.product,
+      existing: childDivergedFamily,
+    }
+
+    expect(() =>
+      buildProductFamilyChangePlan({
+        ...childRepairInput,
+        existingFamilyEvidenceComplete: false,
+      })
+    ).toThrow(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+
+    const repaired = buildProductFamilyChangePlan({
+      ...childRepairInput,
+      existingFamilyEvidenceComplete: true,
+    })
+    expect(
+      repaired.desired.every(
+        ({ product }) => product.supplierAllocation === undefined
+      )
+    ).toBe(true)
+    expect(repaired.publish.map(({ dTag }) => dTag)).toContain(
+      divergentChild.dTag
+    )
+  })
+
+  it("rejects allocation signing when the complete family changed after edit opened", () => {
+    const originalAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+    }
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({ supplierAllocation: originalAllocation }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const baseline = toFamily(initialPlan)
+    const rotatedAllocation = {
+      ...originalAllocation,
+      recipients: [
+        originalAllocation.recipients[0]!,
+        {
+          pubkey: "d".repeat(64),
+          relayHint: "wss://relay.ditto.pub/",
+          weight: 2,
+          role: "supplier" as const,
+        },
+      ],
+    }
+
+    expect(
+      productFamilySupplierAllocationChangeRequested(
+        baseline,
+        originalAllocation
+      )
+    ).toBe(false)
+    expect(
+      productFamilySupplierAllocationChangeRequested(
+        baseline,
+        rotatedAllocation
+      )
+    ).toBe(true)
+    expect(
+      productFamilySnapshotsMatch(baseline, structuredClone(baseline))
+    ).toBe(true)
+
+    const added = structuredClone(baseline)
+    added.variations.push({
+      ...structuredClone(added.variations[0]!),
+      addressId: `${added.variations[0]!.addressId}-new`,
+      eventId: "e".repeat(64),
+    })
+    expect(productFamilySnapshotsMatch(baseline, added)).toBe(false)
+
+    const updated = structuredClone(baseline)
+    updated.variations[0]!.eventId = "f".repeat(64)
+    expect(productFamilySnapshotsMatch(baseline, updated)).toBe(false)
+
+    const removed = structuredClone(baseline)
+    removed.variations.pop()
+    expect(productFamilySnapshotsMatch(baseline, removed)).toBe(false)
+  })
+
+  it("captures root, child, and allocation terms in a stable family revision", () => {
+    const absent = { state: "absent" as const, recipients: [], issues: [] }
+    const baseline = toFamily(
+      buildProductFamilyChangePlan({
+        parentDTag: "conduit-tee",
+        baseProduct: baseProduct({ supplierAllocation: absent }),
+        variations: sizeVariationForm("S, M"),
+        currency: "USD",
+        now: NOW,
+      })
+    )
+    const expected = getProductFamilySupplierAllocationRevisionKey(baseline)
+    const reordered = structuredClone(baseline)
+    reordered.variations.reverse()
+    expect(getProductFamilySupplierAllocationRevisionKey(reordered)).toBe(
+      expected
+    )
+
+    const advancedRoot = structuredClone(baseline)
+    advancedRoot.root.eventId = "new-root-revision"
+    expect(
+      getProductFamilySupplierAllocationRevisionKey(advancedRoot)
+    ).not.toBe(expected)
+
+    const advancedChild = structuredClone(baseline)
+    advancedChild.variations[0]!.eventId = "new-child-revision"
+    advancedChild.variations[0]!.product.supplierAllocation = {
+      state: "valid",
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 1,
+          role: "merchant",
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier",
+        },
+      ],
+      issues: [],
+    }
+    expect(
+      getProductFamilySupplierAllocationRevisionKey(advancedChild)
+    ).not.toBe(expected)
+
+    const restoredTerms = structuredClone(baseline)
+    restoredTerms.variations[0]!.product.supplierAllocation =
+      advancedChild.variations[0]!.product.supplierAllocation
+    expect(
+      getProductFamilySupplierAllocationRevisionKey(restoredTerms)
+    ).not.toBe(expected)
+  })
+
+  it("binds unchanged allocation forms to the current complete family snapshot", () => {
+    const supplierAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+    }
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({ supplierAllocation }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const baseline = toFamily(plan)
+
+    expect(
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline,
+        current: structuredClone(baseline),
+        nextAllocation: supplierAllocation,
+        evidenceComplete: true,
+      }).requiresCurrentSnapshot
+    ).toBe(true)
+
+    expect(() =>
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline,
+        current: structuredClone(baseline),
+        nextAllocation: supplierAllocation,
+        evidenceComplete: false,
+      })
+    ).toThrow(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+
+    const refreshed = structuredClone(baseline)
+    refreshed.root.eventId = "f".repeat(64)
+    refreshed.root.product.supplierAllocation = {
+      ...supplierAllocation,
+      recipients: [
+        supplierAllocation.recipients[0]!,
+        {
+          ...supplierAllocation.recipients[1]!,
+          weight: 2,
+        },
+      ],
+    }
+    expect(() =>
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline,
+        current: refreshed,
+        nextAllocation: supplierAllocation,
+        evidenceComplete: true,
+      })
+    ).toThrow(
+      "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+    )
+  })
+
+  it("blocks unrelated saves from a degraded legacy cache that omitted allocation evidence", () => {
+    const legacyCachedPlan = buildProductFamilyChangePlan({
+      parentDTag: "legacy-cached-product",
+      baseProduct: baseProduct(),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+    const legacyCachedFamily = toFamily(legacyCachedPlan)
+    expect(
+      [legacyCachedFamily.root, ...legacyCachedFamily.variations].every(
+        ({ product }) => product.supplierAllocation === undefined
+      )
+    ).toBe(true)
+
+    expect(() =>
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline: legacyCachedFamily,
+        current: null,
+        nextAllocation: undefined,
+        evidenceComplete: false,
+      })
+    ).toThrow(
+      "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+    )
+  })
+
+  it("keeps explicit allocation absence publishable on an unrelated save", () => {
+    const explicitAbsent = {
+      state: "absent" as const,
+      recipients: [],
+      issues: [],
+    }
+    const absentPlan = buildProductFamilyChangePlan({
+      parentDTag: "ordinary-product",
+      baseProduct: baseProduct({ supplierAllocation: explicitAbsent }),
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      now: NOW,
+    })
+    const absentFamily = toFamily(absentPlan)
+
+    expect(
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline: absentFamily,
+        current: null,
+        nextAllocation: undefined,
+        evidenceComplete: false,
+      })
+    ).toEqual({ requiresCurrentSnapshot: false })
+    expect(
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline: absentFamily,
+        current: structuredClone(absentFamily),
+        nextAllocation: undefined,
+        evidenceComplete: true,
+      })
+    ).toEqual({ requiresCurrentSnapshot: false })
+
+    const unrelatedEdit = buildProductFamilyChangePlan({
+      parentDTag: "ordinary-product",
+      baseProduct: {
+        ...absentFamily.root.product,
+        title: "Updated ordinary product",
+      },
+      variations: createEmptyProductVariationForm(),
+      currency: "USD",
+      existing: absentFamily,
+      existingFamilyEvidenceComplete: false,
+      now: NOW + 1_000,
+    })
+    expect(unrelatedEdit.publish.map(({ dTag }) => dTag)).toEqual([
+      "ordinary-product",
+    ])
+  })
+
+  it("blocks a stale unrelated save after the current root or child gains allocation terms", () => {
+    const explicitAbsent = {
+      state: "absent" as const,
+      recipients: [],
+      issues: [],
+    }
+    const baseline = toFamily(
+      buildProductFamilyChangePlan({
+        parentDTag: "conduit-tee",
+        baseProduct: baseProduct({ supplierAllocation: explicitAbsent }),
+        variations: sizeVariationForm("S, M"),
+        currency: "USD",
+        now: NOW,
+      })
+    )
+    const newlySignedAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+    }
+
+    for (const changedMember of ["root", "child"] as const) {
+      const current = structuredClone(baseline)
+      const record =
+        changedMember === "root" ? current.root : current.variations[0]!
+      record.eventId = `${changedMember}-new-revision`
+      record.product.supplierAllocation = newlySignedAllocation
+
+      expect(() =>
+        validateProductFamilySupplierAllocationSaveSnapshot({
+          baseline,
+          current,
+          nextAllocation: undefined,
+          evidenceComplete: false,
+        })
+      ).toThrow(
+        "Refresh products before changing supplier allocation terms. The current product-family read is incomplete."
+      )
+      expect(() =>
+        validateProductFamilySupplierAllocationSaveSnapshot({
+          baseline,
+          current,
+          nextAllocation: undefined,
+          evidenceComplete: true,
+        })
+      ).toThrow(
+        "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+      )
+    }
+
+    const sameRevisionWithChangedTerms = structuredClone(baseline)
+    sameRevisionWithChangedTerms.variations[0]!.product.supplierAllocation =
+      newlySignedAllocation
+    expect(
+      productFamilySnapshotsMatch(baseline, sameRevisionWithChangedTerms)
+    ).toBe(true)
+    expect(() =>
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline,
+        current: sameRevisionWithChangedTerms,
+        nextAllocation: undefined,
+        evidenceComplete: true,
+      })
+    ).toThrow(
+      "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+    )
+  })
+
+  it("rejects a stale unrelated save when refresh restores cached allocation terms", () => {
+    const legacyCachedPlan = buildProductFamilyChangePlan({
+      parentDTag: "legacy-cached-product",
+      baseProduct: baseProduct(),
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+    const legacyCachedFamily = toFamily(legacyCachedPlan)
+    const refreshedFamily = structuredClone(legacyCachedFamily)
+    const revisionEvent = {
+      id: "e".repeat(64),
+      pubkey: MERCHANT_PUBKEY,
+      created_at: Math.floor(NOW / 1_000),
+      kind: 30_402 as const,
+      tags: [
+        ["d", "legacy-cached-product"],
+        ["conduit_supplier_allocation", "1"],
+        ["zap", MERCHANT_PUBKEY, "wss://relay.conduit.market/", "3"],
+        ["zap", SUPPLIER_PUBKEY, "wss://nos.lol/", "1"],
+      ],
+      content: "Signed supplier allocation",
+      sig: "f".repeat(128),
+    }
+    const restoredAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+      revisionEventId: revisionEvent.id,
+      revisionCreatedAt: revisionEvent.created_at,
+      revisionEvent,
+    }
+    for (const record of [
+      refreshedFamily.root,
+      ...refreshedFamily.variations,
+    ]) {
+      record.product.supplierAllocation = restoredAllocation
+    }
+
+    expect(
+      productFamilySnapshotsMatch(legacyCachedFamily, refreshedFamily)
+    ).toBe(true)
+    expect(() =>
+      validateProductFamilySupplierAllocationSaveSnapshot({
+        baseline: legacyCachedFamily,
+        current: refreshedFamily,
+        nextAllocation: undefined,
+        evidenceComplete: true,
+      })
+    ).toThrow(
+      "Products changed while this editor was open. Refresh and reopen the product before changing supplier allocation terms."
+    )
+  })
+
+  it("propagates supplier allocation rotation and removal across a variation family", () => {
+    const originalAllocation = {
+      state: "valid" as const,
+      recipients: [
+        {
+          pubkey: MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market/",
+          weight: 3,
+          role: "merchant" as const,
+        },
+        {
+          pubkey: SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol/",
+          weight: 1,
+          role: "supplier" as const,
+        },
+      ],
+      issues: [],
+    }
+    const initialPlan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({ supplierAllocation: originalAllocation }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    const family = toFamily(initialPlan)
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    ).state
+    const rotatedAllocation = {
+      ...originalAllocation,
+      recipients: [
+        originalAllocation.recipients[0]!,
+        {
+          pubkey: "d".repeat(64),
+          relayHint: "wss://relay.ditto.pub/",
+          weight: 2,
+          role: "supplier" as const,
+        },
+      ],
+    }
+    const rotated = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...family.root.product,
+        supplierAllocation: rotatedAllocation,
+      },
+      variations: restored,
+      currency: "USD",
+      existing: family,
+      existingFamilyEvidenceComplete: true,
+      now: NOW + 60_000,
+    })
+
+    expect(rotated.publish.map(({ dTag }) => dTag)).toEqual(
+      rotated.desired.map(({ dTag }) => dTag)
+    )
+    expect(
+      rotated.desired.every(
+        ({ product }) => product.supplierAllocation === rotatedAllocation
+      )
+    ).toBe(true)
+
+    const rotatedFamily = toFamily(rotated)
+    const removed = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: {
+        ...rotatedFamily.root.product,
+        supplierAllocation: undefined,
+      },
+      variations: restored,
+      currency: "USD",
+      existing: rotatedFamily,
+      existingFamilyEvidenceComplete: true,
+      now: NOW + 120_000,
+    })
+
+    expect(removed.publish.map(({ dTag }) => dTag)).toEqual(
+      removed.desired.map(({ dTag }) => dTag)
+    )
+    expect(
+      removed.desired.every(
+        ({ product }) => product.supplierAllocation === undefined
       )
     ).toBe(true)
   })

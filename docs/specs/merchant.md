@@ -212,6 +212,21 @@ missing or malformed, Merchant Portal must retain the policy as unknown and
 prefill the edit form with the private-safe choice. Saving the product writes
 an explicit policy and sets the local policy confidence to known.
 
+### Supplier allocation authoring
+
+The product editor may publish versioned supplier allocation terms. It requires
+the merchant's relative weight plus at least one supplier identity and weight.
+Every recipient also needs a public `wss://` profile relay; an `nprofile` may
+provide its own relay hint, while an `npub` requires an explicit one. Merchant
+preserves those signed relay hints when reopening drafts or existing products
+instead of substituting a generic relay.
+
+The editor previews the relative shares and explains that the tags are declared
+terms rather than payment proof. Saving, rotating, or removing terms republishes
+the root and every variation in the family so no child retains stale allocation
+evidence. Existing orders continue to use the exact product revision they
+originally referenced.
+
 ## Publishing Flow
 
 1. Normalize form/workspace state

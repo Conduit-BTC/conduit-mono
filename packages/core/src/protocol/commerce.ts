@@ -2037,6 +2037,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
+    supplierAllocation: product.supplierAllocation,
     location: product.location,
     eventId: record.eventId,
     eventCreatedAt: record.eventCreatedAt,
@@ -2099,6 +2100,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     publicZapEnabled: row.publicZapEnabled ?? true,
     zapMessagePolicy,
     publicZapPolicyKnown: row.publicZapPolicyKnown ?? false,
+    supplierAllocation: row.supplierAllocation,
     location: row.location,
     createdAt: row.createdAt ?? row.cachedAt,
     updatedAt: row.updatedAt ?? row.cachedAt,
@@ -3214,6 +3216,31 @@ export async function cacheSignedProductListingEvent(
     }
   }
   return record
+}
+
+/** Pure signed projection for a product-write transaction; does not touch cache or relays. */
+export function projectSignedProductListingForLocalCommit(
+  signedEvent: SignedPublicNostrEvent
+): CachedProduct {
+  const event = new NDKEvent(undefined, signedEvent)
+  if (
+    event.kind !== EVENT_KINDS.PRODUCT ||
+    !isValidSignedPublicNostrEvent(signedEvent)
+  ) {
+    throw new Error("Expected a valid signed product listing event")
+  }
+  const [record] = dedupeProductEvents([event])
+  if (!record) throw new Error("Could not parse signed product listing event")
+  return toCachedProduct(record)
+}
+
+/** Pure NIP-09 projection for the same atomic local product-write transaction. */
+export function projectSignedProductDeletionForLocalCommit(
+  signedEvent: SignedPublicNostrEvent
+): CachedProductTombstone[] {
+  return tombstonesFromDeletionEvent(new NDKEvent(undefined, signedEvent), {
+    observedLocally: true,
+  })
 }
 
 export async function cacheSignedProductDeletionEvent(

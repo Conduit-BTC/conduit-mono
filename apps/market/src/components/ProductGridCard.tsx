@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
+  getProductSupplierAllocationEvidenceState,
   getShopperPriceDisplay,
   pubkeyToNpub,
   type PricingRateInput,
@@ -7,6 +8,7 @@ import {
   type ShopperPricePreference,
 } from "@conduit/core"
 import {
+  Badge,
   ProductCard,
   ProductCardSkeleton,
   ProductCartAction,
@@ -127,6 +129,8 @@ export function ProductGridCard({
     family,
     selectedProductId
   )
+  const supplierAllocationEvidence =
+    getProductSupplierAllocationEvidenceState(selectedProduct)
   const hasReadyFamily =
     product.type === "variable" && family?.state === "ready"
   const hasVariations =
@@ -221,6 +225,17 @@ export function ProductGridCard({
       }
       onFocus={(event) => updateVariationPanelPlacement(event.currentTarget)}
       title={product.title}
+      titleAside={
+        supplierAllocationEvidence === "signed" ? (
+          <Badge variant="outline" className="shrink-0 text-[10px]">
+            Revenue split
+          </Badge>
+        ) : supplierAllocationEvidence === "unverified" ? (
+          <Badge variant="outline" className="shrink-0 text-[10px]">
+            Split unavailable
+          </Badge>
+        ) : undefined
+      }
       notice={notice}
       merchantName={merchantName}
       merchantNamePending={merchantNamePending}

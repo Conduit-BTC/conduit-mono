@@ -162,12 +162,13 @@ function createCache(
 }
 
 describe("shopper trust evidence", () => {
-  it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, and invoice stores", () => {
-    expect(db.verno).toBe(19)
+  it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, invoice, and product-write stores", () => {
+    expect(db.verno).toBe(21)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
         "productDeletionOutbox",
+        "productListingOutbox",
         "inboxDeclarationEvidence",
         "ownerRelayListEvidence",
         "accountNetworkLocalState",
@@ -178,6 +179,10 @@ describe("shopper trust evidence", () => {
         "shippingOptionFrontiers",
         "merchantPendingInvoices",
         "shoppingCarts",
+        "localProductWriteIntents",
+        "localProductWriteFrontiers",
+        "localProductShippingOutbox",
+        "localProductStockCheckpoints",
       ])
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
@@ -214,6 +219,18 @@ describe("shopper trust evidence", () => {
         "deliveryState",
         "invoiceExpiresAt",
         "updatedAt",
+      ])
+    )
+    expect(db.productListingOutbox.schema.primKey.name).toBe("id")
+    expect(
+      db.productListingOutbox.schema.indexes.map(({ name }) => name)
+    ).toEqual(
+      expect.arrayContaining([
+        "merchantPubkey",
+        "state",
+        "nextRetryAt",
+        "updatedAt",
+        "createdAt",
       ])
     )
   })

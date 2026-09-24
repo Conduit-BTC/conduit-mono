@@ -36,6 +36,8 @@ import {
   recordRelayFailure,
   saveRelaySettings,
   setActiveRelaySettingsScope,
+  PRODUCT_SUPPLIER_ALLOCATION_VERSION,
+  PRODUCT_SUPPLIER_ALLOCATION_VERSION_TAG,
 } from "@conduit/core"
 import { config, EVENT_KINDS } from "@conduit/core"
 import type {
@@ -277,6 +279,7 @@ function makeSignedProductEvent(params: {
   stock?: number
   contentPrice?: number
   tagPrice?: number
+  extraTags?: string[][]
 }): NDKEvent {
   const secretKey = params.secretKey ?? MERCHANT_A_SECRET
   const pubkey = getPublicKey(secretKey)
@@ -305,6 +308,7 @@ function makeSignedProductEvent(params: {
         ["title", params.title],
         ["price", String(params.tagPrice ?? 25), "USD"],
         ["t", "test"],
+        ...(params.extraTags ?? []),
         ...(typeof params.stock === "number"
           ? [["stock", String(params.stock)]]
           : []),
@@ -3014,6 +3018,40 @@ describe("commerce gateway", () => {
       price: 30,
       currency: "USD",
       priceEvidenceMalformed: true,
+    })
+  })
+
+  it("retains the exact signed supplier allocation across the product cache round trip", async () => {
+    const supplierPubkey = getPublicKey(MERCHANT_B_SECRET)
+    const signedProduct = makeSignedProductEvent({
+      dTag: "supplier-allocation-cache",
+      createdAt: 100,
+      title: "Supplier Allocation Cache",
+      extraTags: [
+        [
+          PRODUCT_SUPPLIER_ALLOCATION_VERSION_TAG,
+          PRODUCT_SUPPLIER_ALLOCATION_VERSION,
+        ],
+        ["zap", MERCHANT_A_PUBKEY, "wss://relay.conduit.market/", "3"],
+        ["zap", supplierPubkey, "wss://nos.lol/", "1"],
+      ],
+    })
+    await cacheSignedProductListingEvent(signedProduct)
+
+    const result = await getCachedMerchantStorefront({
+      merchantPubkey: signedProduct.pubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
+
+    expect(cachedProducts[0]?.supplierAllocation).toEqual(
+      result.data[0]?.product.supplierAllocation
+    )
+    expect(result.data[0]?.product.supplierAllocation).toMatchObject({
+      state: "valid",
+      revisionEventId: signedProduct.id,
+      revisionCreatedAt: signedProduct.created_at,
+      revisionEvent: signedProduct.rawEvent(),
     })
   })
 

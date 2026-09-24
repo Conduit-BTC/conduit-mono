@@ -491,10 +491,13 @@ describe("app account-network read propagation", () => {
       merchantOrders.indexOf("const confirmPaymentMutation =")
     )
     expect(stockMutation).toMatch(
-      /signAndPublishProductListing\(\{[\s\S]{0,100}merchantPubkey: pubkey,[\s\S]{0,100}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAction\(authority\)/
+      /signAndPublishProductWriteBundle\(\{\s*merchantPubkey: pubkey,\s*authenticatedPubkey,\s*shouldContinue: \(\) => isCurrentOrderAction\(authority\),\s*assertCurrentWriteBaseline,/
     )
     expect(stockMutation).toMatch(
-      /deliverSignedProductEvent\([\s\S]{0,180}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
+      /ensureSignedProductListingsQueued\(\{[\s\S]{0,180}merchantPubkey: pubkey,[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
+    )
+    expect(stockMutation).toMatch(
+      /deliverQueuedProductListings\(queued\.id, \{[\s\S]{0,120}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
     )
     expect(lightning).toContain("accountPubkey,")
     expect(lightning).toContain("accountNetworkLocalStateRepository,")

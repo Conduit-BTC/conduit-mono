@@ -9,7 +9,26 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
-import {
+import { IDBFactory as FakeIDBFactory, IDBKeyRange } from "fake-indexeddb"
+import type {
+  CachedEventMarketEvidence,
+  CommerceProductRecord,
+  OrderSummary,
+  ParsedEventMarketPickup,
+  ParsedShippingOption,
+  ProductListingDeliveryJob,
+  ProductListingOutboxRepository,
+  ProductSchema,
+  SignedPublicNostrEvent,
+} from "@conduit/core"
+import type {
+  ProductListingPublishTarget,
+  ProductPublicationDependencies,
+  ProductSignerRequestProgress,
+} from "../apps/merchant/src/lib/product-publishing"
+import type { ProductListingRecordLike } from "../apps/merchant/src/lib/productVariations"
+
+const {
   __resetCommerceTestOverrides,
   __resetShippingTestOverrides,
   __resetRelayPublishTestOverrides,
@@ -17,6 +36,7 @@ import {
   __setShippingTestOverrides,
   __setRelayPublishTestOverrides,
   buildProductListingEventDraft,
+  db,
   EVENT_KINDS,
   getEventMarketPickupsByCoordinates,
   getProductShippingOptionAddress,
@@ -24,37 +44,29 @@ import {
   parseEventMarketPickupEvent,
   selectEventMarketEvidenceForRetention,
   setSigner,
-  type CachedEventMarketEvidence,
-  type CommerceProductRecord,
-  type OrderSummary,
-  type ParsedEventMarketPickup,
-  type ParsedShippingOption,
-  type ProductSchema,
-  type SignedPublicNostrEvent,
-} from "@conduit/core"
-import {
-  __resetEventMarketTestOverrides,
-  __setEventMarketTestOverrides,
-} from "../packages/core/src/protocol/event-market"
-import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
-import {
+} = await import("@conduit/core")
+const { __resetEventMarketTestOverrides, __setEventMarketTestOverrides } =
+  await import("../packages/core/src/protocol/event-market")
+const { __resetNdkTestState } =
+  await import("../packages/core/src/protocol/ndk")
+const {
   applyProductFulfillmentIntentForPublication,
   getProductPreservedFulfillmentFields,
+  SignedProductDeliveryError,
   signAndPublishProductWriteBundle,
-  type ProductListingPublishTarget,
-  type ProductPublicationDependencies,
-  type ProductSignerRequestProgress,
-} from "../apps/merchant/src/lib/product-publishing"
-import { prepareOrderStockUpdate } from "../apps/merchant/src/lib/order-stock-fulfillment"
-import { getOrderStockDecisionKey } from "../apps/merchant/src/lib/productStock"
-import {
+} = await import("../apps/merchant/src/lib/product-publishing")
+const { prepareOrderStockUpdate } =
+  await import("../apps/merchant/src/lib/order-stock-fulfillment")
+const { getOrderStockDecisionKey } =
+  await import("../apps/merchant/src/lib/productStock")
+const {
   MAX_PRODUCT_VARIATION_COUNT,
   buildProductFamilyChangePlan,
   createEmptyProductVariationForm,
+  getProductFamilySupplierAllocationRevisionKey,
   getProductVariationFormError,
   getProductVariationFormState,
-  type ProductListingRecordLike,
-} from "../apps/merchant/src/lib/productVariations"
+} = await import("../apps/merchant/src/lib/productVariations")
 
 const SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(SECRET)
@@ -339,15 +351,147 @@ interface PublicationObservation {
   publishedKinds: number[]
   signedBundleCount: number
   signedEvents?: NDKEvent[]
+  queuedDeliveryCount?: number
+}
+
+function installTestBrowserDurability(): () => void {
+  // Other test files may load the singleton before this fixture. Dexie snapshots
+  // its dependencies at construction, so a global polyfill is insufficient.
+  const dependencies = (
+    db as unknown as {
+      _deps: {
+        indexedDB?: IDBFactory
+        IDBKeyRange?: typeof IDBKeyRange
+      }
+    }
+  )._deps
+  const previousIndexedDB = dependencies.indexedDB
+  const previousKeyRange = dependencies.IDBKeyRange
+  db.close({ disableAutoOpen: false })
+  dependencies.indexedDB = new FakeIDBFactory()
+  dependencies.IDBKeyRange = IDBKeyRange
+  const previousNavigator = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "navigator"
+  )
+  const previousStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage"
+  )
+  const testNavigator = Object.create(
+    typeof navigator === "undefined" ? null : navigator
+  ) as Navigator
+  Object.defineProperty(testNavigator, "locks", {
+    configurable: true,
+    value: {
+      // These cases have one writer; contention belongs to the lock tests.
+      request: async <T>(
+        name: string,
+        operation: (lock: { name: string }) => Promise<T>
+      ): Promise<T> => operation({ name }),
+    },
+  })
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: testNavigator,
+  })
+  const values = new Map<string, string>()
+  const testStorage: Storage = {
+    get length() {
+      return values.size
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => {
+      values.delete(key)
+    },
+    setItem: (key, value) => {
+      values.set(key, value)
+    },
+  }
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: testStorage,
+  })
+  return () => {
+    db.close({ disableAutoOpen: false })
+    dependencies.indexedDB = previousIndexedDB
+    dependencies.IDBKeyRange = previousKeyRange
+    if (previousNavigator) {
+      Object.defineProperty(globalThis, "navigator", previousNavigator)
+    } else {
+      Reflect.deleteProperty(globalThis, "navigator")
+    }
+    if (previousStorage) {
+      Object.defineProperty(globalThis, "localStorage", previousStorage)
+    } else {
+      Reflect.deleteProperty(globalThis, "localStorage")
+    }
+  }
+}
+
+class MemoryProductListingOutbox implements ProductListingOutboxRepository {
+  private readonly jobs = new Map<string, ProductListingDeliveryJob>()
+
+  constructor(private readonly onAdd?: () => void) {}
+
+  async add(job: ProductListingDeliveryJob): Promise<void> {
+    if (this.jobs.has(job.id)) throw new Error("duplicate")
+    this.jobs.set(job.id, structuredClone(job))
+    this.onAdd?.()
+  }
+
+  async get(id: string): Promise<ProductListingDeliveryJob | undefined> {
+    const job = this.jobs.get(id)
+    return job ? structuredClone(job) : undefined
+  }
+
+  async listUndelivered(): Promise<ProductListingDeliveryJob[]> {
+    return Array.from(this.jobs.values()).map((job) => structuredClone(job))
+  }
+
+  async update(
+    id: string,
+    updater: (current: ProductListingDeliveryJob) => ProductListingDeliveryJob
+  ): Promise<ProductListingDeliveryJob> {
+    const current = this.jobs.get(id)
+    if (!current) throw new Error("missing")
+    const next = updater(structuredClone(current))
+    this.jobs.set(id, structuredClone(next))
+    return structuredClone(next)
+  }
 }
 
 async function attemptProductPublication(input: {
   listings: readonly ProductListingPublishTarget[]
+  durableBaselines?: readonly ProductSchema[]
+  stopAfterDurableCommit?: boolean
   getEventMarketPickups?: ProductPublicationDependencies["getEventMarketPickups"]
   getShippingOptions?: ProductPublicationDependencies["getShippingOptions"]
   now?: number
   observed?: PublicationObservation
+  assertBeforeSignerRequest?: () => void
 }): Promise<void> {
+  if (input.stopAfterDurableCommit && !input.durableBaselines) {
+    throw new Error("A durable baseline is required to stop after commit")
+  }
+  const stopAfterCommit = new Error("Stopped after durable test preparation")
+  const baselinesByAddress = input.durableBaselines
+    ? new Map(input.durableBaselines.map((baseline) => [baseline.id, baseline]))
+    : null
+  const listings = baselinesByAddress
+    ? input.listings.map((listing) => {
+        const baseline = baselinesByAddress.get(
+          `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${listing.dTag}`
+        )
+        if (!baseline) throw new Error("Missing durable product baseline")
+        return { ...listing, previousEventId: record(baseline).eventId }
+      })
+    : input.listings
+  const relayUrl = input.durableBaselines
+    ? "wss://relay.conduit.market"
+    : "wss://relay.example"
   setSigner(new NDKPrivateKeySigner(SECRET))
   __setCommerceTestOverrides({
     now: () => input.now ?? START,
@@ -363,6 +507,14 @@ async function attemptProductPublication(input: {
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
     }),
+    ...(input.durableBaselines
+      ? {
+          publishSignedEventFrameToRelay: async ({ signedEvent }) => {
+            input.observed?.publishedKinds.push(signedEvent.kind)
+            return "acked" as const
+          },
+        }
+      : {}),
   })
   const publish = spyOn(NDKEvent.prototype, "publish").mockImplementation(
     async function (this: NDKEvent) {
@@ -376,29 +528,115 @@ async function attemptProductPublication(input: {
     input.now === undefined
       ? undefined
       : spyOn(Date, "now").mockReturnValue(input.now)
+  const restoreBrowserDurability = input.durableBaselines
+    ? installTestBrowserDurability()
+    : undefined
   try {
+    if (input.durableBaselines) {
+      await db.products.bulkPut(
+        input.durableBaselines.map((baseline) => ({
+          ...baseline,
+          eventId: record(baseline).eventId,
+          eventCreatedAt: record(baseline).eventCreatedAt,
+          cachedAt: START,
+        }))
+      )
+    }
     await signAndPublishProductWriteBundle(
       {
         merchantPubkey: MERCHANT,
-        listings: input.listings,
+        listings,
+        ...(input.durableBaselines ? { durableCommit: {} } : {}),
         waitForSignerVisibility: async () => {},
-        onSignerRequest: (progress) =>
-          input.observed?.signerRequests.push(progress),
-        onSignedLocal: async ({ events }) => {
+        onSignerRequest: (progress) => {
+          input.assertBeforeSignerRequest?.()
+          input.observed?.signerRequests.push(progress)
+        },
+        onSignedLocal: async ({ events, productListingDeliveryJobId }) => {
+          if (input.durableBaselines) {
+            const intent = (await db.localProductWriteIntents.toArray()).find(
+              (row) => row.listingJobId === productListingDeliveryJobId
+            )
+            expect(intent?.shippingEventIds).toHaveLength(
+              input.durableBaselines.length
+            )
+            expect(intent?.productAddressIds).toEqual(
+              input.durableBaselines.map((baseline) => baseline.id)
+            )
+            expect(
+              await db.productListingOutbox.get(productListingDeliveryJobId!)
+            ).toBeDefined()
+            for (const eventId of intent?.shippingEventIds ?? []) {
+              expect(
+                (await db.localProductShippingOutbox.get(eventId))?.signedEvent
+                  .kind
+              ).toBe(EVENT_KINDS.SHIPPING_OPTION)
+            }
+          }
           if (input.observed) {
             input.observed.signedBundleCount += 1
             input.observed.signedEvents?.push(...events)
           }
+          if (input.stopAfterDurableCommit) throw stopAfterCommit
+        },
+        productListingDeliveryOptions: {
+          ...(input.durableBaselines
+            ? {}
+            : {
+                repository: new MemoryProductListingOutbox(() => {
+                  if (input.observed?.queuedDeliveryCount !== undefined) {
+                    input.observed.queuedDeliveryCount += 1
+                  }
+                }),
+              }),
+          accountNetworkLocalStateRepository: { get: async () => undefined },
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ signedEvent }) => {
+            if (input.durableBaselines) {
+              const intent = (await db.localProductWriteIntents.toArray()).find(
+                (row) =>
+                  row.productAddressIds.includes(
+                    `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${signedEvent.tags.find(([name]) => name === "d")?.[1]}`
+                  )
+              )
+              expect(intent).toBeDefined()
+              for (const eventId of intent?.shippingEventIds ?? []) {
+                expect(
+                  (await db.localProductShippingOutbox.get(eventId))
+                    ?.acknowledgedRelayUrls
+                ).toContain(relayUrl)
+              }
+            }
+            input.observed?.publishedKinds.push(signedEvent.kind)
+            return { status: "acked" }
+          },
         },
       },
       {
         getEventMarketPickups: input.getEventMarketPickups ?? (async () => []),
         getShippingOptions: input.getShippingOptions ?? (async () => []),
+        planProductListingRelayTargets: async () => [
+          {
+            relayUrl,
+            ownerSelected: false,
+            personalRelay: true,
+          },
+        ],
       }
     )
+  } catch (error) {
+    if (
+      input.stopAfterDurableCommit &&
+      error instanceof SignedProductDeliveryError &&
+      error.deliveryCause === stopAfterCommit
+    ) {
+      return
+    }
+    throw error
   } finally {
     publish.mockRestore()
     clock?.mockRestore()
+    restoreBrowserDurability?.()
   }
 }
 
@@ -410,6 +648,7 @@ async function attemptPreservedPublication(input: {
   getEventMarketPickups?: ProductPublicationDependencies["getEventMarketPickups"]
   getShippingOptions?: ProductPublicationDependencies["getShippingOptions"]
   observed?: PublicationObservation
+  durableShippingIntent?: boolean
 }): Promise<void> {
   const change = plan(input.baseline, input.update)
   await attemptProductPublication({
@@ -422,6 +661,9 @@ async function attemptPreservedPublication(input: {
     getShippingOptions:
       input.getShippingOptions ?? (async () => input.options ?? []),
     observed: input.observed,
+    ...(input.durableShippingIntent
+      ? { durableBaselines: [input.baseline] }
+      : {}),
   })
 }
 
@@ -434,6 +676,92 @@ afterEach(() => {
 })
 
 describe("merchant-owned product mutation boundary", () => {
+  it("stops a stale allocation save before signing or queuing after pickup preparation", async () => {
+    const absent = { state: "absent" as const, recipients: [], issues: [] }
+    const baseline = product("allocation-frontier", {
+      supplierAllocation: absent,
+    })
+    const family = {
+      root: record(baseline),
+      variations: [
+        record(product("allocation-child", { supplierAllocation: absent })),
+      ],
+      orphanVariation: false,
+    }
+    const expectedRevision =
+      getProductFamilySupplierAllocationRevisionKey(family)
+    let currentFamily = structuredClone(family)
+    let releasePickupRead!: () => void
+    let notifyPickupRead!: () => void
+    const pickupReadStarted = new Promise<void>((resolve) => {
+      notifyPickupRead = resolve
+    })
+    const pickupReadRelease = new Promise<void>((resolve) => {
+      releasePickupRead = resolve
+    })
+    const observed: PublicationObservation = {
+      signerRequests: [],
+      publishedKinds: [],
+      signedBundleCount: 0,
+      queuedDeliveryCount: 0,
+    }
+    const change = plan(baseline, { stock: 4 })
+    const publication = attemptProductPublication({
+      listings: change.publish.map((target) => ({
+        ...target,
+        previousEventCreatedAt: target.existing!.eventCreatedAt,
+      })),
+      getEventMarketPickups: async () => {
+        notifyPickupRead()
+        await pickupReadRelease
+        return [pickupOption(baseline)]
+      },
+      assertBeforeSignerRequest: () => {
+        if (
+          getProductFamilySupplierAllocationRevisionKey(currentFamily) !==
+          expectedRevision
+        ) {
+          throw new Error("Products changed while this editor was open.")
+        }
+      },
+      observed,
+    })
+
+    await pickupReadStarted
+    currentFamily = structuredClone(currentFamily)
+    currentFamily.variations[0]!.eventId = "new-child-revision"
+    currentFamily.variations[0]!.product.supplierAllocation = {
+      state: "valid",
+      recipients: [
+        { pubkey: MERCHANT, weight: 1, role: "merchant" },
+        { pubkey: ORGANIZER, weight: 1, role: "supplier" },
+      ],
+      issues: [],
+    }
+    releasePickupRead()
+
+    await expect(publication).rejects.toThrow(
+      "Products changed while this editor was open."
+    )
+    expect(observed).toEqual({
+      signerRequests: [],
+      publishedKinds: [],
+      signedBundleCount: 0,
+      queuedDeliveryCount: 0,
+    })
+
+    const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
+    expect(route).toMatch(
+      /onSignerRequest:\s*\(progress\)\s*=>\s*{\s*assertCurrentFamilyRevision\?\.\(\)/
+    )
+    expect(route).toMatch(
+      /onSignerRequest:\s*\(\)\s*=>\s*{\s*assertCurrentFamilyRevision\?\.\(\)/
+    )
+    expect(route).toMatch(
+      /shouldContinue:\s*\(\)\s*=>\s*{\s*assertCurrentFamilyRevision\?\.\(\)\s*return shouldContinue\?\.\(\) !== false/
+    )
+  })
+
   for (const now of [START - 1, START, START + 1, START + 86_400_000]) {
     for (const networkState of ["delayed", "unavailable"] as const) {
       it(`signs only the merchant stock edit at ${now - START}ms with ${networkState} organizer evidence`, async () => {
@@ -641,6 +969,7 @@ describe("merchant-owned product mutation boundary", () => {
       update: { stock: 4 },
       options: [shippingOption(baseline)],
       observed,
+      durableShippingIntent: true,
     })
     expect(observed).toEqual({
       signerRequests: [
@@ -722,6 +1051,7 @@ describe("merchant-owned product mutation boundary", () => {
       update: { stock: 4 },
       options: [shippingOption(baseline)],
       observed,
+      durableShippingIntent: true,
     })
 
     expect(observed.publishedKinds).toEqual([30406, 30402])
@@ -761,6 +1091,10 @@ describe("merchant-owned product mutation boundary", () => {
         return baselines.map((baseline) => shippingOption(baseline))
       },
       observed,
+      durableBaselines: baselines,
+      // This case covers max-size batch preparation; delivery is exercised
+      // with a smaller family below to keep the in-memory IDB test bounded.
+      stopAfterDurableCommit: true,
     })
 
     expect(requestedCoordinates).toEqual([
@@ -780,6 +1114,35 @@ describe("merchant-owned product mutation boundary", () => {
         event!.tags.filter(([name]) => name === "shipping_option")
       ).toEqual([["shipping_option", baseline.shippingOptionId!]])
     }
+    expect(observed.publishedKinds).toEqual([])
+  })
+
+  it("acks all shipping options before publishing a canonical family", async () => {
+    const baselines = [
+      canonicalProduct("paired-root"),
+      canonicalProduct("paired-child"),
+    ]
+    const observed = {
+      signerRequests: [] as ProductSignerRequestProgress[],
+      publishedKinds: [] as number[],
+      signedBundleCount: 0,
+    }
+
+    await attemptProductPublication({
+      listings: baselines.map((baseline) => ({
+        product: { ...baseline, stock: 4 },
+        dTag: record(baseline).dTag!,
+        previousEventCreatedAt: record(baseline).eventCreatedAt,
+        fulfillmentIntent: { kind: "preserve_existing", baseline },
+      })),
+      getShippingOptions: async () =>
+        baselines.map((baseline) => shippingOption(baseline)),
+      durableBaselines: baselines,
+      observed,
+    })
+
+    expect(observed.publishedKinds).toEqual([30406, 30406, 30402, 30402])
+    expect(observed.signedBundleCount).toBe(1)
   })
 
   it("rejects a missing option in a maximum-size family before signing", async () => {

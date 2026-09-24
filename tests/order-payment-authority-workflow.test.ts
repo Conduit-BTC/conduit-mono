@@ -272,6 +272,14 @@ describe("executor profile authority workflow", () => {
   for (const change of ["removal", "session", "expiry", "none"] as const) {
     it(`rechecks ${change} after real WebLN enable before submitting`, async () => {
       await observeProfile(JSON.stringify({ lud16: SAVED_ADDRESS }))
+      // A failed pre-claim invoice must be distinct from the new invoice so
+      // rollback remains observable even when this test runs within one second.
+      stored.invoice = makeBolt11Fixture({
+        hrp: "lnbc10n",
+        createdAt: Math.floor(Date.now() / 1_000) - 120,
+        fields: [bolt11PaymentHashField(), bolt11PlainDescriptionField()],
+      })
+      const preclaimInvoice = stored.invoice
       let signalEnabled!: () => void
       let releaseEnable!: () => void
       const enabled = new Promise<void>((resolve) => {
@@ -327,7 +335,10 @@ describe("executor profile authority workflow", () => {
       } else {
         expect(result.error).toMatch(/address|account changed|expired/i)
       }
-      expect(stored.invoice).toBe(acquiredInvoice)
+      expect(
+        stored.invoice ===
+          (change === "none" ? acquiredInvoice : preclaimInvoice)
+      ).toBe(true)
     })
   }
 

@@ -199,6 +199,8 @@ describe("Playwright smoke area validation", () => {
 
     expect(market.env.VITE_E2E_RELAY_URL).toBe("ws://127.0.0.1:54321")
     expect(merchant.env.VITE_E2E_RELAY_URL).toBe("ws://127.0.0.1:54321")
+    expect(market.env.VITE_ENABLE_E2E_TEST_HOOKS).toBe("true")
+    expect(merchant.env.VITE_ENABLE_E2E_TEST_HOOKS).toBe("true")
     expect(market.env.VITE_LIGHTNING_NETWORK).toBe("testnet")
     expect(merchant.env.VITE_LIGHTNING_NETWORK).toBe("testnet")
   })

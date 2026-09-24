@@ -10,21 +10,34 @@ import {
   __resetRelayPublishTestOverrides,
   __setCommerceTestOverrides,
   __setRelayPublishTestOverrides,
+  applyAccountNetworkRelayExclusion,
   applyE2eRelayIsolation,
   buildProductListingEventDraft,
   cacheSignedProductListingEvent,
   CANONICAL_APP_BACKPLANE_RELAYS,
   config,
+  createInMemoryAccountNetworkLocalStateRepository,
+  deliverProductListingJob,
+  emptyAccountNetworkLocalState,
   EVENT_KINDS,
   getCachedMerchantStorefront,
+  getPendingProductDeletionDeliveries,
+  getRejectedProductListingDeliveries,
+  markProductListingDeliveryReady,
   parseProductEvent,
+  persistProductListingDelivery,
   planProductDeletionRelays,
   RemoteSignerError,
   resolveProductFulfillment,
+  setAccountNetworkRoutingSourceEnabled,
   setSigner,
   type ProductDeletionOutboxRepository,
+  type ProductListingDeliveryJob,
+  type ProductListingOutboxRepository,
+  type ProductListingRelayTarget,
   type ProductSchema,
   type PublishWithPlannerResult,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 import type {
   CachedProduct,
@@ -44,11 +57,41 @@ import {
   resolvePublishedProductFulfillmentIntentForTarget,
   signAndPublishProductWriteBundle,
   signAndPublishProductListing,
+  SignedProductDeliveryError,
   type CanonicalProductPublishDependencies,
   type SignedProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
-import { resumePendingProductDeletionDeliveries } from "../apps/merchant/src/lib/product-deletion-delivery"
+import {
+  deliverQueuedProductDeletion,
+  persistSignedProductDeletion,
+  resumePendingProductDeletionDeliveries,
+} from "../apps/merchant/src/lib/product-deletion-delivery"
+import {
+  buildProductDeliveryNotice,
+  getRejectedMixedDeletionRecoveryTargets,
+  getTerminalRejectedListingRecoveryDTags,
+  resolveProductWriteDeliveryNotice,
+} from "../apps/merchant/src/lib/product-delivery"
+import {
+  deliverQueuedProductListings,
+  ensureSignedProductListingsQueued,
+  productListingJobToPublishResult,
+  resolveProductListingRelayTargets,
+  resumePendingProductListingDeliveries,
+  resumeStagedProductListingDeliveries,
+} from "../apps/merchant/src/lib/product-listing-delivery"
 import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
+import {
+  assertOrderStockRevisionCurrent,
+  captureOrderStockRevision,
+} from "../apps/merchant/src/lib/order-stock-fulfillment"
+import {
+  buildOrderStockAdjustments,
+  getOrderStockDecisionKey,
+  isOrderStockAdjustmentMutationDisabled,
+  PendingProductStockDeliveryStore,
+  type OrderStockAdjustment,
+} from "../apps/merchant/src/lib/productStock"
 
 const MERCHANT_SECRET = new Uint8Array(32).fill(4)
 const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
@@ -56,6 +99,43 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
 const allowAllAccountNetworkLocalStateRepository = {
   get: async () => undefined,
+}
+
+class MemoryStorage implements Storage {
+  private readonly values = new Map<string, string>()
+  failWrites = false
+
+  get length(): number {
+    return this.values.size
+  }
+
+  clear(): void {
+    this.values.clear()
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+
+  key(index: number): string | null {
+    return Array.from(this.values.keys())[index] ?? null
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key)
+  }
+
+  setItem(key: string, value: string): void {
+    if (this.failWrites) throw new Error("storage unavailable")
+    this.values.set(key, value)
+  }
+}
+
+function personalListingTarget(
+  relayUrl: string,
+  ownerSelected = false
+): ProductListingRelayTarget {
+  return { relayUrl, ownerSelected, personalRelay: true }
 }
 
 function publishAndParse(
@@ -130,6 +210,77 @@ class MemoryProductDeletionOutbox implements ProductDeletionOutboxRepository {
     const next = updater(cloneDeletionJob(current))
     this.storage.set(id, cloneDeletionJob(next))
     return cloneDeletionJob(next)
+  }
+}
+
+function cloneListingJob(
+  job: ProductListingDeliveryJob
+): ProductListingDeliveryJob {
+  return structuredClone(job)
+}
+
+class MemoryProductListingOutbox implements ProductListingOutboxRepository {
+  constructor(
+    private readonly storage: Map<string, ProductListingDeliveryJob> = new Map()
+  ) {}
+
+  async add(job: ProductListingDeliveryJob): Promise<void> {
+    if (this.storage.has(job.id)) throw new Error("duplicate")
+    this.storage.set(job.id, cloneListingJob(job))
+  }
+
+  async get(id: string): Promise<ProductListingDeliveryJob | undefined> {
+    const job = this.storage.get(id)
+    return job ? cloneListingJob(job) : undefined
+  }
+
+  async listUndelivered(): Promise<ProductListingDeliveryJob[]> {
+    return Array.from(this.storage.values())
+      .filter((job) => job.state === "pending" || job.state === "partial")
+      .map(cloneListingJob)
+  }
+
+  async listFailed(
+    merchantPubkey: string
+  ): Promise<ProductListingDeliveryJob[]> {
+    return Array.from(this.storage.values())
+      .filter(
+        (job) => job.state === "failed" && job.merchantPubkey === merchantPubkey
+      )
+      .map(cloneListingJob)
+  }
+
+  async update(
+    id: string,
+    updater: (current: ProductListingDeliveryJob) => ProductListingDeliveryJob
+  ): Promise<ProductListingDeliveryJob> {
+    const current = this.storage.get(id)
+    if (!current) throw new Error("missing")
+    const next = updater(cloneListingJob(current))
+    this.storage.set(id, cloneListingJob(next))
+    return cloneListingJob(next)
+  }
+}
+
+function createAckedProductListingDeliveryOptions() {
+  return {
+    repository: new MemoryProductListingOutbox(),
+    accountNetworkLocalStateRepository:
+      allowAllAccountNetworkLocalStateRepository,
+    now: () => NOW,
+    retryDelayMs: 1,
+    restoreLocalEvidence: async () => {},
+    publisher: async () => ({ status: "acked" as const }),
+  }
+}
+
+function createProductListingRelayPlanningDependencies(
+  relayUrl = "wss://relay.example"
+) {
+  return {
+    planProductListingRelayTargets: async () => [
+      personalListingTarget(relayUrl),
+    ],
   }
 }
 
@@ -268,6 +419,7 @@ beforeEach(() => {
   __setRelayPublishTestOverrides({
     accountNetworkLocalStateRepository:
       allowAllAccountNetworkLocalStateRepository,
+    publishSignedEventFrameToRelay: async () => "acked",
     planPublishRelays: async () => ({
       intent: "author_event",
       primaryRelayUrls: [],
@@ -284,7 +436,306 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
-  it("routes product and shipping events through the commerce author intent", async () => {
+  it("freezes configured commerce fallbacks into a non-authoritative relay plan", () => {
+    const plannedRelayUrl = "wss://merchant-relay.example"
+    const targets = resolveProductListingRelayTargets({
+      intent: "commerce_author_event",
+      primaryRelayUrls: [plannedRelayUrl],
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+      personalRelayUrls: [plannedRelayUrl],
+      signedRelayListAuthoritative: false,
+    })
+    const targetUrls = targets.map(({ relayUrl }) => relayUrl)
+
+    expect(targetUrls).toContain(plannedRelayUrl)
+    expect(
+      targets.find(({ relayUrl }) => relayUrl === plannedRelayUrl)
+    ).toMatchObject({
+      personalRelay: true,
+    })
+    for (const relayUrl of config.commerceRelayUrls) {
+      expect(targetUrls).toContain(relayUrl)
+      expect(
+        targets.find((target) => target.relayUrl === relayUrl)
+      ).toMatchObject({
+        appRelay: true,
+      })
+    }
+  })
+
+  it("does not add configured fallbacks to an authoritative empty relay plan", () => {
+    expect(
+      resolveProductListingRelayTargets({
+        intent: "commerce_author_event",
+        primaryRelayUrls: [],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+        signedRelayListAuthoritative: true,
+      })
+    ).toEqual([])
+  })
+
+  it("retains both source labels when one product relay belongs to App and Personal layers", () => {
+    const overlapRelayUrl = config.commerceRelayUrls[0]!
+    const targets = resolveProductListingRelayTargets({
+      intent: "commerce_author_event",
+      primaryRelayUrls: [overlapRelayUrl],
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+      appRelayUrls: [overlapRelayUrl],
+      personalRelayUrls: [overlapRelayUrl],
+      signedRelayListAuthoritative: false,
+    })
+
+    expect(
+      targets.filter((target) => target.relayUrl === overlapRelayUrl)
+    ).toEqual([
+      {
+        relayUrl: overlapRelayUrl,
+        ownerSelected: false,
+        appRelay: true,
+        personalRelay: true,
+      },
+    ])
+  })
+
+  it("rechecks queued product relay source toggles and exclusions on retry", async () => {
+    const targets: ProductListingRelayTarget[] = [
+      {
+        relayUrl: "wss://app-only.example",
+        ownerSelected: false,
+        appRelay: true,
+      },
+      personalListingTarget("wss://personal-only.example"),
+      {
+        relayUrl: "wss://overlap.example",
+        ownerSelected: false,
+        appRelay: true,
+        personalRelay: true,
+      },
+      {
+        relayUrl: "wss://independent.example",
+        ownerSelected: false,
+        independentRelay: true,
+      },
+      {
+        relayUrl: "wss://excluded.example",
+        ownerSelected: false,
+        independentRelay: true,
+      },
+    ]
+
+    for (const [index, source] of (["app", "personal"] as const).entries()) {
+      const repository = new MemoryProductListingOutbox()
+      const signedEvent = makeSignedProductEventWithShippingTags({
+        dTag: `source-toggle-${source}`,
+        shippingTags: [],
+      }).rawEvent()
+      const accountNetworkLocalStateRepository =
+        createInMemoryAccountNetworkLocalStateRepository([
+          emptyAccountNetworkLocalState(MERCHANT_PUBKEY, () => NOW),
+        ])
+      const queued = await persistProductListingDelivery(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          signedEvents: [signedEvent],
+          relayTargets: targets,
+        },
+        { repository, now: () => NOW }
+      )
+
+      // The immutable delivery plan survives the local setting change; only
+      // current admission changes. Exclusions always dominate both layers.
+      await accountNetworkLocalStateRepository.update(
+        MERCHANT_PUBKEY,
+        (state) =>
+          applyAccountNetworkRelayExclusion(
+            {
+              ...state,
+              routingPolicy: setAccountNetworkRoutingSourceEnabled(
+                state.routingPolicy,
+                source,
+                false
+              ),
+            },
+            {
+              relayUrl: "wss://excluded.example",
+              relayListFrontier: { eventId: null, createdAt: null },
+              inboxDeclarationFrontier: { eventId: null, createdAt: null },
+              committedAt: NOW + index + 1,
+            }
+          )
+      )
+      const published: string[] = []
+
+      await deliverProductListingJob(
+        queued.id,
+        async ({ relayUrl }) => {
+          published.push(relayUrl)
+          return { status: "acked" }
+        },
+        {
+          repository,
+          accountNetworkLocalStateRepository,
+          now: () => NOW + 10,
+        }
+      )
+
+      expect(published.sort()).toEqual(
+        (source === "app"
+          ? [
+              "wss://independent.example",
+              "wss://overlap.example",
+              "wss://personal-only.example",
+            ]
+          : [
+              "wss://app-only.example",
+              "wss://independent.example",
+              "wss://overlap.example",
+            ]
+        ).sort()
+      )
+      expect((await repository.get(queued.id))?.relayTargets).toEqual(
+        queued.relayTargets
+      )
+      const disabledRelayUrl =
+        source === "app"
+          ? "wss://app-only.example"
+          : "wss://personal-only.example"
+      expect(
+        (await repository.get(queued.id))?.relayDelivery.find(
+          (delivery) => delivery.relayUrl === disabledRelayUrl
+        )?.status
+      ).toBe("pending")
+
+      await accountNetworkLocalStateRepository.update(
+        MERCHANT_PUBKEY,
+        (state) => ({
+          ...state,
+          routingPolicy: setAccountNetworkRoutingSourceEnabled(
+            state.routingPolicy,
+            source,
+            true
+          ),
+        })
+      )
+      const retried: string[] = []
+      await deliverProductListingJob(
+        queued.id,
+        async ({ relayUrl }) => {
+          retried.push(relayUrl)
+          return { status: "acked" }
+        },
+        {
+          repository,
+          accountNetworkLocalStateRepository,
+          now: () => NOW + 20,
+        }
+      )
+      expect(retried).toEqual([disabledRelayUrl])
+      expect(
+        (await repository.get(queued.id))?.relayDelivery.find(
+          (delivery) => delivery.relayUrl === disabledRelayUrl
+        )?.status
+      ).toBe("acked")
+      expect(
+        (await repository.get(queued.id))?.relayDelivery.find(
+          (delivery) => delivery.relayUrl === "wss://excluded.example"
+        )?.status
+      ).toBe("pending")
+    }
+  })
+
+  it("does not send a legacy queued listing whose relay source is unknown", async () => {
+    const relayUrl = "wss://legacy-source.example"
+    const storage = new Map<string, ProductListingDeliveryJob>()
+    const repository = new MemoryProductListingOutbox(storage)
+    const queued = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [makeSignedEvent(EVENT_KINDS.PRODUCT)],
+        relayTargets: [personalListingTarget(relayUrl)],
+      },
+      { repository, now: () => NOW }
+    )
+    storage.set(queued.id, {
+      ...queued,
+      relayTargets: [{ relayUrl, ownerSelected: false }],
+    })
+    let published = false
+
+    const result = await deliverProductListingJob(
+      queued.id,
+      async () => {
+        published = true
+        return { status: "acked" }
+      },
+      {
+        repository,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        now: () => NOW + 10,
+      }
+    )
+
+    expect(published).toBe(false)
+    expect(result.signedEvents).toEqual(queued.signedEvents)
+    expect(result.relayDelivery[0]?.status).toBe("rejected")
+  })
+
+  it("rechecks an App relay cutoff immediately before the exact listing write", async () => {
+    const relayUrl = "wss://app-cutoff.example"
+    const repository = new MemoryProductListingOutbox()
+    const queued = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [makeSignedEvent(EVENT_KINDS.PRODUCT)],
+        relayTargets: [{ relayUrl, ownerSelected: false, appRelay: true }],
+      },
+      { repository, now: () => NOW }
+    )
+    const initiallyEnabled = emptyAccountNetworkLocalState(
+      MERCHANT_PUBKEY,
+      () => NOW
+    )
+    const appDisabled = {
+      ...initiallyEnabled,
+      routingPolicy: setAccountNetworkRoutingSourceEnabled(
+        initiallyEnabled.routingPolicy,
+        "app",
+        false
+      ),
+    }
+    let policyReads = 0
+    let framesSent = 0
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async () => {
+        framesSent += 1
+        return "acked"
+      },
+    })
+
+    await deliverQueuedProductListings(queued.id, {
+      repository,
+      accountNetworkLocalStateRepository: {
+        get: async () => {
+          policyReads += 1
+          return policyReads === 1 ? initiallyEnabled : appDisabled
+        },
+      },
+      restoreLocalEvidence: async () => {},
+      now: () => NOW + 10,
+    })
+
+    expect(policyReads).toBeGreaterThanOrEqual(2)
+    expect(framesSent).toBe(0)
+    expect(
+      (await repository.get(queued.id))?.relayDelivery[0]?.status
+    ).not.toBe("acked")
+  })
+
+  it("does not plan a legacy shipping relay write without a durable intent", async () => {
     const relayUrl = "wss://relay.example"
     const intents: string[] = []
     setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
@@ -304,33 +755,87 @@ describe("merchant product event delivery", () => {
     )
 
     try {
-      await signAndPublishProductWriteBundle({
-        merchantPubkey: MERCHANT_PUBKEY,
-        listings: [
-          {
-            product: makeProduct("commerce-intent"),
-            dTag: "commerce-intent",
-            fulfillmentIntent: {
-              kind: "fixed_standard",
-              amount: 5,
-              currency: "SATS",
-              countries: ["US"],
+      await expect(
+        signAndPublishProductWriteBundle({
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("commerce-intent"),
+              dTag: "commerce-intent",
+              fulfillmentIntent: {
+                kind: "fixed_standard",
+                amount: 5,
+                currency: "SATS",
+                countries: ["US"],
+              },
             },
+          ],
+          onSignedLocal: async () => {},
+          productListingDeliveryOptions:
+            createAckedProductListingDeliveryOptions(),
+        })
+      ).rejects.toBeInstanceOf(SignedProductDeliveryError)
+      expect(intents).toEqual([])
+      expect(publishSpy).not.toHaveBeenCalled()
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
+  it("does not expose fixed shipping before the signed product intent is durable", async () => {
+    const relayUrl = "wss://relay.example"
+    const publishedKinds: number[] = []
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async (input) => ({
+        intent: input.intent,
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+      async function (this: NDKEvent) {
+        publishedKinds.push(this.kind ?? -1)
+        return new Set([{ url: relayUrl }]) as never
+      }
+    )
+
+    try {
+      await expect(
+        signAndPublishProductWriteBundle({
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("shipping-before-commit"),
+              dTag: "shipping-before-commit",
+              fulfillmentIntent: {
+                kind: "fixed_standard",
+                amount: 5,
+                currency: "SATS",
+                countries: ["US"],
+              },
+            },
+          ],
+          onSignedBeforeStaging: async () => {
+            throw new Error("durable product intent unavailable")
           },
-        ],
-        onSignedLocal: async () => {},
-      })
-      expect(intents).toEqual([
-        "commerce_author_event",
-        "commerce_author_event",
-      ])
+          onSignedLocal: async () => {},
+          productListingDeliveryOptions: {
+            repository: new MemoryProductListingOutbox(listingStorage),
+          },
+        })
+      ).rejects.toThrow("Signed product event could not be delivered")
+      expect(publishedKinds).toEqual([])
+      expect(listingStorage.size).toBe(0)
     } finally {
       publishSpy.mockRestore()
     }
   })
 
   it("revalidates live account authority before product relay I/O", async () => {
-    const relayUrl = "wss://relay.example"
+    const relayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]!
     __setRelayPublishTestOverrides({
       accountNetworkLocalStateRepository:
         allowAllAccountNetworkLocalStateRepository,
@@ -724,6 +1229,7 @@ describe("merchant product event delivery", () => {
     const deletionPendingRelayUrl = "wss://relay.nostr.net"
     const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
     const beforeReload = new MemoryProductDeletionOutbox(durableStorage)
+    const listingOptions = createAckedProductListingDeliveryOptions()
     const signer = new NDKPrivateKeySigner(MERCHANT_SECRET)
     setSigner(signer)
     const deletionTargets = buildProductRemovalDeletionTargets([
@@ -735,49 +1241,55 @@ describe("merchant product event delivery", () => {
     ])
     let signedBundle: SignedProductWriteBundle | null = null
     let signedDeletionId = ""
-    const delivery = await signAndPublishProductWriteBundle({
-      merchantPubkey: MERCHANT_PUBKEY,
-      listings: [
-        {
-          product: makeProduct("root"),
-          dTag: "root",
-          fulfillmentIntent: { kind: "coordinate_after_order" },
+    const delivery = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("root"),
+            dTag: "root",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        deletions: deletionTargets,
+        onSignedLocal: async (bundle) => {
+          signedBundle = bundle
+          const listing = bundle.events.find(
+            (event) => event.kind === EVENT_KINDS.PRODUCT
+          )
+          const deletion = bundle.events.find(
+            (event) => event.kind === EVENT_KINDS.DELETION
+          )
+          if (!listing) throw new Error("Expected a signed listing event")
+          if (!deletion) throw new Error("Expected a signed deletion event")
+          signedDeletionId = deletion.id
+          listing.publish = (async (relaySet: unknown) => {
+            const attemptedRelayUrls = [
+              ...((relaySet as { relayUrls?: Set<string> | string[] })
+                .relayUrls ?? []),
+            ]
+            return new Set(attemptedRelayUrls.map((url) => ({ url })))
+          }) as never
+          deletion.publish = (async () => new Set()) as never
         },
-      ],
-      deletions: deletionTargets,
-      onSignedLocal: async (bundle) => {
-        signedBundle = bundle
-        const listing = bundle.events.find(
-          (event) => event.kind === EVENT_KINDS.PRODUCT
-        )
-        const deletion = bundle.events.find(
-          (event) => event.kind === EVENT_KINDS.DELETION
-        )
-        if (!listing) throw new Error("Expected a signed listing event")
-        if (!deletion) throw new Error("Expected a signed deletion event")
-        signedDeletionId = deletion.id
-        listing.publish = (async (relaySet: unknown) => {
-          const attemptedRelayUrls = [
-            ...((relaySet as { relayUrls?: Set<string> | string[] })
-              .relayUrls ?? []),
-          ]
-          return new Set(attemptedRelayUrls.map((url) => ({ url })))
-        }) as never
-        deletion.publish = (async () => new Set()) as never
+        productListingDeliveryOptions: listingOptions,
+        deletionDeliveryOptions: {
+          repository: beforeReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ relayUrl }) =>
+            relayUrl === deletionPendingRelayUrl
+              ? { status: "timed_out" }
+              : { status: "acked" },
+        },
       },
-      deletionDeliveryOptions: {
-        repository: beforeReload,
-        accountNetworkLocalStateRepository:
-          allowAllAccountNetworkLocalStateRepository,
-        now: () => NOW,
-        retryDelayMs: 1,
-        restoreLocalEvidence: async () => {},
-        publisher: async ({ relayUrl }) =>
-          relayUrl === deletionPendingRelayUrl
-            ? { status: "timed_out" }
-            : { status: "acked" },
-      },
-    })
+      createProductListingRelayPlanningDependencies(
+        CANONICAL_APP_BACKPLANE_RELAYS[0]!
+      )
+    )
     if (!signedBundle) throw new Error("Expected the signed retry bundle")
     const stagedDeletion = await beforeReload.get(signedDeletionId)
 
@@ -813,6 +1325,7 @@ describe("merchant product event delivery", () => {
       now: () => NOW + 10_000,
       retryDelayMs: 1,
       deliveryLeaseOwner: "after-reload",
+      getCompanionListingJob: (jobId) => listingOptions.repository.get(jobId),
       restoreLocalEvidence: async () => {},
       publisher: async ({ relayUrl, signedEvent }) => {
         resumedRelayUrls.push(relayUrl)
@@ -824,6 +1337,2182 @@ describe("merchant product event delivery", () => {
     expect(resumedRelayUrls).toEqual([deletionPendingRelayUrl])
     expect(resumedEventIds).toEqual([signedDeletionId])
     expect((await afterReload.get(signedDeletionId))?.state).toBe("delivered")
+  })
+
+  it("keeps a mixed deletion queued until every replacement event is ACKed on one relay", async () => {
+    const firstRelayUrl = "wss://relay.damus.io"
+    const secondRelayUrl = "wss://relay.nostr.net"
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const deletionStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const listingsBeforeReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionsBeforeReload = new MemoryProductDeletionOutbox(
+      deletionStorage
+    )
+    const deletionAttempts: string[] = []
+    let signedBundle: SignedProductWriteBundle | null = null
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+    const initial = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: ["root", "variation"].map((dTag) => ({
+          product: makeProduct(dTag),
+          dTag,
+          fulfillmentIntent: { kind: "coordinate_after_order" as const },
+        })),
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "a".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+            sourceRelayUrls: [],
+          },
+        ]),
+        onSignedLocal: async (bundle) => {
+          signedBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingsBeforeReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ relayUrl, signedEvent }) => {
+            const dTag = signedEvent.tags.find(([name]) => name === "d")?.[1]
+            return {
+              status:
+                (relayUrl === firstRelayUrl && dTag === "root") ||
+                (relayUrl === secondRelayUrl && dTag === "variation")
+                  ? ("acked" as const)
+                  : relayUrl === firstRelayUrl
+                    ? ("timed_out" as const)
+                    : ("rejected" as const),
+            }
+          },
+        },
+        deletionDeliveryOptions: {
+          repository: deletionsBeforeReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ signedEvent }) => {
+            deletionAttempts.push(signedEvent.id)
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget(firstRelayUrl),
+          personalListingTarget(secondRelayUrl),
+        ],
+      }
+    )
+    if (!signedBundle) throw new Error("Expected a signed mixed mutation")
+    const listingJobId = signedBundle.productListingDeliveryJobId
+    const deletionJobId = signedBundle.deletionDeliveryJobId
+    if (!listingJobId || !deletionJobId) {
+      throw new Error("Expected reciprocal durable jobs")
+    }
+
+    expect(initial.successfulRelayUrls).toEqual([])
+    expect(deletionAttempts).toEqual([])
+    expect(
+      (await deletionsBeforeReload.get(deletionJobId))?.deliveryAttemptCount
+    ).toBe(0)
+
+    const listingsAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionsAfterReload = new MemoryProductDeletionOutbox(
+      deletionStorage
+    )
+    const retryOptions = {
+      repository: deletionsAfterReload,
+      getCompanionListingJob: (jobId: string) => listingsAfterReload.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({
+        signedEvent,
+      }: {
+        signedEvent: SignedPublicNostrEvent
+      }) => {
+        deletionAttempts.push(signedEvent.id)
+        return { status: "acked" as const }
+      },
+    }
+    await deliverQueuedProductDeletion(deletionJobId, retryOptions)
+    await resumePendingProductDeletionDeliveries(retryOptions)
+    expect(deletionAttempts).toEqual([])
+    expect(
+      (await deletionsAfterReload.get(deletionJobId))?.deliveryAttemptCount
+    ).toBe(0)
+
+    await resumePendingProductListingDeliveries({
+      repository: listingsAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ relayUrl, signedEvent }) => {
+        const dTag = signedEvent.tags.find(([name]) => name === "d")?.[1]
+        expect(relayUrl).toBe(firstRelayUrl)
+        expect(dTag).toBe("variation")
+        return { status: "acked" }
+      },
+    })
+    const listingAfterRetry = await listingsAfterReload.get(listingJobId)
+    expect(listingAfterRetry?.state).toBe("delivered")
+    expect(
+      listingAfterRetry?.signedEvents.every((event) =>
+        listingAfterRetry.relayDelivery.some(
+          (delivery) =>
+            delivery.relayUrl === firstRelayUrl &&
+            delivery.eventId === event.id &&
+            delivery.status === "acked"
+        )
+      )
+    ).toBe(true)
+
+    await resumePendingProductDeletionDeliveries(retryOptions)
+    expect(deletionAttempts.length).toBeGreaterThan(0)
+    expect(deletionAttempts.every((id) => id === deletionJobId)).toBe(true)
+    expect((await deletionsAfterReload.get(deletionJobId))?.state).toBe(
+      "delivered"
+    )
+  })
+
+  it("offers the original signed deletion for retry when a mixed listing ACKs but deletion is rejected", async () => {
+    const relayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]!
+    const listingRepository = new MemoryProductListingOutbox()
+    const deletionRepository = new MemoryProductDeletionOutbox()
+    const signerDelegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let signerRequests = 0
+    setSigner({
+      user: () => signerDelegate.user(),
+      sign: async (event: NostrEvent) => {
+        signerRequests += 1
+        return await signerDelegate.sign(event)
+      },
+    } as NDKSigner)
+    let signedBundle: SignedProductWriteBundle | null = null
+    const sentDeletionBytes: string[] = []
+    const initial = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("accepted-replacement"),
+            dTag: "accepted-replacement",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "c".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+            sourceRelayUrls: [],
+          },
+        ]),
+        onSignedLocal: async (bundle) => {
+          signedBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingRepository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => ({ status: "acked" }),
+        },
+        deletionDeliveryOptions: {
+          repository: deletionRepository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ signedEvent }) => {
+            sentDeletionBytes.push(JSON.stringify(signedEvent))
+            return { status: "rejected" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget(relayUrl),
+        ],
+      }
+    )
+    if (!signedBundle?.deletionDeliveryJobId) {
+      throw new Error("Expected the signed companion deletion")
+    }
+    const deletionId = signedBundle.deletionDeliveryJobId
+    const signedDeletion = signedBundle.events.find(
+      (event) => event.kind === EVENT_KINDS.DELETION
+    )
+    expect(signedDeletion).toBeDefined()
+    expect(
+      (await listingRepository.get(signedBundle.productListingDeliveryJobId!))
+        ?.state
+    ).toBe("delivered")
+    expect((await deletionRepository.get(deletionId))?.state).toBe("partial")
+
+    const previousPublishNotice = buildProductDeliveryNotice("publish", {
+      ...initial,
+      successfulRelayUrls: [relayUrl],
+      failedRelayUrls: [],
+      rejectedRelayUrls: [],
+    })
+    const outcome = resolveProductWriteDeliveryNotice(
+      initial,
+      previousPublishNotice
+    )
+    expect(outcome.notice.action).toBe("delete")
+    expect(outcome.notice.state).toBe("retry_needed")
+    expect(outcome.notice.detail).toContain("Use Retry delivery")
+    expect(outcome.notice.successfulRelayUrls).toEqual([])
+    expect(outcome.retryDeletionJobId).toBe(deletionId)
+    expect(sentDeletionBytes.length).toBeGreaterThan(0)
+    expect(JSON.parse(sentDeletionBytes[0]!)).toEqual(
+      signedDeletion!.rawEvent()
+    )
+    expect(
+      sentDeletionBytes.every((bytes) => bytes === sentDeletionBytes[0])
+    ).toBe(true)
+    const initialSendCount = sentDeletionBytes.length
+    const requestsBeforeRetry = signerRequests
+
+    await deliverQueuedProductDeletion(deletionId, {
+      repository: deletionRepository,
+      getCompanionListingJob: (jobId) => listingRepository.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        sentDeletionBytes.push(JSON.stringify(signedEvent))
+        return { status: "acked" }
+      },
+    })
+    expect(sentDeletionBytes.length).toBeGreaterThan(initialSendCount)
+    expect(
+      sentDeletionBytes.every((bytes) => bytes === sentDeletionBytes[0])
+    ).toBe(true)
+    expect(signerRequests).toBe(requestsBeforeRetry)
+    expect((await deletionRepository.get(deletionId))?.state).toBe("delivered")
+  })
+
+  it("never attempts a mixed deletion after every replacement relay rejects the listing", async () => {
+    const relayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]!
+    const secondRelayUrl = "wss://relay.nostr.net"
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const deletionStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const listingRepository = new MemoryProductListingOutbox(listingStorage)
+    const deletionRepository = new MemoryProductDeletionOutbox(deletionStorage)
+    let signedBundle: SignedProductWriteBundle | null = null
+    let deletionAttempts = 0
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+    const initial = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("rejected-replacement"),
+            dTag: "rejected-replacement",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "c".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+            sourceRelayUrls: [],
+          },
+        ]),
+        onSignedLocal: async (bundle) => {
+          signedBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingRepository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => ({ status: "rejected" }),
+        },
+        deletionDeliveryOptions: {
+          repository: deletionRepository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => {
+            deletionAttempts += 1
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget(relayUrl),
+          personalListingTarget(secondRelayUrl),
+        ],
+      }
+    )
+    if (!signedBundle) throw new Error("Expected a signed mixed mutation")
+    const listingJobId = signedBundle.productListingDeliveryJobId
+    const deletionJobId = signedBundle.deletionDeliveryJobId
+    if (!listingJobId || !deletionJobId) {
+      throw new Error("Expected reciprocal durable jobs")
+    }
+
+    expect(initial.successfulRelayUrls).toEqual([])
+    const rejectedListing = await listingRepository.get(listingJobId)
+    expect(buildProductDeliveryNotice("publish", initial).state).toBe(
+      "rejected"
+    )
+    expect(rejectedListing?.state).toBe("failed")
+    expect(rejectedListing?.relayDelivery).toHaveLength(2)
+    expect(
+      rejectedListing?.relayDelivery.every(
+        (delivery) => delivery.status === "rejected"
+      )
+    ).toBe(true)
+    expect(deletionAttempts).toBe(0)
+    expect((await deletionRepository.get(deletionJobId))?.state).toBe("pending")
+    expect(
+      await getPendingProductDeletionDeliveries({
+        repository: deletionRepository,
+        getCompanionListingJob: (jobId) => listingRepository.get(jobId),
+      })
+    ).toEqual([])
+
+    const listingsAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionsAfterReload = new MemoryProductDeletionOutbox(
+      deletionStorage
+    )
+    const retryOptions = {
+      repository: deletionsAfterReload,
+      getCompanionListingJob: (jobId: string) => listingsAfterReload.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        deletionAttempts += 1
+        return { status: "acked" as const }
+      },
+    }
+    expect(await getPendingProductDeletionDeliveries(retryOptions)).toEqual([])
+    expect(
+      await getPendingProductDeletionDeliveries({
+        ...retryOptions,
+        dueOnly: true,
+      })
+    ).toEqual([])
+    await deliverQueuedProductDeletion(deletionJobId, retryOptions)
+    await resumePendingProductDeletionDeliveries(retryOptions)
+
+    const deletionAfterRetry = await deletionsAfterReload.get(deletionJobId)
+    expect(deletionAttempts).toBe(0)
+    expect(deletionAfterRetry?.state).toBe("pending")
+    expect(deletionAfterRetry?.deliveryAttemptCount).toBe(0)
+    expect(
+      deletionAfterRetry?.relayDelivery.every(
+        (delivery) => delivery.attemptCount === 0
+      )
+    ).toBe(true)
+
+    // A reload must expose the exact failed local listing and its reciprocal
+    // untouched deletion as one deliberate start-over, not two retries.
+    const rejected = await getRejectedProductListingDeliveries(
+      MERCHANT_PUBKEY,
+      { repository: listingsAfterReload }
+    )
+    const oldListing = rejected[0]
+    if (!oldListing || !deletionAfterRetry) {
+      throw new Error("Expected durable rejected mixed-family evidence")
+    }
+    const currentFamily = {
+      eventId: oldListing.signedEvents[0]!.id,
+      dTag: "rejected-replacement",
+      product: { pubkey: MERCHANT_PUBKEY },
+      variations: [],
+    }
+    expect(
+      getTerminalRejectedListingRecoveryDTags(oldListing, currentFamily)
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        oldListing,
+        { ...currentFamily, eventId: "f".repeat(64) },
+        deletionAfterRetry
+      )
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(oldListing, currentFamily, {
+        ...deletionAfterRetry,
+        companionListingJobId: "different-family",
+      })
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        oldListing,
+        currentFamily,
+        deletionAfterRetry
+      )
+    ).toEqual(["rejected-replacement"])
+    const recoveryTargets = getRejectedMixedDeletionRecoveryTargets(
+      deletionAfterRetry,
+      MERCHANT_PUBKEY
+    )
+    if (!recoveryTargets) throw new Error("Expected signed deletion targets")
+
+    let recoveryBundle: SignedProductWriteBundle | null = null
+    let recoveryDeletionAttempts = 0
+    const recovered = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("rejected-replacement"),
+            dTag: "rejected-replacement",
+            previousEventCreatedAt: oldListing.signedEvents[0]!.created_at,
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        deletions: recoveryTargets,
+        recoveryDeletionEvent: deletionAfterRetry.signedEvent,
+        onSignedLocal: async (bundle) => {
+          recoveryBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingsAfterReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW + 20_000,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => ({ status: "timed_out" }),
+        },
+        deletionDeliveryOptions: {
+          repository: deletionsAfterReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW + 20_000,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => {
+            recoveryDeletionAttempts += 1
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget("wss://relay.repaired.example"),
+        ],
+      }
+    )
+    if (!recoveryBundle) throw new Error("Expected new signed pair")
+    const newListingId = recoveryBundle.productListingDeliveryJobId
+    const newDeletionId = recoveryBundle.deletionDeliveryJobId
+    if (!newListingId || !newDeletionId) {
+      throw new Error("Expected new reciprocal delivery jobs")
+    }
+    expect(newListingId).not.toBe(listingJobId)
+    expect(newDeletionId).not.toBe(deletionJobId)
+    expect(recovered.successfulRelayUrls).toEqual([])
+    expect(recoveryDeletionAttempts).toBe(0)
+    expect((await listingsAfterReload.get(listingJobId))?.state).toBe("failed")
+    expect(
+      (await deletionsAfterReload.get(deletionJobId))?.deliveryAttemptCount
+    ).toBe(0)
+    const newListing = await listingsAfterReload.get(newListingId)
+    const newDeletion = await deletionsAfterReload.get(newDeletionId)
+    expect(newListing?.companionDeletionJobId).toBe(newDeletionId)
+    expect(newDeletion?.companionListingJobId).toBe(newListingId)
+    expect(newDeletion?.signedEvent.created_at).toBe(
+      deletionAfterRetry.signedEvent.created_at
+    )
+    expect(newDeletion?.signedEvent.tags).toContainEqual([
+      "conduit_recovery_attempt",
+      deletionJobId,
+      expect.any(String),
+    ])
+    expect(newDeletion?.deliveryAttemptCount).toBe(0)
+
+    await resumePendingProductListingDeliveries({
+      repository: listingsAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 30_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        expect(signedEvent.id).toBe(newListing?.signedEvents[0]?.id)
+        return { status: "acked" }
+      },
+    })
+    expect((await listingsAfterReload.get(newListingId))?.state).toBe(
+      "delivered"
+    )
+    await resumePendingProductDeletionDeliveries({
+      repository: deletionsAfterReload,
+      getCompanionListingJob: (jobId) => listingsAfterReload.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 30_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        expect(signedEvent.id).toBe(newDeletionId)
+        recoveryDeletionAttempts += 1
+        return { status: "acked" }
+      },
+    })
+    expect(recoveryDeletionAttempts).toBeGreaterThan(0)
+    expect((await deletionsAfterReload.get(newDeletionId))?.state).toBe(
+      "delivered"
+    )
+    expect(
+      (await deletionsAfterReload.get(deletionJobId))?.deliveryAttemptCount
+    ).toBe(0)
+  })
+
+  it("recovers a crossed ACK/reject family without releasing its linked deletion before a common ACK", async () => {
+    const firstRelayUrl = "wss://relay.damus.io"
+    const secondRelayUrl = "wss://relay.nostr.net"
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const deletionStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const listings = new MemoryProductListingOutbox(listingStorage)
+    const deletions = new MemoryProductDeletionOutbox(deletionStorage)
+    const dTags = ["cross-root", "cross-variation"]
+    let initialBundle: SignedProductWriteBundle | null = null
+    let deletionAttempts = 0
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+    await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: dTags.map((dTag) => ({
+          product: makeProduct(dTag),
+          dTag,
+          fulfillmentIntent: { kind: "coordinate_after_order" as const },
+        })),
+        deletions: buildProductRemovalDeletionTargets([
+          {
+            eventId: "c".repeat(64),
+            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+            sourceRelayUrls: [],
+          },
+        ]),
+        onSignedLocal: async (bundle) => {
+          initialBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listings,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ relayUrl, signedEvent }) => {
+            const dTag = signedEvent.tags.find(([name]) => name === "d")?.[1]
+            return {
+              status:
+                (relayUrl === firstRelayUrl && dTag === dTags[0]) ||
+                (relayUrl === secondRelayUrl && dTag === dTags[1])
+                  ? ("acked" as const)
+                  : ("rejected" as const),
+            }
+          },
+        },
+        deletionDeliveryOptions: {
+          repository: deletions,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => {
+            deletionAttempts += 1
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget(firstRelayUrl),
+          personalListingTarget(secondRelayUrl),
+        ],
+      }
+    )
+    if (!initialBundle) throw new Error("Expected signed mixed mutation")
+    const oldListingId = initialBundle.productListingDeliveryJobId
+    const oldDeletionId = initialBundle.deletionDeliveryJobId
+    if (!oldListingId || !oldDeletionId) {
+      throw new Error("Expected reciprocal durable jobs")
+    }
+
+    const listingsAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionsAfterReload = new MemoryProductDeletionOutbox(
+      deletionStorage
+    )
+    const oldListing = await listingsAfterReload.get(oldListingId)
+    const oldDeletion = await deletionsAfterReload.get(oldDeletionId)
+    if (!oldListing || !oldDeletion) {
+      throw new Error("Expected durable crossed-family evidence")
+    }
+    expect(oldListing.state).toBe("failed")
+    expect(oldListing.relayDelivery).toHaveLength(4)
+    expect(
+      oldListing.relayDelivery.filter((pair) => pair.status === "acked")
+    ).toHaveLength(2)
+    expect(
+      oldListing.relayDelivery.filter((pair) => pair.status === "rejected")
+    ).toHaveLength(2)
+    expect(oldDeletion.state).toBe("pending")
+    expect(oldDeletion.deliveryAttemptCount).toBe(0)
+    expect(deletionAttempts).toBe(0)
+
+    const oldDeletionRetryOptions = {
+      repository: deletionsAfterReload,
+      getCompanionListingJob: (jobId: string) => listingsAfterReload.get(jobId),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        deletionAttempts += 1
+        return { status: "acked" as const }
+      },
+    }
+    await deliverQueuedProductDeletion(oldDeletionId, oldDeletionRetryOptions)
+    await resumePendingProductDeletionDeliveries(oldDeletionRetryOptions)
+    expect(deletionAttempts).toBe(0)
+
+    const rejected = await getRejectedProductListingDeliveries(
+      MERCHANT_PUBKEY,
+      { repository: listingsAfterReload }
+    )
+    expect(rejected.map((job) => job.id)).toContain(oldListingId)
+    const signedByDTag = new Map(
+      oldListing.signedEvents.map((event) => [
+        event.tags.find(([name]) => name === "d")?.[1],
+        event,
+      ])
+    )
+    const rootEvent = signedByDTag.get(dTags[0])
+    const variationEvent = signedByDTag.get(dTags[1])
+    if (!rootEvent || !variationEvent) {
+      throw new Error("Expected signed root and variation")
+    }
+    const currentFamily = {
+      eventId: rootEvent.id,
+      dTag: dTags[0]!,
+      product: { pubkey: MERCHANT_PUBKEY },
+      variations: [
+        {
+          eventId: variationEvent.id,
+          dTag: dTags[1]!,
+          product: { pubkey: MERCHANT_PUBKEY },
+        },
+      ],
+    }
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        oldListing,
+        currentFamily,
+        oldDeletion
+      )
+    ).toEqual(dTags)
+    expect(
+      getTerminalRejectedListingRecoveryDTags(oldListing, currentFamily)
+    ).toBeNull()
+    expect(
+      getTerminalRejectedListingRecoveryDTags(
+        oldListing,
+        {
+          ...currentFamily,
+          variations: [
+            { ...currentFamily.variations[0]!, eventId: "f".repeat(64) },
+          ],
+        },
+        oldDeletion
+      )
+    ).toBeNull()
+    const recoveryTargets = getRejectedMixedDeletionRecoveryTargets(
+      oldDeletion,
+      MERCHANT_PUBKEY
+    )
+    if (!recoveryTargets) throw new Error("Expected signed deletion targets")
+
+    let recoveryBundle: SignedProductWriteBundle | null = null
+    let recoveryDeletionAttempts = 0
+    await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: dTags.map((dTag) => ({
+          product: makeProduct(dTag),
+          dTag,
+          previousEventCreatedAt: signedByDTag.get(dTag)!.created_at,
+          fulfillmentIntent: { kind: "coordinate_after_order" as const },
+        })),
+        deletions: recoveryTargets,
+        recoveryDeletionEvent: oldDeletion.signedEvent,
+        onSignedLocal: async (bundle) => {
+          recoveryBundle = bundle
+        },
+        productListingDeliveryOptions: {
+          repository: listingsAfterReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW + 20_000,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async ({ signedEvent }) => ({
+            status:
+              signedEvent.tags.find(([name]) => name === "d")?.[1] === dTags[0]
+                ? ("acked" as const)
+                : ("timed_out" as const),
+          }),
+        },
+        deletionDeliveryOptions: {
+          repository: deletionsAfterReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW + 20_000,
+          retryDelayMs: 1,
+          restoreLocalEvidence: async () => {},
+          publisher: async () => {
+            recoveryDeletionAttempts += 1
+            return { status: "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget("wss://relay.repaired.example"),
+        ],
+      }
+    )
+    if (!recoveryBundle) throw new Error("Expected new signed pair")
+    const newListingId = recoveryBundle.productListingDeliveryJobId
+    const newDeletionId = recoveryBundle.deletionDeliveryJobId
+    if (!newListingId || !newDeletionId) {
+      throw new Error("Expected new reciprocal durable jobs")
+    }
+    expect(newListingId).not.toBe(oldListingId)
+    expect(newDeletionId).not.toBe(oldDeletionId)
+    const newListing = await listingsAfterReload.get(newListingId)
+    const newDeletion = await deletionsAfterReload.get(newDeletionId)
+    expect(newListing?.signedEvents.map((event) => event.id)).not.toEqual(
+      oldListing.signedEvents.map((event) => event.id)
+    )
+    expect(newListing?.companionDeletionJobId).toBe(newDeletionId)
+    expect(newDeletion?.companionListingJobId).toBe(newListingId)
+    expect(newDeletion?.signedEvent.created_at).toBe(
+      oldDeletion.signedEvent.created_at
+    )
+    expect(newDeletion?.state).toBe("pending")
+    expect(newDeletion?.deliveryAttemptCount).toBe(0)
+    expect(recoveryDeletionAttempts).toBe(0)
+    await deliverQueuedProductDeletion(newDeletionId, {
+      ...oldDeletionRetryOptions,
+      now: () => NOW + 21_000,
+    })
+    expect(deletionAttempts).toBe(0)
+    expect(
+      (await deletionsAfterReload.get(newDeletionId))?.deliveryAttemptCount
+    ).toBe(0)
+
+    await resumePendingProductListingDeliveries({
+      repository: listingsAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 30_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        expect(signedEvent.id).toBe(
+          newListing?.signedEvents.find(
+            (event) =>
+              event.tags.find(([name]) => name === "d")?.[1] === dTags[1]
+          )?.id
+        )
+        return { status: "acked" }
+      },
+    })
+    expect((await listingsAfterReload.get(newListingId))?.state).toBe(
+      "delivered"
+    )
+    await resumePendingProductDeletionDeliveries({
+      ...oldDeletionRetryOptions,
+      now: () => NOW + 30_000,
+      publisher: async ({ signedEvent }) => {
+        expect(signedEvent.id).toBe(newDeletionId)
+        recoveryDeletionAttempts += 1
+        return { status: "acked" as const }
+      },
+    })
+    expect(recoveryDeletionAttempts).toBeGreaterThan(0)
+    expect((await deletionsAfterReload.get(newDeletionId))?.state).toBe(
+      "delivered"
+    )
+    expect(
+      (await deletionsAfterReload.get(oldDeletionId))?.deliveryAttemptCount
+    ).toBe(0)
+  })
+
+  it("resumes the exact signed product family after partial relay delivery and reload", async () => {
+    const firstRelayUrl = "wss://relay.damus.io"
+    const secondRelayUrl = "wss://relay.nostr.net"
+    const durableStorage = new Map<string, ProductListingDeliveryJob>()
+    const beforeReload = new MemoryProductListingOutbox(durableStorage)
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let signRequests = 0
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        return await delegate.sign(event)
+      },
+    } as NDKSigner)
+
+    let signedBundle: SignedProductWriteBundle | null = null
+    const initialAttempts: Array<{ eventId: string; relayUrl: string }> = []
+    const initial = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: ["root", "variation"].map((dTag) => ({
+          product: makeProduct(dTag),
+          dTag,
+          fulfillmentIntent: { kind: "coordinate_after_order" as const },
+        })),
+        onSignedLocal: async (bundle) => {
+          signedBundle = bundle
+          const jobId = bundle.productListingDeliveryJobId
+          expect(jobId).toBeString()
+          // The exact family is durable but relay-ineligible until the
+          // caller-specific local commit succeeds.
+          expect(await beforeReload.get(jobId!)).toMatchObject({
+            id: jobId,
+            readyForDelivery: false,
+            signedEvents: bundle.events.map((event) => event.rawEvent()),
+          })
+          expect(initialAttempts).toEqual([])
+        },
+        productListingDeliveryOptions: {
+          repository: beforeReload,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          now: () => NOW,
+          retryDelayMs: 1,
+          publisher: async ({ relayUrl, signedEvent }) => {
+            initialAttempts.push({ eventId: signedEvent.id, relayUrl })
+            const dTag = signedEvent.tags.find(([name]) => name === "d")?.[1]
+            if (relayUrl === firstRelayUrl) {
+              return { status: dTag === "root" ? "acked" : "timed_out" }
+            }
+            return { status: dTag === "root" ? "rejected" : "acked" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget(firstRelayUrl),
+          personalListingTarget(secondRelayUrl),
+        ],
+      }
+    )
+    if (!signedBundle) throw new Error("Expected a signed product bundle")
+    const jobId = signedBundle.productListingDeliveryJobId
+    if (!jobId) throw new Error("Expected a durable listing delivery job")
+    const staged = await beforeReload.get(jobId)
+    const exactSignedEvents = structuredClone(staged?.signedEvents ?? [])
+
+    expect(signRequests).toBe(2)
+    expect(initial.successfulRelayUrls).toEqual([])
+    expect(staged?.state).toBe("partial")
+    expect(staged?.relayDelivery).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventId: exactSignedEvents[0]?.id,
+          relayUrl: firstRelayUrl,
+          status: "acked",
+        }),
+        expect.objectContaining({
+          eventId: exactSignedEvents[1]?.id,
+          relayUrl: firstRelayUrl,
+          status: "timed_out",
+        }),
+        expect.objectContaining({
+          eventId: exactSignedEvents[0]?.id,
+          relayUrl: secondRelayUrl,
+          status: "rejected",
+        }),
+        expect.objectContaining({
+          eventId: exactSignedEvents[1]?.id,
+          relayUrl: secondRelayUrl,
+          status: "acked",
+        }),
+      ])
+    )
+    expect(
+      cachedProducts.find((product) => product.dTag === "root")?.sourceRelayUrls
+    ).toEqual([firstRelayUrl])
+    expect(
+      cachedProducts.find((product) => product.dTag === "variation")
+        ?.sourceRelayUrls
+    ).toEqual([secondRelayUrl])
+
+    const afterReload = new MemoryProductListingOutbox(durableStorage)
+    const resumed: Array<{ event: NostrEvent; relayUrl: string }> = []
+    await resumePendingProductListingDeliveries(
+      {
+        repository: afterReload,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        now: () => NOW + 10_000,
+        retryDelayMs: 1,
+        publisher: async ({ relayUrl, signedEvent }) => {
+          resumed.push({ event: signedEvent, relayUrl })
+          return { status: "acked" }
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          {
+            relayUrl: CANONICAL_APP_BACKPLANE_RELAYS[0]!,
+            ownerSelected: false,
+            appRelay: true,
+          },
+        ],
+      }
+    )
+
+    const delivered = await afterReload.get(jobId)
+    expect(signRequests).toBe(2)
+    expect(resumed).toEqual([
+      { event: exactSignedEvents[1], relayUrl: firstRelayUrl },
+    ])
+    expect(delivered?.signedEvents).toEqual(exactSignedEvents)
+    expect(delivered?.relayTargets).toEqual(staged?.relayTargets)
+    expect(delivered?.state).toBe("delivered")
+    expect(delivered?.relayDelivery).toContainEqual(
+      expect.objectContaining({
+        eventId: exactSignedEvents[0]?.id,
+        relayUrl: secondRelayUrl,
+        status: "rejected",
+      })
+    )
+    const resumedVariation = cachedProducts.find(
+      (product) => product.dTag === "variation"
+    )
+    expect(resumedVariation?.sourceRelayUrls).toEqual([
+      firstRelayUrl,
+      secondRelayUrl,
+    ])
+    expect(
+      planProductDeletionRelays({
+        currentWriteRelayUrls: [],
+        sourceRelayUrls: resumedVariation?.sourceRelayUrls ?? [],
+        canonicalConduitRelayUrl: CANONICAL_APP_BACKPLANE_RELAYS[0]!,
+      }).map(({ relayUrl }) => relayUrl)
+    ).toEqual(expect.arrayContaining([firstRelayUrl, secondRelayUrl]))
+  })
+
+  it("does not let a stale timeout overwrite another tab's relay ACK", async () => {
+    const relayUrl = "wss://relay.example"
+    const storage = new Map<string, ProductListingDeliveryJob>()
+    const firstTab = new MemoryProductListingOutbox(storage)
+    const secondTab = new MemoryProductListingOutbox(storage)
+    const signedEvent = makeSignedEvent(EVENT_KINDS.PRODUCT)
+    const staged = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [signedEvent],
+        relayTargets: [personalListingTarget(relayUrl)],
+      },
+      { repository: firstTab, now: () => NOW }
+    )
+    let releaseFirstAttempt = () => {}
+    let firstAttemptStarted = () => {}
+    const firstAttemptIsStarted = new Promise<void>((resolve) => {
+      firstAttemptStarted = resolve
+    })
+    const releaseFirstAttemptPromise = new Promise<void>((resolve) => {
+      releaseFirstAttempt = resolve
+    })
+
+    const staleTimeout = deliverProductListingJob(
+      staged.id,
+      async () => {
+        firstAttemptStarted()
+        await releaseFirstAttemptPromise
+        return { status: "timed_out" }
+      },
+      {
+        repository: firstTab,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        now: () => NOW,
+        retryDelayMs: 1,
+      }
+    )
+    await firstAttemptIsStarted
+    await deliverProductListingJob(
+      staged.id,
+      async () => ({ status: "acked" }),
+      {
+        repository: secondTab,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        now: () => NOW + 1,
+        retryDelayMs: 1,
+      }
+    )
+    releaseFirstAttempt()
+    await staleTimeout
+
+    const delivered = await firstTab.get(staged.id)
+    expect(delivered?.state).toBe("delivered")
+    expect(delivered?.relayDelivery).toContainEqual(
+      expect.objectContaining({
+        eventId: signedEvent.id,
+        relayUrl,
+        status: "acked",
+      })
+    )
+  })
+
+  it("keeps a shipping-dependent product off relays until its exact shipping ACK", async () => {
+    const relayUrl = "wss://relay.example"
+    const otherRelayUrl = "wss://other-relay.example"
+    const repository = new MemoryProductListingOutbox()
+    const shippingEvent = makeSignedEvent(EVENT_KINDS.SHIPPING_OPTION)
+    const signedProduct = makeSignedEvent(EVENT_KINDS.PRODUCT)
+    const staged = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [signedProduct],
+        relayTargets: [
+          personalListingTarget(relayUrl),
+          personalListingTarget(otherRelayUrl),
+        ],
+        prerequisiteShippingEventIds: [shippingEvent.id],
+      },
+      { repository, now: () => NOW }
+    )
+    expect(staged.readyForDelivery).toBe(false)
+    await expect(
+      persistProductListingDelivery(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          signedEvents: [signedProduct],
+          relayTargets: [
+            personalListingTarget(relayUrl),
+            personalListingTarget(otherRelayUrl),
+          ],
+        },
+        { repository, now: () => NOW }
+      )
+    ).rejects.toThrow("different immutable intent")
+    let acknowledged = false
+    let publishes = 0
+    const options = {
+      repository,
+      now: () => NOW,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      isShippingPrerequisiteAcknowledged: async (
+        eventId: string,
+        _listingJobId: string,
+        targetRelayUrl: string
+      ) =>
+        eventId === shippingEvent.id &&
+        acknowledged &&
+        targetRelayUrl === relayUrl,
+    }
+    await expect(
+      markProductListingDeliveryReady(staged.id, options)
+    ).rejects.toThrow("Signed shipping prerequisite is not acknowledged")
+    expect((await repository.get(staged.id))?.readyForDelivery).toBe(false)
+    await repository.update(staged.id, (current) => ({
+      ...current,
+      readyForDelivery: true,
+    }))
+    await expect(
+      deliverProductListingJob(
+        staged.id,
+        async () => {
+          publishes++
+          return { status: "acked" }
+        },
+        options
+      )
+    ).rejects.toThrow("Signed shipping prerequisite is not acknowledged")
+    expect(publishes).toBe(0)
+
+    acknowledged = true
+    await deliverProductListingJob(
+      staged.id,
+      async () => {
+        publishes++
+        return { status: "acked" }
+      },
+      options
+    )
+    expect(publishes).toBe(1)
+    expect(
+      (await repository.get(staged.id))?.relayDelivery.find(
+        (delivery) => delivery.relayUrl === otherRelayUrl
+      )?.status
+    ).toBe("pending")
+  })
+
+  it("lets a durable relay ACK upgrade a concurrent rejection", async () => {
+    const relayUrl = "wss://relay.example"
+    const storage = new Map<string, ProductListingDeliveryJob>()
+    const firstTab = new MemoryProductListingOutbox(storage)
+    const secondTab = new MemoryProductListingOutbox(storage)
+    const signedEvent = makeSignedEvent(EVENT_KINDS.PRODUCT)
+    const staged = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [signedEvent],
+        relayTargets: [personalListingTarget(relayUrl)],
+      },
+      { repository: firstTab, now: () => NOW }
+    )
+    let releaseAck = () => {}
+    let ackStarted = () => {}
+    const ackIsStarted = new Promise<void>((resolve) => {
+      ackStarted = resolve
+    })
+    const releaseAckPromise = new Promise<void>((resolve) => {
+      releaseAck = resolve
+    })
+
+    const delayedAck = deliverProductListingJob(
+      staged.id,
+      async () => {
+        ackStarted()
+        await releaseAckPromise
+        return { status: "acked" }
+      },
+      {
+        repository: firstTab,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        now: () => NOW + 1,
+        retryDelayMs: 1,
+      }
+    )
+    await ackIsStarted
+    await deliverProductListingJob(
+      staged.id,
+      async () => ({ status: "rejected" }),
+      {
+        repository: secondTab,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        now: () => NOW,
+        retryDelayMs: 1,
+      }
+    )
+    releaseAck()
+    await delayedAck
+
+    const delivered = await firstTab.get(staged.id)
+    expect(delivered?.state).toBe("delivered")
+    expect(delivered?.relayDelivery).toContainEqual(
+      expect.objectContaining({
+        eventId: signedEvent.id,
+        relayUrl,
+        status: "acked",
+      })
+    )
+  })
+
+  it("completes once one relay acknowledges the entire signed family", async () => {
+    const commonRelayUrl = "wss://relay.damus.io"
+    const timedOutRelayUrl = "wss://relay.nostr.net"
+    const repository = new MemoryProductListingOutbox()
+    const signedEvents = ["root", "variation"].map((dTag) =>
+      makeSignedProductEventWithShippingTags({
+        dTag: `common-${dTag}`,
+        shippingTags: [],
+      }).rawEvent()
+    )
+    const staged = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents,
+        relayTargets: [
+          personalListingTarget(commonRelayUrl),
+          personalListingTarget(timedOutRelayUrl),
+        ],
+      },
+      { repository, now: () => NOW, retryDelayMs: 1 }
+    )
+    let attempts = 0
+
+    const delivered = await deliverProductListingJob(
+      staged.id,
+      async ({ relayUrl }) => {
+        attempts += 1
+        return {
+          status:
+            relayUrl === commonRelayUrl
+              ? ("acked" as const)
+              : ("timed_out" as const),
+        }
+      },
+      {
+        repository,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        now: () => NOW,
+        retryDelayMs: 1,
+      }
+    )
+
+    expect(delivered.state).toBe("delivered")
+    expect(attempts).toBe(4)
+    await resumePendingProductListingDeliveries({
+      repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        attempts += 1
+        return { status: "acked" }
+      },
+    })
+    expect(attempts).toBe(4)
+  })
+
+  it("reports an all-rejected family as terminal and does not retry it", async () => {
+    const relayUrl = "wss://relay.example"
+    const repository = new MemoryProductListingOutbox()
+    const staged = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [
+          makeSignedProductEventWithShippingTags({
+            dTag: "terminal-rejection",
+            shippingTags: [],
+          }).rawEvent(),
+        ],
+        relayTargets: [personalListingTarget(relayUrl)],
+      },
+      { repository, now: () => NOW, retryDelayMs: 1 }
+    )
+    let attempts = 0
+
+    const result = await deliverQueuedProductListings(staged.id, {
+      repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        attempts += 1
+        return { status: "rejected" }
+      },
+    })
+
+    expect(result.failedRelayUrls).toEqual([relayUrl])
+    expect(result.rejectedRelayUrls).toEqual([relayUrl])
+    expect((await repository.get(staged.id))?.state).toBe("failed")
+    await resumePendingProductListingDeliveries({
+      repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        attempts += 1
+        return { status: "acked" }
+      },
+    })
+    expect(attempts).toBe(1)
+  })
+
+  it("reports an ineligible persisted target as pending instead of delivered", async () => {
+    const relayUrl = "ws://127.0.0.1:4799"
+    const repository = new MemoryProductListingOutbox()
+    const staged = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [makeSignedEvent(EVENT_KINDS.PRODUCT)],
+        relayTargets: [personalListingTarget(relayUrl, true)],
+      },
+      { repository, now: () => NOW }
+    )
+
+    const result = await deliverQueuedProductListings(staged.id, {
+      repository,
+      authenticatedPubkey: null,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        throw new Error("ineligible target must not reach the publisher")
+      },
+    })
+
+    expect(result.attemptedRelayUrls).toEqual([])
+    expect(result.successfulRelayUrls).toEqual([])
+    expect(result.failedRelayUrls).toEqual([relayUrl])
+    expect(
+      productListingJobToPublishResult((await repository.get(staged.id))!)
+    ).toMatchObject({ failedRelayUrls: [relayUrl] })
+  })
+
+  it("migrates a pre-outbox retry before publishing its exact signed event", async () => {
+    const relayUrl = "wss://relay.example"
+    const repository = new MemoryProductListingOutbox()
+    const signedEvent = makeSignedProductEventWithShippingTags({
+      dTag: "legacy-pending-stock",
+      shippingTags: [],
+    }).rawEvent()
+    let planCalls = 0
+    let relayAttempts = 0
+
+    const queued = await ensureSignedProductListingsQueued(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [signedEvent],
+        authenticatedPubkey: MERCHANT_PUBKEY,
+      },
+      { repository, now: () => NOW },
+      {
+        planRelayTargets: async () => {
+          planCalls += 1
+          return [personalListingTarget(relayUrl)]
+        },
+      }
+    )
+
+    expect(planCalls).toBe(1)
+    expect(relayAttempts).toBe(0)
+    expect(queued.signedEvents).toEqual([signedEvent])
+    expect(queued.relayTargets).toEqual([personalListingTarget(relayUrl)])
+
+    await deliverQueuedProductListings(queued.id, {
+      repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent: attemptedEvent }) => {
+        relayAttempts += 1
+        expect(attemptedEvent).toEqual(signedEvent)
+        return { status: "acked" }
+      },
+    })
+    expect(relayAttempts).toBe(1)
+
+    const existing = await ensureSignedProductListingsQueued(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [signedEvent],
+      },
+      { repository },
+      {
+        planRelayTargets: async () => {
+          planCalls += 1
+          return [personalListingTarget("wss://different.example")]
+        },
+      }
+    )
+    expect(existing.relayTargets).toEqual(queued.relayTargets)
+    expect(planCalls).toBe(1)
+  })
+
+  it("does not make a relay ACK terminal before its provenance is durable", async () => {
+    const relayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]!
+    const repository = new MemoryProductListingOutbox()
+    const signedEvent = makeSignedProductEventWithShippingTags({
+      dTag: "durable-ack-provenance",
+      shippingTags: [],
+    }).rawEvent()
+    const cachedRows: CachedProduct[] = []
+    let failCacheWrite = true
+    let relayAttempts = 0
+    __setCommerceTestOverrides({
+      getCachedProducts: async () => cachedRows,
+      putCachedProducts: async (rows) => {
+        if (failCacheWrite) throw new Error("product cache unavailable")
+        cachedRows.push(...rows)
+      },
+    })
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async () => {
+        relayAttempts += 1
+        return "acked"
+      },
+    })
+    const queued = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [signedEvent],
+        relayTargets: [personalListingTarget(relayUrl)],
+      },
+      { repository, now: () => NOW, retryDelayMs: 1 }
+    )
+
+    const first = await deliverQueuedProductListings(queued.id, {
+      repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+    })
+
+    expect(first.successfulRelayUrls).toEqual([])
+    expect((await repository.get(queued.id))?.state).toBe("partial")
+    expect(relayAttempts).toBe(1)
+
+    failCacheWrite = false
+    const retried = await deliverQueuedProductListings(queued.id, {
+      repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+    })
+
+    expect(retried.successfulRelayUrls).toEqual([relayUrl])
+    expect((await repository.get(queued.id))?.state).toBe("delivered")
+    expect(relayAttempts).toBe(2)
+    expect(
+      cachedRows.find((row) => row.dTag === "durable-ack-provenance")
+        ?.sourceRelayUrls
+    ).toEqual([relayUrl])
+  })
+
+  it("starts a later family while a larger family still has delayed pairs", async () => {
+    const relayUrl = "wss://relay.example"
+    const repository = new MemoryProductListingOutbox()
+    const slowEvents = Array.from({ length: 8 }, (_, index) =>
+      makeSignedProductEventWithShippingTags({
+        dTag: `slow-${index}`,
+        shippingTags: [],
+      }).rawEvent()
+    )
+    const laterEvent = makeSignedProductEventWithShippingTags({
+      dTag: "later",
+      shippingTags: [],
+    }).rawEvent()
+    await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: slowEvents,
+        relayTargets: [personalListingTarget(relayUrl)],
+      },
+      { repository, now: () => NOW }
+    )
+    await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [laterEvent],
+        relayTargets: [personalListingTarget(relayUrl)],
+      },
+      { repository, now: () => NOW + 1 }
+    )
+    let releaseSlow = () => {}
+    const slowRelease = new Promise<void>((resolve) => {
+      releaseSlow = resolve
+    })
+    let laterStarted = false
+    let activeSlowPairs = 0
+    let maximumActiveSlowPairs = 0
+
+    const delivery = resumePendingProductListingDeliveries({
+      repository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        const dTag = signedEvent.tags.find(([name]) => name === "d")?.[1]
+        if (dTag === "later") {
+          laterStarted = true
+          return { status: "acked" }
+        }
+        activeSlowPairs += 1
+        maximumActiveSlowPairs = Math.max(
+          maximumActiveSlowPairs,
+          activeSlowPairs
+        )
+        await slowRelease
+        activeSlowPairs -= 1
+        return { status: "acked" }
+      },
+    })
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    expect(laterStarted).toBe(true)
+    expect(maximumActiveSlowPairs).toBe(6)
+    releaseSlow()
+    await delivery
+  })
+
+  it("keeps both mixed-mutation workers blocked when deletion staging fails", async () => {
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const listingRepository = new MemoryProductListingOutbox(listingStorage)
+    const deletionRepository = new MemoryProductDeletionOutbox()
+    deletionRepository.add = async () => {
+      throw new Error("deletion outbox unavailable")
+    }
+    let listingRelayAttempts = 0
+    let deletionRelayAttempts = 0
+    let onSignedLocalCalls = 0
+    let onDeliveryQueuedCalls = 0
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("mixed-stage-failure"),
+              dTag: "mixed-stage-failure",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          deletions: buildProductRemovalDeletionTargets([
+            {
+              eventId: "d".repeat(64),
+              addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+              sourceRelayUrls: [],
+            },
+          ]),
+          onSignedLocal: async () => {
+            onSignedLocalCalls += 1
+          },
+          onDeliveryQueued: async () => {
+            onDeliveryQueuedCalls += 1
+          },
+          productListingDeliveryOptions: {
+            repository: listingRepository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            publisher: async () => {
+              listingRelayAttempts += 1
+              return { status: "acked" }
+            },
+          },
+          deletionDeliveryOptions: {
+            repository: deletionRepository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            restoreLocalEvidence: async () => {},
+            publisher: async () => {
+              deletionRelayAttempts += 1
+              return { status: "acked" }
+            },
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    const [stagedListing] = Array.from(listingStorage.values())
+    expect(stagedListing?.readyForDelivery).toBe(false)
+    expect(stagedListing?.companionDeletionJobId).toBeString()
+    await resumePendingProductListingDeliveries({
+      repository: new MemoryProductListingOutbox(listingStorage),
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 10_000,
+      retryDelayMs: 1,
+      publisher: async () => {
+        listingRelayAttempts += 1
+        return { status: "acked" }
+      },
+    })
+
+    expect(listingRelayAttempts).toBe(0)
+    expect(deletionRelayAttempts).toBe(0)
+    expect(onSignedLocalCalls).toBe(0)
+    expect(onDeliveryQueuedCalls).toBe(0)
+  })
+
+  it("arms a reciprocal mixed mutation after reloading the staged crash window", async () => {
+    const relayUrl = CANONICAL_APP_BACKPLANE_RELAYS[0]!
+    const listingRepository = new MemoryProductListingOutbox()
+    const deletionRepository = new MemoryProductDeletionOutbox()
+    const signedListing = makeSignedProductEventWithShippingTags({
+      dTag: "crash-window-replacement",
+      shippingTags: [],
+    }).rawEvent()
+    const signedDeletion = makeSignedEvent(EVENT_KINDS.DELETION)
+    const listingJob = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [signedListing],
+        relayTargets: [personalListingTarget(relayUrl)],
+        companionDeletionJobId: signedDeletion.id,
+      },
+      { repository: listingRepository, now: () => NOW }
+    )
+    await persistSignedProductDeletion(
+      {
+        signedEvent: signedDeletion,
+        currentWriteRelayUrls: [relayUrl],
+        sourceRelayUrls: [],
+        companionListingJobId: listingJob.id,
+      },
+      { repository: deletionRepository, now: () => NOW }
+    )
+    const restored: string[] = []
+    let listingAttempts = 0
+    let deletionAttempts = 0
+
+    await Promise.all([
+      resumePendingProductListingDeliveries({
+        repository: listingRepository,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        publisher: async () => {
+          listingAttempts += 1
+          return { status: "acked" }
+        },
+      }),
+      resumePendingProductDeletionDeliveries({
+        repository: deletionRepository,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        getCompanionListingJob: (jobId) => listingRepository.get(jobId),
+        restoreLocalEvidence: async () => {},
+        publisher: async () => {
+          deletionAttempts += 1
+          return { status: "acked" }
+        },
+      }),
+    ])
+
+    expect(listingAttempts).toBe(0)
+    expect(deletionAttempts).toBe(0)
+
+    await resumeStagedProductListingDeliveries({
+      repository: listingRepository,
+      deletionDeliveryOptions: { repository: deletionRepository },
+      restoreLocalListingEvidence: async (job) => {
+        for (const event of job.signedEvents) {
+          await cacheSignedProductListingEvent(new NDKEvent(undefined, event))
+          restored.push(event.id)
+        }
+      },
+      restoreLocalDeletionEvidence: async (event) => {
+        restored.push(event.id)
+      },
+      now: () => NOW + 1,
+    })
+
+    expect(restored).toEqual([signedListing.id, signedDeletion.id])
+    expect((await listingRepository.get(listingJob.id))?.readyForDelivery).toBe(
+      true
+    )
+
+    await Promise.all([
+      resumePendingProductListingDeliveries({
+        repository: listingRepository,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        restoreLocalEvidence: async () => {},
+        publisher: async () => {
+          listingAttempts += 1
+          return { status: "acked" }
+        },
+      }),
+      resumePendingProductDeletionDeliveries({
+        repository: deletionRepository,
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        getCompanionListingJob: (jobId) => listingRepository.get(jobId),
+        restoreLocalEvidence: async () => {},
+        publisher: async () => {
+          deletionAttempts += 1
+          return { status: "acked" }
+        },
+      }),
+    ])
+
+    expect(listingAttempts).toBe(1)
+    expect(deletionAttempts).toBe(0)
+    await resumePendingProductDeletionDeliveries({
+      repository: deletionRepository,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      getCompanionListingJob: (jobId) => listingRepository.get(jobId),
+      restoreLocalEvidence: async () => {},
+      publisher: async () => {
+        deletionAttempts += 1
+        return { status: "acked" }
+      },
+    })
+    expect(deletionAttempts).toBeGreaterThan(0)
+  })
+
+  it("does not restore a staged listing over a competing same-second revision", async () => {
+    const dTag = "staged-competing-tie"
+    const buildSigned = (stock: number) => {
+      const product = { ...makeProduct(dTag), stock }
+      const draft = buildProductListingEventDraft({
+        product,
+        dTag,
+        clientAppId: "merchant",
+      })
+      return finalizeEvent(
+        {
+          kind: draft.kind,
+          created_at: Math.floor(NOW / 1000),
+          content: draft.content,
+          tags: draft.tags,
+        },
+        MERCHANT_SECRET
+      )
+    }
+    const first = buildSigned(3)
+    const second = buildSigned(4)
+    // NIP-01 keeps the lexically lower event ID when timestamps tie.
+    // Stage the losing revision so recovery must not arm it over the winner.
+    const [staged, competing] =
+      first.id > second.id ? [first, second] : [second, first]
+    const repository = new MemoryProductListingOutbox()
+    const job = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [staged],
+        relayTargets: [personalListingTarget("wss://relay.example")],
+        readyForDelivery: false,
+      },
+      { repository, now: () => NOW }
+    )
+    await cacheSignedProductListingEvent(new NDKEvent(undefined, competing))
+
+    await resumeStagedProductListingDeliveries({
+      repository,
+      now: () => NOW + 1,
+    })
+
+    const current = (
+      await getCachedMerchantStorefront({
+        merchantPubkey: MERCHANT_PUBKEY,
+        includeMarketHidden: true,
+      })
+    ).data.find((record) => record.dTag === dTag)
+    expect(current?.eventId).toBe(competing.id)
+    expect((await repository.get(job.id))?.readyForDelivery).toBe(false)
+  })
+
+  it("recovers a staged standalone listing after local commit fails", async () => {
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const listingRepository = new MemoryProductListingOutbox(listingStorage)
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let signRequests = 0
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        return await delegate.sign(event)
+      },
+    } as NDKSigner)
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("standalone-commit-failure"),
+              dTag: "standalone-commit-failure",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedLocal: async () => {
+            throw new Error("local product commit failed")
+          },
+          productListingDeliveryOptions: {
+            repository: listingRepository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            now: () => NOW,
+            retryDelayMs: 1,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    const [stagedListing] = Array.from(listingStorage.values())
+    expect(signRequests).toBe(1)
+    expect(stagedListing?.readyForDelivery).toBe(false)
+    expect(stagedListing?.companionDeletionJobId).toBeUndefined()
+    const exactEvents = structuredClone(stagedListing!.signedEvents)
+
+    const listingAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const restoredEventIds: string[] = []
+    await resumeStagedProductListingDeliveries({
+      repository: listingAfterReload,
+      restoreLocalListingEvidence: async (job) => {
+        restoredEventIds.push(...job.signedEvents.map(({ id }) => id))
+      },
+      now: () => NOW + 1,
+    })
+    expect(restoredEventIds).toEqual(exactEvents.map(({ id }) => id))
+    expect(
+      (await listingAfterReload.get(stagedListing!.id))?.readyForDelivery
+    ).toBe(true)
+
+    const deliveredEvents: NostrEvent[] = []
+    await resumePendingProductListingDeliveries({
+      repository: listingAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 100,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        deliveredEvents.push(signedEvent)
+        return { status: "acked" }
+      },
+    })
+    expect(deliveredEvents).toEqual(exactEvents)
+    expect(signRequests).toBe(1)
+  })
+
+  it("recovers the exact staged mixed mutation after a local commit failure", async () => {
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const deletionStorage = new Map<string, ProductDeletionDeliveryJob>()
+    const listingRepository = new MemoryProductListingOutbox(listingStorage)
+    const deletionRepository = new MemoryProductDeletionOutbox(deletionStorage)
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let signRequests = 0
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        return await delegate.sign(event)
+      },
+    } as NDKSigner)
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("local-commit-failure"),
+              dTag: "local-commit-failure",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          deletions: buildProductRemovalDeletionTargets([
+            {
+              eventId: "f".repeat(64),
+              addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:old`,
+              sourceRelayUrls: [],
+            },
+          ]),
+          onSignedLocal: async () => {
+            throw new Error("local product commit failed")
+          },
+          productListingDeliveryOptions: {
+            repository: listingRepository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            now: () => NOW,
+            retryDelayMs: 1,
+          },
+          deletionDeliveryOptions: {
+            repository: deletionRepository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            now: () => NOW,
+            retryDelayMs: 1,
+            restoreLocalEvidence: async () => {},
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    const [stagedListing] = Array.from(listingStorage.values())
+    const [stagedDeletion] = await deletionRepository.listUndelivered()
+    expect(signRequests).toBe(2)
+    expect(stagedListing?.readyForDelivery).toBe(false)
+    expect(stagedListing?.companionDeletionJobId).toBe(stagedDeletion?.id)
+    expect(stagedDeletion?.companionListingJobId).toBe(stagedListing?.id)
+    const exactListingEvents = structuredClone(stagedListing!.signedEvents)
+    const exactDeletionEvent = structuredClone(stagedDeletion!.signedEvent)
+
+    const listingAfterReload = new MemoryProductListingOutbox(listingStorage)
+    const deletionAfterReload = new MemoryProductDeletionOutbox(deletionStorage)
+    const restoredEventIds: string[] = []
+    await resumeStagedProductListingDeliveries({
+      repository: listingAfterReload,
+      deletionDeliveryOptions: { repository: deletionAfterReload },
+      restoreLocalListingEvidence: async (job) => {
+        restoredEventIds.push(...job.signedEvents.map(({ id }) => id))
+      },
+      restoreLocalDeletionEvidence: async (event) => {
+        restoredEventIds.push(event.id)
+      },
+      now: () => NOW + 1,
+    })
+
+    expect(restoredEventIds).toEqual([
+      ...exactListingEvents.map(({ id }) => id),
+      exactDeletionEvent.id,
+    ])
+    expect(
+      (await listingAfterReload.get(stagedListing!.id))?.readyForDelivery
+    ).toBe(true)
+
+    const deliveredListingEvents: NostrEvent[] = []
+    await resumePendingProductListingDeliveries({
+      repository: listingAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 100,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        deliveredListingEvents.push(signedEvent)
+        return { status: "acked" }
+      },
+    })
+    const deliveredDeletionEvents: NostrEvent[] = []
+    await resumePendingProductDeletionDeliveries({
+      repository: deletionAfterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      getCompanionListingJob: (jobId) => listingAfterReload.get(jobId),
+      now: () => NOW + 100,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        deliveredDeletionEvents.push(signedEvent)
+        return { status: "acked" }
+      },
+    })
+
+    expect(deliveredListingEvents).toEqual(exactListingEvents)
+    expect(
+      deliveredDeletionEvents.every(
+        (event) => event.id === exactDeletionEvent.id
+      )
+    ).toBe(true)
+    expect(deliveredDeletionEvents.length).toBeGreaterThan(0)
+    expect(signRequests).toBe(2)
+  })
+
+  it("leaves the local draft untouched when listing staging fails", async () => {
+    const repository = new MemoryProductListingOutbox()
+    repository.add = async () => {
+      throw new Error("listing outbox unavailable")
+    }
+    let onSignedLocalCalls = 0
+    let onDeliveryQueuedCalls = 0
+    let productRelayAttempts = 0
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("persist-first"),
+              dTag: "persist-first",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedLocal: async () => {
+            onSignedLocalCalls += 1
+          },
+          onDeliveryQueued: async () => {
+            onDeliveryQueuedCalls += 1
+          },
+          productListingDeliveryOptions: {
+            repository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            publisher: async () => {
+              productRelayAttempts += 1
+              return { status: "acked" }
+            },
+          },
+        },
+        {
+          planProductListingRelayTargets: async () => [
+            personalListingTarget("wss://relay.example"),
+          ],
+        }
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    expect(onSignedLocalCalls).toBe(0)
+    expect(onDeliveryQueuedCalls).toBe(0)
+    expect(productRelayAttempts).toBe(0)
+    expect(cachedProducts).toEqual([])
+  })
+
+  it("restores exact signed listing bytes when local cache projection fails after staging", async () => {
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const repository = new MemoryProductListingOutbox(listingStorage)
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    let signRequests = 0
+    let onSignedLocalCalls = 0
+    let productRelayAttempts = 0
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        return await delegate.sign(event)
+      },
+    } as NDKSigner)
+    __setCommerceTestOverrides({
+      putCachedProducts: async () => {
+        throw new Error("local product cache unavailable")
+      },
+    })
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("cache-write-failure"),
+              dTag: "cache-write-failure",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedLocal: async () => {
+            onSignedLocalCalls += 1
+          },
+          productListingDeliveryOptions: {
+            repository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            now: () => NOW,
+            retryDelayMs: 1,
+            publisher: async () => {
+              productRelayAttempts += 1
+              return { status: "acked" }
+            },
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("local product cache unavailable")
+
+    const [stagedListing] = Array.from(listingStorage.values())
+    expect(signRequests).toBe(1)
+    expect(onSignedLocalCalls).toBe(0)
+    expect(productRelayAttempts).toBe(0)
+    expect(cachedProducts).toEqual([])
+    expect(stagedListing?.readyForDelivery).toBe(false)
+    const exactEvents = structuredClone(stagedListing!.signedEvents)
+
+    __setCommerceTestOverrides({
+      putCachedProducts: async (rows) => {
+        cachedProducts.push(...rows)
+      },
+    })
+    const afterReload = new MemoryProductListingOutbox(listingStorage)
+    await resumeStagedProductListingDeliveries({
+      repository: afterReload,
+      now: () => NOW + 1,
+    })
+    expect(cachedProducts.map(({ eventId }) => eventId)).toEqual(
+      exactEvents.map(({ id }) => id)
+    )
+    expect((await afterReload.get(stagedListing!.id))?.readyForDelivery).toBe(
+      true
+    )
+
+    const deliveredEvents: NostrEvent[] = []
+    await resumePendingProductListingDeliveries({
+      repository: afterReload,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      now: () => NOW + 100,
+      retryDelayMs: 1,
+      restoreLocalEvidence: async () => {},
+      publisher: async ({ signedEvent }) => {
+        deliveredEvents.push(signedEvent)
+        return { status: "acked" }
+      },
+    })
+    expect(deliveredEvents).toEqual(exactEvents)
+    expect(signRequests).toBe(1)
+  })
+
+  it("exposes the exact retry only after its listing outbox is durable", async () => {
+    const repository = new MemoryProductListingOutbox()
+    let queuedBundle: SignedProductWriteBundle | null = null
+    let productRelayAttempts = 0
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+
+    const result = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: makeProduct("queued-before-retry"),
+            dTag: "queued-before-retry",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        onSignedLocal: async () => {},
+        onDeliveryQueued: async (bundle) => {
+          queuedBundle = bundle
+          expect(bundle.productListingDeliveryJobId).toBeString()
+          expect(
+            await repository.get(bundle.productListingDeliveryJobId!)
+          ).toMatchObject({
+            id: bundle.productListingDeliveryJobId,
+            readyForDelivery: true,
+          })
+          expect(productRelayAttempts).toBe(0)
+        },
+        productListingDeliveryOptions: {
+          repository,
+          accountNetworkLocalStateRepository:
+            allowAllAccountNetworkLocalStateRepository,
+          publisher: async () => {
+            productRelayAttempts += 1
+            return { status: "timed_out" }
+          },
+        },
+      },
+      {
+        planProductListingRelayTargets: async () => [
+          personalListingTarget("wss://relay.example"),
+        ],
+      }
+    )
+
+    expect(queuedBundle).not.toBeNull()
+    expect(productRelayAttempts).toBe(1)
+    expect(result.failedRelayUrls).toEqual(["wss://relay.example"])
   })
 
   it("serializes family event approvals through a non-reentrant signer", async () => {
@@ -868,26 +3557,33 @@ describe("merchant product event delivery", () => {
     let publishCallsAtCompletion = -1
 
     try {
-      await signAndPublishProductWriteBundle({
-        merchantPubkey: MERCHANT_PUBKEY,
-        listings: ["family-a", "family-b"].map((dTag) => ({
-          product: makeProduct(dTag),
-          dTag,
-          fulfillmentIntent: {
-            kind: "fixed_standard" as const,
-            amount: 5,
-            currency: "SATS",
-            countries: ["US"],
+      await expect(
+        signAndPublishProductWriteBundle(
+          {
+            merchantPubkey: MERCHANT_PUBKEY,
+            listings: ["family-a", "family-b"].map((dTag) => ({
+              product: makeProduct(dTag),
+              dTag,
+              fulfillmentIntent: {
+                kind: "fixed_standard" as const,
+                amount: 5,
+                currency: "SATS",
+                countries: ["US"],
+              },
+            })),
+            onSignerRequest: (progress) => signerProgress.push(progress),
+            onSignerRequestsComplete: () => {
+              signerRequestsCompleteCalls += 1
+              signedKindsAtCompletion = [...signedKinds]
+              publishCallsAtCompletion = publishSpy.mock.calls.length
+            },
+            onSignedLocal: async () => {},
+            productListingDeliveryOptions:
+              createAckedProductListingDeliveryOptions(),
           },
-        })),
-        onSignerRequest: (progress) => signerProgress.push(progress),
-        onSignerRequestsComplete: () => {
-          signerRequestsCompleteCalls += 1
-          signedKindsAtCompletion = [...signedKinds]
-          publishCallsAtCompletion = publishSpy.mock.calls.length
-        },
-        onSignedLocal: async () => {},
-      })
+          createProductListingRelayPlanningDependencies()
+        )
+      ).rejects.toBeInstanceOf(SignedProductDeliveryError)
 
       expect(signedKinds).toEqual([
         EVENT_KINDS.SHIPPING_OPTION,
@@ -909,7 +3605,7 @@ describe("merchant product event delivery", () => {
     }
   })
 
-  it("does not dispatch the second product approval while the app is hidden", async () => {
+  it("waits for visibility before announcing the next signer request", async () => {
     const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
     const signedKinds: number[] = []
     const signerProgress: Array<{
@@ -945,42 +3641,52 @@ describe("merchant product event delivery", () => {
     )
 
     try {
-      const publishing = signAndPublishProductWriteBundle({
-        merchantPubkey: MERCHANT_PUBKEY,
-        listings: [
-          {
-            product: makeProduct("hidden-between-approvals"),
-            dTag: "hidden-between-approvals",
-            fulfillmentIntent: {
-              kind: "fixed_standard",
-              amount: 5,
-              currency: "SATS",
-              countries: ["US"],
+      const publishing = signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("hidden-between-approvals"),
+              dTag: "hidden-between-approvals",
+              fulfillmentIntent: {
+                kind: "fixed_standard",
+                amount: 5,
+                currency: "SATS",
+                countries: ["US"],
+              },
             },
+          ],
+          onSignerRequest: (progress) => signerProgress.push(progress),
+          waitForSignerVisibility: async () => {
+            visibilityChecks += 1
+            if (!visible) await visibleAgain
           },
-        ],
-        onSignerRequest: (progress) => signerProgress.push(progress),
-        waitForSignerVisibility: async () => {
-          visibilityChecks += 1
-          if (!visible) await visibleAgain
+          onSignedLocal: async () => {},
+          productListingDeliveryOptions:
+            createAckedProductListingDeliveryOptions(),
         },
-        onSignedLocal: async () => {},
-      })
+        createProductListingRelayPlanningDependencies()
+      )
 
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
       expect(signedKinds).toEqual([EVENT_KINDS.SHIPPING_OPTION])
       expect(signerProgress).toEqual([
         { kind: "shipping", current: 1, total: 2 },
-        { kind: "product", current: 2, total: 2 },
       ])
 
       visible = true
       restoreVisibility()
-      await publishing
+      await expect(publishing).rejects.toBeInstanceOf(
+        SignedProductDeliveryError
+      )
 
       expect(signedKinds).toEqual([
         EVENT_KINDS.SHIPPING_OPTION,
         EVENT_KINDS.PRODUCT,
+      ])
+      expect(signerProgress).toEqual([
+        { kind: "shipping", current: 1, total: 2 },
+        { kind: "product", current: 2, total: 2 },
       ])
       expect(visibilityChecks).toBe(2)
     } finally {
@@ -992,6 +3698,7 @@ describe("merchant product event delivery", () => {
     const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
     let signRequests = 0
     let signedLocalCalls = 0
+    let listingDeliveryAttempts = 0
     const failedSigner = {
       user: () => delegate.user(),
       sign: async () => {
@@ -1027,17 +3734,30 @@ describe("merchant product event delivery", () => {
       onSignedLocal: async () => {
         signedLocalCalls += 1
       },
+      productListingDeliveryOptions: {
+        repository: new MemoryProductListingOutbox(),
+        accountNetworkLocalStateRepository:
+          allowAllAccountNetworkLocalStateRepository,
+        publisher: async () => {
+          listingDeliveryAttempts += 1
+          return { status: "acked" as const }
+        },
+      },
     }
 
     try {
       await expect(
-        signAndPublishProductWriteBundle(input)
+        signAndPublishProductWriteBundle(
+          input,
+          createProductListingRelayPlanningDependencies()
+        )
       ).rejects.toMatchObject({
         code: "timeout",
         operation: "sign event",
       })
       expect(signRequests).toBe(1)
       expect(signedLocalCalls).toBe(0)
+      expect(listingDeliveryAttempts).toBe(0)
       expect(publishSpy).toHaveBeenCalledTimes(0)
 
       setSigner({
@@ -1053,18 +3773,23 @@ describe("merchant product event delivery", () => {
       await Promise.resolve()
       expect(signRequests).toBe(1)
       expect(signedLocalCalls).toBe(0)
+      expect(listingDeliveryAttempts).toBe(0)
       expect(publishSpy).toHaveBeenCalledTimes(0)
 
-      await signAndPublishProductWriteBundle(input)
+      await signAndPublishProductWriteBundle(
+        input,
+        createProductListingRelayPlanningDependencies()
+      )
       expect(signRequests).toBe(2)
       expect(signedLocalCalls).toBe(1)
-      expect(publishSpy).toHaveBeenCalledTimes(1)
+      expect(listingDeliveryAttempts).toBe(1)
+      expect(publishSpy).toHaveBeenCalledTimes(0)
     } finally {
       publishSpy.mockRestore()
     }
   })
 
-  it("retains a signer-returned product for exact retry after authority changes", async () => {
+  it("does not project an uncommitted product after authority changes during signing", async () => {
     const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
     let authorityCurrent = true
     let signRequests = 0
@@ -1108,19 +3833,654 @@ describe("merchant product event delivery", () => {
         })
       ).rejects.toThrow("Product signer session changed")
       expect(signRequests).toBe(1)
-      expect(signedEvent?.id).toBeTruthy()
+      expect(signedEvent).toBeNull()
       expect(publishSpy).toHaveBeenCalledTimes(0)
-
-      authorityCurrent = true
-      await deliverSignedProductEvent(signedEvent!, MERCHANT_PUBKEY, {
-        shouldContinue: () => authorityCurrent,
-      })
-      expect(signRequests).toBe(1)
-      expect(publishSpy).toHaveBeenCalledTimes(1)
-      expect(publishedIds).toEqual([signedEvent!.id])
+      expect(publishedIds).toEqual([])
     } finally {
       publishSpy.mockRestore()
     }
+  })
+
+  it("discards a stock signature when the source revision changes during signing", async () => {
+    for (const stockAction of ["update", "republish"] as const) {
+      const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+      const listingStorage = new Map<string, ProductListingDeliveryJob>()
+      const dTag = `stock-${stockAction}`
+      const supplierPubkey = getPublicKey(OTHER_MERCHANT_SECRET)
+      const allocation = (merchantWeight: number) => ({
+        state: "valid" as const,
+        recipients: [
+          {
+            pubkey: MERCHANT_PUBKEY,
+            relayHint: "wss://relay.conduit.market/",
+            role: "merchant" as const,
+            weight: merchantWeight,
+          },
+          {
+            pubkey: supplierPubkey,
+            relayHint: "wss://relay.conduit.market/",
+            role: "supplier" as const,
+            weight: 1,
+          },
+        ],
+        issues: [],
+      })
+      const sourceProduct = {
+        ...makeProduct(dTag),
+        stock: 5,
+        supplierAllocation: allocation(4),
+      }
+      const signedListing = (product: ProductSchema, createdAt: number) => {
+        const draft = buildProductListingEventDraft({
+          product,
+          dTag,
+          clientAppId: "merchant",
+        })
+        return finalizeEvent(
+          { ...draft, created_at: createdAt },
+          MERCHANT_SECRET
+        )
+      }
+      const original = signedListing(sourceProduct, Math.floor(NOW / 1000))
+      const rotated = signedListing(
+        { ...sourceProduct, supplierAllocation: allocation(3) },
+        Math.floor(NOW / 1000) + 1
+      )
+      await cacheSignedProductListingEvent(new NDKEvent(undefined, original))
+      const sourceRecord = (
+        await getCachedMerchantStorefront({
+          merchantPubkey: MERCHANT_PUBKEY,
+          includeMarketHidden: true,
+        })
+      ).data.find((record) => record.dTag === dTag)
+      expect(sourceRecord?.eventId).toBe(original.id)
+      const expectedRevision = captureOrderStockRevision(sourceRecord!)
+      let signRequests = 0
+      let localCalls = 0
+      let relayAttempts = 0
+      setSigner({
+        user: () => delegate.user(),
+        sign: async (event: NostrEvent) => {
+          signRequests += 1
+          const signed = await delegate.sign(event)
+          await cacheSignedProductListingEvent(new NDKEvent(undefined, rotated))
+          return signed
+        },
+      } as NDKSigner)
+
+      await expect(
+        signAndPublishProductWriteBundle(
+          {
+            merchantPubkey: MERCHANT_PUBKEY,
+            listings: [
+              {
+                product: { ...sourceRecord!.product, stock: 3 },
+                dTag,
+                fulfillmentIntent: {
+                  kind: "preserve_existing",
+                  baseline: sourceRecord!.product,
+                },
+              },
+            ],
+            assertCurrentWriteBaseline: async () => {
+              const latest = await getCachedMerchantStorefront({
+                merchantPubkey: MERCHANT_PUBKEY,
+                includeMarketHidden: true,
+              })
+              assertOrderStockRevisionCurrent({
+                merchantPubkey: MERCHANT_PUBKEY,
+                expected: expectedRevision,
+                current: latest.data.find((record) => record.dTag === dTag),
+              })
+            },
+            onSignedLocal: async () => {
+              localCalls += 1
+            },
+            productListingDeliveryOptions: {
+              repository: new MemoryProductListingOutbox(listingStorage),
+              accountNetworkLocalStateRepository:
+                allowAllAccountNetworkLocalStateRepository,
+              now: () => NOW,
+              retryDelayMs: 1,
+              publisher: async () => {
+                relayAttempts += 1
+                return { status: "acked" }
+              },
+            },
+          },
+          createProductListingRelayPlanningDependencies()
+        )
+      ).rejects.toThrow("changed while preparing the stock update")
+      expect(signRequests).toBe(1)
+      expect(localCalls).toBe(0)
+      expect(listingStorage.size).toBe(0)
+      expect(
+        (
+          await getCachedMerchantStorefront({
+            merchantPubkey: MERCHANT_PUBKEY,
+            includeMarketHidden: true,
+          })
+        ).data.find((record) => record.dTag === dTag)?.eventId
+      ).toBe(rotated.id)
+      expect(relayAttempts).toBe(0)
+    }
+  })
+
+  it("stops a stock write before signing when relay preparation exposes a newer revision", async () => {
+    const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    let currentRevision = "original"
+    let signRequests = 0
+    let localCalls = 0
+    setSigner({
+      user: () => delegate.user(),
+      sign: async (event: NostrEvent) => {
+        signRequests += 1
+        return delegate.sign(event)
+      },
+    } as NDKSigner)
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("stock-pre-sign"),
+              dTag: "stock-pre-sign",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          assertCurrentWriteBaseline: async () => {
+            if (currentRevision !== "original") {
+              throw new Error("stock source revision changed")
+            }
+          },
+          onSignedLocal: async () => {
+            localCalls += 1
+          },
+          productListingDeliveryOptions: {
+            ...createAckedProductListingDeliveryOptions(),
+            repository: new MemoryProductListingOutbox(listingStorage),
+          },
+        },
+        {
+          planProductListingRelayTargets: async () => {
+            currentRevision = "changed"
+            return [personalListingTarget("wss://relay.example")]
+          },
+        }
+      )
+    ).rejects.toThrow("stock source revision changed")
+    expect(signRequests).toBe(0)
+    expect(localCalls).toBe(0)
+    expect(listingStorage.size).toBe(0)
+  })
+
+  it("publishes stock when the source revision remains current through staging", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    let checks = 0
+    let localCalls = 0
+    const result = await signAndPublishProductWriteBundle(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        listings: [
+          {
+            product: { ...makeProduct("stock-current"), stock: 3 },
+            dTag: "stock-current",
+            fulfillmentIntent: { kind: "coordinate_after_order" },
+          },
+        ],
+        assertCurrentWriteBaseline: async () => {
+          checks += 1
+        },
+        onSignedLocal: async () => {
+          localCalls += 1
+        },
+        productListingDeliveryOptions: {
+          ...createAckedProductListingDeliveryOptions(),
+          repository: new MemoryProductListingOutbox(listingStorage),
+        },
+      },
+      createProductListingRelayPlanningDependencies()
+    )
+    expect(checks).toBeGreaterThanOrEqual(2)
+    expect(localCalls).toBe(1)
+    expect(listingStorage.size).toBe(1)
+    expect(result.successfulRelayUrls).toContain("wss://relay.example")
+  })
+
+  it("saves an order stock checkpoint before staging so a cache-before-UI crash cannot offer a second decrement", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const storage = new MemoryStorage()
+    const pending = new PendingProductStockDeliveryStore(storage)
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const dTag = "order-stock-checkpoint"
+    const product = { ...makeProduct(dTag), stock: 3 }
+    const addressId = `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`
+    const adjustment: OrderStockAdjustment = {
+      key: getOrderStockDecisionKey("order-checkpoint", addressId),
+      addressId,
+      sourceEventId: "a".repeat(64),
+      title: product.title,
+      quantity: 2,
+      currentStock: 5,
+      nextStock: 3,
+      shortfall: 0,
+    }
+    const operations: string[] = []
+    const persistedCheckpoint = () =>
+      new PendingProductStockDeliveryStore(storage).getForOrder(
+        MERCHANT_PUBKEY,
+        "order-checkpoint"
+      )
+    const listingRepository = new (class extends MemoryProductListingOutbox {
+      async add(job: ProductListingDeliveryJob): Promise<void> {
+        expect(persistedCheckpoint()).toHaveLength(1)
+        operations.push("outbox_stage")
+        await super.add(job)
+      }
+    })(listingStorage)
+    __setCommerceTestOverrides({
+      putCachedProducts: async (rows) => {
+        expect(persistedCheckpoint()).toHaveLength(1)
+        operations.push("product_cache")
+        for (const row of rows) {
+          cachedProducts = [
+            ...cachedProducts.filter((existing) => existing.id !== row.id),
+            row,
+          ]
+        }
+      },
+    })
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product,
+              dTag,
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedBeforeStaging: async (bundle) => {
+            await Promise.resolve()
+            const signedEvent = bundle.events[0]?.rawEvent() as
+              SignedPublicNostrEvent | undefined
+            if (!signedEvent) throw new Error("missing signed stock event")
+            expect(
+              pending.set(
+                MERCHANT_PUBKEY,
+                {
+                  orderId: "order-checkpoint",
+                  adjustment,
+                  signedEvent,
+                },
+                { requireDurable: true }
+              )
+            ).toBe(true)
+            operations.push("order_checkpoint")
+            return true
+          },
+          onSignedLocal: async () => {
+            operations.push("ui_callback")
+            throw new Error("simulated reload before UI callback completes")
+          },
+          productListingDeliveryOptions: {
+            repository: listingRepository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    const [staged] = Array.from(listingStorage.values())
+    const cached = (
+      await getCachedMerchantStorefront({
+        merchantPubkey: MERCHANT_PUBKEY,
+        includeMarketHidden: true,
+      })
+    ).data.find((record) => record.dTag === dTag)
+    const restored = new PendingProductStockDeliveryStore(storage).getForOrder(
+      MERCHANT_PUBKEY,
+      "order-checkpoint"
+    )
+    expect(operations).toEqual([
+      "order_checkpoint",
+      "outbox_stage",
+      "product_cache",
+      "ui_callback",
+    ])
+    expect(staged?.readyForDelivery).toBe(false)
+    expect(cached?.product.stock).toBe(3)
+    expect(restored).toHaveLength(1)
+    expect(restored[0]?.signedEvent.id).toBe(staged?.signedEvents[0]?.id)
+
+    const recalculated = buildOrderStockAdjustments({
+      orderId: "order-checkpoint",
+      merchantPubkey: MERCHANT_PUBKEY,
+      items: [{ productId: addressId, quantity: 2 }],
+      productRecords: cached ? [cached] : [],
+    })[0]
+    expect(recalculated?.nextStock).toBe(1)
+    expect(
+      isOrderStockAdjustmentMutationDisabled({
+        adjustment: recalculated!,
+        persistedDecision: null,
+        hasPendingDelivery: restored.some(
+          (delivery) => delivery.adjustment.key === recalculated?.key
+        ),
+        hasSessionDecision: false,
+      })
+    ).toBe(true)
+  })
+
+  it("does not let an ordinary product edit stage over another tab's pending stock checkpoint", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const dTag = "edit-vs-stock-checkpoint"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`
+    const storage = new MemoryStorage()
+    const oldStorage = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "localStorage"
+    )
+    const oldNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: storage,
+    })
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        locks: {
+          request: async (
+            _name: string,
+            task: (lock: object) => Promise<unknown>
+          ) => task({}),
+        },
+      },
+    })
+    try {
+      const pending = new PendingProductStockDeliveryStore(storage)
+      const stockProduct = { ...makeProduct(dTag), stock: 3 }
+      const stockDraft = buildProductListingEventDraft({
+        product: stockProduct,
+        dTag,
+        clientAppId: "merchant",
+      })
+      const stockEvent = finalizeEvent(
+        {
+          kind: stockDraft.kind,
+          created_at: Math.floor(NOW / 1000),
+          content: stockDraft.content,
+          tags: stockDraft.tags,
+        },
+        MERCHANT_SECRET
+      )
+      expect(
+        pending.set(
+          MERCHANT_PUBKEY,
+          {
+            orderId: "cross-tab-stock-order",
+            adjustment: {
+              key: getOrderStockDecisionKey("cross-tab-stock-order", addressId),
+              addressId,
+              sourceEventId: "a".repeat(64),
+              title: dTag,
+              quantity: 2,
+              currentStock: 5,
+              nextStock: 3,
+              shortfall: 0,
+            },
+            signedEvent: stockEvent,
+          },
+          { requireDurable: true }
+        )
+      ).toBe(true)
+      const listingStorage = new Map<string, ProductListingDeliveryJob>()
+      let productLocalCommits = 0
+
+      let failure: unknown
+      try {
+        await signAndPublishProductWriteBundle(
+          {
+            merchantPubkey: MERCHANT_PUBKEY,
+            durableCommit: {},
+            listings: [
+              {
+                product: {
+                  ...makeProduct(dTag),
+                  stock: 5,
+                  title: "Manual edit",
+                },
+                dTag,
+                fulfillmentIntent: { kind: "coordinate_after_order" },
+              },
+            ],
+            onSignedLocal: async () => {
+              productLocalCommits += 1
+            },
+            productListingDeliveryOptions: {
+              ...createAckedProductListingDeliveryOptions(),
+              repository: new MemoryProductListingOutbox(listingStorage),
+            },
+          },
+          createProductListingRelayPlanningDependencies()
+        )
+      } catch (error) {
+        failure = error
+      }
+      expect(failure).toBeInstanceOf(SignedProductDeliveryError)
+      expect(
+        (failure as SignedProductDeliveryError).deliveryCause
+      ).toMatchObject({
+        message: expect.stringContaining("signed stock update must settle"),
+      })
+      expect(productLocalCommits).toBe(0)
+      expect(listingStorage.size).toBe(0)
+    } finally {
+      if (oldStorage)
+        Object.defineProperty(globalThis, "localStorage", oldStorage)
+      else Reflect.deleteProperty(globalThis, "localStorage")
+      if (oldNavigator)
+        Object.defineProperty(globalThis, "navigator", oldNavigator)
+      else Reflect.deleteProperty(globalThis, "navigator")
+    }
+  })
+
+  it("keeps the exact signed checkpoint retryable when outbox staging fails before local UI", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const storage = new MemoryStorage()
+    const pending = new PendingProductStockDeliveryStore(storage)
+    const dTag = "stock-outbox-failure"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`
+    const adjustment: OrderStockAdjustment = {
+      key: getOrderStockDecisionKey("order-outbox-failure", addressId),
+      addressId,
+      sourceEventId: "a".repeat(64),
+      title: dTag,
+      quantity: 2,
+      currentStock: 5,
+      nextStock: 3,
+      shortfall: 0,
+    }
+    let localCalls = 0
+    const repository = new (class extends MemoryProductListingOutbox {
+      async add(): Promise<void> {
+        expect(
+          pending.getForOrder(MERCHANT_PUBKEY, "order-outbox-failure")
+        ).toHaveLength(1)
+        throw new Error("simulated outbox storage failure")
+      }
+    })()
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: { ...makeProduct(dTag), stock: 3 },
+              dTag,
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedBeforeStaging: (bundle) => {
+            const signedEvent = bundle.events[0]?.rawEvent() as
+              SignedPublicNostrEvent | undefined
+            if (!signedEvent) throw new Error("missing signed stock event")
+            if (
+              !pending.set(
+                MERCHANT_PUBKEY,
+                { orderId: "order-outbox-failure", adjustment, signedEvent },
+                { requireDurable: true }
+              )
+            ) {
+              throw new Error("stock checkpoint failed")
+            }
+            return true
+          },
+          onSignedLocal: async () => {
+            localCalls += 1
+          },
+          productListingDeliveryOptions: {
+            repository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    const restored = new PendingProductStockDeliveryStore(storage).getForOrder(
+      MERCHANT_PUBKEY,
+      "order-outbox-failure"
+    )
+    expect(restored).toHaveLength(1)
+    expect(restored[0]?.signedEvent.id).toMatch(/^[0-9a-f]{64}$/)
+    expect(localCalls).toBe(0)
+    expect(
+      (
+        await getCachedMerchantStorefront({
+          merchantPubkey: MERCHANT_PUBKEY,
+          includeMarketHidden: true,
+        })
+      ).data.find((record) => record.addressId === addressId)
+    ).toBeUndefined()
+  })
+
+  it("does not stage or cache stock when the order checkpoint is not durable", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const storage = new MemoryStorage()
+    storage.failWrites = true
+    const pending = new PendingProductStockDeliveryStore(storage)
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const dTag = "order-checkpoint-failure"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`
+    let checkpointAttempts = 0
+    let localCalls = 0
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: { ...makeProduct(dTag), stock: 3 },
+              dTag,
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedBeforeStaging: (bundle) => {
+            checkpointAttempts += 1
+            const signedEvent = bundle.events[0]?.rawEvent() as
+              SignedPublicNostrEvent | undefined
+            if (!signedEvent) throw new Error("missing signed stock event")
+            const persisted = pending.set(
+              MERCHANT_PUBKEY,
+              {
+                orderId: "order-checkpoint-failure",
+                adjustment: {
+                  key: getOrderStockDecisionKey(
+                    "order-checkpoint-failure",
+                    addressId
+                  ),
+                  addressId,
+                  sourceEventId: "a".repeat(64),
+                  title: dTag,
+                  quantity: 2,
+                  currentStock: 5,
+                  nextStock: 3,
+                  shortfall: 0,
+                },
+                signedEvent,
+              },
+              { requireDurable: true }
+            )
+            if (!persisted) throw new Error("stock checkpoint unavailable")
+          },
+          onSignedLocal: async () => {
+            localCalls += 1
+          },
+          productListingDeliveryOptions: {
+            repository: new MemoryProductListingOutbox(listingStorage),
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    expect(checkpointAttempts).toBe(1)
+    expect(listingStorage.size).toBe(0)
+    expect(cachedProducts).toEqual([])
+    expect(localCalls).toBe(0)
+  })
+
+  it("does not stage a listing when an async pre-stage checkpoint does not resolve true", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    let localCalls = 0
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: { ...makeProduct("async-checkpoint"), stock: 3 },
+              dTag: "async-checkpoint",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedBeforeStaging: (async () =>
+            undefined) as unknown as () => Promise<true>,
+          onSignedLocal: async () => {
+            localCalls += 1
+          },
+          productListingDeliveryOptions: {
+            repository: new MemoryProductListingOutbox(listingStorage),
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    expect(listingStorage.size).toBe(0)
+    expect(cachedProducts).toEqual([])
+    expect(localCalls).toBe(0)
   })
 
   it("keeps durable family-removal delivery on loopback in E2E isolation", async () => {
@@ -1128,8 +4488,10 @@ describe("merchant product event delivery", () => {
     const previousConfig = structuredClone(config)
     const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
     const repository = new MemoryProductDeletionOutbox(durableStorage)
+    const listingOptions = createAckedProductListingDeliveryOptions()
     const attemptedDeletionRelayUrls: string[] = []
     let deletionDeliveryJobId = ""
+    let listingDeliveryJobId = ""
 
     try {
       Object.assign(config, applyE2eRelayIsolation(config, [loopbackRelayUrl]))
@@ -1143,48 +4505,67 @@ describe("merchant product event delivery", () => {
       })
       setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
 
-      await signAndPublishProductWriteBundle({
-        merchantPubkey: MERCHANT_PUBKEY,
-        listings: [
-          {
-            product: makeProduct("root"),
-            dTag: "root",
-            fulfillmentIntent: { kind: "coordinate_after_order" },
+      await signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("root"),
+              dTag: "root",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          deletions: buildProductRemovalDeletionTargets([
+            {
+              eventId: "e".repeat(64),
+              addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
+              sourceRelayUrls: ["wss://source-public.example"],
+            },
+          ]),
+          onSignedLocal: async (bundle) => {
+            deletionDeliveryJobId = bundle.deletionDeliveryJobId ?? ""
+            listingDeliveryJobId = bundle.productListingDeliveryJobId ?? ""
+            const listing = bundle.events.find(
+              (event) => event.kind === EVENT_KINDS.PRODUCT
+            )
+            if (!listing) throw new Error("Expected a signed listing event")
+            listing.publish = (async () =>
+              new Set([{ url: `${loopbackRelayUrl}/` }])) as never
           },
-        ],
-        deletions: buildProductRemovalDeletionTargets([
-          {
-            eventId: "e".repeat(64),
-            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
-            sourceRelayUrls: ["wss://source-public.example"],
+          productListingDeliveryOptions: listingOptions,
+          deletionDeliveryOptions: {
+            repository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            now: () => NOW,
+            retryDelayMs: 1,
+            restoreLocalEvidence: async () => {},
+            publisher: async ({ relayUrl }) => {
+              attemptedDeletionRelayUrls.push(relayUrl)
+              return { status: "timed_out" }
+            },
           },
-        ]),
-        onSignedLocal: async (bundle) => {
-          deletionDeliveryJobId = bundle.deletionDeliveryJobId ?? ""
-          const listing = bundle.events.find(
-            (event) => event.kind === EVENT_KINDS.PRODUCT
-          )
-          if (!listing) throw new Error("Expected a signed listing event")
-          listing.publish = (async () =>
-            new Set([{ url: `${loopbackRelayUrl}/` }])) as never
         },
-        deletionDeliveryOptions: {
-          repository,
-          accountNetworkLocalStateRepository:
-            allowAllAccountNetworkLocalStateRepository,
-          now: () => NOW,
-          retryDelayMs: 1,
-          restoreLocalEvidence: async () => {},
-          publisher: async ({ relayUrl }) => {
-            attemptedDeletionRelayUrls.push(relayUrl)
-            return { status: "timed_out" }
-          },
-        },
-      })
+        {
+          planProductListingRelayTargets: async () => [
+            {
+              relayUrl: loopbackRelayUrl,
+              ownerSelected: false,
+              appRelay: true,
+            },
+          ],
+        }
+      )
 
       const job = await repository.get(deletionDeliveryJobId)
+      const listingJob =
+        await listingOptions.repository.get(listingDeliveryJobId)
       expect(config.e2eRelayIsolationEnabled).toBe(true)
       expect(config.appBackplaneRelayUrls).toEqual([loopbackRelayUrl])
+      expect(listingJob?.relayTargets).toEqual([
+        { relayUrl: loopbackRelayUrl, ownerSelected: false, appRelay: true },
+      ])
+      expect(listingJob?.state).toBe("delivered")
       expect(job?.relayPlan.map((target) => target.relayUrl)).toEqual([
         loopbackRelayUrl,
       ])
@@ -1198,6 +4579,7 @@ describe("merchant product event delivery", () => {
         now: () => NOW + 10_000,
         retryDelayMs: 1,
         deliveryLeaseOwner: "after-isolated-reload",
+        getCompanionListingJob: (jobId) => listingOptions.repository.get(jobId),
         restoreLocalEvidence: async () => {},
         publisher: async ({ relayUrl }) => {
           attemptedDeletionRelayUrls.push(relayUrl)
@@ -1218,6 +4600,8 @@ describe("merchant product event delivery", () => {
   })
 
   it("does not arm durable removal delivery before replacement listings are cached", async () => {
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const listingRepository = new MemoryProductListingOutbox(listingStorage)
     const repository = new MemoryProductDeletionOutbox()
     const signer = new NDKPrivateKeySigner(MERCHANT_SECRET)
     setSigner(signer)
@@ -1230,44 +4614,56 @@ describe("merchant product event delivery", () => {
     let deletionPublishAttempts = 0
 
     await expect(
-      signAndPublishProductWriteBundle({
-        merchantPubkey: MERCHANT_PUBKEY,
-        listings: [
-          {
-            product: makeProduct("root"),
-            dTag: "root",
-            fulfillmentIntent: { kind: "coordinate_after_order" },
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("root"),
+              dTag: "root",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          deletions: buildProductRemovalDeletionTargets([
+            {
+              eventId: "c".repeat(64),
+              addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
+              sourceRelayUrls: ["wss://relay.damus.io"],
+            },
+          ]),
+          onSignedLocal: async () => {
+            onSignedLocalCalls += 1
           },
-        ],
-        deletions: buildProductRemovalDeletionTargets([
-          {
-            eventId: "c".repeat(64),
-            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
-            sourceRelayUrls: ["wss://relay.damus.io"],
+          productListingDeliveryOptions: {
+            repository: listingRepository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
           },
-        ]),
-        onSignedLocal: async () => {
-          onSignedLocalCalls += 1
+          deletionDeliveryOptions: {
+            repository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            restoreLocalEvidence: async () => {},
+            publisher: async () => {
+              deletionPublishAttempts += 1
+              return { status: "acked" }
+            },
+          },
         },
-        deletionDeliveryOptions: {
-          repository,
-          accountNetworkLocalStateRepository:
-            allowAllAccountNetworkLocalStateRepository,
-          restoreLocalEvidence: async () => {},
-          publisher: async () => {
-            deletionPublishAttempts += 1
-            return { status: "acked" }
-          },
-        },
-      })
+        createProductListingRelayPlanningDependencies()
+      )
     ).rejects.toThrow("listing cache unavailable")
 
-    expect(await repository.listUndelivered()).toEqual([])
+    const [stagedListing] = Array.from(listingStorage.values())
+    const [stagedDeletion] = await repository.listUndelivered()
+    expect(stagedListing?.readyForDelivery).toBe(false)
+    expect(stagedDeletion?.companionListingJobId).toBe(stagedListing?.id)
+    expect(cachedProducts).toEqual([])
     expect(onSignedLocalCalls).toBe(0)
     expect(deletionPublishAttempts).toBe(0)
   })
 
-  it("stops the production bundle before product side effects when fixed shipping has no ACK", async () => {
+  it("stops the legacy bundle before any fixed-shipping relay IO without a durable intent", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const publishAttempts: number[] = []
     let onSignedLocalCalls = 0
@@ -1321,9 +4717,9 @@ describe("merchant product event delivery", () => {
             publisher: async () => ({ status: "acked" }),
           },
         })
-      ).rejects.toThrow("Product publication was stopped.")
+      ).rejects.toBeInstanceOf(SignedProductDeliveryError)
 
-      expect(publishAttempts).toEqual([EVENT_KINDS.SHIPPING_OPTION])
+      expect(publishAttempts).toEqual([])
       expect(cachedProducts).toEqual([])
       expect(await repository.listUndelivered()).toEqual([])
       expect(onSignedLocalCalls).toBe(0)

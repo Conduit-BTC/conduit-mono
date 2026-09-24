@@ -5,6 +5,8 @@ import {
   canUseZeroProductPrice,
   canSubmitProductForm,
   formatProductTags,
+  applyMerchantProductSupplierAllocationFormChange,
+  getMerchantProductSupplierAllocationFormState,
   getProductShippingPricingMode,
   getProductTagEditFeedback,
   MAX_PRODUCT_TAG_COUNT,
@@ -17,15 +19,22 @@ import {
   reconcileProductFormShippingPreset,
   removeProductTagAtIndex,
   isProductUsingPresetShippingZone,
+  validateMerchantProductSupplierAllocationForm,
   validateProductPublishForm,
   type MerchantProductFormValues,
   type ProductPublishFormValues,
 } from "../apps/merchant/src/lib/productForm"
+import type { ProductSupplierAllocation } from "@conduit/core"
 import {
   createProductVariationAxis,
   createEmptyProductVariationForm,
   generateProductVariationRows,
 } from "../apps/merchant/src/lib/productVariations"
+
+const VALID_MERCHANT_PUBKEY =
+  "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+const VALID_SUPPLIER_PUBKEY =
+  "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 
 function form(
   overrides: Partial<ProductPublishFormValues> = {}
@@ -63,6 +72,93 @@ function validate(
 }
 
 describe("merchant product form validation", () => {
+  it("keeps malformed signed allocation evidence blocked until explicit repair or removal", () => {
+    const malformedAllocation: ProductSupplierAllocation = {
+      state: "invalid",
+      issues: ["invalid_version", "invalid_recipient"],
+      recipients: [
+        {
+          pubkey: VALID_MERCHANT_PUBKEY,
+          relayHint: "wss://relay.conduit.market",
+          weight: 3,
+          role: "merchant",
+        },
+        {
+          pubkey: VALID_SUPPLIER_PUBKEY,
+          relayHint: "wss://nos.lol",
+          weight: 1,
+          role: "supplier",
+        },
+      ],
+    }
+    const allocationForm =
+      getMerchantProductSupplierAllocationFormState(malformedAllocation)
+    const editForm: MerchantProductFormValues = {
+      ...form(),
+      summary: "",
+      fulfillment: "ship",
+      eventMarketReference: "",
+      eventHandoffMode: "merchant_handoff",
+      merchantPickupTitle: "Merchant booth pickup",
+      merchantPickupLocation: "",
+      merchantPickupGeohash: "",
+      merchantPickupCountry: "US",
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      ...allocationForm,
+    }
+
+    expect(allocationForm.supplierAllocationEnabled).toBe(true)
+    expect(allocationForm.supplierAllocationRepairRequired).toBe(true)
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        { ...editForm, title: "Unrelated title edit" },
+        VALID_MERCHANT_PUBKEY
+      )
+    ).toEqual({
+      canPublish: false,
+      error:
+        "Repair the invalid signed revenue-split terms or remove them before publishing.",
+    })
+
+    const repaired = applyMerchantProductSupplierAllocationFormChange(
+      editForm,
+      {
+        enabled: true,
+        merchantWeight: "3",
+        merchantRelayHint: "wss://relay.conduit.market",
+        suppliers: [
+          {
+            identity: VALID_SUPPLIER_PUBKEY,
+            relayHint: "wss://nos.lol",
+            weight: "1",
+          },
+        ],
+      }
+    )
+    expect(repaired.supplierAllocationRepairRequired).toBe(false)
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        repaired,
+        VALID_MERCHANT_PUBKEY
+      ).canPublish
+    ).toBe(true)
+
+    const removed = applyMerchantProductSupplierAllocationFormChange(editForm, {
+      enabled: false,
+      merchantWeight: editForm.merchantAllocationWeight,
+      merchantRelayHint: editForm.merchantAllocationRelayHint,
+      suppliers: editForm.supplierAllocations,
+    })
+    expect(removed.supplierAllocationRepairRequired).toBe(false)
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        removed,
+        VALID_MERCHANT_PUBKEY
+      )
+    ).toEqual({ canPublish: true, error: null })
+  })
+
   it("uses one product-scoped wire identity for preset and custom fixed shipping", () => {
     const fixedIntent = {
       kind: "fixed_standard" as const,
@@ -148,6 +244,11 @@ describe("merchant product form validation", () => {
       merchantPickupCountry: "US",
       publicZapEnabled: true,
       zapMessagePolicy: "generic_only",
+      supplierAllocationEnabled: false,
+      supplierAllocationRepairRequired: false,
+      merchantAllocationWeight: "1",
+      merchantAllocationRelayHint: "",
+      supplierAllocations: [],
     }
 
     expect(reconcileProductFormShippingPreset(values, false)).toEqual({
@@ -159,6 +260,111 @@ describe("merchant product form validation", () => {
         .usePresetShippingZone
     ).toBe(false)
     expect(reconcileProductFormShippingPreset(values, true)).toBe(values)
+  })
+
+  it("builds signed supplier allocation terms only when enabled and valid", () => {
+    const merchantPubkey = VALID_MERCHANT_PUBKEY
+    const supplierPubkey = VALID_SUPPLIER_PUBKEY
+
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        {
+          supplierAllocationEnabled: false,
+          merchantAllocationWeight: "",
+          merchantAllocationRelayHint: "",
+          supplierAllocations: [],
+        },
+        merchantPubkey
+      )
+    ).toEqual({ canPublish: true, error: null })
+
+    const valid = validateMerchantProductSupplierAllocationForm(
+      {
+        supplierAllocationEnabled: true,
+        merchantAllocationWeight: "3",
+        merchantAllocationRelayHint: "wss://relay.conduit.market",
+        supplierAllocations: [
+          {
+            identity: supplierPubkey,
+            relayHint: "wss://nos.lol",
+            weight: "1",
+          },
+        ],
+      },
+      merchantPubkey
+    )
+
+    expect(valid.canPublish).toBe(true)
+    expect(valid.error).toBeNull()
+    expect(valid.allocation?.state).toBe("valid")
+    expect(valid.allocation?.recipients).toEqual([
+      expect.objectContaining({
+        pubkey: merchantPubkey,
+        role: "merchant",
+        weight: 3,
+      }),
+      expect.objectContaining({
+        pubkey: supplierPubkey,
+        role: "supplier",
+        weight: 1,
+      }),
+    ])
+  })
+
+  it("blocks incomplete, duplicate, and non-positive supplier allocations", () => {
+    const merchantPubkey = VALID_MERCHANT_PUBKEY
+    const supplierPubkey = VALID_SUPPLIER_PUBKEY
+
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        {
+          supplierAllocationEnabled: true,
+          merchantAllocationWeight: "1",
+          merchantAllocationRelayHint: "wss://relay.conduit.market",
+          supplierAllocations: [],
+        },
+        merchantPubkey
+      ).error
+    ).toContain("at least one supplier")
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        {
+          supplierAllocationEnabled: true,
+          merchantAllocationWeight: "1",
+          merchantAllocationRelayHint: "wss://relay.conduit.market",
+          supplierAllocations: [
+            {
+              identity: supplierPubkey,
+              relayHint: "wss://nos.lol",
+              weight: "1",
+            },
+            {
+              identity: supplierPubkey,
+              relayHint: "wss://nos.lol",
+              weight: "1",
+            },
+          ],
+        },
+        merchantPubkey
+      ).error
+    ).toContain("only once")
+    expect(
+      validateMerchantProductSupplierAllocationForm(
+        {
+          supplierAllocationEnabled: true,
+          merchantAllocationWeight: "1",
+          merchantAllocationRelayHint: "wss://relay.conduit.market",
+          supplierAllocations: [
+            {
+              identity: supplierPubkey,
+              relayHint: "wss://nos.lol",
+              weight: "0",
+            },
+          ],
+        },
+        merchantPubkey
+      ).error
+    ).toContain("positive whole-number")
   })
 
   it("keeps a blank create form invalid", () => {

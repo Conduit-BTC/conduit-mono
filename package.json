@@ -79,6 +79,7 @@
     "eslint": "^10.10.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "fake-indexeddb": "6.2.5",
     "husky": "^9.1.7",
     "lint-staged": "^17.5.1",
     "nostr-tools": "2.25.2",

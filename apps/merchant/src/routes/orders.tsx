@@ -19,6 +19,9 @@ import {
   getNdk,
   getCachedMerchantConversationList,
   getCachedMerchantStorefront,
+  getLocalProductStockRecoveryForOrder,
+  confirmLocalProductStockRecovery,
+  settleLocalProductStockRecovery,
   getCurrencyAmountStep,
   getEventMarketOrderCorrelationRef,
   getLightningNetworkMismatchMessage,
@@ -48,6 +51,7 @@ import {
   type Profile,
   type OrderSummary,
   type SignedPublicNostrEvent,
+  type LocalProductStockRecovery,
   useAuth,
   useConduitSession,
   useInboxDeclaration,
@@ -149,20 +153,33 @@ import {
   type ProductDeliveryNotice,
 } from "../lib/product-delivery"
 import {
-  deliverSignedProductEvent,
   getRelayPublishDiagnosticsError,
-  signAndPublishProductListing,
+  signAndPublishProductWriteBundle,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
-import { prepareOrderStockUpdate } from "../lib/order-stock-fulfillment"
+import {
+  deliverQueuedProductListings,
+  ensureSignedProductListingsQueued,
+} from "../lib/product-listing-delivery"
+import {
+  assertOrderStockRevisionCurrent,
+  captureOrderStockRevision,
+  prepareOrderStockUpdate,
+} from "../lib/order-stock-fulfillment"
 import {
   applyOrderStockTarget,
   buildOrderStockAdjustments,
+  checkpointSignedOrderStockDeliveryWithHeldLock,
+  confirmExactPendingStockDelivery,
   getOrderStockAdjustmentForDisplay,
+  getUnpublishedOrderStockRepublishAdjustment,
   isOrderStockAdjustmentMutationDisabled,
   PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
+  settleSignedOrderStockDelivery,
   shouldShowOrderStockAdjustment,
+  type PendingProductStockDelivery,
+  type ProductStockDecision,
   type OrderStockAdjustment,
   type OrderStockTargetMode,
 } from "../lib/productStock"
@@ -216,6 +233,25 @@ type StockDeliveryState = {
   adjustment: OrderStockAdjustment
   notice: ProductDeliveryNotice
   signedEvent: SignedPublicNostrEvent
+  authority?: "journal"
+}
+
+function journalStockDecision(
+  rows: readonly LocalProductStockRecovery[],
+  addressId: string
+): ProductStockDecision | null {
+  const row = rows.find(
+    (candidate) => candidate.checkpoint.productAddressId === addressId
+  )
+  if (!row || row.checkpoint.state === "pending") return null
+  return {
+    kind: row.checkpoint.state,
+    decidedAt: row.checkpoint.committedAt,
+    adjustment: row.checkpoint.adjustment,
+    ...(row.checkpoint.state === "unpublished"
+      ? { localEventId: row.checkpoint.signedEventId }
+      : {}),
+  }
 }
 
 type OrderActionAuthority = {
@@ -229,6 +265,11 @@ type StockUpdateMutationPayload =
       orderId: string
       adjustment: OrderStockAdjustment
       orderItems: OrderSummary["items"]
+    }
+  | {
+      action: "republish"
+      orderId: string
+      adjustment: OrderStockAdjustment
     }
   | {
       action: "retry"
@@ -1186,6 +1227,16 @@ function OrdersWorkspace() {
   const selectedStockDecisionId = selected
     ? `${pubkey ?? "none"}:${selected.id}`
     : null
+  const localStockJournalQuery = useQuery({
+    queryKey: ["merchant-order-stock-journal", pubkey, selected?.orderId],
+    queryFn: () =>
+      getLocalProductStockRecoveryForOrder(pubkey!, selected!.orderId),
+    enabled: !!pubkey && !!selected,
+  })
+  const localStockJournal = useMemo(
+    () => localStockJournalQuery.data ?? [],
+    [localStockJournalQuery.data]
+  )
   const selectedOrderMessage = selected?.messages?.find(
     (message) => message.type === "order"
   )
@@ -1354,10 +1405,22 @@ function OrdersWorkspace() {
     setOrganizerReleaseConfirmed(false)
     const pendingStockDeliveries =
       pubkey && selected
-        ? pendingStockDeliveryStoreRef.current.getForOrder(
-            pubkey,
-            selected.orderId
-          )
+        ? pendingStockDeliveryStoreRef.current
+            .getForOrder(pubkey, selected.orderId)
+            .filter((pending) => {
+              const decision = stockDecisionStoreRef.current.get(
+                pubkey,
+                pending.orderId,
+                pending.adjustment.addressId
+              )
+              return (
+                decision?.kind !== "applied" &&
+                !(
+                  decision?.kind === "unpublished" &&
+                  decision.localEventId === pending.signedEvent.id
+                )
+              )
+            })
         : []
     const pendingStockDelivery = pendingStockDeliveries[0]
     setStockDelivery(
@@ -1401,6 +1464,33 @@ function OrdersWorkspace() {
       normalizeInvoiceCurrencyChoice(firstOrder.payload.currency)
     )
   }, [pubkey, selected, selectedStockDecisionId])
+
+  useEffect(() => {
+    if (!pubkey || !selected || !localStockJournalQuery.isSuccess) return
+    const pending = localStockJournal.find(
+      (row) => row.checkpoint.state === "pending"
+    )
+    if (pending) {
+      setStockDelivery({
+        orderId: pending.checkpoint.orderId,
+        adjustment: pending.checkpoint.adjustment,
+        notice: buildLocalProductRetryNotice("publish"),
+        signedEvent: pending.signedEvent,
+        authority: "journal",
+      })
+      setSessionStockDecisionKeys((current) => {
+        const next = new Set(current)
+        next.add(`${pubkey}:${pending.checkpoint.adjustment.key}`)
+        return next
+      })
+    } else {
+      setStockDelivery((current) =>
+        current?.authority === "journal" && current.orderId === selected.orderId
+          ? null
+          : current
+      )
+    }
+  }, [pubkey, selected, localStockJournal, localStockJournalQuery.isSuccess])
 
   const orderSummary = useMemo(
     () => (selected ? getMerchantOrderSummary(selected) : null),
@@ -1497,7 +1587,8 @@ function OrdersWorkspace() {
     !selected ||
     !orderSummary ||
     !pubkey ||
-    stockDecisionHydratedSelectionId !== selectedStockDecisionId
+    stockDecisionHydratedSelectionId !== selectedStockDecisionId ||
+    !localStockJournalQuery.isSuccess
       ? []
       : buildOrderStockAdjustments({
           orderId: selected.orderId,
@@ -1507,15 +1598,18 @@ function OrdersWorkspace() {
         }).flatMap((adjustment) => {
           const pendingAdjustment =
             stockDelivery?.notice.state !== "delivered" &&
+            stockDelivery?.notice.state !== "rejected" &&
             stockDelivery?.orderId === selected.orderId &&
             stockDelivery.adjustment.key === adjustment.key
               ? stockDelivery.adjustment
               : null
-          const storedDecision = stockDecisionStoreRef.current.get(
-            pubkey,
-            selected.orderId,
-            adjustment.addressId
-          )
+          const storedDecision =
+            journalStockDecision(localStockJournal, adjustment.addressId) ??
+            stockDecisionStoreRef.current.get(
+              pubkey,
+              selected.orderId,
+              adjustment.addressId
+            )
           const persistedDecision = pendingAdjustment
             ? {
                 kind: "applied" as const,
@@ -1544,22 +1638,32 @@ function OrdersWorkspace() {
           ]
         })
   const stockMutationDisabledKeys = new Set<string>()
+  const unpublishedStockKeys = new Set<string>()
   for (const adjustment of stockAdjustments) {
     const hasPendingDelivery = Boolean(
       stockDelivery &&
       stockDelivery.notice.state !== "delivered" &&
+      stockDelivery.notice.state !== "rejected" &&
       selected &&
       stockDelivery.orderId === selected.orderId &&
       stockDelivery.adjustment.key === adjustment.key
     )
     const persistedDecision =
       pubkey && selected
-        ? stockDecisionStoreRef.current.get(
+        ? (journalStockDecision(localStockJournal, adjustment.addressId) ??
+          stockDecisionStoreRef.current.get(
             pubkey,
             selected.orderId,
             adjustment.addressId
-          )
+          ))
         : null
+    if (
+      persistedDecision?.kind === "unpublished" &&
+      !hasPendingDelivery &&
+      !sessionStockDecisionKeys.has(`${pubkey}:${adjustment.key}`)
+    ) {
+      unpublishedStockKeys.add(adjustment.key)
+    }
     if (
       isOrderStockAdjustmentMutationDisabled({
         adjustment,
@@ -1816,22 +1920,58 @@ function OrdersWorkspace() {
             "This signed stock update belongs to another account."
           )
         }
-        pendingStockDeliveryStoreRef.current.set(pubkey, {
-          orderId: payload.orderId,
-          adjustment: payload.adjustment,
-          signedEvent: payload.signedEvent,
-        })
-        const delivery = await deliverSignedProductEvent(
-          payload.signedEvent,
+        const journalRows = await getLocalProductStockRecoveryForOrder(
           pubkey,
-          {
-            authenticatedPubkey,
-            shouldContinue: () => isCurrentOrderAccount(pubkey),
-          }
+          payload.orderId
         )
+        const journalRow = journalRows.find(
+          (row) =>
+            row.checkpoint.productAddressId === payload.adjustment.addressId &&
+            row.checkpoint.signedEventId === payload.signedEvent.id
+        )
+        if (
+          !journalRow &&
+          journalRows.some(
+            (row) =>
+              row.checkpoint.productAddressId === payload.adjustment.addressId
+          )
+        ) {
+          throw new Error("A newer signed stock revision replaced this retry")
+        }
+        const queued = journalRow
+          ? (
+              await confirmLocalProductStockRecovery({
+                merchantPubkey: pubkey,
+                orderId: payload.orderId,
+                addressId: payload.adjustment.addressId,
+                signedEventId: payload.signedEvent.id,
+              })
+            ).listingJob
+          : await (async () => {
+              await confirmExactPendingStockDelivery({
+                merchantPubkey: pubkey,
+                orderId: payload.orderId,
+                adjustment: payload.adjustment,
+                signedEventId: payload.signedEvent.id,
+                pendingStore: pendingStockDeliveryStoreRef.current,
+                decisionStore: stockDecisionStoreRef.current,
+              })
+              return ensureSignedProductListingsQueued({
+                merchantPubkey: pubkey,
+                signedEvents: [payload.signedEvent],
+                authenticatedPubkey,
+                shouldContinue: () => isCurrentOrderAccount(pubkey),
+              })
+            })()
+        const delivery = await deliverQueuedProductListings(queued.id, {
+          authenticatedPubkey,
+          shouldContinue: () => isCurrentOrderAccount(pubkey),
+          expectedSignedEvents: [payload.signedEvent],
+        })
         return {
           authority: null,
           retryOwner: pubkey,
+          journal: !!journalRow,
           delivery,
           signedEvent: payload.signedEvent,
           adjustment: payload.adjustment,
@@ -1852,61 +1992,171 @@ function OrdersWorkspace() {
           "The merchant listing is not available on this device. Refresh orders and try again."
         )
       }
-      const persistedDecision = stockDecisionStoreRef.current.get(
+      const journalRows = await getLocalProductStockRecoveryForOrder(
+        pubkey,
+        payload.orderId
+      )
+      const journalDecision = journalStockDecision(
+        journalRows,
+        record.addressId
+      )
+      const legacyDecision = stockDecisionStoreRef.current.get(
         pubkey,
         payload.orderId,
         record.addressId
       )
+      if (journalDecision && legacyDecision) {
+        throw new Error(
+          "Conflicting stock recovery records need reconciliation"
+        )
+      }
+      const persistedDecision = journalDecision ?? legacyDecision
+      const legacyRepublish =
+        payload.action === "republish" &&
+        !journalDecision &&
+        legacyDecision?.kind === "unpublished"
       const { adjustment: effectiveAdjustment, fulfillmentIntent } =
-        prepareOrderStockUpdate({
-          merchantPubkey: pubkey,
-          orderId: payload.orderId,
-          items: payload.orderItems,
-          adjustment: payload.adjustment,
-          record,
-          persistedDecision,
-        })
-      const hasPendingDelivery = pendingStockDeliveryStoreRef.current
-        .getForOrder(pubkey, payload.orderId)
-        .some((pending) => pending.adjustment.key === effectiveAdjustment.key)
+        payload.action === "republish"
+          ? {
+              adjustment: getUnpublishedOrderStockRepublishAdjustment({
+                adjustment: payload.adjustment,
+                persistedDecision,
+                record,
+              }),
+              fulfillmentIntent: {
+                kind: "preserve_existing" as const,
+                baseline: record.product,
+              },
+            }
+          : prepareOrderStockUpdate({
+              merchantPubkey: pubkey,
+              orderId: payload.orderId,
+              items: payload.orderItems,
+              adjustment: payload.adjustment,
+              record,
+              persistedDecision,
+            })
+      const hasPendingDelivery =
+        pendingStockDeliveryStoreRef.current
+          .getForOrder(pubkey, payload.orderId)
+          .some(
+            (pending) => pending.adjustment.key === effectiveAdjustment.key
+          ) ||
+        journalRows.some(
+          (row) =>
+            row.checkpoint.productAddressId === record.addressId &&
+            row.checkpoint.state === "pending"
+        )
       if (
-        isOrderStockAdjustmentMutationDisabled({
-          adjustment: effectiveAdjustment,
-          persistedDecision,
-          hasPendingDelivery,
-          hasSessionDecision: sessionStockDecisionKeys.has(
-            `${pubkey}:${effectiveAdjustment.key}`
-          ),
-        })
+        payload.action === "republish"
+          ? hasPendingDelivery ||
+            sessionStockDecisionKeys.has(`${pubkey}:${effectiveAdjustment.key}`)
+          : isOrderStockAdjustmentMutationDisabled({
+              adjustment: effectiveAdjustment,
+              persistedDecision,
+              hasPendingDelivery,
+              hasSessionDecision: sessionStockDecisionKeys.has(
+                `${pubkey}:${effectiveAdjustment.key}`
+              ),
+            })
       ) {
         throw new Error(
           "This stock update is already applied or awaiting delivery."
         )
       }
+      const expectedRevision = captureOrderStockRevision(record)
+      const assertCurrentWriteBaseline = async () => {
+        if (!isCurrentOrderAccount(pubkey)) {
+          throw new Error("Stock update belongs to another account.")
+        }
+        const currentLocal = await getCachedMerchantStorefront({
+          merchantPubkey: pubkey,
+          includeMarketHidden: true,
+        })
+        assertOrderStockRevisionCurrent({
+          merchantPubkey: pubkey,
+          expected: expectedRevision,
+          current: currentLocal.data.find(
+            (candidate) => candidate.addressId === expectedRevision.addressId
+          ),
+        })
+      }
       let signedEvent: SignedPublicNostrEvent | null = null
-      const delivery = await signAndPublishProductListing({
+      const delivery = await signAndPublishProductWriteBundle({
         merchantPubkey: pubkey,
         authenticatedPubkey,
         shouldContinue: () => isCurrentOrderAction(authority),
-        product: {
-          ...record.product,
-          stock: effectiveAdjustment.nextStock,
-          updatedAt: Date.now(),
-        },
-        dTag: record.dTag,
-        previousEventCreatedAt: record.eventCreatedAt,
-        fulfillmentIntent,
-        onSignedLocal: async (event) => {
+        assertCurrentWriteBaseline,
+        listings: [
+          {
+            product: {
+              ...record.product,
+              stock: effectiveAdjustment.nextStock,
+              updatedAt: Date.now(),
+            },
+            dTag: record.dTag,
+            previousEventId: record.eventId,
+            previousEventCreatedAt: record.eventCreatedAt,
+            fulfillmentIntent,
+          },
+        ],
+        ...(!legacyRepublish
+          ? {
+              durableCommit: {
+                stock: {
+                  orderId: payload.orderId,
+                  adjustment: effectiveAdjustment,
+                  ...(payload.action === "republish" &&
+                  journalDecision?.kind === "unpublished"
+                    ? {
+                        replacesSignedEventId: journalDecision.localEventId,
+                      }
+                    : {}),
+                },
+              },
+            }
+          : {}),
+        ...(legacyRepublish
+          ? {
+              legacyCommit: {
+                recovery: {
+                  kind: "stock_republish" as const,
+                  previousStockEventId: persistedDecision?.localEventId ?? "",
+                },
+                reserveSignedUnderLock: async (bundle) => {
+                  if (!isCurrentOrderAccount(pubkey)) {
+                    throw new Error(
+                      "Signed stock update belongs to another account."
+                    )
+                  }
+                  const event = bundle.events[0]
+                  if (!event)
+                    throw new Error("No signed stock update was prepared.")
+                  return checkpointSignedOrderStockDeliveryWithHeldLock({
+                    merchantPubkey: pubkey,
+                    orderId: payload.orderId,
+                    adjustment: effectiveAdjustment,
+                    signedEvent: event.rawEvent() as SignedPublicNostrEvent,
+                    expectedUnpublishedEventId:
+                      payload.action === "republish"
+                        ? (persistedDecision?.localEventId ?? "")
+                        : null,
+                    assertCurrentWriteBaseline,
+                    decisionStore: stockDecisionStoreRef.current,
+                    pendingStore: pendingStockDeliveryStoreRef.current,
+                  })
+                },
+              },
+            }
+          : {}),
+        onSignedLocal: async (bundle) => {
           if (!isCurrentOrderAccount(pubkey)) {
             throw new Error("Signed stock update belongs to another account.")
           }
+          const event = bundle.events[0]
+          if (!event) throw new Error("No signed stock update was prepared.")
           const rawEvent = event.rawEvent() as SignedPublicNostrEvent
           signedEvent = rawEvent
-          pendingStockDeliveryStoreRef.current.set(pubkey, {
-            orderId: payload.orderId,
-            adjustment: effectiveAdjustment,
-            signedEvent: rawEvent,
-          })
           setSessionStockDecisionKeys((current) => {
             const next = new Set(current)
             next.add(`${pubkey}:${effectiveAdjustment.key}`)
@@ -1917,6 +2167,7 @@ function OrdersWorkspace() {
             adjustment: effectiveAdjustment,
             notice: buildLocalProductDeliveryNotice("publish"),
             signedEvent: rawEvent,
+            ...(!legacyRepublish ? { authority: "journal" as const } : {}),
           })
         },
       })
@@ -1927,13 +2178,14 @@ function OrdersWorkspace() {
       return {
         authority,
         retryOwner: null,
+        journal: !legacyRepublish,
         delivery,
         signedEvent,
         adjustment: effectiveAdjustment,
       }
     },
     onMutate: (payload) => {
-      if (payload.action === "update") setStockDelivery(null)
+      if (payload.action !== "retry") setStockDelivery(null)
     },
     onSuccess: async (result, payload) => {
       const previousNotice =
@@ -1956,52 +2208,124 @@ function OrdersWorkspace() {
         adjustment: result.adjustment,
         notice,
         signedEvent: result.signedEvent,
+        ...(result.journal ? { authority: "journal" } : {}),
       })
-      if (notice.state === "delivered") {
-        const decisionPersisted = stockDecisionStoreRef.current.set(
-          merchantPubkey,
-          payload.orderId,
-          result.adjustment.addressId,
-          "applied",
-          result.adjustment
-        )
-        pendingStockDeliveryStoreRef.current.delete(
-          merchantPubkey,
-          payload.orderId,
-          result.adjustment.addressId
-        )
-        setSessionStockDecisionKeys((current) => {
-          const next = new Set(current)
-          next.delete(`${merchantPubkey}:${result.adjustment.key}`)
-          return next
-        })
-        const nextPendingDelivery =
-          pendingStockDeliveryStoreRef.current.getForOrder(
-            merchantPubkey,
-            payload.orderId
-          )[0]
+      if (notice.state === "delivered" || notice.state === "rejected") {
+        let settlement: "saved" | "retry" | "stale" = "retry"
+        try {
+          settlement = result.journal
+            ? await settleLocalProductStockRecovery({
+                merchantPubkey,
+                orderId: payload.orderId,
+                addressId: result.adjustment.addressId,
+                signedEventId: result.signedEvent.id,
+                kind: notice.state === "rejected" ? "unpublished" : "applied",
+              })
+            : await settleSignedOrderStockDelivery({
+                merchantPubkey,
+                orderId: payload.orderId,
+                adjustment: result.adjustment,
+                signedEventId: result.signedEvent.id,
+                kind: notice.state === "rejected" ? "unpublished" : "applied",
+                decisionStore: stockDecisionStoreRef.current,
+                pendingStore: pendingStockDeliveryStoreRef.current,
+              })
+        } catch {
+          // Keep the exact pending checkpoint if this tab lost storage or its
+          // cross-tab lock after publishing. The next retry must recheck it.
+        }
+        if (settlement === "stale") {
+          setStockDelivery(null)
+          flash(
+            "This stock update changed in another tab. Refresh orders before continuing."
+          )
+          await invalidateProductQueries()
+          return
+        }
+        const decisionPersisted = settlement === "saved"
+        if (decisionPersisted) {
+          setSessionStockDecisionKeys((current) => {
+            const next = new Set(current)
+            next.delete(`${merchantPubkey}:${result.adjustment.key}`)
+            return next
+          })
+        }
+        const nextPendingDelivery = result.journal
+          ? (
+              await getLocalProductStockRecoveryForOrder(
+                merchantPubkey,
+                payload.orderId
+              )
+            ).find((row) => row.checkpoint.state === "pending")
+          : pendingStockDeliveryStoreRef.current
+              .getForOrder(merchantPubkey, payload.orderId)
+              .find((pending) => {
+                const decision = stockDecisionStoreRef.current.get(
+                  merchantPubkey,
+                  pending.orderId,
+                  pending.adjustment.addressId
+                )
+                return (
+                  decision?.kind !== "applied" &&
+                  !(
+                    decision?.kind === "unpublished" &&
+                    decision.localEventId === pending.signedEvent.id
+                  )
+                )
+              })
         if (nextPendingDelivery) {
           setStockDelivery({
-            orderId: nextPendingDelivery.orderId,
-            adjustment: nextPendingDelivery.adjustment,
+            orderId: result.journal
+              ? (nextPendingDelivery as LocalProductStockRecovery).checkpoint
+                  .orderId
+              : (nextPendingDelivery as PendingProductStockDelivery).orderId,
+            adjustment: result.journal
+              ? (nextPendingDelivery as LocalProductStockRecovery).checkpoint
+                  .adjustment
+              : (nextPendingDelivery as PendingProductStockDelivery).adjustment,
             notice: buildLocalProductRetryNotice("publish"),
             signedEvent: nextPendingDelivery.signedEvent,
+            ...(result.journal ? { authority: "journal" } : {}),
+          })
+        } else if (!decisionPersisted) {
+          setStockDelivery({
+            orderId: payload.orderId,
+            adjustment: result.adjustment,
+            notice: buildLocalProductRetryNotice("publish"),
+            signedEvent: result.signedEvent,
+            ...(result.journal ? { authority: "journal" } : {}),
           })
         }
         flash(
-          decisionPersisted
-            ? `Stock updated for ${result.adjustment.title}`
-            : `Stock updated for ${result.adjustment.title}, but this device could not remember the order decision after reload.`
+          notice.state === "rejected"
+            ? decisionPersisted
+              ? `Stock updated locally for ${result.adjustment.title}, but the target relays rejected the signed update.`
+              : `Stock updated locally for ${result.adjustment.title}, the target relays rejected the signed update, and this device could not remember the order decision after reload.`
+            : decisionPersisted
+              ? `Stock updated for ${result.adjustment.title}`
+              : `Stock updated for ${result.adjustment.title}, but this device could not remember the order decision after reload.`
         )
       } else {
-        const retryPersisted = pendingStockDeliveryStoreRef.current.set(
-          merchantPubkey,
-          {
-            orderId: payload.orderId,
-            adjustment: result.adjustment,
-            signedEvent: result.signedEvent,
-          }
-        )
+        let retryPersisted = false
+        try {
+          retryPersisted = result.journal
+            ? !!(await confirmLocalProductStockRecovery({
+                merchantPubkey,
+                orderId: payload.orderId,
+                addressId: result.adjustment.addressId,
+                signedEventId: result.signedEvent.id,
+              }))
+            : (await confirmExactPendingStockDelivery({
+                merchantPubkey,
+                orderId: payload.orderId,
+                adjustment: result.adjustment,
+                signedEventId: result.signedEvent.id,
+                pendingStore: pendingStockDeliveryStoreRef.current,
+                decisionStore: stockDecisionStoreRef.current,
+              })) === true
+        } catch {
+          // Never replace another tab's checkpoint with this result.
+        }
         flash(
           retryPersisted
             ? `Stock update saved locally for ${result.adjustment.title}; relay delivery still needs attention.`
@@ -2009,14 +2333,79 @@ function OrdersWorkspace() {
         )
       }
       await invalidateProductQueries()
+      await queryClient.invalidateQueries({
+        queryKey: [
+          "merchant-order-stock-journal",
+          merchantPubkey,
+          payload.orderId,
+        ],
+      })
     },
     onError: async (error, payload) => {
       if (!pubkey || !isCurrentOrderAccount(pubkey)) return
+      let recoveredPending: PendingProductStockDelivery | null = null
+      let journalPending: LocalProductStockRecovery | null = null
+      try {
+        journalPending =
+          (
+            await getLocalProductStockRecoveryForOrder(pubkey, payload.orderId)
+          ).find(
+            (row) =>
+              row.checkpoint.adjustment.key === payload.adjustment.key &&
+              row.checkpoint.state === "pending"
+          ) ?? null
+      } catch {
+        // Missing exact journal evidence is not permission to recreate a job.
+      }
+      try {
+        recoveredPending =
+          pendingStockDeliveryStoreRef.current
+            .getPersistedForMerchant(pubkey)
+            .find((pending) => {
+              if (
+                pending.orderId !== payload.orderId ||
+                pending.adjustment.key !== payload.adjustment.key
+              ) {
+                return false
+              }
+              const decision = stockDecisionStoreRef.current.getPersisted(
+                pubkey,
+                pending.orderId,
+                pending.adjustment.addressId
+              )
+              return (
+                decision?.kind !== "applied" &&
+                !(
+                  decision?.kind === "unpublished" &&
+                  decision.localEventId === pending.signedEvent.id
+                )
+              )
+            }) ?? null
+      } catch {
+        // Browser storage may be unavailable; keep any current-session UI.
+      }
       setStockDelivery((current) => {
+        const recovery: StockDeliveryState | null = journalPending
+          ? {
+              orderId: journalPending.checkpoint.orderId,
+              adjustment: journalPending.checkpoint.adjustment,
+              signedEvent: journalPending.signedEvent,
+              notice: buildLocalProductRetryNotice("publish"),
+              authority: "journal",
+            }
+          : recoveredPending
+            ? {
+                orderId: recoveredPending.orderId,
+                adjustment: recoveredPending.adjustment,
+                signedEvent: recoveredPending.signedEvent,
+                notice: buildLocalProductRetryNotice("publish"),
+              }
+            : null
+        const active = recovery ?? current
         if (
-          !current ||
-          current.orderId !== payload.orderId ||
-          current.adjustment.key !== payload.adjustment.key
+          !active ||
+          active.orderId !== payload.orderId ||
+          active.adjustment.key !== payload.adjustment.key
         ) {
           return current
         }
@@ -2024,26 +2413,26 @@ function OrdersWorkspace() {
         const diagnosticsError = getRelayPublishDiagnosticsError(error)
         if (diagnosticsError) {
           return {
-            ...current,
+            ...active,
             notice: buildProductDeliveryNotice(
               "publish",
               diagnosticsError.diagnostics,
               payload.action === "retry"
                 ? payload.previousNotice
-                : current.notice
+                : active.notice
             ),
           }
         }
         if (error instanceof SignedProductDeliveryError) {
           return {
-            ...current,
+            ...active,
             notice:
               payload.action === "retry"
                 ? payload.previousNotice
                 : buildLocalProductRetryNotice("publish"),
           }
         }
-        return current
+        return active
       })
       await invalidateProductQueries()
     },
@@ -2776,6 +3165,15 @@ function OrdersWorkspace() {
     })
   }
 
+  function republishStock(adjustment: OrderStockAdjustment): void {
+    if (!selected) return
+    stockUpdateMutation.mutate({
+      action: "republish",
+      orderId: selected.orderId,
+      adjustment,
+    })
+  }
+
   function dismissStockDelivery(): void {
     if (stockDeliveryCanRetry) {
       flash("Relay retry hidden for now. Reopen this order to resume delivery.")
@@ -3043,6 +3441,7 @@ function OrdersWorkspace() {
                             stockMutationDisabledKeys={
                               stockMutationDisabledKeys
                             }
+                            unpublishedStockKeys={unpublishedStockKeys}
                             delivery={selectedStockDelivery}
                             deliveryNeedsAttention={stockDeliveryCanRetry}
                             pending={orderActionPending}
@@ -3053,6 +3452,7 @@ function OrdersWorkspace() {
                             onUpdate={updateStock}
                             onMessageBuyer={() => setMessagesOpen(true)}
                             onRetry={retryStockDelivery}
+                            onRepublish={republishStock}
                             onDismissDelivery={dismissStockDelivery}
                           />
 

@@ -5,6 +5,7 @@ import {
   buildProductDetailActionTelemetryProperties,
   formatNpub,
   getListingSafetyDisplay,
+  getProductSupplierAllocationEvidenceState,
   getProfileName,
   isCommerceReadIncomplete,
   pubkeyToNpub,
@@ -90,6 +91,15 @@ function getMarketProductShareUrl(
   }
 }
 
+function formatSupplierAllocationShare(
+  weight: number,
+  totalWeight: number
+): string {
+  if (totalWeight <= 0) return ""
+  const percent = (weight / totalWeight) * 100
+  return `${percent.toFixed(percent >= 10 ? 1 : 2).replace(/\.0$/, "")}%`
+}
+
 function ProductPage() {
   const { authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -126,6 +136,17 @@ function ProductPage() {
   const selectedProduct = product
     ? getProductSelection(product, family, selectedProductId)
     : null
+  const supplierAllocation = selectedProduct?.supplierAllocation
+  const supplierAllocationEvidence = selectedProduct
+    ? getProductSupplierAllocationEvidenceState(selectedProduct)
+    : "absent"
+  const supplierAllocationTotalWeight =
+    supplierAllocationEvidence === "signed" && supplierAllocation
+      ? supplierAllocation.recipients.reduce(
+          (sum, recipient) => sum + recipient.weight,
+          0
+        )
+      : 0
   const productCartFulfillment = useProductCartFulfillment(
     selectedProduct,
     shopperPricing.quote
@@ -965,6 +986,76 @@ function ProductPage() {
                     )}
                   </dl>
                 )}
+
+                {supplierAllocationEvidence === "signed" &&
+                supplierAllocation ? (
+                  <section
+                    aria-labelledby="product-revenue-allocation-title"
+                    className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3
+                        id="product-revenue-allocation-title"
+                        className="text-sm font-medium text-[var(--text-primary)]"
+                      >
+                        Signed revenue allocation
+                      </h3>
+                      <Badge variant="outline">Declared terms</Badge>
+                    </div>
+                    <p className="text-xs leading-5 text-[var(--text-muted)]">
+                      These weighted recipients are signed into this exact
+                      product revision. They describe intended allocation; they
+                      are not proof that payment occurred.
+                    </p>
+                    <dl className="grid gap-2">
+                      {supplierAllocation.recipients.map((recipient) => (
+                        <div
+                          key={recipient.pubkey}
+                          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <dt className="text-xs font-medium capitalize text-[var(--text-primary)]">
+                              {recipient.role}
+                            </dt>
+                            <dd className="mt-1 flex min-w-0 items-center gap-2 font-mono text-xs text-[var(--text-muted)]">
+                              <span className="truncate">
+                                {formatNpub(recipient.pubkey, 10)}
+                              </span>
+                              <CopyButton
+                                value={recipient.pubkey}
+                                label={`Copy ${recipient.role} npub`}
+                              />
+                            </dd>
+                          </div>
+                          <dd className="text-right text-sm font-medium text-[var(--text-primary)]">
+                            {formatSupplierAllocationShare(
+                              recipient.weight,
+                              supplierAllocationTotalWeight
+                            )}
+                            <span className="ml-2 text-xs font-normal text-[var(--text-muted)]">
+                              weight {recipient.weight}
+                            </span>
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <p className="text-xs leading-5 text-[var(--text-muted)]">
+                      Whole-satoshi rounding residue is assigned to the
+                      merchant.
+                    </p>
+                  </section>
+                ) : supplierAllocationEvidence === "invalid" ||
+                  supplierAllocationEvidence === "unverified" ? (
+                  <div
+                    role="status"
+                    className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-xs leading-5 text-[var(--text-secondary)]"
+                  >
+                    {supplierAllocationEvidence === "invalid"
+                      ? "This listing contains malformed allocation terms. The merchant must publish a corrected product revision."
+                      : "This listing's allocation terms cannot be verified against its exact signed revision. Refresh to check for a valid listing."}{" "}
+                    Checkout cannot use unavailable allocation terms.
+                  </div>
+                ) : null}
 
                 {visibleTags.length > 0 && (
                   <div className="space-y-2">

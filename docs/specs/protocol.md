@@ -297,6 +297,36 @@ Current parsers may accept the legacy aliases `public_zaps` and
 `zap_message_policy` for already-published listings, but newly emitted Conduit
 events must use `checkout_public_zaps` and `checkout_zap_message_policy`.
 
+### Product Supplier Allocation Terms
+
+A Conduit product may declare weighted supplier terms for its exact signed
+revision. The contract is opt-in and versioned:
+
+```text
+["conduit_supplier_allocation", "1"]
+["zap", "<merchant_pubkey>", "wss://<profile-relay>", "<weight>"]
+["zap", "<supplier_pubkey>", "wss://<profile-relay>", "<weight>"]
+```
+
+The version tag is required before Conduit interprets NIP-57 `zap` tags as
+supplier allocation terms. Unmarked `zap` tags remain ordinary NIP-57 payment
+metadata and must not be relabeled as a supplier contract. A valid allocation
+has exactly one merchant recipient matching the product author, at least one
+supplier, unique public keys, positive safe-integer weights, and a public relay
+hint for each recipient where that recipient's kind-0 profile can be found.
+
+Weights are relative. Whole-satoshi rounding residue belongs to the merchant.
+Terms are bound to the exact kind-30402 event ID and timestamp that carried
+them; replacing or removing terms requires a new signed product-family
+revision, while historical orders keep their original evidence.
+
+These tags declare terms; they are not proof of payment or settlement. A
+payment coordinator may consider a recipient ready only after resolving the
+current profile LUD16 and validating the LNURL min/max range, expected network,
+`allowsNostr=true`, and a valid provider `nostrPubkey` against that exact signed
+revision. Payment execution and funded-wallet orchestration remain separate
+from product publication.
+
 Checkout privacy behavior:
 
 - If any cart item has `checkout_public_zaps=false`, missing policy tags, or
