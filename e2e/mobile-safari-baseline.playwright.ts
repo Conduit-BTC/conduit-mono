@@ -737,7 +737,7 @@ const expiredManualMetadata = JSON.stringify([
 
 function makeExpiredManualInvoice(): string {
   return makeBolt11Fixture({
-    hrp: "lntb10n",
+    hrp: "lnbc10n",
     createdAt: Math.floor(Date.now() / 1000) - 3601,
     fields: [
       bolt11PaymentHashField(new Uint8Array(32).fill(7)),
@@ -1150,7 +1150,9 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.goto(`${marketUrl}/products`)
     await page.goto(`${marketUrl}/checkout`)
 
-    await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+    await expect(
+      page.getByRole("heading", { name: "Delivery details" })
+    ).toBeVisible()
     await assertMobileViewport(page)
 
     const firstName = page.locator("#ship-first-name")
@@ -1509,7 +1511,7 @@ test.describe("CND-162 mobile browser baseline", () => {
       const orderId = `mobile-expired-manual-invoice-${mode}`
       const expiredInvoice = makeExpiredManualInvoice()
       const newInvoice = makeBolt11Fixture({
-        hrp: "lntb10n",
+        hrp: "lnbc10n",
         createdAt: Math.floor(Date.now() / 1000),
         fields: [
           bolt11PaymentHashField(new Uint8Array(32).fill(8)),
@@ -2174,7 +2176,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     }, orderId)
     await page.reload()
     await expect(
-      page.getByText("Order cancelled", { exact: true })
+      page.getByRole("button", { name: /Mobile Recovery Cancelled/ })
     ).toBeVisible()
     await expect(failureAlert).toHaveCount(0)
     expect(await readRecoveredPayment(page, orderId)).toMatchObject({
