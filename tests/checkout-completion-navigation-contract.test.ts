@@ -57,8 +57,8 @@ describe("checkout completion navigation contracts", () => {
     ).text()
 
     expect(checkoutRoute).not.toContain("LightningStrikeOverlay")
-    expect(ordersRoute).toContain(
-      'getOrderPaymentState(current.orderId)?.lifecycle?.paymentStatus !== "paid"'
+    expect(ordersRoute).toMatch(
+      /getOrderPaymentState\(current\.orderId\)\?\.lifecycle\?\.paymentStatus\s*!==\s*"paid"/
     )
     expect(ordersRoute).toContain('current.paymentStatus !== "paid"')
     expect(ordersRoute).toContain("celebratedOrdersRef.current.has")
