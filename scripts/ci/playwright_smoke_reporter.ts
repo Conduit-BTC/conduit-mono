@@ -1,4 +1,5 @@
-import { chmodSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, chmodSync, readFileSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
 
 import ts from "typescript"
 
@@ -14,6 +15,7 @@ import type {
 
 type ReporterOptions = {
   outputFile: string
+  progressFile?: string
 }
 
 type SafeSmokeEvidence = {
@@ -39,6 +41,8 @@ type SafeSpec = {
   file: string
   line: number
   ok: boolean
+  project: string
+  smokeId: string
   tags: string[]
   tests: Array<{
     expectedStatus: TestCase["expectedStatus"]
@@ -50,6 +54,11 @@ type SafeSpec = {
 
 const approvedAreaTags = ["@market", "@merchant", "@commerce"] as const
 const approvedAreaTagSet = new Set<string>(approvedAreaTags)
+const approvedProjects = new Set([
+  "chromium",
+  "mobile-chromium",
+  "mobile-webkit",
+])
 const redactedTitle = "redacted smoke test"
 const gitObjectIdPattern = /^[0-9a-f]{40}$/
 const unsafeTitlePatterns = [
@@ -120,6 +129,15 @@ function safeTags(tags: readonly string[]): string[] {
     tags.map((tag) => (tag.startsWith("@") ? tag : `@${tag}`))
   )
   return approvedAreaTags.filter((tag) => provided.has(tag))
+}
+
+function safeProject(test: TestCase): string {
+  const project = test.parent?.project?.()?.name
+  return project && approvedProjects.has(project) ? project : "unknown"
+}
+
+export function safePlaywrightSmokeId(id: string | undefined): string {
+  return id ? createHash("sha256").update(id).digest("hex") : "unknown"
 }
 
 function isPlaywrightTestCall(expression: ts.Expression): boolean {
@@ -241,21 +259,44 @@ function safeLocation(
  */
 export class PrivacySafeSmokeReporter implements Reporter {
   private readonly outputFile: string
+  private readonly progressFile?: string
   private metadata: Record<string, unknown> = {}
   private readonly specs = new Map<string, SafeSpec>()
   private topLevelErrorCount = 0
+  private startedAt = 0
+  private completedAttempts = 0
 
   constructor(options: ReporterOptions) {
     this.outputFile = options.outputFile
+    this.progressFile = options.progressFile
   }
 
   printsToStdio(): boolean {
     return true
   }
 
-  onBegin(config: FullConfig, _suite: Suite): void {
-    void _suite
+  onBegin(config: FullConfig, suite: Suite): void {
     this.metadata = safeMetadata(config.metadata)
+    this.startedAt = Date.now()
+    this.progress(`selected=${suite.allTests().length}`)
+  }
+
+  private progress(message: string): void {
+    if (!this.progressFile) return
+    appendFileSync(this.progressFile, `[smoke] ${message}\n`, { mode: 0o600 })
+  }
+
+  onTestBegin(test: TestCase, result: TestResult): void {
+    const file = safeFile(test.location.file)
+    const title = safePlaywrightSmokeTitle({
+      file,
+      line: test.location.line,
+      sourceFile: test.location.file,
+      title: test.title,
+    })
+    this.progress(
+      `start elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s retry=${result.retry} project=${safeProject(test)} ${file}:${test.location.line} ${title}`
+    )
   }
 
   onError(_error: TestError): void {
@@ -264,6 +305,11 @@ export class PrivacySafeSmokeReporter implements Reporter {
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
+    this.completedAttempts += 1
+    const file = safeFile(test.location.file)
+    this.progress(
+      `end completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s duration=${Math.max(0, Math.round(result.duration))}ms retry=${Math.max(0, result.retry)} status=${result.status} project=${safeProject(test)} ${file}:${test.location.line}`
+    )
     const existing = this.specs.get(test.id)
     const location = safeLocation(result.error?.location)
     const safeResult: SafeResult = {
@@ -279,11 +325,12 @@ export class PrivacySafeSmokeReporter implements Reporter {
       return
     }
 
-    const file = safeFile(test.location.file)
     this.specs.set(test.id, {
       file,
       line: test.location.line,
       ok: test.ok(),
+      project: safeProject(test),
+      smokeId: safePlaywrightSmokeId(test.id),
       tags: safeTags(test.tags),
       tests: [
         {
@@ -303,6 +350,9 @@ export class PrivacySafeSmokeReporter implements Reporter {
 
   onEnd(_result: FullResult): void {
     void _result
+    this.progress(
+      `finished completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s`
+    )
     const specs = [...this.specs.values()]
     const outcomes = specs.map((spec) => spec.tests[0]!.status)
     const report = {

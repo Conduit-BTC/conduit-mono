@@ -1,6 +1,11 @@
 import { spawnSync } from "node:child_process"
 
 export type SmokeShard = "market" | "merchant" | "commerce"
+export type SmokeMatrixJob = {
+  id: string
+  area: SmokeShard | "none"
+  shard: string
+}
 
 const shardOrder: SmokeShard[] = ["market", "merchant", "commerce"]
 
@@ -123,6 +128,21 @@ export function selectSmokeShards(paths: readonly string[]): SmokeShard[] {
   return shardOrder.filter((shard) => selected.has(shard))
 }
 
+export function expandSmokeMatrix(
+  shards: readonly SmokeShard[]
+): SmokeMatrixJob[] {
+  if (shards.length === 0) return [{ id: "none", area: "none", shard: "" }]
+  return shards.flatMap((area) =>
+    area === "market"
+      ? [
+          { id: "market-1", area, shard: "1/3" },
+          { id: "market-2", area, shard: "2/3" },
+          { id: "market-3", area, shard: "3/3" },
+        ]
+      : [{ id: area, area, shard: "" }]
+  )
+}
+
 function readArgument(name: string): string | null {
   const index = process.argv.indexOf(name)
   return index >= 0 ? (process.argv[index + 1] ?? null) : null
@@ -171,12 +191,17 @@ function collectChangedPaths(base: string, head: string): string[] {
 }
 
 if (import.meta.main) {
+  const all = process.argv.includes("--all")
   const base = readArgument("--base")
   const head = readArgument("--head") ?? "HEAD"
-  if (!base) {
-    throw new Error("Usage: select_smoke_shards.ts --base <sha> [--head <sha>]")
+  if (!all && !base) {
+    throw new Error(
+      "Usage: select_smoke_shards.ts --all | --base <sha> [--head <sha>]"
+    )
   }
 
-  const shards = selectSmokeShards(collectChangedPaths(base, head))
-  process.stdout.write(JSON.stringify(shards.length > 0 ? shards : ["none"]))
+  const shards = all
+    ? shardOrder
+    : selectSmokeShards(collectChangedPaths(base!, head))
+  process.stdout.write(JSON.stringify(expandSmokeMatrix(shards)))
 }

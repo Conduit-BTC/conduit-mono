@@ -1,11 +1,24 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  expandSmokeMatrix,
   parseChangedPaths,
   selectSmokeShards,
 } from "../scripts/ci/select_smoke_shards"
 
 describe("path-aware smoke shard selection", () => {
+  it("splits Market into three required jobs without changing area selection", () => {
+    expect(expandSmokeMatrix(["market", "merchant", "commerce"])).toEqual([
+      { id: "market-1", area: "market", shard: "1/3" },
+      { id: "market-2", area: "market", shard: "2/3" },
+      { id: "market-3", area: "market", shard: "3/3" },
+      { id: "merchant", area: "merchant", shard: "" },
+      { id: "commerce", area: "commerce", shard: "" },
+    ])
+    expect(expandSmokeMatrix([])).toEqual([
+      { id: "none", area: "none", shard: "" },
+    ])
+  })
   it("selects only the changed app for app-local runtime changes", () => {
     expect(selectSmokeShards(["apps/market/src/routes/profile.tsx"])).toEqual([
       "market",

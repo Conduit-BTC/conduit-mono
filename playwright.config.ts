@@ -18,6 +18,7 @@ const configuredRelayPort =
 const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
 const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
 const smokeResultFile = process.env.PLAYWRIGHT_SMOKE_RESULT_FILE
+const smokeProgressFile = process.env.PLAYWRIGHT_SMOKE_PROGRESS_FILE
 const smokeEvidenceValues = {
   baseSha: process.env.PLAYWRIGHT_SMOKE_BASE_SHA ?? "",
   sourceHeadSha: process.env.PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA ?? "",
@@ -41,7 +42,7 @@ const ciReporters: ReporterDescription[] = smokeResultFile
   ? [
       [
         "./scripts/ci/playwright_smoke_reporter.ts",
-        { outputFile: smokeResultFile },
+        { outputFile: smokeResultFile, progressFile: smokeProgressFile },
       ],
     ]
   : [["null"]]

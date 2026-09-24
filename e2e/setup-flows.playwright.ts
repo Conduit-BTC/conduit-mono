@@ -1432,7 +1432,9 @@ test("market checkout country combobox supports search and selection @market", a
   await seedMarketCart(page)
   await page.goto(`${marketUrl}/checkout`)
 
-  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Delivery details" })
+  ).toBeVisible()
 
   await page.getByRole("combobox", { name: /country/i }).click()
   await page.getByPlaceholder("Search countries...").fill("canada")
@@ -1508,7 +1510,9 @@ test("market guest initial checkout clears a signed draft @market", async ({
 
   await page.goto(`${marketUrl}/checkout`)
 
-  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Delivery details" })
+  ).toBeVisible()
   await expect(page.getByLabel("First name")).toHaveValue("")
   await expect(page.getByLabel("Street address")).toHaveValue("")
   await expect
@@ -1561,7 +1565,9 @@ test("market checkout claims a guest draft when a signer connects @market", asyn
   await seedMarketCart(page)
   await page.goto(`${marketUrl}/checkout`)
 
-  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Delivery details" })
+  ).toBeVisible()
   const firstName = page.getByLabel("First name")
   const lastName = page.getByLabel("Last name")
   const street = page.getByLabel("Street address")
@@ -1785,7 +1791,9 @@ test("market checkout clears an identity draft after signer restoration fails @m
   }, TEST_BUYER_PUBKEY)
 
   await page.goto(`${marketUrl}/checkout`)
-  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Delivery details" })
+  ).toBeVisible()
   await expect(page.getByLabel("First name")).toHaveValue("")
   await expect(page.getByLabel("Street address")).toHaveValue("")
   expect(

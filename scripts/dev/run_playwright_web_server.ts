@@ -24,7 +24,8 @@ export function resolvePlaywrightWebServerTarget(
   }
   const relayUrl = `ws://127.0.0.1:${relayPort}`
   const smokeArea = environment.PLAYWRIGHT_SMOKE_AREA ?? "all"
-  const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
+  const testnetIncluded =
+    smokeArea === "all" || smokeArea === "market" || smokeArea === "commerce"
 
   const sharedAppEnv = {
     VITE_DISABLE_DEVTOOLS: "true",
@@ -33,7 +34,7 @@ export function resolvePlaywrightWebServerTarget(
     VITE_ENABLE_TELEMETRY_TEST_HOOKS: "true",
     VITE_PLAUSIBLE_SRC: "data:text/javascript,",
     VITE_TELEMETRY_ALLOWED_HOSTS: "127.0.0.1",
-    ...(commerceIncluded ? { VITE_LIGHTNING_NETWORK: "testnet" } : {}),
+    ...(testnetIncluded ? { VITE_LIGHTNING_NETWORK: "testnet" } : {}),
   }
 
   const targets: Record<string, PlaywrightWebServerTarget> = {

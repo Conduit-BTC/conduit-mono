@@ -712,8 +712,12 @@ test("atomic quantity deltas preserve concurrent changes across signed-out tabs 
     first.goto(`${marketUrl}/cart`),
     second.goto(`${marketUrl}/cart`),
   ])
-  await expect(first.getByText("Alpha", { exact: true })).toBeVisible()
-  await expect(second.getByText("Beta", { exact: true })).toBeVisible()
+  await expect(
+    first.getByRole("link", { name: "Alpha", exact: true })
+  ).toBeVisible()
+  await expect(
+    second.getByRole("link", { name: "Beta", exact: true })
+  ).toBeVisible()
 
   await Promise.all([
     first.getByRole("button", { name: "Increase quantity for Alpha" }).click(),
@@ -788,8 +792,12 @@ test("atomic concurrent additions preserve both new lines across signed-out tabs
     first.goto(`${marketUrl}/cart`),
     second.goto(`${marketUrl}/cart`),
   ])
-  await expect(first.getByText("Race item", { exact: true })).toBeVisible()
-  await expect(second.getByText("Race item", { exact: true })).toBeVisible()
+  await expect(
+    first.getByRole("link", { name: "Race item", exact: true })
+  ).toBeVisible()
+  await expect(
+    second.getByRole("link", { name: "Race item", exact: true })
+  ).toBeVisible()
 
   await Promise.all([
     addCartItemThroughRepository(first, {
@@ -877,7 +885,9 @@ test("legacy writes are ignored after the canonical migration boundary @market",
 }) => {
   await seedLegacyCart(context, legacyCart)
   await page.goto(`${marketUrl}/cart`)
-  await expect(page.getByText("Race item", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "Race item", exact: true })
+  ).toBeVisible()
   await expect
     .poll(() =>
       page.evaluate(
@@ -904,12 +914,16 @@ test("legacy writes are ignored after the canonical migration boundary @market",
     }
   )
   await page.reload()
-  await expect(page.getByText("Race item", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "Race item", exact: true })
+  ).toBeVisible()
   await expect(page.getByText("Obsolete write", { exact: true })).toHaveCount(0)
 
   const resumed = await context.newPage()
   await resumed.goto(`${marketUrl}/cart`)
-  await expect(resumed.getByText("Race item", { exact: true })).toBeVisible()
+  await expect(
+    resumed.getByRole("link", { name: "Race item", exact: true })
+  ).toBeVisible()
   expect(await readCanonicalLines(resumed)).toEqual([
     expect.objectContaining({ title: "Race item", quantity: 2 }),
   ])
@@ -937,14 +951,18 @@ test("an unsupported future cart stays untouched beside canonical data @market",
 }) => {
   await seedLegacyCart(context, legacyCart)
   await page.goto(`${marketUrl}/cart`)
-  await expect(page.getByText("Race item", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "Race item", exact: true })
+  ).toBeVisible()
 
   const raw = JSON.stringify({ version: 3, items: legacyCart.items })
   await page.evaluate((value) => {
     localStorage.setItem("conduit:cart", value)
   }, raw)
   await page.reload()
-  await expect(page.getByText("Race item", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "Race item", exact: true })
+  ).toBeVisible()
 
   expect(await page.evaluate(() => localStorage.getItem("conduit:cart"))).toBe(
     raw
@@ -1036,7 +1054,9 @@ test("a mid-session storage failure preserves exact purchase cleanup in memory @
 }) => {
   await seedLegacyCart(context, legacyCart)
   await page.goto(`${marketUrl}/cart`)
-  await expect(page.getByText("Race item", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "Race item", exact: true })
+  ).toBeVisible()
 
   const result = await page.evaluate(async (corePath) => {
     const repositoryPath = "/src/lib/cart-repository.ts"
@@ -1129,7 +1149,9 @@ test("a mid-session storage failure preserves exact purchase cleanup in memory @
     page.getByRole("heading", { name: "Your cart is empty" })
   ).toBeVisible()
   await page.reload()
-  await expect(page.getByText("Race item", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "Race item", exact: true })
+  ).toBeVisible()
   await expect(
     page.getByText(
       "Cart storage is unavailable. Changes work in this tab only and may not survive a reload or appear in another tab."
@@ -1236,7 +1258,8 @@ test("mixed shipping, two events, and two merchants become separate purchasable 
 
   await page.goto(`${marketUrl}/cart`)
   const eventBPurchase = page
-    .getByText(/Event B item · Ref/)
+    .getByText("Event B item", { exact: true })
+    .first()
     .locator("xpath=ancestor::section[1]")
   await eventBPurchase.getByRole("button", { name: "Review 1 item" }).click()
   await eventBPurchase

@@ -286,6 +286,8 @@ cross-app commerce Playwright shards. App-local changes keep their owning app
 shard and add commerce when they affect the shared checkout, order, product,
 messaging, relay, signer, or payment flow. Shared runtime changes and pushes to
 `main` run every critical shard; docs-only changes skip browser installation.
+Market runs in three single-worker jobs. Their project-aware discovery manifests
+must combine to the complete Market selection with no missing or repeated tests.
 Playwright area tags select the tests. CI rejects an untagged smoke test or a
 selected area that contains zero tests.
 

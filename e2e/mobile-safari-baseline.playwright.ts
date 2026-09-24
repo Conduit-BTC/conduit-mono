@@ -411,7 +411,7 @@ async function readRecoveredPayment(
 
 function makeManualInvoice(description: string): string {
   return makeBolt11Fixture({
-    hrp: "lnbc10n",
+    hrp: "lntb10n",
     createdAt: Math.floor(Date.now() / 1000),
     fields: [bolt11PaymentHashField(), bolt11DescriptionHashField(description)],
   })
@@ -1150,7 +1150,9 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.goto(`${marketUrl}/products`)
     await page.goto(`${marketUrl}/checkout`)
 
-    await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+    await expect(
+      page.getByRole("heading", { name: "Delivery details" })
+    ).toBeVisible()
     await assertMobileViewport(page)
 
     const firstName = page.locator("#ship-first-name")
@@ -2040,7 +2042,7 @@ test.describe("CND-162 mobile browser baseline", () => {
       .getByRole("alert")
       .filter({ hasText: failureDetail })
     const invoice = makeBolt11Fixture({
-      hrp: "lnbc10n",
+      hrp: "lntb10n",
       createdAt: Math.floor(Date.now() / 1000),
       fields: [
         bolt11PaymentHashField(),
@@ -2174,7 +2176,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     }, orderId)
     await page.reload()
     await expect(
-      page.getByText("Order cancelled", { exact: true })
+      page.getByRole("button", { name: /Mobile Recovery Cancelled/ })
     ).toBeVisible()
     await expect(failureAlert).toHaveCount(0)
     expect(await readRecoveredPayment(page, orderId)).toMatchObject({
