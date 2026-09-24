@@ -4995,12 +4995,20 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   await gotoAs(page, marketUrl, "/checkout", "buyer", {
     merchant: nip19.npubEncode(ORGANIZER_PUBKEY),
   })
+  const orderSummary = page.locator("aside").filter({
+    has: page.getByRole("heading", { name: "Order summary", exact: true }),
+  })
   await expect(
-    page.getByText("Pickup from merchant booth", { exact: true }).first()
+    orderSummary.getByText(
+      "Pickup from merchant booth · Synthetic Fixture Hall, Booth 12",
+      { exact: true }
+    )
   ).toBeVisible()
   await expect(
-    page.locator(`main a[href="/u/${handlerNpub}"]:visible`).first()
-  ).toBeVisible({ timeout: 30_000 })
+    orderSummary.getByText("Handled by Synthetic Pickup Host", {
+      exact: true,
+    })
+  ).toBeVisible()
   await expect(page.getByRole("button", { name: /^Send order$/i })).toBeEnabled(
     { timeout: 30_000 }
   )
