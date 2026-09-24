@@ -19,6 +19,7 @@ export interface LightningStrikeOverlayProps {
 
 interface BoltPath {
   d: string
+  depth: number
   /**
    * Hero bolts are the 1-2 dominant main strikes; they render with thicker
    * stroke widths and a white-hot core. All branches inherit the parent
@@ -27,11 +28,13 @@ interface BoltPath {
   isHero: boolean
 }
 
+const branchWidth = (base: number, depth: number) => base * 0.68 ** depth
+
 /**
  * Recursively generate a jagged lightning bolt with random branching forks.
  * Each segment is offset perpendicular to the main axis with sin-tapered
- * jitter so the endpoints stay anchored. Branches recurse twice for natural
- * organic-looking forks (e.g. main strike -> sub-branch -> small spark).
+ * jitter so the endpoints stay anchored. Three generations of progressively
+ * shorter forks give each strike a visible, self-similar silhouette.
  *
  * `isHero` propagates to all sub-branches: a hero strike's children are
  * also hero, so the entire dominant channel renders thick + white-hot.
@@ -74,26 +77,31 @@ function generateLightningBolt(
       )
       .join(" "),
     isHero,
+    depth,
   })
 
-  if (depth < 2) {
-    // Hero strikes branch noticeably more aggressively to feel like the
-    // dominant electrical channel; secondary bolts stay sparser.
+  if (depth < 3) {
+    // Keep the fork count bounded while adding fine twigs at the outer edges.
     const branchCount = isHero
       ? depth === 0
         ? 5 + Math.floor(Math.random() * 3) // 5-7 at top of hero
-        : 1 + Math.floor(Math.random() * 3) // 1-3 at hero sub-branches
+        : depth === 1
+          ? 2 + Math.floor(Math.random() * 2) // 2-3 per large branch
+          : 1 + Math.floor(Math.random() * 2) // 1-2 fine twigs
       : depth === 0
         ? 2 + Math.floor(Math.random() * 3) // 2-4 at top of normal
-        : Math.floor(Math.random() * 2) + 1 // 1-2 at normal sub-branches
+        : depth === 1
+          ? 1 + Math.floor(Math.random() * 2) // 1-2 per branch
+          : 1 // one fine twig
     const totalLen = Math.hypot(dx, dy)
 
     for (let b = 0; b < branchCount; b++) {
       // Pick a random middle vertex as the branch root.
       const branchIdx = 1 + Math.floor(Math.random() * (points.length - 2))
       const root = points[branchIdx]
-      const branchAngle = baseAngle + (Math.random() - 0.5) * 1.4
-      const branchLength = totalLen * (0.18 + Math.random() * 0.45)
+      const side = Math.random() < 0.5 ? -1 : 1
+      const branchAngle = baseAngle + side * (0.35 + Math.random() * 0.7)
+      const branchLength = totalLen * (0.28 + Math.random() * 0.25)
       const ex = root.x + Math.cos(branchAngle) * branchLength
       const ey = root.y + Math.sin(branchAngle) * branchLength
       result.push(
@@ -102,8 +110,8 @@ function generateLightningBolt(
           root.y,
           ex,
           ey,
-          Math.max(4, Math.floor(segments * 0.6)),
-          jitter * 0.65,
+          Math.max(4, Math.floor(segments * 0.7)),
+          jitter * 0.62,
           isHero,
           depth + 1
         )
@@ -269,7 +277,6 @@ export function LightningStrikeOverlay({
         {/* Soft outer glow -- normal bolts (large blurred halo behind body) */}
         <g
           stroke="var(--primary-500)"
-          strokeWidth="4"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -278,14 +285,17 @@ export function LightningStrikeOverlay({
           className="animate-[lso-soft_1100ms_ease-out_30ms_forwards]"
         >
           {normalBolts.map((b, i) => (
-            <path key={`s-${i}`} d={b.d} />
+            <path
+              key={`s-${i}`}
+              d={b.d}
+              strokeWidth={branchWidth(4, b.depth)}
+            />
           ))}
         </g>
 
         {/* Soft outer glow -- hero bolts (fatter halo, deeper blur) */}
         <g
           stroke="var(--primary-500)"
-          strokeWidth="9"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -294,14 +304,17 @@ export function LightningStrikeOverlay({
           className="animate-[lso-soft-hero_1100ms_ease-out_20ms_forwards]"
         >
           {heroBolts.map((b, i) => (
-            <path key={`sh-${i}`} d={b.d} />
+            <path
+              key={`sh-${i}`}
+              d={b.d}
+              strokeWidth={branchWidth(9, b.depth)}
+            />
           ))}
         </g>
 
         {/* Mid layer -- normal bolt body (lavender) */}
         <g
           stroke="var(--primary-300)"
-          strokeWidth="1.4"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -309,14 +322,17 @@ export function LightningStrikeOverlay({
           className="animate-[lso-mid_1100ms_ease-out_60ms_forwards]"
         >
           {normalBolts.map((b, i) => (
-            <path key={`m-${i}`} d={b.d} />
+            <path
+              key={`m-${i}`}
+              d={b.d}
+              strokeWidth={branchWidth(1.4, b.depth)}
+            />
           ))}
         </g>
 
         {/* Mid layer -- hero bolt body (brighter lavender, thicker spine) */}
         <g
           stroke="var(--primary-200)"
-          strokeWidth="2.6"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -324,14 +340,17 @@ export function LightningStrikeOverlay({
           className="animate-[lso-mid-hero_1100ms_ease-out_50ms_forwards]"
         >
           {heroBolts.map((b, i) => (
-            <path key={`mh-${i}`} d={b.d} />
+            <path
+              key={`mh-${i}`}
+              d={b.d}
+              strokeWidth={branchWidth(2.6, b.depth)}
+            />
           ))}
         </g>
 
         {/* Bright core -- normal bolts (pale lavender thread) */}
         <g
           stroke="var(--primary-100)"
-          strokeWidth="0.6"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -340,14 +359,17 @@ export function LightningStrikeOverlay({
           className="animate-[lso-core_1100ms_ease-out_80ms_forwards]"
         >
           {normalBolts.map((b, i) => (
-            <path key={`c-${i}`} d={b.d} />
+            <path
+              key={`c-${i}`}
+              d={b.d}
+              strokeWidth={branchWidth(0.6, b.depth)}
+            />
           ))}
         </g>
 
         {/* Bright core -- hero bolts (white-hot, thicker, dominant flash) */}
         <g
           stroke="var(--primary-50)"
-          strokeWidth="1.4"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -356,7 +378,11 @@ export function LightningStrikeOverlay({
           className="animate-[lso-core-hero_1100ms_ease-out_70ms_forwards]"
         >
           {heroBolts.map((b, i) => (
-            <path key={`ch-${i}`} d={b.d} />
+            <path
+              key={`ch-${i}`}
+              d={b.d}
+              strokeWidth={branchWidth(1.4, b.depth)}
+            />
           ))}
         </g>
       </svg>
