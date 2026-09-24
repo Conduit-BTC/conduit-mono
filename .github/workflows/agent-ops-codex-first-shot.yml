@@ -260,7 +260,7 @@ jobs:
             - Run targeted validation when feasible and include results in the final message.
 
             Hard rules:
-            - Read AGENTS.md, CONTRIBUTING.md, docs/README.md, and docs/knowledge/self-healing-agent-system.md before editing.
+            - Read AGENTS.md and docs/knowledge/agent-automation-boundary.md before editing; follow their task routes and read CONTRIBUTING.md before opening a PR.
             - Do not deploy, merge, force-push, alter production secrets, run destructive commands, or touch .env files.
             - Do not commit secrets, private runbooks, telemetry exports, dashboard exports, message/order/payment contents, addresses, signer codes, Nostr secret keys, NWC URIs, wallet credentials, Linear tokens, or unbounded Linear text.
             - Treat protocol, auth, payment, privacy, security, release policy, production secret, and broad architecture work as risk C and stop with an advisory report.
@@ -299,7 +299,7 @@ jobs:
             - Run targeted validation when feasible and include results in the final message.
 
             Hard rules:
-            - Read AGENTS.md, CONTRIBUTING.md, docs/README.md, and docs/knowledge/self-healing-agent-system.md before editing.
+            - Read AGENTS.md and docs/knowledge/agent-automation-boundary.md before editing; follow their task routes and read CONTRIBUTING.md before opening a PR.
             - Do not deploy, merge, force-push, alter production secrets, run destructive commands, or touch .env files.
             - Do not commit secrets, private runbooks, telemetry exports, dashboard exports, message/order/payment contents, addresses, signer codes, Nostr secret keys, NWC URIs, wallet credentials, Linear tokens, or unbounded Linear text.
             - Treat protocol, auth, payment, privacy, security, release policy, production secret, and broad architecture work as risk C and stop with an advisory report.
@@ -338,7 +338,7 @@ jobs:
             - Run targeted validation when feasible and include results in the final message.
 
             Hard rules:
-            - Read AGENTS.md, CONTRIBUTING.md, docs/README.md, and docs/knowledge/self-healing-agent-system.md before editing.
+            - Read AGENTS.md and docs/knowledge/agent-automation-boundary.md before editing; follow their task routes and read CONTRIBUTING.md before opening a PR.
             - Do not deploy, merge, force-push, alter production secrets, run destructive commands, or touch .env files.
             - Do not commit secrets, private runbooks, telemetry exports, dashboard exports, message/order/payment contents, addresses, signer codes, Nostr secret keys, NWC URIs, wallet credentials, Linear tokens, or unbounded Linear text.
             - Treat protocol, auth, payment, privacy, security, release policy, production secret, and broad architecture work as risk C and stop with an advisory report.
