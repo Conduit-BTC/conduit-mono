@@ -77,6 +77,19 @@ function plan() {
         maxFeeSats: 24,
       },
     ],
+    commerceQuote: {
+      commerceTotalSats: 1_000,
+      lines: [
+        {
+          productCoordinate: `30402:${MERCHANT}:recovery-fixture`,
+          productEventId: "d".repeat(64),
+          merchantPubkey: MERCHANT,
+          quantity: 1,
+          unitMerchandiseSats: 1_000,
+          unitShippingSats: 0,
+        },
+      ],
+    },
   })
 }
 
@@ -174,6 +187,15 @@ describe("checkout Spark merchant recovery", () => {
     tampered.content = JSON.stringify(decoded)
     tampered.id = tampered.getEventHash()
     expect(() => parseCheckoutSparkRecoveryRumor(tampered)).toThrow(
+      "recovery rumor"
+    )
+
+    const quoteTampered = new NDKEvent(getNdk(), rumor.rawEvent())
+    const changed = JSON.parse(quoteTampered.content)
+    changed.plan.commerceQuote.lines[0].productEventId = "e".repeat(64)
+    quoteTampered.content = JSON.stringify(changed)
+    quoteTampered.id = quoteTampered.getEventHash()
+    expect(() => parseCheckoutSparkRecoveryRumor(quoteTampered)).toThrow(
       "recovery rumor"
     )
   })

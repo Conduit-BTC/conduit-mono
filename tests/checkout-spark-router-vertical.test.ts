@@ -20,6 +20,7 @@ import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
+import { checkoutSparkQuoteFixture } from "./support/checkout-spark-quote-fixture"
 
 const CREATED_AT = 1_800_000_000_000
 const RELAY = "wss://merchant.inbox.relay.dev"
@@ -74,6 +75,7 @@ function input(storage: MemoryStorage) {
       pubkey: BUYER.pubkey,
       signer: BUYER,
     },
+    quoteAuthority: checkoutSparkQuoteFixture(MERCHANT.pubkey),
     routerObligationInputs: {
       commerceTotalSats: 1_000,
       commerce: [

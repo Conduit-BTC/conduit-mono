@@ -401,6 +401,12 @@ export function createCheckoutSparkRouterFundingBridge(
           }
         }
 
+        // Legacy plans remain restorable for recovery and receive observation,
+        // but must not authorize a new payer submission without quote evidence.
+        if (prepared.plan.schemaVersion !== 2) {
+          throw new Error("Checkout Spark funding requires a quote-bound plan.")
+        }
+
         if (input.paymentTarget.type === "manual") {
           const manual = await payInvoice({
             invoice: prepared.fundingInvoice,

@@ -37,7 +37,8 @@ class MemoryStorage {
 }
 
 function preparedFunding(
-  grossFundingSats = 1_240
+  grossFundingSats = 1_240,
+  quoteBound = true
 ): PreparedCheckoutSparkRouterFunding {
   const plan = freezeCheckoutSparkPlan({
     checkoutId: "checkout-router-funding-1",
@@ -72,6 +73,23 @@ function preparedFunding(
         maxFeeSats: 24,
       },
     ],
+    ...(quoteBound
+      ? {
+          commerceQuote: {
+            commerceTotalSats: 1_000,
+            lines: [
+              {
+                productCoordinate: `30402:${"a".repeat(64)}:funding-fixture`,
+                productEventId: "d".repeat(64),
+                merchantPubkey: "a".repeat(64),
+                quantity: 1,
+                unitMerchandiseSats: 1_000,
+                unitShippingSats: 0,
+              },
+            ],
+          },
+        }
+      : {}),
   })
   return {
     plan,
@@ -110,6 +128,28 @@ function paymentInput(): CheckoutSparkRouterFundingPaymentInput {
 }
 
 describe("checkout Spark router funding bridge", () => {
+  it("restores a legacy plan but refuses a fresh payer submission", async () => {
+    const payInvoice = mock(async () => ({ status: "paid" as const }))
+    const prepared = preparedFunding(1_240, false)
+    const bridge = createCheckoutSparkRouterFundingBridge(prepared, {
+      payInvoice,
+      reconcileCheckoutReceive: async () => ({
+        status: "PENDING",
+        funds: {
+          spendableSats: 0,
+          observedAt: CREATED_AT + 1,
+        },
+      }),
+      persistProgress: async () => undefined,
+      requireCrossTabLock: false,
+    })
+
+    await expect(bridge.fund(paymentInput())).rejects.toThrow(
+      "quote-bound plan"
+    )
+    expect(payInvoice).not.toHaveBeenCalled()
+  })
+
   it("treats payer success as provisional until the exact Spark receive is spendable", async () => {
     const payInvoice = mock(async () => ({
       status: "paid" as const,

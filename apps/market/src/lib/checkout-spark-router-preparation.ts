@@ -2,6 +2,7 @@ import {
   applyCheckoutSparkEvidence,
   buildCheckoutSparkRouterObligations,
   createCheckoutSparkReconciliation,
+  freezeCheckoutSparkCommerceQuote,
   freezeCheckoutSparkPlan,
   restoreCheckoutSparkReconciliation,
   type BuildCheckoutSparkRouterObligationsInput,
@@ -27,6 +28,8 @@ import type {
   SparkCheckoutReceiveInput,
   SparkCheckoutReceiveRequest,
 } from "./spark-wallet"
+import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
+import type { CheckoutSparkQuoteAuthority } from "./checkout-spark-quote-authority"
 
 const STORAGE_KEY = "conduit:checkout-spark-router-preparations:v1"
 const MAX_STORED_PREPARATIONS = 64
@@ -65,6 +68,7 @@ export interface PrepareCheckoutSparkRouterFundingInput {
   grossFundingSats: number
   fundingExpirySecs: number
   identity: CheckoutSparkRecoverySigningIdentity
+  quoteAuthority: CheckoutSparkQuoteAuthority
   routerObligationInputs: Omit<
     BuildCheckoutSparkRouterObligationsInput,
     "network" | "nowSeconds"
@@ -507,6 +511,16 @@ export async function prepareCheckoutSparkRouterFunding(
     network: input.network,
     nowSeconds: Math.floor(now() / 1_000),
   })
+  const commerceQuote = freezeCheckoutSparkCommerceQuote(
+    buildCheckoutSparkCommerceEvidence(input.quoteAuthority),
+    input.merchantPubkey
+  )
+  if (
+    commerceQuote.commerceTotalSats !==
+    input.routerObligationInputs.commerceTotalSats
+  ) {
+    throw new Error("Checkout Spark obligations differ from the signed quote.")
+  }
   const requiredNetSats = routerObligations.requiredNetSats
   const wallet = createWalletMaterial(input.network)
   if (wallet.network !== input.network) {
@@ -553,6 +567,7 @@ export async function prepareCheckoutSparkRouterFunding(
         expiresAt: funding.expiresAt,
       },
       obligations: routerObligations.obligations,
+      commerceQuote,
     })
     const reconciliation = createCheckoutSparkReconciliation(plan)
     preparation = saveCheckoutSparkRouterPreparation(
@@ -651,6 +666,9 @@ export async function retryCheckoutSparkRouterRecoveryAndResumeFunding(input: {
     throw new Error("Checkout Spark recovery cannot resume this preparation.")
   }
   const plan = stored.reconciliation.plan
+  if (plan.schemaVersion !== 2) {
+    throw new Error("Legacy checkout Spark plans cannot expose new funding.")
+  }
   const currentTime = now()
   if (
     !Number.isSafeInteger(currentTime) ||

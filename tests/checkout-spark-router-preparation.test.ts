@@ -9,6 +9,7 @@ import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
+import { checkoutSparkQuoteFixture } from "./support/checkout-spark-quote-fixture"
 
 import {
   getCheckoutSparkRouterPreparation,
@@ -65,6 +66,7 @@ function preparationInput() {
       pubkey: BUYER.pubkey,
       signer: BUYER,
     },
+    quoteAuthority: checkoutSparkQuoteFixture(MERCHANT),
     routerObligationInputs: {
       commerceTotalSats: 1_000,
       commerce: [
@@ -134,6 +136,32 @@ describe("checkout Spark router preparation", () => {
     expect(walletCreateCalls).toBe(0)
   })
 
+  it("rejects a quote whose signed commerce total differs before wallet creation", async () => {
+    let walletCreateCalls = 0
+    const input = preparationInput()
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        {
+          ...input,
+          quoteAuthority: {
+            ...input.quoteAuthority,
+            pricing: {
+              ...input.quoteAuthority.pricing,
+              totalSats: 999,
+            },
+          },
+        },
+        {
+          createWalletMaterial: () => {
+            walletCreateCalls += 1
+            return walletMaterial()
+          },
+        }
+      )
+    ).rejects.toThrow()
+    expect(walletCreateCalls).toBe(0)
+  })
+
   it("persists the frozen plan and exact recovery handoff before exposing funding", async () => {
     const storage = new MemoryStorage()
     const calls: string[] = []
@@ -185,6 +213,8 @@ describe("checkout Spark router preparation", () => {
     ])
     expect(result.fundingInvoice).toBe("lnbc-hidden-router-funding")
     expect(result.plan.funding.paymentRequest).toBe(result.fundingInvoice)
+    expect(result.plan.schemaVersion).toBe(2)
+    expect(result.plan.commerceQuote?.commerceTotalSats).toBe(1_000)
     expect(result.fundingReceive).toEqual(fundingReceive())
     expect(Object.isFrozen(result.fundingReceive)).toBe(true)
     expect(result.fundingSubmissionState).toBe("not_started")
