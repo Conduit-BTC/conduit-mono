@@ -1679,3 +1679,34 @@ test("two future market products form one order and one private organizer releas
       .getByText("Organizer handed out")
   ).toBeVisible()
 })
+
+test("organizer creates and closes one future Event Market without legacy event records @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await gotoAs(page, merchantUrl, "/events/new", "organizer")
+  await page.getByLabel("Event title").fill("New Future Fair")
+  await page.getByLabel("Description").fill("A future organizer market")
+  await page
+    .getByLabel("Banner URL")
+    .fill("https://cdn.conduit.market/conduit-test/template-product.svg")
+  await page.getByLabel("Location", { exact: true }).fill("Town Hall")
+  await page.getByLabel("Start", { exact: true }).fill("2030-06-01T10:00")
+  await page.getByLabel("End", { exact: true }).fill("2030-06-01T16:00")
+  await page.getByRole("button", { name: "Publish Event Market" }).click()
+  await expect(page).toHaveURL(/\/events\/naddr1/)
+  await expect(
+    page.getByRole("heading", { name: "New Future Fair" })
+  ).toBeVisible()
+  const published = uniquePublishedEvents(relay.publications)
+  expect(published.map((event) => event.kind)).toContain(31923)
+  expect(published.map((event) => event.kind)).toContain(30409)
+  expect(
+    published.some((event) => event.kind === 30405 || event.kind === 30406)
+  ).toBe(false)
+  await page.getByRole("button", { name: "Close Event Market" }).click()
+  await expect(page.getByText(/Closed · Town Hall/)).toBeVisible()
+  await page.getByRole("button", { name: "Reopen Event Market" }).click()
+  await expect(page.getByText(/Open · Town Hall/)).toBeVisible()
+})
