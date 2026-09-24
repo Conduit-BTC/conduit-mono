@@ -118,14 +118,25 @@ nor this design guarantees eventual settlement.
 - [ ] Old direct-payment and manual second-payment routes cannot be reached
       for a new checkout after cutover; old orders remain inspectable.
 
-## Open question before full cutover
+## Open questions before full cutover
 
-How should a merchant-issued `pay_later` or `payment_request` for a **new router
-order** enter this flow after order creation? The new-checkout rule forbids a
-silent direct-recipient fallback, but the timing and authority for a later
-merchant-approved invoice must be specified before that flow is migrated.
-Historical pre-cutover orders retain their original payment authority. This
-does not block testing a prepaid router checkout on an isolated branch.
+- A merchant-issued `pay_later` or `payment_request` for a **new router order**
+  needs a defined point at which the plan and invoice become authorized. The
+  new-checkout rule forbids a silent direct-recipient fallback. Historical
+  pre-cutover orders retain their original payment authority.
+- An expired but apparently unpaid funding invoice needs an explicit
+  continuation or cancellation rule. Any replacement must account for late
+  receive evidence and concurrent tabs without changing the order or replaying
+  a payment. The current one-invoice rule does not authorize an automatic
+  replacement.
+- Funds remaining after a failed payout or unused fee allowance need an exact,
+  authorized disposition before the wallet can retire. A selected wallet,
+  merchant, cache entry, or application default must not silently choose a
+  refund destination. No in-app refund authority is established here.
+
+These questions do not change the frozen plan or permit direct payment as a
+fallback. They must be resolved before claiming a complete cutover; a narrow
+prepaid branch test is not evidence for these failure paths.
 
 ## Source contracts
 
