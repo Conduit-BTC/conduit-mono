@@ -62,6 +62,24 @@ not claim that unrelated clients implement the extension.
 Core parsing must nevertheless preserve repeated collection and
 `shipping_option` references.
 
+## Presentation and operational state
+
+Requirements to resolve, retain, validate, or expose event-market state do not
+by themselves require a dedicated shopper-facing warning, card, or disclosure.
+Market presents the fulfillment information needed for the shopper's current
+decision or order action, in compact ordinary UI. Discovery can defer exact
+pickup and handoff details until cart or checkout, before order commitment.
+When evidence prevents the current action, the shopper receives concise,
+actionable status; underlying relay coverage and protocol diagnostics remain
+available on the relevant merchant, organizer, network, or recovery surface.
+Recovery information appears in the shopper journey when it changes the action
+the shopper can take, without displacing the primary checkout or payment action
+with routine relay explanations.
+
+This presentation boundary does not relax signed authority, exact revision and
+fulfillment validation, fail-closed payment or handoff gates, durable retry,
+receipt privacy, or merchant and organizer operational observability.
+
 ## Identity and coordinates
 
 Every record is identified by its full addressable coordinate:
@@ -253,7 +271,8 @@ out the product. Inbox pagination and coverage describe message discovery, not
 the authority of positive evidence already found. A 400-event page cap,
 continued scan, failed relay, stale result, or inability to prove global inbox
 completeness therefore does not negate a valid receipt. The UI exposes degraded
-discovery and keeps retrying so it can find additional relevant messages.
+discovery on the organizer's operational or recovery surface, while bounded
+discovery and retry continue to find additional relevant messages.
 
 Revocation is race-sensitive. A valid matching revocation known before handoff
 makes the claim revoked and blocks `handed_out`. A matching acknowledgement and
@@ -292,10 +311,13 @@ The shared resolver exposes these states rather than collapsing them:
 - `unsupported`: a version, kind, or reference shape is not implemented.
 
 An empty or failed relay response never erases stronger retained evidence.
-Catalog browsing may render cached/partial evidence with truthful state. A
+Catalog browsing may use retained product data while the resolver preserves its
+source, freshness, and coverage. Shopper-facing status describes an action limit
+when the evidence changes what the shopper can do; detailed relay and evidence
+state remains available on operational or recovery surfaces. A
 partial relay view does not veto an exact positive graph when the required
 listing, collection, event, and pickup revisions were all observed live; it
-does prevent an incomplete negative observation from being presented as
+does prevent an incomplete negative observation from being treated as
 absence. Cached-only required evidence is stale. Direct payment requires that
 current positive graph plus a deterministic total. Deleted, malformed,
 conflicting, unsupported, unavailable, or stale required evidence blocks direct
@@ -323,9 +345,9 @@ visibility or organizer receipt.
 Private organizer receipts, revocations, and acknowledgements require a usable
 recipient kind-10050 inbox. Each signed gift wrap is persisted before its first
 relay I/O; retry reuses the exact immutable wrap. Zero ACKs remain an explicit
-undelivered state, partial delivery remains observable to the merchant for
-recovery, and a merchant-delivered
-order is not duplicated merely because the separate organizer leg needs retry.
+undelivered state, partial delivery remains visible to the merchant on the
+outbox or recovery surface, and a merchant-delivered order is not duplicated
+merely because the separate organizer leg needs retry.
 The Merchant outbox retains only the exact encrypted wraps plus the bounded,
 account-scoped receipt identity and public graph scope needed for retry or a
 later revocation after public evidence changes. It does not retain a plaintext
@@ -374,11 +396,16 @@ open events remain selectable beyond their advertised end time.
 The canonical catalog URL encodes the organizer collection `naddr`. Friendly
 aliases may redirect to it but are not metadata or membership authority.
 
-The page renders organizer trust context separately from signed provenance,
-calendar metadata from the linked NIP-52 record, pickup expectations from each
-accepted product's exact linked `30406`, and only exact product coordinates
-present in the organizer collection. Products are grouped or labeled by
-merchant booth and show whether pickup is from the merchant or event organizer.
+For each selected product, the client resolves its exact linked `30406`, public
+pickup terms, and merchant- or organizer-handoff relationship when current
+evidence permits, retaining unresolved state otherwise. The page presents
+organizer trust context separately from signed provenance, calendar metadata
+from the linked NIP-52 record, and only exact product coordinates present in
+the organizer collection. Products are grouped or labeled by merchant booth.
+Compact catalog cards need not repeat pickup expectations, location, handler
+identity, or handoff mode; the cart or checkout review presents the resolved
+details before order commitment. Unresolved pickup evidence may limit an action
+without adding a per-product relay warning or clarification box.
 One-sided merchant claims and forged tags never add products.
 
 Discovery is bounded to imported coordinates and organizer pubkeys already
@@ -393,8 +420,8 @@ Pickup checkout:
 - does not request or emit a buyer delivery address;
 - does not show a universal contact form for a signed-in buyer with a usable
   private reply path;
-- keeps a bounded merchant-only recovery contact for guest/manual order-first
-  cases that cannot receive a private reply;
+- keeps bounded merchant-only email and phone contact for guest/manual
+  order-first cases that cannot receive a private reply;
 - blocks or explicitly splits carts that mix pickup and shipped fulfillment;
 - snapshots pickup coordinate/revision, price/currency, title, public location,
   organizer pubkey, merchant pubkey, event coordinate, collection coordinate,
@@ -403,10 +430,15 @@ Pickup checkout:
   organizer-handoff order;
 - requires snapshot parity before signing or retrying direct payment.
 
-Before signing, the buyer sees who performs handoff and, for organizer handoff,
-that a minimal fulfillment receipt will be shared after merchant payment
-confirmation. Mixed merchant- and organizer-handoff carts are blocked or split
-unless every physical line resolves to the same exact handler graph.
+Before the relevant order commitment, the buyer can understand the selected
+fulfillment type, public pickup location, and who performs handoff. Compact
+fulfillment details in the cart or checkout review satisfy this requirement;
+warning cards, repeated fulfillment prose, and technical relay explanations are
+not required. Organizer handoff does not require a separate pre-submit
+disclosure about the minimal fulfillment receipt; the receipt remains limited
+to the operational fields defined above. Mixed merchant- and organizer-handoff
+carts are blocked or split unless every physical line resolves to the same
+exact handler graph.
 
 The order carries the selected shipping-option coordinate. Pickup orders do not
 require carrier or tracking actions. Merchant records `picked_up`/complete
@@ -443,20 +475,22 @@ ambiguous-payment reconciliation retain their independent safeguards.
   contact, addresses, notes, invoices, proofs, payment secrets, and arbitrary
   extra keys.
 - Receipt, revocation, and acknowledgement wraps persist before relay I/O,
-  retry the exact signed events, retain zero/partial ACK states for merchant
-  recovery, and remain
-  idempotent across reload.
+  retry the exact signed events, expose zero/partial ACK states to the merchant
+  on operational or recovery surfaces, and remain idempotent across reload.
 - A found valid ready receipt remains actionable when the inbox is capped,
   partial, stale, or otherwise cannot prove completeness; no valid receipt
   means no handoff authority.
 - A valid revocation known before handoff removes readiness and prevents
   handout. A hypothetical unseen revocation does not negate found authority; a
   valid organizer acknowledgement grants no merchant-only lifecycle authority.
-- Signed-in pickup completes without a contact form. Guest pickup requires one
-  merchant-only recovery method and never copies it to the organizer.
+- Signed-in pickup completes without a contact form. New guest pickup orders
+  require both merchant-only email and phone contact and never copy either to
+  the organizer. Historical one-contact pickup orders remain readable.
 - Cross-app browser fixtures cover event creation, both handoff modes,
-  organizer acceptance, informed pickup handoff/no address, paid or zero-cost ready
-  delivery, organizer handoff acknowledgement, and merchant completion.
+  organizer acceptance, compact catalog discovery, cart or checkout fulfillment
+  and handler details before commitment, checkout without a delivery address,
+  paid or zero-cost ready delivery, organizer handoff acknowledgement, and
+  merchant completion.
 - Ordinary shipping, digital products, legacy single-recipient orders, and
   non-event Gamma collections keep their prior behavior.
 

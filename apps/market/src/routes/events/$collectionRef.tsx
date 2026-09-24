@@ -1,7 +1,6 @@
 import {
   AlertCircle,
   Archive,
-  Check,
   ChevronDown,
   ExternalLink,
   RefreshCw,
@@ -39,7 +38,6 @@ import {
 } from "../../components/EventActorIdentity"
 import {
   getEventActorIdentityView,
-  selectEventHandoffIdentity,
   type EventActorIdentityView,
 } from "../../lib/event-actor-identity"
 import {
@@ -76,10 +74,6 @@ import {
   type EventCatalog,
 } from "../../lib/event-market-adapter"
 import { parseEventCatalogSearch } from "../../lib/event-catalog-search"
-import {
-  getPickupHandoffPrivacyCopy,
-  getPickupHandoffSummary,
-} from "../../lib/pickup-handoff"
 
 export const Route = createFileRoute("/events/$collectionRef")({
   component: EventCatalogPage,
@@ -98,11 +92,9 @@ function EventCatalogProductCard({
   purchaseReady,
   isChecking,
   identity,
-  organizerIdentity,
   imageLoading,
   btcUsdRate,
   pricePreference,
-  onCartNotice,
   onMerchantActivate,
 }: {
   entry: EventCatalog["products"][number]
@@ -110,12 +102,10 @@ function EventCatalogProductCard({
   purchaseReady: boolean
   isChecking: boolean
   identity: ReturnType<ReturnType<typeof useMerchantIdentities>["getIdentity"]>
-  organizerIdentity: EventActorIdentityView
   imageLoading: "eager" | "lazy"
   btcUsdRate: ReturnType<typeof useShopperPricing>["quote"]
   pricePreference: ReturnType<typeof useShopperPricing>["preference"]
   onMerchantActivate: () => void
-  onCartNotice: (message: string) => void
 }) {
   const cart = useCart()
   const { upgradePendingEventPickupItem } = cart
@@ -143,22 +133,6 @@ function EventCatalogProductCard({
     selectedProduct.id === product.id && product.type !== "variable"
       ? entry.pickupReadiness
       : (entry.familyPickupReadiness?.[selectedProduct.id] ?? "terminal")
-  const pickupLocation =
-    pickupFulfillment?.option.location ?? pickupFulfillment?.option.geohash
-  const handoff = pickupFulfillment
-    ? getPickupHandoffSummary(pickupFulfillment)
-    : null
-  const handlerIdentity = handoff
-    ? selectEventHandoffIdentity({
-        mode: handoff.mode,
-        handlerPubkey: handoff.handlerPubkey,
-        merchant: { pubkey: identity.pubkey, identity },
-        organizer: {
-          pubkey: catalog.organizerPubkey ?? "",
-          identity: organizerIdentity,
-        },
-      })
-    : null
   const exactCandidate = pickupFulfillment
     ? cartItemInputFromProductSelection(
         product,
@@ -240,13 +214,7 @@ function EventCatalogProductCard({
   const add = async (selection: Product) => {
     const candidate = exactCandidate ?? pendingCandidate
     if (selection.id !== selectedProduct.id || !canAdd || !candidate) return
-    const added = await cart.addItem(candidate, 1)
-    if (!added) return
-    onCartNotice(
-      pickupFulfillment
-        ? `${product.title} was added for ${handoff?.label.toLowerCase() ?? "event pickup"}.`
-        : `${product.title} was added. Pickup terms are being verified in the background.`
-    )
+    await cart.addItem(candidate, 1)
   }
   const increment = async (selection: Product) => {
     const candidate = exactCandidate ?? pendingCandidate
@@ -282,91 +250,29 @@ function EventCatalogProductCard({
   }
 
   return (
-    <>
-      <ProductGridCard
-        product={product}
-        family={family}
-        className="h-auto"
-        selectedProductId={selectedProduct.id}
-        onSelectedProductChange={(selection) =>
-          setSelectedProductId(selection.id)
-        }
-        merchantName={identity.displayName}
-        merchantNamePending={identity.status === "pending"}
-        imageLoading={imageLoading}
-        btcUsdRate={btcUsdRate}
-        pricePreference={pricePreference}
-        allowZeroPrice={pickupFulfillment !== null || pendingEvidenceMayRecover}
-        cartQuantity={cartQuantity}
-        onProductActivate={null}
-        onMerchantActivate={onMerchantActivate}
-        onAddToCart={add}
-        onIncrement={canAdd ? increment : undefined}
-        onDecrement={canAdd ? decrement : undefined}
-        cartActionDisabled={!cartAction.enabled}
-        cartActionDisabledLabel={cartAction.disabledLabel ?? undefined}
-      />
-      {!pickupFulfillment ? (
-        <div className="rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-          {pendingEvidenceMayRecover ? (
-            <>
-              Current pickup terms are being verified. You can add this item
-              now; checkout stays locked until this exact product is confirmed.
-            </>
-          ) : entry.evidenceState === "retained" ? (
-            <>
-              Previously verified product details are shown while current relay
-              evidence is unavailable. Checkout is disabled until the exact
-              product and pickup terms are confirmed again.
-            </>
-          ) : (
-            <>
-              Organizer accepted; this selected product or option has no current
-              exact merchant pickup link. Checkout is disabled.
-            </>
-          )}
-        </div>
-      ) : handoff && handlerIdentity ? (
-        <details className="group/pickup rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-xs leading-5 text-[var(--text-secondary)]">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] [&::-webkit-details-marker]:hidden">
-            <span className="min-w-0 flex-1">
-              <span className="block font-medium text-[var(--text-primary)]">
-                {handoff.label}
-              </span>
-              <span
-                className="block truncate"
-                title={`Handled by ${handlerIdentity.displayName}`}
-              >
-                Handled by <EventActorName identity={handlerIdentity} />
-              </span>
-            </span>
-            <span className="flex shrink-0 items-center gap-1 font-medium text-[var(--text-primary)]">
-              <span className="sr-only sm:not-sr-only">Details</span>
-              <ChevronDown
-                className="h-3.5 w-3.5 transition-transform duration-200 group-open/pickup:rotate-180"
-                aria-hidden="true"
-              />
-            </span>
-          </summary>
-          <div className="border-t border-[var(--border)] px-3 py-2">
-            <p className="font-medium text-[var(--text-primary)]">
-              {pickupFulfillment.option.title}
-            </p>
-            {pickupLocation ? <p className="mt-1">{pickupLocation}</p> : null}
-            <p className="mt-2 break-words">
-              Handled by <EventActorName identity={handlerIdentity} />
-            </p>
-            <p className="mt-2">{getPickupHandoffPrivacyCopy(handoff)}</p>
-            <div className="mt-2 flex justify-end">
-              <EventActorProvenance
-                pubkey={handoff.handlerPubkey}
-                copyLabel="Copy pickup handler npub"
-              />
-            </div>
-          </div>
-        </details>
-      ) : null}
-    </>
+    <ProductGridCard
+      product={product}
+      family={family}
+      className="h-auto"
+      selectedProductId={selectedProduct.id}
+      onSelectedProductChange={(selection) =>
+        setSelectedProductId(selection.id)
+      }
+      merchantName={identity.displayName}
+      merchantNamePending={identity.status === "pending"}
+      imageLoading={imageLoading}
+      btcUsdRate={btcUsdRate}
+      pricePreference={pricePreference}
+      allowZeroPrice={pickupFulfillment !== null || pendingEvidenceMayRecover}
+      cartQuantity={cartQuantity}
+      onProductActivate={null}
+      onMerchantActivate={onMerchantActivate}
+      onAddToCart={add}
+      onIncrement={canAdd ? increment : undefined}
+      onDecrement={canAdd ? decrement : undefined}
+      cartActionDisabled={!cartAction.enabled}
+      cartActionDisabledLabel={cartAction.disabledLabel ?? undefined}
+    />
   )
 }
 
@@ -521,7 +427,6 @@ function EventCatalogPage() {
   }
   const shopperPricing = useShopperPricing()
   const session = useConduitSession()
-  const [cartNotice, setCartNotice] = useState<string | null>(null)
   const query = useEventMarket(collectionRef, shopperPricing.quote, {
     selectedMerchantPubkey: selectedMerchantPubkey || undefined,
   })
@@ -720,6 +625,7 @@ function EventCatalogPage() {
               <Nip05TrustIndicator
                 pubkey={organizerPubkey}
                 nip05={organizerNip05}
+                display="icon"
               />
             ) : null}
           </div>
@@ -737,7 +643,7 @@ function EventCatalogPage() {
                   catalog.canonicalNaddr
                 )}
               >
-                Sell at this event
+                Sell here
                 <ExternalLink aria-hidden="true" className="size-3.5" />
               </a>
             </Button>
@@ -801,11 +707,9 @@ function EventCatalogPage() {
             purchaseReady={!archived && catalog.purchaseReady}
             isChecking={isChecking}
             identity={merchantIdentities.getIdentity(entry.product.pubkey)}
-            organizerIdentity={organizerIdentity}
             imageLoading={index < 4 ? "eager" : "lazy"}
             btcUsdRate={shopperPricing.quote}
             pricePreference={shopperPricing.preference}
-            onCartNotice={setCartNotice}
             onMerchantActivate={onMerchantActivate}
           />
         )}
@@ -815,18 +719,6 @@ function EventCatalogPage() {
             Some accepted products are unresolved. Previously verified product
             details remain visible. Products that cannot be confirmed are
             unavailable for checkout.
-          </div>
-        ) : null}
-        {cartNotice ? (
-          <div
-            role="status"
-            className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]"
-          >
-            <Check
-              className="mt-0.5 size-4 shrink-0 text-[var(--success)]"
-              aria-hidden="true"
-            />
-            {cartNotice}
           </div>
         ) : null}
         {isChecking && catalog.products.length === 0 ? (

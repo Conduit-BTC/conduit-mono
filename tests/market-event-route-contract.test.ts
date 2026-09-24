@@ -69,9 +69,8 @@ describe("Market event catalog route", () => {
       "requiredEventRecordsResolved,\n    productAvailability.availableProductCount,\n    productAvailability.unresolvedProductCount"
     )
     expect(route).toContain("Organizer handoff details are unresolved")
-    expect(route).toContain("no current")
-    expect(route).toContain("exact merchant pickup link")
-    expect(route).toContain("Checkout is disabled")
+    expect(route).toContain("getEventCatalogPickupGate")
+    expect(route).toContain("cartActionDisabled={!cartAction.enabled}")
   })
 
   it("keeps recoverable pickup intent reversible until exact checkout authority resolves", async () => {
@@ -86,9 +85,7 @@ describe("Market event catalog route", () => {
       "const candidate = exactCandidate ?? pendingCandidate"
     )
     expect(route).toContain("allowPendingCart: pendingEvidenceMayRecover")
-    expect(route).toContain(
-      "checkout stays locked until this exact product is confirmed"
-    )
+    expect(route).not.toContain("Current pickup terms are being verified")
     expect(cartModel).toContain('type: "event_pickup_pending"')
     expect(cartModel).toContain(
       "if (isPendingEventPickupCartItem(item)) continue"
@@ -156,7 +153,7 @@ describe("Market event catalog route", () => {
     expect(orders).toContain("async function retryPayment")
     expect(orders).toContain("runOrderPrivateFallback")
     expect(orders.indexOf("verifyPickupCartFreshness")).toBeLessThan(
-      orders.lastIndexOf("runOrderPrivateFallback(ctx)")
+      orders.lastIndexOf("await runOrderPrivateFallback({")
     )
     expect(checkout).toContain("sourceShippingCost: item.sourceShippingCost")
     expect(authorization).toContain("resolveCheckoutProductFulfillments")
@@ -198,22 +195,17 @@ describe("Market event catalog route", () => {
     expect(checkout.match(/publishBuyerOrderMessage\(/g)?.length).toBe(2)
   })
 
-  it("keeps organizer-pickup evidence inside the fixed order sidebar", async () => {
+  it("keeps shopper pickup details concise in the order sidebar", async () => {
     const orders = await Bun.file("apps/market/src/routes/orders.tsx").text()
-    const costLabel = orders.indexOf("Resolved pickup cost")
-    const panelStart = orders.lastIndexOf("<dl", costLabel)
-    const panelEnd = orders.indexOf(
-      "getPickupHandoffPrivacyCopy(handoff)",
-      panelStart
-    )
-    const pickupPanel = orders.slice(panelStart, panelEnd)
 
-    expect(costLabel).toBeGreaterThan(-1)
-    expect(panelStart).toBeGreaterThan(-1)
-    expect(panelEnd).toBeGreaterThan(panelStart)
-    expect(pickupPanel).toContain(
-      'className="mt-4 grid grid-cols-1 gap-3 border-t border-[var(--border)] pt-4 text-xs sm:grid-cols-2 xl:grid-cols-1"'
-    )
+    expect(orders).toContain("Handled by")
+    expect(orders).toContain("Pickup code")
+    expect(orders).toContain("View event catalog")
+    expect(orders).not.toContain("Resolved pickup cost")
+    expect(orders).not.toContain("Calendar revision")
+    expect(orders).not.toContain("Pickup revision")
+    expect(orders).not.toContain("getPickupHandoffPrivacyCopy(handoff)")
+    expect(orders).not.toContain("Copy pickup handler npub")
   })
 
   it("lets order progress end independently of the taller sidebar", async () => {

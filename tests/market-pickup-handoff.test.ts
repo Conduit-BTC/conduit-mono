@@ -6,11 +6,9 @@ import {
 } from "@conduit/core"
 import type { CartPickupFulfillment } from "../apps/market/src/lib/cart-model"
 import {
-  ORGANIZER_HANDOFF_DISCLOSURE,
   assertCartPickupHandlerReady,
   getOrganizerInboxBlockingMessage,
   getOrganizerPickupClaimCode,
-  getPickupHandoffPrivacyCopy,
   getPickupHandoffSummary,
 } from "../apps/market/src/lib/pickup-handoff"
 
@@ -71,9 +69,6 @@ describe("Market pickup handoff", () => {
       legacySafeDefault: true,
       label: "Pickup from merchant booth",
     })
-    expect(getPickupHandoffPrivacyCopy(getPickupHandoffSummary(legacy))).toBe(
-      "Your private order and payment updates go only to the merchant; no organizer receipt is sent."
-    )
   })
 
   it("keeps historical organizer-owned product snapshots merchant-only", async () => {
@@ -107,30 +102,6 @@ describe("Market pickup handoff", () => {
       }
     )
     expect(inboxLookups).toBe(0)
-  })
-
-  it("discloses the bounded organizer receipt without sensitive fields", () => {
-    const summary = getPickupHandoffSummary(
-      pickupFulfillment("organizer_handoff")
-    )
-    const disclosure = getPickupHandoffPrivacyCopy(summary)
-
-    expect(summary).toMatchObject({
-      mode: "organizer_handoff",
-      handlerPubkey: ORGANIZER,
-      legacySafeDefault: false,
-      label: "Pickup from event organizer",
-    })
-    expect(disclosure).toBe(ORGANIZER_HANDOFF_DISCLOSURE)
-    expect(disclosure).toContain("After the merchant confirms payment")
-    expect(disclosure).toContain("item references")
-    expect(disclosure).toContain("quantities")
-    expect(disclosure).toContain("Pickup is not ready")
-    expect(disclosure).toContain("are not shared")
-    expect(disclosure).not.toContain("alice@example.com")
-    expect(disclosure).not.toContain("+15551234567")
-    expect(disclosure).not.toContain("1 Private Road")
-    expect(disclosure).not.toContain("lnbc")
   })
 
   it("derives the same organizer pickup code without exposing order identity", () => {

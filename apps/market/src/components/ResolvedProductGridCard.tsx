@@ -9,10 +9,7 @@ import {
   getDefaultProductSelection,
   getProductSelection,
 } from "../lib/productVariations"
-import {
-  getPickupHandoffPrivacyCopy,
-  getPickupHandoffSummary,
-} from "../lib/pickup-handoff"
+import { getPickupHandoffSummary } from "../lib/pickup-handoff"
 import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { ProductGridCard, type ProductGridCardProps } from "./ProductGridCard"
 
@@ -140,8 +137,7 @@ export function ResolvedProductGridCard({
                 <span>
                   {pickupHandoff.label}. Handled by{" "}
                   <EventActorName identity={pickupHandlerIdentity} />. No
-                  delivery address is required.{" "}
-                  {getPickupHandoffPrivacyCopy(pickupHandoff)}
+                  delivery address is required.
                 </span>
                 <EventActorProvenance
                   pubkey={pickupHandoff.handlerPubkey}

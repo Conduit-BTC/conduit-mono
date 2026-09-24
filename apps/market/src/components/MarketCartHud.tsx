@@ -1,4 +1,14 @@
-import { ChevronDown, Minus, Plus, ShoppingCart, Zap } from "lucide-react"
+import {
+  ChevronDown,
+  Download,
+  Minus,
+  Plus,
+  ShoppingCart,
+  Store,
+  Truck,
+  Zap,
+  type LucideIcon,
+} from "lucide-react"
 import { Link, useNavigate } from "@tanstack/react-router"
 import {
   getProfilePaymentAddress,
@@ -35,19 +45,133 @@ import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapab
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
   getCartCommerceFingerprint,
-  getCartCostSummary,
   getCartItemKey,
   getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
-  getCartPurchaseReference,
+  getCartItemFulfillmentType,
   groupCartPurchases,
   isCartProductAvailabilityBlocking,
+  type CartPurchaseGroup,
 } from "../lib/cart-model"
 import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
 import { armHudZapIntent } from "../lib/hud-zap-intent"
 
 const HUD_EXIT_DURATION_MS = 240
+
+type PurchaseContext = {
+  Icon: LucideIcon
+  navLabel: string
+  label: string
+  selectedLabel: string
+}
+
+function getPurchaseContext(group: CartPurchaseGroup): PurchaseContext {
+  if (group.kind === "pickup") {
+    const pickupTitle = group.items.find(
+      (item) => item.fulfillment?.type === "pickup"
+    )?.fulfillment
+    const pickupDetail =
+      pickupTitle?.type === "pickup"
+        ? pickupTitle.option.location?.trim() ||
+          pickupTitle.option.title?.trim()
+        : ""
+    return {
+      Icon: Store,
+      navLabel: "Pickup",
+      label: pickupDetail ? `Event pickup - ${pickupDetail}` : "Event pickup",
+      selectedLabel: pickupDetail || "Event pickup",
+    }
+  }
+
+  const digitalOnly = group.items.every(
+    (item) => getCartItemFulfillmentType(item) === "digital"
+  )
+  return {
+    Icon: digitalOnly ? Download : Truck,
+    navLabel: digitalOnly ? "Digital" : "Delivery",
+    label: digitalOnly ? "Digital delivery" : "Delivery",
+    selectedLabel: digitalOnly ? "Digital delivery" : "Delivery",
+  }
+}
+
+function PurchaseContextLabel({
+  group,
+  compact = false,
+}: {
+  group: CartPurchaseGroup
+  compact?: boolean
+}) {
+  const context = getPurchaseContext(group)
+  const { Icon } = context
+  return (
+    <span className="flex min-w-0 max-w-full items-center gap-1 text-xs text-[var(--text-muted)]">
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span
+        className={cn(
+          "min-w-0",
+          compact ? "truncate" : "whitespace-normal break-words"
+        )}
+      >
+        {compact ? context.navLabel : context.selectedLabel}
+      </span>
+    </span>
+  )
+}
+
+function PurchaseTab({
+  group,
+  merchantLabel,
+  picture,
+  selected,
+  purchaseIndex,
+  onSelect,
+}: {
+  group: CartPurchaseGroup
+  merchantLabel: string
+  picture?: string
+  selected: boolean
+  purchaseIndex?: number
+  onSelect: () => void
+}) {
+  const context = getPurchaseContext(group)
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}${purchaseIndex === undefined ? "" : `, purchase ${purchaseIndex + 1}`}`}
+      onClick={onSelect}
+      className={cn(
+        "market-cart-hud-item flex min-h-11 min-w-[4.5rem] max-w-60 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:min-w-0 sm:gap-2 sm:px-3",
+        selected
+          ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
+          : "border-transparent text-[var(--text-secondary)] hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]"
+      )}
+    >
+      <Avatar data-testid="purchase-tab-avatar" className="h-7 w-7 shrink-0">
+        <AvatarImage src={picture} alt="" />
+        <AvatarFallback>
+          <MerchantAvatarFallback iconClassName="h-4 w-4" />
+        </AvatarFallback>
+      </Avatar>
+      <span
+        data-testid="purchase-tab-details"
+        className="hidden min-w-0 max-w-full text-left leading-tight sm:block"
+      >
+        <span className="block max-w-32 truncate">{merchantLabel}</span>
+        <PurchaseContextLabel group={group} compact />
+      </span>
+      <StatusPill
+        variant="neutral"
+        aria-hidden="true"
+        data-testid="purchase-tab-count"
+        className="h-6 min-w-6 justify-center border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-1 py-0 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
+      >
+        {group.totalItems}
+      </StatusPill>
+    </button>
+  )
+}
 
 export type MarketCartHudProps = {
   pathname: string
@@ -99,6 +223,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const [zapStarting, setZapStarting] = useState(false)
   const hudRef = useRef<HTMLElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const purchaseRailRef = useRef<HTMLDivElement>(null)
   const disclosureRef = useRef<HTMLButtonElement>(null)
   const detailsPanelId = useId()
   const previousQuantitiesRef = useRef(new Map<string, number>())
@@ -133,14 +258,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const merchantLud16 = getProfilePaymentAddress(
     selectedMerchant ? profiles.profileContexts[selectedMerchant] : undefined
   )
-  const activeSummary = activeGroup
-    ? getCartCostSummary(activeGroup.items, shopperPricing.quote)
-    : null
-  const activeTotal = activeSummary
-    ? activeSummary.itemPricesAvailable
-      ? shopperPricing.formatSatsAmount(activeSummary.totalSats)
-      : null
-    : null
   const activeAvailabilityMessage = activeReadiness?.blockingMessage ?? null
   const checkoutDisabled = !!activeAvailabilityMessage
   // Cart presence is sufficient shopper intent for the LNURL metadata
@@ -156,7 +273,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   })
   const checkoutCapability = capabilityView.capability
   const pricingIntent = capabilityView.pricingIntent
-  const checkoutFallbackMessage = capabilityView.fallbackMessage
   // Collapsing hides and inerts the panel. If focus is inside, move it to
   // the disclosure toggle first so keyboard and screen-reader users are not
   // dropped at the document root.
@@ -175,9 +291,24 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   // One activation path for pointer, Enter, and Space: selecting a merchant
   // while collapsed both selects it and expands the panel, including when the
   // activated merchant is already selected.
-  const activatePurchase = useCallback((purchaseId: string) => {
+  const activatePurchase = useCallback((purchaseId: string, index?: number) => {
     setActivePurchase(purchaseId)
     setExpanded(true)
+    const rail = purchaseRailRef.current
+    const tab = index === undefined ? null : rail?.children.item(index)
+    if (!rail || !(tab instanceof HTMLElement)) return
+    const railBounds = rail.getBoundingClientRect()
+    const tabBounds = tab.getBoundingClientRect()
+    rail.scrollTo({
+      left:
+        index === 0
+          ? 0
+          : rail.scrollLeft +
+            tabBounds.left -
+            railBounds.left -
+            (railBounds.width - tabBounds.width) / 2,
+      behavior: "smooth",
+    })
   }, [])
 
   useEffect(() => {
@@ -378,9 +509,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
 
           {groups.length > 1 ? (
             <div
+              ref={purchaseRailRef}
               role="group"
               aria-label="Cart purchases"
-              className="flex h-auto w-fit min-w-0 max-w-full justify-start justify-self-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="flex h-auto w-full min-w-0 max-w-full justify-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-[50%] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
                 maskImage:
                   "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
@@ -388,101 +520,31 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                   "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
               }}
             >
-              {groups.map((group) => {
+              {groups.map((group, index) => {
                 const profile = profiles.data[group.merchantPubkey]
-                const groupSummary = getCartCostSummary(
-                  group.items,
-                  shopperPricing.quote
-                )
-                const groupTotal = shopperPricing.formatSatsAmount(
-                  groupSummary.totalSats
-                )
-                const selected = group.id === activeGroup.id
-                const purchaseReference = getCartPurchaseReference(group.id)
-                const fulfillmentLabel =
-                  group.kind === "pickup"
-                    ? group.items[0]?.fulfillment?.type === "pickup"
-                      ? group.items[0].fulfillment.option.title
-                      : "Event pickup"
-                    : group.items.some((item) => item.format !== "digital")
-                      ? "Shipping"
-                      : "Digital"
+                const merchantLabel =
+                  getProfileName(profile) ?? formatNpub(group.merchantPubkey, 6)
                 return (
-                  <button
+                  <PurchaseTab
                     key={group.id}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => activatePurchase(group.id)}
-                    className={cn(
-                      "market-cart-hud-item flex min-h-11 max-w-60 shrink-0 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none",
-                      selected
-                        ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
-                        : "border-transparent text-[var(--text-secondary)] hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]"
-                    )}
-                  >
-                    <Avatar className="h-7 w-7">
-                      <AvatarImage src={profile?.picture} alt="" />
-                      <AvatarFallback>
-                        <MerchantAvatarFallback iconClassName="h-4 w-4" />
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="min-w-0 text-left leading-tight">
-                      <span className="flex min-w-0 items-center gap-2">
-                        <span className="block max-w-32 truncate">
-                          {getProfileName(profile) ??
-                            formatNpub(group.merchantPubkey, 6)}
-                        </span>
-                        <StatusPill
-                          variant="neutral"
-                          aria-label={`${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}`}
-                          className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
-                        >
-                          {group.totalItems}
-                        </StatusPill>
-                      </span>
-                      <span className="block max-w-44 truncate text-xs font-normal text-[var(--text-muted)]">
-                        {fulfillmentLabel} · {group.items[0]?.title ?? "Cart"} ·
-                        Ref {purchaseReference}
-                        {selected && expanded
-                          ? ` · ${groupSummary.itemPricesAvailable ? groupTotal.primary : "Total unavailable"}`
-                          : ""}
-                      </span>
-                    </span>
-                  </button>
+                    group={group}
+                    merchantLabel={merchantLabel}
+                    picture={profile?.picture}
+                    selected={group.id === activeGroup.id}
+                    purchaseIndex={index}
+                    onSelect={() => activatePurchase(group.id, index)}
+                  />
                 )
               })}
             </div>
           ) : (
-            <Link
-              to="/store/$pubkey"
-              params={{ pubkey: selectedMerchant }}
-              aria-label={`Open ${merchantName} merchant page`}
-              className="flex min-h-11 w-fit min-w-0 max-w-60 items-center justify-self-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-            >
-              <Avatar className="h-7 w-7">
-                <AvatarImage src={activeProfile?.picture} alt="" />
-                <AvatarFallback>
-                  <MerchantAvatarFallback iconClassName="h-4 w-4" />
-                </AvatarFallback>
-              </Avatar>
-              <span className="min-w-0 text-left text-sm font-medium leading-tight">
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="block truncate">{merchantName}</span>
-                  <StatusPill
-                    variant="neutral"
-                    aria-label={`${activeGroup.totalItems} cart ${activeGroup.totalItems === 1 ? "item" : "items"}`}
-                    className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
-                  >
-                    {activeGroup.totalItems}
-                  </StatusPill>
-                </span>
-                {expanded && activeSummary ? (
-                  <span className="block truncate text-xs font-normal text-[var(--text-muted)]">
-                    {activeTotal?.primary ?? "Total unavailable"}
-                  </span>
-                ) : null}
-              </span>
-            </Link>
+            <PurchaseTab
+              group={activeGroup}
+              merchantLabel={merchantName}
+              picture={activeProfile?.picture}
+              selected
+              onSelect={() => activatePurchase(activeGroup.id)}
+            />
           )}
 
           <div className="flex shrink-0 items-center gap-1 sm:gap-2">
@@ -552,7 +614,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                       merchant: pubkeyToNpub(selectedMerchant),
                       purchase: activeGroup.id,
                     }}
-                    title={checkoutFallbackMessage}
                   >
                     Checkout
                   </Link>
@@ -575,7 +636,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
         >
           <div className="min-h-0 overflow-hidden">
             <div className="space-y-3 p-3 sm:p-4">
-              {groups.length > 1 ? (
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1">
                 <Link
                   to="/store/$pubkey"
                   params={{ pubkey: selectedMerchant }}
@@ -590,7 +651,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                   </Avatar>
                   <span className="truncate">{merchantName}</span>
                 </Link>
-              ) : null}
+                <span
+                  data-testid="selected-purchase-context"
+                  className="min-w-0 max-w-full"
+                >
+                  <PurchaseContextLabel group={activeGroup} />
+                </span>
+              </div>
               <div
                 role="region"
                 aria-label="Cart products"
@@ -710,18 +777,20 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
-                <span
-                  role="status"
-                  className="max-w-md text-xs text-[var(--text-muted)]"
-                >
-                  {activeAvailabilityMessage ??
-                    (activeReadiness?.isChecking
-                      ? "Checking stock…"
-                      : activeReadiness?.isRefreshing
-                        ? "Refreshing availability…"
-                        : checkoutFallbackMessage)}
-                </span>
-                <div className="flex shrink-0 gap-2">
+                {activeAvailabilityMessage ||
+                activeReadiness?.isChecking ||
+                activeReadiness?.isRefreshing ? (
+                  <span
+                    role="status"
+                    className="max-w-md text-xs text-[var(--text-muted)]"
+                  >
+                    {activeAvailabilityMessage ??
+                      (activeReadiness?.isChecking
+                        ? "Checking stock…"
+                        : "Refreshing availability…")}
+                  </span>
+                ) : null}
+                <div className="ml-auto flex shrink-0 gap-2">
                   <Button asChild variant="outline" size="sm">
                     <Link
                       to="/cart"
@@ -730,7 +799,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         purchase: activeGroup.id,
                       }}
                     >
-                      View cart
+                      View full cart
                     </Link>
                   </Button>
                   {checkoutDisabled ? (
@@ -766,7 +835,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                           merchant: pubkeyToNpub(selectedMerchant),
                           purchase: activeGroup.id,
                         }}
-                        title={checkoutFallbackMessage}
                       >
                         Continue to checkout
                       </Link>
