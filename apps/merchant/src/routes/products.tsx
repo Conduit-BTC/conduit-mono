@@ -883,7 +883,8 @@ async function publishProduct(
   onDeliveryQueued?: (bundle: SignedProductWriteBundle) => Promise<void>,
   assertCurrentFamilyRevision?: () => void,
   forcePublishDTags?: readonly string[],
-  recoveryDeletionJob?: ProductDeletionDeliveryJob
+  recoveryDeletionJob?: ProductDeletionDeliveryJob,
+  recoveryListingJobId?: string
 ): Promise<ProductWriteDeliveryResult> {
   const preserveFulfillment = form.fulfillment === "preserve"
   if (preserveFulfillment && !existing) {
@@ -1176,7 +1177,16 @@ async function publishProduct(
             },
           },
         }
-      : { durableCommit: {} }),
+      : recoveryListingJobId
+        ? {
+            legacyCommit: {
+              recovery: {
+                kind: "listing_republish" as const,
+                previousListingJobId: recoveryListingJobId,
+              },
+            },
+          }
+        : { durableCommit: {} }),
     onSignerRequest: (progress) => {
       assertCurrentFamilyRevision?.()
       onSignerRequest?.({
@@ -2001,7 +2011,8 @@ function ProductsPage() {
           },
           assertCurrentFamilyRevision,
           recoveryDTags,
-          recoveryDeletionJob
+          recoveryDeletionJob,
+          recoveryDTags ? payload.recoveryJobId : undefined
         )
       } catch (error) {
         if (fallbackMovePrepared && !signedLocally) {

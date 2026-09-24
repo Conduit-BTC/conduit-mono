@@ -49,6 +49,7 @@ export interface LocalProductWriteCommitInput {
 
 export type LocalLegacyProductWriteRecovery =
   | { kind: "mixed_deletion"; previousDeletionEventId: string }
+  | { kind: "listing_republish"; previousListingJobId: string }
   | { kind: "stock_republish"; previousStockEventId: string }
 
 export interface LocalLegacyProductWriteStageInput {
@@ -308,6 +309,32 @@ export async function withLocalLegacyProductWriteStage<T>(
       )
       allowedListingJobId = oldListing.id
       allowedDeletionJobId = oldDeletion.id
+    } else if (input.recovery.kind === "listing_republish") {
+      const oldListing = await db.productListingOutbox.get(
+        input.recovery.previousListingJobId
+      )
+      if (
+        deletion ||
+        !oldListing ||
+        oldListing.merchantPubkey !== merchantPubkey ||
+        oldListing.companionDeletionJobId !== undefined ||
+        (oldListing.prerequisiteShippingEventIds?.length ?? 0) > 0 ||
+        !isTerminalRecoverableProductListingJob(oldListing)
+      ) {
+        throw new Error("Rejected product recovery is not exact")
+      }
+      assertExactSet(
+        listingCoordinates,
+        oldListing.signedEvents.map(productAddressId)
+      )
+      if (
+        oldListing.signedEvents.some(
+          (event) => expected.get(productAddressId(event)) !== event.id
+        )
+      ) {
+        throw new Error("Rejected product revision is no longer current")
+      }
+      allowedListingJobId = oldListing.id
     } else {
       if (deletion || input.signedListings.length !== 1) {
         throw new Error("Legacy stock recovery needs one signed listing")

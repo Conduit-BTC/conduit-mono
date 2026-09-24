@@ -692,7 +692,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", async ({
+test("Merchant upgrades v16 data to the current owner-evidence store @merchant", async ({
   page,
 }) => {
   await page.route(
@@ -743,7 +743,7 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 200,
+      nativeVersion: 210,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
@@ -1468,12 +1468,21 @@ test("Merchant deliberately re-signs a rejected mixed listing and deletion toget
   // The first listing is already a real locally authored, all-relay-rejected
   // browser product. Add the reciprocal, untouched deletion that a mixed
   // edit leaves queued when its listing never receives a common relay ACK.
+  const removedVariation = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: Math.floor(Date.now() / 1000) - 120,
+      tags: [["d", "removed-variation"]],
+      content: "",
+    },
+    MERCHANT_SECRET
+  )
   const originalDeletion = finalizeEvent(
     {
       kind: 5,
       created_at: Math.floor(Date.now() / 1000) - 60,
       tags: [
-        ["e", "8".repeat(64)],
+        ["e", removedVariation.id],
         ["a", `30402:${MERCHANT_PUBKEY}:removed-variation`],
         ["k", "30402"],
       ],
@@ -1484,13 +1493,17 @@ test("Merchant deliberately re-signs a rejected mixed listing and deletion toget
   const originalRelayUrl = originalListing.relayDelivery[0]!.relayUrl
   const stagedAt = Date.now()
   await page.evaluate(
-    ({ listingId, deletionEvent, relayUrl, stagedAt }) =>
+    ({ listingId, deletionEvent, removedVariation, relayUrl, stagedAt }) =>
       new Promise<void>((resolve, reject) => {
         const request = indexedDB.open("conduit")
         request.onerror = () => reject(request.error)
         request.onsuccess = () => {
           const transaction = request.result.transaction(
-            ["productListingOutbox", "productDeletionOutbox"],
+            [
+              "productListingOutbox",
+              "productDeletionOutbox",
+              "localProductWriteFrontiers",
+            ],
             "readwrite"
           )
           const listings = transaction.objectStore("productListingOutbox")
@@ -1514,6 +1527,13 @@ test("Merchant deliberately re-signs a rejected mixed listing and deletion toget
             createdAt: stagedAt,
             updatedAt: stagedAt,
           })
+          transaction.objectStore("localProductWriteFrontiers").put({
+            id: `30402:${deletionEvent.pubkey}:removed-variation`,
+            merchantPubkey: deletionEvent.pubkey,
+            eventId: removedVariation.id,
+            eventCreatedAt: removedVariation.created_at,
+            intentId: "earlier-signed-variation",
+          })
           transaction.oncomplete = () => resolve()
           transaction.onerror = () => reject(transaction.error)
           transaction.onabort = () => reject(transaction.error)
@@ -1522,6 +1542,7 @@ test("Merchant deliberately re-signs a rejected mixed listing and deletion toget
     {
       listingId: originalListing.id,
       deletionEvent: originalDeletion,
+      removedVariation,
       relayUrl: originalRelayUrl,
       stagedAt,
     }

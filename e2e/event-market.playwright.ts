@@ -3071,9 +3071,6 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
       })
   )
   const pickupGeohash = "dp3wj"
-  const pickupLocation = market.pickupEvent!.tags.find(
-    (tag) => tag[0] === "location"
-  )![1]!
   const pickups = Array.from({ length: 26 }, (_, index) =>
     signEvent(
       index === 1 || index === 2 || (index >= 4 && index % 2 === 1)
@@ -8882,13 +8879,6 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
       orderPublishStart
     )
   ).find((message) => rumorType(message.rumor) === "order")!
-  const buyerOrderSelfCopy = uniquePrivatePublications(
-    decryptPrivatePublications(
-      relay.publications,
-      BUYER_SECRET,
-      orderPublishStart
-    )
-  ).find((message) => rumorType(message.rumor) === "order")
   const organizerOrderLeg = uniquePrivatePublications(
     decryptPrivatePublications(
       relay.publications,
@@ -8909,7 +8899,19 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     "p",
     ORGANIZER_PUBKEY,
   ])
-  expect(buyerOrderSelfCopy).toBeTruthy()
+  await expect
+    .poll(
+      () =>
+        uniquePrivatePublications(
+          decryptPrivatePublications(
+            relay.publications,
+            BUYER_SECRET,
+            orderPublishStart
+          )
+        ).some((message) => rumorType(message.rumor) === "order"),
+      { timeout: 20_000 }
+    )
+    .toBe(true)
   expect(organizerOrderLeg).toBeUndefined()
 
   const orderPayload = JSON.parse(merchantOrderMessage.rumor.content) as Record<
@@ -9742,7 +9744,7 @@ test("Orders keeps rejected stock unpublished across reload and re-signs without
     merchant: nip19.npubEncode(ORGANIZER_PUBKEY),
   })
   await expect(
-    page.getByRole("heading", { name: "Send Order", exact: true })
+    page.getByRole("heading", { name: "Checkout", exact: true })
   ).toBeVisible({ timeout: 30_000 })
   const sendOrder = page.getByRole("button", {
     name: "Send order",
