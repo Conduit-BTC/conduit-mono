@@ -1,6 +1,6 @@
 # Order Lifecycle Specification
 
-Status-first buyer order tracking for Conduit Market (CND-122, consolidating the
+Durable buyer order tracking for Conduit Market (CND-122, consolidating the
 external-wallet fallback CND-120 and address-validity gates CND-127).
 
 ## Overview
@@ -87,18 +87,16 @@ fixed cost.
    decisions and fulfillment are self-addressed operational messages, not
    replies to a guest Nostr inbox.
 
-## Interpreted view-model and timeline
+## Interpreted order state
 
-`apps/market/src/lib/order-view.ts` merges lifecycle + conversation + payment
-attempt into an `OrderViewModel`, and derives:
-
-- A 7-stage **timeline** (`StatusStepper`): Order sent -> Invoice received ->
-  Payment sent -> Receipt sent -> Merchant confirmation -> Fulfillment/Shipping
-  -> Complete.
-- A header **status pill** (`deriveOrderHeaderStatus`), e.g. `Paid - Receipt
-sent`, `Pending - Awaiting invoice`, `Action needed - Pay with external
-wallet`, `Completed - Delivered`, plus an `actionNeeded` flag for the list
-  marker.
+`apps/market/src/lib/order-view.ts` merges the lifecycle record, validated
+conversation evidence, and payment attempt into an `OrderViewModel`. Its
+projection must preserve the distinct order-delivery, invoice, payment,
+proof-delivery, merchant decision, fulfillment, and communication states. The
+customer must be able to determine the order's current state and appropriate
+next action without treating relay readback as the source of local order
+existence. A derived status label, stage display, or list marker is one possible
+presentation of that projection, not an additional lifecycle authority.
 
 ## Order flows and gates
 
@@ -138,9 +136,9 @@ arrival order.
 - The merchant infers it: observed buyer payment evidence **without** a merchant
   invoice ⇒ prepaid; otherwise invoice-first. Shared helper
   `deriveOrderFlow({ status, paid, paymentObserved, invoiceSent })` in
-  `@conduit/core/order-status` encodes this and drives the merchant timeline
-  ordering (payment↔acceptance). Payment evidence may update flow and timeline
-  presentation, but only merchant-confirmed payment unlocks shipping and revenue
+  `@conduit/core/order-status` encodes this and preserves the distinct payment
+  and acceptance axes. Payment evidence may update the interpreted flow, but
+  only merchant-confirmed payment unlocks shipping and revenue
   accounting. After confirmation, the normal merchant choices are to fulfill
   the order or cancel it and coordinate a manual refund; an ordinary additional
   invoice is no longer a valid next step.
@@ -165,8 +163,8 @@ marker are `nostr_replyable`; explicit guest orders are `guest_out_of_band`;
 orderless partial reads remain `unknown` and may write merchant self-copies but
 must not claim buyer delivery.
 
-These axes drive a single contextual next-action surface rather than exposing a
-general-purpose status console as the primary workflow:
+These axes determine eligible merchant actions and prevent a generic status
+change from bypassing their gates:
 
 - `reported` or `proof_observed`: verify settlement, then confirm payment or
   cancel the order; no separate disputed wire status is introduced here.
@@ -175,7 +173,7 @@ general-purpose status console as the primary workflow:
 - confirmed pickup order and not complete: mark the handoff picked up/complete;
   carrier and tracking are not requested.
 - confirmed digital-only order: confirm delivery directly or cancel and
-  coordinate a manual refund; no shipping milestone is shown or required.
+  coordinate a manual refund; no shipping milestone is required.
 - shipped: complete delivery when appropriate.
 - unpaid and unreviewed: accept/request payment or decline.
 
@@ -209,12 +207,12 @@ publishes a minimal encrypted ready-for-pickup receipt. A valid organizer
 does not itself become payment, cancellation, refund, shipping, or ordinary
 merchant status evidence. An authenticated zero-cost pickup may expose the
 pickup-completion action after merchant acceptance and any required organizer
-acknowledgement, but its payment stage is shown as not required and it never
+acknowledgement, but payment is not required and it never
 sets or implies a paid status.
 
-The Merchant order queue exposes work-oriented filters: **Paid—fulfill**,
-**Payment reported—verify**, **Unpaid—review**, **Shipped**, and **Closed**, with
-an all-orders view available for browsing.
+Merchant order handling must allow the merchant to find work by settlement,
+decision, fulfillment, and communication needs. The exact queue labels and
+filter set are presentation choices.
 
 For guest orders, the merchant contacts the buyer out of band and records the
 same decision, payment, shipment, and completion milestones through
@@ -234,7 +232,8 @@ Lightning payments are non-custodial and final, and escrow/refunds are explicit
 protocol non-goals (`docs/specs/protocol.md`). Therefore:
 
 - Cancelling a **paid** order does not reverse funds. The app sets `cancelled`
-  and must tell the merchant a refund is a separate, manual step.
+  and informs the merchant before cancellation that any refund is a separate,
+  manual step.
 - Refund coordination and payout are currently **out of band**. Conduit does not
   create or pay a refund invoice, emit a standardized refund proof, custody
   funds, escrow payment, or guarantee repayment. `refund_requested` is reserved
@@ -268,10 +267,10 @@ protocol non-goals (`docs/specs/protocol.md`). Therefore:
   Ambiguous payment state retains the original invoice and requires the buyer
   to check that payment before any retry. The explicit private transition is
   retained only to recover legacy already-failed anonymous lifecycle records.
-- "Try payment again" is offered only when funds did not move
-  (`paymentStatus: "failed"`).
-- "Resend receipt" is offered only after payment moved and proof delivery is
-  `retry_needed`/`failed`.
+- A payment retry is available only when funds did not move
+  (`paymentStatus: "failed"`). It is never offered for an ambiguous result.
+- Receipt/proof resend is a distinct operation available only after payment
+  moved and proof delivery is `retry_needed`/`failed`; it never pays again.
 - External/manual payment is the same durable order in `manual_required` state,
   not a separate checkout branch.
 - Paid carts clear at the durable checkpoint (order sent), so they are not live
@@ -294,19 +293,18 @@ syntax, lightweight street plausibility, and bundled postal-to-region or
 postal-to-locality consistency where data exists.
 
 Some destinations also require a state/province/region-style administrative
-area for local address confidence. Checkout shows the country-specific label
-from shared region metadata (for example `State`, `Province / Territory`, or
-`Emirate`) and marks that field as expected. Missing expected region data is an
-advisory confidence warning under the current policy, not a hard order or
-payment blocker.
+area for local address confidence. Checkout uses shared region metadata to
+identify the expected field for the selected country. Missing expected region
+data reduces local confidence under the current policy; it is not a hard order
+or payment blocker.
 
 Direct-payment confidence is advisory rather than mandatory. Unsupported or
 not-yet-profiled countries, profiled countries without enough bundled
 consistency evidence, missing expected region data, missing street/building
-numbers, and known postal/region/locality contradictions receive warnings when
-the shared structural checks otherwise pass. Checkout must tell the buyer that
-the address could not be fully validated locally and that the merchant may need
-to confirm details, but the buyer may still choose direct payment when merchant
+numbers, and known postal/region/locality contradictions remain advisory when
+the shared structural checks otherwise pass. The customer receives relevant,
+actionable information that local validation is incomplete and the merchant may
+need to confirm details, but may still choose direct payment when merchant
 shipping-zone and payment gates pass. No third-party / browser address-API calls
 are made; no address or contact data is sent to analytics, logs, or
 observability; and local checks never claim full deliverability verification.
