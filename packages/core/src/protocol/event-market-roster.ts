@@ -233,16 +233,40 @@ export function resolveEventMarketRoster(input: {
   }
   const market = parseEventMarketRosterEvent(winner)
   if (!market) return { state: "malformed", eventId: winner.id }
-  const byId = new Map(revisions.map((event) => [event.id, event]))
-  const ancestorIds = new Set<string>()
-  let cursor: SignedPublicNostrEvent | undefined = winner
-  while (cursor && !ancestorIds.has(cursor.id)) {
-    ancestorIds.add(cursor.id)
-    const previous: string[][] = cursor.tags.filter((tag) => tag[0] === "prev")
-    cursor =
-      previous.length === 1 ? byId.get(previous[0]?.[1] ?? "") : undefined
+  const observedParents = new Set<string>()
+  let observedRoots = 0
+  for (const revision of revisions) {
+    const parsed = parseEventMarketRosterEvent(revision)
+    if (!parsed) continue
+    if (!parsed.previousEventId) {
+      observedRoots++
+      continue
+    }
+    if (observedParents.has(parsed.previousEventId)) {
+      return { state: "conflicting", eventId: winner.id }
+    }
+    observedParents.add(parsed.previousEventId)
   }
-  if (revisions.some((event) => !ancestorIds.has(event.id)))
+  if (observedRoots > 1) return { state: "conflicting", eventId: winner.id }
+  // Missing intermediate revisions from a pruned relay do not establish a fork.
+  const knownById = new Map(revisions.map((event) => [event.id, event]))
+  let cursor: ParsedEventMarketRoster | null = market
+  const ancestors = new Set<string>()
+  while (cursor) {
+    if (ancestors.has(cursor.eventId))
+      return { state: "conflicting", eventId: winner.id }
+    ancestors.add(cursor.eventId)
+    if (!cursor.previousEventId) break
+    const parent = knownById.get(cursor.previousEventId)
+    if (!parent) break
+    cursor = parseEventMarketRosterEvent(parent)
+    if (!cursor) break
+  }
+  if (
+    cursor &&
+    !cursor.previousEventId &&
+    revisions.some((event) => !ancestors.has(event.id))
+  )
     return { state: "conflicting", eventId: winner.id }
   return { state: "current", market }
 }

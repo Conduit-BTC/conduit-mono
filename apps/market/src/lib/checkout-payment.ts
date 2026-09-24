@@ -240,6 +240,13 @@ function isCheckoutShippingCostResolvable(item: CartItem): boolean {
 }
 
 function getCheckoutShippingResolvableItem(item: CartItem): CartItem {
+  if (item.fulfillment?.type === "event_market_pickup") {
+    return {
+      ...item,
+      shippingCostSats: 0,
+      sourceShippingCost: undefined,
+    }
+  }
   return isCheckoutShippingCostResolvable(item)
     ? item
     : {

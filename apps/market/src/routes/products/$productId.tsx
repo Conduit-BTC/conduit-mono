@@ -3,6 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   buildMarketProductShareUrl,
+  encodeEventMarketNaddr,
   buildProductDetailActionTelemetryProperties,
   createEventMarketPickupSnapshot,
   formatNpub,
@@ -125,6 +126,38 @@ function ProductPage() {
 
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
+  const futureEventReference = product?.eventMarketRefs?.[0]
+  const futureEventQuery = useQuery({
+    queryKey: [
+      "product-future-event-authority",
+      futureEventReference,
+      product?.id,
+      session.relayScope,
+      authenticatedPubkey,
+    ],
+    enabled: !!futureEventReference && !!product && session.relaySettingsReady,
+    retry: false,
+    queryFn: async ({ signal }) => {
+      const marketRead = await readEventMarketRoster({
+        reference: futureEventReference!,
+        authenticatedPubkey,
+        signal,
+      })
+      if (marketRead.resolution.state !== "current" || !marketRead.calendar)
+        return null
+      const productRead = await readEventMarketProduct({
+        marketRead,
+        productCoordinate: product!.id,
+        authenticatedPubkey,
+        signal,
+      })
+      return productRead.resolution.state === "eligible" &&
+        productRead.actionable
+        ? encodeEventMarketNaddr(marketRead.coordinate)
+        : null
+    },
+  })
+  const futureEventNaddr = futureEventQuery.data
   const family = productQuery.family ?? undefined
   const routeProductSelection = useMemo(
     () => (product ? getProductSelection(product, family, productId) : null),
@@ -933,6 +966,16 @@ function ProductPage() {
                       </Link>
                     ) : null}
                   </div>
+                ) : null}
+
+                {futureEventNaddr ? (
+                  <Link
+                    to="/events/$collectionRef"
+                    params={{ collectionRef: futureEventNaddr }}
+                    className="text-sm font-medium text-secondary-400 hover:text-secondary-300"
+                  >
+                    View eligible Event Market listing
+                  </Link>
                 ) : null}
 
                 <Button asChild variant="outline" className="w-full">

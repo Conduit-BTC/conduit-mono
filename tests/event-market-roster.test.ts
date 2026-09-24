@@ -14,8 +14,10 @@ import {
   resolveEventMarketCalendar,
   resolveEventMarketProduct,
   resolveEventMarketRoster,
+  resolveEventMarketAuthorization,
   readEventMarketRoster,
   readEventMarketProduct,
+  readEventMarketReapprovalPreview,
   readEventMarketCatalog,
   readEventMarketOrderEvidenceByIds,
   previewEventMarketMerchantProducts,
@@ -56,6 +58,17 @@ function roster(
     state: "open",
     merchants: rows,
     previousEventId,
+  })
+  return sign(organizerSecret, draft.kind, draft.tags, createdAt)
+}
+
+function grant(createdAt = 102): SignedPublicNostrEvent {
+  const draft = buildEventMarketAuthorizationDraft({
+    marketCoordinate,
+    merchantPubkey: merchant,
+    state: "active",
+    sequence: 0,
+    parentIds: [],
   })
   return sign(organizerSecret, draft.kind, draft.tags, createdAt)
 }
@@ -174,6 +187,25 @@ describe("experimental Event Market roster", () => {
         revisions: [initial],
       })
     ).toMatchObject({ state: "current", market: { merchants: [merchantRow] } })
+  })
+
+  it("accepts an observed A to C chain when B was pruned", () => {
+    const initial = roster([merchantRow], 100)
+    const middle = roster([], 101, initial.id)
+    const latest = roster([merchantRow], 102, middle.id)
+    expect(
+      resolveEventMarketRoster({
+        coordinate: marketCoordinate,
+        revisions: [initial, latest],
+      })
+    ).toMatchObject({ state: "current", market: { eventId: latest.id } })
+    const sibling = roster([], 103, middle.id)
+    expect(
+      resolveEventMarketRoster({
+        coordinate: marketCoordinate,
+        revisions: [initial, latest, sibling],
+      })
+    ).toMatchObject({ state: "conflicting" })
   })
 
   it("treats signed deletion and malformed newer evidence as stronger than an older approval", () => {
@@ -388,7 +420,11 @@ describe("experimental Event Market roster", () => {
           relayHintTruncated: false,
         }),
         fetch: async (filter) => ({
-          events: filter.kinds?.includes(30402 as never) ? [tagged] : [],
+          events: filter.kinds?.includes(30402 as never)
+            ? [tagged]
+            : filter.kinds?.includes(3841 as never)
+              ? [grant()]
+              : [],
           relays: [{ relayUrl: "wss://example.com", status: "success" }],
         }),
         load: async () => [untagged],
@@ -446,6 +482,7 @@ describe("experimental Event Market roster", () => {
           if (filter.kinds?.includes(30409 as never)) events = [approved]
           if (filter.kinds?.includes(31923 as never)) events = [calendar]
           if (filter.kinds?.includes(30402 as never)) events = [tagged, spam]
+          if (filter.kinds?.includes(3841 as never)) events = [grant()]
           return {
             events,
             relays: [{ relayUrl: "wss://example.com", status: "success" }],
@@ -465,6 +502,71 @@ describe("experimental Event Market roster", () => {
     )
     expect(candidateCall?.authors).toEqual([merchant])
     expect(calls[0]?.authors).toEqual([organizer])
+  })
+
+  it("keeps an eligible product visible but marks partial authorization coverage", async () => {
+    const approved = roster([merchantRow])
+    const calendar = sign(
+      organizerSecret,
+      31923,
+      [
+        ["d", "fair"],
+        ["title", "Fair"],
+        ["start", "1790000000"],
+        ["D", "20717"],
+      ],
+      100
+    )
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    const active = grant()
+    const read = await readEventMarketCatalog(
+      { reference: marketCoordinate },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com", "wss://fallback.example.com"],
+          candidateRelayUrls: [
+            "wss://example.com",
+            "wss://fallback.example.com",
+          ],
+          maxRelayAttempts: 2,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: ["wss://fallback.example.com"],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => ({
+          events: filter.kinds?.includes(30409 as never)
+            ? [approved]
+            : filter.kinds?.includes(31923 as never)
+              ? [calendar]
+              : filter.kinds?.includes(30402 as never)
+                ? [tagged]
+                : filter.kinds?.includes(3841 as never)
+                  ? [active]
+                  : [],
+          relays: [
+            { relayUrl: "wss://example.com", status: "success" },
+            ...(filter.kinds?.includes(3841 as never)
+              ? [
+                  {
+                    relayUrl: "wss://fallback.example.com",
+                    status: "failed" as const,
+                  },
+                ]
+              : []),
+          ],
+        }),
+        load: async () => [],
+        retain: async () => undefined,
+      }
+    )
+    expect(read.products).toHaveLength(1)
+    expect(read.products[0]?.resolution.state).toBe("eligible")
+    expect(read.products[0]?.authorization?.resolution.state).toBe("active")
+    expect(read.products[0]?.actionable).toBe(false)
+    expect(read.coverage).toBe("partial")
   })
 
   it("freezes the signed roster row and product revision with the merchant as payee", () => {

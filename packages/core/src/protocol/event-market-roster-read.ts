@@ -705,9 +705,16 @@ export async function readEventMarketProduct(
       actionable: false,
     }
   }
-  const authorization = await (
-    dependencies.authorization ?? readEventMarketAuthorization
-  )({
+  const readAuthorization =
+    dependencies.authorization ??
+    ((query: Parameters<typeof readEventMarketAuthorization>[0]) =>
+      readEventMarketAuthorization(query, {
+        plan: dependencies.plan,
+        fetch: dependencies.fetch,
+        load: dependencies.load,
+        retain: dependencies.retain,
+      }))
+  const authorization = await readAuthorization({
     marketCoordinate: market.market.coordinate,
     merchantPubkey: product.authorPubkey,
     authenticatedPubkey: input.authenticatedPubkey,

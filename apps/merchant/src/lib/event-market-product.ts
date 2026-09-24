@@ -1,6 +1,7 @@
 import {
   parseAddressableCoordinate,
   type ParsedEventMarketRoster,
+  type EventMarketAuthorizationReadResult,
   type ProductSchema,
 } from "@conduit/core"
 
@@ -8,6 +9,7 @@ import {
 export function setEventMarketProductAssociation(input: {
   product: ProductSchema
   market: ParsedEventMarketRoster
+  authorization?: EventMarketAuthorizationReadResult
   enabled: boolean
   authorizationActive?: boolean
 }): ProductSchema {

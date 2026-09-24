@@ -165,6 +165,20 @@ export async function publishEventMarketRoster(
       "The Event Market coordinate could not be confirmed for creation."
     )
   }
+  const previousMerchants = new Set(
+    previous?.merchants.map((merchant) => merchant.pubkey) ?? []
+  )
+  const nextMerchants = new Set(
+    input.merchants.map((merchant) => merchant.pubkey)
+  )
+  if (
+    previousMerchants.size !== nextMerchants.size ||
+    [...previousMerchants].some((merchant) => !nextMerchants.has(merchant))
+  ) {
+    throw new Error(
+      "Merchant membership changes require paired causal authorization."
+    )
+  }
   const draft = buildEventMarketRosterDraft({
     dTag: input.dTag,
     organizerPubkey,
@@ -235,6 +249,8 @@ export async function retryEventMarketRosterDelivery(
   })
   if (
     current.resolution.state === "conflicting" ||
+    current.resolution.state === "malformed" ||
+    current.resolution.state === "deleted" ||
     (current.resolution.state === "current" &&
       current.resolution.market.eventId !== parsed.eventId &&
       compareReplaceableEventFrontiers(
