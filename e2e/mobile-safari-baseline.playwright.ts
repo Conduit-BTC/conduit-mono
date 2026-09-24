@@ -411,7 +411,7 @@ async function readRecoveredPayment(
 
 function makeManualInvoice(description: string): string {
   return makeBolt11Fixture({
-    hrp: "lntb10n",
+    hrp: "lnbc10n",
     createdAt: Math.floor(Date.now() / 1000),
     fields: [bolt11PaymentHashField(), bolt11DescriptionHashField(description)],
   })
@@ -737,7 +737,7 @@ const expiredManualMetadata = JSON.stringify([
 
 function makeExpiredManualInvoice(): string {
   return makeBolt11Fixture({
-    hrp: "lntb10n",
+    hrp: "lnbc10n",
     createdAt: Math.floor(Date.now() / 1000) - 3601,
     fields: [
       bolt11PaymentHashField(new Uint8Array(32).fill(7)),
@@ -1511,7 +1511,7 @@ test.describe("CND-162 mobile browser baseline", () => {
       const orderId = `mobile-expired-manual-invoice-${mode}`
       const expiredInvoice = makeExpiredManualInvoice()
       const newInvoice = makeBolt11Fixture({
-        hrp: "lntb10n",
+        hrp: "lnbc10n",
         createdAt: Math.floor(Date.now() / 1000),
         fields: [
           bolt11PaymentHashField(new Uint8Array(32).fill(8)),
@@ -2042,7 +2042,7 @@ test.describe("CND-162 mobile browser baseline", () => {
       .getByRole("alert")
       .filter({ hasText: failureDetail })
     const invoice = makeBolt11Fixture({
-      hrp: "lntb10n",
+      hrp: "lnbc10n",
       createdAt: Math.floor(Date.now() / 1000),
       fields: [
         bolt11PaymentHashField(),

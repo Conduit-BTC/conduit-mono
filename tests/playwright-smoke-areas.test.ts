@@ -203,7 +203,7 @@ describe("Playwright smoke area validation", () => {
     expect(merchant.env.VITE_LIGHTNING_NETWORK).toBe("testnet")
   })
 
-  it("uses testnet for Market payment fixtures and commerce while retaining Merchant mock mode", () => {
+  it("uses mainnet for Market invoice and Spark fixtures while Commerce uses testnet", () => {
     expect(playwrightWebServer).toContain(
       'const smokeArea = environment.PLAYWRIGHT_SMOKE_AREA ?? "all"'
     )
@@ -215,11 +215,9 @@ describe("Playwright smoke area validation", () => {
       PLAYWRIGHT_RELAY_PORT: "54321",
       PLAYWRIGHT_SMOKE_AREA: "merchant",
     })
-    expect(market.env.VITE_LIGHTNING_NETWORK).toBe("testnet")
+    expect(market.env.VITE_LIGHTNING_NETWORK).toBe("mainnet")
     expect(merchant.env.VITE_LIGHTNING_NETWORK).toBeUndefined()
-    expect(playwrightWebServer).toContain(
-      '...(testnetIncluded ? { VITE_LIGHTNING_NETWORK: "testnet" } : {})'
-    )
+    expect(playwrightWebServer).toContain('smokeArea === "market"')
     expect(playwrightWebServer).toContain('"@conduit/market"')
     expect(playwrightWebServer).toContain('"@conduit/merchant"')
     expect(playwrightConfig).toContain(
