@@ -361,9 +361,9 @@ The current area-tag shape is:
 - `@commerce`: shared buyer-to-merchant signing, relay, messaging, checkout,
   order, invoice, and payment behavior.
 
-`@commerce` remains reserved until AC-SELECT-2, tracked by CND-193, is
-implemented. Until then, shared commerce changes must run the applicable
-current `@market` and `@merchant` shards.
+`@commerce` runs for affected critical commerce paths. The selector may run it
+alongside `@market` or `@merchant`; shared Playwright and runtime changes run
+all three areas.
 
 Current CI uses explicit Playwright tags. Keep ownership independent of
 human-readable title capitalization.
@@ -376,7 +376,7 @@ The selector and validator must continue to:
 - run every applicable tag for shared Playwright and runtime changes;
 - keep docs-only changes eligible to skip browser installation.
 
-After AC-SELECT-2 is implemented, run `@commerce` for changes to:
+The current selector includes `@commerce` for changes to:
 
 - checkout or order creation;
 - product publish and discovery contracts;
@@ -485,7 +485,7 @@ production signer path.
       evidence sign-off is eligible and require higher-risk validation.
 - [x] **AC-SELECT-1:** Smoke tests use explicit area tags, reject orphaned
       tests, and reject a selected shard with zero tests.
-- [ ] **AC-SELECT-2:** The selector runs the commerce shard for affected
+- [x] **AC-SELECT-2:** The selector runs the commerce shard for affected
       critical paths, keeps one aggregate required check, and runs every
       critical shard on `main`.
 - [ ] **AC-KEY-1:** Required PR smoke generates separate buyer and merchant

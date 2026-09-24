@@ -15,16 +15,6 @@ This directory contains public implementation context for the `conduit-mono` cli
 Read `AGENTS.md` at startup. This index is for finding applicable context,
 not a required second startup read.
 
-| Task                                                                                   | Deeper guidance                                                                                                                                                                                          |
-| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| UI, theming, shared controls                                                           | [Design](DESIGN.md)                                                                                                                                                                                      |
-| Architecture or cross-app data flow                                                    | [Architecture](ARCHITECTURE.md) and the relevant existing [spec](specs/)                                                                                                                                 |
-| Nostr, relay, signer, messaging, product events, payments, or signed-event persistence | [Network posture](knowledge/decentralized-network-product-posture.md), [external protocol references](knowledge/external-nostr-references.md), applicable [spec](specs/), and the relevant public source |
-| Checkout, orders, wallet, or guest flow                                                | Applicable [feature contracts](specs/), plus the protocol route when signed delivery or payments change                                                                                                  |
-| Telemetry                                                                              | [Telemetry policy](analytics/events.md)                                                                                                                                                                  |
-| CI, dependencies, preview, release, or PR evidence                                     | [Contributor guide](../CONTRIBUTING.md), affected workflow, and [E2E evidence contract](specs/testing-e2e.md) when smoke behavior changes                                                                |
-| Agent intake, dispatch, review, or hardening                                           | [Agent automation boundary](knowledge/agent-automation-boundary.md), affected workflow, and [contributor guide](../CONTRIBUTING.md)                                                                      |
-
 ## Working Model
 
 1. Use this repo's docs for implemented behavior, accepted implementation contracts, and agent preflight context.
