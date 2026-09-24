@@ -148,6 +148,7 @@ import {
   validateMerchantInvoicePaymentAction,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import { takeSparkPaymentHandoff } from "../lib/order-payment-handoff"
 import {
   checkOrderPaymentAddressUpdate,
   type OrderPaymentAddressUpdate,
@@ -1198,6 +1199,11 @@ function OrderDetail({
     })
   }
 
+  const finishAcceptedOrderRecoveryRef = useRef(finishAcceptedOrderRecovery)
+  useLayoutEffect(() => {
+    finishAcceptedOrderRecoveryRef.current = finishAcceptedOrderRecovery
+  })
+
   async function retryStagedOrderDelivery(): Promise<void> {
     const lifecycle = row.lifecycle
     if (!lifecycle?.orderRelayDelivery) {
@@ -1241,6 +1247,43 @@ function OrderDetail({
     }
     await finishAcceptedOrderRecovery(current)
   }
+
+  useEffect(() => {
+    if (
+      !paymentFocused ||
+      !actionsReady ||
+      row.lifecycle?.orderDeliveryStatus !== "sent" ||
+      row.lifecycle.paymentTarget?.type !== "wallet" ||
+      row.lifecycle.paymentTarget.providerId !== "spark"
+    ) {
+      return
+    }
+    const handoff = takeSparkPaymentHandoff(vm.orderId, buyerPubkey)
+    if (!handoff) return
+    void withBusy(async () => {
+      await runOrderPayment({
+        ...handoff.context,
+        approveFee: sparkFeeApproval.requestApproval,
+      })
+      await handoff.purchaseCleanup
+      const current = await getOrderLifecycle(vm.orderId)
+      if (!current || !hasCheckoutPaymentProgress(current)) {
+        throw new Error(
+          "Payment did not start. Continue this accepted order from here."
+        )
+      }
+      await finishAcceptedOrderRecoveryRef.current(current)
+    })
+  }, [
+    actionsReady,
+    buyerPubkey,
+    paymentFocused,
+    row.lifecycle?.orderDeliveryStatus,
+    row.lifecycle?.paymentTarget,
+    sparkFeeApproval.requestApproval,
+    vm.orderId,
+    withBusy,
+  ])
 
   async function confirmPaymentAddressUpdate(): Promise<void> {
     const pending = paymentAddressUpdate
@@ -2825,6 +2868,22 @@ function OrdersPage() {
       headerStatus: deriveOrderHeaderStatus(vm),
     }
   }, [paymentAttemptQuery.data, selected])
+
+  useEffect(() => {
+    if (
+      !paymentFocused ||
+      !selectedRow ||
+      selectedRow.orderId !== selectedFromUrl ||
+      selectedRow.lifecycle?.paymentStatus !== "paid"
+    ) {
+      return
+    }
+    void navigate({
+      to: "/orders",
+      search: { order: selectedRow.orderId },
+      replace: true,
+    })
+  }, [navigate, paymentFocused, selectedFromUrl, selectedRow])
 
   const hasOrders = orders.length > 0
   const focusedOrderPending =
