@@ -7,9 +7,7 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
-  buildProductDeletionEventDraft,
   buildProductPublishResultTelemetryProperties,
-  cacheSignedProductDeletionEvent,
   canonicalizeProductPrice,
   compileProductFulfillmentIntent,
   evaluateListingSafety,
@@ -21,13 +19,10 @@ import {
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
-  getNdk,
   isCommerceReadIncomplete,
-  isValidSignedPublicNostrEvent,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
   resolveEventMarketOrganizerInbox,
-  waitForVisibleDocument,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
@@ -147,8 +142,6 @@ import { needsProductInboxPublishGuidance } from "../lib/productInboxReadiness"
 import {
   deliverQueuedProductDeletion,
   getPendingProductDeletionJobs,
-  persistSignedProductDeletion,
-  planCurrentProductDeletionWriteRelays,
   productDeletionJobToPublishResult,
 } from "../lib/product-deletion-delivery"
 import {
@@ -1118,6 +1111,7 @@ async function publishProduct(
   const listings = plan.publish.map((target) => ({
     product: target.product,
     dTag: target.dTag,
+    previousEventId: target.existing?.eventId ?? null,
     previousEventCreatedAt: target.existing?.eventCreatedAt,
     fulfillmentIntent: target.fulfillmentIntent,
   }))
@@ -1171,6 +1165,18 @@ async function publishProduct(
     listings,
     deletions,
     recoveryDeletionEvent: recoveryDeletionJob?.signedEvent,
+    // Fresh families use one atomic intent. An older rejected mixed family
+    // keeps its original NIP-09 cutoff and stages under the same local locks.
+    ...(recoveryDeletionJob
+      ? {
+          legacyCommit: {
+            recovery: {
+              kind: "mixed_deletion" as const,
+              previousDeletionEventId: recoveryDeletionJob.id,
+            },
+          },
+        }
+      : { durableCommit: {} }),
     onSignerRequest: (progress) => {
       assertCurrentFamilyRevision?.()
       onSignerRequest?.({
@@ -1217,92 +1223,30 @@ async function deleteProduct(
       "Product pubkey mismatch; refusing to publish deletion event"
     )
   }
-  const draft = buildProductDeletionEventDraft({
+  let deliveryJobId: string | undefined
+  const delivery = await signAndPublishProductWriteBundle({
     merchantPubkey,
-    targets: familyRecords.map((record) => ({
-      eventId: record.eventId,
-      addressId: record.dTag ? record.addressId : undefined,
-    })),
-    clientAppId: "merchant",
-  })
-  return signAndDeliverProductDeletion(
-    merchantPubkey,
-    draft,
-    Array.from(
-      new Set(familyRecords.flatMap((record) => record.sourceRelayUrls))
-    ),
-    onSignedLocal,
-    onSignerRequest,
     authenticatedPubkey,
-    shouldContinue
-  )
-}
-
-async function signAndDeliverProductDeletion(
-  merchantPubkey: string,
-  draft: ReturnType<typeof buildProductDeletionEventDraft>,
-  sourceRelayUrls: readonly string[],
-  onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>,
-  onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
-  authenticatedPubkey?: string | null,
-  shouldContinue?: () => boolean
-): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
-  const ndk = getNdk()
-  if (!ndk.signer) throw new Error("Signer not connected")
-  const signerPubkey = (await ndk.signer.user()).pubkey
-  if (signerPubkey !== merchantPubkey || shouldContinue?.() === false) {
-    throw new Error("Active signer does not match current merchant pubkey")
-  }
-  const activeAuthenticatedPubkey =
-    authenticatedPubkey === undefined ? signerPubkey : authenticatedPubkey
-  const currentWriteRelayPlan = await planCurrentProductDeletionWriteRelays(
-    merchantPubkey,
-    activeAuthenticatedPubkey,
-    shouldContinue
-  )
-
-  const deletion = new NDKEvent(ndk)
-  deletion.kind = EVENT_KINDS.DELETION
-  deletion.created_at = Math.floor(Date.now() / 1000)
-  deletion.tags = draft.tags
-  deletion.content = draft.content
-
-  onSignerRequest?.({ kind: "deletion", current: 1, total: 1 })
-  await waitForVisibleDocument()
-  if (shouldContinue?.() === false) {
-    throw new Error("Product signer session changed before deletion signing")
-  }
-  await deletion.sign(ndk.signer)
-  const signedEvent = deletion.rawEvent()
-  if (
-    !isValidSignedPublicNostrEvent(signedEvent) ||
-    signedEvent.pubkey !== merchantPubkey ||
-    shouldContinue?.() === false
-  ) {
-    throw new Error("Signer changed during product deletion signing")
-  }
-  const deliveryJob = await persistSignedProductDeletion({
-    signedEvent,
-    currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
-    currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
-    currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,
-    sourceRelayUrls: [...sourceRelayUrls],
+    shouldContinue,
+    listings: [],
+    deletions: buildProductRemovalDeletionTargets(familyRecords),
+    durableCommit: {},
+    onSignerRequest,
+    onSignedLocal: async (bundle) => {
+      const deletion = bundle.events.find(
+        (event) => event.kind === EVENT_KINDS.DELETION
+      )
+      if (!deletion || !bundle.deletionDeliveryJobId) {
+        throw new Error("Signed product deletion is missing its durable job")
+      }
+      deliveryJobId = bundle.deletionDeliveryJobId
+      await onSignedLocal(deletion, deliveryJobId)
+    },
   })
-  await cacheSignedProductDeletionEvent(deletion)
-  try {
-    await onSignedLocal(deletion, deliveryJob.id)
-    return {
-      delivery: await deliverQueuedProductDeletion(deliveryJob.id, {
-        authenticatedPubkey: activeAuthenticatedPubkey,
-        shouldContinue,
-      }),
-      deliveryJobId: deliveryJob.id,
-    }
-  } catch (error) {
-    throw error instanceof SignedProductDeliveryError
-      ? error
-      : new SignedProductDeliveryError(error)
+  if (!deliveryJobId) {
+    throw new Error("Signed product deletion was not committed locally")
   }
+  return { delivery, deliveryJobId }
 }
 
 function ProductsPage() {

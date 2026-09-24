@@ -5,7 +5,10 @@ import {
   buildProductListingEventDraft,
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
+  config,
+  commitLocalProductWrite,
   compileProductFulfillmentIntent,
+  deliverLocalProductShippingJob,
   EVENT_KINDS,
   getEventMarketPickupsByCoordinates,
   getNdk,
@@ -20,6 +23,9 @@ import {
   markProductListingDeliveryReady,
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
+  publishExactProductShippingRelay,
+  prepareProductDeletionDeliveryJob,
+  prepareProductListingDeliveryJob,
   publishWithPlanner,
   productDeletionEvidenceFromSignedEvent,
   RelayPublishDiagnosticsError,
@@ -32,7 +38,11 @@ import {
   type ProductSchema,
   type PublishWithPlannerResult,
   type SignedPublicNostrEvent,
+  type LocalProductWriteStockInput,
+  type LocalLegacyProductWriteRecovery,
+  withLocalLegacyProductWriteStage,
 } from "@conduit/core"
+import type { LocalProductShippingJob } from "@conduit/core/db"
 import {
   deliverQueuedProductDeletion,
   persistSignedProductDeletion,
@@ -45,6 +55,10 @@ import {
   planCurrentProductListingRelayTargets,
   type DeliverQueuedProductListingOptions,
 } from "./product-listing-delivery"
+import {
+  PendingProductStockDeliveryStore,
+  withMerchantStockLock,
+} from "./productStock"
 
 export class SignedProductDeliveryError extends Error {
   readonly deliveryCause: unknown
@@ -252,8 +266,44 @@ export function getProductPreservedFulfillmentFields(product: ProductSchema) {
 export interface ProductListingPublishTarget {
   product: ProductSchema
   dTag: string
+  /** Exact local revision expected by the durable commit, null for creation. */
+  previousEventId?: string | null
   previousEventCreatedAt?: number
   fulfillmentIntent: ProductPublicationFulfillmentIntent
+}
+
+function expectedProductWriteRevisions(input: {
+  merchantPubkey: string
+  listings: readonly ProductListingPublishTarget[]
+  deletions: readonly ProductDeletionPublishTarget[]
+}): Array<{ addressId: string; eventId: string | null }> {
+  const expected = new Map<string, string | null>()
+  for (const listing of input.listings) {
+    if (
+      listing.previousEventCreatedAt !== undefined &&
+      !listing.previousEventId
+    ) {
+      throw new Error("Existing product revision is missing its exact event id")
+    }
+    const addressId = `${EVENT_KINDS.PRODUCT}:${input.merchantPubkey}:${listing.dTag}`
+    if (expected.has(addressId)) {
+      throw new Error("Product write repeats a coordinate")
+    }
+    expected.set(addressId, listing.previousEventId ?? null)
+  }
+  for (const deletion of input.deletions) {
+    if (!deletion.addressId) {
+      throw new Error("Durable deletion needs an exact product coordinate")
+    }
+    if (expected.has(deletion.addressId)) {
+      throw new Error("Product write lists and deletes one coordinate")
+    }
+    expected.set(deletion.addressId, deletion.eventId)
+  }
+  return [...expected].map(([addressId, eventId]) => ({
+    addressId,
+    eventId,
+  }))
 }
 
 const VERIFIED_EVENT_PICKUP = Symbol("verified-event-pickup")
@@ -1147,8 +1197,21 @@ export async function signAndPublishProductWriteBundle(
     deletions?: readonly ProductDeletionPublishTarget[]
     /** Re-sign a rejected mixed family's original deletion without widening its NIP-09 cutoff. */
     recoveryDeletionEvent?: SignedPublicNostrEvent
+    /** New device-local journal path. Legacy route adoption remains explicit. */
+    durableCommit?: { stock?: LocalProductWriteStockInput }
+    /** Only for an exact rejected legacy recovery; all fresh writes use durableCommit. */
+    legacyCommit?: {
+      recovery: LocalLegacyProductWriteRecovery
+      reserveSignedUnderLock?: (
+        bundle: SignedProductWriteBundle
+      ) => true | Promise<true>
+    }
     /** Optional owner-supplied source-revision check for concurrent local edits. */
     assertCurrentWriteBaseline?: () => Promise<void>
+    /** Await durable caller-owned recovery intent before outbox or cache advances. */
+    onSignedBeforeStaging?: (
+      bundle: SignedProductWriteBundle
+    ) => true | Promise<true>
     onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
     onSignedEvent?: (
       event: NDKEvent,
@@ -1312,23 +1375,6 @@ export async function signAndPublishProductWriteBundle(
   await input.assertCurrentWriteBaseline?.()
   assertSignerSessionCurrent()
 
-  for (const write of writes) {
-    if (!write.shippingEvent) continue
-    const delivery = await publishWithPlanner(write.shippingEvent, {
-      intent: "commerce_author_event",
-      authorPubkey: signerPubkey,
-      authenticatedPubkey,
-      accountPubkey: signerPubkey,
-      deliveryMode: "critical",
-      shouldContinue: input.shouldContinue,
-    })
-    if (delivery.successfulRelayUrls.length === 0) {
-      throw new Error(
-        "Fixed shipping was not acknowledged by a relay. Product publication was stopped."
-      )
-    }
-  }
-
   const deletionEvent = events.find(
     (event) => event.kind === EVENT_KINDS.DELETION
   )
@@ -1348,89 +1394,309 @@ export async function signAndPublishProductWriteBundle(
     ...(productListingDeliveryJobId ? { productListingDeliveryJobId } : {}),
     ...(deletionDeliveryJobId ? { deletionDeliveryJobId } : {}),
   }
-  // Relay preparation or shipping publication may have yielded after signing.
-  // Check again before either exact outbox or local cache can project a stale
-  // listing revision.
-  await input.assertCurrentWriteBaseline?.()
-  assertSignerSessionCurrent()
-  try {
-    if (productListingDeliveryJobId) {
-      await persistSignedProductListings(
-        {
-          merchantPubkey: signerPubkey,
-          signedEvents: rawListingEvents,
-          relayTargets: productListingRelayTargets,
-          companionDeletionJobId: deletionDeliveryJobId,
-          // Every exact family remains relay-ineligible until the caller's
-          // local evidence commit succeeds. A companion NIP-09 job adds the
-          // reciprocal durability check when the shared gate is armed.
-          readyForDelivery: false,
-        },
-        input.productListingDeliveryOptions
+  if (input.durableCommit) {
+    if (input.onSignedBeforeStaging) {
+      throw new Error(
+        "Durable product writes cannot stage a separate recovery checkpoint"
       )
     }
-    if (deletionEvent && deletionDeliveryJobId) {
-      const currentWriteRelayPlan = await planCurrentProductDeletionWriteRelays(
+    const shippingEvents = writes
+      .map((write) => write.shippingEvent)
+      .filter((event): event is NDKEvent => event !== null)
+    const listingJob =
+      rawListingEvents.length > 0
+        ? prepareProductListingDeliveryJob(
+            {
+              merchantPubkey: signerPubkey,
+              signedEvents: rawListingEvents,
+              relayTargets: productListingRelayTargets,
+              companionDeletionJobId: deletionDeliveryJobId,
+              prerequisiteShippingEventIds: shippingEvents.map(
+                (event) => event.id
+              ),
+              readyForDelivery: false,
+            },
+            input.productListingDeliveryOptions
+          )
+        : undefined
+    const currentWriteRelayPlan = deletionEvent
+      ? await planCurrentProductDeletionWriteRelays(
+          signerPubkey,
+          signerPubkey,
+          input.shouldContinue
+        )
+      : null
+    const canonicalConduitRelayUrl = config.appBackplaneRelayUrls[0]
+    if (deletionEvent && !canonicalConduitRelayUrl) {
+      throw new Error("Canonical Conduit relay is not configured")
+    }
+    const deletionJob =
+      deletionEvent && currentWriteRelayPlan
+        ? prepareProductDeletionDeliveryJob(
+            {
+              signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
+              currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
+              currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
+              currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,
+              sourceRelayUrls: mergeRelayUrls(
+                ...(input.deletions ?? []).map(
+                  (deletion) => deletion.sourceRelayUrls ?? []
+                )
+              ),
+              canonicalConduitRelayUrl: canonicalConduitRelayUrl!,
+              companionListingJobId: listingJob?.id,
+            },
+            input.deletionDeliveryOptions
+          )
+        : undefined
+    const shippingJobs: LocalProductShippingJob[] = shippingEvents.map(
+      (event) => ({
+        id: event.id,
+        merchantPubkey: signerPubkey,
+        signedEvent: event.rawEvent() as SignedPublicNostrEvent,
+        relayUrls:
+          listingJob?.relayTargets.map((target) => target.relayUrl) ?? [],
+        acknowledgedRelayUrls: [],
+        createdAt: Date.now(),
+      })
+    )
+    await input.assertCurrentWriteBaseline?.()
+    assertSignerSessionCurrent()
+    try {
+      const expectedRevisions = expectedProductWriteRevisions({
+        merchantPubkey: signerPubkey,
+        listings: input.listings,
+        deletions: input.deletions ?? [],
+      })
+      await withMerchantStockLock(signerPubkey, async () => {
+        const coordinates = new Set(
+          expectedRevisions.map((revision) => revision.addressId)
+        )
+        const legacyPending = new PendingProductStockDeliveryStore()
+          .getPersistedForMerchant(signerPubkey)
+          .some((pending) => coordinates.has(pending.adjustment.addressId))
+        if (legacyPending) {
+          throw new Error(
+            "A signed stock update must settle before this product changes"
+          )
+        }
+        await commitLocalProductWrite({
+          intentId: crypto.randomUUID(),
+          merchantPubkey: signerPubkey,
+          expectedRevisions,
+          ...(listingJob ? { listingJob } : {}),
+          ...(deletionJob ? { deletionJob } : {}),
+          shippingJobs,
+          ...(input.durableCommit?.stock
+            ? { stock: input.durableCommit.stock }
+            : {}),
+        })
+      })
+    } catch (error) {
+      throw asSignedProductDeliveryError(error, false)
+    }
+    try {
+      await input.onSignedLocal(signedBundle)
+      await input.onDeliveryQueued?.(signedBundle)
+    } catch (error) {
+      throw asSignedProductDeliveryError(error, false)
+    }
+    try {
+      for (const shippingJob of shippingJobs) {
+        await deliverLocalProductShippingJob(
+          shippingJob.id,
+          publishExactProductShippingRelay,
+          {
+            authenticatedPubkey,
+            isAuthenticatedPubkeyCurrent: () =>
+              input.shouldContinue?.() !== false,
+          }
+        )
+      }
+      if (listingJob && shippingJobs.length > 0) {
+        await markProductListingDeliveryReady(listingJob.id, {
+          ...input.productListingDeliveryOptions,
+          isCompanionDeletionDurable: async (eventId, listingJobId) => {
+            const deletion = await getProductDeletionDelivery(
+              eventId,
+              input.deletionDeliveryOptions
+            )
+            return deletion?.companionListingJobId === listingJobId
+          },
+        })
+      }
+      return await deliverSignedProductWriteBundle(signedBundle, signerPubkey, {
+        ...input.deletionDeliveryOptions,
+        authenticatedPubkey,
+        shouldContinue: input.shouldContinue,
+        productListingDeliveryOptions: input.productListingDeliveryOptions,
+      })
+    } catch (error) {
+      throw asSignedProductDeliveryError(error)
+    }
+  }
+
+  // A new 30406 can only leave after the exact signed shipping/listing family
+  // is committed together. The older separate-outbox path remains for legacy
+  // non-shipping recovery, but it has no authority to publish fixed shipping.
+  if (writes.some((write) => write.shippingEvent !== null)) {
+    throw asSignedProductDeliveryError(
+      new Error("Fixed shipping requires a durable local product-write intent"),
+      false
+    )
+  }
+  if (input.legacyCommit && input.onSignedBeforeStaging) {
+    throw new Error("Legacy product recovery cannot reserve outside its lock")
+  }
+  const legacyDeletionRelayPlan = deletionEvent
+    ? await planCurrentProductDeletionWriteRelays(
         signerPubkey,
         signerPubkey,
         input.shouldContinue
       )
-      const sourceRelayUrls = mergeRelayUrls(
-        ...(input.deletions ?? []).map(
-          (deletion) => deletion.sourceRelayUrls ?? []
-        )
-      )
-      await persistSignedProductDeletion(
-        {
-          signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
-          currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
-          currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
-          currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,
-          sourceRelayUrls,
-          companionListingJobId: productListingDeliveryJobId,
-        },
-        input.deletionDeliveryOptions
-      )
-    }
-  } catch (error) {
-    throw asSignedProductDeliveryError(error, false)
-  }
-
-  // Both exact signed intents must be recoverable before a new local revision
-  // (or its companion deletion) is projected. Leave staged jobs unarmed when
-  // projection fails; startup recovery restores these same signed bytes.
-  await Promise.all(
-    listingEvents.map((event) => cacheSignedProductListingEvent(event))
+    : null
+  const legacySourceRelayUrls = mergeRelayUrls(
+    ...(input.deletions ?? []).map((deletion) => deletion.sourceRelayUrls ?? [])
   )
-  if (deletionEvent) {
+  const stageLegacyLocal = async () => {
+    // Relay preparation and signing may have yielded. Check again under the
+    // held locks before any exact outbox or cache can project this revision.
+    await input.assertCurrentWriteBaseline?.()
+    assertSignerSessionCurrent()
     try {
-      await cacheSignedProductDeletionEvent(deletionEvent)
+      if (
+        input.legacyCommit?.reserveSignedUnderLock &&
+        (await input.legacyCommit.reserveSignedUnderLock(signedBundle)) !== true
+      ) {
+        throw new Error("Signed recovery checkpoint was not confirmed")
+      }
+      if (
+        input.onSignedBeforeStaging &&
+        (await input.onSignedBeforeStaging(signedBundle)) !== true
+      ) {
+        throw new Error("Signed recovery checkpoint was not confirmed")
+      }
+    } catch (error) {
+      throw asSignedProductDeliveryError(error, false)
+    }
+    assertSignerSessionCurrent()
+    if (input.legacyCommit) {
+      const affectedCoordinates = new Set(
+        expectedProductWriteRevisions({
+          merchantPubkey: signerPubkey,
+          listings: input.listings,
+          deletions: input.deletions ?? [],
+        }).map((revision) => revision.addressId)
+      )
+      const pending = new PendingProductStockDeliveryStore()
+        .getPersistedForMerchant(signerPubkey)
+        .filter((row) => affectedCoordinates.has(row.adjustment.addressId))
+      const ownSignedEventId =
+        input.legacyCommit.recovery.kind === "stock_republish"
+          ? rawListingEvents[0]?.id
+          : undefined
+      if (
+        pending.some((row) => row.signedEvent.id !== ownSignedEventId) ||
+        (ownSignedEventId &&
+          pending.filter((row) => row.signedEvent.id === ownSignedEventId)
+            .length !== 1)
+      ) {
+        throw new Error(
+          "A signed stock update must settle before this product changes"
+        )
+      }
+    }
+    try {
+      if (productListingDeliveryJobId) {
+        await persistSignedProductListings(
+          {
+            merchantPubkey: signerPubkey,
+            signedEvents: rawListingEvents,
+            relayTargets: productListingRelayTargets,
+            companionDeletionJobId: deletionDeliveryJobId,
+            readyForDelivery: false,
+          },
+          input.productListingDeliveryOptions
+        )
+      }
+      if (deletionEvent && deletionDeliveryJobId && legacyDeletionRelayPlan) {
+        await persistSignedProductDeletion(
+          {
+            signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
+            currentWriteRelayUrls: legacyDeletionRelayPlan.relayUrls,
+            currentAppRelayUrls: legacyDeletionRelayPlan.appRelayUrls,
+            currentPersonalRelayUrls: legacyDeletionRelayPlan.personalRelayUrls,
+            sourceRelayUrls: legacySourceRelayUrls,
+            companionListingJobId: productListingDeliveryJobId,
+          },
+          input.deletionDeliveryOptions
+        )
+      }
+    } catch (error) {
+      throw asSignedProductDeliveryError(error, false)
+    }
+    // The exact family remains unarmed until its local projection succeeds.
+    await Promise.all(
+      listingEvents.map((event) => cacheSignedProductListingEvent(event))
+    )
+    if (deletionEvent) {
+      try {
+        await cacheSignedProductDeletionEvent(deletionEvent)
+      } catch (error) {
+        throw asSignedProductDeliveryError(error, false)
+      }
+    }
+    try {
+      await input.onSignedLocal(signedBundle)
+    } catch (error) {
+      throw asSignedProductDeliveryError(error, false)
+    }
+    try {
+      if (productListingDeliveryJobId) {
+        await markProductListingDeliveryReady(productListingDeliveryJobId, {
+          ...input.productListingDeliveryOptions,
+          isCompanionDeletionDurable: async (eventId, listingJobId) => {
+            const deletion = await getProductDeletionDelivery(
+              eventId,
+              input.deletionDeliveryOptions
+            )
+            return deletion?.companionListingJobId === listingJobId
+          },
+        })
+      }
     } catch (error) {
       throw asSignedProductDeliveryError(error, false)
     }
   }
-
-  try {
-    await input.onSignedLocal(signedBundle)
-  } catch (error) {
-    throw asSignedProductDeliveryError(error, false)
-  }
-
-  try {
-    if (productListingDeliveryJobId) {
-      await markProductListingDeliveryReady(productListingDeliveryJobId, {
-        ...input.productListingDeliveryOptions,
-        isCompanionDeletionDurable: async (eventId, listingJobId) => {
-          const deletion = await getProductDeletionDelivery(
-            eventId,
-            input.deletionDeliveryOptions
-          )
-          return deletion?.companionListingJobId === listingJobId
-        },
+  if (input.legacyCommit) {
+    try {
+      const expectedRevisions = expectedProductWriteRevisions({
+        merchantPubkey: signerPubkey,
+        listings: input.listings,
+        deletions: input.deletions ?? [],
       })
+      await withMerchantStockLock(signerPubkey, () =>
+        withLocalLegacyProductWriteStage(
+          {
+            merchantPubkey: signerPubkey,
+            expectedRevisions,
+            signedListings: rawListingEvents,
+            ...(deletionEvent
+              ? {
+                  signedDeletion:
+                    deletionEvent.rawEvent() as SignedPublicNostrEvent,
+                }
+              : {}),
+            recovery: input.legacyCommit!.recovery,
+          },
+          stageLegacyLocal
+        )
+      )
+    } catch (error) {
+      throw asSignedProductDeliveryError(error, false)
     }
-  } catch (error) {
-    throw asSignedProductDeliveryError(error, false)
+  } else {
+    await stageLegacyLocal()
   }
 
   try {
@@ -1469,11 +1735,14 @@ export async function signAndPublishProductListing(input: {
         fulfillmentIntent: input.fulfillmentIntent,
       },
     ],
+    durableCommit: {},
     onSignerRequest: input.onSignerRequest,
-    onSignedEvent: async (event, kind) => {
-      if (kind !== "product") return
+    onSignedLocal: async (bundle) => {
+      const event = bundle.events.find(
+        (candidate) => candidate.kind === EVENT_KINDS.PRODUCT
+      )
+      if (!event) throw new Error("Signed product listing is missing")
       await input.onSignedLocal(event)
     },
-    onSignedLocal: async () => undefined,
   })
 }

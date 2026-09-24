@@ -186,6 +186,18 @@ describe("merchant order stock UI", () => {
     expect(source).toContain(
       "stockDecisionHydratedSelectionId !== selectedStockDecisionId"
     )
+    const settledDecision = source.slice(
+      source.indexOf('let settlement: "saved" | "retry" | "stale"'),
+      source.indexOf("const nextPendingDelivery =")
+    )
+    expect(settledDecision).toContain("settleLocalProductStockRecovery({")
+    expect(settledDecision).toContain("settleSignedOrderStockDelivery({")
+    expect(settledDecision).toContain(
+      'const decisionPersisted = settlement === "saved"'
+    )
+    expect(settledDecision).toMatch(
+      /if \(decisionPersisted\) \{[\s\S]*setSessionStockDecisionKeys\(/
+    )
     expect(
       source.indexOf("pendingStockDeliveryStoreRef.current.getForOrder")
     ).toBeLessThan(
@@ -269,7 +281,7 @@ describe("merchant order stock UI", () => {
     expect(source).toContain("onRepublish={republishStock}")
   })
 
-  it("binds both fresh stock actions to the current signed listing before staging", async () => {
+  it("binds fresh stock to the journal and old republish to held-lock recovery", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
     const mutation = source.slice(
       source.indexOf("const stockUpdateMutation ="),
@@ -280,7 +292,65 @@ describe("merchant order stock UI", () => {
     expect(mutation).toContain("assertOrderStockRevisionCurrent({")
     expect(mutation).toContain("signAndPublishProductWriteBundle({")
     expect(mutation).toContain("assertCurrentWriteBaseline,")
+    expect(mutation).toContain("durableCommit: {")
+    expect(mutation).toContain("legacyCommit: {")
+    expect(mutation).toContain('kind: "stock_republish" as const')
+    expect(mutation).toContain("reserveSignedUnderLock: async (bundle) => {")
+    expect(mutation).toContain(
+      "return checkpointSignedOrderStockDeliveryWithHeldLock({"
+    )
+    expect(mutation).toContain("expectedUnpublishedEventId:")
+    expect(mutation).toContain("assertCurrentWriteBaseline,")
+    expect(mutation).toContain("settleSignedOrderStockDelivery({")
+    expect(mutation.indexOf("reserveSignedUnderLock:")).toBeLessThan(
+      mutation.indexOf("onSignedLocal:")
+    )
     expect(mutation).toContain("onSignedLocal: async (bundle) => {")
     expect(mutation).not.toContain("onSignedEvent:")
+  })
+
+  it("rehydrates the exact pending stock retry when outbox staging fails before the UI callback", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+    const stockMutation = source.slice(
+      source.indexOf("const stockUpdateMutation ="),
+      source.indexOf("const confirmPaymentMutation =")
+    )
+    const errorHandler = stockMutation.slice(
+      stockMutation.indexOf("onError: async (error, payload) => {"),
+      stockMutation.indexOf("onSettled:")
+    )
+    expect(errorHandler).toContain("getPersistedForMerchant(pubkey)")
+    expect(errorHandler).toContain("pending.orderId !== payload.orderId")
+    expect(errorHandler).toContain(
+      "pending.adjustment.key !== payload.adjustment.key"
+    )
+    expect(errorHandler).toContain('decision?.kind !== "applied"')
+    expect(errorHandler).toContain("signedEvent: recoveredPending.signedEvent")
+    expect(errorHandler).toContain('buildLocalProductRetryNotice("publish")')
+    expect(errorHandler).not.toContain("signAndPublishProductWriteBundle(")
+  })
+
+  it("fences Products deletion against an outstanding signed stock update", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/routes/products.tsx"
+    ).text()
+    const deletion = source.slice(
+      source.indexOf("async function deleteProduct("),
+      source.indexOf("function ProductsPage()")
+    )
+    expect(deletion).toContain("signAndPublishProductWriteBundle({")
+    expect(deletion).toContain("durableCommit: {}")
+    const writer = await Bun.file(
+      "apps/merchant/src/lib/product-publishing.ts"
+    ).text()
+    const atomicPath = writer.slice(
+      writer.indexOf("if (input.durableCommit) {"),
+      writer.indexOf("// A new 30406 can only leave")
+    )
+    expect(atomicPath).toContain("withMerchantStockLock(")
+    expect(atomicPath).toContain("getPersistedForMerchant(")
+    expect(atomicPath.indexOf("getPersistedForMerchant(")).toBeLessThan(
+      atomicPath.indexOf("commitLocalProductWrite(")
+    )
   })
 })

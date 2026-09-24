@@ -273,6 +273,8 @@ export interface ProductListingDeliveryJob {
   relayDelivery: ProductListingRelayDelivery[]
   /** Exact NIP-09 job required by this mixed product mutation, when present. */
   companionDeletionJobId?: string
+  /** Newly signed fixed-shipping events that must be ACKed before this listing can leave. */
+  prerequisiteShippingEventIds?: string[]
   /** False while a mixed mutation is still staging its deletion and local cache. */
   readyForDelivery?: boolean
   state: ProductListingDeliveryState
@@ -281,6 +283,64 @@ export interface ProductListingDeliveryJob {
   nextRetryAt?: number
   createdAt: number
   updatedAt: number
+}
+
+/** One committed local product mutation. No worker may infer authority from an uncommitted row. */
+export interface LocalProductWriteIntent {
+  id: string
+  merchantPubkey: string
+  productAddressIds: string[]
+  listingJobId?: string
+  deletionJobId?: string
+  shippingEventIds: string[]
+  stockCheckpointId?: string
+  committedAt: number
+}
+
+/** Device-local signed revision frontier for one merchant-owned coordinate. */
+export interface LocalProductWriteFrontier {
+  id: string
+  merchantPubkey: string
+  /** Last signed product revision, if any; a deletion does not invent a listing. */
+  eventId: string | null
+  eventCreatedAt: number | null
+  /** Strongest local address deletion cutoff, kept across later writes. */
+  deletionEventId?: string
+  deletionCreatedAt?: number
+  intentId: string
+}
+
+/** Exact signed shipping prerequisite; delivery and ACK handling remain separate. */
+export interface LocalProductShippingJob {
+  id: string
+  merchantPubkey: string
+  signedEvent: SignedPublicNostrEvent
+  relayUrls: string[]
+  acknowledgedRelayUrls: string[]
+  createdAt: number
+}
+
+/** Order stock recovery evidence committed with its signed product revision. */
+export interface LocalProductStockCheckpoint {
+  id: string
+  merchantPubkey: string
+  orderId: string
+  productAddressId: string
+  sourceEventId: string
+  signedEventId: string
+  adjustment: {
+    key: string
+    addressId: string
+    sourceEventId: string
+    title: string
+    quantity: number
+    currentStock: number
+    nextStock: number
+    shortfall: number
+    targetMode?: "custom"
+  }
+  state: "pending" | "applied" | "unpublished"
+  committedAt: number
 }
 
 export interface CachedProfile {
@@ -1047,6 +1107,10 @@ class ConduitDB extends Dexie {
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
   productListingOutbox!: EntityTable<ProductListingDeliveryJob, "id">
+  localProductWriteIntents!: EntityTable<LocalProductWriteIntent, "id">
+  localProductWriteFrontiers!: EntityTable<LocalProductWriteFrontier, "id">
+  localProductShippingOutbox!: EntityTable<LocalProductShippingJob, "id">
+  localProductStockCheckpoints!: EntityTable<LocalProductStockCheckpoint, "id">
   inboxDeclarationEvidence!: EntityTable<
     InboxDeclarationEvidenceRecord,
     "pubkey"
@@ -1249,6 +1313,14 @@ class ConduitDB extends Dexie {
     this.version(20).stores({
       productListingOutbox:
         "id, merchantPubkey, state, nextRetryAt, updatedAt, createdAt",
+    })
+
+    this.version(21).stores({
+      localProductWriteIntents: "id, merchantPubkey, listingJobId, committedAt",
+      localProductWriteFrontiers: "id, merchantPubkey, intentId",
+      localProductShippingOutbox: "id, merchantPubkey, createdAt",
+      localProductStockCheckpoints:
+        "id, merchantPubkey, orderId, productAddressId, state, committedAt",
     })
   }
 }

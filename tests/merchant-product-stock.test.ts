@@ -1,9 +1,15 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import { EVENT_KINDS, type CommerceProductRecord } from "@conduit/core"
-import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   applyOrderStockTarget,
   buildOrderStockAdjustments,
+  checkpointSignedOrderStockDelivery,
+  confirmExactPendingStockDelivery,
   doesOrderStockDecisionCoverAdjustment,
   getOrderStockAdjustmentForDisplay,
   getOrderStockDecisionKey,
@@ -16,11 +22,16 @@ import {
   parseProductStockInput,
   PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
+  settleSignedOrderStockDelivery,
   shouldShowOrderStockAdjustment,
+  withMerchantStockLock,
+  type MerchantStockLockRequest,
 } from "../apps/merchant/src/lib/productStock"
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>()
+  failWrites = false
+  dropWrites = false
 
   get length(): number {
     return this.values.size
@@ -43,7 +54,34 @@ class MemoryStorage implements Storage {
   }
 
   setItem(key: string, value: string): void {
+    if (this.failWrites) throw new Error("storage unavailable")
+    if (this.dropWrites) return
     this.values.set(key, value)
+  }
+}
+
+class TestMerchantStockLocks {
+  private readonly queues = new Map<string, Promise<void>>()
+
+  request: MerchantStockLockRequest = async <T>(
+    name: string,
+    task: () => Promise<T>
+  ): Promise<T> => {
+    const previous = this.queues.get(name) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    this.queues.set(
+      name,
+      previous.then(() => current)
+    )
+    await previous
+    try {
+      return await task()
+    } finally {
+      release()
+    }
   }
 }
 
@@ -329,6 +367,160 @@ describe("merchant product stock", () => {
     expect(first.set(merchant, "order-2", address, "declined")).toBe(true)
     expect(second.get(merchant, "order-2", address)?.kind).toBe("declined")
     expect(second.get(merchant, "order-3", address)).toBeNull()
+  })
+
+  it("retains a prior durable decision when its same-key replacement fails to persist", () => {
+    const storage = new MemoryStorage()
+    const store = new ProductStockDecisionStore(storage)
+    const merchant = "a".repeat(64)
+    const address = `30402:${merchant}:pocket-relay`
+
+    expect(
+      store.set(merchant, "order-1", address, "applied", undefined, undefined, {
+        requireDurable: true,
+      })
+    ).toBe(true)
+    storage.failWrites = true
+    expect(
+      store.set(
+        merchant,
+        "order-1",
+        address,
+        "declined",
+        undefined,
+        undefined,
+        {
+          requireDurable: true,
+        }
+      )
+    ).toBe(false)
+    storage.failWrites = false
+    storage.dropWrites = true
+    expect(
+      store.set(
+        merchant,
+        "order-1",
+        address,
+        "declined",
+        undefined,
+        undefined,
+        {
+          requireDurable: true,
+        }
+      )
+    ).toBe(false)
+
+    expect(store.get(merchant, "order-1", address)?.kind).toBe("applied")
+    expect(
+      new ProductStockDecisionStore(storage).get(merchant, "order-1", address)
+        ?.kind
+    ).toBe("applied")
+  })
+
+  it("durably records the exact applied and unpublished stock outcomes", () => {
+    const storage = new MemoryStorage()
+    const merchant = "a".repeat(64)
+    const record = productRecord()
+    const adjustment = buildOrderStockAdjustments({
+      orderId: "order-applied",
+      merchantPubkey: merchant,
+      items: [{ productId: record.addressId, quantity: 2 }],
+      productRecords: [record],
+    })[0]!
+    const unpublishedAdjustment = buildOrderStockAdjustments({
+      orderId: "order-unpublished",
+      merchantPubkey: merchant,
+      items: [{ productId: record.addressId, quantity: 2 }],
+      productRecords: [record],
+    })[0]!
+    const store = new ProductStockDecisionStore(storage)
+
+    expect(
+      store.set(
+        merchant,
+        "order-applied",
+        adjustment.addressId,
+        "applied",
+        adjustment,
+        undefined,
+        { requireDurable: true }
+      )
+    ).toBe(true)
+    expect(
+      store.set(
+        merchant,
+        "order-unpublished",
+        unpublishedAdjustment.addressId,
+        "unpublished",
+        unpublishedAdjustment,
+        "c".repeat(64),
+        { requireDurable: true }
+      )
+    ).toBe(true)
+
+    const afterReload = new ProductStockDecisionStore(storage)
+    expect(
+      afterReload.get(merchant, "order-applied", adjustment.addressId)
+    ).toMatchObject({ kind: "applied", adjustment })
+    expect(
+      afterReload.get(
+        merchant,
+        "order-unpublished",
+        unpublishedAdjustment.addressId
+      )
+    ).toMatchObject({
+      kind: "unpublished",
+      adjustment: unpublishedAdjustment,
+      localEventId: "c".repeat(64),
+    })
+  })
+
+  it("fails closed without evicting an order decision when durable storage is full", () => {
+    const storage = new MemoryStorage()
+    const merchant = "a".repeat(64)
+    const address = `30402:${merchant}:pocket-relay`
+    const store = new ProductStockDecisionStore(storage)
+    expect(
+      store.set(merchant, "order-0", address, "applied", undefined, undefined, {
+        requireDurable: true,
+      })
+    ).toBe(true)
+
+    const storageKey = storage.key(0)!
+    const fixedTime = 1_700_000_000_000
+    const decisions: Record<string, unknown> = {}
+    for (let index = 0; index < 500; index += 1) {
+      decisions[getOrderStockDecisionKey(`order-${index}`, address)] = {
+        kind: "applied",
+        decidedAt: fixedTime,
+      }
+    }
+    storage.setItem(storageKey, JSON.stringify({ version: 1, decisions }))
+
+    const clock = spyOn(Date, "now").mockReturnValue(fixedTime)
+    try {
+      expect(
+        store.set(
+          merchant,
+          "order-500",
+          address,
+          "applied",
+          undefined,
+          undefined,
+          { requireDurable: true }
+        )
+      ).toBe(false)
+    } finally {
+      clock.mockRestore()
+    }
+
+    const afterReload = new ProductStockDecisionStore(storage)
+    expect(afterReload.get(merchant, "order-500", address)).toBeNull()
+    expect(afterReload.get(merchant, "order-0", address)?.kind).toBe("applied")
+    const retained = JSON.parse(storage.getItem(storageKey)!) as {
+      decisions: Record<string, unknown>
+    }
+    expect(Object.keys(retained.decisions)).toHaveLength(500)
   })
 
   it("rejects persisted stock snapshots bound to another product", () => {
@@ -1131,5 +1323,801 @@ describe("merchant product stock", () => {
         "order-1"
       )
     ).toEqual([])
+  })
+
+  it("does not replace a prior durable stock checkpoint when a later same-key write fails", () => {
+    const storage = new MemoryStorage()
+    const secretKey = generateSecretKey()
+    const merchant = getPublicKey(secretKey)
+    const dTag = "durable-stock-checkpoint"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${merchant}:${dTag}`
+    const signStock = (createdAt: number) =>
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.PRODUCT,
+          created_at: createdAt,
+          content: "Stock update",
+          tags: [
+            ["d", dTag],
+            ["title", "Pocket Relay"],
+            ["price", "25", "USD"],
+            ["stock", "3"],
+          ],
+        },
+        secretKey
+      )
+    const original = signStock(1_700_000_001)
+    const replacement = signStock(1_700_000_002)
+    const adjustment = {
+      key: getOrderStockDecisionKey("order-1", addressId),
+      addressId,
+      sourceEventId: "source-event",
+      title: "Pocket Relay",
+      quantity: 2,
+      currentStock: 5,
+      nextStock: 3,
+      shortfall: 0,
+    }
+    const store = new PendingProductStockDeliveryStore(storage)
+    expect(
+      store.set(
+        merchant,
+        { orderId: "order-1", adjustment, signedEvent: original },
+        { requireDurable: true }
+      )
+    ).toBe(true)
+
+    storage.failWrites = true
+    expect(
+      store.set(
+        merchant,
+        { orderId: "order-1", adjustment, signedEvent: replacement },
+        { requireDurable: true }
+      )
+    ).toBe(false)
+    storage.failWrites = false
+    storage.dropWrites = true
+    expect(
+      store.set(
+        merchant,
+        { orderId: "order-1", adjustment, signedEvent: replacement },
+        { requireDurable: true }
+      )
+    ).toBe(false)
+    expect(store.getForOrder(merchant, "order-1")[0]?.signedEvent.id).toBe(
+      original.id
+    )
+    expect(
+      new PendingProductStockDeliveryStore(storage).getForOrder(
+        merchant,
+        "order-1"
+      )[0]?.signedEvent.id
+    ).toBe(original.id)
+  })
+
+  it("fails closed without evicting another order when the durable checkpoint store is full in the same millisecond", () => {
+    const storage = new MemoryStorage()
+    const secretKey = generateSecretKey()
+    const merchant = getPublicKey(secretKey)
+    const dTag = "durable-stock-cap"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${merchant}:${dTag}`
+    const signedEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 1_700_000_001,
+        content: "Stock update",
+        tags: [
+          ["d", dTag],
+          ["title", "Pocket Relay"],
+          ["price", "25", "USD"],
+          ["stock", "3"],
+        ],
+      },
+      secretKey
+    )
+    const store = new PendingProductStockDeliveryStore(storage)
+    const fixedTime = 1_700_000_000_000
+    const deliveryFor = (orderId: string) => ({
+      orderId,
+      adjustment: {
+        key: getOrderStockDecisionKey(orderId, addressId),
+        addressId,
+        sourceEventId: "source-event",
+        title: "Pocket Relay",
+        quantity: 2,
+        currentStock: 5,
+        nextStock: 3,
+        shortfall: 0,
+      },
+      signedEvent,
+    })
+    expect(
+      store.set(merchant, deliveryFor("order-0"), { requireDurable: true })
+    ).toBe(true)
+    const storageKey = storage.key(0)!
+    const deliveries: Record<string, unknown> = {}
+    for (let index = 0; index < 100; index += 1) {
+      const delivery = deliveryFor(`order-${index}`)
+      deliveries[delivery.adjustment.key] = { ...delivery, savedAt: fixedTime }
+    }
+    storage.setItem(storageKey, JSON.stringify({ version: 1, deliveries }))
+
+    const clock = spyOn(Date, "now").mockReturnValue(fixedTime)
+    try {
+      expect(
+        store.set(merchant, deliveryFor("order-100"), {
+          requireDurable: true,
+        })
+      ).toBe(false)
+    } finally {
+      clock.mockRestore()
+    }
+
+    const afterReload = new PendingProductStockDeliveryStore(storage)
+    expect(afterReload.getForOrder(merchant, "order-100")).toEqual([])
+    expect(
+      afterReload.getForOrder(merchant, "order-0")[0]?.signedEvent.id
+    ).toBe(signedEvent.id)
+    const retained = JSON.parse(storage.getItem(storageKey)!) as {
+      deliveries: Record<string, unknown>
+    }
+    expect(Object.keys(retained.deliveries)).toHaveLength(100)
+  })
+
+  it("serializes two tabs so distinct products survive and a second order cannot stage the same product", async () => {
+    const storage = new MemoryStorage()
+    const secretKey = generateSecretKey()
+    const merchant = getPublicKey(secretKey)
+    const locks = new TestMerchantStockLocks()
+    const pendingA = new PendingProductStockDeliveryStore(storage)
+    const pendingB = new PendingProductStockDeliveryStore(storage)
+    const decisionA = new ProductStockDecisionStore(storage)
+    const decisionB = new ProductStockDecisionStore(storage)
+    const makeStock = (orderId: string, dTag: string, createdAt: number) => {
+      const addressId = `${EVENT_KINDS.PRODUCT}:${merchant}:${dTag}`
+      return {
+        adjustment: {
+          key: getOrderStockDecisionKey(orderId, addressId),
+          addressId,
+          sourceEventId: "a".repeat(64),
+          title: dTag,
+          quantity: 2,
+          currentStock: 5,
+          nextStock: 3,
+          shortfall: 0,
+        },
+        signedEvent: finalizeEvent(
+          {
+            kind: EVENT_KINDS.PRODUCT,
+            created_at: createdAt,
+            content: "Stock update",
+            tags: [
+              ["d", dTag],
+              ["title", dTag],
+              ["price", "25", "USD"],
+              ["stock", "3"],
+            ],
+          },
+          secretKey
+        ),
+      }
+    }
+    const first = makeStock("order-1", "stock-a", 1_700_000_001)
+    const second = makeStock("order-2", "stock-b", 1_700_000_002)
+    let releaseFirst!: () => void
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    let notifyEntered!: () => void
+    const firstEntered = new Promise<void>((resolve) => {
+      notifyEntered = resolve
+    })
+    const baselineChecks: string[] = []
+    const firstWrite = checkpointSignedOrderStockDelivery({
+      merchantPubkey: merchant,
+      orderId: "order-1",
+      ...first,
+      expectedUnpublishedEventId: null,
+      assertCurrentWriteBaseline: async () => {
+        baselineChecks.push("first")
+        notifyEntered()
+        await firstHeld
+      },
+      decisionStore: decisionA,
+      pendingStore: pendingA,
+      requestLock: locks.request,
+    })
+    await firstEntered
+    const secondWrite = checkpointSignedOrderStockDelivery({
+      merchantPubkey: merchant,
+      orderId: "order-2",
+      ...second,
+      expectedUnpublishedEventId: null,
+      assertCurrentWriteBaseline: async () => {
+        baselineChecks.push("second")
+      },
+      decisionStore: decisionB,
+      pendingStore: pendingB,
+      requestLock: locks.request,
+    })
+    await Promise.resolve()
+    expect(baselineChecks).toEqual(["first"])
+    releaseFirst()
+    expect(await firstWrite).toBe(true)
+    expect(await secondWrite).toBe(true)
+    expect(baselineChecks).toEqual(["first", "second"])
+    expect(
+      new PendingProductStockDeliveryStore(storage)
+        .getPersistedForMerchant(merchant)
+        .map((delivery) => delivery.orderId)
+        .sort()
+    ).toEqual(["order-1", "order-2"])
+
+    const competingOrder = makeStock("order-3", "stock-a", 1_700_000_003)
+    await expect(
+      checkpointSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-3",
+        ...competingOrder,
+        expectedUnpublishedEventId: null,
+        assertCurrentWriteBaseline: async () => {},
+        decisionStore: decisionB,
+        pendingStore: pendingB,
+        requestLock: locks.request,
+      })
+    ).rejects.toThrow("Another signed stock update")
+    const competingSameOrder = makeStock("order-1", "stock-a", 1_700_000_004)
+    await expect(
+      checkpointSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-1",
+        ...competingSameOrder,
+        expectedUnpublishedEventId: null,
+        assertCurrentWriteBaseline: async () => {},
+        decisionStore: decisionB,
+        pendingStore: pendingB,
+        requestLock: locks.request,
+      })
+    ).rejects.toThrow("Another signed stock update")
+    expect(pendingA.getForOrder(merchant, "order-1")[0]?.signedEvent.id).toBe(
+      first.signedEvent.id
+    )
+
+    expect(
+      await settleSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-1",
+        adjustment: first.adjustment,
+        signedEventId: first.signedEvent.id,
+        kind: "applied",
+        decisionStore: decisionA,
+        pendingStore: pendingA,
+        requestLock: locks.request,
+      })
+    ).toBe("saved")
+    expect(pendingB.getForOrder(merchant, "order-1")).toEqual([])
+    expect(
+      new PendingProductStockDeliveryStore(storage).getForOrder(
+        merchant,
+        "order-2"
+      )
+    ).toHaveLength(1)
+    expect(
+      new ProductStockDecisionStore(storage).getPersisted(
+        merchant,
+        "order-1",
+        first.adjustment.addressId
+      )?.kind
+    ).toBe("applied")
+    await expect(
+      checkpointSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-3",
+        ...competingOrder,
+        expectedUnpublishedEventId: null,
+        assertCurrentWriteBaseline: async () => {},
+        decisionStore: decisionB,
+        pendingStore: pendingB,
+        requestLock: locks.request,
+      })
+    ).rejects.toThrow("already updated this product revision")
+    expect(
+      await settleSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-2",
+        adjustment: second.adjustment,
+        signedEventId: second.signedEvent.id,
+        kind: "applied",
+        decisionStore: decisionB,
+        pendingStore: pendingB,
+        requestLock: locks.request,
+      })
+    ).toBe("saved")
+    const afterReload = new ProductStockDecisionStore(storage)
+    expect(
+      afterReload.getPersisted(merchant, "order-1", first.adjustment.addressId)
+        ?.kind
+    ).toBe("applied")
+    expect(
+      afterReload.getPersisted(merchant, "order-2", second.adjustment.addressId)
+        ?.kind
+    ).toBe("applied")
+  })
+
+  it("keeps a newer republish checkpoint when an older tab settles or retries stale bytes", async () => {
+    const storage = new MemoryStorage()
+    const secretKey = generateSecretKey()
+    const merchant = getPublicKey(secretKey)
+    const locks = new TestMerchantStockLocks()
+    const pendingStore = new PendingProductStockDeliveryStore(storage)
+    const decisionStore = new ProductStockDecisionStore(storage)
+    const orderId = "order-1"
+    const dTag = "same-order-stock"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${merchant}:${dTag}`
+    const adjustment = {
+      key: getOrderStockDecisionKey(orderId, addressId),
+      addressId,
+      sourceEventId: "a".repeat(64),
+      title: dTag,
+      quantity: 2,
+      currentStock: 5,
+      nextStock: 3,
+      shortfall: 0,
+    }
+    const sign = (createdAt: number) =>
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.PRODUCT,
+          created_at: createdAt,
+          content: "Stock update",
+          tags: [
+            ["d", dTag],
+            ["title", dTag],
+            ["price", "25", "USD"],
+            ["stock", "3"],
+          ],
+        },
+        secretKey
+      )
+    const original = sign(1_700_000_001)
+    const replacement = sign(1_700_000_002)
+    const reserve = (signedEvent: typeof original, expected: string | null) =>
+      checkpointSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId,
+        adjustment,
+        signedEvent,
+        expectedUnpublishedEventId: expected,
+        assertCurrentWriteBaseline: async () => {},
+        decisionStore,
+        pendingStore,
+        requestLock: locks.request,
+      })
+
+    expect(await reserve(original, null)).toBe(true)
+    expect(
+      await settleSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId,
+        adjustment,
+        signedEventId: original.id,
+        kind: "unpublished",
+        decisionStore,
+        pendingStore,
+        requestLock: locks.request,
+      })
+    ).toBe("saved")
+    expect(await reserve(replacement, original.id)).toBe(true)
+    expect(
+      await settleSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId,
+        adjustment,
+        signedEventId: original.id,
+        kind: "applied",
+        decisionStore: new ProductStockDecisionStore(storage),
+        pendingStore: new PendingProductStockDeliveryStore(storage),
+        requestLock: locks.request,
+      })
+    ).toBe("stale")
+    await expect(
+      confirmExactPendingStockDelivery({
+        merchantPubkey: merchant,
+        orderId,
+        adjustment,
+        signedEventId: original.id,
+        pendingStore,
+        decisionStore,
+        requestLock: locks.request,
+      })
+    ).rejects.toThrow("no longer awaiting delivery")
+    expect(
+      await confirmExactPendingStockDelivery({
+        merchantPubkey: merchant,
+        orderId,
+        adjustment,
+        signedEventId: replacement.id,
+        pendingStore,
+        decisionStore,
+        requestLock: locks.request,
+      })
+    ).toBe(true)
+    expect(
+      new PendingProductStockDeliveryStore(storage).getForOrder(
+        merchant,
+        orderId
+      )[0]?.signedEvent.id
+    ).toBe(replacement.id)
+    expect(
+      new ProductStockDecisionStore(storage).getPersisted(
+        merchant,
+        orderId,
+        addressId
+      )?.localEventId
+    ).toBe(original.id)
+  })
+
+  it("does not let a failed settled-checkpoint cleanup block the next order", async () => {
+    let protectedStorageKey: string | null = null
+    let protectedDeliveryKey: string | null = null
+    const storage = new (class extends MemoryStorage {
+      setItem(key: string, value: string): void {
+        if (key === protectedStorageKey && protectedDeliveryKey) {
+          const deliveries = (
+            JSON.parse(value) as {
+              deliveries: Record<string, unknown>
+            }
+          ).deliveries
+          if (!deliveries[protectedDeliveryKey]) return
+        }
+        super.setItem(key, value)
+      }
+    })()
+    const secretKey = generateSecretKey()
+    const merchant = getPublicKey(secretKey)
+    const locks = new TestMerchantStockLocks()
+    const pendingStore = new PendingProductStockDeliveryStore(storage)
+    const decisionStore = new ProductStockDecisionStore(storage)
+    const dTag = "cleanup-failure"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${merchant}:${dTag}`
+    const firstEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 1_700_000_001,
+        content: "Stock update",
+        tags: [
+          ["d", dTag],
+          ["title", dTag],
+          ["price", "25", "USD"],
+          ["stock", "3"],
+        ],
+      },
+      secretKey
+    )
+    const firstAdjustment = {
+      key: getOrderStockDecisionKey("order-1", addressId),
+      addressId,
+      sourceEventId: "a".repeat(64),
+      title: dTag,
+      quantity: 2,
+      currentStock: 5,
+      nextStock: 3,
+      shortfall: 0,
+    }
+    expect(
+      await checkpointSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-1",
+        adjustment: firstAdjustment,
+        signedEvent: firstEvent,
+        expectedUnpublishedEventId: null,
+        assertCurrentWriteBaseline: async () => {},
+        decisionStore,
+        pendingStore,
+        requestLock: locks.request,
+      })
+    ).toBe(true)
+    protectedStorageKey = storage.key(0)
+    protectedDeliveryKey = firstAdjustment.key
+    expect(
+      await settleSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-1",
+        adjustment: firstAdjustment,
+        signedEventId: firstEvent.id,
+        kind: "applied",
+        decisionStore,
+        pendingStore,
+        requestLock: locks.request,
+      })
+    ).toBe("saved")
+    expect(pendingStore.getPersistedForMerchant(merchant)).toHaveLength(1)
+
+    const secondEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 1_700_000_002,
+        content: "Stock update",
+        tags: [
+          ["d", dTag],
+          ["title", dTag],
+          ["price", "25", "USD"],
+          ["stock", "1"],
+        ],
+      },
+      secretKey
+    )
+    const secondAdjustment = {
+      key: getOrderStockDecisionKey("order-2", addressId),
+      addressId,
+      sourceEventId: firstEvent.id,
+      title: dTag,
+      quantity: 2,
+      currentStock: 3,
+      nextStock: 1,
+      shortfall: 0,
+    }
+    expect(
+      await checkpointSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-2",
+        adjustment: secondAdjustment,
+        signedEvent: secondEvent,
+        expectedUnpublishedEventId: null,
+        assertCurrentWriteBaseline: async () => {},
+        decisionStore: new ProductStockDecisionStore(storage),
+        pendingStore: new PendingProductStockDeliveryStore(storage),
+        requestLock: locks.request,
+      })
+    ).toBe(true)
+    expect(
+      pendingStore
+        .getPersistedForMerchant(merchant)
+        .map((item) => item.orderId)
+        .sort()
+    ).toEqual(["order-1", "order-2"])
+    await expect(
+      confirmExactPendingStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-1",
+        adjustment: firstAdjustment,
+        signedEventId: firstEvent.id,
+        pendingStore,
+        decisionStore,
+        requestLock: locks.request,
+      })
+    ).rejects.toThrow("no longer awaiting delivery")
+  })
+
+  it("reserves a decision slot before staging when other orders are pending at capacity", async () => {
+    const storage = new MemoryStorage()
+    const secretKey = generateSecretKey()
+    const merchant = getPublicKey(secretKey)
+    const decisions = new ProductStockDecisionStore(storage)
+    const pending = new PendingProductStockDeliveryStore(storage)
+    const locks = new TestMerchantStockLocks()
+    for (let index = 0; index < 499; index += 1) {
+      expect(
+        decisions.set(
+          merchant,
+          `historical-${index}`,
+          `${EVENT_KINDS.PRODUCT}:${merchant}:historical-${index}`,
+          "applied",
+          undefined,
+          undefined,
+          { requireDurable: true }
+        )
+      ).toBe(true)
+    }
+
+    const signedEvent = (dTag: string) =>
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.PRODUCT,
+          created_at: 1_700_000_001,
+          content: "Stock update",
+          tags: [
+            ["d", dTag],
+            ["title", dTag],
+            ["price", "25", "USD"],
+            ["stock", "3"],
+          ],
+        },
+        secretKey
+      )
+    const oldAddress = `${EVENT_KINDS.PRODUCT}:${merchant}:reserved-old`
+    expect(
+      pending.set(
+        merchant,
+        {
+          orderId: "reserved-old-order",
+          adjustment: {
+            key: getOrderStockDecisionKey("reserved-old-order", oldAddress),
+            addressId: oldAddress,
+            sourceEventId: "a".repeat(64),
+            title: "Reserved old",
+            quantity: 1,
+            currentStock: 4,
+            nextStock: 3,
+            shortfall: 0,
+          },
+          signedEvent: signedEvent("reserved-old"),
+        },
+        { requireDurable: true }
+      )
+    ).toBe(true)
+
+    const newAddress = `${EVENT_KINDS.PRODUCT}:${merchant}:reserved-new`
+    await expect(
+      checkpointSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "reserved-new-order",
+        adjustment: {
+          key: getOrderStockDecisionKey("reserved-new-order", newAddress),
+          addressId: newAddress,
+          sourceEventId: "b".repeat(64),
+          title: "Reserved new",
+          quantity: 1,
+          currentStock: 4,
+          nextStock: 3,
+          shortfall: 0,
+        },
+        signedEvent: signedEvent("reserved-new"),
+        expectedUnpublishedEventId: null,
+        assertCurrentWriteBaseline: async () => {},
+        decisionStore: decisions,
+        pendingStore: pending,
+        requestLock: locks.request,
+      })
+    ).rejects.toThrow("Stock decision storage is full")
+    expect(pending.getPersistedForMerchant(merchant)).toHaveLength(1)
+    expect(decisions.getPersistedForMerchant(merchant)).toHaveLength(499)
+  })
+
+  it("refuses to stage a signed stock event when cross-tab locking is unavailable", async () => {
+    const storage = new MemoryStorage()
+    const secretKey = generateSecretKey()
+    const merchant = getPublicKey(secretKey)
+    const dTag = "no-lock-stock"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${merchant}:${dTag}`
+    const signedEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 1_700_000_001,
+        content: "Stock update",
+        tags: [
+          ["d", dTag],
+          ["title", dTag],
+          ["price", "25", "USD"],
+          ["stock", "3"],
+        ],
+      },
+      secretKey
+    )
+    await expect(
+      checkpointSignedOrderStockDelivery({
+        merchantPubkey: merchant,
+        orderId: "order-1",
+        adjustment: {
+          key: getOrderStockDecisionKey("order-1", addressId),
+          addressId,
+          sourceEventId: "a".repeat(64),
+          title: dTag,
+          quantity: 2,
+          currentStock: 5,
+          nextStock: 3,
+          shortfall: 0,
+        },
+        signedEvent,
+        expectedUnpublishedEventId: null,
+        assertCurrentWriteBaseline: async () => {},
+        decisionStore: new ProductStockDecisionStore(storage),
+        pendingStore: new PendingProductStockDeliveryStore(storage),
+        requestLock: null,
+      })
+    ).rejects.toThrow("cannot coordinate stock updates")
+    expect(
+      new PendingProductStockDeliveryStore(storage).getForOrder(
+        merchant,
+        "order-1"
+      )
+    ).toEqual([])
+    await expect(
+      withMerchantStockLock(merchant, async () => true, null)
+    ).rejects.toThrow("cannot coordinate stock updates")
+  })
+
+  it("does not overwrite malformed existing stock authority during durable writes", () => {
+    const merchant = "a".repeat(64)
+    const addressId = `${EVENT_KINDS.PRODUCT}:${merchant}:corrupt-decision`
+    const decisionStorage = new MemoryStorage()
+    const decisions = new ProductStockDecisionStore(decisionStorage)
+    expect(
+      decisions.set(
+        merchant,
+        "order-1",
+        addressId,
+        "applied",
+        undefined,
+        undefined,
+        { requireDurable: true }
+      )
+    ).toBe(true)
+    const decisionKey = decisionStorage.key(0)!
+    const malformedDecisions = JSON.stringify({
+      version: 1,
+      decisions: { invalid: { kind: "applied", decidedAt: "not-a-date" } },
+    })
+    decisionStorage.setItem(decisionKey, malformedDecisions)
+    expect(
+      decisions.set(
+        merchant,
+        "order-2",
+        addressId,
+        "applied",
+        undefined,
+        undefined,
+        { requireDurable: true }
+      )
+    ).toBe(false)
+    expect(decisionStorage.getItem(decisionKey)).toBe(malformedDecisions)
+    expect(() =>
+      decisions.getPersisted(merchant, "order-2", addressId)
+    ).toThrow("invalid order evidence")
+
+    const deliveryStorage = new MemoryStorage()
+    const secretKey = generateSecretKey()
+    const author = getPublicKey(secretKey)
+    const dTag = "corrupt-pending"
+    const productAddressId = `${EVENT_KINDS.PRODUCT}:${author}:${dTag}`
+    const signedEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 1_700_000_001,
+        content: "Stock update",
+        tags: [
+          ["d", dTag],
+          ["title", dTag],
+          ["price", "25", "USD"],
+          ["stock", "3"],
+        ],
+      },
+      secretKey
+    )
+    const pending = new PendingProductStockDeliveryStore(deliveryStorage)
+    const delivery = {
+      orderId: "order-1",
+      adjustment: {
+        key: getOrderStockDecisionKey("order-1", productAddressId),
+        addressId: productAddressId,
+        sourceEventId: "a".repeat(64),
+        title: dTag,
+        quantity: 2,
+        currentStock: 5,
+        nextStock: 3,
+        shortfall: 0,
+      },
+      signedEvent,
+    }
+    expect(pending.set(author, delivery, { requireDurable: true })).toBe(true)
+    const deliveryKey = deliveryStorage.key(0)!
+    const malformedDeliveries = "{bad-json"
+    deliveryStorage.setItem(deliveryKey, malformedDeliveries)
+    expect(
+      pending.set(
+        author,
+        {
+          ...delivery,
+          orderId: "order-2",
+          adjustment: {
+            ...delivery.adjustment,
+            key: getOrderStockDecisionKey("order-2", productAddressId),
+          },
+        },
+        { requireDurable: true }
+      )
+    ).toBe(false)
+    expect(deliveryStorage.getItem(deliveryKey)).toBe(malformedDeliveries)
+    expect(() => pending.getPersistedForMerchant(author)).toThrow("unreadable")
   })
 })

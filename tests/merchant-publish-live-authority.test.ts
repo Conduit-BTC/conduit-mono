@@ -29,10 +29,10 @@ describe("Merchant publish live account authority", () => {
       /signAndPublishProductWriteBundle\(\{[\s\S]{0,100}shouldContinue,/
     )
     expect(products).toMatch(
-      /deliverQueuedProductDeletion\([\s\S]{0,220}authenticatedPubkey: activeAuthenticatedPubkey,[\s\S]{0,40}shouldContinue,/
+      /deliverQueuedProductDeletion\(payload\.deliveryJobId,\s*\{\s*authenticatedPubkey: authStatus === "connected" \? pubkey : null,\s*shouldContinue: \(\) => authGenerationRef\.current === authGeneration,/
     )
     expect(products).toMatch(
-      /deliverQueuedProductDeletion\([\s\S]{0,220}authenticatedPubkey:[\s\S]{0,80}shouldContinue: \(\) =>/
+      /deleteProduct\(\s*payload\.merchantPubkey,\s*payload\.product,[\s\S]{0,1000}authStatus === "connected" \? pubkey : null,\s*\(\) => authGenerationRef\.current === authGeneration/
     )
     expect(eventProducts).toContain("shouldContinue: input.shouldContinue")
     expect(pickup.match(/shouldContinue: input\.shouldContinue/g)).toHaveLength(
@@ -48,8 +48,9 @@ describe("Merchant publish live account authority", () => {
 
     expect(delivery).toContain("requiresAuthenticatedOwnerAuthority")
     expect(delivery).toContain("!normalizePublicWebSocketUrl(input.relayUrl)")
+    expect(delivery).toContain("status: await publishSignedEventToRelay({")
     expect(delivery).toMatch(
-      /publishSignedEventToRelay\(\{[\s\S]{0,500}shouldContinue:/
+      /shouldContinue:\s*requiresAuthenticatedOwnerAuthority && authenticatedPubkey\s*\? \(\) =>\s*input\.isAuthenticatedPubkeyCurrent\?\.\(authenticatedPubkey\) !==\s*false/
     )
     expect(worker).toContain(
       'import { StrictMode, useLayoutEffect } from "react"'

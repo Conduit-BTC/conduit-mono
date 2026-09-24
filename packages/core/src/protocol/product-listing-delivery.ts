@@ -48,6 +48,7 @@ export interface PersistProductListingDeliveryInput {
   signedEvents: readonly SignedPublicNostrEvent[]
   relayTargets: readonly ProductListingRelayTarget[]
   companionDeletionJobId?: string
+  prerequisiteShippingEventIds?: readonly string[]
   readyForDelivery?: boolean
 }
 
@@ -110,6 +111,11 @@ export interface ProductListingDeliveryOptions {
     eventId: string,
     listingJobId: string
   ) => Promise<boolean>
+  isShippingPrerequisiteAcknowledged?: (
+    eventId: string,
+    listingJobId: string,
+    relayUrl: string
+  ) => Promise<boolean>
 }
 
 function cloneSignedEvent(
@@ -144,6 +150,9 @@ function cloneJob(job: ProductListingDeliveryJob): ProductListingDeliveryJob {
     signedEvents: job.signedEvents.map(cloneSignedEvent),
     relayTargets: cloneRelayTargets(job.relayTargets),
     relayDelivery: cloneRelayDelivery(job.relayDelivery),
+    ...(job.prerequisiteShippingEventIds
+      ? { prerequisiteShippingEventIds: [...job.prerequisiteShippingEventIds] }
+      : {}),
   }
 }
 
@@ -197,6 +206,26 @@ function relayTargetsMatch(
   right: readonly ProductListingRelayTarget[]
 ): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function shippingPrerequisitesMatch(
+  left: readonly string[] | undefined,
+  right: readonly string[] | undefined
+): boolean {
+  return JSON.stringify(left ?? []) === JSON.stringify(right ?? [])
+}
+
+function normalizeShippingPrerequisiteIds(
+  raw: readonly string[] | undefined
+): string[] {
+  const ids = [...(raw ?? [])]
+  if (
+    new Set(ids).size !== ids.length ||
+    ids.some((id) => !/^[0-9a-f]{64}$/.test(id))
+  ) {
+    throw new Error("Product listing shipping prerequisite ids are invalid")
+  }
+  return ids
 }
 
 function normalizeMerchantPubkey(raw: string): string {
@@ -368,7 +397,11 @@ const dexieProductListingOutboxRepository: ProductListingOutboxRepository = {
         next.merchantPubkey !== current.merchantPubkey ||
         !signedEventsMatch(next.signedEvents, current.signedEvents) ||
         !relayTargetsMatch(next.relayTargets, current.relayTargets) ||
-        next.companionDeletionJobId !== current.companionDeletionJobId
+        next.companionDeletionJobId !== current.companionDeletionJobId ||
+        !shippingPrerequisitesMatch(
+          next.prerequisiteShippingEventIds,
+          current.prerequisiteShippingEventIds
+        )
       ) {
         throw new Error("Product listing delivery intent is immutable")
       }
@@ -459,11 +492,11 @@ function reconcileJob(
   }
 }
 
-/** Persist the exact signed family and immutable relay plan before delivery. */
-export async function persistProductListingDelivery(
+/** Prepare immutable, exact signed bytes without touching IndexedDB or relays. */
+export function prepareProductListingDeliveryJob(
   input: PersistProductListingDeliveryInput,
   options: ProductListingDeliveryOptions = {}
-): Promise<ProductListingDeliveryJob> {
+): ProductListingDeliveryJob {
   const merchantPubkey = normalizeMerchantPubkey(input.merchantPubkey)
   assertSignedProductFamily({
     merchantPubkey,
@@ -474,24 +507,10 @@ export async function persistProductListingDelivery(
   const companionDeletionJobId = normalizedCompanionDeletionJobId(
     input.companionDeletionJobId
   )
-  const repository = getRepository(options)
+  const prerequisiteShippingEventIds = normalizeShippingPrerequisiteIds(
+    input.prerequisiteShippingEventIds
+  )
   const id = getProductListingDeliveryJobId(signedEvents)
-  const existing = await repository.get(id)
-
-  if (existing) {
-    if (
-      existing.merchantPubkey !== merchantPubkey ||
-      !signedEventsMatch(existing.signedEvents, signedEvents) ||
-      !relayTargetsMatch(existing.relayTargets, relayTargets) ||
-      existing.companionDeletionJobId !== companionDeletionJobId
-    ) {
-      throw new Error(
-        "A product listing delivery job already exists with a different immutable intent"
-      )
-    }
-    return cloneJob(existing)
-  }
-
   const createdAt = getNow(options)
   const job: ProductListingDeliveryJob = {
     id,
@@ -507,8 +526,13 @@ export async function persistProductListingDelivery(
       }))
     ),
     ...(companionDeletionJobId ? { companionDeletionJobId } : {}),
+    ...(prerequisiteShippingEventIds.length > 0
+      ? { prerequisiteShippingEventIds }
+      : {}),
     readyForDelivery:
-      input.readyForDelivery ?? companionDeletionJobId === undefined,
+      prerequisiteShippingEventIds.length > 0
+        ? false
+        : (input.readyForDelivery ?? companionDeletionJobId === undefined),
     state: "pending",
     deliveryAttemptCount: 0,
     nextRetryAt: createdAt,
@@ -516,17 +540,46 @@ export async function persistProductListingDelivery(
     updatedAt: createdAt,
   }
 
+  return cloneJob(job)
+}
+
+function sameProductListingImmutableIntent(
+  existing: ProductListingDeliveryJob,
+  prepared: ProductListingDeliveryJob
+): boolean {
+  return (
+    existing.merchantPubkey === prepared.merchantPubkey &&
+    signedEventsMatch(existing.signedEvents, prepared.signedEvents) &&
+    relayTargetsMatch(existing.relayTargets, prepared.relayTargets) &&
+    existing.companionDeletionJobId === prepared.companionDeletionJobId &&
+    shippingPrerequisitesMatch(
+      existing.prerequisiteShippingEventIds,
+      prepared.prerequisiteShippingEventIds
+    )
+  )
+}
+
+/** Persist the exact signed family and immutable relay plan before delivery. */
+export async function persistProductListingDelivery(
+  input: PersistProductListingDeliveryInput,
+  options: ProductListingDeliveryOptions = {}
+): Promise<ProductListingDeliveryJob> {
+  const job = prepareProductListingDeliveryJob(input, options)
+  const repository = getRepository(options)
+  const existing = await repository.get(job.id)
+  if (existing) {
+    if (!sameProductListingImmutableIntent(existing, job)) {
+      throw new Error(
+        "A product listing delivery job already exists with a different immutable intent"
+      )
+    }
+    return cloneJob(existing)
+  }
   try {
     await repository.add(job)
   } catch (error) {
-    const raced = await repository.get(id)
-    if (
-      !raced ||
-      raced.merchantPubkey !== merchantPubkey ||
-      !signedEventsMatch(raced.signedEvents, signedEvents) ||
-      !relayTargetsMatch(raced.relayTargets, relayTargets) ||
-      raced.companionDeletionJobId !== companionDeletionJobId
-    ) {
+    const raced = await repository.get(job.id)
+    if (!raced || !sameProductListingImmutableIntent(raced, job)) {
       throw error
     }
     return cloneJob(raced)
@@ -547,6 +600,59 @@ async function isCompanionDeletionDurable(
   return deletion?.companionListingJobId === listingJobId
 }
 
+async function shippingPrerequisiteEligibleRelays(
+  job: ProductListingDeliveryJob,
+  options: ProductListingDeliveryOptions
+): Promise<Set<string>> {
+  const eligible = new Set(job.relayTargets.map((target) => target.relayUrl))
+  if ((job.prerequisiteShippingEventIds ?? []).length === 0) return eligible
+  const intents = options.isShippingPrerequisiteAcknowledged
+    ? []
+    : await db.localProductWriteIntents
+        .where("listingJobId")
+        .equals(job.id)
+        .toArray()
+  for (const eventId of job.prerequisiteShippingEventIds ?? []) {
+    if (options.isShippingPrerequisiteAcknowledged) {
+      for (const relayUrl of [...eligible]) {
+        if (
+          !(await options.isShippingPrerequisiteAcknowledged(
+            eventId,
+            job.id,
+            relayUrl
+          ))
+        ) {
+          eligible.delete(relayUrl)
+        }
+      }
+      continue
+    }
+    const shipping = await db.localProductShippingOutbox.get(eventId)
+    if (
+      !shipping ||
+      shipping.signedEvent.id !== eventId ||
+      shipping.merchantPubkey !== job.merchantPubkey ||
+      !shippingPrerequisitesMatch(
+        [...shipping.relayUrls].sort(),
+        job.relayTargets.map((target) => target.relayUrl).sort()
+      ) ||
+      !intents.some(
+        (intent) =>
+          intent.merchantPubkey === job.merchantPubkey &&
+          intent.shippingEventIds.includes(eventId)
+      )
+    ) {
+      return new Set()
+    }
+    for (const relayUrl of [...eligible]) {
+      if (!shipping.acknowledgedRelayUrls.includes(relayUrl)) {
+        eligible.delete(relayUrl)
+      }
+    }
+  }
+  return eligible
+}
+
 /**
  * Make both halves of a mixed product mutation runnable only after the exact
  * companion deletion is durable and both local evidence writes have finished.
@@ -559,6 +665,9 @@ export async function markProductListingDeliveryReady(
   const stored = await repository.get(id)
   if (!stored) throw new Error("Product listing delivery job not found")
   if (stored.readyForDelivery !== false) return cloneJob(stored)
+  if ((await shippingPrerequisiteEligibleRelays(stored, options)).size === 0) {
+    throw new Error("Signed shipping prerequisite is not acknowledged")
+  }
   const companionDeletionJobId = stored.companionDeletionJobId
   if (
     companionDeletionJobId &&
@@ -567,7 +676,13 @@ export async function markProductListingDeliveryReady(
     throw new Error("Companion product deletion is not durable")
   }
   return await repository.update(id, (current) => {
-    if (current.companionDeletionJobId !== companionDeletionJobId) {
+    if (
+      current.companionDeletionJobId !== companionDeletionJobId ||
+      !shippingPrerequisitesMatch(
+        current.prerequisiteShippingEventIds,
+        stored.prerequisiteShippingEventIds
+      )
+    ) {
       throw new Error("Product listing delivery intent is immutable")
     }
     if (current.readyForDelivery !== false) return current
@@ -680,12 +795,21 @@ async function deliverProductListingJobUnlocked(
   const stored = await repository.get(id)
   if (!stored) throw new Error("Product listing delivery job not found")
   if (stored.readyForDelivery === false) return cloneJob(stored)
+  const shippingEligibleRelays = await shippingPrerequisiteEligibleRelays(
+    stored,
+    options
+  )
+  if (shippingEligibleRelays.size === 0) {
+    throw new Error("Signed shipping prerequisite is not acknowledged")
+  }
   assertSignedProductFamily(stored)
 
   const immutableSignedEvents = stored.signedEvents.map(cloneSignedEvent)
   const immutableRelayTargets = cloneRelayTargets(stored.relayTargets)
-  const retryablePairs = stored.relayDelivery.filter((delivery) =>
-    isRetryableStatus(delivery.status)
+  const retryablePairs = stored.relayDelivery.filter(
+    (delivery) =>
+      isRetryableStatus(delivery.status) &&
+      shippingEligibleRelays.has(delivery.relayUrl)
   )
   if (retryablePairs.length === 0) {
     return await repository.update(id, (current) =>
@@ -715,6 +839,13 @@ async function deliverProductListingJobUnlocked(
       )
       if (!event || !target) {
         throw new Error("Product listing delivery matrix is inconsistent")
+      }
+      if (
+        !(await shippingPrerequisiteEligibleRelays(stored, options)).has(
+          target.relayUrl
+        )
+      ) {
+        return
       }
 
       const authenticatedPubkey = getCurrentAuthenticatedPubkey(options)
@@ -750,7 +881,11 @@ async function deliverProductListingJobUnlocked(
       if (
         !signedEventsMatch(current.signedEvents, immutableSignedEvents) ||
         !relayTargetsMatch(current.relayTargets, immutableRelayTargets) ||
-        current.companionDeletionJobId !== stored.companionDeletionJobId
+        current.companionDeletionJobId !== stored.companionDeletionJobId ||
+        !shippingPrerequisitesMatch(
+          current.prerequisiteShippingEventIds,
+          stored.prerequisiteShippingEventIds
+        )
       ) {
         throw new Error("Product listing delivery intent is immutable")
       }

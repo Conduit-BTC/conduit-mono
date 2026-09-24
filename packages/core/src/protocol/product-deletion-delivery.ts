@@ -507,31 +507,15 @@ function getDeliveryLeaseMs(options?: ProductDeletionDeliveryOptions): number {
  * calls for the same event are idempotent only when the event and original
  * plan are byte-for-byte equivalent.
  */
-export async function persistProductDeletionDelivery(
+export function prepareProductDeletionDeliveryJob(
   input: PersistProductDeletionDeliveryInput,
   options: ProductDeletionDeliveryOptions = {}
-): Promise<ProductDeletionDeliveryJob> {
+): ProductDeletionDeliveryJob {
   assertSignedDeletionEvent(input.signedEvent)
-  const repository = getRepository(options)
   const relayPlan = planProductDeletionRelays(input)
   const companionListingJobId = normalizeCompanionListingJobId(
     input.companionListingJobId
   )
-  const existing = await repository.get(input.signedEvent.id)
-
-  if (existing) {
-    if (
-      !signedEventMatches(existing.signedEvent, input.signedEvent) ||
-      !relayPlanMatches(existing.relayPlan, relayPlan) ||
-      existing.companionListingJobId !== companionListingJobId
-    ) {
-      throw new Error(
-        "A product deletion delivery job already exists with a different immutable plan"
-      )
-    }
-    return cloneJob(existing)
-  }
-
   const createdAt = getNow(options)
   const job: ProductDeletionDeliveryJob = {
     id: input.signedEvent.id,
@@ -551,17 +535,41 @@ export async function persistProductDeletionDelivery(
     updatedAt: createdAt,
   }
 
+  return cloneJob(job)
+}
+
+function sameProductDeletionImmutableIntent(
+  existing: ProductDeletionDeliveryJob,
+  prepared: ProductDeletionDeliveryJob
+): boolean {
+  return (
+    signedEventMatches(existing.signedEvent, prepared.signedEvent) &&
+    relayPlanMatches(existing.relayPlan, prepared.relayPlan) &&
+    existing.companionListingJobId === prepared.companionListingJobId
+  )
+}
+
+export async function persistProductDeletionDelivery(
+  input: PersistProductDeletionDeliveryInput,
+  options: ProductDeletionDeliveryOptions = {}
+): Promise<ProductDeletionDeliveryJob> {
+  const job = prepareProductDeletionDeliveryJob(input, options)
+  const repository = getRepository(options)
+  const existing = await repository.get(job.id)
+  if (existing) {
+    if (!sameProductDeletionImmutableIntent(existing, job)) {
+      throw new Error(
+        "A product deletion delivery job already exists with a different immutable plan"
+      )
+    }
+    return cloneJob(existing)
+  }
   try {
     await repository.add(job)
   } catch (error) {
     // Another route/tab may have won the same idempotent insert race.
     const raced = await repository.get(job.id)
-    if (
-      !raced ||
-      !signedEventMatches(raced.signedEvent, job.signedEvent) ||
-      !relayPlanMatches(raced.relayPlan, job.relayPlan) ||
-      raced.companionListingJobId !== companionListingJobId
-    ) {
+    if (!raced || !sameProductDeletionImmutableIntent(raced, job)) {
       throw error
     }
     return cloneJob(raced)

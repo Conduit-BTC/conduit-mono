@@ -23,6 +23,7 @@ import {
   getCachedMerchantStorefront,
   getPendingProductDeletionDeliveries,
   getRejectedProductListingDeliveries,
+  markProductListingDeliveryReady,
   parseProductEvent,
   persistProductListingDelivery,
   planProductDeletionRelays,
@@ -36,6 +37,7 @@ import {
   type ProductListingRelayTarget,
   type ProductSchema,
   type PublishWithPlannerResult,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 import type {
   CachedProduct,
@@ -55,6 +57,7 @@ import {
   resolvePublishedProductFulfillmentIntentForTarget,
   signAndPublishProductWriteBundle,
   signAndPublishProductListing,
+  SignedProductDeliveryError,
   type CanonicalProductPublishDependencies,
   type SignedProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
@@ -82,6 +85,13 @@ import {
   assertOrderStockRevisionCurrent,
   captureOrderStockRevision,
 } from "../apps/merchant/src/lib/order-stock-fulfillment"
+import {
+  buildOrderStockAdjustments,
+  getOrderStockDecisionKey,
+  isOrderStockAdjustmentMutationDisabled,
+  PendingProductStockDeliveryStore,
+  type OrderStockAdjustment,
+} from "../apps/merchant/src/lib/productStock"
 
 const MERCHANT_SECRET = new Uint8Array(32).fill(4)
 const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
@@ -89,6 +99,36 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
 const allowAllAccountNetworkLocalStateRepository = {
   get: async () => undefined,
+}
+
+class MemoryStorage implements Storage {
+  private readonly values = new Map<string, string>()
+  failWrites = false
+
+  get length(): number {
+    return this.values.size
+  }
+
+  clear(): void {
+    this.values.clear()
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+
+  key(index: number): string | null {
+    return Array.from(this.values.keys())[index] ?? null
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key)
+  }
+
+  setItem(key: string, value: string): void {
+    if (this.failWrites) throw new Error("storage unavailable")
+    this.values.set(key, value)
+  }
 }
 
 function personalListingTarget(
@@ -695,7 +735,7 @@ describe("merchant product event delivery", () => {
     ).not.toBe("acked")
   })
 
-  it("routes product and shipping events through the commerce author intent", async () => {
+  it("does not plan a legacy shipping relay write without a durable intent", async () => {
     const relayUrl = "wss://relay.example"
     const intents: string[] = []
     setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
@@ -715,25 +755,80 @@ describe("merchant product event delivery", () => {
     )
 
     try {
-      await signAndPublishProductWriteBundle({
-        merchantPubkey: MERCHANT_PUBKEY,
-        listings: [
-          {
-            product: makeProduct("commerce-intent"),
-            dTag: "commerce-intent",
-            fulfillmentIntent: {
-              kind: "fixed_standard",
-              amount: 5,
-              currency: "SATS",
-              countries: ["US"],
+      await expect(
+        signAndPublishProductWriteBundle({
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("commerce-intent"),
+              dTag: "commerce-intent",
+              fulfillmentIntent: {
+                kind: "fixed_standard",
+                amount: 5,
+                currency: "SATS",
+                countries: ["US"],
+              },
             },
+          ],
+          onSignedLocal: async () => {},
+          productListingDeliveryOptions:
+            createAckedProductListingDeliveryOptions(),
+        })
+      ).rejects.toBeInstanceOf(SignedProductDeliveryError)
+      expect(intents).toEqual([])
+      expect(publishSpy).not.toHaveBeenCalled()
+    } finally {
+      publishSpy.mockRestore()
+    }
+  })
+
+  it("does not expose fixed shipping before the signed product intent is durable", async () => {
+    const relayUrl = "wss://relay.example"
+    const publishedKinds: number[] = []
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async (input) => ({
+        intent: input.intent,
+        primaryRelayUrls: [relayUrl],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+      async function (this: NDKEvent) {
+        publishedKinds.push(this.kind ?? -1)
+        return new Set([{ url: relayUrl }]) as never
+      }
+    )
+
+    try {
+      await expect(
+        signAndPublishProductWriteBundle({
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("shipping-before-commit"),
+              dTag: "shipping-before-commit",
+              fulfillmentIntent: {
+                kind: "fixed_standard",
+                amount: 5,
+                currency: "SATS",
+                countries: ["US"],
+              },
+            },
+          ],
+          onSignedBeforeStaging: async () => {
+            throw new Error("durable product intent unavailable")
           },
-        ],
-        onSignedLocal: async () => {},
-        productListingDeliveryOptions:
-          createAckedProductListingDeliveryOptions(),
-      })
-      expect(intents).toEqual(["commerce_author_event"])
+          onSignedLocal: async () => {},
+          productListingDeliveryOptions: {
+            repository: new MemoryProductListingOutbox(listingStorage),
+          },
+        })
+      ).rejects.toThrow("Signed product event could not be delivered")
+      expect(publishedKinds).toEqual([])
+      expect(listingStorage.size).toBe(0)
     } finally {
       publishSpy.mockRestore()
     }
@@ -2295,6 +2390,91 @@ describe("merchant product event delivery", () => {
     )
   })
 
+  it("keeps a shipping-dependent product off relays until its exact shipping ACK", async () => {
+    const relayUrl = "wss://relay.example"
+    const otherRelayUrl = "wss://other-relay.example"
+    const repository = new MemoryProductListingOutbox()
+    const shippingEvent = makeSignedEvent(EVENT_KINDS.SHIPPING_OPTION)
+    const signedProduct = makeSignedEvent(EVENT_KINDS.PRODUCT)
+    const staged = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [signedProduct],
+        relayTargets: [
+          personalListingTarget(relayUrl),
+          personalListingTarget(otherRelayUrl),
+        ],
+        prerequisiteShippingEventIds: [shippingEvent.id],
+      },
+      { repository, now: () => NOW }
+    )
+    expect(staged.readyForDelivery).toBe(false)
+    await expect(
+      persistProductListingDelivery(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          signedEvents: [signedProduct],
+          relayTargets: [
+            personalListingTarget(relayUrl),
+            personalListingTarget(otherRelayUrl),
+          ],
+        },
+        { repository, now: () => NOW }
+      )
+    ).rejects.toThrow("different immutable intent")
+    let acknowledged = false
+    let publishes = 0
+    const options = {
+      repository,
+      now: () => NOW,
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      isShippingPrerequisiteAcknowledged: async (
+        eventId: string,
+        _listingJobId: string,
+        targetRelayUrl: string
+      ) =>
+        eventId === shippingEvent.id &&
+        acknowledged &&
+        targetRelayUrl === relayUrl,
+    }
+    await expect(
+      markProductListingDeliveryReady(staged.id, options)
+    ).rejects.toThrow("Signed shipping prerequisite is not acknowledged")
+    expect((await repository.get(staged.id))?.readyForDelivery).toBe(false)
+    await repository.update(staged.id, (current) => ({
+      ...current,
+      readyForDelivery: true,
+    }))
+    await expect(
+      deliverProductListingJob(
+        staged.id,
+        async () => {
+          publishes++
+          return { status: "acked" }
+        },
+        options
+      )
+    ).rejects.toThrow("Signed shipping prerequisite is not acknowledged")
+    expect(publishes).toBe(0)
+
+    acknowledged = true
+    await deliverProductListingJob(
+      staged.id,
+      async () => {
+        publishes++
+        return { status: "acked" }
+      },
+      options
+    )
+    expect(publishes).toBe(1)
+    expect(
+      (await repository.get(staged.id))?.relayDelivery.find(
+        (delivery) => delivery.relayUrl === otherRelayUrl
+      )?.status
+    ).toBe("pending")
+  })
+
   it("lets a durable relay ACK upgrade a concurrent rejection", async () => {
     const relayUrl = "wss://relay.example"
     const storage = new Map<string, ProductListingDeliveryJob>()
@@ -2832,7 +3012,10 @@ describe("merchant product event delivery", () => {
       repository: listingRepository,
       deletionDeliveryOptions: { repository: deletionRepository },
       restoreLocalListingEvidence: async (job) => {
-        restored.push(...job.signedEvents.map(({ id }) => id))
+        for (const event of job.signedEvents) {
+          await cacheSignedProductListingEvent(new NDKEvent(undefined, event))
+          restored.push(event.id)
+        }
       },
       restoreLocalDeletionEvidence: async (event) => {
         restored.push(event.id)
@@ -2883,6 +3066,58 @@ describe("merchant product event delivery", () => {
       },
     })
     expect(deletionAttempts).toBeGreaterThan(0)
+  })
+
+  it("does not restore a staged listing over a competing same-second revision", async () => {
+    const dTag = "staged-competing-tie"
+    const buildSigned = (stock: number) => {
+      const product = { ...makeProduct(dTag), stock }
+      const draft = buildProductListingEventDraft({
+        product,
+        dTag,
+        clientAppId: "merchant",
+      })
+      return finalizeEvent(
+        {
+          kind: draft.kind,
+          created_at: Math.floor(NOW / 1000),
+          content: draft.content,
+          tags: draft.tags,
+        },
+        MERCHANT_SECRET
+      )
+    }
+    const first = buildSigned(3)
+    const second = buildSigned(4)
+    // NIP-01 keeps the lexically lower event ID when timestamps tie.
+    // Stage the losing revision so recovery must not arm it over the winner.
+    const [staged, competing] =
+      first.id > second.id ? [first, second] : [second, first]
+    const repository = new MemoryProductListingOutbox()
+    const job = await persistProductListingDelivery(
+      {
+        merchantPubkey: MERCHANT_PUBKEY,
+        signedEvents: [staged],
+        relayTargets: [personalListingTarget("wss://relay.example")],
+        readyForDelivery: false,
+      },
+      { repository, now: () => NOW }
+    )
+    await cacheSignedProductListingEvent(new NDKEvent(undefined, competing))
+
+    await resumeStagedProductListingDeliveries({
+      repository,
+      now: () => NOW + 1,
+    })
+
+    const current = (
+      await getCachedMerchantStorefront({
+        merchantPubkey: MERCHANT_PUBKEY,
+        includeMarketHidden: true,
+      })
+    ).data.find((record) => record.dTag === dTag)
+    expect(current?.eventId).toBe(competing.id)
+    expect((await repository.get(job.id))?.readyForDelivery).toBe(false)
   })
 
   it("recovers a staged standalone listing after local commit fails", async () => {
@@ -3322,31 +3557,33 @@ describe("merchant product event delivery", () => {
     let publishCallsAtCompletion = -1
 
     try {
-      await signAndPublishProductWriteBundle(
-        {
-          merchantPubkey: MERCHANT_PUBKEY,
-          listings: ["family-a", "family-b"].map((dTag) => ({
-            product: makeProduct(dTag),
-            dTag,
-            fulfillmentIntent: {
-              kind: "fixed_standard" as const,
-              amount: 5,
-              currency: "SATS",
-              countries: ["US"],
+      await expect(
+        signAndPublishProductWriteBundle(
+          {
+            merchantPubkey: MERCHANT_PUBKEY,
+            listings: ["family-a", "family-b"].map((dTag) => ({
+              product: makeProduct(dTag),
+              dTag,
+              fulfillmentIntent: {
+                kind: "fixed_standard" as const,
+                amount: 5,
+                currency: "SATS",
+                countries: ["US"],
+              },
+            })),
+            onSignerRequest: (progress) => signerProgress.push(progress),
+            onSignerRequestsComplete: () => {
+              signerRequestsCompleteCalls += 1
+              signedKindsAtCompletion = [...signedKinds]
+              publishCallsAtCompletion = publishSpy.mock.calls.length
             },
-          })),
-          onSignerRequest: (progress) => signerProgress.push(progress),
-          onSignerRequestsComplete: () => {
-            signerRequestsCompleteCalls += 1
-            signedKindsAtCompletion = [...signedKinds]
-            publishCallsAtCompletion = publishSpy.mock.calls.length
+            onSignedLocal: async () => {},
+            productListingDeliveryOptions:
+              createAckedProductListingDeliveryOptions(),
           },
-          onSignedLocal: async () => {},
-          productListingDeliveryOptions:
-            createAckedProductListingDeliveryOptions(),
-        },
-        createProductListingRelayPlanningDependencies()
-      )
+          createProductListingRelayPlanningDependencies()
+        )
+      ).rejects.toBeInstanceOf(SignedProductDeliveryError)
 
       expect(signedKinds).toEqual([
         EVENT_KINDS.SHIPPING_OPTION,
@@ -3439,7 +3676,9 @@ describe("merchant product event delivery", () => {
 
       visible = true
       restoreVisibility()
-      await publishing
+      await expect(publishing).rejects.toBeInstanceOf(
+        SignedProductDeliveryError
+      )
 
       expect(signedKinds).toEqual([
         EVENT_KINDS.SHIPPING_OPTION,
@@ -3550,7 +3789,7 @@ describe("merchant product event delivery", () => {
     }
   })
 
-  it("retains a signer-returned product for exact retry after authority changes", async () => {
+  it("does not project an uncommitted product after authority changes during signing", async () => {
     const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
     let authorityCurrent = true
     let signRequests = 0
@@ -3594,16 +3833,9 @@ describe("merchant product event delivery", () => {
         })
       ).rejects.toThrow("Product signer session changed")
       expect(signRequests).toBe(1)
-      expect(signedEvent?.id).toBeTruthy()
+      expect(signedEvent).toBeNull()
       expect(publishSpy).toHaveBeenCalledTimes(0)
-
-      authorityCurrent = true
-      await deliverSignedProductEvent(signedEvent!, MERCHANT_PUBKEY, {
-        shouldContinue: () => authorityCurrent,
-      })
-      expect(signRequests).toBe(1)
-      expect(publishSpy).toHaveBeenCalledTimes(1)
-      expect(publishedIds).toEqual([signedEvent!.id])
+      expect(publishedIds).toEqual([])
     } finally {
       publishSpy.mockRestore()
     }
@@ -3819,6 +4051,438 @@ describe("merchant product event delivery", () => {
     expect(result.successfulRelayUrls).toContain("wss://relay.example")
   })
 
+  it("saves an order stock checkpoint before staging so a cache-before-UI crash cannot offer a second decrement", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const storage = new MemoryStorage()
+    const pending = new PendingProductStockDeliveryStore(storage)
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const dTag = "order-stock-checkpoint"
+    const product = { ...makeProduct(dTag), stock: 3 }
+    const addressId = `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`
+    const adjustment: OrderStockAdjustment = {
+      key: getOrderStockDecisionKey("order-checkpoint", addressId),
+      addressId,
+      sourceEventId: "a".repeat(64),
+      title: product.title,
+      quantity: 2,
+      currentStock: 5,
+      nextStock: 3,
+      shortfall: 0,
+    }
+    const operations: string[] = []
+    const persistedCheckpoint = () =>
+      new PendingProductStockDeliveryStore(storage).getForOrder(
+        MERCHANT_PUBKEY,
+        "order-checkpoint"
+      )
+    const listingRepository = new (class extends MemoryProductListingOutbox {
+      async add(job: ProductListingDeliveryJob): Promise<void> {
+        expect(persistedCheckpoint()).toHaveLength(1)
+        operations.push("outbox_stage")
+        await super.add(job)
+      }
+    })(listingStorage)
+    __setCommerceTestOverrides({
+      putCachedProducts: async (rows) => {
+        expect(persistedCheckpoint()).toHaveLength(1)
+        operations.push("product_cache")
+        for (const row of rows) {
+          cachedProducts = [
+            ...cachedProducts.filter((existing) => existing.id !== row.id),
+            row,
+          ]
+        }
+      },
+    })
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product,
+              dTag,
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedBeforeStaging: async (bundle) => {
+            await Promise.resolve()
+            const signedEvent = bundle.events[0]?.rawEvent() as
+              SignedPublicNostrEvent | undefined
+            if (!signedEvent) throw new Error("missing signed stock event")
+            expect(
+              pending.set(
+                MERCHANT_PUBKEY,
+                {
+                  orderId: "order-checkpoint",
+                  adjustment,
+                  signedEvent,
+                },
+                { requireDurable: true }
+              )
+            ).toBe(true)
+            operations.push("order_checkpoint")
+            return true
+          },
+          onSignedLocal: async () => {
+            operations.push("ui_callback")
+            throw new Error("simulated reload before UI callback completes")
+          },
+          productListingDeliveryOptions: {
+            repository: listingRepository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    const [staged] = Array.from(listingStorage.values())
+    const cached = (
+      await getCachedMerchantStorefront({
+        merchantPubkey: MERCHANT_PUBKEY,
+        includeMarketHidden: true,
+      })
+    ).data.find((record) => record.dTag === dTag)
+    const restored = new PendingProductStockDeliveryStore(storage).getForOrder(
+      MERCHANT_PUBKEY,
+      "order-checkpoint"
+    )
+    expect(operations).toEqual([
+      "order_checkpoint",
+      "outbox_stage",
+      "product_cache",
+      "ui_callback",
+    ])
+    expect(staged?.readyForDelivery).toBe(false)
+    expect(cached?.product.stock).toBe(3)
+    expect(restored).toHaveLength(1)
+    expect(restored[0]?.signedEvent.id).toBe(staged?.signedEvents[0]?.id)
+
+    const recalculated = buildOrderStockAdjustments({
+      orderId: "order-checkpoint",
+      merchantPubkey: MERCHANT_PUBKEY,
+      items: [{ productId: addressId, quantity: 2 }],
+      productRecords: cached ? [cached] : [],
+    })[0]
+    expect(recalculated?.nextStock).toBe(1)
+    expect(
+      isOrderStockAdjustmentMutationDisabled({
+        adjustment: recalculated!,
+        persistedDecision: null,
+        hasPendingDelivery: restored.some(
+          (delivery) => delivery.adjustment.key === recalculated?.key
+        ),
+        hasSessionDecision: false,
+      })
+    ).toBe(true)
+  })
+
+  it("does not let an ordinary product edit stage over another tab's pending stock checkpoint", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const dTag = "edit-vs-stock-checkpoint"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`
+    const storage = new MemoryStorage()
+    const oldStorage = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "localStorage"
+    )
+    const oldNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: storage,
+    })
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        locks: {
+          request: async (
+            _name: string,
+            task: (lock: object) => Promise<unknown>
+          ) => task({}),
+        },
+      },
+    })
+    try {
+      const pending = new PendingProductStockDeliveryStore(storage)
+      const stockProduct = { ...makeProduct(dTag), stock: 3 }
+      const stockDraft = buildProductListingEventDraft({
+        product: stockProduct,
+        dTag,
+        clientAppId: "merchant",
+      })
+      const stockEvent = finalizeEvent(
+        {
+          kind: stockDraft.kind,
+          created_at: Math.floor(NOW / 1000),
+          content: stockDraft.content,
+          tags: stockDraft.tags,
+        },
+        MERCHANT_SECRET
+      )
+      expect(
+        pending.set(
+          MERCHANT_PUBKEY,
+          {
+            orderId: "cross-tab-stock-order",
+            adjustment: {
+              key: getOrderStockDecisionKey("cross-tab-stock-order", addressId),
+              addressId,
+              sourceEventId: "a".repeat(64),
+              title: dTag,
+              quantity: 2,
+              currentStock: 5,
+              nextStock: 3,
+              shortfall: 0,
+            },
+            signedEvent: stockEvent,
+          },
+          { requireDurable: true }
+        )
+      ).toBe(true)
+      const listingStorage = new Map<string, ProductListingDeliveryJob>()
+      let productLocalCommits = 0
+
+      let failure: unknown
+      try {
+        await signAndPublishProductWriteBundle(
+          {
+            merchantPubkey: MERCHANT_PUBKEY,
+            durableCommit: {},
+            listings: [
+              {
+                product: {
+                  ...makeProduct(dTag),
+                  stock: 5,
+                  title: "Manual edit",
+                },
+                dTag,
+                fulfillmentIntent: { kind: "coordinate_after_order" },
+              },
+            ],
+            onSignedLocal: async () => {
+              productLocalCommits += 1
+            },
+            productListingDeliveryOptions: {
+              ...createAckedProductListingDeliveryOptions(),
+              repository: new MemoryProductListingOutbox(listingStorage),
+            },
+          },
+          createProductListingRelayPlanningDependencies()
+        )
+      } catch (error) {
+        failure = error
+      }
+      expect(failure).toBeInstanceOf(SignedProductDeliveryError)
+      expect(
+        (failure as SignedProductDeliveryError).deliveryCause
+      ).toMatchObject({
+        message: expect.stringContaining("signed stock update must settle"),
+      })
+      expect(productLocalCommits).toBe(0)
+      expect(listingStorage.size).toBe(0)
+    } finally {
+      if (oldStorage)
+        Object.defineProperty(globalThis, "localStorage", oldStorage)
+      else Reflect.deleteProperty(globalThis, "localStorage")
+      if (oldNavigator)
+        Object.defineProperty(globalThis, "navigator", oldNavigator)
+      else Reflect.deleteProperty(globalThis, "navigator")
+    }
+  })
+
+  it("keeps the exact signed checkpoint retryable when outbox staging fails before local UI", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const storage = new MemoryStorage()
+    const pending = new PendingProductStockDeliveryStore(storage)
+    const dTag = "stock-outbox-failure"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`
+    const adjustment: OrderStockAdjustment = {
+      key: getOrderStockDecisionKey("order-outbox-failure", addressId),
+      addressId,
+      sourceEventId: "a".repeat(64),
+      title: dTag,
+      quantity: 2,
+      currentStock: 5,
+      nextStock: 3,
+      shortfall: 0,
+    }
+    let localCalls = 0
+    const repository = new (class extends MemoryProductListingOutbox {
+      async add(): Promise<void> {
+        expect(
+          pending.getForOrder(MERCHANT_PUBKEY, "order-outbox-failure")
+        ).toHaveLength(1)
+        throw new Error("simulated outbox storage failure")
+      }
+    })()
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: { ...makeProduct(dTag), stock: 3 },
+              dTag,
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedBeforeStaging: (bundle) => {
+            const signedEvent = bundle.events[0]?.rawEvent() as
+              SignedPublicNostrEvent | undefined
+            if (!signedEvent) throw new Error("missing signed stock event")
+            if (
+              !pending.set(
+                MERCHANT_PUBKEY,
+                { orderId: "order-outbox-failure", adjustment, signedEvent },
+                { requireDurable: true }
+              )
+            ) {
+              throw new Error("stock checkpoint failed")
+            }
+            return true
+          },
+          onSignedLocal: async () => {
+            localCalls += 1
+          },
+          productListingDeliveryOptions: {
+            repository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    const restored = new PendingProductStockDeliveryStore(storage).getForOrder(
+      MERCHANT_PUBKEY,
+      "order-outbox-failure"
+    )
+    expect(restored).toHaveLength(1)
+    expect(restored[0]?.signedEvent.id).toMatch(/^[0-9a-f]{64}$/)
+    expect(localCalls).toBe(0)
+    expect(
+      (
+        await getCachedMerchantStorefront({
+          merchantPubkey: MERCHANT_PUBKEY,
+          includeMarketHidden: true,
+        })
+      ).data.find((record) => record.addressId === addressId)
+    ).toBeUndefined()
+  })
+
+  it("does not stage or cache stock when the order checkpoint is not durable", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const storage = new MemoryStorage()
+    storage.failWrites = true
+    const pending = new PendingProductStockDeliveryStore(storage)
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    const dTag = "order-checkpoint-failure"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:${dTag}`
+    let checkpointAttempts = 0
+    let localCalls = 0
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: { ...makeProduct(dTag), stock: 3 },
+              dTag,
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedBeforeStaging: (bundle) => {
+            checkpointAttempts += 1
+            const signedEvent = bundle.events[0]?.rawEvent() as
+              SignedPublicNostrEvent | undefined
+            if (!signedEvent) throw new Error("missing signed stock event")
+            const persisted = pending.set(
+              MERCHANT_PUBKEY,
+              {
+                orderId: "order-checkpoint-failure",
+                adjustment: {
+                  key: getOrderStockDecisionKey(
+                    "order-checkpoint-failure",
+                    addressId
+                  ),
+                  addressId,
+                  sourceEventId: "a".repeat(64),
+                  title: dTag,
+                  quantity: 2,
+                  currentStock: 5,
+                  nextStock: 3,
+                  shortfall: 0,
+                },
+                signedEvent,
+              },
+              { requireDurable: true }
+            )
+            if (!persisted) throw new Error("stock checkpoint unavailable")
+          },
+          onSignedLocal: async () => {
+            localCalls += 1
+          },
+          productListingDeliveryOptions: {
+            repository: new MemoryProductListingOutbox(listingStorage),
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    expect(checkpointAttempts).toBe(1)
+    expect(listingStorage.size).toBe(0)
+    expect(cachedProducts).toEqual([])
+    expect(localCalls).toBe(0)
+  })
+
+  it("does not stage a listing when an async pre-stage checkpoint does not resolve true", async () => {
+    setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
+    const listingStorage = new Map<string, ProductListingDeliveryJob>()
+    let localCalls = 0
+
+    await expect(
+      signAndPublishProductWriteBundle(
+        {
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: { ...makeProduct("async-checkpoint"), stock: 3 },
+              dTag: "async-checkpoint",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          onSignedBeforeStaging: (async () =>
+            undefined) as unknown as () => Promise<true>,
+          onSignedLocal: async () => {
+            localCalls += 1
+          },
+          productListingDeliveryOptions: {
+            repository: new MemoryProductListingOutbox(listingStorage),
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+          },
+        },
+        createProductListingRelayPlanningDependencies()
+      )
+    ).rejects.toThrow("Signed product event could not be delivered")
+
+    expect(listingStorage.size).toBe(0)
+    expect(cachedProducts).toEqual([])
+    expect(localCalls).toBe(0)
+  })
+
   it("keeps durable family-removal delivery on loopback in E2E isolation", async () => {
     const loopbackRelayUrl = "ws://127.0.0.1:7777"
     const previousConfig = structuredClone(config)
@@ -3999,7 +4663,7 @@ describe("merchant product event delivery", () => {
     expect(deletionPublishAttempts).toBe(0)
   })
 
-  it("stops the production bundle before product side effects when fixed shipping has no ACK", async () => {
+  it("stops the legacy bundle before any fixed-shipping relay IO without a durable intent", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const publishAttempts: number[] = []
     let onSignedLocalCalls = 0
@@ -4053,9 +4717,9 @@ describe("merchant product event delivery", () => {
             publisher: async () => ({ status: "acked" }),
           },
         })
-      ).rejects.toThrow("Product publication was stopped.")
+      ).rejects.toBeInstanceOf(SignedProductDeliveryError)
 
-      expect(publishAttempts).toEqual([EVENT_KINDS.SHIPPING_OPTION])
+      expect(publishAttempts).toEqual([])
       expect(cachedProducts).toEqual([])
       expect(await repository.listUndelivered()).toEqual([])
       expect(onSignedLocalCalls).toBe(0)

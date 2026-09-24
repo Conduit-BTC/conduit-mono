@@ -3,8 +3,10 @@ import {
   cacheSignedProductListingEvent,
   cacheSignedProductDeletionEvent,
   config,
+  deliverPendingProductShippingJobs,
   deliverProductListingJob,
   EVENT_KINDS,
+  getCachedMerchantStorefront,
   getPendingProductListingDeliveries,
   getProductDeletionDelivery,
   getProductListingDelivery,
@@ -15,6 +17,7 @@ import {
   markProductListingDeliveryReady,
   persistProductListingDelivery,
   planPublishRelays,
+  publishExactProductShippingRelay,
   publishSignedEventToRelay,
   type ProductListingDeliveryJob,
   type ProductListingDeliveryOptions,
@@ -142,6 +145,34 @@ async function restoreLocalListingEvidence(
       )
     })
   )
+}
+
+/**
+ * Recovery may only arm the exact signed revisions still selected by the
+ * local NIP-01 product frontier. Another tab can have committed a newer (or
+ * same-second, lower-ID) revision while this job was staged. An incomplete
+ * cache read also leaves the exact signed job staged for explicit repair.
+ */
+async function isCurrentStagedListingFamily(
+  job: ProductListingDeliveryJob
+): Promise<boolean> {
+  const records = (
+    await getCachedMerchantStorefront({
+      merchantPubkey: job.merchantPubkey,
+      includeMarketHidden: true,
+    })
+  ).data
+  return job.signedEvents.every((event) => {
+    const dTags = event.tags.filter((tag) => tag[0] === "d")
+    if (dTags.length !== 1 || !dTags[0]?.[1]) return false
+    const addressId = `${EVENT_KINDS.PRODUCT}:${event.pubkey}:${dTags[0][1]}`
+    const selected = records.filter((record) => record.addressId === addressId)
+    return (
+      selected.length === 1 &&
+      selected[0]?.eventId === event.id &&
+      selected[0]?.eventCreatedAt === event.created_at
+    )
+  })
 }
 
 export async function planCurrentProductListingRelayTargets(
@@ -450,6 +481,7 @@ export async function resumeStagedProductListingDeliveries(
     try {
       if (!deletionId) {
         await restoreListing(job)
+        if (!(await isCurrentStagedListingFamily(job))) continue
         await markProductListingDeliveryReady(job.id, listingOptions)
         continue
       }
@@ -466,6 +498,7 @@ export async function resumeStagedProductListingDeliveries(
       }
       await restoreListing(job)
       await restoreDeletion(deletion.signedEvent)
+      if (!(await isCurrentStagedListingFamily(job))) continue
       await markProductListingDeliveryReady(job.id, {
         ...listingOptions,
         isCompanionDeletionDurable: async (
@@ -517,10 +550,19 @@ export function startProductListingDeliveryWorker(
   let active: Promise<void> | null = null
   const run = () => {
     if (stopped || active) return
-    active = resumeStagedProductListingDeliveries({
-      authenticatedPubkey,
-      isAuthenticatedPubkeyCurrent: () => !stopped,
-    })
+    active = deliverPendingProductShippingJobs(
+      publishExactProductShippingRelay,
+      {
+        authenticatedPubkey,
+        isAuthenticatedPubkeyCurrent: () => !stopped,
+      }
+    )
+      .then(() =>
+        resumeStagedProductListingDeliveries({
+          authenticatedPubkey,
+          isAuthenticatedPubkeyCurrent: () => !stopped,
+        })
+      )
       .then(() =>
         resumePendingProductListingDeliveries({
           authenticatedPubkey,
