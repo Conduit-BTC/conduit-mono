@@ -8871,13 +8871,19 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
       orderPublishStart
     )
   ).find((message) => rumorType(message.rumor) === "order")!
-  const buyerOrderSelfCopy = uniquePrivatePublications(
-    decryptPrivatePublications(
-      relay.publications,
-      BUYER_SECRET,
-      orderPublishStart
+  // The merchant's first ACK opens Orders. The buyer self-copy continues in
+  // post-acceptance work, so observe it independently of that handoff.
+  await expect
+    .poll(() =>
+      uniquePrivatePublications(
+        decryptPrivatePublications(
+          relay.publications,
+          BUYER_SECRET,
+          orderPublishStart
+        )
+      ).some((message) => rumorType(message.rumor) === "order")
     )
-  ).find((message) => rumorType(message.rumor) === "order")
+    .toBe(true)
   const organizerOrderLeg = uniquePrivatePublications(
     decryptPrivatePublications(
       relay.publications,
@@ -8898,7 +8904,6 @@ test("organizer handoff completes a private order receipt and exact ACK flow @ma
     "p",
     ORGANIZER_PUBKEY,
   ])
-  expect(buyerOrderSelfCopy).toBeTruthy()
   expect(organizerOrderLeg).toBeUndefined()
 
   const orderPayload = JSON.parse(merchantOrderMessage.rumor.content) as Record<

@@ -281,7 +281,11 @@ describe("Market wallet route contracts", () => {
     expect(targetContent).toContain("Previously selected wallet (unavailable)")
     expect(targetContent).toContain("textValue=")
     expect(content).toContain("paymentTarget: storedPaymentTarget")
-    expect(content).toContain("sparkFeeApproval.requestApproval")
+    expect(content).toContain(
+      "queueSparkPaymentHandoff(serviceCtx, purchaseCleanup)"
+    )
+    const orders = await readFile("apps/market/src/routes/orders.tsx", "utf8")
+    expect(orders).toContain("approveFee: sparkFeeApproval.requestApproval")
     expect(content).toContain("Wallet balance")
     expect(content).toContain("getKnownWalletPaymentConstraint")
     expect(content).toContain("Automatic wallet payment will be skipped")
