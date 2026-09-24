@@ -330,6 +330,53 @@ describe("checkout Spark one-obligation step", () => {
     expect(run.saves).toBe(3)
   })
 
+  it("settles commerce before Conduit and never replays commerce after a fee-leg delay", async () => {
+    const run = harness()
+
+    run.setPreflightState("fee_over_cap")
+    const blockedCommerce = await run.step()
+    expect(blockedCommerce.sendAttempted).toBe(false)
+    expect(run.sends).toHaveLength(0)
+    expect(blockedCommerce.state.obligations.map((item) => item.state)).toEqual(
+      ["not_found", "unreconciled"]
+    )
+
+    run.setPreflightState("ready")
+    const settledCommerce = await run.step()
+    expect(settledCommerce.state.obligations.map((item) => item.state)).toEqual(
+      ["paid", "unreconciled"]
+    )
+    expect(run.sends.map((target) => target.obligation.kind)).toEqual([
+      "merchant",
+    ])
+
+    run.setPreflightState("fee_over_cap")
+    const blockedFee = await run.step()
+    expect(blockedFee.sendAttempted).toBe(false)
+    expect(blockedFee.state.obligations.map((item) => item.state)).toEqual([
+      "paid",
+      "not_found",
+    ])
+    expect(run.sends.map((target) => target.obligation.kind)).toEqual([
+      "merchant",
+    ])
+
+    run.setPreflightState("ready")
+    const settledFee = await run.step()
+    expect(settledFee.state.obligations.map((item) => item.state)).toEqual([
+      "paid",
+      "paid",
+    ])
+    expect(run.sends.map((target) => target.obligation.kind)).toEqual([
+      "merchant",
+      "conduit",
+    ])
+
+    const complete = await run.step()
+    expect(complete.sendAttempted).toBe(false)
+    expect(run.sends).toHaveLength(2)
+  })
+
   it.each(["fee_over_cap", "unavailable"] as const)(
     "keeps an unpaid obligation retryable when fee preflight is %s",
     async (preflightState) => {

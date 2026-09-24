@@ -17,7 +17,11 @@ import { config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
-import { inspectCheckoutSparkRecoveryWrap } from "./checkout-spark-recovery"
+import {
+  inspectCheckoutSparkRecoveryWrap,
+  openCheckoutSparkRecoveryWrap,
+  type CheckoutSparkRecoveryPayload,
+} from "./checkout-spark-recovery"
 import { EVENT_KINDS } from "./kinds"
 import { NostrSignerError } from "./nostr-event-signer"
 import {
@@ -9509,6 +9513,214 @@ export async function getMerchantCheckoutSparkRecoveryList(
     malformedCount,
     decryptFailureCount,
     conflictCount: conflictingCheckouts.size,
+  }
+}
+
+export interface MerchantCheckoutSparkRecoveryHandoffResult {
+  status: "consumed" | "missing" | "incomplete"
+  coverage: InboxReadCoverage
+  declarationState: InboxDeclarationState
+  candidate: MerchantCheckoutSparkRecoveryCandidate | null
+}
+
+/**
+ * A private, non-rendering adapter. It must keep the decrypted wallet material
+ * in memory only, never return it, and recheck authority around each await.
+ * This seam does not authorize payment or invoke a provider send.
+ */
+export interface MerchantCheckoutSparkRecoveryPrivateAdapter {
+  consume(
+    payload: CheckoutSparkRecoveryPayload,
+    assertCurrent: () => void
+  ): Promise<void>
+}
+
+/**
+ * Re-fetch one selected, signed recovery wrap by its full ID from the current
+ * merchant's declared inbox relays. A complete discovery pass is repeated so
+ * stale or conflicting list rows cannot authorize opening wallet material.
+ * Nothing decrypted is returned to UI/query state or ordinary order caches.
+ * Consuming this package is not a merchant application ACK or a funding gate.
+ */
+export async function withMerchantCheckoutSparkRecovery(
+  principalPubkey: string,
+  selected: MerchantCheckoutSparkRecoveryCandidate,
+  privateAdapter: MerchantCheckoutSparkRecoveryPrivateAdapter
+): Promise<MerchantCheckoutSparkRecoveryHandoffResult> {
+  const wrapId = selected.wrapId?.trim().toLowerCase()
+  if (!wrapId || !/^[0-9a-f]{64}$/.test(wrapId)) {
+    throw new Error("Merchant checkout recovery selection is invalid.")
+  }
+  const authorization = resolveInboxSyncAuthorization(principalPubkey)
+  assertInboxSyncAuthority(authorization)
+  const signer = await resolveEnvelopeSigner()
+  assertInboxSyncAuthority(authorization)
+  const principal = principalPubkey.trim().toLowerCase()
+  if (
+    !signer ||
+    (await signer.user()).pubkey?.trim().toLowerCase() !== principal
+  ) {
+    throw new ProtectedInboxAuthorityChangedError()
+  }
+  assertInboxSyncAuthority(authorization)
+
+  const discovery = await getMerchantCheckoutSparkRecoveryList(principal)
+  assertInboxSyncAuthority(authorization)
+  if (discovery.coverage !== "complete") {
+    return {
+      status: "incomplete",
+      coverage: discovery.coverage,
+      declarationState: discovery.declarationState,
+      candidate: null,
+    }
+  }
+  const candidate = discovery.candidates.find(
+    (entry) =>
+      entry.wrapId === wrapId &&
+      entry.checkoutId === selected.checkoutId &&
+      entry.orderId === selected.orderId &&
+      entry.planDigest === selected.planDigest &&
+      entry.takeoverAt === selected.takeoverAt &&
+      entry.preparedAt === selected.preparedAt
+  )
+  if (!candidate) {
+    return {
+      status: "missing",
+      coverage: "complete",
+      declarationState: discovery.declarationState,
+      candidate: null,
+    }
+  }
+
+  const declaration = await resolvePrincipalInboxDeclaration(
+    principal,
+    authorization
+  )
+  assertInboxSyncAuthority(authorization)
+  const relayUrls = normalizeOwnerSelectedRelayUrls(
+    declaration.state === "declared" ? declaration.relayUrls : []
+  )
+  if (relayUrls.length === 0) {
+    return {
+      status: "incomplete",
+      coverage: "unavailable",
+      declarationState: declaration.state,
+      candidate: null,
+    }
+  }
+  const read = await (testOverrides.readProtectedInbox ?? readProtectedInbox)({
+    principalPubkey: principal,
+    relayUrls,
+    ownerSelectedRelayUrls: relayUrls,
+    appRelayUrls: [],
+    eventId: wrapId,
+    limit: 2,
+    authorization,
+    accountNetworkLocalStateRepository:
+      testOverrides.accountNetworkLocalStateRepository,
+    connectTimeoutMs: 4_000,
+    queryTimeoutMs: 12_000,
+  })
+  assertInboxSyncAuthority(authorization)
+  const relayComplete =
+    read.coverage === "complete" &&
+    read.relayResult.attemptedCount === relayUrls.length &&
+    read.relayResult.completedCount === relayUrls.length &&
+    read.relayResult.failedCount === 0 &&
+    read.relayResult.relays.length === relayUrls.length &&
+    read.relayResult.relays.every(
+      (relay) =>
+        relay.status === "success" &&
+        relay.eventCount < 2 &&
+        relay.malformedCount === 0 &&
+        relay.unusableCount === 0
+    )
+  const incomplete = (
+    coverage: InboxReadCoverage
+  ): MerchantCheckoutSparkRecoveryHandoffResult => ({
+    status: "incomplete",
+    coverage,
+    declarationState: declaration.state,
+    candidate: null,
+  })
+  if (read.coverage === "unavailable") return incomplete("unavailable")
+  if (!relayComplete || declaration.stale) return incomplete("partial")
+  if (read.events.length === 0) {
+    return {
+      status: "missing",
+      coverage: "complete",
+      declarationState: declaration.state,
+      candidate: null,
+    }
+  }
+  if (read.events.length !== 1) return incomplete("partial")
+  const wrap = read.events[0] as SignedPublicNostrEvent
+  if (
+    wrap.id !== wrapId ||
+    wrap.kind !== EVENT_KINDS.GIFT_WRAP ||
+    !isValidSignedPublicNostrEvent(wrap)
+  ) {
+    return incomplete("partial")
+  }
+  let opened: Awaited<ReturnType<typeof openCheckoutSparkRecoveryWrap>>
+  try {
+    const opening = openCheckoutSparkRecoveryWrap({
+      signedRecipientWrap: wrap,
+      signer,
+      ...(testOverrides.giftUnwrap
+        ? { giftUnwrap: testOverrides.giftUnwrap }
+        : {}),
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const result = await Promise.race([
+      opening,
+      new Promise<typeof CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT>(
+        (resolve) => {
+          timer = setTimeout(
+            () => resolve(CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT),
+            CHECKOUT_SPARK_RECOVERY_UNWRAP_TIMEOUT_MS
+          )
+        }
+      ),
+    ]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer)
+    })
+    assertInboxSyncAuthority(authorization)
+    if (result === CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT) {
+      return incomplete("partial")
+    }
+    opened = result
+  } catch {
+    assertInboxSyncAuthority(authorization)
+    return incomplete("partial")
+  }
+  assertInboxSyncAuthority(authorization)
+  const payload = opened.payload
+  if (
+    opened.wrapId !== candidate.wrapId ||
+    payload.plan.checkoutId !== candidate.checkoutId ||
+    payload.plan.orderId !== candidate.orderId ||
+    payload.plan.planDigest !== candidate.planDigest ||
+    payload.plan.takeoverAt !== candidate.takeoverAt ||
+    payload.preparedAt !== candidate.preparedAt ||
+    payload.merchantPubkey !== principal
+  ) {
+    return incomplete("partial")
+  }
+  const assertCurrent = () => assertInboxSyncAuthority(authorization)
+  assertCurrent()
+  try {
+    await privateAdapter.consume(payload, assertCurrent)
+  } catch {
+    assertCurrent()
+    throw new Error("Merchant checkout recovery adapter failed.")
+  }
+  assertCurrent()
+  return {
+    status: "consumed",
+    coverage: "complete",
+    declarationState: declaration.state,
+    candidate,
   }
 }
 

@@ -8,12 +8,18 @@ import {
   createCheckoutSparkRecoveryPayload,
   freezeCheckoutSparkPlan,
   getMerchantCheckoutSparkRecoveryList,
+  withMerchantCheckoutSparkRecovery,
 } from "@conduit/core"
 import {
   __resetProtectedReadSigner,
+  getProtectedReadAuthorization,
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
-import type { ProtectedInboxReadResult } from "../packages/core/src/protocol/protected-inbox-read"
+import {
+  readProtectedInbox,
+  type ProtectedInboxReadResult,
+} from "../packages/core/src/protocol/protected-inbox-read"
+import type { CommerceRelayExecutor } from "../packages/core/src/protocol/relay-executor"
 
 const MERCHANT_SECRET = new Uint8Array(32).fill(31)
 const BUYER_SECRET = new Uint8Array(32).fill(32)
@@ -174,6 +180,40 @@ afterEach(() => {
 })
 
 describe("Merchant checkout Spark recovery discovery", () => {
+  it("narrows the protected relay query to one full signed wrap ID", async () => {
+    const wrap = signedWrap()
+    let observedFilter: unknown
+    const executor = {
+      query: async (request: { filters: unknown[] }) => {
+        observedFilter = request.filters[0]
+        const read = protectedRead([wrap])
+        return { ...read.relayResult, events: read.events }
+      },
+    } as unknown as CommerceRelayExecutor
+    const authorization = getProtectedReadAuthorization(MERCHANT)
+    expect(authorization).not.toBeNull()
+
+    const result = await readProtectedInbox({
+      principalPubkey: MERCHANT,
+      relayUrls: [INBOX],
+      ownerSelectedRelayUrls: [INBOX],
+      appRelayUrls: [],
+      eventId: wrap.id,
+      limit: 2,
+      authorization,
+      accountNetworkLocalStateRepository: { get: async () => undefined },
+      executor,
+    })
+
+    expect(observedFilter).toEqual({
+      kinds: [1_059],
+      "#p": [MERCHANT],
+      ids: [wrap.id],
+      limit: 2,
+    })
+    expect(result.events.map((event) => event.id)).toEqual([wrap.id])
+  })
+
   it("discovers an exact signed wrap after fresh login without using order cache", async () => {
     const wrap = signedWrap()
     const rumor = recoveryRumor()
@@ -452,4 +492,259 @@ describe("Merchant checkout Spark recovery discovery", () => {
     expect(result.coverage).toBe("partial")
     expect(JSON.stringify(result)).not.toContain("phrase")
   })
+
+  it("re-fetches the selected exact signed wrap and gives secrets only to a private adapter", async () => {
+    const wrap = signedWrap()
+    const observedReads: Array<{
+      eventId?: string
+      limit: number
+      appRelays?: readonly string[]
+    }> = []
+    let consumed = 0
+    let ordinaryCacheReads = 0
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [INBOX],
+      readProtectedInbox: async (options) => {
+        observedReads.push({
+          eventId: options.eventId,
+          limit: options.limit,
+          appRelays: options.appRelayUrls,
+        })
+        return protectedRead([wrap])
+      },
+      giftUnwrap: async () => recoveryRumor(),
+      getCachedOrderMessages: async () => {
+        ordinaryCacheReads += 1
+        return []
+      },
+    })
+    const discovery = await getMerchantCheckoutSparkRecoveryList(MERCHANT)
+
+    const result = await withMerchantCheckoutSparkRecovery(
+      MERCHANT,
+      discovery.candidates[0]!,
+      {
+        async consume(payload, assertCurrent) {
+          assertCurrent()
+          expect(payload.wallet.mnemonic).toBe(
+            "synthetic test-only wallet material"
+          )
+          expect(payload.plan.planDigest).toBe(plan().planDigest)
+          consumed += 1
+        },
+      }
+    )
+
+    expect(consumed).toBe(1)
+    expect(ordinaryCacheReads).toBe(0)
+    expect(observedReads).toEqual([
+      { eventId: undefined, limit: 400, appRelays: [] },
+      { eventId: undefined, limit: 400, appRelays: [] },
+      { eventId: wrap.id, limit: 2, appRelays: [] },
+    ])
+    expect(result.status).toBe("consumed")
+    expect(result.coverage).toBe("complete")
+    expect(result.candidate?.wrapId).toBe(wrap.id)
+    expect(JSON.stringify(result)).not.toContain("synthetic test-only")
+    expect(JSON.stringify(result)).not.toContain("lnbc-private")
+  })
+
+  it("does not consume a stale, wrong, or missing exact wrap", async () => {
+    const wrap = signedWrap()
+    let readCount = 0
+    let consumed = false
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [INBOX],
+      readProtectedInbox: async (options) => {
+        readCount += 1
+        return options.eventId ? protectedRead([]) : protectedRead([wrap])
+      },
+      giftUnwrap: async () => recoveryRumor(),
+    })
+    const discovered = await getMerchantCheckoutSparkRecoveryList(MERCHANT)
+    const adapter = {
+      async consume() {
+        consumed = true
+      },
+    }
+    const wrong = await withMerchantCheckoutSparkRecovery(
+      MERCHANT,
+      { ...discovered.candidates[0]!, wrapId: "a".repeat(64) },
+      adapter
+    )
+    expect(wrong.status).toBe("missing")
+    expect(readCount).toBe(2)
+
+    const missing = await withMerchantCheckoutSparkRecovery(
+      MERCHANT,
+      discovered.candidates[0]!,
+      adapter
+    )
+    expect(missing.status).toBe("missing")
+    expect(missing.coverage).toBe("complete")
+    expect(consumed).toBe(false)
+  })
+
+  it("keeps forged, conflicting, and degraded exact reads out of the private adapter", async () => {
+    const wrap = signedWrap()
+    const altered = { ...wrap, content: "forged ciphertext" }
+    let exact = protectedRead([altered])
+    let consumed = 0
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [INBOX],
+      readProtectedInbox: async (options) => {
+        return options.eventId ? exact : protectedRead([wrap])
+      },
+      giftUnwrap: async () => recoveryRumor(),
+    })
+    const adapter = {
+      async consume() {
+        consumed += 1
+      },
+    }
+    const selected = (await getMerchantCheckoutSparkRecoveryList(MERCHANT))
+      .candidates[0]!
+
+    const forged = await withMerchantCheckoutSparkRecovery(
+      MERCHANT,
+      selected,
+      adapter
+    )
+    expect(forged.status).toBe("incomplete")
+    expect(forged.coverage).toBe("partial")
+
+    exact = protectedRead([wrap, altered], { eventCount: 1 })
+    const conflicting = await withMerchantCheckoutSparkRecovery(
+      MERCHANT,
+      selected,
+      adapter
+    )
+    expect(conflicting.status).toBe("incomplete")
+    expect(conflicting.coverage).toBe("partial")
+
+    exact = protectedRead([signedWrap(MERCHANT, CREATED_AT + 1_000)])
+    const wrongId = await withMerchantCheckoutSparkRecovery(
+      MERCHANT,
+      selected,
+      adapter
+    )
+    expect(wrongId.status).toBe("incomplete")
+    expect(wrongId.coverage).toBe("partial")
+
+    exact = protectedRead([wrap], { coverage: "partial" })
+    const degraded = await withMerchantCheckoutSparkRecovery(
+      MERCHANT,
+      selected,
+      adapter
+    )
+    expect(degraded.status).toBe("incomplete")
+    expect(degraded.coverage).toBe("partial")
+    expect(consumed).toBe(0)
+  })
+
+  it("rejects account changes during exact re-fetch and sanitizes adapter errors", async () => {
+    const wrap = signedWrap()
+    let current = true
+    let readCount = 0
+    installProtectedReadSigner(
+      {
+        authMethod: "nip07",
+        getPublicKey: async () => MERCHANT,
+        signEvent: async (event) => finalizeEvent(event, MERCHANT_SECRET),
+      },
+      MERCHANT,
+      () => current
+    )
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [INBOX],
+      readProtectedInbox: async () => {
+        readCount += 1
+        if (readCount === 3) current = false
+        return protectedRead([wrap])
+      },
+      giftUnwrap: async () => recoveryRumor(),
+    })
+    const selected = (await getMerchantCheckoutSparkRecoveryList(MERCHANT))
+      .candidates[0]!
+    await expect(
+      withMerchantCheckoutSparkRecovery(MERCHANT, selected, {
+        async consume() {
+          throw new Error("should not run")
+        },
+      })
+    ).rejects.toThrow("authority changed")
+
+    current = true
+    readCount = 0
+    installMerchantSession()
+    await expect(
+      withMerchantCheckoutSparkRecovery(MERCHANT, selected, {
+        async consume() {
+          throw new Error("synthetic test-only wallet material")
+        },
+      })
+    ).rejects.toThrow("Merchant checkout recovery adapter failed")
+  })
+
+  it("discards exact unwrapped material when the Merchant account changes", async () => {
+    const wrap = signedWrap()
+    let current = true
+    let unwrapCount = 0
+    let consumed = false
+    installProtectedReadSigner(
+      {
+        authMethod: "nip07",
+        getPublicKey: async () => MERCHANT,
+        signEvent: async (event) => finalizeEvent(event, MERCHANT_SECRET),
+      },
+      MERCHANT,
+      () => current
+    )
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [INBOX],
+      readProtectedInbox: async () => protectedRead([wrap]),
+      giftUnwrap: async () => {
+        unwrapCount += 1
+        if (unwrapCount === 3) current = false
+        return recoveryRumor()
+      },
+    })
+    const selected = (await getMerchantCheckoutSparkRecoveryList(MERCHANT))
+      .candidates[0]!
+
+    await expect(
+      withMerchantCheckoutSparkRecovery(MERCHANT, selected, {
+        async consume() {
+          consumed = true
+        },
+      })
+    ).rejects.toThrow("authority changed")
+    expect(consumed).toBe(false)
+  })
+
+  it("leaves exact recovery partial if a signer unwrap stalls", async () => {
+    const wrap = signedWrap()
+    let unwrapCount = 0
+    let consumed = false
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [INBOX],
+      readProtectedInbox: async () => protectedRead([wrap]),
+      giftUnwrap: async () => {
+        unwrapCount += 1
+        return unwrapCount === 3
+          ? new Promise<never>(() => {})
+          : recoveryRumor()
+      },
+    })
+    const selected = (await getMerchantCheckoutSparkRecoveryList(MERCHANT))
+      .candidates[0]!
+    const result = await withMerchantCheckoutSparkRecovery(MERCHANT, selected, {
+      async consume() {
+        consumed = true
+      },
+    })
+    expect(result.status).toBe("incomplete")
+    expect(result.coverage).toBe("partial")
+    expect(consumed).toBe(false)
+  }, 8_000)
 })
