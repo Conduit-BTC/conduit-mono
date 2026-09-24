@@ -2,11 +2,11 @@ import { Zap } from "lucide-react"
 import { useEffect, useId, useRef, useState } from "react"
 
 export interface LightningStrikeOverlayProps {
-  /** Render the overlay. Becomes visible immediately when set true. */
+  /** Render a decorative payment-sent effect without blocking the order. */
   open: boolean
   /**
    * Called once the entrance animation has finished playing. Use this to
-   * allow the underlying tracker to take focus / clear `overlayPlaying` state.
+   * clear the presentation state.
    * Fires exactly once per `open` cycle.
    */
   onComplete: () => void
@@ -115,13 +115,10 @@ function generateLightningBolt(
 }
 
 /**
- * LightningStrikeOverlay -- the "click registered" moment for the fast zap
- * checkout flow. Renders a full-viewport storm of branching purple lightning
- * bolts radiating from a glowing central aura, then auto-dismisses by
- * calling `onComplete()`.
+ * LightningStrikeOverlay celebrates a recorded payment send. It renders a
+ * decorative full-viewport storm, then dismisses via `onComplete()`.
  *
  * Token-driven (`--primary-*` scale only):
- *  - backdrop: `bg-black/60 backdrop-blur-sm` (page UI stays partly visible)
  *  - bolts: layered soft-glow + mid + bright-core; 1-2 hero strikes get a
  *    thicker stroke and a white-hot `--primary-50` core for natural
  *    real-lightning hierarchy where one channel dominates.
@@ -225,9 +222,9 @@ export function LightningStrikeOverlay({
     <div
       role="presentation"
       aria-hidden="true"
+      data-testid="payment-sent-lightning"
       className={[
-        "fixed inset-0 z-50 flex items-center justify-center overflow-hidden",
-        "bg-black/60 backdrop-blur-sm",
+        "pointer-events-none fixed inset-0 z-50 flex items-center justify-center overflow-hidden",
         "transition-opacity duration-300 motion-reduce:transition-none",
         exiting ? "opacity-0" : "opacity-100",
       ].join(" ")}

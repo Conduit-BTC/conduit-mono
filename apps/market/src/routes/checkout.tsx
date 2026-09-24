@@ -143,7 +143,6 @@ import {
   type CartAvailabilityReadDecision,
   type CartProductAvailability,
 } from "../lib/cart-model"
-import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import {
   buildShippingAddressFromForm,
   isFastCheckoutEligible,
@@ -1102,8 +1101,6 @@ function CheckoutPage() {
   const [touchedShippingFields, setTouchedShippingFields] = useState<
     Set<ShippingFieldKey>
   >(() => new Set())
-  // Lightning-strike click feedback while the order publishes before navigation.
-  const [overlayPlaying, setOverlayPlaying] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [signerReconnectPending, setSignerReconnectPending] = useState(false)
   // Synchronous re-entrancy guard for the payment flow. A `step`/`disabled`
@@ -3565,7 +3562,6 @@ function CheckoutPage() {
     autoZapStartedRef.current = true
     autoZapAuthorizationGenerationRef.current = null
     setAutoZapAuthorization(null)
-    setOverlayPlaying(true)
     void payNowRef.current(autoZapAuthorization)
   }, [
     autoZapAuthorization,
@@ -3581,13 +3577,6 @@ function CheckoutPage() {
     signerConnected,
     signedBuyerPubkey,
   ])
-
-  const lightningOverlay = (
-    <LightningStrikeOverlay
-      open={overlayPlaying}
-      onComplete={() => setOverlayPlaying(false)}
-    />
-  )
 
   if (authPending) {
     return (
@@ -4579,9 +4568,6 @@ function CheckoutPage() {
                         !paymentInFlightRef.current
                       }
                       onHoldComplete={() => {
-                        if (canAttemptLightningPayment) {
-                          setOverlayPlaying(true)
-                        }
                         void payNow()
                       }}
                       chargedLabel={
@@ -4719,7 +4705,6 @@ function CheckoutPage() {
         </section>
       </div>
 
-      {lightningOverlay}
       <SignerSwitch
         open={connectOpen}
         onOpenChange={setConnectOpen}
