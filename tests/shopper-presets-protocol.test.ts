@@ -9,6 +9,7 @@ import {
   SHOPPER_PRESETS_D_TAG,
   SHOPPER_PRESETS_FORMAT,
   SHOPPER_PRESETS_KDF,
+  __resetRelayHealth,
   buildShopperPresetsDocument,
   config,
   decryptShopperPresetsDocument,
@@ -243,6 +244,7 @@ describe("NIP-78 shopper presets", () => {
   })
 
   it("discovers relay hints and uses bounded preset read timeouts", async () => {
+    __resetRelayHealth()
     const { pubkey } = await signerFixture()
     let relayListOptions:
       | {
@@ -300,6 +302,7 @@ describe("NIP-78 shopper presets", () => {
     })
     expect(fetchOptions!.relayUrls![0]).toBe(config.appWriteRelayUrls[0])
     expect(fetchOptions!.relayUrls!.length).toBeLessThanOrEqual(6)
+    __resetRelayHealth()
   })
 
   it("admits only the authenticated owner's selected ws relay", async () => {

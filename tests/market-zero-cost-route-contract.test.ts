@@ -25,9 +25,8 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(eventRoute).toContain(
       "allowZeroPrice={pickupFulfillment !== null || pendingEvidenceMayRecover}"
     )
-    expect(eventRoute).toContain(
-      "checkout stays locked until this exact product is confirmed"
-    )
+    expect(eventRoute).toContain("getEventCatalogPickupGate")
+    expect(eventRoute).toContain("cartActionDisabled={!cartAction.enabled}")
     expect(detail).toContain(
       'allowZero: productCartResolution?.status === "pickup"'
     )
@@ -58,9 +57,8 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(placeOrder).toContain('checkoutMode: "pay_later"')
     expect(placeOrder).not.toContain("runOrderPayment")
     expect(checkout).toContain('"Send order"')
-    expect(checkout).toContain(
-      "No payment is required. The merchant reviews the order and coordinates pickup."
-    )
+    expect(checkout).not.toContain("What happens next")
+    expect(checkout).not.toContain("No payment is required")
   })
 
   it("suppresses Lightning discovery and fails closed before any zero payment", async () => {
@@ -104,12 +102,12 @@ describe("Market verified zero-cost pickup route contract", () => {
       '["order_sent", "merchant_confirmation", "fulfillment", "complete"]'
     )
     expect(orders).toContain("if (zeroCostPickupOrder) return null")
-    expect(orders).toContain(
-      '!zeroCostPickupOrder && vm.paymentStatus === "failed"'
+    expect(orders).toMatch(
+      /!zeroCostPickupOrder &&\s+vm\.paymentStatus === "failed" &&\s+generalPaymentRetryEligible/
     )
     expect(orders).toContain("const wallets = useWallets()")
-    expect(orders).toContain(
-      'const showRetryPayment = !zeroCostPickupOrder && vm.paymentStatus === "failed"'
+    expect(orders).toMatch(
+      /const showRetryPayment =\s+!zeroCostPickupOrder &&\s+vm\.paymentStatus === "failed" &&\s+generalPaymentRetryEligible/
     )
   })
 
