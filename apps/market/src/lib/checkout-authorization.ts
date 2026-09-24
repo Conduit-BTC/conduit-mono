@@ -4,6 +4,12 @@ import type {
   Product,
 } from "@conduit/core"
 import {
+  createEventMarketPickupSnapshot,
+  readEventMarketProduct,
+  readEventMarketRoster,
+  type OrderEventMarketPickupFulfillmentSchema,
+} from "@conduit/core"
+import {
   getCartCommerceFingerprint,
   rebuildCurrentCartItems,
   type CartItem,
@@ -38,6 +44,81 @@ export type CheckoutPickupHandlerAuthorizer = (
 ) => Promise<void>
 
 /**
+ * A future Event Market purchase must have live, complete and retained signed
+ * market, calendar, grant and product evidence at the submit boundary. The
+ * exact current revisions are put into the order; older cart terms require
+ * the buyer to review the listing again.
+ */
+export async function resolveCurrentFutureEventMarketFulfillments(
+  input: {
+    items: readonly CartItem[]
+    products: readonly Product[]
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+  },
+  dependencies: {
+    readMarket: typeof readEventMarketRoster
+    readProduct: typeof readEventMarketProduct
+    snapshot: typeof createEventMarketPickupSnapshot
+  } = {
+    readMarket: readEventMarketRoster,
+    readProduct: readEventMarketProduct,
+    snapshot: createEventMarketPickupSnapshot,
+  }
+): Promise<Map<string, OrderEventMarketPickupFulfillmentSchema> | null> {
+  const futureItems = input.items.filter(
+    (item) => item.fulfillment?.type === "event_market_pickup"
+  )
+  const snapshots = new Map<string, OrderEventMarketPickupFulfillmentSchema>()
+  const marketReads = new Map<
+    string,
+    Awaited<ReturnType<typeof readEventMarketRoster>>
+  >()
+  for (const item of futureItems) {
+    const saved = item.fulfillment
+    if (saved?.type !== "event_market_pickup") return null
+    const currentProduct = input.products.find(
+      (product) =>
+        product.id === item.productId && product.pubkey === item.merchantPubkey
+    )
+    if (!currentProduct || currentProduct.format !== "physical") return null
+    let marketRead = marketReads.get(saved.market.coordinate)
+    if (!marketRead) {
+      marketRead = await dependencies.readMarket({
+        reference: saved.market.coordinate,
+        authenticatedPubkey: input.authenticatedPubkey,
+        shouldContinue: input.shouldContinue,
+      })
+      marketReads.set(saved.market.coordinate, marketRead)
+    }
+    const productRead = await dependencies.readProduct({
+      marketRead,
+      productCoordinate: item.productId,
+      authenticatedPubkey: input.authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
+    })
+    if (
+      !productRead.actionable ||
+      productRead.resolution.state !== "eligible" ||
+      currentProduct.sourceEventId !== productRead.resolution.revision.id ||
+      currentProduct.updatedAt !==
+        productRead.resolution.revision.created_at * 1_000
+    ) {
+      return null
+    }
+    let current: OrderEventMarketPickupFulfillmentSchema
+    try {
+      current = dependencies.snapshot({ marketRead, productRead })
+    } catch {
+      return null
+    }
+    if (JSON.stringify(saved) !== JSON.stringify(current)) return null
+    snapshots.set(item.productId, current)
+  }
+  return snapshots
+}
+
+/**
  * Rebuilds one checkout snapshot from authoritative 30402 and 30406 reads.
  * The caller must use the returned items for every subsequent pricing,
  * destination, payload, and lifecycle decision in the submit attempt.
@@ -55,23 +136,24 @@ export async function authorizeCurrentCheckoutItems(input: {
   resolveProductFulfillment?: CheckoutProductFulfillmentResolver
   authorizePickupHandlers?: CheckoutPickupHandlerAuthorizer
 }): Promise<CheckoutAuthorizationResult> {
-  // Future Event Market payment stays disabled until its composed handoff path
-  // can recheck both organizer authorities at the payment boundary.
-  if (
-    [...input.rawItems, ...input.reviewedItems].some(
-      (item) => item.fulfillment?.type === "event_market_pickup"
-    )
-  ) {
-    return { status: "changed" }
-  }
+  const futureSnapshots = await resolveCurrentFutureEventMarketFulfillments({
+    items: input.rawItems,
+    products: input.refreshedProducts,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+  })
+  if (!futureSnapshots) return { status: "changed" }
+  const ordinaryProducts = input.refreshedProducts.filter(
+    (product) => !futureSnapshots.has(product.id)
+  )
   const fulfillmentResolutions = input.resolveProductFulfillment
     ? await Promise.all(
-        input.refreshedProducts.map((product) =>
+        ordinaryProducts.map((product) =>
           input.resolveProductFulfillment!(product, input.rateInput ?? null)
         )
       )
     : await resolveCheckoutProductFulfillments(
-        input.refreshedProducts,
+        ordinaryProducts,
         input.rateInput,
         input.authenticatedPubkey,
         input.shouldContinue
@@ -83,6 +165,9 @@ export async function authorizeCurrentCheckoutItems(input: {
   }
 
   const fulfillmentByProductId = new Map<string, CartItemFulfillment>()
+  for (const [productId, snapshot] of futureSnapshots) {
+    fulfillmentByProductId.set(productId, snapshot)
+  }
   const resolvedProducts = fulfillmentResolutions.map((resolution) => {
     if (resolution.status === "blocked") {
       throw new Error("Blocked fulfillment escaped checkout authorization.")
@@ -97,7 +182,12 @@ export async function authorizeCurrentCheckoutItems(input: {
   })
   const refreshedRawItems = rebuildCurrentCartItems(
     input.rawItems,
-    resolvedProducts,
+    [
+      ...resolvedProducts,
+      ...input.refreshedProducts.filter((product) =>
+        futureSnapshots.has(product.id)
+      ),
+    ],
     fulfillmentByProductId
   )
   if (

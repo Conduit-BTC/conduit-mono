@@ -7,8 +7,8 @@ import {
 import {
   buildEventMarketAuthorizationDraft,
   parseEventMarketAuthorizationEvent,
+  readEventMarketAuthorization,
   resolveEventMarketAuthorization,
-  type ParsedEventMarketAuthorization,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
@@ -19,27 +19,20 @@ const marketCoordinate = `30409:${organizer}:fair`
 
 function transition(
   state: "active" | "revoked",
-  parents: ParsedEventMarketAuthorization[] = [],
-  createdAt = 100,
-  repairs: { deletionId: string; targetEventId: string }[] = []
+  sequence: number,
+  parents: SignedPublicNostrEvent[] = [],
+  createdAt = sequence + 100
 ): SignedPublicNostrEvent {
   const draft = buildEventMarketAuthorizationDraft({
     marketCoordinate,
     merchantPubkey: merchant,
     state,
-    parents,
-    repairs,
+    sequence,
+    parentIds: parents.map((event) => event.id),
   })
   return finalizeEvent({ ...draft, created_at: createdAt }, organizerSecret)
 }
-
-function parsed(event: SignedPublicNostrEvent): ParsedEventMarketAuthorization {
-  const result = parseEventMarketAuthorizationEvent(event)
-  if (!result) throw new Error("Invalid fixture")
-  return result
-}
-
-function reduce(
+function resolution(
   transitions: SignedPublicNostrEvent[],
   deletions: SignedPublicNostrEvent[] = []
 ) {
@@ -51,134 +44,236 @@ function reduce(
   })
 }
 
-function deletion(target: SignedPublicNostrEvent, createdAt = 110) {
-  return finalizeEvent(
-    {
-      kind: 5,
-      tags: [
-        ["e", target.id],
-        ["a", marketCoordinate],
-        ["p", merchant],
-      ],
-      content: "",
-      created_at: createdAt,
-    },
-    organizerSecret
-  )
-}
+describe("Event Market causal merchant authorization", () => {
+  it("requires a valid root, descends through revoke and deliberate regrant", () => {
+    const grant = transition("active", 0)
+    const revoke = transition("revoked", 1, [grant])
+    const regrant = transition("active", 2, [revoke])
+    expect(parseEventMarketAuthorizationEvent(grant)?.parentIds).toEqual([])
+    expect(resolution([grant]).state).toBe("active")
+    expect(resolution([grant, revoke]).state).toBe("revoked")
+    const current = resolution([grant, revoke, regrant])
+    expect(current.state).toBe("active")
+    if (current.state === "active")
+      expect(current.ancestry.map((event) => event.eventId)).toEqual([
+        grant.id,
+        revoke.id,
+        regrant.id,
+      ])
+  })
 
-describe("Event Market causal authorization", () => {
-  it("emits a canonical grant and rejects forged scope and duplicate singleton tags", () => {
-    const root = transition("active")
-    expect(parsed(root)).toMatchObject({
-      marketCoordinate,
-      merchantPubkey: merchant,
-      state: "active",
-      sequence: 0,
-      parentIds: [],
-    })
-    const duplicate = finalizeEvent(
+  it("blocks an identical-state fork until a descendant names both tips", () => {
+    const root = transition("active", 0)
+    const first = transition("active", 1, [root], 101)
+    const second = transition("active", 1, [root], 102)
+    expect(resolution([root, first, second]).state).toBe("conflicting")
+    const reconcile = transition("active", 2, [first, second], 103)
+    expect(resolution([root, first, second, reconcile]).state).toBe("active")
+    expect(resolution([reconcile]).state).toBe("missing_parent")
+  })
+
+  it("retains deletion as a blocker rather than restoring an old grant", () => {
+    const grant = transition("active", 0)
+    const revoke = transition("revoked", 1, [grant])
+    const deletion = finalizeEvent(
       {
-        kind: 3841,
-        tags: [...root.tags, ["state", "revoked"]],
+        kind: 5,
+        created_at: 103,
         content: "",
-        created_at: 101,
+        tags: [
+          ["e", revoke.id],
+          ["a", marketCoordinate],
+          ["p", merchant],
+        ],
       },
       organizerSecret
     )
-    expect(parseEventMarketAuthorizationEvent(duplicate)).toBeNull()
-    const wrongAuthor = finalizeEvent(
-      {
-        kind: 3841,
-        tags: root.tags,
-        content: "",
-        created_at: 101,
-      },
-      generateSecretKey()
-    )
-    expect(parseEventMarketAuthorizationEvent(wrongAuthor)).toBeNull()
-  })
-
-  it("requires a descendant for regrant and validates required ancestry", () => {
-    const grant = transition("active")
-    const revoke = transition("revoked", [parsed(grant)], 101)
-    const regrant = transition("active", [parsed(revoke)], 102)
-    expect(reduce([grant, revoke])).toMatchObject({
-      state: "revoked",
-      tip: { eventId: revoke.id },
-    })
-    expect(reduce([grant, revoke, regrant])).toMatchObject({
-      state: "active",
-      tip: { eventId: regrant.id },
-      ancestry: expect.arrayContaining([grant, revoke, regrant]),
-    })
-    expect(reduce([grant, regrant])).toMatchObject({
-      state: "missing_parent",
-      missingParentIds: [revoke.id],
-    })
-  })
-
-  it("blocks equal-state siblings until a multi-parent reconciliation", () => {
-    const grant = transition("active")
-    const one = transition("active", [parsed(grant)], 101)
-    const two = transition("active", [parsed(grant)], 102)
-    expect(reduce([grant, one, two])).toMatchObject({ state: "conflicting" })
-    const reconcile = transition("active", [parsed(one), parsed(two)], 103)
-    expect(parsed(reconcile).sequence).toBe(2)
-    expect(reduce([grant, one, two, reconcile])).toMatchObject({
-      state: "active",
-      tip: { eventId: reconcile.id },
-    })
-  })
-
-  it("retains deletion of a revoke until an exact descendant repair", () => {
-    const grant = transition("active")
-    const revoke = transition("revoked", [parsed(grant)], 101)
-    const erased = deletion(revoke)
-    expect(reduce([grant, revoke], [erased])).toMatchObject({
-      state: "deleted",
-      tip: { eventId: revoke.id },
-    })
-    expect(reduce([grant], [erased])).toMatchObject({ state: "deleted" })
-    expect(reduce([], [erased])).toMatchObject({
+    expect(resolution([grant, revoke], [deletion]).state).toBe("deleted")
+    expect(resolution([grant, revoke]).state).toBe("revoked")
+    expect(resolution([grant], [deletion]).state).toBe("deleted")
+    expect(resolution([], [deletion])).toMatchObject({
       state: "deleted_unknown",
       missingTargetIds: [revoke.id],
     })
-    const unrepaired = transition("active", [parsed(revoke)], 111)
-    expect(reduce([grant, revoke, unrepaired], [erased])).toMatchObject({
-      state: "deleted",
-    })
-    const repaired = transition("active", [parsed(revoke)], 112, [
-      { deletionId: erased.id, targetEventId: revoke.id },
-    ])
-    expect(reduce([grant, revoke, repaired], [erased])).toMatchObject({
-      state: "active",
-      tip: { eventId: repaired.id },
-    })
   })
 
-  it("rejects invalid sequence and parent payload", () => {
-    const root = transition("active")
-    const badSequence = finalizeEvent(
+  it("requires an actual descendant repair for every observed deletion target", () => {
+    const grant = transition("active", 0)
+    const revoke = transition("revoked", 1, [grant])
+    const deletion = finalizeEvent(
       {
-        kind: 3841,
-        tags: root.tags.map((tag) => (tag[0] === "seq" ? ["seq", "1"] : tag)),
-        content: "",
-        created_at: 101,
-      },
-      organizerSecret
-    )
-    expect(parseEventMarketAuthorizationEvent(badSequence)).toBeNull()
-    const child = transition("revoked", [parsed(root)], 102)
-    const forgedSequence = finalizeEvent(
-      {
-        kind: 3841,
-        tags: child.tags.map((tag) => (tag[0] === "seq" ? ["seq", "2"] : tag)),
-        content: "",
+        kind: 5,
         created_at: 103,
+        content: "",
+        tags: [
+          ["e", grant.id],
+          ["e", revoke.id],
+          ["a", marketCoordinate],
+          ["p", merchant],
+        ],
       },
       organizerSecret
     )
-    expect(reduce([root, forgedSequence])).toMatchObject({ state: "malformed" })
+    const repairDraft = buildEventMarketAuthorizationDraft({
+      marketCoordinate,
+      merchantPubkey: merchant,
+      state: "active",
+      sequence: 2,
+      parentIds: [revoke.id],
+      repairs: [
+        { deletionId: deletion.id, targetId: grant.id },
+        { deletionId: deletion.id, targetId: revoke.id },
+      ],
+    })
+    const repair = finalizeEvent(
+      { ...repairDraft, created_at: 104 },
+      organizerSecret
+    )
+    expect(resolution([grant, revoke], [deletion]).state).toBe("deleted")
+    expect(resolution([grant, revoke, repair], [deletion]).state).toBe("active")
+    const incompleteDraft = buildEventMarketAuthorizationDraft({
+      marketCoordinate,
+      merchantPubkey: merchant,
+      state: "active",
+      sequence: 2,
+      parentIds: [revoke.id],
+      repairs: [{ deletionId: deletion.id, targetId: revoke.id }],
+    })
+    const incomplete = finalizeEvent(
+      { ...incompleteDraft, created_at: 105 },
+      organizerSecret
+    )
+    expect(resolution([grant, revoke, incomplete], [deletion]).state).toBe(
+      "deleted"
+    )
+  })
+
+  it("rejects a wrong organizer, market, sequence, or malformed profile", () => {
+    const root = transition("active", 0)
+    const wrongSequence = transition("revoked", 2, [root])
+    expect(resolution([root, wrongSequence]).state).toBe("malformed")
+    const forged = finalizeEvent(
+      {
+        kind: 3841,
+        content: "",
+        created_at: 110,
+        tags: root.tags,
+      },
+      generateSecretKey()
+    )
+    expect(parseEventMarketAuthorizationEvent(forged)).toBeNull()
+    const malformed = finalizeEvent(
+      {
+        kind: 3841,
+        content: "",
+        created_at: 111,
+        tags: [...root.tags, ["state", "revoked"]],
+      },
+      organizerSecret
+    )
+    expect(resolution([root, malformed]).state).toBe("malformed")
+  })
+
+  it("keeps a retained revoke when a relay returns only an older grant", async () => {
+    const grant = transition("active", 0)
+    const revoke = transition("revoked", 1, [grant])
+    const read = await readEventMarketAuthorization(
+      {
+        marketCoordinate,
+        merchantPubkey: merchant,
+      },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => ({
+          events: filter.kinds?.includes(3841 as never) ? [grant] : [],
+          relays: [{ relayUrl: "wss://example.com", status: "success" }],
+        }),
+        load: async () => [grant, revoke],
+        retain: async () => undefined,
+      }
+    )
+    expect(read.resolution.state).toBe("revoked")
+    expect(read.coverage).toBe("stale")
+    expect(read.actionable).toBe(false)
+  })
+
+  it("blocks two live sibling grants even with full relay responses", async () => {
+    const root = transition("active", 0)
+    const first = transition("active", 1, [root], 101)
+    const second = transition("active", 1, [root], 102)
+    const read = await readEventMarketAuthorization(
+      {
+        marketCoordinate,
+        merchantPubkey: merchant,
+      },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => ({
+          events: filter.kinds?.includes(3841 as never)
+            ? [root, first, second]
+            : [],
+          relays: [{ relayUrl: "wss://example.com", status: "success" }],
+        }),
+        load: async () => [],
+        retain: async () => undefined,
+      }
+    )
+    expect(read.resolution.state).toBe("conflicting")
+    expect(read.actionable).toBe(false)
+  })
+
+  it("permits a first grant only after complete empty scoped reads", async () => {
+    const readEmpty = (status: "success" | "partial" | "failed") =>
+      readEventMarketAuthorization(
+        { marketCoordinate, merchantPubkey: merchant },
+        {
+          plan: async () => ({
+            relayUrls: ["wss://example.com"],
+            candidateRelayUrls: ["wss://example.com"],
+            maxRelayAttempts: 1,
+            ownerSelectedRelayUrls: [],
+            appRelayUrls: ["wss://example.com"],
+            personalRelayUrls: [],
+            independentRelayUrls: [],
+            relayListState: "missing",
+            relayHintTruncated: false,
+          }),
+          fetch: async () => ({
+            events: [],
+            relays: [{ relayUrl: "wss://example.com", status }],
+          }),
+          load: async () => [],
+          retain: async () => undefined,
+        }
+      )
+    const complete = await readEmpty("success")
+    expect(complete.resolution.state).toBe("missing")
+    expect(complete.coverage).toBe("complete")
+    const partial = await readEmpty("partial")
+    expect(partial.resolution.state).toBe("missing")
+    expect(partial.coverage).toBe("partial")
+    const unavailable = await readEmpty("failed")
+    expect(unavailable.resolution.state).toBe("missing")
+    expect(unavailable.coverage).toBe("unavailable")
   })
 })

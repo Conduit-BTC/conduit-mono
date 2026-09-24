@@ -182,7 +182,7 @@ export interface CachedEventMarketRosterEvidence {
   cachedAt: number
 }
 
-/** Exact, paired organizer signatures kept outside admitted relay evidence. */
+/** Exact paired organizer signatures kept outside admitted relay evidence. */
 export interface EventMarketMerchantDecisionJob {
   id: string
   marketCoordinate: string
@@ -1226,7 +1226,7 @@ class ConduitDB extends Dexie {
 
     this.version(21).stores({
       eventMarketMerchantDecisionJobs:
-        "id, [marketCoordinate+merchantPubkey], status, createdAt",
+        "id, marketCoordinate, merchantPubkey, status, updatedAt",
     })
   }
 }

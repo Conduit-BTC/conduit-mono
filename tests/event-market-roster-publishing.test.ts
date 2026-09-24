@@ -440,6 +440,8 @@ describe("future Event Market organizer updates", () => {
       marketCoordinate,
       merchantPubkey: merchant,
       state: "active",
+      sequence: 0,
+      parentIds: [],
     })
     const active = finalizeEvent({ ...activeDraft, created_at: 101 }, secret)
     const order: string[] = []
@@ -580,6 +582,8 @@ describe("future Event Market organizer updates", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "active",
+          sequence: 0,
+          parentIds: [],
         }),
         created_at: 101,
       },
@@ -591,7 +595,8 @@ describe("future Event Market organizer updates", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "revoked",
-          parents: [parseEventMarketAuthorizationEvent(active)!],
+          sequence: 1,
+          parentIds: [active.id],
         }),
         created_at: 102,
       },
@@ -654,6 +659,8 @@ describe("future Event Market organizer updates", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "active",
+          sequence: 0,
+          parentIds: [],
         }),
         created_at: 101,
       },

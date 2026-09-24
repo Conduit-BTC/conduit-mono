@@ -7,6 +7,7 @@ import {
 import {
   buildEventMarketRosterDraft,
   buildEventMarketAuthorizationDraft,
+  resolveEventMarketAuthorization,
   getEventMarketCandidateFilters,
   parseEventMarketRosterEvent,
   parseEventMarketCalendarEvent,
@@ -18,6 +19,8 @@ import {
   readEventMarketProduct,
   readEventMarketReapprovalPreview,
   readEventMarketCatalog,
+  readEventMarketOrderEvidenceByIds,
+  previewEventMarketMerchantProducts,
   createEventMarketPickupSnapshot,
   type EventMarketMerchantRow,
 } from "@conduit/core"
@@ -64,6 +67,8 @@ function grant(createdAt = 102): SignedPublicNostrEvent {
     marketCoordinate,
     merchantPubkey: merchant,
     state: "active",
+    sequence: 0,
+    parentIds: [],
   })
   return sign(organizerSecret, draft.kind, draft.tags, createdAt)
 }
@@ -96,6 +101,30 @@ const merchantRow: EventMarketMerchantRow = {
   pubkey: merchant,
   mode: "merchant_present",
   assignment: "Booth 12",
+}
+
+const grantEvent = (() => {
+  const draft = buildEventMarketAuthorizationDraft({
+    marketCoordinate,
+    merchantPubkey: merchant,
+    state: "active",
+    sequence: 0,
+    parentIds: [],
+  })
+  return sign(organizerSecret, draft.kind, draft.tags, 99)
+})()
+const authorization = resolveEventMarketAuthorization({
+  marketCoordinate,
+  merchantPubkey: merchant,
+  transitions: [grantEvent],
+})
+const authorizationRead = {
+  marketCoordinate,
+  merchantPubkey: merchant,
+  resolution: authorization,
+  coverage: "complete" as const,
+  retained: true,
+  actionable: true,
 }
 
 describe("experimental Event Market roster", () => {
@@ -246,6 +275,7 @@ describe("experimental Event Market roster", () => {
     const first = product(merchantSecret, merchant, "soap", 100)
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate,
         revisions: [first],
@@ -254,6 +284,7 @@ describe("experimental Event Market roster", () => {
     const spam = product(spammerSecret, spammer, "spam", 100)
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate: `30402:${spammer}:spam`,
         revisions: [spam],
@@ -262,6 +293,7 @@ describe("experimental Event Market roster", () => {
     const hidden = product(merchantSecret, merchant, "soap", 101, true, true)
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate,
         revisions: [first, hidden],
@@ -270,6 +302,7 @@ describe("experimental Event Market roster", () => {
     const untagged = product(merchantSecret, merchant, "soap", 102, false)
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate,
         revisions: [first, untagged],
@@ -286,6 +319,7 @@ describe("experimental Event Market roster", () => {
     )
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate,
         revisions: [first],
@@ -295,6 +329,7 @@ describe("experimental Event Market roster", () => {
     const revoked = parseEventMarketRosterEvent(roster([], 103))!
     expect(
       resolveEventMarketProduct({
+        authorization,
         market: revoked,
         productCoordinate,
         revisions: [first],
@@ -303,6 +338,7 @@ describe("experimental Event Market roster", () => {
     const reapproved = parseEventMarketRosterEvent(roster([merchantRow], 104))!
     expect(
       resolveEventMarketProduct({
+        authorization,
         market: reapproved,
         productCoordinate,
         revisions: [first],
@@ -393,6 +429,7 @@ describe("experimental Event Market roster", () => {
         }),
         load: async () => [untagged],
         retain: async () => undefined,
+        authorization: async () => authorizationRead,
       }
     )
     expect(read.resolution.state).toBe("untagged")
@@ -536,6 +573,7 @@ describe("experimental Event Market roster", () => {
     const currentMarket = parseEventMarketRosterEvent(roster([merchantRow]))!
     const signedProduct = product(merchantSecret, merchant, "soap", 100)
     const currentProduct = resolveEventMarketProduct({
+      authorization,
       market: currentMarket,
       productCoordinate,
       revisions: [signedProduct],
@@ -568,18 +606,7 @@ describe("experimental Event Market roster", () => {
       coverage: "complete" as const,
       retained: true,
       actionable: true,
-      authorization: {
-        marketCoordinate,
-        merchantPubkey: merchant,
-        resolution: resolveEventMarketAuthorization({
-          marketCoordinate,
-          merchantPubkey: merchant,
-          transitions: [grant()],
-        }),
-        coverage: "complete" as const,
-        retained: true,
-        observedRelayUrls: ["wss://example.com"],
-      },
+      authorization: authorizationRead,
     }
     const snapshot = createEventMarketPickupSnapshot({
       marketRead,
@@ -602,52 +629,76 @@ describe("experimental Event Market roster", () => {
     ).toThrow()
   })
 
-  it("previews a removed merchant's current tagged products without granting admission", async () => {
-    const removed = roster([], 100)
-    const calendar = sign(
-      organizerSecret,
-      31923,
-      [
-        ["d", "fair"],
-        ["title", "Fair"],
-        ["start", "1790000000"],
-        ["D", "20717"],
-      ],
-      100
+  it("retrieves the exact signed order record after a newer roster revision", async () => {
+    const original = roster([merchantRow], 100)
+    const newer = roster([], 101, original.id)
+    const read = await readEventMarketOrderEvidenceByIds(
+      {
+        marketCoordinate,
+        merchantPubkey: merchant,
+        eventIds: [original.id],
+      },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async () => ({
+          events: [newer],
+          relays: [{ relayUrl: "wss://example.com", status: "success" }],
+        }),
+        load: async () => [original],
+        retain: async () => undefined,
+      }
     )
-    const tagged = product(merchantSecret, merchant, "soap", 100)
-    const dependencies = {
-      plan: async () => ({
-        relayUrls: ["wss://example.com"],
-        candidateRelayUrls: ["wss://example.com"],
-        maxRelayAttempts: 1,
-        ownerSelectedRelayUrls: [],
-        appRelayUrls: ["wss://example.com"],
-        personalRelayUrls: [],
-        independentRelayUrls: [],
-        relayListState: "missing" as const,
-        relayHintTruncated: false,
-      }),
-      fetch: async (filter: { kinds?: number[] }) => ({
-        events: filter.kinds?.includes(30409)
-          ? [removed]
-          : filter.kinds?.includes(31923)
-            ? [calendar]
-            : filter.kinds?.includes(30402)
-              ? [tagged]
-              : [],
-        relays: [{ relayUrl: "wss://example.com", status: "success" as const }],
-      }),
-      load: async () => [] as SignedPublicNostrEvent[],
-      retain: async () => undefined,
-    }
-    const preview = await readEventMarketReapprovalPreview(
-      { marketCoordinate, merchantPubkey: merchant },
-      dependencies
+    expect(read.events.map((event) => event.id)).toEqual([original.id])
+    expect(read.coverage).toBe("stale")
+  })
+
+  it("previews current tagged products before reapproval without admitting old revisions", async () => {
+    const active = product(merchantSecret, merchant, "soap", 100)
+    const oldTagged = product(merchantSecret, merchant, "jam", 100)
+    const untagged = product(merchantSecret, merchant, "jam", 101, false)
+    const preview = await previewEventMarketMerchantProducts(
+      {
+        marketCoordinate,
+        merchantPubkey: merchant,
+      },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => ({
+          events: filter.kinds?.includes(30402 as never)
+            ? "#a" in filter
+              ? [active, oldTagged]
+              : [active, oldTagged, untagged]
+            : [],
+          relays: [{ relayUrl: "wss://example.com", status: "success" }],
+        }),
+        load: async () => [],
+        retain: async () => undefined,
+      }
     )
-    expect(preview.complete).toBe(true)
-    expect(preview.products.map((entry) => entry.id)).toEqual([
+    expect(preview.products.map((item) => item.coordinate)).toEqual([
       productCoordinate,
     ])
+    expect(preview.candidateCount).toBe(2)
+    expect(preview.coverage).toBe("complete")
   })
 })

@@ -1,17 +1,9 @@
-import {
-  AlertCircle,
-  Archive,
-  ChevronDown,
-  ExternalLink,
-  RefreshCw,
-} from "lucide-react"
+import { AlertCircle, Archive, ChevronDown, RefreshCw } from "lucide-react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   buildMarketEventCatalogUrl,
-  buildMerchantEventParticipationUrl,
   decodeEventMarketReference,
-  inferConduitAppOrigin,
   normalizePubkey,
   pubkeyToNpub,
   useAuth,
@@ -84,8 +76,19 @@ export const Route = createFileRoute("/events/$collectionRef")({
 
 function EventCatalogRoute() {
   const { collectionRef } = Route.useParams()
+  const search = Route.useSearch()
+  const navigate = useNavigate({ from: Route.fullPath })
   return decodeEventMarketReference(collectionRef, [30409]) ? (
-    <FutureEventMarketPage reference={collectionRef} />
+    <FutureEventMarketPage
+      reference={collectionRef}
+      selectedMerchant={normalizePubkey(search.merchant) ?? undefined}
+      onMerchantChange={(merchant) =>
+        void navigate({
+          search: merchant ? { merchant: pubkeyToNpub(merchant) } : {},
+          replace: true,
+        })
+      }
+    />
   ) : (
     <EventCatalogPage />
   )
@@ -185,7 +188,7 @@ function EventCatalogProductCard({
     allowPendingCart: pendingEvidenceMayRecover,
     isChecking: pickupGate.isChecking,
   })
-  const canAdd = cartAction.enabled
+  const canAdd = false
 
   useEffect(() => {
     setSelectedProductId((previous) =>
@@ -222,11 +225,6 @@ function EventCatalogProductCard({
     upgradePendingEventPickupItem,
   ])
 
-  const add = async (selection: Product) => {
-    const candidate = exactCandidate ?? pendingCandidate
-    if (selection.id !== selectedProduct.id || !canAdd || !candidate) return
-    await cart.addItem(candidate, 1)
-  }
   const increment = async (selection: Product) => {
     const candidate = exactCandidate ?? pendingCandidate
     if (selection.id !== selectedProduct.id || !existing || !candidate) return
@@ -278,7 +276,7 @@ function EventCatalogProductCard({
       cartQuantity={cartQuantity}
       onProductActivate={null}
       onMerchantActivate={onMerchantActivate}
-      onAddToCart={add}
+      onAddToCart={undefined}
       onIncrement={canAdd ? increment : undefined}
       onDecrement={canAdd ? decrement : undefined}
       cartActionDisabled={!cartAction.enabled}
@@ -570,7 +568,6 @@ function EventCatalogPage() {
 
   const eventLocations = calendar.locations.filter(Boolean)
   const calendarLocation = eventLocations.join(" · ")
-  const archived = catalog.state === "ended"
   const actionability = getEventActionabilityPresentation({
     state: catalog.state,
     orderAcceptance: catalog.collection?.orderAcceptance,
@@ -581,6 +578,13 @@ function EventCatalogPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-5 sm:space-y-8">
+      <p
+        role="status"
+        className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]"
+      >
+        This historical Event Market is available for existing links and orders.
+        New purchases and product setup use the current Event Market model.
+      </p>
       {stateCopy && !isChecking ? (
         <div className="flex flex-col gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 sm:flex-row sm:items-center sm:justify-between">
           <div role={actionability.role}>
@@ -641,25 +645,7 @@ function EventCatalogPage() {
             ) : null}
           </div>
         }
-        actions={
-          catalog.canonicalNaddr ? (
-            <Button asChild variant="outline" size="sm">
-              <a
-                href={buildMerchantEventParticipationUrl(
-                  inferConduitAppOrigin(
-                    "merchant",
-                    window.location,
-                    import.meta.env.VITE_BUILD_BRANCH
-                  ),
-                  catalog.canonicalNaddr
-                )}
-              >
-                Sell here
-                <ExternalLink aria-hidden="true" className="size-3.5" />
-              </a>
-            </Button>
-          ) : null
-        }
+        actions={undefined}
         shareUrl={
           catalog.canonicalNaddr
             ? buildMarketEventCatalogUrl(
@@ -715,7 +701,7 @@ function EventCatalogPage() {
           <EventCatalogProductCard
             entry={entry}
             catalog={catalog}
-            purchaseReady={!archived && catalog.purchaseReady}
+            purchaseReady={false}
             isChecking={isChecking}
             identity={merchantIdentities.getIdentity(entry.product.pubkey)}
             imageLoading={index < 4 ? "eager" : "lazy"}

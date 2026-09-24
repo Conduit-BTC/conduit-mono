@@ -13,6 +13,9 @@ const EVENT_COORDINATE = `30405:${"1".repeat(64)}:fall-market`
 const EVENT_NADDR = encodeEventMarketNaddr(EVENT_COORDINATE, [
   "wss://relay.example/events",
 ])
+const FUTURE_MARKET_NADDR = encodeEventMarketNaddr(
+  `30409:${"1".repeat(64)}:fall-market`
+)
 const MERCHANT_PUBKEY = "2".repeat(64)
 const MERCHANT_NPUB = pubkeyToNpub(MERCHANT_PUBKEY)
 
@@ -116,6 +119,21 @@ describe("paired Conduit app origins", () => {
 })
 
 describe("event market links", () => {
+  it("builds shopper and merchant links to the new market coordinate", () => {
+    expect(
+      buildMarketEventCatalogUrl(
+        "https://shop.conduit.market",
+        FUTURE_MARKET_NADDR
+      )
+    ).toBe(`https://shop.conduit.market/events/${FUTURE_MARKET_NADDR}`)
+    expect(
+      buildMerchantEventParticipationUrl(
+        "https://sell.conduit.market",
+        FUTURE_MARKET_NADDR
+      )
+    ).toBe(`https://sell.conduit.market/events/${FUTURE_MARKET_NADDR}`)
+  })
+
   it("builds separate preview shopper and merchant links", () => {
     expect(
       buildMarketEventCatalogUrl(

@@ -19,12 +19,12 @@ export function getEventMarketCartReviewReasons(input: {
   if (saved.assignment !== current.assignment)
     reasons.push("Pickup assignment changed")
   if (
-    saved.authorization.tip.id !== current.authorization.tip.id ||
-    saved.authorization.deletions
+    saved.grant.eventId !== current.grant.eventId ||
+    saved.grant.signedEvidence.deletions
       .map((event) => event.id)
       .sort()
       .join(",") !==
-      current.authorization.deletions
+      current.grant.signedEvidence.deletions
         .map((event) => event.id)
         .sort()
         .join(",")

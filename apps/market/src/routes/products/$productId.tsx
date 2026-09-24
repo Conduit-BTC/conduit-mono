@@ -5,14 +5,15 @@ import {
   buildMarketProductShareUrl,
   encodeEventMarketNaddr,
   buildProductDetailActionTelemetryProperties,
+  createEventMarketPickupSnapshot,
   formatNpub,
   getListingSafetyDisplay,
   getProfileName,
   isCommerceReadIncomplete,
-  pubkeyToNpub,
-  recordBrowserTelemetryEvent,
   readEventMarketProduct,
   readEventMarketRoster,
+  pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   useAuth,
   useConduitSession,
   useProfile,
@@ -64,6 +65,8 @@ import {
 } from "../../lib/productVariations"
 
 export const Route = createFileRoute("/products/$productId")({
+  validateSearch: (raw: Record<string, unknown>): { event?: string } =>
+    typeof raw.event === "string" ? { event: raw.event } : {},
   component: ProductPage,
 })
 
@@ -106,6 +109,7 @@ function ProductPage() {
   const accountPubkey = authenticatedPubkey
   const cart = useCart()
   const { productId } = Route.useParams()
+  const { event: eventMarketReference } = Route.useSearch()
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
   const [selectedProductId, setSelectedProductId] = useState("")
   const [quantity, setQuantity] = useState(1)
@@ -162,6 +166,40 @@ function ProductPage() {
   const selectedProduct = product
     ? getProductSelection(product, family, selectedProductId)
     : null
+  const eventMarketQuery = useQuery({
+    queryKey: [
+      "product-event-market",
+      eventMarketReference,
+      selectedProduct?.id,
+      session.relayScope,
+      authenticatedPubkey,
+    ],
+    queryFn: async ({ signal }) => {
+      const marketRead = await readEventMarketRoster({
+        reference: eventMarketReference!,
+        authenticatedPubkey,
+        signal,
+      })
+      const productRead = await readEventMarketProduct({
+        marketRead,
+        productCoordinate: selectedProduct!.id,
+        authenticatedPubkey,
+        signal,
+      })
+      return { marketRead, productRead }
+    },
+    enabled:
+      !!eventMarketReference && !!selectedProduct && session.relaySettingsReady,
+    retry: false,
+  })
+  const eventMarketFulfillment = (() => {
+    if (!eventMarketReference || !eventMarketQuery.data) return null
+    try {
+      return createEventMarketPickupSnapshot(eventMarketQuery.data)
+    } catch {
+      return null
+    }
+  })()
   const productCartFulfillment = useProductCartFulfillment(
     selectedProduct,
     shopperPricing.quote
@@ -171,7 +209,11 @@ function ProductPage() {
     ? getListingSafetyDisplay(listingSafety)
     : null
   const productUnavailable =
-    !!product && !!listingSafety && !productQuery.isMarketVisible
+    !!product &&
+    !!listingSafety &&
+    !productQuery.isMarketVisible &&
+    (!eventMarketReference ||
+      (!eventMarketQuery.isPending && !eventMarketFulfillment))
   const productSoldOut = selectedProduct?.stock === 0
 
   const merchantProfile = useProfile(product?.pubkey, {
@@ -226,7 +268,7 @@ function ProductPage() {
   const pickupHandlerIdentity = useEventActorIdentity(
     productPickupHandoff?.handlerPubkey
   )
-  const productCartCandidate = productCartResolution
+  const ordinaryProductCartCandidate = productCartResolution
     ? productCartResolution.status === "pickup"
       ? cartItemInputFromProductSelection(
           product!,
@@ -241,23 +283,41 @@ function ProductPage() {
           )
         : null
     : null
+  const productCartCandidate =
+    eventMarketReference && selectedProduct
+      ? eventMarketFulfillment
+        ? cartItemInputFromProductSelection(
+            product!,
+            selectedProduct,
+            eventMarketFulfillment
+          )
+        : null
+      : ordinaryProductCartCandidate
   const cartItem = productCartCandidate
     ? selectCartLine(cart.items, productCartCandidate)
     : undefined
   const productCartBlocked =
-    productCartFulfillment.isChecking ||
-    productCartResolution?.status === "blocked" ||
-    !productCartCandidate
-  const productEventNaddr =
-    productCartResolution?.status === "pickup" ||
-    productCartResolution?.status === "blocked"
+    (eventMarketReference
+      ? eventMarketQuery.isFetching || !eventMarketFulfillment
+      : productCartFulfillment.isChecking ||
+        productCartResolution?.status === "blocked") || !productCartCandidate
+  const productEventNaddr = eventMarketReference
+    ? eventMarketReference
+    : productCartResolution?.status === "pickup" ||
+        productCartResolution?.status === "blocked"
       ? productCartResolution.canonicalNaddr
       : productCartFulfillment.candidateNaddr
-  const productFulfillmentNotice = productCartFulfillment.isChecking
-    ? "Checking current signed event pickup evidence before this listing can be added."
-    : productCartResolution?.status === "blocked"
-      ? productCartResolution.reason
-      : null
+  const productFulfillmentNotice = eventMarketReference
+    ? eventMarketQuery.isFetching
+      ? "Checking current signed Event Market participation."
+      : eventMarketFulfillment
+        ? null
+        : "This product is not currently eligible at this Event Market. Review the event catalog or try again."
+    : productCartFulfillment.isChecking
+      ? "Checking current signed event pickup evidence before this listing can be added."
+      : productCartResolution?.status === "blocked"
+        ? productCartResolution.reason
+        : null
   const showPickupIdentityNotice =
     !!productPickupHandoff &&
     !!pickupHandlerIdentity &&
@@ -290,12 +350,20 @@ function ProductPage() {
           (variation) => variation.product.id === selectedProduct.id
         )?.sourceRelayUrls ?? [])
       : productQuery.sourceRelayUrls
-  const productShareUrl = selectedProduct
+  const ordinaryProductShareUrl = selectedProduct
     ? getMarketProductShareUrl(
         selectedProduct.id,
         selectedProductSourceRelayUrls
       )
     : null
+  const productShareUrl = (() => {
+    if (!ordinaryProductShareUrl || !eventMarketReference) {
+      return ordinaryProductShareUrl
+    }
+    const url = new URL(ordinaryProductShareUrl)
+    url.searchParams.set("event", eventMarketReference)
+    return url.toString()
+  })()
   const productPresenceCount = useProductLivePresenceCount({
     merchantPubkey: selectedProduct?.pubkey,
     productCanonicalId: selectedProduct?.id,
@@ -852,15 +920,19 @@ function ProductPage() {
                   >
                     {productSoldOut
                       ? "Sold out"
-                      : productCartFulfillment.isChecking
-                        ? "Checking event pickup"
-                        : productCartResolution?.status === "blocked"
+                      : eventMarketReference && eventMarketQuery.isFetching
+                        ? "Checking Event Market"
+                        : eventMarketReference && !eventMarketFulfillment
                           ? "Review event catalog"
-                          : productAddAvailability.remainingStock === 0
-                            ? "Stock limit reached"
-                            : cartQuantity > 0
-                              ? `Add more (${cartQuantity} in cart)`
-                              : `Add ${quantity} to cart`}
+                          : productCartFulfillment.isChecking
+                            ? "Checking event pickup"
+                            : productCartResolution?.status === "blocked"
+                              ? "Review event catalog"
+                              : productAddAvailability.remainingStock === 0
+                                ? "Stock limit reached"
+                                : cartQuantity > 0
+                                  ? `Add more (${cartQuantity} in cart)`
+                                  : `Add ${quantity} to cart`}
                   </Button>
                 </div>
 

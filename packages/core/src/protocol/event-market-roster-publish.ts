@@ -1,24 +1,27 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { db, type EventMarketMerchantDecisionJob } from "../db"
-import { parseAddressableCoordinate } from "./event-market"
-import { EVENT_KINDS } from "./kinds"
 import {
   buildEventMarketAuthorizationDraft,
   parseEventMarketAuthorizationEvent,
   type EventMarketAuthorizationRepair,
   type ParsedEventMarketAuthorization,
 } from "./event-market-authorization"
+import { readEventMarketAuthorization } from "./event-market-authorization-read"
+import {
+  buildEventMarketCalendarDraft,
+  parseAddressableCoordinate,
+  parseEventMarketCalendarEvent,
+  type EventMarketCalendarDraftInput,
+} from "./event-market"
 import {
   buildEventMarketRosterDraft,
   parseEventMarketRosterEvent,
   type EventMarketCommerceState,
   type EventMarketMerchantRow,
 } from "./event-market-roster"
-import {
-  readEventMarketAuthorization,
-  readEventMarketRoster,
-} from "./event-market-roster-read"
+import { readEventMarketRoster } from "./event-market-roster-read"
 import { waitForVisibleDocument } from "./interactive-signer"
+import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
 import {
   publishWithPlanner,
@@ -43,102 +46,6 @@ interface RosterPublishDependencies {
     authorPubkey: string,
     shouldContinue?: () => boolean
   ) => Promise<PublishWithPlannerResult>
-}
-
-interface MerchantDecisionDependencies extends RosterPublishDependencies {
-  readAuthorization: typeof readEventMarketAuthorization
-  persist: typeof persistMerchantDecision
-  load: typeof loadEventMarketMerchantDecision
-  acknowledge: typeof acknowledgeMerchantDecision
-}
-
-export interface SignedEventMarketMerchantDecision {
-  action: "approve" | "revoke"
-  roster: SignedPublicNostrEvent
-  authorization: SignedPublicNostrEvent
-}
-
-async function persistMerchantDecision(
-  signed: SignedEventMarketMerchantDecision
-): Promise<void> {
-  const authorization = parseEventMarketAuthorizationEvent(signed.authorization)
-  const roster = parseEventMarketRosterEvent(signed.roster)
-  if (
-    !authorization ||
-    !roster ||
-    authorization.marketCoordinate !== roster.coordinate
-  ) {
-    throw new Error("Invalid signed merchant decision cannot be saved.")
-  }
-  await db.transaction("rw", db.eventMarketMerchantDecisionJobs, async () => {
-    const existing = await db.eventMarketMerchantDecisionJobs.get(
-      authorization.eventId
-    )
-    if (existing) {
-      if (
-        existing.action !== signed.action ||
-        JSON.stringify(existing.roster) !== JSON.stringify(signed.roster) ||
-        JSON.stringify(existing.authorization) !==
-          JSON.stringify(signed.authorization)
-      ) {
-        throw new Error("Saved merchant decision signature changed.")
-      }
-      return
-    }
-    const pending = await db.eventMarketMerchantDecisionJobs
-      .where("[marketCoordinate+merchantPubkey]")
-      .equals([roster.coordinate, authorization.merchantPubkey])
-      .filter((job) => job.status === "pending")
-      .first()
-    if (pending) {
-      throw new Error(
-        "Retry the pending merchant decision before signing another."
-      )
-    }
-    const now = Date.now()
-    await db.eventMarketMerchantDecisionJobs.add({
-      id: authorization.eventId,
-      marketCoordinate: roster.coordinate,
-      merchantPubkey: authorization.merchantPubkey,
-      action: signed.action,
-      roster: signed.roster,
-      authorization: signed.authorization,
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    })
-  })
-}
-
-export async function loadEventMarketMerchantDecision(
-  decisionId: string
-): Promise<EventMarketMerchantDecisionJob | undefined> {
-  if (!/^[0-9a-f]{64}$/.test(decisionId)) return undefined
-  return db.eventMarketMerchantDecisionJobs.get(decisionId)
-}
-
-/** Find exact saved signatures that still need delivery after a reload. */
-export async function listPendingEventMarketMerchantDecisions(
-  marketCoordinate: string
-): Promise<EventMarketMerchantDecisionJob[]> {
-  const market = parseAddressableCoordinate(marketCoordinate, [
-    EVENT_KINDS.EVENT_MARKET,
-  ])
-  if (!market || market.coordinate !== marketCoordinate) return []
-  const jobs = await db.eventMarketMerchantDecisionJobs
-    .where("status")
-    .equals("pending")
-    .filter((job) => job.marketCoordinate === market.coordinate)
-    .toArray()
-  return jobs
-}
-
-async function acknowledgeMerchantDecision(decisionId: string): Promise<void> {
-  const updated = await db.eventMarketMerchantDecisionJobs.update(decisionId, {
-    status: "acknowledged",
-    updatedAt: Date.now(),
-  })
-  if (updated !== 1) throw new Error("Saved merchant decision is unavailable.")
 }
 
 async function signRoster(input: {
@@ -196,14 +103,6 @@ const defaultDependencies: RosterPublishDependencies = {
   publish: publishRoster,
 }
 
-const defaultMerchantDecisionDependencies: MerchantDecisionDependencies = {
-  ...defaultDependencies,
-  readAuthorization: readEventMarketAuthorization,
-  persist: persistMerchantDecision,
-  load: loadEventMarketMerchantDecision,
-  acknowledge: acknowledgeMerchantDecision,
-}
-
 /** Compare the strongest known signed head before requesting an organizer signature. */
 export async function publishEventMarketRoster(
   input: {
@@ -257,14 +156,6 @@ export async function publishEventMarketRoster(
         "The Event Market changed. Review the latest roster before signing."
       )
     }
-    if (
-      JSON.stringify(previous.merchants.map((row) => row.pubkey).sort()) !==
-      JSON.stringify(input.merchants.map((row) => row.pubkey).sort())
-    ) {
-      throw new Error(
-        "Merchant approval and revocation require a causal authorization decision."
-      )
-    }
   } else if (
     current.resolution.state !== "missing" ||
     current.coverage !== "complete" ||
@@ -274,8 +165,19 @@ export async function publishEventMarketRoster(
       "The Event Market coordinate could not be confirmed for creation."
     )
   }
-  if (!previous && input.merchants.length > 0) {
-    throw new Error("Create the Event Market before approving merchants.")
+  const previousMerchants = new Set(
+    previous?.merchants.map((merchant) => merchant.pubkey) ?? []
+  )
+  const nextMerchants = new Set(
+    input.merchants.map((merchant) => merchant.pubkey)
+  )
+  if (
+    previousMerchants.size !== nextMerchants.size ||
+    [...previousMerchants].some((merchant) => !nextMerchants.has(merchant))
+  ) {
+    throw new Error(
+      "Merchant membership changes require paired causal authorization."
+    )
   }
   const draft = buildEventMarketRosterDraft({
     dTag: input.dTag,
@@ -298,9 +200,6 @@ export async function publishEventMarketRoster(
   const parsed = parseEventMarketRosterEvent(signedEvent)
   if (
     !parsed ||
-    signedEvent.kind !== draft.kind ||
-    signedEvent.content !== draft.content ||
-    JSON.stringify(signedEvent.tags) !== JSON.stringify(draft.tags) ||
     parsed.coordinate !== coordinate ||
     parsed.createdAt !== createdAt ||
     parsed.calendarCoordinate !== input.calendarCoordinate ||
@@ -349,11 +248,9 @@ export async function retryEventMarketRosterDelivery(
     shouldContinue: input.shouldContinue,
   })
   if (
-    !current.retained ||
     current.resolution.state === "conflicting" ||
     current.resolution.state === "malformed" ||
     current.resolution.state === "deleted" ||
-    current.resolution.state === "invalid_reference" ||
     (current.resolution.state === "current" &&
       current.resolution.market.eventId !== parsed.eventId &&
       compareReplaceableEventFrontiers(
@@ -373,50 +270,165 @@ export async function retryEventMarketRosterDelivery(
   )
 }
 
-function decisionParents(
+/** Publish a NIP-52 calendar without creating a legacy collection or pickup record. */
+export async function publishFutureEventMarketCalendar(input: {
+  organizerPubkey: string
+  authenticatedPubkey: string | null
+  calendar: EventMarketCalendarDraftInput
+  /** Supply the market coordinate and exact observed calendar head for edits. */
+  marketCoordinate?: string
+  expectedPreviousEventId?: string
+  /** Previous signed calendar creation time in milliseconds. */
+  previousCreatedAt?: number
+  shouldContinue?: () => boolean
+  onSignedLocal: (event: SignedPublicNostrEvent) => Promise<void>
+}): Promise<{
+  signedEvent: SignedPublicNostrEvent
+  delivery: PublishWithPlannerResult
+}> {
+  const organizerPubkey = input.organizerPubkey.toLowerCase()
+  if (
+    !/^[0-9a-f]{64}$/.test(organizerPubkey) ||
+    input.authenticatedPubkey?.toLowerCase() !== organizerPubkey
+  )
+    throw new Error("The authenticated organizer is required.")
+  const draft = buildEventMarketCalendarDraft(input.calendar)
+  let observedPreviousCreatedAt = 0
+  if (input.marketCoordinate) {
+    const read = await readEventMarketRoster({
+      reference: input.marketCoordinate,
+      authenticatedPubkey: organizerPubkey,
+      shouldContinue: input.shouldContinue,
+    })
+    if (
+      read.resolution.state !== "current" ||
+      !read.calendar ||
+      read.calendarCoverage === "stale" ||
+      read.calendarCoverage === "unavailable" ||
+      read.calendar.eventId !== input.expectedPreviousEventId ||
+      read.calendar.coordinate !==
+        `${draft.kind}:${organizerPubkey}:${input.calendar.dTag}`
+    )
+      throw new Error(
+        "Calendar changed. Review the latest signed event before editing."
+      )
+    observedPreviousCreatedAt = read.calendar.createdAt
+  } else if (input.expectedPreviousEventId) {
+    throw new Error("Calendar edits require the current market reference.")
+  }
+  const createdAt = Math.max(
+    Math.floor(Date.now() / 1_000),
+    Math.floor(observedPreviousCreatedAt / 1_000) +
+      (observedPreviousCreatedAt ? 1 : 0),
+    input.previousCreatedAt === undefined
+      ? 0
+      : Math.floor(input.previousCreatedAt / 1_000) + 1
+  )
+  const signedEvent = await signRoster({
+    draft,
+    createdAt,
+    organizerPubkey,
+    shouldContinue: input.shouldContinue,
+  })
+  const parsed = parseEventMarketCalendarEvent(signedEvent)
+  if (
+    !parsed ||
+    parsed.coordinate !==
+      `${draft.kind}:${organizerPubkey}:${input.calendar.dTag}` ||
+    signedEvent.created_at !== createdAt ||
+    JSON.stringify(signedEvent.tags) !== JSON.stringify(draft.tags) ||
+    signedEvent.content !== draft.content
+  )
+    throw new Error("Signer changed the calendar draft.")
+  await input.onSignedLocal(signedEvent)
+  const delivery = await publishRoster(
+    signedEvent,
+    organizerPubkey,
+    input.shouldContinue
+  )
+  if (delivery.successfulRelayUrls.length === 0)
+    throw new Error(
+      "The signed calendar was saved for retry but no relay acknowledged it."
+    )
+  return { signedEvent, delivery }
+}
+
+export interface SignedEventMarketMerchantDecision {
+  action: "approve" | "revoke"
+  roster: SignedPublicNostrEvent
+  authorization: SignedPublicNostrEvent
+}
+
+/** List exact, unfinished local organizer decisions for the recovery surface. */
+export async function listPendingEventMarketMerchantDecisions(
+  marketCoordinate: string
+): Promise<EventMarketMerchantDecisionJob[]> {
+  const market = parseAddressableCoordinate(marketCoordinate, [
+    EVENT_KINDS.EVENT_MARKET,
+  ])
+  if (!market || market.coordinate !== marketCoordinate) return []
+  return (
+    await db.eventMarketMerchantDecisionJobs
+      .where("marketCoordinate")
+      .equals(market.coordinate)
+      .toArray()
+  )
+    .filter((job) => job.status === "pending")
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, 64)
+}
+
+interface MerchantDecisionDependencies extends RosterPublishDependencies {
+  readAuthorization: typeof readEventMarketAuthorization
+  persist: (decision: SignedEventMarketMerchantDecision) => Promise<void>
+  load: (id: string) => Promise<EventMarketMerchantDecisionJob | undefined>
+  acknowledge: (id: string) => Promise<void>
+}
+
+const merchantDecisionDependencies: MerchantDecisionDependencies = {
+  ...defaultDependencies,
+  readAuthorization: readEventMarketAuthorization,
+  persist: async (decision) => {
+    const authorization = parseEventMarketAuthorizationEvent(
+      decision.authorization
+    )
+    if (!authorization) throw new Error("Signed merchant decision is invalid.")
+    const now = Date.now()
+    await db.eventMarketMerchantDecisionJobs.put({
+      id: authorization.eventId,
+      marketCoordinate: authorization.marketCoordinate,
+      merchantPubkey: authorization.merchantPubkey,
+      action: decision.action,
+      roster: decision.roster,
+      authorization: decision.authorization,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    })
+  },
+  load: (id) => db.eventMarketMerchantDecisionJobs.get(id),
+  acknowledge: async (id) => {
+    await db.eventMarketMerchantDecisionJobs.update(id, {
+      status: "acknowledged",
+      updatedAt: Date.now(),
+    })
+  },
+}
+
+function authorizationTips(
   resolution: Awaited<
     ReturnType<typeof readEventMarketAuthorization>
   >["resolution"]
 ): ParsedEventMarketAuthorization[] {
-  switch (resolution.state) {
-    case "missing":
-      return []
-    case "active":
-    case "revoked":
-    case "deleted":
-      return [resolution.tip]
-    case "conflicting":
-      return resolution.tips
-    default:
-      throw new Error("Merchant authorization needs organizer review.")
-  }
+  if (resolution.state === "missing") return []
+  if (resolution.state === "active" || resolution.state === "revoked")
+    return [resolution.tip]
+  if (resolution.state === "deleted" || resolution.state === "conflicting")
+    return resolution.tips
+  throw new Error("Merchant authorization needs organizer review.")
 }
 
-function deletionRepairs(
-  resolution: Awaited<
-    ReturnType<typeof readEventMarketAuthorization>
-  >["resolution"]
-): EventMarketAuthorizationRepair[] {
-  if (resolution.state !== "deleted") return []
-  const ancestryIds = new Set(resolution.ancestry.map((event) => event.id))
-  const repairs = resolution.deletions.flatMap((deletion) =>
-    deletion.tags
-      .filter((tag) => tag[0] === "e")
-      .map((tag) => ({
-        deletionId: deletion.id,
-        targetEventId: tag[1] ?? "",
-      }))
-  )
-  if (repairs.some((repair) => !ancestryIds.has(repair.targetEventId))) {
-    throw new Error("Deleted merchant authorization needs organizer review.")
-  }
-  return repairs
-}
-
-/**
- * Sign and save both independent relay events before publishing either one.
- * A roster row or authorization tip alone never admits new commerce.
- */
+/** Sign and durably save both organizer authorities before publishing either one. */
 export async function publishEventMarketMerchantDecision(
   input: {
     organizerPubkey: string
@@ -429,18 +441,17 @@ export async function publishEventMarketMerchantDecision(
     expectedPreviousEventId: string
     expectedAuthorizationTipIds: readonly string[]
     shouldContinue?: () => boolean
-    /** Optional caller hook after Core has saved both exact signed events. */
     onSignedLocal?: (
       decision: SignedEventMarketMerchantDecision
     ) => Promise<void>
   },
-  dependencies: MerchantDecisionDependencies = defaultMerchantDecisionDependencies
+  dependencies: MerchantDecisionDependencies = merchantDecisionDependencies
 ): Promise<{
   signed: SignedEventMarketMerchantDecision
   rosterDelivery: PublishWithPlannerResult
   authorizationDelivery: PublishWithPlannerResult
 }> {
-  const organizerPubkey = input.organizerPubkey.trim().toLowerCase()
+  const organizerPubkey = input.organizerPubkey.toLowerCase()
   if (
     !/^[0-9a-f]{64}$/.test(organizerPubkey) ||
     input.authenticatedPubkey?.toLowerCase() !== organizerPubkey ||
@@ -448,11 +459,10 @@ export async function publishEventMarketMerchantDecision(
     (input.action === "approve" &&
       input.row?.pubkey !== input.merchantPubkey) ||
     (input.action === "revoke" && input.row !== undefined)
-  ) {
+  )
     throw new Error(
       "The authenticated organizer and merchant decision are required."
     )
-  }
   const coordinate = `30409:${organizerPubkey}:${input.dTag}`
   const [marketRead, authorizationRead] = await Promise.all([
     dependencies.read({
@@ -469,25 +479,25 @@ export async function publishEventMarketMerchantDecision(
   ])
   if (
     !marketRead.retained ||
+    marketRead.coverage !== "complete" ||
     marketRead.resolution.state !== "current" ||
     marketRead.resolution.market.eventId !== input.expectedPreviousEventId ||
     marketRead.resolution.market.calendarCoordinate !==
       input.calendarCoordinate ||
-    !authorizationRead.retained
-  ) {
+    !authorizationRead.retained ||
+    authorizationRead.coverage !== "complete"
+  )
     throw new Error(
       "Current signed Event Market authority needs organizer review."
     )
-  }
   const market = marketRead.resolution.market
-  const parents = decisionParents(authorizationRead.resolution)
-  const observedTipIds = parents.map((parent) => parent.eventId).sort()
+  const parents = authorizationTips(authorizationRead.resolution)
+  const parentIds = parents.map((parent) => parent.eventId).sort()
   if (
-    JSON.stringify(observedTipIds) !==
+    JSON.stringify(parentIds) !==
     JSON.stringify([...input.expectedAuthorizationTipIds].sort())
-  ) {
+  )
     throw new Error("Merchant authorization changed. Review it before signing.")
-  }
   const existingRow = market.merchants.find(
     (row) => row.pubkey === input.merchantPubkey
   )
@@ -496,12 +506,11 @@ export async function publishEventMarketMerchantDecision(
       existingRow ||
       authorizationRead.resolution.state === "active" ||
       (authorizationRead.resolution.state === "deleted" &&
-        authorizationRead.resolution.tip.state !== "revoked")
-    ) {
+        parents.some((parent) => parent.state !== "revoked"))
+    )
       throw new Error(
         "Merchant reapproval needs a revoked tip and removed row."
       )
-    }
   } else if (authorizationRead.resolution.state === "missing") {
     throw new Error("Merchant revocation needs an observed authorization tip.")
   }
@@ -509,6 +518,25 @@ export async function publishEventMarketMerchantDecision(
     (row) => row.pubkey !== input.merchantPubkey
   )
   if (input.action === "approve") nextRows.push(input.row!)
+  const repairs: EventMarketAuthorizationRepair[] = []
+  if (authorizationRead.resolution.state === "deleted") {
+    const observedIds = new Set(
+      authorizationRead.observedEvidence
+        .filter((event) => event.kind === EVENT_KINDS.EVENT_MARKET_AUTH)
+        .map((event) => event.id)
+    )
+    for (const deletion of authorizationRead.observedEvidence.filter(
+      (event) => event.kind === EVENT_KINDS.DELETION
+    )) {
+      for (const tag of deletion.tags.filter((tag) => tag[0] === "e")) {
+        if (!observedIds.has(tag[1] ?? ""))
+          throw new Error(
+            "Deleted merchant authorization needs organizer review."
+          )
+        repairs.push({ deletionId: deletion.id, targetId: tag[1]! })
+      }
+    }
+  }
   const rosterDraft = buildEventMarketRosterDraft({
     dTag: input.dTag,
     organizerPubkey,
@@ -521,8 +549,12 @@ export async function publishEventMarketMerchantDecision(
     marketCoordinate: coordinate,
     merchantPubkey: input.merchantPubkey,
     state: input.action === "approve" ? "active" : "revoked",
-    parents,
-    repairs: deletionRepairs(authorizationRead.resolution),
+    sequence:
+      parents.length === 0
+        ? 0
+        : 1 + Math.max(...parents.map((parent) => parent.sequence)),
+    parentIds,
+    repairs,
   })
   const createdAt = Math.max(
     Math.floor(Date.now() / 1_000),
@@ -542,110 +574,86 @@ export async function publishEventMarketMerchantDecision(
     shouldContinue: input.shouldContinue,
   })
   const parsedRoster = parseEventMarketRosterEvent(roster)
-  const parsedAuthorization = parseEventMarketAuthorizationEvent(authorization)
+  const parsedAuth = parseEventMarketAuthorizationEvent(authorization)
   if (
     !parsedRoster ||
-    roster.kind !== rosterDraft.kind ||
-    roster.content !== rosterDraft.content ||
+    !parsedAuth ||
     JSON.stringify(roster.tags) !== JSON.stringify(rosterDraft.tags) ||
-    parsedRoster.coordinate !== coordinate ||
-    parsedRoster.previousEventId !== market.eventId ||
-    parsedRoster.calendarCoordinate !== input.calendarCoordinate ||
-    parsedRoster.state !== market.state ||
-    JSON.stringify(parsedRoster.merchants) !== JSON.stringify(nextRows) ||
-    !parsedAuthorization ||
-    authorization.kind !== authorizationDraft.kind ||
-    authorization.content !== authorizationDraft.content ||
     JSON.stringify(authorization.tags) !==
       JSON.stringify(authorizationDraft.tags) ||
-    parsedAuthorization.marketCoordinate !== coordinate ||
-    parsedAuthorization.merchantPubkey !== input.merchantPubkey ||
-    parsedAuthorization.state !==
-      (input.action === "approve" ? "active" : "revoked") ||
-    JSON.stringify(parsedAuthorization.parentIds) !==
-      JSON.stringify(parents.map((parent) => parent.eventId)) ||
+    roster.content !== rosterDraft.content ||
+    authorization.content !== authorizationDraft.content ||
     roster.created_at !== createdAt ||
-    authorization.created_at !== createdAt
-  ) {
+    authorization.created_at !== createdAt ||
+    parsedRoster.coordinate !== coordinate ||
+    parsedRoster.previousEventId !== market.eventId ||
+    parsedAuth.marketCoordinate !== coordinate ||
+    parsedAuth.merchantPubkey !== input.merchantPubkey ||
+    JSON.stringify(parsedAuth.parentIds) !== JSON.stringify(parentIds)
+  )
     throw new Error("Signer changed the Event Market merchant decision.")
-  }
-  const signed: SignedEventMarketMerchantDecision = {
-    action: input.action,
-    roster,
-    authorization,
-  }
+  const signed = { action: input.action, roster, authorization }
   await dependencies.persist(signed)
   await input.onSignedLocal?.(signed)
   const first = input.action === "approve" ? roster : authorization
   const second = input.action === "approve" ? authorization : roster
-  let firstResult: PublishWithPlannerResult | undefined
-  let secondResult: PublishWithPlannerResult | undefined
+  let firstDelivery: PublishWithPlannerResult | undefined
+  let secondDelivery: PublishWithPlannerResult | undefined
   try {
-    firstResult = await dependencies.publish(
+    firstDelivery = await dependencies.publish(
       first,
       organizerPubkey,
       input.shouldContinue
     )
   } catch {
-    // The second independent signed event can still close an interrupted state.
+    /* The exact pair remains saved for retry. */
   }
-  if (input.shouldContinue?.() === false) {
+  if (input.shouldContinue?.() === false)
     throw new Error(
       "Organizer session changed during merchant decision delivery."
     )
-  }
   try {
-    secondResult = await dependencies.publish(
+    secondDelivery = await dependencies.publish(
       second,
       organizerPubkey,
       input.shouldContinue
     )
   } catch {
-    // Both exact signatures remain saved for retry.
+    /* The exact pair remains saved for retry. */
   }
   if (
-    !firstResult?.successfulRelayUrls.length ||
-    !secondResult?.successfulRelayUrls.length
-  ) {
+    !firstDelivery?.successfulRelayUrls.length ||
+    !secondDelivery?.successfulRelayUrls.length
+  )
     throw new Error(
       "The signed merchant decision was saved for retry but both relay events were not acknowledged."
     )
-  }
   await dependencies.acknowledge(authorization.id)
   return {
     signed,
-    rosterDelivery: input.action === "approve" ? firstResult : secondResult,
+    rosterDelivery: input.action === "approve" ? firstDelivery : secondDelivery,
     authorizationDelivery:
-      input.action === "approve" ? secondResult : firstResult,
+      input.action === "approve" ? secondDelivery : firstDelivery,
   }
 }
 
-/** Reuse both saved signatures after checking the exact roster and causal tips. */
+/** Replay the saved pair only while its observed parent and tip still match. */
 export async function retryEventMarketMerchantDecisionDelivery(
   input: {
     decisionId: string
     authenticatedPubkey: string | null
     shouldContinue?: () => boolean
   },
-  dependencies: Pick<
-    MerchantDecisionDependencies,
-    "read" | "readAuthorization" | "publish" | "load" | "acknowledge"
-  > = defaultMerchantDecisionDependencies
+  dependencies: MerchantDecisionDependencies = merchantDecisionDependencies
 ): Promise<{
   rosterDelivery: PublishWithPlannerResult
   authorizationDelivery: PublishWithPlannerResult
 }> {
   const job = await dependencies.load(input.decisionId)
-  if (!job || job.id !== input.decisionId) {
+  if (!job || job.status !== "pending")
     throw new Error("Saved merchant decision is unavailable for retry.")
-  }
-  const signed: SignedEventMarketMerchantDecision = {
-    action: job.action,
-    roster: job.roster,
-    authorization: job.authorization,
-  }
-  const roster = parseEventMarketRosterEvent(signed.roster)
-  const authorization = parseEventMarketAuthorizationEvent(signed.authorization)
+  const roster = parseEventMarketRosterEvent(job.roster)
+  const authorization = parseEventMarketAuthorizationEvent(job.authorization)
   if (
     !roster ||
     !authorization ||
@@ -655,18 +663,15 @@ export async function retryEventMarketMerchantDecisionDelivery(
     input.authenticatedPubkey?.toLowerCase() !== roster.organizerPubkey ||
     roster.coordinate !== authorization.marketCoordinate ||
     Boolean(
-      roster.merchants.find(
+      roster.merchants.some(
         (row) => row.pubkey === authorization.merchantPubkey
       )
     ) !==
-      (signed.action === "approve") ||
-    authorization.state !==
-      (signed.action === "approve" ? "active" : "revoked") ||
+      (job.action === "approve") ||
     !roster.previousEventId
-  ) {
+  )
     throw new Error("The exact signed merchant decision is required for retry.")
-  }
-  const [marketRead, authorizationRead] = await Promise.all([
+  const [marketRead, authRead] = await Promise.all([
     dependencies.read({
       reference: roster.coordinate,
       authenticatedPubkey: roster.organizerPubkey,
@@ -685,78 +690,70 @@ export async function retryEventMarketMerchantDecisionDelivery(
     ![roster.eventId, roster.previousEventId].includes(
       marketRead.resolution.market.eventId
     ) ||
-    !authorizationRead.retained
-  ) {
+    !authRead.retained
+  )
     throw new Error(
       "A newer or invalid signed Event Market roster blocks this retry."
     )
-  }
-  if (authorizationRead.resolution.state === "deleted") {
-    const requiredRepairs = deletionRepairs(authorizationRead.resolution)
+  if (authRead.resolution.state === "deleted") {
     if (
-      authorizationRead.resolution.tip.eventId === authorization.eventId ||
-      requiredRepairs.some(
-        (repair) =>
+      authRead.resolution.tips.some(
+        (tip) => tip.eventId === authorization.eventId
+      )
+    )
+      throw new Error("Deleted merchant authorization blocks this retry.")
+    const observedTargets = authRead.observedEvidence
+      .filter((event) => event.kind === EVENT_KINDS.DELETION)
+      .flatMap((event) =>
+        event.tags
+          .filter((tag) => tag[0] === "e")
+          .map((tag) => ({ deletionId: event.id, targetId: tag[1] ?? "" }))
+      )
+    if (
+      observedTargets.some(
+        (pair) =>
           !authorization.repairs.some(
-            (savedRepair) =>
-              savedRepair.deletionId === repair.deletionId &&
-              savedRepair.targetEventId === repair.targetEventId
+            (repair) =>
+              repair.deletionId === pair.deletionId &&
+              repair.targetId === pair.targetId
           )
       )
-    ) {
+    )
       throw new Error("Deleted merchant authorization blocks this retry.")
-    }
   }
-  const currentTipIds = decisionParents(authorizationRead.resolution).map(
+  const currentTips = authorizationTips(authRead.resolution).map(
     (tip) => tip.eventId
   )
-  const savedIsSoleTip =
-    currentTipIds.length === 1 && currentTipIds[0] === authorization.eventId
-  const observedOnlyParents =
-    currentTipIds.length === authorization.parentIds.length &&
-    currentTipIds.every((id) => authorization.parentIds.includes(id))
-  if (!savedIsSoleTip && !observedOnlyParents) {
+  const savedIsTip =
+    currentTips.length === 1 && currentTips[0] === authorization.eventId
+  const observedParents =
+    currentTips.length === authorization.parentIds.length &&
+    currentTips.every((id) => authorization.parentIds.includes(id))
+  if (!savedIsTip && !observedParents)
     throw new Error(
       "A newer or invalid merchant authorization blocks this retry."
     )
-  }
-  const first =
-    signed.action === "approve" ? signed.roster : signed.authorization
-  const second =
-    signed.action === "approve" ? signed.authorization : signed.roster
-  let firstResult: PublishWithPlannerResult | undefined
-  let secondResult: PublishWithPlannerResult | undefined
-  try {
-    firstResult = await dependencies.publish(
-      first,
-      roster.organizerPubkey,
-      input.shouldContinue
-    )
-  } catch {
-    // Still attempt the other exact signed event.
-  }
-  if (input.shouldContinue?.() === false) {
-    throw new Error("Organizer session changed during merchant decision retry.")
-  }
-  try {
-    secondResult = await dependencies.publish(
-      second,
-      roster.organizerPubkey,
-      input.shouldContinue
-    )
-  } catch {
-    // Keep both exact signatures available for a later retry.
-  }
+  const first = job.action === "approve" ? job.roster : job.authorization
+  const second = job.action === "approve" ? job.authorization : job.roster
+  const firstDelivery = await dependencies.publish(
+    first,
+    roster.organizerPubkey,
+    input.shouldContinue
+  )
+  const secondDelivery = await dependencies.publish(
+    second,
+    roster.organizerPubkey,
+    input.shouldContinue
+  )
   if (
-    !firstResult?.successfulRelayUrls.length ||
-    !secondResult?.successfulRelayUrls.length
-  ) {
-    throw new Error("The saved merchant decision still needs relay delivery.")
-  }
-  await dependencies.acknowledge(authorization.eventId)
+    !firstDelivery.successfulRelayUrls.length ||
+    !secondDelivery.successfulRelayUrls.length
+  )
+    throw new Error("The signed merchant decision remains saved for retry.")
+  await dependencies.acknowledge(job.id)
   return {
-    rosterDelivery: signed.action === "approve" ? firstResult : secondResult,
+    rosterDelivery: job.action === "approve" ? firstDelivery : secondDelivery,
     authorizationDelivery:
-      signed.action === "approve" ? secondResult : firstResult,
+      job.action === "approve" ? secondDelivery : firstDelivery,
   }
 }

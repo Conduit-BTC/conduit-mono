@@ -14,6 +14,9 @@ import {
   __resetInboxRelayCache,
   applyAccountNetworkRelayExclusion,
   buildDirectMessageRumor,
+  buildFutureMarketPrivateRumor,
+  buildFutureMarketHandoffAck,
+  buildFutureMarketRevocation,
   classifyPrivateMessageKind,
   createInMemoryInboxDeclarationEvidenceRepository,
   createInMemoryAccountNetworkLocalStateRepository,
@@ -23,6 +26,7 @@ import {
   detectNip44Capabilities,
   EVENT_KINDS,
   fetchInboxRelayUrls,
+  futureMarketReadyReceiptSchema,
   getInboxDeclarationEvidence,
   inspectOwnPrivateMessageRelayReadiness,
   inspectRetainedOwnPrivateMessageRelayReadiness,
@@ -30,6 +34,7 @@ import {
   mergeInboxDeclarationEvidenceInMemory,
   mergeInboxDeclarationEvidence,
   parseDirectMessageRumor,
+  parseOrderMessageRumorEvent,
   parsePrivateMessageRelays,
   PrivateMessageRelayReadinessError,
   publishPrivateMessage,
@@ -334,6 +339,65 @@ describe("unwrapGiftWrap", () => {
     const outcome = await unwrapGiftWrap(wrap("w2"), signer, { giftUnwrap })
     expect(outcome.status).toBe("ok")
     if (outcome.status === "ok") expect(outcome.category).toBe("order")
+  })
+
+  it("classifies future ready, revoke, and ACK as private kind-16 order messages", async () => {
+    const merchant = INBOX_OWNER
+    const organizer = INBOX_PEER
+    const receipt = futureMarketReadyReceiptSchema.parse({
+      version: 2,
+      type: "future_market_ready",
+      releaseAuthorized: true,
+      claimRef: "a".repeat(64),
+      merchantPubkey: merchant,
+      organizerPubkey: organizer,
+      market: {
+        coordinate: `30409:${organizer}:fair`,
+        eventId: "b".repeat(64),
+        createdAt: 100,
+      },
+      calendar: {
+        coordinate: `31923:${organizer}:fair`,
+        eventId: "c".repeat(64),
+        createdAt: 100,
+      },
+      grant: { eventId: "d".repeat(64), createdAt: 100 },
+      items: [
+        {
+          product: {
+            coordinate: `30402:${merchant}:soap`,
+            eventId: "e".repeat(64),
+            createdAt: 100,
+          },
+          quantity: 2,
+        },
+      ],
+      issuedAt: 200,
+    })
+    const readyReceiptId = "f".repeat(64)
+    const payloads = [
+      receipt,
+      buildFutureMarketRevocation({ receipt, readyReceiptId, issuedAt: 201 }),
+      buildFutureMarketHandoffAck({
+        receipt,
+        readyReceiptId,
+        handedOutAt: 202,
+      }),
+    ]
+    for (const payload of payloads) {
+      const privateRumor = buildFutureMarketPrivateRumor(payload)
+      const outcome = await unwrapGiftWrap(
+        wrap(`future-${payload.type}`),
+        signer,
+        {
+          giftUnwrap: async () => privateRumor,
+        }
+      )
+      expect(outcome.status).toBe("ok")
+      if (outcome.status !== "ok") continue
+      expect(outcome.category).toBe("order")
+      expect(parseOrderMessageRumorEvent(outcome.rumor).type).toBe(payload.type)
+    }
   })
 
   it("ignores a NIP-18-shaped kind-16 generic repost", async () => {

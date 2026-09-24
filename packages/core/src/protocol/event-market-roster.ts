@@ -1,4 +1,5 @@
 import type { ProductSchema } from "../schemas"
+import type { EventMarketAuthorizationResolution } from "./event-market-authorization"
 import {
   isEventMarketAddressableRevisionDeleted,
   parseAddressableCoordinate,
@@ -247,8 +248,7 @@ export function resolveEventMarketRoster(input: {
     observedParents.add(parsed.previousEventId)
   }
   if (observedRoots > 1) return { state: "conflicting", eventId: winner.id }
-  // Follow the signed parent chain. A pruned relay may show A and C while
-  // C names an unseen B; that gap alone does not establish a fork.
+  // Missing intermediate revisions from a pruned relay do not establish a fork.
   const knownById = new Map(revisions.map((event) => [event.id, event]))
   let cursor: ParsedEventMarketRoster | null = market
   const ancestors = new Set<string>()
@@ -325,6 +325,7 @@ export type EventMarketProductResolution =
         | "hidden"
         | "malformed"
         | "deleted"
+        | "unauthorized"
     }
   | {
       state: "eligible"
@@ -339,6 +340,7 @@ export function resolveEventMarketProduct(input: {
   productCoordinate: string
   revisions: readonly SignedPublicNostrEvent[]
   deletions?: readonly SignedPublicNostrEvent[]
+  authorization?: EventMarketAuthorizationResolution
 }): EventMarketProductResolution {
   const coordinate = parseAddressableCoordinate(input.productCoordinate, [
     EVENT_KINDS.PRODUCT,
@@ -348,6 +350,7 @@ export function resolveEventMarketProduct(input: {
     (row) => row.pubkey === coordinate.authorPubkey
   )
   if (!merchant) return { state: "unapproved" }
+  if (input.authorization?.state !== "active") return { state: "unauthorized" }
   const revisions = input.revisions
     .filter(
       (event) =>

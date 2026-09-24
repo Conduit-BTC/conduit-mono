@@ -6,7 +6,11 @@ import {
   type EventMarketOrganizerInboxResolution,
   type ResolveInboxDeclarationOptions,
 } from "@conduit/core"
-import type { CartItem, CartPickupFulfillment } from "./cart-model"
+import type {
+  CartEventMarketPickupFulfillment,
+  CartItem,
+  CartPickupFulfillment,
+} from "./cart-model"
 
 export type PickupHandoffSummary = {
   mode: "merchant_handoff" | "organizer_handoff"
@@ -32,10 +36,29 @@ export function getCartPickupHandoffSummary(
   items: readonly Pick<CartItem, "fulfillment">[]
 ): PickupHandoffSummary | null {
   const pickup = items.find(
-    (item): item is { fulfillment: CartPickupFulfillment } =>
-      item.fulfillment?.type === "pickup"
+    (item) =>
+      item.fulfillment?.type === "pickup" ||
+      item.fulfillment?.type === "event_market_pickup"
   )?.fulfillment
-  return pickup ? getPickupHandoffSummary(pickup) : null
+  if (pickup?.type === "pickup") return getPickupHandoffSummary(pickup)
+  if (pickup?.type !== "event_market_pickup") return null
+  return getFuturePickupHandoffSummary(pickup)
+}
+
+export function getFuturePickupHandoffSummary(
+  fulfillment: CartEventMarketPickupFulfillment
+): PickupHandoffSummary {
+  const organizer = fulfillment.mode === "organizer_handoff"
+  return {
+    mode: organizer ? "organizer_handoff" : "merchant_handoff",
+    handlerPubkey: organizer
+      ? fulfillment.organizerPubkey
+      : fulfillment.merchantPubkey,
+    legacySafeDefault: false,
+    label: organizer
+      ? "Pickup from event organizer"
+      : "Pickup from merchant booth",
+  }
 }
 
 /**

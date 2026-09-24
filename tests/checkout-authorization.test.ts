@@ -181,24 +181,6 @@ function ownPickupFulfillment(
 }
 
 describe("checkout authorization refresh", () => {
-  it("keeps future Event Market payment disabled before any payment authority read", async () => {
-    const futureItem = rawItem({
-      fulfillment: { type: "event_market_pickup" } as CartItem["fulfillment"],
-    })
-    let shippingRead = false
-    const result = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems: [futureItem],
-      rawItems: [futureItem],
-      refreshedProducts: [product()],
-      readShippingOptions: async () => {
-        shippingRead = true
-        return []
-      },
-    })
-    expect(result).toEqual({ status: "changed" })
-    expect(shippingRead).toBe(false)
-  })
   it("accepts unchanged raw listing terms after preparing the fresh shipping option", async () => {
     const original = rawItem()
     const option = shippingOption()

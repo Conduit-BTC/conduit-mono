@@ -463,6 +463,7 @@ function RelatedProductRow({
       <Link
         to="/products/$productId"
         params={{ productId: selectedProduct.id }}
+        search={{}}
         className="shrink-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)]"
       >
         <img
@@ -483,6 +484,7 @@ function RelatedProductRow({
         <Link
           to="/products/$productId"
           params={{ productId: selectedProduct.id }}
+          search={{}}
           className="line-clamp-2 text-sm font-medium leading-6 text-[var(--text-primary)] transition-colors hover:text-secondary-300"
         >
           {product.title}
@@ -616,8 +618,13 @@ function CartLineItem({
       item.quantity >= availability.stock)
   const pickup =
     item.fulfillment?.type === "pickup" ? item.fulfillment : undefined
+  const futurePickup =
+    item.fulfillment?.type === "event_market_pickup"
+      ? item.fulfillment
+      : undefined
   const zeroPriceOptions = {
-    allowZero: allowZeroPrice && pickup !== undefined,
+    allowZero:
+      allowZeroPrice && (pickup !== undefined || futurePickup !== undefined),
   }
   const linePrice = formatPrice(
     {
@@ -669,6 +676,7 @@ function CartLineItem({
         <Link
           to="/products/$productId"
           params={{ productId: item.productId }}
+          search={futurePickup ? { event: futurePickup.market.coordinate } : {}}
           className="line-clamp-2 text-base font-medium leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300 sm:text-lg"
         >
           {item.title}
@@ -714,6 +722,17 @@ function CartLineItem({
                   : " · public location pending"}
               </div>
             </div>
+          </div>
+        ) : null}
+        {futurePickup ? (
+          <div className="mt-2 flex items-start gap-2 text-xs leading-5 text-[var(--text-secondary)]">
+            <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-secondary-400" />
+            <span>
+              {futurePickup.mode === "organizer_handoff"
+                ? "Pickup from event organizer"
+                : "Pickup from merchant booth"}
+              {` · ${futurePickup.assignment}`}
+            </span>
           </div>
         ) : null}
 
@@ -922,7 +941,7 @@ function MerchantCartCard({
   const purchaseReference = getCartPurchaseReference(group.id)
   const purchaseLabel =
     group.kind === "pickup"
-      ? `Event pickup · ${group.items[0]?.fulfillment?.type === "pickup" ? group.items[0].fulfillment.option.title : "Pickup"}`
+      ? `Event pickup · ${group.items[0]?.fulfillment?.type === "pickup" ? group.items[0].fulfillment.option.title : group.items[0]?.fulfillment?.type === "event_market_pickup" ? group.items[0].fulfillment.assignment : "Pickup"}`
       : group.items.some((item) => item.format !== "digital")
         ? "Shipping / delivery"
         : "Digital delivery"

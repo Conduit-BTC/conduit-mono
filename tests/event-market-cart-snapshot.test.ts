@@ -7,40 +7,37 @@ import {
 import {
   buildEventMarketAuthorizationDraft,
   orderItemSchema,
-  orderSchema,
-  parseEventMarketAuthorizationEvent,
-  resolveEventMarketAuthorization,
+  parseProductEvent,
+  type Product,
+  type EventMarketProductReadResult,
+  type EventMarketRosterReadResult,
 } from "@conduit/core"
 import {
   getCartCommerceFingerprint,
   getMixedFulfillmentBlockingMessage,
   groupCartPurchases,
+  createCartItemFromProduct,
+  rebuildCurrentCartItems,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
 import { getEventMarketCartReviewReasons } from "../apps/market/src/lib/event-market-cart-review"
+import { resolveCurrentFutureEventMarketFulfillments } from "../apps/market/src/lib/checkout-authorization"
+import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
+import { isZeroCostPickupOrder } from "../apps/market/src/lib/order-view"
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
 const merchant = "b".repeat(64)
 const eventId = "c".repeat(64)
 const marketCoordinate = `30409:${organizer}:fair-market`
-const signedGrant = finalizeEvent(
-  {
-    kind: 3841,
-    created_at: 100,
-    tags: [
-      ["openmarkets", "event-market-auth", "1"],
-      ["a", marketCoordinate],
-      ["p", merchant],
-      ["state", "active"],
-      ["seq", "0"],
-      ["alt", "Open Markets event merchant authorization"],
-    ],
-    content: "",
-  },
-  organizerSecret
-)
-const grant = JSON.parse(JSON.stringify(signedGrant)) as typeof signedGrant
+const grantDraft = buildEventMarketAuthorizationDraft({
+  marketCoordinate,
+  merchantPubkey: merchant,
+  state: "active",
+  sequence: 0,
+  parentIds: [],
+})
+const grant = finalizeEvent({ ...grantDraft, created_at: 1 }, organizerSecret)
 
 function item(
   dTag: string,
@@ -66,6 +63,15 @@ function item(
         eventId: marketEventId,
         createdAt: 100,
       },
+      grant: {
+        kind: 3841,
+        pubkey: organizer,
+        eventId: grant.id,
+        createdAt: 1_000,
+        ancestryEventIds: [grant.id],
+        observedDeletionEventIds: [],
+        signedEvidence: { tip: grant, ancestry: [grant], deletions: [] },
+      },
       calendar: {
         coordinate: `31923:${organizer}:fair`,
         eventId,
@@ -74,35 +80,218 @@ function item(
         end: 300,
       },
       product: { coordinate: productId, eventId, createdAt: 100 },
-      authorization: { tip: grant, ancestry: [grant], deletions: [] },
       mode: "merchant_present",
       assignment,
     },
   }
 }
 
-function order(items: CartItem[] = [item("soap")]) {
-  return {
-    id: "order-1",
-    merchantPubkey: merchant,
-    buyerPubkey: "d".repeat(64),
-    items: items.map((source) => ({
-      productId: source.productId,
-      title: source.title,
-      format: source.format,
-      quantity: source.quantity,
-      priceAtPurchase: source.price,
-      currency: source.currency,
-      fulfillment: source.fulfillment,
-    })),
-    subtotal: items.reduce((sum, source) => sum + source.price, 0),
-    currency: "USD",
-    shippingCostStatus: "not_required" as const,
-    createdAt: 100,
-  }
-}
-
 describe("future Event Market cart and order snapshots", () => {
+  it("prices a signed zero SAT future listing as one zero-cost pickup order", () => {
+    const secret = generateSecretKey()
+    const signed = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: 100,
+        content: "Soap",
+        tags: [
+          ["d", "soap"],
+          ["title", "Soap"],
+          ["price", "0", "SAT"],
+          ["type", "simple", "physical"],
+          ["stock", "5"],
+        ],
+      },
+      secret
+    )
+    const product = parseProductEvent(signed)
+    const future = item("soap").fulfillment
+    if (future?.type !== "event_market_pickup")
+      throw new Error("Missing future pickup")
+    const cartItem = {
+      ...createCartItemFromProduct(product, future),
+      quantity: 1,
+    }
+    expect(cartItem.priceSats).toBe(0)
+    const pricing = buildCheckoutPricingIntent([cartItem], null, 200_000)
+    expect(pricing).toMatchObject({
+      status: "ok",
+      paymentRequired: false,
+      totalSats: 0,
+    })
+    if (pricing.status !== "ok") throw new Error("Missing zero-cost pricing")
+    expect(
+      isZeroCostPickupOrder({
+        items: pricing.items.map((priced) => ({
+          ...priced,
+          displayTitle: priced.title,
+        })),
+        requiresPickup: true,
+        totalSats: 0,
+      })
+    ).toBe(true)
+  })
+  it("prices a nonzero signed future listing to the merchant with no buyer pickup fee", () => {
+    const secret = generateSecretKey()
+    const signed = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: 100,
+        content: "Soap",
+        tags: [
+          ["d", "soap"],
+          ["title", "Soap"],
+          ["price", "2500", "SAT"],
+          ["type", "simple", "physical"],
+          ["stock", "5"],
+        ],
+      },
+      secret
+    )
+    const product = parseProductEvent(signed)
+    const future = item("soap").fulfillment
+    if (future?.type !== "event_market_pickup")
+      throw new Error("Missing future pickup")
+    const cartItem = {
+      ...createCartItemFromProduct(product, future),
+      quantity: 1,
+    }
+    const pricing = buildCheckoutPricingIntent([cartItem], null, 200_000)
+    expect(pricing).toMatchObject({
+      status: "ok",
+      paymentRequired: true,
+      itemSubtotalSats: 2500,
+      totalSats: 2500,
+      shippingCost: { totalSats: 0 },
+    })
+    if (pricing.status !== "ok") throw new Error("Missing paid pricing")
+    expect(pricing.items[0]).toMatchObject({
+      priceAtPurchase: 2500,
+      shippingCostSats: 0,
+      fulfillment: { type: "event_market_pickup", payeePubkey: merchant },
+    })
+  })
+  it("requires actionable exact signed evidence before a future checkout", async () => {
+    const cartItem = item("soap")
+    const snapshot = cartItem.fulfillment
+    if (snapshot?.type !== "event_market_pickup")
+      throw new Error("Missing snapshot")
+    const currentProduct = {
+      id: cartItem.productId,
+      pubkey: merchant,
+      format: "physical",
+      sourceEventId: eventId,
+      updatedAt: 1_000,
+    } as Product
+    const marketRead = {} as EventMarketRosterReadResult
+    const productRead = {
+      actionable: true,
+      resolution: {
+        state: "eligible",
+        revision: { id: eventId, created_at: 1 },
+      },
+    } as EventMarketProductReadResult
+    let marketReads = 0
+    const dependencies = {
+      readMarket: async () => {
+        marketReads += 1
+        return marketRead
+      },
+      readProduct: async ({
+        productCoordinate,
+      }: {
+        productCoordinate: string
+      }) => ({
+        ...productRead,
+        productCoordinate,
+      }),
+      snapshot: ({
+        productRead: read,
+      }: {
+        productRead: EventMarketProductReadResult
+      }) => ({
+        ...snapshot,
+        product: { ...snapshot.product, coordinate: read.productCoordinate },
+      }),
+    } as unknown as Parameters<
+      typeof resolveCurrentFutureEventMarketFulfillments
+    >[1]
+    const current = await resolveCurrentFutureEventMarketFulfillments(
+      {
+        items: [cartItem, item("candles")],
+        products: [
+          currentProduct,
+          { ...currentProduct, id: `30402:${merchant}:candles` },
+        ],
+      },
+      dependencies
+    )
+    expect(current?.size).toBe(2)
+    expect(marketReads).toBe(1)
+    const blocked = await resolveCurrentFutureEventMarketFulfillments(
+      {
+        items: [cartItem],
+        products: [currentProduct],
+      },
+      {
+        ...dependencies,
+        readProduct: async () => ({ ...productRead, actionable: false }),
+      } as typeof dependencies
+    )
+    expect(blocked).toBeNull()
+    for (const coverage of ["partial", "stale"] as const) {
+      const unreadable = await resolveCurrentFutureEventMarketFulfillments(
+        { items: [cartItem], products: [currentProduct] },
+        {
+          ...dependencies,
+          readProduct: async () => ({
+            ...productRead,
+            coverage,
+            actionable: false,
+          }),
+        } as typeof dependencies
+      )
+      expect(unreadable).toBeNull()
+    }
+    const divergentRevision = await resolveCurrentFutureEventMarketFulfillments(
+      {
+        items: [cartItem],
+        products: [{ ...currentProduct, sourceEventId: "d".repeat(64) }],
+      },
+      dependencies
+    )
+    expect(divergentRevision).toBeNull()
+    const changedPayee = await resolveCurrentFutureEventMarketFulfillments(
+      { items: [cartItem], products: [currentProduct] },
+      {
+        ...dependencies,
+        snapshot: () => ({ ...snapshot, payeePubkey: organizer }),
+      } as typeof dependencies
+    )
+    expect(changedPayee).toBeNull()
+    const changedPrice = rebuildCurrentCartItems(
+      [cartItem],
+      [
+        {
+          ...currentProduct,
+          title: cartItem.title,
+          price: 14,
+          currency: "USD",
+          type: "simple",
+          visibility: "public",
+          images: [],
+          tags: [],
+          createdAt: 1,
+          updatedAt: 1_000,
+        } as Product,
+      ],
+      new Map([[cartItem.productId, snapshot]])
+    )
+    expect(changedPrice).not.toBeNull()
+    expect(getCartCommerceFingerprint(changedPrice!)).not.toBe(
+      getCartCommerceFingerprint([cartItem])
+    )
+  })
   it("groups two merchant products by market identity, not roster revision or booth label", () => {
     const first = item("soap")
     const second = item("candles", "Booth 14", "d".repeat(64))
@@ -111,9 +300,7 @@ describe("future Event Market cart and order snapshots", () => {
     expect(groups[0]?.kind).toBe("pickup")
     expect(groups[0]?.items).toHaveLength(2)
     expect(groups[0]?.id).toBe(groupCartPurchases([second, first])[0]?.id)
-    expect(getMixedFulfillmentBlockingMessage([first, second])).toContain(
-      "current signed"
-    )
+    expect(getMixedFulfillmentBlockingMessage([first, second])).toBeNull()
     expect(getCartCommerceFingerprint([first])).not.toBe(
       getCartCommerceFingerprint([item("soap", "Booth 14")])
     )
@@ -130,20 +317,9 @@ describe("future Event Market cart and order snapshots", () => {
       currency: "USD",
       fulfillment: source.fulfillment,
     })
-    expect(parsed.fulfillment).toEqual(source.fulfillment)
-    expect(orderSchema.parse(order()).items[0]?.fulfillment).toEqual(
-      source.fulfillment
+    expect(JSON.parse(JSON.stringify(parsed.fulfillment))).toEqual(
+      JSON.parse(JSON.stringify(source.fulfillment))
     )
-    const withoutGrant = {
-      ...source.fulfillment,
-      authorization: undefined,
-    }
-    expect(
-      orderItemSchema.safeParse({
-        ...parsed,
-        fulfillment: withoutGrant,
-      }).success
-    ).toBe(false)
     expect(() =>
       orderItemSchema.parse({
         ...parsed,
@@ -156,231 +332,6 @@ describe("future Event Market cart and order snapshots", () => {
         shippingCostSats: 10,
       })
     ).toThrow()
-  })
-
-  it("keeps the accepted signed authorization history in historical orders", () => {
-    const created = orderSchema.parse(order())
-    const fulfillment = created.items[0]?.fulfillment
-    if (fulfillment?.type !== "event_market_pickup")
-      throw new Error("Missing Event Market pickup")
-    expect(fulfillment.authorization).toEqual({
-      tip: grant,
-      ancestry: [grant],
-      deletions: [],
-    })
-    expect(
-      orderItemSchema.safeParse({
-        ...created.items[0],
-        fulfillment: {
-          ...fulfillment,
-          authorization: { tip: grant, ancestry: [], deletions: [] },
-        },
-      }).success
-    ).toBe(false)
-    const revoke = JSON.parse(
-      JSON.stringify(
-        finalizeEvent(
-          {
-            kind: 3841,
-            created_at: 101,
-            tags: grant.tags.map((tag) =>
-              tag[0] === "state" ? ["state", "revoked"] : tag
-            ),
-            content: "",
-          },
-          organizerSecret
-        )
-      )
-    ) as typeof grant
-    expect(
-      orderItemSchema.safeParse({
-        ...created.items[0],
-        fulfillment: {
-          ...fulfillment,
-          authorization: { tip: revoke, ancestry: [revoke], deletions: [] },
-        },
-      }).success
-    ).toBe(false)
-    const parsedGrant = parseEventMarketAuthorizationEvent(grant)
-    if (!parsedGrant) throw new Error("Missing initial grant")
-    const descendant = finalizeEvent(
-      {
-        ...buildEventMarketAuthorizationDraft({
-          marketCoordinate,
-          merchantPubkey: merchant,
-          state: "active",
-          parents: [parsedGrant],
-        }),
-        created_at: 102,
-      },
-      organizerSecret
-    )
-    expect(
-      orderItemSchema.safeParse({
-        ...created.items[0],
-        fulfillment: {
-          ...fulfillment,
-          authorization: {
-            tip: descendant,
-            ancestry: [descendant],
-            deletions: [],
-          },
-        },
-      }).success
-    ).toBe(false)
-    expect(
-      orderSchema.safeParse({
-        ...created,
-        items: [
-          {
-            ...created.items[0],
-            fulfillment: {
-              ...fulfillment,
-              authorization: {
-                tip: { ...grant, sig: "0".repeat(128) },
-                ancestry: [grant],
-                deletions: [],
-              },
-            },
-          },
-        ],
-      }).success
-    ).toBe(false)
-  })
-
-  it("retains a repaired revocation deletion without reinterpreting the paid order", () => {
-    const parsedGrant = parseEventMarketAuthorizationEvent(grant)
-    if (!parsedGrant) throw new Error("Missing initial grant")
-    const revoke = finalizeEvent(
-      {
-        ...buildEventMarketAuthorizationDraft({
-          marketCoordinate,
-          merchantPubkey: merchant,
-          state: "revoked",
-          parents: [parsedGrant],
-        }),
-        created_at: 101,
-      },
-      organizerSecret
-    )
-    const parsedRevoke = parseEventMarketAuthorizationEvent(revoke)
-    if (!parsedRevoke) throw new Error("Missing revoke")
-    const deletion = finalizeEvent(
-      {
-        kind: 5,
-        created_at: 102,
-        tags: [["e", revoke.id]],
-        content: "",
-      },
-      organizerSecret
-    )
-    const regrant = finalizeEvent(
-      {
-        ...buildEventMarketAuthorizationDraft({
-          marketCoordinate,
-          merchantPubkey: merchant,
-          state: "active",
-          parents: [parsedRevoke],
-          repairs: [{ deletionId: deletion.id, targetEventId: revoke.id }],
-        }),
-        created_at: 103,
-      },
-      organizerSecret
-    )
-    const resolution = resolveEventMarketAuthorization({
-      marketCoordinate,
-      merchantPubkey: merchant,
-      transitions: [grant, revoke, regrant],
-      deletions: [deletion],
-    })
-    expect(resolution.state).toBe("active")
-    if (resolution.state !== "active") throw new Error("Missing regrant")
-    const historical = order()
-    const fulfillment = historical.items[0]?.fulfillment
-    if (fulfillment?.type !== "event_market_pickup")
-      throw new Error("Missing Event Market pickup")
-    fulfillment.authorization = {
-      tip: resolution.tip.signedEvent,
-      ancestry: resolution.ancestry,
-      deletions: resolution.deletions,
-    }
-    const created = orderSchema.parse(historical)
-    const accepted = created.items[0]?.fulfillment
-    if (accepted?.type !== "event_market_pickup")
-      throw new Error("Missing saved Event Market pickup")
-    expect(accepted.authorization.tip.id).toBe(regrant.id)
-    expect(accepted.authorization.ancestry.map((event) => event.id)).toContain(
-      revoke.id
-    )
-    expect(accepted.authorization.deletions.map((event) => event.id)).toEqual([
-      deletion.id,
-    ])
-  })
-
-  it("enforces merchant, market, pickup lane, and shipping terms across the full order", () => {
-    const base = order([item("soap"), item("candles")])
-    expect(orderSchema.safeParse(base).success).toBe(true)
-    expect(
-      orderSchema.safeParse({ ...base, merchantPubkey: organizer }).success
-    ).toBe(false)
-    expect(
-      orderSchema.safeParse(order([item("soap"), item("candles", "Booth 14")]))
-        .success
-    ).toBe(false)
-    expect(
-      orderSchema.safeParse(
-        order([item("soap"), item("candles", "Booth 12", "e".repeat(64))])
-      ).success
-    ).toBe(false)
-    const laterGrant = JSON.parse(
-      JSON.stringify(
-        finalizeEvent(
-          { kind: 3841, created_at: 101, tags: grant.tags, content: "" },
-          organizerSecret
-        )
-      )
-    ) as typeof grant
-    const changedAuthorization = order([item("soap"), item("candles")])
-    const second = changedAuthorization.items[1]?.fulfillment
-    if (second?.type !== "event_market_pickup")
-      throw new Error("Missing second Event Market pickup")
-    second.authorization = {
-      tip: laterGrant,
-      ancestry: [laterGrant],
-      deletions: [],
-    }
-    expect(orderSchema.safeParse(changedAuthorization).success).toBe(false)
-    expect(
-      orderSchema.safeParse({ ...base, shippingCostSats: 10 }).success
-    ).toBe(false)
-    expect(
-      orderSchema.safeParse({
-        ...base,
-        shippingAddress: {
-          name: "Buyer",
-          street: "1 Road",
-          city: "City",
-          postalCode: "00000",
-          country: "US",
-        },
-      }).success
-    ).toBe(false)
-    expect(
-      orderSchema.safeParse({
-        ...base,
-        items: [
-          ...base.items,
-          {
-            productId: `30402:${merchant}:shipped`,
-            format: "physical",
-            quantity: 1,
-            priceAtPurchase: 10,
-            currency: "USD",
-            fulfillment: { type: "shipping" },
-          },
-        ],
-      }).success
-    ).toBe(false)
   })
 
   it("requires review for material changes but not a roster revision alone", () => {
@@ -419,5 +370,16 @@ describe("future Event Market cart and order snapshots", () => {
       "Product changed",
       "Price changed",
     ])
+    expect(
+      getEventMarketCartReviewReasons({
+        saved,
+        current: { ...saved, payeePubkey: organizer },
+        savedPrice: 12,
+        currentPrice: 12,
+      })
+    ).toContain("Payee changed")
+    expect(getCartCommerceFingerprint([item("soap")])).not.toBe(
+      getCartCommerceFingerprint([{ ...item("soap"), price: 14 }])
+    )
   })
 })

@@ -138,7 +138,6 @@ export function ProductFulfillmentEditor({
           <SelectContent>
             <SelectItem value="digital">Digital</SelectItem>
             <SelectItem value="ship">Ship</SelectItem>
-            <SelectItem value="local_pickup">Local pickup</SelectItem>
           </SelectContent>
         </Select>
       </div>

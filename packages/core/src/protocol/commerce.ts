@@ -7281,7 +7281,10 @@ function isEventMarketPrivateMessage(
   return (
     message.type === "organizer_fulfillment_receipt" ||
     message.type === "organizer_fulfillment_revocation" ||
-    message.type === "organizer_handoff_ack"
+    message.type === "organizer_handoff_ack" ||
+    message.type === "future_market_ready" ||
+    message.type === "future_market_revoked" ||
+    message.type === "future_market_handed_out"
   )
 }
 
@@ -7691,7 +7694,8 @@ async function readEventMarketInboxWraps(
 function eventMarketTerminalReadyReceiptId(
   message: ParsedEventMarketPrivateMessage
 ): string | null {
-  return message.type === "organizer_fulfillment_receipt"
+  return message.type === "organizer_fulfillment_receipt" ||
+    message.type === "future_market_ready"
     ? null
     : message.payload.readyReceiptId
 }
@@ -7748,7 +7752,8 @@ function retainBoundedEventMarketMessage(
   const candidateId =
     Array.from(messages.entries()).find(
       ([id, candidate]) =>
-        candidate.type === "organizer_fulfillment_receipt" &&
+        (candidate.type === "organizer_fulfillment_receipt" ||
+          candidate.type === "future_market_ready") &&
         !protectedReadyIds.has(id) &&
         id !== incomingGroupReadyId
     )?.[0] ??

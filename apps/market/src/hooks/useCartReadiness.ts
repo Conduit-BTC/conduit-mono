@@ -90,7 +90,11 @@ export function getCartMerchantHiddenProductIds(
   return Array.from(
     new Set(
       items
-        .filter((item) => item.fulfillment?.type === "pickup")
+        .filter(
+          (item) =>
+            item.fulfillment?.type === "pickup" ||
+            item.fulfillment?.type === "event_market_pickup"
+        )
         .map((item) => item.productId)
     )
   ).sort()

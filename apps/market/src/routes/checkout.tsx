@@ -774,12 +774,16 @@ function OrderSummary({
   const fulfillmentLane = getCartFulfillmentLane(items)
   const pickupHandoff = getCartPickupHandoffSummary(items)
   const pickupFulfillment = items.find(
-    (item) => item.fulfillment?.type === "pickup"
+    (item) =>
+      item.fulfillment?.type === "pickup" ||
+      item.fulfillment?.type === "event_market_pickup"
   )?.fulfillment
   const pickupLocation =
     pickupFulfillment?.type === "pickup"
       ? (pickupFulfillment.option.location ?? pickupFulfillment.option.geohash)
-      : null
+      : pickupFulfillment?.type === "event_market_pickup"
+        ? pickupFulfillment.assignment
+        : null
   const pricing = buildCheckoutPricingIntent(items, btcUsdRate)
   const pricingUnavailable = {
     state: "invalid" as const,
@@ -879,9 +883,10 @@ function OrderSummary({
             },
             {
               allowZero:
-                pricing.status === "ok" &&
-                !pricing.paymentRequired &&
-                item.fulfillment?.type === "pickup",
+                (pricing.status === "ok" &&
+                  !pricing.paymentRequired &&
+                  item.fulfillment?.type === "pickup") ||
+                item.fulfillment?.type === "event_market_pickup",
             }
           )
           const imageUrl = normalizePublicMediaUrl(item.image)
@@ -1606,7 +1611,9 @@ function CheckoutPage() {
     if (pricingPreview.status === "ok") return pricingPreview.totalSats
     const itemSubtotal = checkoutItems.reduce((sum, item) => {
       const sats = getPriceSats(item, btcUsdRate, {
-        allowZero: item.fulfillment?.type === "pickup",
+        allowZero:
+          item.fulfillment?.type === "pickup" ||
+          item.fulfillment?.type === "event_market_pickup",
       })
       return sats ? sum + sats.sats * item.quantity : sum
     }, 0)
@@ -3799,11 +3806,17 @@ function CheckoutPage() {
                   group.items[0]?.fulfillment?.type === "pickup"
                     ? group.items[0].fulfillment
                     : null
+                const futurePickup =
+                  group.items[0]?.fulfillment?.type === "event_market_pickup"
+                    ? group.items[0].fulfillment
+                    : null
                 const label = pickup
                   ? `Event pickup · ${pickup.option.title}`
-                  : group.items.some((item) => item.format !== "digital")
-                    ? "Shipping / delivery"
-                    : "Digital delivery"
+                  : futurePickup
+                    ? `Event pickup · ${futurePickup.assignment}`
+                    : group.items.some((item) => item.format !== "digital")
+                      ? "Shipping / delivery"
+                      : "Digital delivery"
                 return (
                   <Button
                     key={group.id}

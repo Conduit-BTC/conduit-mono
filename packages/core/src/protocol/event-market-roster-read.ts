@@ -1,4 +1,8 @@
 import type { NDKFilter, NDKKind } from "@nostr-dev-kit/ndk"
+import {
+  readEventMarketAuthorization,
+  type EventMarketAuthorizationReadResult,
+} from "./event-market-authorization-read"
 import { db, type CachedEventMarketRosterEvidence } from "../db"
 import {
   orderEventMarketPickupFulfillmentSchema,
@@ -7,6 +11,7 @@ import {
 import {
   decodeEventMarketReference,
   getEventMarketReadPlan,
+  isEventMarketAddressableRevisionDeleted,
   parseAddressableCoordinate,
   type EventMarketReadPlan,
   type ParsedEventMarketCalendar,
@@ -19,11 +24,8 @@ import {
   type EventMarketProductResolution,
   type EventMarketRosterResolution,
 } from "./event-market-roster"
-import {
-  resolveEventMarketAuthorization,
-  type EventMarketAuthorizationResolution,
-} from "./event-market-authorization"
 import { EVENT_KINDS } from "./kinds"
+import { parseProductEvent } from "./products"
 import { fetchEventsFanoutDetailed, type FetchEventsFanoutOptions } from "./ndk"
 import {
   compareReplaceableEventFrontiers,
@@ -46,22 +48,11 @@ export interface EventMarketRosterReadResult {
 
 export interface EventMarketProductReadResult {
   productCoordinate: string
-  resolution:
-    | EventMarketProductResolution
-    | { state: "market_unavailable" | "authorization_unavailable" }
+  resolution: EventMarketProductResolution | { state: "market_unavailable" }
   coverage: EventMarketRosterReadCoverage
   retained: boolean
   actionable: boolean
   authorization?: EventMarketAuthorizationReadResult
-}
-
-export interface EventMarketAuthorizationReadResult {
-  marketCoordinate: string
-  merchantPubkey: string
-  resolution: EventMarketAuthorizationResolution
-  coverage: EventMarketRosterReadCoverage
-  retained: boolean
-  observedRelayUrls: string[]
 }
 
 export interface EventMarketCatalogReadResult {
@@ -87,9 +78,7 @@ export function createEventMarketPickupSnapshot(input: {
     product.state !== "eligible" ||
     authorization?.state !== "active" ||
     !input.productRead.actionable ||
-    product.product.id !== input.productRead.productCoordinate ||
-    authorization.tip.marketCoordinate !== market.market.coordinate ||
-    authorization.tip.merchantPubkey !== product.merchant.pubkey
+    product.product.id !== input.productRead.productCoordinate
   ) {
     throw new Error("Current signed Event Market participation is required.")
   }
@@ -115,10 +104,24 @@ export function createEventMarketPickupSnapshot(input: {
       eventId: product.revision.id,
       createdAt: product.revision.created_at * 1_000,
     },
-    authorization: {
-      tip: authorization.tip.signedEvent,
-      ancestry: authorization.ancestry,
-      deletions: authorization.deletions,
+    grant: {
+      kind: EVENT_KINDS.EVENT_MARKET_AUTH,
+      pubkey: market.market.organizerPubkey,
+      eventId: authorization.tip.eventId,
+      createdAt: authorization.tip.signedEvent.created_at * 1_000,
+      ancestryEventIds: authorization.ancestry.map((event) => event.eventId),
+      observedDeletionEventIds:
+        input.productRead.authorization?.observedEvidence
+          ?.filter((event) => event.kind === EVENT_KINDS.DELETION)
+          .map((event) => event.id) ?? [],
+      signedEvidence: {
+        tip: authorization.tip.signedEvent,
+        ancestry: authorization.ancestry.map((event) => event.signedEvent),
+        deletions:
+          input.productRead.authorization?.observedEvidence?.filter(
+            (event) => event.kind === EVENT_KINDS.DELETION
+          ) ?? [],
+      },
     },
     mode: product.merchant.mode,
     assignment: product.merchant.assignment,
@@ -141,6 +144,7 @@ interface RosterReadDependencies {
     coordinate: string,
     events: readonly SignedPublicNostrEvent[]
   ) => Promise<void>
+  authorization?: typeof readEventMarketAuthorization
 }
 
 const MAX_RETAINED_MARKET_RECORDS = 2_048
@@ -199,11 +203,35 @@ async function retainSigned(
   })
 }
 
+/** Persist a signed market, calendar, or authorization event before first relay I/O. */
+export async function retainSignedEventMarketEvidence(
+  marketCoordinate: string,
+  signedEvent: SignedPublicNostrEvent
+): Promise<void> {
+  const market = parseAddressableCoordinate(marketCoordinate, [
+    EVENT_KINDS.EVENT_MARKET,
+  ])
+  if (
+    !market ||
+    !isValidSignedPublicNostrEvent(signedEvent) ||
+    signedEvent.pubkey !== market.authorPubkey ||
+    ![
+      EVENT_KINDS.EVENT_MARKET,
+      EVENT_KINDS.CALENDAR_DATE,
+      EVENT_KINDS.CALENDAR_TIME,
+      EVENT_KINDS.EVENT_MARKET_AUTH,
+    ].includes(signedEvent.kind as never)
+  )
+    throw new Error("Signed Event Market evidence is invalid.")
+  await retainSigned(market.coordinate, [signedEvent])
+}
+
 const defaultDependencies: RosterReadDependencies = {
   plan: getEventMarketReadPlan,
   fetch: fetchSigned,
   load: loadRetained,
   retain: retainSigned,
+  authorization: readEventMarketAuthorization,
 }
 
 function fanoutOptions(
@@ -642,228 +670,8 @@ export async function readEventMarketRoster(
   }
 }
 
-/** Union organizer transitions, signed parents, and deletion evidence across reads. */
-export async function readEventMarketAuthorization(
-  input: {
-    marketCoordinate: string
-    merchantPubkey: string
-    authenticatedPubkey?: string | null
-    shouldContinue?: () => boolean
-    signal?: AbortSignal
-  },
-  dependencies: RosterReadDependencies = defaultDependencies
-): Promise<EventMarketAuthorizationReadResult> {
-  const market = parseAddressableCoordinate(input.marketCoordinate, [
-    EVENT_KINDS.EVENT_MARKET,
-  ])
-  const merchantPubkey = input.merchantPubkey
-  const resolve = (events: readonly SignedPublicNostrEvent[]) =>
-    resolveEventMarketAuthorization({
-      marketCoordinate: input.marketCoordinate,
-      merchantPubkey,
-      transitions: events.filter(
-        (event) => event.kind === EVENT_KINDS.EVENT_MARKET_AUTH
-      ),
-      deletions: events.filter((event) => event.kind === EVENT_KINDS.DELETION),
-    })
-  if (!market || !/^[0-9a-f]{64}$/.test(merchantPubkey)) {
-    return {
-      marketCoordinate: input.marketCoordinate,
-      merchantPubkey,
-      resolution: resolve([]),
-      coverage: "unavailable",
-      retained: false,
-      observedRelayUrls: [],
-    }
-  }
-  const scoped = (
-    events: readonly SignedPublicNostrEvent[],
-    knownIds: ReadonlySet<string>
-  ) =>
-    events.filter(
-      (event) =>
-        event.pubkey === market.authorPubkey &&
-        isValidSignedPublicNostrEvent(event) &&
-        (event.kind === EVENT_KINDS.EVENT_MARKET_AUTH
-          ? event.tags.some(
-              (tag) => tag[0] === "a" && tag[1] === market.coordinate
-            ) &&
-            event.tags.some(
-              (tag) => tag[0] === "p" && tag[1] === merchantPubkey
-            )
-          : event.kind === EVENT_KINDS.DELETION &&
-            (event.tags.some(
-              (tag) => tag[0] === "e" && knownIds.has(tag[1] ?? "")
-            ) ||
-              (event.tags.some(
-                (tag) => tag[0] === "a" && tag[1] === market.coordinate
-              ) &&
-                event.tags.some(
-                  (tag) => tag[0] === "p" && tag[1] === merchantPubkey
-                ))))
-    )
-  let retained = true
-  let cached: SignedPublicNostrEvent[] = []
-  try {
-    const loaded = await dependencies.load(market.coordinate)
-    const ids = new Set(
-      loaded
-        .filter((event) => event.kind === EVENT_KINDS.EVENT_MARKET_AUTH)
-        .map((event) => event.id)
-    )
-    cached = scoped(loaded, ids)
-  } catch {
-    retained = false
-  }
-  let plan: EventMarketReadPlan
-  try {
-    plan = await dependencies.plan({
-      organizerPubkey: market.authorPubkey,
-      authenticatedPubkey: input.authenticatedPubkey,
-      shouldContinue: input.shouldContinue,
-      signal: input.signal,
-    })
-  } catch (error) {
-    if (input.signal?.aborted || input.shouldContinue?.() === false) throw error
-    return {
-      marketCoordinate: market.coordinate,
-      merchantPubkey,
-      resolution: resolve(cached),
-      coverage: "unavailable",
-      retained,
-      observedRelayUrls: [],
-    }
-  }
-  const options = fanoutOptions(plan, input)
-  const safeFetch = async (filter: NDKFilter): Promise<SignedFanoutResult> => {
-    try {
-      return await dependencies.fetch(filter, options)
-    } catch (error) {
-      if (input.signal?.aborted || input.shouldContinue?.() === false)
-        throw error
-      return { events: [], relays: [] }
-    }
-  }
-  const reads: SignedFanoutResult[] = await Promise.all([
-    safeFetch({
-      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH as NDKKind],
-      authors: [market.authorPubkey],
-      "#a": [market.coordinate],
-      "#p": [merchantPubkey],
-      limit: 128,
-    }),
-    safeFetch({
-      kinds: [EVENT_KINDS.DELETION],
-      authors: [market.authorPubkey],
-      "#a": [market.coordinate],
-      "#p": [merchantPubkey],
-      limit: 128,
-    }),
-  ])
-  const known = new Map(
-    [...cached, ...reads.flatMap((read) => read.events)]
-      .filter(
-        (event) =>
-          event.kind === EVENT_KINDS.EVENT_MARKET_AUTH &&
-          event.pubkey === market.authorPubkey &&
-          event.tags.some(
-            (tag) => tag[0] === "a" && tag[1] === market.coordinate
-          ) &&
-          event.tags.some(
-            (tag) => tag[0] === "p" && tag[1] === merchantPubkey
-          ) &&
-          isValidSignedPublicNostrEvent(event)
-      )
-      .map((event) => [event.id, event])
-  )
-  const requested = new Set<string>()
-  for (let depth = 0; depth < 128 && requested.size < 256; depth++) {
-    const missing = [...known.values()]
-      .flatMap((event) =>
-        event.tags
-          .filter((tag) => tag[0] === "auth_parent")
-          .map((tag) => tag[1] ?? "")
-      )
-      .filter(
-        (id) =>
-          /^[0-9a-f]{64}$/.test(id) && !known.has(id) && !requested.has(id)
-      )
-      .slice(0, Math.min(32, 256 - requested.size))
-    if (missing.length === 0) break
-    missing.forEach((id) => requested.add(id))
-    const read = await safeFetch({
-      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH as NDKKind],
-      authors: [market.authorPubkey],
-      ids: missing,
-      limit: 32,
-    })
-    reads.push(read)
-    for (const event of read.events) {
-      if (
-        missing.includes(event.id) &&
-        event.kind === EVENT_KINDS.EVENT_MARKET_AUTH &&
-        event.pubkey === market.authorPubkey &&
-        event.tags.some(
-          (tag) => tag[0] === "a" && tag[1] === market.coordinate
-        ) &&
-        event.tags.some((tag) => tag[0] === "p" && tag[1] === merchantPubkey) &&
-        isValidSignedPublicNostrEvent(event)
-      )
-        known.set(event.id, event)
-    }
-  }
-  const ids = [...known.keys()]
-  for (let index = 0; index < ids.length; index += 32) {
-    reads.push(
-      await safeFetch({
-        kinds: [EVENT_KINDS.DELETION],
-        authors: [market.authorPubkey],
-        "#e": ids.slice(index, index + 32),
-        limit: 128,
-      })
-    )
-  }
-  const knownIds = new Set(known.keys())
-  const live = scoped(
-    reads.flatMap((read) => read.events),
-    knownIds
-  )
-  const all = [
-    ...new Map([...cached, ...live].map((event) => [event.id, event])).values(),
-  ]
-  try {
-    await dependencies.retain(market.coordinate, live)
-  } catch {
-    retained = false
-  }
-  const relayStates = reads.flatMap((read) => read.relays)
-  const liveIds = new Set(live.map((event) => event.id))
-  const stale = cached.some((event) => !liveIds.has(event.id))
-  const coverage: EventMarketRosterReadCoverage = stale
-    ? "stale"
-    : relayStates.length === 0 ||
-        relayStates.every((relay) => relay.status === "failed")
-      ? "unavailable"
-      : !retained ||
-          plan.relayHintTruncated ||
-          reads.some((read) => read.relays.length === 0) ||
-          relayStates.some((relay) => relay.status !== "success") ||
-          reads.some((read) => read.events.length >= 128) ||
-          requested.size >= 256
-        ? "partial"
-        : "complete"
-  return {
-    marketCoordinate: market.coordinate,
-    merchantPubkey,
-    resolution: resolve(all),
-    coverage,
-    retained,
-    observedRelayUrls: [...new Set(relayStates.map((relay) => relay.relayUrl))],
-  }
-}
-
 /** Exact product read for both catalog candidates and direct product links. */
-async function readEventMarketProductImpl(
+export async function readEventMarketProduct(
   input: {
     marketRead: EventMarketRosterReadResult
     productCoordinate: string
@@ -871,8 +679,7 @@ async function readEventMarketProductImpl(
     shouldContinue?: () => boolean
     signal?: AbortSignal
   },
-  dependencies: RosterReadDependencies,
-  requireAuthorization: boolean
+  dependencies: RosterReadDependencies = defaultDependencies
 ): Promise<EventMarketProductReadResult> {
   const market = input.marketRead.resolution
   const product = parseAddressableCoordinate(input.productCoordinate, [
@@ -898,24 +705,28 @@ async function readEventMarketProductImpl(
       actionable: false,
     }
   }
-  const authorization = requireAuthorization
-    ? await readEventMarketAuthorization(
-        {
-          marketCoordinate: market.market.coordinate,
-          merchantPubkey: product.authorPubkey,
-          authenticatedPubkey: input.authenticatedPubkey,
-          shouldContinue: input.shouldContinue,
-          signal: input.signal,
-        },
-        dependencies
-      )
-    : undefined
-  if (requireAuthorization && authorization?.resolution.state !== "active") {
+  const readAuthorization =
+    dependencies.authorization ??
+    ((query: Parameters<typeof readEventMarketAuthorization>[0]) =>
+      readEventMarketAuthorization(query, {
+        plan: dependencies.plan,
+        fetch: dependencies.fetch,
+        load: dependencies.load,
+        retain: dependencies.retain,
+      }))
+  const authorization = await readAuthorization({
+    marketCoordinate: market.market.coordinate,
+    merchantPubkey: product.authorPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+    signal: input.signal,
+  })
+  if (authorization.resolution.state !== "active") {
     return {
       productCoordinate: product.coordinate,
-      resolution: { state: "authorization_unavailable" },
-      coverage: authorization?.coverage ?? "unavailable",
-      retained: authorization?.retained ?? false,
+      resolution: { state: "unauthorized" },
+      coverage: authorization.coverage,
+      retained: authorization.retained,
       actionable: false,
       authorization,
     }
@@ -958,6 +769,7 @@ async function readEventMarketProductImpl(
       productCoordinate: product.coordinate,
       revisions: cached.filter((event) => event.kind === EVENT_KINDS.PRODUCT),
       deletions: cached.filter((event) => event.kind === EVENT_KINDS.DELETION),
+      authorization: authorization.resolution,
     })
     return {
       productCoordinate: product.coordinate,
@@ -1039,6 +851,7 @@ async function readEventMarketProductImpl(
     productCoordinate: product.coordinate,
     revisions: all.filter((event) => event.kind === EVENT_KINDS.PRODUCT),
     deletions: all.filter((event) => event.kind === EVENT_KINDS.DELETION),
+    authorization: authorization.resolution,
   })
   const liveIds = new Set(live.map((event) => event.id))
   const stale =
@@ -1070,29 +883,14 @@ async function readEventMarketProductImpl(
     authorization,
     actionable:
       resolution.state === "eligible" &&
+      authorization.actionable &&
       market.market.state === "open" &&
       retained &&
-      authorization?.retained === true &&
-      authorization.coverage === "complete" &&
       coverage === "complete" &&
       input.marketRead.coverage === "complete" &&
       input.marketRead.calendarCoverage === "complete" &&
       input.marketRead.retained,
   }
-}
-
-/** Exact product read for catalog candidates and direct product links. */
-export async function readEventMarketProduct(
-  input: {
-    marketRead: EventMarketRosterReadResult
-    productCoordinate: string
-    authenticatedPubkey?: string | null
-    shouldContinue?: () => boolean
-    signal?: AbortSignal
-  },
-  dependencies: RosterReadDependencies = defaultDependencies
-): Promise<EventMarketProductReadResult> {
-  return readEventMarketProductImpl(input, dependencies, true)
 }
 
 /** Discover only approved authors, then resolve each candidate's exact signed head. */
@@ -1110,10 +908,7 @@ export async function readEventMarketCatalog(
     return {
       marketRead,
       products: [],
-      coverage:
-        marketRead.resolution.state === "current"
-          ? "partial"
-          : marketRead.coverage,
+      coverage: marketRead.coverage,
       candidateCount: 0,
     }
   }
@@ -1205,8 +1000,201 @@ export async function readEventMarketCatalog(
   }
 }
 
-/** Preview current tagged products before a descendant regrant restores admission. */
-export async function readEventMarketReapprovalPreview(
+/** Bounded organizer-scoped discovery for Market and Merchant timelines. */
+export async function discoverFutureEventMarkets(
+  input: {
+    organizerPubkeys: readonly string[]
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+    signal?: AbortSignal
+  },
+  dependencies: RosterReadDependencies = defaultDependencies
+): Promise<{
+  markets: EventMarketRosterReadResult[]
+  coverage: EventMarketRosterReadCoverage
+}> {
+  const authors = [
+    ...new Set(
+      input.organizerPubkeys.filter((value) => /^[0-9a-f]{64}$/.test(value))
+    ),
+  ].slice(0, 64)
+  const coordinates = new Set<string>()
+  let incomplete = input.organizerPubkeys.length > 64
+  for (const author of authors) {
+    let plan: EventMarketReadPlan
+    try {
+      plan = await dependencies.plan({
+        organizerPubkey: author,
+        authenticatedPubkey: input.authenticatedPubkey,
+        shouldContinue: input.shouldContinue,
+        signal: input.signal,
+      })
+    } catch (error) {
+      if (input.signal?.aborted || input.shouldContinue?.() === false)
+        throw error
+      incomplete = true
+      continue
+    }
+    try {
+      const result = await dependencies.fetch(
+        {
+          kinds: [EVENT_KINDS.EVENT_MARKET as NDKKind],
+          authors: [author],
+          limit: 128,
+        },
+        fanoutOptions(plan, input)
+      )
+      if (
+        plan.relayHintTruncated ||
+        result.events.length >= 128 ||
+        result.relays.length === 0 ||
+        result.relays.some((relay) => relay.status !== "success")
+      )
+        incomplete = true
+      for (const event of result.events) {
+        if (
+          event.kind !== EVENT_KINDS.EVENT_MARKET ||
+          event.pubkey !== author ||
+          !isValidSignedPublicNostrEvent(event)
+        )
+          continue
+        const dTags = event.tags.filter((tag) => tag[0] === "d")
+        if (dTags.length !== 1 || !dTags[0]?.[1]) continue
+        coordinates.add(`${EVENT_KINDS.EVENT_MARKET}:${author}:${dTags[0][1]}`)
+      }
+    } catch (error) {
+      if (input.signal?.aborted || input.shouldContinue?.() === false)
+        throw error
+      incomplete = true
+    }
+  }
+  const markets: EventMarketRosterReadResult[] = []
+  for (const coordinate of [...coordinates].slice(0, 128)) {
+    markets.push(
+      await readEventMarketRoster(
+        {
+          reference: coordinate,
+          authenticatedPubkey: input.authenticatedPubkey,
+          shouldContinue: input.shouldContinue,
+          signal: input.signal,
+        },
+        dependencies
+      )
+    )
+  }
+  if (
+    coordinates.size > 128 ||
+    markets.some((read) => read.coverage !== "complete")
+  )
+    incomplete = true
+  return { markets, coverage: incomplete ? "partial" : "complete" }
+}
+
+/** Fetch exact historical signed records for a created order without reinterpreting its terms. */
+export async function readEventMarketOrderEvidenceByIds(
+  input: {
+    marketCoordinate: string
+    merchantPubkey: string
+    eventIds: readonly string[]
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+    signal?: AbortSignal
+  },
+  dependencies: RosterReadDependencies = defaultDependencies
+): Promise<{
+  events: SignedPublicNostrEvent[]
+  coverage: EventMarketRosterReadCoverage
+  retained: boolean
+}> {
+  const market = parseAddressableCoordinate(input.marketCoordinate, [
+    EVENT_KINDS.EVENT_MARKET,
+  ])
+  if (
+    !market ||
+    !/^[0-9a-f]{64}$/.test(input.merchantPubkey) ||
+    input.eventIds.length === 0 ||
+    input.eventIds.length > 320 ||
+    input.eventIds.some((id) => !/^[0-9a-f]{64}$/.test(id))
+  )
+    return { events: [], coverage: "unavailable", retained: false }
+  const ids = new Set(input.eventIds)
+  let retained = true
+  let cached: SignedPublicNostrEvent[] = []
+  try {
+    cached = (await dependencies.load(market.coordinate)).filter(
+      (event) =>
+        ids.has(event.id) &&
+        [market.authorPubkey, input.merchantPubkey].includes(event.pubkey) &&
+        isValidSignedPublicNostrEvent(event)
+    )
+  } catch {
+    retained = false
+  }
+  const live: SignedPublicNostrEvent[] = []
+  const relayStates: Array<{
+    relayUrl: string
+    status: "success" | "partial" | "failed"
+  }> = []
+  for (const author of new Set([market.authorPubkey, input.merchantPubkey])) {
+    try {
+      const plan = await dependencies.plan({
+        organizerPubkey: author,
+        authenticatedPubkey: input.authenticatedPubkey,
+        shouldContinue: input.shouldContinue,
+        signal: input.signal,
+      })
+      const targets = [...ids]
+      for (let offset = 0; offset < targets.length; offset += 64) {
+        const batch = targets.slice(offset, offset + 64)
+        const result = await dependencies.fetch(
+          {
+            ids: batch,
+            authors: [author],
+            limit: batch.length,
+          },
+          fanoutOptions(plan, input)
+        )
+        live.push(
+          ...result.events.filter(
+            (event) =>
+              ids.has(event.id) &&
+              event.pubkey === author &&
+              isValidSignedPublicNostrEvent(event)
+          )
+        )
+        relayStates.push(...result.relays)
+      }
+    } catch (error) {
+      if (input.signal?.aborted || input.shouldContinue?.() === false)
+        throw error
+    }
+  }
+  try {
+    await dependencies.retain(market.coordinate, live)
+  } catch {
+    retained = false
+  }
+  const events = [
+    ...new Map([...cached, ...live].map((event) => [event.id, event])).values(),
+  ]
+  const liveIds = new Set(live.map((event) => event.id))
+  const coverage: EventMarketRosterReadCoverage = cached.some(
+    (event) => !liveIds.has(event.id)
+  )
+    ? "stale"
+    : relayStates.length === 0 ||
+        relayStates.every((relay) => relay.status === "failed")
+      ? "unavailable"
+      : !retained ||
+          relayStates.some((relay) => relay.status !== "success") ||
+          events.length !== ids.size
+        ? "partial"
+        : "complete"
+  return { events, coverage, retained }
+}
+
+/** Show what a descendant regrant would admit, without granting admission. */
+export async function previewEventMarketMerchantProducts(
   input: {
     marketCoordinate: string
     merchantPubkey: string
@@ -1216,25 +1204,25 @@ export async function readEventMarketReapprovalPreview(
   },
   dependencies: RosterReadDependencies = defaultDependencies
 ): Promise<{
-  products: import("../schemas").ProductSchema[]
+  products: Array<{ coordinate: string; title: string }>
+  candidateCount: number
   coverage: EventMarketRosterReadCoverage
-  complete: boolean
 }> {
-  const marketRead = await readEventMarketRoster(
-    {
-      reference: input.marketCoordinate,
-      authenticatedPubkey: input.authenticatedPubkey,
-      shouldContinue: input.shouldContinue,
-      signal: input.signal,
-    },
-    dependencies
-  )
-  if (
-    marketRead.resolution.state !== "current" ||
-    !marketRead.calendar ||
-    !/^[0-9a-f]{64}$/.test(input.merchantPubkey)
-  ) {
-    return { products: [], coverage: "unavailable", complete: false }
+  const market = parseAddressableCoordinate(input.marketCoordinate, [
+    EVENT_KINDS.EVENT_MARKET,
+  ])
+  if (!market || !/^[0-9a-f]{64}$/.test(input.merchantPubkey))
+    return { products: [], candidateCount: 0, coverage: "unavailable" }
+  let retained = true
+  let cached: SignedPublicNostrEvent[] = []
+  try {
+    cached = (await dependencies.load(market.coordinate)).filter(
+      (event) =>
+        event.pubkey === input.merchantPubkey &&
+        isValidSignedPublicNostrEvent(event)
+    )
+  } catch {
+    retained = false
   }
   let plan: EventMarketReadPlan
   try {
@@ -1246,105 +1234,164 @@ export async function readEventMarketReapprovalPreview(
     })
   } catch (error) {
     if (input.signal?.aborted || input.shouldContinue?.() === false) throw error
-    return { products: [], coverage: "unavailable", complete: false }
+    return { products: [], candidateCount: 0, coverage: "unavailable" }
   }
-  let candidates: SignedFanoutResult
-  try {
-    candidates = await dependencies.fetch(
-      {
-        kinds: [EVENT_KINDS.PRODUCT],
-        authors: [input.merchantPubkey],
-        "#a": [marketRead.coordinate],
-        limit: 64,
-      },
-      fanoutOptions(plan, input)
-    )
-  } catch (error) {
-    if (input.signal?.aborted || input.shouldContinue?.() === false) throw error
-    return { products: [], coverage: "unavailable", complete: false }
+  const fetch = async (filter: NDKFilter): Promise<SignedFanoutResult> => {
+    try {
+      return await dependencies.fetch(filter, fanoutOptions(plan, input))
+    } catch (error) {
+      if (input.signal?.aborted || input.shouldContinue?.() === false)
+        throw error
+      return { events: [], relays: [] }
+    }
   }
-  let retainedCandidates: SignedPublicNostrEvent[] = []
-  let candidateRetentionReady = true
-  try {
-    retainedCandidates = (
-      await dependencies.load(marketRead.coordinate)
-    ).filter(
-      (event) =>
-        event.kind === EVENT_KINDS.PRODUCT &&
-        event.pubkey === input.merchantPubkey &&
-        isValidSignedPublicNostrEvent(event) &&
-        event.tags.some(
-          (tag) => tag[0] === "a" && tag[1] === marketRead.coordinate
+  const candidates = await fetch({
+    kinds: [EVENT_KINDS.PRODUCT],
+    authors: [input.merchantPubkey],
+    "#a": [market.coordinate],
+    limit: 64,
+  })
+  const dTags = [
+    ...new Set(
+      [...cached, ...candidates.events].flatMap((event) => {
+        if (
+          event.kind !== EVENT_KINDS.PRODUCT ||
+          event.pubkey !== input.merchantPubkey ||
+          !isValidSignedPublicNostrEvent(event)
         )
-    )
-  } catch {
-    candidateRetentionReady = false
+          return []
+        const d = event.tags.filter((tag) => tag[0] === "d")
+        return d.length === 1 && d[0]?.[1] ? [d[0][1]] : []
+      })
+    ),
+  ].slice(0, 32)
+  if (dTags.length === 0) {
+    return {
+      products: [],
+      candidateCount: 0,
+      coverage:
+        candidates.relays.length === 0
+          ? "unavailable"
+          : candidates.relays.some((relay) => relay.status !== "success") ||
+              plan.relayHintTruncated ||
+              candidates.events.length >= 64
+            ? "partial"
+            : "complete",
+    }
   }
-  const candidateCoordinates = new Set<string>()
-  for (const event of [...retainedCandidates, ...candidates.events]) {
+  const coordinates = dTags.map(
+    (d) => `${EVENT_KINDS.PRODUCT}:${input.merchantPubkey}:${d}`
+  )
+  const revisions = await fetch({
+    kinds: [EVENT_KINDS.PRODUCT],
+    authors: [input.merchantPubkey],
+    "#d": dTags,
+    limit: 128,
+  })
+  const knownIds = [
+    ...new Set(
+      [...cached, ...revisions.events]
+        .filter((event) => event.kind === EVENT_KINDS.PRODUCT)
+        .map((event) => event.id)
+    ),
+  ].slice(0, 128)
+  const [coordinateDeletions, idDeletions] = await Promise.all([
+    fetch({
+      kinds: [EVENT_KINDS.DELETION],
+      authors: [input.merchantPubkey],
+      "#a": coordinates,
+      limit: 128,
+    }),
+    knownIds.length > 0
+      ? fetch({
+          kinds: [EVENT_KINDS.DELETION],
+          authors: [input.merchantPubkey],
+          "#e": knownIds,
+          limit: 128,
+        })
+      : Promise.resolve({ events: [], relays: [] }),
+  ])
+  const live = [
+    ...candidates.events,
+    ...revisions.events,
+    ...coordinateDeletions.events,
+    ...idDeletions.events,
+  ].filter(isValidSignedPublicNostrEvent)
+  try {
+    await dependencies.retain(market.coordinate, live)
+  } catch {
+    retained = false
+  }
+  const evidence = [
+    ...new Map([...cached, ...live].map((event) => [event.id, event])).values(),
+  ]
+  const products: Array<{ coordinate: string; title: string }> = []
+  for (const coordinate of coordinates) {
+    const dTag = coordinate.slice(
+      coordinate.indexOf(":", coordinate.indexOf(":") + 1) + 1
+    )
+    const heads = evidence
+      .filter(
+        (event) =>
+          event.kind === EVENT_KINDS.PRODUCT &&
+          event.pubkey === input.merchantPubkey &&
+          event.tags.some((tag) => tag[0] === "d" && tag[1] === dTag)
+      )
+      .sort(
+        (left, right) =>
+          -compareReplaceableEventFrontiers(
+            { createdAt: left.created_at, eventId: left.id },
+            { createdAt: right.created_at, eventId: right.id }
+          )
+      )
+    const head = heads[0]
     if (
-      event.kind !== EVENT_KINDS.PRODUCT ||
-      event.pubkey !== input.merchantPubkey ||
-      !isValidSignedPublicNostrEvent(event) ||
-      !event.tags.some(
-        (tag) => tag[0] === "a" && tag[1] === marketRead.coordinate
+      !head ||
+      !head.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === market.coordinate
+      ) ||
+      isEventMarketAddressableRevisionDeleted(
+        {
+          coordinate,
+          eventId: head.id,
+          createdAt: head.created_at * 1_000,
+        },
+        evidence.filter((event) => event.kind === EVENT_KINDS.DELETION)
       )
     )
       continue
-    const dTags = event.tags.filter((tag) => tag[0] === "d")
-    if (dTags.length !== 1 || !dTags[0]?.[1]) continue
-    candidateCoordinates.add(
-      `${EVENT_KINDS.PRODUCT}:${input.merchantPubkey}:${dTags[0][1]}`
-    )
+    try {
+      const product = parseProductEvent(head)
+      if (
+        product.visibility === "public" &&
+        product.format === "physical" &&
+        !product.priceEvidenceMalformed
+      )
+        products.push({ coordinate, title: product.title })
+    } catch {
+      /* Malformed listings do not enter the preview. */
+    }
   }
-  const existingRow = marketRead.resolution.market.merchants.find(
-    (row) => row.pubkey === input.merchantPubkey
+  const reads = [candidates, revisions, coordinateDeletions, idDeletions]
+  const relayStates = reads.flatMap((read) => read.relays)
+  const liveIds = new Set(live.map((event) => event.id))
+  const coverage: EventMarketRosterReadCoverage = cached.some(
+    (event) => !liveIds.has(event.id)
   )
-  const previewMarketRead: EventMarketRosterReadResult = {
-    ...marketRead,
-    resolution: {
-      state: "current",
-      market: {
-        ...marketRead.resolution.market,
-        merchants: [
-          existingRow ?? {
-            pubkey: input.merchantPubkey,
-            mode: "merchant_present",
-            assignment: "Reapproval preview",
-          },
-        ],
-      },
-    },
-  }
-  let complete =
-    marketRead.coverage === "complete" &&
-    marketRead.calendarCoverage === "complete" &&
-    marketRead.retained &&
-    candidateRetentionReady &&
-    !plan.relayHintTruncated &&
-    candidates.events.length < 64 &&
-    candidates.relays.length > 0 &&
-    candidates.relays.every((relay) => relay.status === "success")
-  const products: import("../schemas").ProductSchema[] = []
-  for (const productCoordinate of candidateCoordinates) {
-    const read = await readEventMarketProductImpl(
-      {
-        marketRead: previewMarketRead,
-        productCoordinate,
-        authenticatedPubkey: input.authenticatedPubkey,
-        shouldContinue: input.shouldContinue,
-        signal: input.signal,
-      },
-      dependencies,
-      false
-    )
-    if (read.coverage !== "complete" || !read.retained) complete = false
-    if (read.resolution.state === "eligible")
-      products.push(read.resolution.product)
-  }
-  return {
-    products,
-    coverage: complete ? "complete" : "partial",
-    complete,
-  }
+    ? "stale"
+    : relayStates.length === 0 ||
+        relayStates.every((relay) => relay.status === "failed")
+      ? "unavailable"
+      : !retained ||
+          plan.relayHintTruncated ||
+          candidates.events.length >= 64 ||
+          dTags.length >= 32 ||
+          revisions.events.length >= 128 ||
+          coordinateDeletions.events.length >= 128 ||
+          idDeletions.events.length >= 128 ||
+          reads.some((read) => read.relays.length === 0) ||
+          relayStates.some((relay) => relay.status !== "success")
+        ? "partial"
+        : "complete"
+  return { products, candidateCount: dTags.length, coverage }
 }
