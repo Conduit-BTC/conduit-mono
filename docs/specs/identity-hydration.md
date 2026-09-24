@@ -22,13 +22,15 @@ other surfaces.
   useful profile field.
 - New valid kind-0 profile fields may enrich or update cached profile data.
 
-## UI Rules
+## Identity presentation
 
-- Primary identity labels should show a loaded profile name when available.
-- Commerce list fallbacks should show a shimmering `Store npub...` label while
-  hydration continues.
-- Detail surfaces may show a pubkey or npub as explicit metadata, but not as the
-  primary merchant or buyer name when a profile lookup is still unresolved.
+- When a validated profile name is available, identity presentation uses it
+  without replacing signed pubkey authority.
+- While hydration is unresolved, a fallback must not imply that a profile name
+  was confirmed or that lookup has completed. After bounded attempts settle,
+  loading presentation ends even if no name was found.
+- A pubkey or npub may be available as identity metadata, but an unresolved
+  profile must not be mistaken for a verified merchant or buyer name.
 
 ## Scope
 
