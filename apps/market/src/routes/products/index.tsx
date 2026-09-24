@@ -351,83 +351,26 @@ function ProductsPage() {
         }
       />
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-        <div className="flex w-full min-w-0 flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
-          {shouldShowCategories ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="min-w-20 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
-                Categories
-              </span>
-              <DropdownMenu
-                open={categoryMenuOpen}
-                onOpenChange={setCategoryMenuOpen}
-              >
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={showCategorySkeleton}
-                    className="min-w-0 flex-1 justify-between text-xs sm:w-auto sm:min-w-[150px] sm:flex-none"
-                  >
-                    {showCategorySkeleton
-                      ? "Loading categories..."
-                      : categoryTriggerLabel}
-                    <ChevronDown
-                      className="size-4 opacity-60"
-                      aria-hidden="true"
-                    />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent className="max-h-80 w-72 overflow-y-scroll [scrollbar-gutter:stable]">
-                  <DropdownMenuCheckboxItem
-                    checked={selectedTags.length === 0}
-                    onSelect={(event) => event.preventDefault()}
-                    onCheckedChange={() => updateSearch({ tag: undefined })}
-                    className="justify-between gap-3"
-                  >
-                    <span className="font-semibold text-primary-500">
-                      All categories
-                    </span>
-                    <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                      [{categoryFacetTotal}]
-                    </span>
-                  </DropdownMenuCheckboxItem>
-                  {categoryFacetOptions.map((option) => (
-                    <DropdownMenuCheckboxItem
-                      key={option.value}
-                      checked={option.selected}
-                      onSelect={(event) => event.preventDefault()}
-                      onCheckedChange={() => toggleTag(option.value)}
-                      className="justify-between gap-3"
-                    >
-                      <span className="min-w-0 flex-1 truncate">
-                        {option.label}
-                      </span>
-                      <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                        [{option.count}]
-                      </span>
-                    </DropdownMenuCheckboxItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          ) : null}
-
+      <div className="flex w-full min-w-0 flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+        {shouldShowCategories ? (
           <div className="flex min-w-0 items-center gap-2">
             <span className="min-w-20 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
-              Merchant
+              Categories
             </span>
             <DropdownMenu
-              open={merchantMenuOpen}
-              onOpenChange={setMerchantMenuOpen}
+              open={categoryMenuOpen}
+              onOpenChange={setCategoryMenuOpen}
             >
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="outline"
                   size="sm"
+                  disabled={showCategorySkeleton}
                   className="min-w-0 flex-1 justify-between text-xs sm:w-auto sm:min-w-[150px] sm:flex-none"
                 >
-                  {merchantTriggerLabel}
+                  {showCategorySkeleton
+                    ? "Loading categories..."
+                    : categoryTriggerLabel}
                   <ChevronDown
                     className="size-4 opacity-60"
                     aria-hidden="true"
@@ -436,73 +379,125 @@ function ProductsPage() {
               </DropdownMenuTrigger>
               <DropdownMenuContent className="max-h-80 w-72 overflow-y-scroll [scrollbar-gutter:stable]">
                 <DropdownMenuCheckboxItem
-                  checked={selectedMerchants.length === 0}
+                  checked={selectedTags.length === 0}
                   onSelect={(event) => event.preventDefault()}
-                  onCheckedChange={() => updateSearch({ merchant: undefined })}
+                  onCheckedChange={() => updateSearch({ tag: undefined })}
                   className="justify-between gap-3"
                 >
                   <span className="font-semibold text-primary-500">
-                    All merchants
+                    All categories
                   </span>
                   <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                    [{merchantFacetTotal}]
+                    [{categoryFacetTotal}]
                   </span>
                 </DropdownMenuCheckboxItem>
-                {merchantFacetOptions.map((option) => {
-                  const identity = getMerchantIdentity(option.value)
-                  return (
-                    <DropdownMenuCheckboxItem
-                      key={option.value}
-                      checked={option.selected}
-                      onSelect={(event) => event.preventDefault()}
-                      onCheckedChange={() => toggleMerchant(option.value)}
-                      className="gap-2.5"
-                    >
-                      <Avatar className="h-5 w-5 shrink-0">
-                        <AvatarImage
-                          src={identity.picture}
-                          alt=""
-                          className="object-cover"
-                        />
-                        <AvatarFallback>
-                          <MerchantAvatarFallback iconClassName="h-2.5 w-2.5" />
-                        </AvatarFallback>
-                      </Avatar>
-                      <span
-                        className={[
-                          "min-w-0 flex-1 truncate",
-                          identity.status === "pending" ? "animate-pulse" : "",
-                        ].join(" ")}
-                      >
-                        {option.label}
-                      </span>
-                      <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                        [{option.count}]
-                      </span>
-                    </DropdownMenuCheckboxItem>
-                  )
-                })}
+                {categoryFacetOptions.map((option) => (
+                  <DropdownMenuCheckboxItem
+                    key={option.value}
+                    checked={option.selected}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={() => toggleTag(option.value)}
+                    className="justify-between gap-3"
+                  >
+                    <span className="min-w-0 flex-1 truncate">
+                      {option.label}
+                    </span>
+                    <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                      [{option.count}]
+                    </span>
+                  </DropdownMenuCheckboxItem>
+                ))}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-          {hasActiveFilters && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="shrink-0 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-              onClick={() =>
-                updateSearch({
-                  q: undefined,
-                  tag: undefined,
-                  sort: undefined,
-                  merchant: undefined,
-                })
-              }
-            >
-              Clear filters
-            </Button>
-          )}
+        ) : null}
+
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="min-w-20 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
+            Merchant
+          </span>
+          <DropdownMenu
+            open={merchantMenuOpen}
+            onOpenChange={setMerchantMenuOpen}
+          >
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="min-w-0 flex-1 justify-between text-xs sm:w-auto sm:min-w-[150px] sm:flex-none"
+              >
+                {merchantTriggerLabel}
+                <ChevronDown className="size-4 opacity-60" aria-hidden="true" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="max-h-80 w-72 overflow-y-scroll [scrollbar-gutter:stable]">
+              <DropdownMenuCheckboxItem
+                checked={selectedMerchants.length === 0}
+                onSelect={(event) => event.preventDefault()}
+                onCheckedChange={() => updateSearch({ merchant: undefined })}
+                className="justify-between gap-3"
+              >
+                <span className="font-semibold text-primary-500">
+                  All merchants
+                </span>
+                <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                  [{merchantFacetTotal}]
+                </span>
+              </DropdownMenuCheckboxItem>
+              {merchantFacetOptions.map((option) => {
+                const identity = getMerchantIdentity(option.value)
+                return (
+                  <DropdownMenuCheckboxItem
+                    key={option.value}
+                    checked={option.selected}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={() => toggleMerchant(option.value)}
+                    className="gap-2.5"
+                  >
+                    <Avatar className="h-5 w-5 shrink-0">
+                      <AvatarImage
+                        src={identity.picture}
+                        alt=""
+                        className="object-cover"
+                      />
+                      <AvatarFallback>
+                        <MerchantAvatarFallback iconClassName="h-2.5 w-2.5" />
+                      </AvatarFallback>
+                    </Avatar>
+                    <span
+                      className={[
+                        "min-w-0 flex-1 truncate",
+                        identity.status === "pending" ? "animate-pulse" : "",
+                      ].join(" ")}
+                    >
+                      {option.label}
+                    </span>
+                    <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                      [{option.count}]
+                    </span>
+                  </DropdownMenuCheckboxItem>
+                )
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
+        {hasActiveFilters && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+            onClick={() =>
+              updateSearch({
+                q: undefined,
+                tag: undefined,
+                sort: undefined,
+                merchant: undefined,
+              })
+            }
+          >
+            Clear filters
+          </Button>
+        )}
       </div>
 
       {hasUnavailablePriceForSort && (
