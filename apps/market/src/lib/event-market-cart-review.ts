@@ -19,6 +19,19 @@ export function getEventMarketCartReviewReasons(input: {
   if (saved.assignment !== current.assignment)
     reasons.push("Pickup assignment changed")
   if (
+    saved.authorization.tip.id !== current.authorization.tip.id ||
+    saved.authorization.deletions
+      .map((event) => event.id)
+      .sort()
+      .join(",") !==
+      current.authorization.deletions
+        .map((event) => event.id)
+        .sort()
+        .join(",")
+  ) {
+    reasons.push("Merchant authorization changed")
+  }
+  if (
     saved.calendar.coordinate !== current.calendar.coordinate ||
     saved.calendar.start !== current.calendar.start ||
     saved.calendar.end !== current.calendar.end

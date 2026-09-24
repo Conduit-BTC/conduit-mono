@@ -9709,7 +9709,7 @@ test("future Event Market catalog follows signed merchant approval and current p
   ) => [
     ["d", "future-fair"],
     ["a", eventCoordinate(calendar)],
-    ["event_market", "1", "open"],
+    ["event_market", "2", "open"],
     ...(merchantApproved
       ? [["merchant", MERCHANT_PUBKEY, "merchant_present", assignment]]
       : []),
@@ -9720,6 +9720,25 @@ test("future Event Market catalog follows signed merchant approval and current p
     created_at: createdAt,
     content: "",
     tags: marketTags("Booth 12", true),
+  })
+  const authorizationTags = (
+    state: "active" | "revoked",
+    sequence: number,
+    parent?: string
+  ) => [
+    ["openmarkets", "event-market-auth", "1"],
+    ["a", eventCoordinate(approval)],
+    ["p", MERCHANT_PUBKEY],
+    ["state", state],
+    ["seq", String(sequence)],
+    ...(parent ? [["auth_parent", parent]] : []),
+    ["alt", "Open Markets event merchant authorization"],
+  ]
+  const grant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt,
+    content: "",
+    tags: authorizationTags("active", 0),
   })
   const productTags = (tagged: boolean) => [
     ["d", "future-soap"],
@@ -9740,10 +9759,20 @@ test("future Event Market catalog follows signed merchant approval and current p
     pubkey: ORGANIZER_PUBKEY,
     identifier: "future-fair",
   })
+  const productNaddr = nip19.naddrEncode({
+    kind: 30402,
+    pubkey: MERCHANT_PUBKEY,
+    identifier: "future-soap",
+  })
   await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
   await expect(
     page.getByRole("heading", { name: "Future Fair", exact: true })
   ).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Future Fair soap" })
+  ).toHaveCount(0)
+  relay.seed(grant)
+  await page.getByRole("button", { name: "Refresh event records" }).click()
   await expect(
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toBeVisible()
@@ -9754,6 +9783,23 @@ test("future Event Market catalog follows signed merchant approval and current p
   await expect(
     page.getByRole("button", { name: "Add", exact: true })
   ).toHaveCount(0)
+
+  const revoke = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt + 1,
+    content: "",
+    tags: authorizationTags("revoked", 1, grant.id),
+  })
+  relay.seed(revoke)
+  await page.getByRole("button", { name: "Refresh event records" }).click()
+  await expect(
+    page.getByRole("heading", { name: "Future Fair soap" })
+  ).toHaveCount(0)
+  await gotoAs(page, marketUrl, `/products/${productNaddr}`, "buyer")
+  await expect(
+    page.getByRole("link", { name: "View eligible Event Market listing" })
+  ).toHaveCount(0)
+  await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
 
   const removal = signEvent(ORGANIZER_SECRET, {
     kind: 30409,
@@ -9767,6 +9813,17 @@ test("future Event Market catalog follows signed merchant approval and current p
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toHaveCount(0)
 
+  const regrant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt + 2,
+    content: "",
+    tags: authorizationTags("active", 2, revoke.id),
+  })
+  relay.seed(regrant)
+  await page.getByRole("button", { name: "Refresh event records" }).click()
+  await expect(
+    page.getByRole("heading", { name: "Future Fair soap" })
+  ).toHaveCount(0)
   const reapproval = signEvent(ORGANIZER_SECRET, {
     kind: 30409,
     created_at: createdAt + 2,
@@ -9792,6 +9849,147 @@ test("future Event Market catalog follows signed merchant approval and current p
   await expect(
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toHaveCount(0)
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 5,
+      created_at: createdAt + 4,
+      content: "",
+      tags: [["a", eventCoordinate(calendar)]],
+    })
+  )
+  await page.getByRole("button", { name: "Refresh event records" }).click()
+  await expect(
+    page.getByText(/The linked event record is unavailable/)
+  ).toBeVisible()
+  await expect(
+    page.getByText(
+      "No eligible products were found in the checked relay evidence."
+    )
+  ).toHaveCount(0)
+})
+
+test("organizer reapproval previews tagged products and publishes paired authority @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1000)
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "reapproval-fair"],
+      ["title", "Reapproval Fair"],
+      ["start", "1790000000"],
+      ["D", "20717"],
+    ],
+  })
+  const approved = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "reapproval-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+      ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 4"],
+    ],
+  })
+  const removed = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt + 1,
+    content: "",
+    tags: [
+      ["d", "reapproval-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+      ["prev", approved.id],
+    ],
+  })
+  const authTags = (
+    state: "active" | "revoked",
+    seq: number,
+    parent?: string
+  ) => [
+    ["openmarkets", "event-market-auth", "1"],
+    ["a", eventCoordinate(approved)],
+    ["p", MERCHANT_PUBKEY],
+    ["state", state],
+    ["seq", String(seq)],
+    ...(parent ? [["auth_parent", parent]] : []),
+    ["alt", "Open Markets event merchant authorization"],
+  ]
+  const grant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt,
+    content: "",
+    tags: authTags("active", 0),
+  })
+  const revoke = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt + 1,
+    content: "",
+    tags: authTags("revoked", 1, grant.id),
+  })
+  const product = signEvent(MERCHANT_SECRET, {
+    kind: 30402,
+    created_at: createdAt,
+    content: "Tagged handmade soap",
+    tags: [
+      ["d", "reapproval-soap"],
+      ["title", "Reapproval soap"],
+      ["price", "12", "USD"],
+      ["type", "simple", "physical"],
+      ["a", eventCoordinate(approved)],
+    ],
+  })
+  relay.seed(calendar, approved, removed, grant, revoke, product)
+  await gotoAs(page, merchantUrl, "/events", "organizer")
+  const marketNaddr = nip19.naddrEncode({
+    kind: 30409,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: "reapproval-fair",
+  })
+  await page.getByLabel("Market address or naddr").fill(marketNaddr)
+  await page.getByRole("link", { name: "Manage merchants" }).click()
+  await expect(
+    page.getByRole("heading", { name: "Merchant admission" })
+  ).toBeVisible()
+  await page.getByLabel("Merchant public key").fill(MERCHANT_PUBKEY)
+  await expect(page.getByText("Authorization: revoked.")).toBeVisible()
+  await page.getByLabel("Public assignment").fill("Booth 12")
+  await page.getByRole("button", { name: "Review reapproval" }).click()
+  const review = page.getByRole("dialog", { name: "Confirm reapproval" })
+  await expect(review.getByText("Reapproval soap")).toBeVisible()
+  await expect(
+    review.getByRole("button", { name: "Confirm and sign" })
+  ).toBeEnabled()
+  const publicationStart = relay.publications.length
+  await review.getByRole("button", { name: "Confirm and sign" }).click()
+  await expect
+    .poll(
+      () =>
+        uniquePublishedEvents(
+          relay.publications.slice(publicationStart)
+        ).filter((event) => event.kind === 30409 || event.kind === 3841).length
+    )
+    .toBe(2)
+  const published = uniquePublishedEvents(
+    relay.publications.slice(publicationStart)
+  )
+  const newMarket = published.find((event) => event.kind === 30409)!
+  const regrant = published.find((event) => event.kind === 3841)!
+  expect(newMarket.tags).toContainEqual([
+    "merchant",
+    MERCHANT_PUBKEY,
+    "merchant_present",
+    "Booth 12",
+  ])
+  expect(newMarket.tags).toContainEqual(["prev", removed.id])
+  expect(regrant.tags).toContainEqual(["auth_parent", revoke.id])
+  expect(regrant.tags).toContainEqual(["state", "active"])
 })
 
 test("Merchant links an approved shop product and Market discovers it without pickup records @market @merchant", async ({
@@ -9819,11 +10017,29 @@ test("Merchant links an approved shop product and Market discovers it without pi
     tags: [
       ["d", "merchant-fair"],
       ["a", eventCoordinate(calendar)],
-      ["event_market", "1", "open"],
+      ["event_market", "2", "open"],
       ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 7"],
     ],
   })
-  relay.seed(calendar, market, createMerchantTemplateProductEvent(createdAt))
+  const merchantGrant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["openmarkets", "event-market-auth", "1"],
+      ["a", eventCoordinate(market)],
+      ["p", MERCHANT_PUBKEY],
+      ["state", "active"],
+      ["seq", "0"],
+      ["alt", "Open Markets event merchant authorization"],
+    ],
+  })
+  relay.seed(
+    calendar,
+    market,
+    merchantGrant,
+    createMerchantTemplateProductEvent(createdAt)
+  )
   await gotoAs(page, merchantUrl, "/products", "merchant")
   await page.getByRole("button", { name: /^(Edit|Fix listing)$/ }).click()
   const editor = page.getByRole("dialog", { name: "Edit listing" })
@@ -9859,4 +10075,13 @@ test("Merchant links an approved shop product and Market discovers it without pi
     page.getByRole("heading", { name: MERCHANT_TEMPLATE_TITLE })
   ).toBeVisible()
   await expect(page.getByText(/Merchant booth: Booth 7/)).toBeVisible()
+  const productNaddr = nip19.naddrEncode({
+    kind: 30402,
+    pubkey: MERCHANT_PUBKEY,
+    identifier: MERCHANT_TEMPLATE_D_TAG,
+  })
+  await gotoAs(page, marketUrl, `/products/${productNaddr}`, "buyer")
+  await expect(
+    page.getByRole("link", { name: "View eligible Event Market listing" })
+  ).toBeVisible()
 })

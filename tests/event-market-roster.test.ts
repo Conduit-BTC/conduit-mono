@@ -6,14 +6,17 @@ import {
 } from "nostr-tools/pure"
 import {
   buildEventMarketRosterDraft,
+  buildEventMarketAuthorizationDraft,
   getEventMarketCandidateFilters,
   parseEventMarketRosterEvent,
   parseEventMarketCalendarEvent,
   resolveEventMarketCalendar,
   resolveEventMarketProduct,
   resolveEventMarketRoster,
+  resolveEventMarketAuthorization,
   readEventMarketRoster,
   readEventMarketProduct,
+  readEventMarketReapprovalPreview,
   readEventMarketCatalog,
   createEventMarketPickupSnapshot,
   type EventMarketMerchantRow,
@@ -52,6 +55,15 @@ function roster(
     state: "open",
     merchants: rows,
     previousEventId,
+  })
+  return sign(organizerSecret, draft.kind, draft.tags, createdAt)
+}
+
+function grant(createdAt = 102): SignedPublicNostrEvent {
+  const draft = buildEventMarketAuthorizationDraft({
+    marketCoordinate,
+    merchantPubkey: merchant,
+    state: "active",
   })
   return sign(organizerSecret, draft.kind, draft.tags, createdAt)
 }
@@ -146,6 +158,25 @@ describe("experimental Event Market roster", () => {
         revisions: [initial],
       })
     ).toMatchObject({ state: "current", market: { merchants: [merchantRow] } })
+  })
+
+  it("accepts an observed A to C chain when B was pruned", () => {
+    const initial = roster([merchantRow], 100)
+    const middle = roster([], 101, initial.id)
+    const latest = roster([merchantRow], 102, middle.id)
+    expect(
+      resolveEventMarketRoster({
+        coordinate: marketCoordinate,
+        revisions: [initial, latest],
+      })
+    ).toMatchObject({ state: "current", market: { eventId: latest.id } })
+    const sibling = roster([], 103, middle.id)
+    expect(
+      resolveEventMarketRoster({
+        coordinate: marketCoordinate,
+        revisions: [initial, latest, sibling],
+      })
+    ).toMatchObject({ state: "conflicting" })
   })
 
   it("treats signed deletion and malformed newer evidence as stronger than an older approval", () => {
@@ -353,7 +384,11 @@ describe("experimental Event Market roster", () => {
           relayHintTruncated: false,
         }),
         fetch: async (filter) => ({
-          events: filter.kinds?.includes(30402 as never) ? [tagged] : [],
+          events: filter.kinds?.includes(30402 as never)
+            ? [tagged]
+            : filter.kinds?.includes(3841 as never)
+              ? [grant()]
+              : [],
           relays: [{ relayUrl: "wss://example.com", status: "success" }],
         }),
         load: async () => [untagged],
@@ -410,6 +445,7 @@ describe("experimental Event Market roster", () => {
           if (filter.kinds?.includes(30409 as never)) events = [approved]
           if (filter.kinds?.includes(31923 as never)) events = [calendar]
           if (filter.kinds?.includes(30402 as never)) events = [tagged, spam]
+          if (filter.kinds?.includes(3841 as never)) events = [grant()]
           return {
             events,
             relays: [{ relayUrl: "wss://example.com", status: "success" }],
@@ -467,6 +503,18 @@ describe("experimental Event Market roster", () => {
       coverage: "complete" as const,
       retained: true,
       actionable: true,
+      authorization: {
+        marketCoordinate,
+        merchantPubkey: merchant,
+        resolution: resolveEventMarketAuthorization({
+          marketCoordinate,
+          merchantPubkey: merchant,
+          transitions: [grant()],
+        }),
+        coverage: "complete" as const,
+        retained: true,
+        observedRelayUrls: ["wss://example.com"],
+      },
     }
     const snapshot = createEventMarketPickupSnapshot({
       marketRead,
@@ -487,5 +535,54 @@ describe("experimental Event Market roster", () => {
         productRead: { ...productRead, actionable: false },
       })
     ).toThrow()
+  })
+
+  it("previews a removed merchant's current tagged products without granting admission", async () => {
+    const removed = roster([], 100)
+    const calendar = sign(
+      organizerSecret,
+      31923,
+      [
+        ["d", "fair"],
+        ["title", "Fair"],
+        ["start", "1790000000"],
+        ["D", "20717"],
+      ],
+      100
+    )
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    const dependencies = {
+      plan: async () => ({
+        relayUrls: ["wss://example.com"],
+        candidateRelayUrls: ["wss://example.com"],
+        maxRelayAttempts: 1,
+        ownerSelectedRelayUrls: [],
+        appRelayUrls: ["wss://example.com"],
+        personalRelayUrls: [],
+        independentRelayUrls: [],
+        relayListState: "missing" as const,
+        relayHintTruncated: false,
+      }),
+      fetch: async (filter: { kinds?: number[] }) => ({
+        events: filter.kinds?.includes(30409)
+          ? [removed]
+          : filter.kinds?.includes(31923)
+            ? [calendar]
+            : filter.kinds?.includes(30402)
+              ? [tagged]
+              : [],
+        relays: [{ relayUrl: "wss://example.com", status: "success" as const }],
+      }),
+      load: async () => [] as SignedPublicNostrEvent[],
+      retain: async () => undefined,
+    }
+    const preview = await readEventMarketReapprovalPreview(
+      { marketCoordinate, merchantPubkey: merchant },
+      dependencies
+    )
+    expect(preview.complete).toBe(true)
+    expect(preview.products.map((entry) => entry.id)).toEqual([
+      productCoordinate,
+    ])
   })
 })

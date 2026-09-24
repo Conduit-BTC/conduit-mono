@@ -63,7 +63,17 @@ export function FutureEventMarketPage({ reference }: { reference: string }) {
           The current signed Event Market record is unavailable.
         </p>
       ) : null}
-      {current && eligible.length === 0 && !query.isPending ? (
+      {current && !calendar && !query.isPending ? (
+        <p role="status">
+          The linked event record is unavailable. Refresh event records before
+          checking products.
+        </p>
+      ) : null}
+      {current &&
+      calendar &&
+      eligible.length === 0 &&
+      catalog?.coverage === "complete" &&
+      !query.isPending ? (
         <p>No eligible products were found in the checked relay evidence.</p>
       ) : null}
       {eligible.length > 0 ? (

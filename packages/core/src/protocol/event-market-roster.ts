@@ -98,7 +98,7 @@ export function buildEventMarketRosterDraft(
   const tags = [
     ["d", input.dTag],
     ["a", calendar.coordinate],
-    ["event_market", "1", input.state],
+    ["event_market", "2", input.state],
     ...input.merchants.map((row) => [
       "merchant",
       row.pubkey,
@@ -151,7 +151,7 @@ export function parseEventMarketRosterEvent(
     calendar.authorPubkey !== event.pubkey ||
     stateTags.length !== 1 ||
     stateTags[0]?.length !== 3 ||
-    stateTags[0][1] !== "1" ||
+    stateTags[0][1] !== "2" ||
     (state !== "open" && state !== "closed") ||
     previousTags.length > 1 ||
     (previousTags.length === 1 &&
@@ -232,14 +232,42 @@ export function resolveEventMarketRoster(input: {
   }
   const market = parseEventMarketRosterEvent(winner)
   if (!market) return { state: "malformed", eventId: winner.id }
-  const previous = revisions.find((event) => event.id !== winner.id)
-  if (
-    previous &&
-    market.previousEventId &&
-    market.previousEventId !== previous.id
-  ) {
-    return { state: "conflicting", eventId: winner.id }
+  const observedParents = new Set<string>()
+  let observedRoots = 0
+  for (const revision of revisions) {
+    const parsed = parseEventMarketRosterEvent(revision)
+    if (!parsed) continue
+    if (!parsed.previousEventId) {
+      observedRoots++
+      continue
+    }
+    if (observedParents.has(parsed.previousEventId)) {
+      return { state: "conflicting", eventId: winner.id }
+    }
+    observedParents.add(parsed.previousEventId)
   }
+  if (observedRoots > 1) return { state: "conflicting", eventId: winner.id }
+  // Follow the signed parent chain. A pruned relay may show A and C while
+  // C names an unseen B; that gap alone does not establish a fork.
+  const knownById = new Map(revisions.map((event) => [event.id, event]))
+  let cursor: ParsedEventMarketRoster | null = market
+  const ancestors = new Set<string>()
+  while (cursor) {
+    if (ancestors.has(cursor.eventId))
+      return { state: "conflicting", eventId: winner.id }
+    ancestors.add(cursor.eventId)
+    if (!cursor.previousEventId) break
+    const parent = knownById.get(cursor.previousEventId)
+    if (!parent) break
+    cursor = parseEventMarketRosterEvent(parent)
+    if (!cursor) break
+  }
+  if (
+    cursor &&
+    !cursor.previousEventId &&
+    revisions.some((event) => !ancestors.has(event.id))
+  )
+    return { state: "conflicting", eventId: winner.id }
   return { state: "current", market }
 }
 

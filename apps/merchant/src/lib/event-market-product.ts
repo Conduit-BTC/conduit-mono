@@ -1,6 +1,7 @@
 import {
   parseAddressableCoordinate,
   type ParsedEventMarketRoster,
+  type EventMarketAuthorizationReadResult,
   type ProductSchema,
 } from "@conduit/core"
 
@@ -8,6 +9,7 @@ import {
 export function setEventMarketProductAssociation(input: {
   product: ProductSchema
   market: ParsedEventMarketRoster
+  authorization?: EventMarketAuthorizationReadResult
   enabled: boolean
 }): ProductSchema {
   const product = parseAddressableCoordinate(input.product.id, [30402])
@@ -28,6 +30,15 @@ export function setEventMarketProductAssociation(input: {
       )
     ) {
       throw new Error("This merchant is not approved for the Event Market.")
+    }
+    if (
+      input.authorization?.resolution.state !== "active" ||
+      input.authorization.merchantPubkey !== product.authorPubkey ||
+      input.authorization.marketCoordinate !== input.market.coordinate ||
+      !input.authorization.retained ||
+      input.authorization.coverage !== "complete"
+    ) {
+      throw new Error("Current signed Event Market authorization is required.")
     }
   }
   const refs = new Set(input.product.eventMarketRefs ?? [])

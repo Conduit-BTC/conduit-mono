@@ -24,6 +24,7 @@ import {
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
   readEventMarketRoster,
+  readEventMarketAuthorization,
   resolveEventMarketOrganizerInbox,
   waitForVisibleDocument,
   type CommerceResult,
@@ -1042,9 +1043,16 @@ async function publishProduct(
           "Current signed Event Market approval could not be confirmed. Retry before linking this product."
         )
       }
+      const authorization = await readEventMarketAuthorization({
+        marketCoordinate: decoded.coordinate,
+        merchantPubkey: signerPubkey,
+        authenticatedPubkey,
+        shouldContinue,
+      })
       product = setEventMarketProductAssociation({
         product,
         market: marketRead.resolution.market,
+        authorization,
         enabled: true,
       })
     }

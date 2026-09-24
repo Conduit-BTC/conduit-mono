@@ -6,8 +6,10 @@ import {
 } from "nostr-tools/pure"
 import {
   buildEventMarketRosterDraft,
+  buildEventMarketAuthorizationDraft,
   buildProductListingEventDraft,
   parseEventMarketRosterEvent,
+  resolveEventMarketAuthorization,
   parseProductEvent,
 } from "@conduit/core"
 import { setEventMarketProductAssociation } from "../apps/merchant/src/lib/event-market-product"
@@ -53,12 +55,34 @@ function ordinaryProduct() {
   )
 }
 
+function activeAuthorization() {
+  const draft = buildEventMarketAuthorizationDraft({
+    marketCoordinate,
+    merchantPubkey: merchant,
+    state: "active",
+  })
+  const signed = finalizeEvent({ ...draft, created_at: 101 }, organizerSecret)
+  return {
+    marketCoordinate,
+    merchantPubkey: merchant,
+    resolution: resolveEventMarketAuthorization({
+      marketCoordinate,
+      merchantPubkey: merchant,
+      transitions: [signed],
+    }),
+    coverage: "complete" as const,
+    retained: true,
+    observedRelayUrls: ["wss://example.com"],
+  }
+}
+
 describe("future Event Market product publishing", () => {
   it("adds only the market association and retains ordinary shop shipping", () => {
     const baseline = ordinaryProduct()
     const associated = setEventMarketProductAssociation({
       product: baseline,
       market: market(true),
+      authorization: activeAuthorization(),
       enabled: true,
     })
     const draft = buildProductListingEventDraft({
@@ -89,5 +113,12 @@ describe("future Event Market product publishing", () => {
         enabled: true,
       })
     ).toThrow("not approved")
+    expect(() =>
+      setEventMarketProductAssociation({
+        product: ordinaryProduct(),
+        market: market(true),
+        enabled: true,
+      })
+    ).toThrow("authorization")
   })
 })

@@ -1,5 +1,7 @@
 import { z } from "zod"
 import { normalizePublicMediaUrl } from "../network-target-safety"
+import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
+import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 
 const publicMediaUrlSchema = z
   .string()
@@ -349,7 +351,19 @@ export const orderPickupFulfillmentSchema = z
     }
   })
 
-/** Future Event Market snapshot. The public roster supplies handoff terms. */
+const signedEventMarketEvidenceSchema = z
+  .object({
+    id: hex64Schema,
+    pubkey: hex64Schema,
+    created_at: z.number().int().min(0),
+    kind: z.number().int().min(0),
+    tags: z.array(z.array(z.string()).min(1)),
+    content: z.string(),
+    sig: z.string().regex(/^[0-9a-f]{128}$/i),
+  })
+  .refine(isValidSignedPublicNostrEvent, "Signed evidence must be valid.")
+
+/** Future Event Market snapshot freezes both roster and causal grant evidence. */
 export const orderEventMarketPickupFulfillmentSchema = z
   .object({
     type: z.literal("event_market_pickup"),
@@ -362,6 +376,11 @@ export const orderEventMarketPickupFulfillmentSchema = z
       end: z.number().int().min(0),
     }),
     product: pickupEvidenceCoordinateSchema,
+    authorization: z.object({
+      tip: signedEventMarketEvidenceSchema,
+      ancestry: z.array(signedEventMarketEvidenceSchema),
+      deletions: z.array(signedEventMarketEvidenceSchema),
+    }),
     mode: z.enum(["merchant_present", "organizer_handoff"]),
     assignment: z.string().min(1).max(120),
   })
@@ -413,6 +432,75 @@ export const orderEventMarketPickupFulfillmentSchema = z
         code: "custom",
         path: ["calendar", "end"],
         message: "Calendar end must follow start.",
+      })
+    }
+    const authorization = fulfillment.authorization
+    const expectedScope = fulfillment.market.coordinate
+    const expectedMerchant = fulfillment.merchantPubkey.toLowerCase()
+    const ancestryIds = new Set(authorization.ancestry.map((event) => event.id))
+    const singleton = (
+      event: z.infer<typeof signedEventMarketEvidenceSchema>,
+      name: string
+    ) => event.tags.filter((tag) => tag[0] === name)
+    const tip = authorization.tip
+    if (
+      tip.kind !== 3841 ||
+      tip.pubkey.toLowerCase() !== organizer ||
+      tip.content !== "" ||
+      JSON.stringify(singleton(tip, "openmarkets")) !==
+        JSON.stringify([["openmarkets", "event-market-auth", "1"]]) ||
+      JSON.stringify(singleton(tip, "a")) !==
+        JSON.stringify([["a", expectedScope]]) ||
+      JSON.stringify(singleton(tip, "p")) !==
+        JSON.stringify([["p", expectedMerchant]]) ||
+      JSON.stringify(singleton(tip, "state")) !==
+        JSON.stringify([["state", "active"]]) ||
+      singleton(tip, "seq").length !== 1 ||
+      !/^(0|[1-9][0-9]*)$/.test(singleton(tip, "seq")[0]?.[1] ?? "") ||
+      !authorization.ancestry.some((event) => event.id === tip.id)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization", "tip"],
+        message: "Authorization tip must be the signed active organizer grant.",
+      })
+    }
+    if (
+      authorization.ancestry.some(
+        (event) =>
+          event.kind !== 3841 ||
+          event.pubkey.toLowerCase() !== organizer ||
+          JSON.stringify(singleton(event, "a")) !==
+            JSON.stringify([["a", expectedScope]]) ||
+          JSON.stringify(singleton(event, "p")) !==
+            JSON.stringify([["p", expectedMerchant]])
+      ) ||
+      authorization.deletions.some(
+        (event) =>
+          event.kind !== 5 ||
+          event.pubkey.toLowerCase() !== organizer ||
+          !event.tags.some(
+            (tag) => tag[0] === "e" && ancestryIds.has(tag[1] ?? "")
+          )
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization"],
+        message: "Authorization history must be organizer-signed.",
+      })
+    }
+    const causal = resolveEventMarketAuthorization({
+      marketCoordinate: expectedScope,
+      merchantPubkey: expectedMerchant,
+      transitions: authorization.ancestry,
+      deletions: authorization.deletions,
+    })
+    if (causal.state !== "active" || causal.tip.eventId !== tip.id) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization"],
+        message: "Authorization history must validate to the accepted grant.",
       })
     }
   })
@@ -526,6 +614,23 @@ function hasSamePickupEvidenceRevision(
   )
 }
 
+function hasSameSignedEvidenceIds(
+  left: readonly { id: string }[],
+  right: readonly { id: string }[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left
+      .map((event) => event.id)
+      .sort()
+      .join(":") ===
+      right
+        .map((event) => event.id)
+        .sort()
+        .join(":")
+  )
+}
+
 /**
  * Pickup items may have different merchant-owned products and per-product
  * costs, but one order must preserve one exact organizer-authored event graph.
@@ -630,7 +735,10 @@ export const orderItemSchema = z
       if (
         item.shippingOptionId ||
         item.shippingOptionDTag ||
-        (item.shippingCostSats ?? 0) !== 0
+        (item.shippingCostSats ?? 0) !== 0 ||
+        item.sourceShippingCost !== undefined ||
+        item.shippingCountries !== undefined ||
+        item.shippingCountryRules !== undefined
       ) {
         context.addIssue({
           code: "custom",
@@ -721,8 +829,15 @@ export const orderSchema = z
       (item) => item.fulfillment?.type === "pickup"
     )?.fulfillment
     const hasPickup = firstPickup?.type === "pickup"
+    const firstEventMarketPickup = order.items.find(
+      (item) => item.fulfillment?.type === "event_market_pickup"
+    )?.fulfillment
+    const hasEventMarketPickup =
+      firstEventMarketPickup?.type === "event_market_pickup"
     const pickupOnly = order.items.every(
-      (item) => item.fulfillment?.type === "pickup"
+      (item) =>
+        item.fulfillment?.type === "pickup" ||
+        item.fulfillment?.type === "event_market_pickup"
     )
     const hasShipping = order.items.some(
       (item) =>
@@ -741,6 +856,59 @@ export const orderSchema = z
           message: "Pickup product evidence must belong to the order merchant.",
         })
       }
+      if (item.fulfillment?.type === "event_market_pickup") {
+        if (
+          item.fulfillment.merchantPubkey.toLowerCase() !==
+            order.merchantPubkey.toLowerCase() ||
+          item.fulfillment.payeePubkey.toLowerCase() !==
+            order.merchantPubkey.toLowerCase()
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["items", index, "fulfillment", "merchantPubkey"],
+            message:
+              "Event Market merchant and payee must match the order recipient.",
+          })
+        }
+        if (
+          firstEventMarketPickup?.type === "event_market_pickup" &&
+          (item.fulfillment.market.coordinate !==
+            firstEventMarketPickup.market.coordinate ||
+            item.fulfillment.market.eventId !==
+              firstEventMarketPickup.market.eventId ||
+            item.fulfillment.calendar.coordinate !==
+              firstEventMarketPickup.calendar.coordinate ||
+            item.fulfillment.calendar.eventId !==
+              firstEventMarketPickup.calendar.eventId ||
+            item.fulfillment.calendar.start !==
+              firstEventMarketPickup.calendar.start ||
+            item.fulfillment.calendar.end !==
+              firstEventMarketPickup.calendar.end ||
+            item.fulfillment.merchantPubkey !==
+              firstEventMarketPickup.merchantPubkey ||
+            item.fulfillment.payeePubkey !==
+              firstEventMarketPickup.payeePubkey ||
+            item.fulfillment.mode !== firstEventMarketPickup.mode ||
+            item.fulfillment.assignment !== firstEventMarketPickup.assignment ||
+            item.fulfillment.authorization.tip.id !==
+              firstEventMarketPickup.authorization.tip.id ||
+            !hasSameSignedEvidenceIds(
+              item.fulfillment.authorization.ancestry,
+              firstEventMarketPickup.authorization.ancestry
+            ) ||
+            !hasSameSignedEvidenceIds(
+              item.fulfillment.authorization.deletions,
+              firstEventMarketPickup.authorization.deletions
+            ))
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["items", index, "fulfillment"],
+            message:
+              "Event Market items must share one accepted market and assignment.",
+          })
+        }
+      }
       if (
         firstPickup?.type === "pickup" &&
         item.fulfillment?.type === "pickup" &&
@@ -754,18 +922,39 @@ export const orderSchema = z
         })
       }
     }
-    if (hasPickup && hasShipping) {
+    if ((hasPickup || hasEventMarketPickup) && hasShipping) {
       context.addIssue({
         code: "custom",
         path: ["items"],
         message: "Pickup and shipped items require separate orders.",
       })
     }
-    if (hasPickup && order.shippingAddress) {
+    if ((hasPickup || hasEventMarketPickup) && order.shippingAddress) {
       context.addIssue({
         code: "custom",
         path: ["shippingAddress"],
         message: "Pickup orders must not include a delivery address.",
+      })
+    }
+    if (hasEventMarketPickup && hasPickup) {
+      context.addIssue({
+        code: "custom",
+        path: ["items"],
+        message:
+          "Legacy and future Event Market pickup require separate orders.",
+      })
+    }
+    if (
+      hasEventMarketPickup &&
+      ((order.shippingCostSats ?? 0) !== 0 ||
+        (order.shippingCostStatus !== undefined &&
+          order.shippingCostStatus !== "not_required" &&
+          order.shippingCostStatus !== "included"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["shippingCostSats"],
+        message: "Event Market pickup has no separate order shipping charge.",
       })
     }
     if (order.buyerIdentityKind === "guest_ephemeral" && !order.guestContact) {
