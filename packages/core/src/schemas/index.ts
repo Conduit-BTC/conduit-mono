@@ -349,10 +349,79 @@ export const orderPickupFulfillmentSchema = z
     }
   })
 
+/** Future Event Market snapshot. The public roster supplies handoff terms. */
+export const orderEventMarketPickupFulfillmentSchema = z
+  .object({
+    type: z.literal("event_market_pickup"),
+    organizerPubkey: hex64Schema,
+    merchantPubkey: hex64Schema,
+    payeePubkey: hex64Schema,
+    market: pickupEvidenceCoordinateSchema,
+    calendar: pickupEvidenceCoordinateSchema.extend({
+      start: z.number().int().min(0),
+      end: z.number().int().min(0),
+    }),
+    product: pickupEvidenceCoordinateSchema,
+    mode: z.enum(["merchant_present", "organizer_handoff"]),
+    assignment: z.string().min(1).max(120),
+  })
+  .superRefine((fulfillment, context) => {
+    const kind = (coordinate: string) => Number(coordinate.split(":", 1)[0])
+    const author = (coordinate: string) =>
+      coordinate.split(":", 3)[1]?.toLowerCase()
+    const organizer = fulfillment.organizerPubkey.toLowerCase()
+    const merchant = fulfillment.merchantPubkey.toLowerCase()
+    if (
+      kind(fulfillment.market.coordinate) !== 30409 ||
+      author(fulfillment.market.coordinate) !== organizer
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["market"],
+        message: "Market must be organizer-authored kind 30409.",
+      })
+    }
+    if (
+      ![31922, 31923].includes(kind(fulfillment.calendar.coordinate)) ||
+      author(fulfillment.calendar.coordinate) !== organizer
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["calendar"],
+        message: "Calendar must be organizer-authored NIP-52.",
+      })
+    }
+    if (
+      kind(fulfillment.product.coordinate) !== 30402 ||
+      author(fulfillment.product.coordinate) !== merchant
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["product"],
+        message: "Product must be merchant-authored kind 30402.",
+      })
+    }
+    if (fulfillment.payeePubkey.toLowerCase() !== merchant) {
+      context.addIssue({
+        code: "custom",
+        path: ["payeePubkey"],
+        message: "The merchant remains the payee.",
+      })
+    }
+    if (fulfillment.calendar.end < fulfillment.calendar.start) {
+      context.addIssue({
+        code: "custom",
+        path: ["calendar", "end"],
+        message: "Calendar end must follow start.",
+      })
+    }
+  })
+
 export const orderItemFulfillmentSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("digital") }),
   z.object({ type: z.literal("shipping") }),
   orderPickupFulfillmentSchema,
+  orderEventMarketPickupFulfillmentSchema,
 ])
 
 export type PickupEvidenceCoordinateSchema = z.infer<
@@ -360,6 +429,9 @@ export type PickupEvidenceCoordinateSchema = z.infer<
 >
 export type OrderPickupFulfillmentSchema = z.infer<
   typeof orderPickupFulfillmentSchema
+>
+export type OrderEventMarketPickupFulfillmentSchema = z.infer<
+  typeof orderEventMarketPickupFulfillmentSchema
 >
 export type OrderItemFulfillmentSchema = z.infer<
   typeof orderItemFulfillmentSchema
@@ -545,6 +617,29 @@ export const orderItemSchema = z
         path: ["fulfillment", "type"],
         message: "Fulfillment type must match the signed product format.",
       })
+    }
+    if (item.fulfillment.type === "event_market_pickup") {
+      if (item.fulfillment.product.coordinate !== item.productId) {
+        context.addIssue({
+          code: "custom",
+          path: ["fulfillment", "product", "coordinate"],
+          message:
+            "Event Market product evidence must match the ordered product.",
+        })
+      }
+      if (
+        item.shippingOptionId ||
+        item.shippingOptionDTag ||
+        (item.shippingCostSats ?? 0) !== 0
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["shippingOptionId"],
+          message:
+            "Event Market pickup has no separate buyer fee or pickup option.",
+        })
+      }
+      return
     }
     if (item.fulfillment.type !== "pickup") return
     if (item.fulfillment.product.coordinate !== item.productId) {

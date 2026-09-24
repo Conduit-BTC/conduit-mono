@@ -184,6 +184,7 @@ export function parseEventMarketRosterEvent(
 }
 
 export type EventMarketRosterResolution =
+  | { state: "invalid_reference" }
   | { state: "missing" }
   | { state: "malformed" | "deleted" | "conflicting"; eventId: string }
   | { state: "current"; market: ParsedEventMarketRoster }
@@ -197,7 +198,7 @@ export function resolveEventMarketRoster(input: {
   const coordinate = parseAddressableCoordinate(input.coordinate, [
     EVENT_KINDS.EVENT_MARKET,
   ])
-  if (!coordinate) return { state: "missing" }
+  if (!coordinate) return { state: "invalid_reference" }
   const revisions = input.revisions
     .filter(
       (event) =>

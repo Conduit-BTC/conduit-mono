@@ -8,9 +8,13 @@ import {
   buildEventMarketRosterDraft,
   getEventMarketCandidateFilters,
   parseEventMarketRosterEvent,
+  parseEventMarketCalendarEvent,
   resolveEventMarketCalendar,
   resolveEventMarketProduct,
   resolveEventMarketRoster,
+  readEventMarketRoster,
+  readEventMarketProduct,
+  createEventMarketPickupSnapshot,
   type EventMarketMerchantRow,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
@@ -272,5 +276,149 @@ describe("experimental Event Market roster", () => {
         revisions: [first],
       }).state
     ).toBe("eligible")
+  })
+
+  it("retains a newer signed merchant removal when a lagging relay returns the old roster", async () => {
+    const approved = roster([merchantRow], 100)
+    const removed = roster([], 101, approved.id)
+    const read = await readEventMarketRoster(
+      { reference: marketCoordinate },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => ({
+          events: filter.kinds?.includes(30409 as never) ? [approved] : [],
+          relays: [{ relayUrl: "wss://example.com", status: "success" }],
+        }),
+        load: async () => [removed],
+        retain: async () => undefined,
+      }
+    )
+    expect(read.resolution).toMatchObject({
+      state: "current",
+      market: { merchants: [] },
+    })
+    expect(read.coverage).toBe("stale")
+  })
+
+  it("uses the exact latest product revision when a lagging relay offers an old market tag", async () => {
+    const approved = parseEventMarketRosterEvent(roster([merchantRow]))!
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    const untagged = product(merchantSecret, merchant, "soap", 101, false)
+    const read = await readEventMarketProduct(
+      {
+        marketRead: {
+          coordinate: marketCoordinate,
+          resolution: { state: "current", market: approved },
+          coverage: "complete",
+          retained: true,
+          observedRelayUrls: ["wss://example.com"],
+          calendar: parseEventMarketCalendarEvent(
+            sign(
+              organizerSecret,
+              31923,
+              [
+                ["d", "fair"],
+                ["title", "Fair"],
+                ["start", "1790000000"],
+                ["D", "20717"],
+              ],
+              100
+            )
+          ),
+          calendarCoverage: "complete",
+        },
+        productCoordinate,
+      },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => ({
+          events: filter.kinds?.includes(30402 as never) ? [tagged] : [],
+          relays: [{ relayUrl: "wss://example.com", status: "success" }],
+        }),
+        load: async () => [untagged],
+        retain: async () => undefined,
+      }
+    )
+    expect(read.resolution.state).toBe("untagged")
+    expect(read.coverage).toBe("stale")
+    expect(read.actionable).toBe(false)
+  })
+
+  it("freezes the signed roster row and product revision with the merchant as payee", () => {
+    const currentMarket = parseEventMarketRosterEvent(roster([merchantRow]))!
+    const signedProduct = product(merchantSecret, merchant, "soap", 100)
+    const currentProduct = resolveEventMarketProduct({
+      market: currentMarket,
+      productCoordinate,
+      revisions: [signedProduct],
+    })
+    const calendar = parseEventMarketCalendarEvent(
+      sign(
+        organizerSecret,
+        31923,
+        [
+          ["d", "fair"],
+          ["title", "Fair"],
+          ["start", "1790000000"],
+          ["D", "20717"],
+        ],
+        100
+      )
+    )!
+    const marketRead = {
+      coordinate: marketCoordinate,
+      resolution: { state: "current" as const, market: currentMarket },
+      coverage: "complete" as const,
+      retained: true,
+      observedRelayUrls: ["wss://example.com"],
+      calendar,
+      calendarCoverage: "complete" as const,
+    }
+    const productRead = {
+      productCoordinate,
+      resolution: currentProduct,
+      coverage: "complete" as const,
+      retained: true,
+      actionable: true,
+    }
+    const snapshot = createEventMarketPickupSnapshot({
+      marketRead,
+      productRead,
+    })
+    expect(snapshot).toMatchObject({
+      type: "event_market_pickup",
+      payeePubkey: merchant,
+      mode: "merchant_present",
+      assignment: "Booth 12",
+      market: { eventId: currentMarket.eventId },
+      product: { eventId: signedProduct.id },
+    })
+    expect(snapshot).not.toHaveProperty("costSats")
+    expect(() =>
+      createEventMarketPickupSnapshot({
+        marketRead,
+        productRead: { ...productRead, actionable: false },
+      })
+    ).toThrow()
   })
 })

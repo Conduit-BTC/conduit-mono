@@ -173,6 +173,14 @@ export interface CachedEventMarketEvidence {
   cachedAt: number
 }
 
+/** Retained public revisions for the experimental merchant-roster contract. */
+export interface CachedEventMarketRosterEvidence {
+  id: string
+  marketCoordinate: string
+  signedEvent: SignedPublicNostrEvent
+  cachedAt: number
+}
+
 export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
 
 export type ProductDeletionRelayDeliveryStatus =
@@ -994,6 +1002,7 @@ class ConduitDB extends Dexie {
   >
   ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
   eventMarketEvidence!: EntityTable<CachedEventMarketEvidence, "id">
+  eventMarketRosterEvidence!: EntityTable<CachedEventMarketRosterEvidence, "id">
   wallets!: EntityTable<WalletDescriptor, "id">
   walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
   shoppingCarts!: EntityTable<StoredShoppingCart, "id">
@@ -1185,6 +1194,10 @@ class ConduitDB extends Dexie {
       // Shared, signer-independent shopper state. Market owns the opaque
       // payload while Core supplies one serialized cross-tab transaction lane.
       shoppingCarts: "id, updatedAt",
+    })
+
+    this.version(20).stores({
+      eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
     })
   }
 }

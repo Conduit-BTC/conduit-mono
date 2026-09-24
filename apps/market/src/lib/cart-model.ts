@@ -19,6 +19,7 @@ import {
   type Product,
   type ProductSpecification,
   type OrderPickupFulfillmentSchema,
+  type OrderEventMarketPickupFulfillmentSchema,
   type PickupEvidenceCoordinateSchema,
 } from "@conduit/core"
 
@@ -88,6 +89,8 @@ export type PickupEvidenceCoordinate = PickupEvidenceCoordinateSchema
 
 /** Shared protocol snapshot; Market only persists and displays this shape. */
 export type CartPickupFulfillment = OrderPickupFulfillmentSchema
+export type CartEventMarketPickupFulfillment =
+  OrderEventMarketPickupFulfillmentSchema
 
 /**
  * Reversible shopper intent while the exact signed event pickup graph is being
@@ -103,6 +106,7 @@ export type CartItemFulfillment =
   | { type: "shipping" }
   | CartPendingEventPickupFulfillment
   | CartPickupFulfillment
+  | CartEventMarketPickupFulfillment
 
 export type PendingEventPickupCartItem = CartItem & {
   fulfillment: CartPendingEventPickupFulfillment
@@ -321,6 +325,8 @@ export function getCartItemFulfillmentType(
   item: Pick<CartItem, "format" | "fulfillment">
 ): CartItemFulfillment["type"] {
   if (item.fulfillment?.type === "pickup") return "pickup"
+  if (item.fulfillment?.type === "event_market_pickup")
+    return "event_market_pickup"
   if (item.fulfillment?.type === "event_pickup_pending") {
     return "event_pickup_pending"
   }
@@ -363,7 +369,7 @@ export function getCartFulfillmentLane(
   for (const item of items) {
     const type = getCartItemFulfillmentType(item)
     if (type === "shipping") hasShipping = true
-    if (type === "pickup") hasPickup = true
+    if (type === "pickup" || type === "event_market_pickup") hasPickup = true
   }
 
   if (hasShipping && hasPickup) return "mixed_shipping_pickup"
@@ -375,6 +381,9 @@ export function getCartFulfillmentLane(
 export function getMixedFulfillmentBlockingMessage(
   items: Array<Pick<CartItem, "format" | "fulfillment">>
 ): string | null {
+  if (items.some((item) => item.fulfillment?.type === "event_market_pickup")) {
+    return "This Event Market needs current signed participation verification before checkout."
+  }
   if (items.some(isPendingEventPickupCartItem)) {
     return "Event pickup is still being verified. Review it after verification finishes."
   }
@@ -393,6 +402,22 @@ export function getMixedFulfillmentBlockingMessage(
     return "These items have different pickup handlers or event pickup records. Place them as separate orders."
   }
 
+  const marketItems = items.filter(
+    (item) => item.fulfillment?.type === "event_market_pickup"
+  )
+  const firstMarket = marketItems[0]?.fulfillment
+  if (
+    firstMarket?.type === "event_market_pickup" &&
+    marketItems.some(
+      (item) =>
+        item.fulfillment?.type !== "event_market_pickup" ||
+        item.fulfillment.market.coordinate !== firstMarket.market.coordinate ||
+        item.fulfillment.merchantPubkey !== firstMarket.merchantPubkey
+    )
+  ) {
+    return "These items belong to different Event Markets. Place them as separate orders."
+  }
+
   return null
 }
 
@@ -409,6 +434,16 @@ export function isSameCartFulfillment(
       right.fulfillment?.type === "event_pickup_pending" &&
       left.fulfillment.collectionCoordinate ===
         right.fulfillment.collectionCoordinate
+    )
+  }
+  if (leftType === "event_market_pickup") {
+    return (
+      left.fulfillment?.type === "event_market_pickup" &&
+      right.fulfillment?.type === "event_market_pickup" &&
+      left.fulfillment.market.coordinate ===
+        right.fulfillment.market.coordinate &&
+      left.fulfillment.merchantPubkey === right.fulfillment.merchantPubkey &&
+      left.fulfillment.payeePubkey === right.fulfillment.payeePubkey
     )
   }
   if (leftType !== "pickup" || rightType !== "pickup") return true
@@ -969,12 +1004,14 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
                     item.fulfillment.sourceCost.normalizedCurrency,
                 },
               }
-            : item.fulfillment?.type === "event_pickup_pending"
-              ? {
-                  type: "event_pickup_pending",
-                  collectionCoordinate: item.fulfillment.collectionCoordinate,
-                }
-              : getCartItemFulfillmentType(item),
+            : item.fulfillment?.type === "event_market_pickup"
+              ? { ...item.fulfillment }
+              : item.fulfillment?.type === "event_pickup_pending"
+                ? {
+                    type: "event_pickup_pending",
+                    collectionCoordinate: item.fulfillment.collectionCoordinate,
+                  }
+                : getCartItemFulfillmentType(item),
         shippingCostSats: item.shippingCostSats ?? null,
         sourceShippingCost: item.sourceShippingCost ?? null,
         shippingOptionId: item.shippingOptionId ?? null,
@@ -1306,6 +1343,16 @@ export function getCartLineFulfillmentId(
   if (item.fulfillment?.type === "pickup") {
     return getPickupLineFulfillmentKey(item.fulfillment)
   }
+  if (item.fulfillment?.type === "event_market_pickup") {
+    return JSON.stringify([
+      "event_market_pickup",
+      item.fulfillment.market.coordinate,
+      item.fulfillment.product.coordinate,
+      item.fulfillment.product.eventId,
+      item.fulfillment.mode,
+      item.fulfillment.assignment,
+    ])
+  }
   if (item.fulfillment?.type === "event_pickup_pending") {
     return JSON.stringify([
       "event_pickup_pending",
@@ -1342,9 +1389,16 @@ export function getCartPurchaseGroupId(
   const compatibility =
     item.fulfillment?.type === "pickup"
       ? getPickupPurchaseCompatibilityKey(item.fulfillment)
-      : item.fulfillment?.type === "event_pickup_pending"
-        ? getCartLineFulfillmentId(item)
-        : "delivery"
+      : item.fulfillment?.type === "event_market_pickup"
+        ? JSON.stringify([
+            "event_market_pickup",
+            item.fulfillment.market.coordinate,
+            item.fulfillment.merchantPubkey,
+            item.fulfillment.payeePubkey,
+          ])
+        : item.fulfillment?.type === "event_pickup_pending"
+          ? getCartLineFulfillmentId(item)
+          : "delivery"
   return JSON.stringify([item.merchantPubkey, compatibility])
 }
 
@@ -1391,7 +1445,10 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
     // It becomes purchasable only after an atomic upgrade to exact fulfillment.
     if (isPendingEventPickupCartItem(item)) continue
     const purchaseItem = item as CartPurchaseItem
-    const kind = isPickupCartItem(item) ? "pickup" : "delivery"
+    const kind =
+      isPickupCartItem(item) || item.fulfillment?.type === "event_market_pickup"
+        ? "pickup"
+        : "delivery"
     const compatibleGroups = groups.filter(
       (group) =>
         group.merchantPubkey === item.merchantPubkey &&
@@ -1404,6 +1461,7 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
     const existing = compatibleGroups.find(
       (group) =>
         kind === "delivery" ||
+        item.fulfillment?.type === "event_market_pickup" ||
         !group.items.some((entry) => entry.productId === item.productId)
     )
     if (existing) {
@@ -1414,7 +1472,7 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
 
     groups.push({
       id:
-        kind === "pickup"
+        kind === "pickup" && item.fulfillment?.type !== "event_market_pickup"
           ? getCartPickupRevisionPurchaseGroupId(item)
           : getCartPurchaseGroupId(item),
       kind,

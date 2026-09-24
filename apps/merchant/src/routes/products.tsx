@@ -992,6 +992,7 @@ async function publishProduct(
     ...(preserveFulfillment && existing
       ? getProductPreservedFulfillmentFields(existing.product)
       : {}),
+    eventMarketRefs: existing?.product.eventMarketRefs,
     stock: parseProductStockInput(form.stock),
     images: prepareProductImages(form.images),
     tags,
