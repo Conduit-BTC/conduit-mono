@@ -129,8 +129,10 @@ Do not use generic `Blocked`. Do not expose internal workflow terms such as
 - Account nsecs, account private keys, and credential-shaped fixtures must not
   be introduced or made reachable in source, authored history, logs, or
   artifacts. Never print suspected secret material.
-- Order and private-message actions remain signer-gated. NIP-17 messaging
-  preserves NIP-59 wrapping and NIP-44 compatibility. NIP-44 v3 work remains
+- Account-owned order and private-message actions remain signer-gated. The
+  bounded guest-order key may sign only its permitted same-order actions; guest
+  checkout must not require an inbox, self-copy, or reply channel. NIP-17
+  messaging preserves NIP-59 wrapping and NIP-44 compatibility. NIP-44 v3 work remains
   gated on public draft and client references plus explicit capability
   detection.
 - Payments remain non-custodial and do not introduce balance management.
