@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 async function source(path: string): Promise<string> {
-  return await Bun.file(path).text()
+  return (await Bun.file(path).text()).replace(/\r\n/g, "\n")
 }
 
 describe("Merchant publish live account authority", () => {

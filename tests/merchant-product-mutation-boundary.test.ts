@@ -9,6 +9,7 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
+import { IDBFactory as FakeIDBFactory, IDBKeyRange } from "fake-indexeddb"
 import type {
   CachedEventMarketEvidence,
   CommerceProductRecord,
@@ -27,8 +28,6 @@ import type {
 } from "../apps/merchant/src/lib/product-publishing"
 import type { ProductListingRecordLike } from "../apps/merchant/src/lib/productVariations"
 
-// Bun has no IndexedDB; initialize it before loading Conduit's Dexie singleton.
-await import("fake-indexeddb/auto")
 const {
   __resetCommerceTestOverrides,
   __resetShippingTestOverrides,
@@ -356,6 +355,21 @@ interface PublicationObservation {
 }
 
 function installTestBrowserDurability(): () => void {
+  // Other test files may load the singleton before this fixture. Dexie snapshots
+  // its dependencies at construction, so a global polyfill is insufficient.
+  const dependencies = (
+    db as unknown as {
+      _deps: {
+        indexedDB?: IDBFactory
+        IDBKeyRange?: typeof IDBKeyRange
+      }
+    }
+  )._deps
+  const previousIndexedDB = dependencies.indexedDB
+  const previousKeyRange = dependencies.IDBKeyRange
+  db.close({ disableAutoOpen: false })
+  dependencies.indexedDB = new FakeIDBFactory()
+  dependencies.IDBKeyRange = IDBKeyRange
   const previousNavigator = Object.getOwnPropertyDescriptor(
     globalThis,
     "navigator"
@@ -401,6 +415,9 @@ function installTestBrowserDurability(): () => void {
     value: testStorage,
   })
   return () => {
+    db.close({ disableAutoOpen: false })
+    dependencies.indexedDB = previousIndexedDB
+    dependencies.IDBKeyRange = previousKeyRange
     if (previousNavigator) {
       Object.defineProperty(globalThis, "navigator", previousNavigator)
     } else {
@@ -463,16 +480,6 @@ async function attemptProductPublication(input: {
   const baselinesByAddress = input.durableBaselines
     ? new Map(input.durableBaselines.map((baseline) => [baseline.id, baseline]))
     : null
-  if (input.durableBaselines) {
-    await db.products.bulkPut(
-      input.durableBaselines.map((baseline) => ({
-        ...baseline,
-        eventId: record(baseline).eventId,
-        eventCreatedAt: record(baseline).eventCreatedAt,
-        cachedAt: START,
-      }))
-    )
-  }
   const listings = baselinesByAddress
     ? input.listings.map((listing) => {
         const baseline = baselinesByAddress.get(
@@ -525,6 +532,16 @@ async function attemptProductPublication(input: {
     ? installTestBrowserDurability()
     : undefined
   try {
+    if (input.durableBaselines) {
+      await db.products.bulkPut(
+        input.durableBaselines.map((baseline) => ({
+          ...baseline,
+          eventId: record(baseline).eventId,
+          eventCreatedAt: record(baseline).eventCreatedAt,
+          cachedAt: START,
+        }))
+      )
+    }
     await signAndPublishProductWriteBundle(
       {
         merchantPubkey: MERCHANT,
