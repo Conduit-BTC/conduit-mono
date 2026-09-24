@@ -455,6 +455,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     return null
   }
 
+  const displayedGroups = groups.length > 0 ? groups : [activeGroup]
   const merchantName =
     getProfileName(activeProfile) ??
     `Merchant ${formatNpub(selectedMerchant, 6)}`
@@ -507,45 +508,44 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             <ShoppingCart className="h-6 w-6" />
           </span>
 
-          {groups.length > 1 ? (
-            <div
-              ref={purchaseRailRef}
-              role="group"
-              aria-label="Cart purchases"
-              className="flex h-auto w-full min-w-0 max-w-full justify-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-[50%] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-              style={{
-                maskImage:
-                  "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
-                WebkitMaskImage:
-                  "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
-              }}
-            >
-              {groups.map((group, index) => {
-                const profile = profiles.data[group.merchantPubkey]
-                const merchantLabel =
-                  getProfileName(profile) ?? formatNpub(group.merchantPubkey, 6)
-                return (
-                  <PurchaseTab
-                    key={group.id}
-                    group={group}
-                    merchantLabel={merchantLabel}
-                    picture={profile?.picture}
-                    selected={group.id === activeGroup.id}
-                    purchaseIndex={index}
-                    onSelect={() => activatePurchase(group.id, index)}
-                  />
-                )
-              })}
-            </div>
-          ) : (
-            <PurchaseTab
-              group={activeGroup}
-              merchantLabel={merchantName}
-              picture={activeProfile?.picture}
-              selected
-              onSelect={() => activatePurchase(activeGroup.id)}
-            />
-          )}
+          <div
+            ref={purchaseRailRef}
+            role="group"
+            aria-label="Cart purchases"
+            className={cn(
+              "flex h-auto w-full min-w-0 max-w-full justify-start gap-1 overflow-x-auto rounded-xl border-0 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+              displayedGroups.length > 1 && "pr-[50%]"
+            )}
+            style={
+              displayedGroups.length > 1
+                ? {
+                    maskImage:
+                      "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+                    WebkitMaskImage:
+                      "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+                  }
+                : undefined
+            }
+          >
+            {displayedGroups.map((group, index) => {
+              const profile = profiles.data[group.merchantPubkey]
+              const merchantLabel =
+                getProfileName(profile) ?? formatNpub(group.merchantPubkey, 6)
+              return (
+                <PurchaseTab
+                  key={group.id}
+                  group={group}
+                  merchantLabel={
+                    displayedGroups.length === 1 ? merchantName : merchantLabel
+                  }
+                  picture={profile?.picture}
+                  selected={group.id === activeGroup.id}
+                  purchaseIndex={displayedGroups.length > 1 ? index : undefined}
+                  onSelect={() => activatePurchase(group.id, index)}
+                />
+              )
+            })}
+          </div>
 
           <div className="flex shrink-0 items-center gap-1 sm:gap-2">
             <Button
