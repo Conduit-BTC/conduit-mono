@@ -29,33 +29,31 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("market-cart-hud-surface")
     expect(styles).toContain("var(--background) 92%, transparent")
     expect(styles).toContain("var(--warning) 1%, var(--surface)")
-    expect(
-      source.match(/var\(--primary-500\)_15%,transparent/g)?.length
-    ).toBeGreaterThanOrEqual(3)
     expect(source).toContain('aria-label="Cart products"')
     expect(source).toContain("linear-gradient(to right")
     expect(source).toContain("rounded-xl border-0 p-1 pr-[50%]")
-    expect(source.match(/max-w-60/g)?.length).toBe(2)
     // Three-column header: shrink-free glyph, minmax(0,1fr) merchant rail,
     // shrink-free disclosure + CTA controls. No magic width subtraction.
     expect(source).toContain("grid-cols-[auto_minmax(0,1fr)_auto]")
     expect(source).not.toContain("calc(100%_-_7rem)")
-    expect(source).toContain("min-h-11 w-fit min-w-0 max-w-60 items-center")
-    expect(source.match(/<StatusPill/g)?.length).toBe(2)
+    expect(source).toContain("<PurchaseTab")
+    expect(source).toContain("<StatusPill")
+    expect(source).toContain('data-testid="purchase-tab-count"')
     expect(source).toContain('variant="neutral"')
+    expect(source).toContain("sm:block")
     expect(source).toContain(
       'label: digitalOnly ? "Digital delivery" : "Delivery"'
     )
     expect(source).toMatch(/:\s*"Event pickup",/)
+    expect(source).toContain('navLabel: "Pickup"')
+    expect(source).toContain('navLabel: digitalOnly ? "Digital" : "Delivery"')
     expect(source).toContain("pickupTitle.option.location?.trim()")
     expect(source).toContain("pickupTitle.option.title?.trim()")
     expect(source).toMatch(/Event pickup\s*-\s*\$\{pickupDetail\}/)
-    expect(source).toContain('compactLabel: pickupDetail || "Event pickup"')
     expect(source).toContain('selectedLabel: pickupDetail || "Event pickup"')
     expect(source).toContain("<PurchaseContextLabel group={group} compact />")
-    expect(source).toContain(
-      "<PurchaseContextLabel group={activeGroup} compact />"
-    )
+    expect(source).not.toContain("getCartPurchaseReference")
+    expect(source).not.toContain("duplicatePurchaseContexts")
     expect(source).toContain("Truck,")
     expect(source).toContain("Download,")
     expect(source).toContain("Store,")
@@ -86,7 +84,7 @@ describe("Market cart HUD policy", () => {
     // purchase while collapsed selects and expands it.
     expect(source).toContain("const activatePurchase = useCallback")
     expect(source).toContain(
-      "onClick={() => activatePurchase(group.id, index)}"
+      "onSelect={() => activatePurchase(group.id, index)}"
     )
     expect(source).toContain("rail.scrollTo({")
     // The disclosure toggle controls the real details panel element.

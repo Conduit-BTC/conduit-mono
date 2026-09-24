@@ -267,33 +267,35 @@ async function seedMerchantProfile(
 
 async function expectMobilePurchaseTabLayout(tab: Locator): Promise<void> {
   const avatar = tab.getByTestId("purchase-tab-avatar")
-  const count = tab.getByTestId("mobile-purchase-count")
-  const label = tab.getByTestId("mobile-purchase-label")
+  const count = tab.getByTestId("purchase-tab-count")
   await expect(avatar).toBeVisible()
   await expect(count).toBeVisible()
-  await expect(label).toBeVisible()
+  await expect(tab.getByTestId("purchase-tab-details")).toBeHidden()
   const boxes = await tab.evaluate((element) => {
     const bounds = (testId: string) =>
       element
         .querySelector(`[data-testid='${testId}']`)!
         .getBoundingClientRect()
     const avatar = bounds("purchase-tab-avatar")
-    const count = bounds("mobile-purchase-count")
-    const label = bounds("mobile-purchase-label")
+    const count = bounds("purchase-tab-count")
     return {
       avatarRight: avatar.right,
-      avatarTop: avatar.top,
-      avatarBottom: avatar.bottom,
       countLeft: count.left,
-      countTop: count.top,
-      labelTop: label.top,
-      labelBottom: label.bottom,
+      verticalOffset: Math.abs(
+        (avatar.top + avatar.bottom) / 2 - (count.top + count.bottom) / 2
+      ),
+      countHeight: count.height,
+      countRadius: parseFloat(
+        getComputedStyle(
+          element.querySelector("[data-testid='purchase-tab-count']")!
+        ).borderTopLeftRadius
+      ),
     }
   })
   expect(boxes.avatarRight).toBeLessThanOrEqual(boxes.countLeft)
-  expect(boxes.avatarTop).toBeLessThanOrEqual(boxes.countTop + 2)
-  expect(boxes.avatarBottom).toBeGreaterThanOrEqual(boxes.labelBottom - 2)
-  expect(boxes.countTop).toBeLessThan(boxes.labelTop)
+  expect(boxes.verticalOffset).toBeLessThanOrEqual(2)
+  expect(boxes.countHeight).toBeGreaterThanOrEqual(20)
+  expect(boxes.countRadius).toBeGreaterThanOrEqual(12)
 }
 
 async function expectInsideHud(page: Page): Promise<void> {
@@ -369,13 +371,12 @@ test("market cart HUD keeps every fixed control inside the HUD across merchant-c
         if (width === 390) {
           const firstTab = rail.getByRole("button").first()
           await expectMobilePurchaseTabLayout(firstTab)
-          await expect(
-            firstTab.getByTestId("mobile-purchase-count")
-          ).toHaveText(/^[12]$/)
+          await expect(firstTab.getByTestId("purchase-tab-count")).toHaveText(
+            /^[12]$/
+          )
           await expect(
             firstTab.getByText("Digital", { exact: true })
-          ).toBeVisible()
-          await expect(firstTab.getByText(/Digital delivery/)).toBeHidden()
+          ).toBeHidden()
           if (merchantCount === 6) {
             const fifthTab = rail.getByRole("button").nth(4)
             await rail.evaluate((element) => {
@@ -590,120 +591,32 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
   expect(names[1]).toContain("Event pickup - Test location")
   expect(names[2]).toContain("Event pickup - Test location")
   expect(new Set(names).size).toBe(3)
-  await expect(selectors.nth(1)).toContainText("Test location")
-  await expect(selectors.nth(1)).not.toContainText("Event pickup")
-  await expect(selectors.nth(2)).toContainText("Test location")
-  await expect(selectors.nth(2)).not.toContainText("Event pickup")
+  await page.setViewportSize({ width: 896, height: 900 })
+  await expect(
+    selectors.nth(0).getByText("Delivery", { exact: true })
+  ).toBeVisible()
+  for (const selector of [selectors.nth(1), selectors.nth(2)]) {
+    await expect(selector.getByTestId("purchase-tab-details")).toBeVisible()
+    await expect(selector.getByText("Pickup", { exact: true })).toBeVisible()
+    await expect(selector).not.toContainText("Test location")
+    await expect(selector.getByTestId("purchase-tab-count")).toHaveText("1")
+  }
 
   await page.setViewportSize({ width: 390, height: 900 })
   for (const selector of await selectors.all()) {
     await expectMobilePurchaseTabLayout(selector)
+    await expect(selector.getByTestId("purchase-tab-count")).toHaveText("1")
     await expect(
       selector.getByTestId("purchase-tab-avatar").locator("img")
     ).toBeVisible()
   }
-  const fixtureGroups = await page.evaluate(async (seed) => {
-    const { getCartPurchaseReference, groupCartPurchases } =
-      await import("/src/lib/cart-model.ts")
-    return groupCartPurchases(seed.items as CartItem[]).map((group) => ({
-      id: group.id,
-      reference: getCartPurchaseReference(group.id),
-    }))
+  const pickupGroups = await page.evaluate(async (seed) => {
+    const { groupCartPurchases } = await import("/src/lib/cart-model.ts")
+    return groupCartPurchases(seed.items as CartItem[])
+      .slice(1)
+      .map((group) => ({ id: group.id }))
   }, sameMerchantFulfillmentCartSeed())
-  const pickupGroups = fixtureGroups.slice(1)
-  const pickupReferences = pickupGroups.map((group) => group.reference)
-  expect(new Set(pickupReferences).size).toBe(2)
-  await page.setViewportSize({ width: 896, height: 900 })
-  const desktopReferences: string[] = []
-  for (let index = 0; index < 2; index += 1) {
-    const reference = selectors
-      .nth(index + 1)
-      .getByTestId("desktop-purchase-reference")
-    await expect(reference).toBeVisible()
-    const referenceGeometry = await reference.evaluate((element) => {
-      const referenceBox = element.getBoundingClientRect()
-      const buttonBox = element.closest("button")!.getBoundingClientRect()
-      return {
-        clientWidth: element.clientWidth,
-        scrollWidth: element.scrollWidth,
-        left: referenceBox.left,
-        right: referenceBox.right,
-        top: referenceBox.top,
-        bottom: referenceBox.bottom,
-        buttonLeft: buttonBox.left,
-        buttonRight: buttonBox.right,
-        buttonTop: buttonBox.top,
-        buttonBottom: buttonBox.bottom,
-      }
-    })
-    expect(referenceGeometry.clientWidth).toBeGreaterThanOrEqual(
-      referenceGeometry.scrollWidth
-    )
-    expect(referenceGeometry.left).toBeGreaterThanOrEqual(
-      referenceGeometry.buttonLeft - 0.5
-    )
-    expect(referenceGeometry.right).toBeLessThanOrEqual(
-      referenceGeometry.buttonRight + 0.5
-    )
-    expect(referenceGeometry.top).toBeGreaterThanOrEqual(
-      referenceGeometry.buttonTop - 0.5
-    )
-    expect(referenceGeometry.bottom).toBeLessThanOrEqual(
-      referenceGeometry.buttonBottom + 0.5
-    )
-    desktopReferences.push((await reference.textContent())?.trim() ?? "")
-  }
-  expect(new Set(desktopReferences).size).toBe(2)
-  expect(desktopReferences).toEqual(
-    pickupGroups.map((group, index) => `#${index + 2} ${group.reference}`)
-  )
-
-  await page.setViewportSize({ width: 390, height: 900 })
-  const visibleCues = await selectors
-    .locator("[data-testid='purchase-cue']")
-    .allTextContents()
-  expect(visibleCues.map((cue) => cue.trim())).toEqual(["2", "3"])
-  await expect(
-    selectors.nth(0).getByTestId("mobile-purchase-count")
-  ).toHaveText("1")
-  await expect(
-    selectors.nth(0).getByText("Delivery", { exact: true }).last()
-  ).toBeVisible()
-  for (let index = 0; index < 2; index += 1) {
-    const selector = selectors.nth(index + 1)
-    await expect(selector.getByText("Pickup", { exact: true })).toBeVisible()
-    await expect(selector.getByTestId("mobile-purchase-count")).toHaveText("1")
-  }
-  await expect(selectors.nth(1).getByTestId("purchase-cue")).not.toContainText(
-    pickupReferences[0]!
-  )
-  await expect(selectors.nth(2).getByTestId("purchase-cue")).not.toContainText(
-    pickupReferences[1]!
-  )
   await expectInsideHud(page)
-
-  await rail.evaluate((element) => {
-    element.scrollLeft = 0
-  })
-  await selectors.nth(2).evaluate((element) => element.click())
-  await expect
-    .poll(() => rail.evaluate((element) => element.scrollLeft))
-    .toBeGreaterThan(0)
-  await expect
-    .poll(async () => {
-      const railBounds = await rail.boundingBox()
-      const tabBounds = await selectors.nth(2).boundingBox()
-      return Math.abs(
-        railBounds!.x +
-          railBounds!.width / 2 -
-          (tabBounds!.x + tabBounds!.width / 2)
-      )
-    })
-    .toBeLessThan(3)
-  await selectors.nth(0).evaluate((element) => element.click())
-  await expect
-    .poll(() => rail.evaluate((element) => element.scrollLeft))
-    .toBe(0)
 
   const toggle = hud.locator("button[aria-expanded]")
   for (const [index, purchaseGroup] of pickupGroups.entries()) {
@@ -711,16 +624,6 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
     await selector.evaluate((element) => {
       element.scrollIntoView({ block: "nearest", inline: "center" })
     })
-    const visibleBounds = await rail.boundingBox()
-    const cue = selector.getByTestId("purchase-cue")
-    const cueBounds = await cue.boundingBox()
-    expect(visibleBounds).not.toBeNull()
-    expect(cueBounds).not.toBeNull()
-    expect(cueBounds!.x).toBeGreaterThanOrEqual(visibleBounds!.x - 0.5)
-    expect(cueBounds!.x + cueBounds!.width).toBeLessThanOrEqual(
-      visibleBounds!.x + visibleBounds!.width - 20 + 0.5
-    )
-    await expect(cue).toBeVisible()
     if ((await toggle.getAttribute("aria-expanded")) === "true") {
       await toggle.click()
     }
@@ -861,10 +764,7 @@ test("market cart HUD shows one purchase's details when its compact tab is opene
     name: /Fixture Market, 1 cart item, Event pickup - Test location/,
   })
   await expectMobilePurchaseTabLayout(purchaseTab)
-  await expect(purchaseTab.getByTestId("mobile-purchase-count")).toHaveText("1")
-  await expect(purchaseTab.getByTestId("mobile-purchase-label")).toHaveText(
-    "Pickup"
-  )
+  await expect(purchaseTab.getByTestId("purchase-tab-count")).toHaveText("1")
   await expect(purchaseTab.getByText("Fixture Market")).toBeHidden()
   await expect(purchaseTab.getByText("Test location")).toBeHidden()
   const toggle = hud.locator("button[aria-expanded]")

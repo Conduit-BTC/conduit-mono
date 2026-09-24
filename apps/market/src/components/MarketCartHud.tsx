@@ -49,7 +49,6 @@ import {
   getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
   getCartItemFulfillmentType,
-  getCartPurchaseReference,
   groupCartPurchases,
   isCartProductAvailabilityBlocking,
   type CartPurchaseGroup,
@@ -62,9 +61,8 @@ const HUD_EXIT_DURATION_MS = 240
 
 type PurchaseContext = {
   Icon: LucideIcon
-  compactLabel: string
+  navLabel: string
   label: string
-  mobileLabel: string
   selectedLabel: string
 }
 
@@ -80,9 +78,8 @@ function getPurchaseContext(group: CartPurchaseGroup): PurchaseContext {
         : ""
     return {
       Icon: Store,
-      compactLabel: pickupDetail || "Event pickup",
+      navLabel: "Pickup",
       label: pickupDetail ? `Event pickup - ${pickupDetail}` : "Event pickup",
-      mobileLabel: "Pickup",
       selectedLabel: pickupDetail || "Event pickup",
     }
   }
@@ -92,9 +89,8 @@ function getPurchaseContext(group: CartPurchaseGroup): PurchaseContext {
   )
   return {
     Icon: digitalOnly ? Download : Truck,
-    compactLabel: digitalOnly ? "Digital delivery" : "Delivery",
+    navLabel: digitalOnly ? "Digital" : "Delivery",
     label: digitalOnly ? "Digital delivery" : "Delivery",
-    mobileLabel: digitalOnly ? "Digital" : "Delivery",
     selectedLabel: digitalOnly ? "Digital delivery" : "Delivery",
   }
 }
@@ -117,9 +113,63 @@ function PurchaseContextLabel({
           compact ? "truncate" : "whitespace-normal break-words"
         )}
       >
-        {compact ? context.compactLabel : context.selectedLabel}
+        {compact ? context.navLabel : context.selectedLabel}
       </span>
     </span>
+  )
+}
+
+function PurchaseTab({
+  group,
+  merchantLabel,
+  picture,
+  selected,
+  purchaseIndex,
+  onSelect,
+}: {
+  group: CartPurchaseGroup
+  merchantLabel: string
+  picture?: string
+  selected: boolean
+  purchaseIndex?: number
+  onSelect: () => void
+}) {
+  const context = getPurchaseContext(group)
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}${purchaseIndex === undefined ? "" : `, purchase ${purchaseIndex + 1}`}`}
+      onClick={onSelect}
+      className={cn(
+        "market-cart-hud-item flex min-h-11 min-w-[4.5rem] max-w-60 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:min-w-0 sm:gap-2 sm:px-3",
+        selected
+          ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
+          : "border-transparent text-[var(--text-secondary)] hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]"
+      )}
+    >
+      <Avatar data-testid="purchase-tab-avatar" className="h-7 w-7 shrink-0">
+        <AvatarImage src={picture} alt="" />
+        <AvatarFallback>
+          <MerchantAvatarFallback iconClassName="h-4 w-4" />
+        </AvatarFallback>
+      </Avatar>
+      <span
+        data-testid="purchase-tab-details"
+        className="hidden min-w-0 max-w-full text-left leading-tight sm:block"
+      >
+        <span className="block max-w-32 truncate">{merchantLabel}</span>
+        <PurchaseContextLabel group={group} compact />
+      </span>
+      <StatusPill
+        variant="neutral"
+        aria-hidden="true"
+        data-testid="purchase-tab-count"
+        className="h-6 min-w-6 justify-center border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-1 py-0 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
+      >
+        {group.totalItems}
+      </StatusPill>
+    </button>
   )
 }
 
@@ -186,18 +236,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     groups.map((group) => group.id)
   )
   const currentGroup = groups.find((group) => group.id === currentPurchase)
-  const duplicatePurchaseContexts = useMemo(() => {
-    const contextCounts = new Map<string, number>()
-    for (const group of groups) {
-      const context = getPurchaseContext(group).label
-      contextCounts.set(context, (contextCounts.get(context) ?? 0) + 1)
-    }
-    return new Set(
-      Array.from(contextCounts)
-        .filter(([, count]) => count > 1)
-        .map(([context]) => context)
-    )
-  }, [groups])
   // Retain the last rendered cart so the dock can slide out instead of
   // disappearing when the cart empties or the route suppresses the HUD.
   const lastVisibleRef = useRef<{
@@ -484,128 +522,29 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             >
               {groups.map((group, index) => {
                 const profile = profiles.data[group.merchantPubkey]
-                const selected = group.id === activeGroup.id
-                const context = getPurchaseContext(group)
-                const contextCollides = duplicatePurchaseContexts.has(
-                  context.label
-                )
-                const purchaseReference = getCartPurchaseReference(group.id)
                 const merchantLabel =
                   getProfileName(profile) ?? formatNpub(group.merchantPubkey, 6)
                 return (
-                  <button
+                  <PurchaseTab
                     key={group.id}
-                    type="button"
-                    aria-pressed={selected}
-                    aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}${contextCollides ? `, reference ${purchaseReference}` : ""}, purchase ${index + 1}`}
-                    onClick={() => activatePurchase(group.id, index)}
-                    className={cn(
-                      "market-cart-hud-item flex min-h-11 min-w-[5.5rem] max-w-60 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:min-w-0 sm:gap-2 sm:px-3",
-                      selected
-                        ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
-                        : "border-transparent text-[var(--text-secondary)] hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]"
-                    )}
-                  >
-                    <Avatar
-                      data-testid="purchase-tab-avatar"
-                      className="h-7 w-7 shrink-0"
-                    >
-                      <AvatarImage src={profile?.picture} alt="" />
-                      <AvatarFallback>
-                        <MerchantAvatarFallback iconClassName="h-4 w-4" />
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="hidden min-w-0 max-w-full text-left leading-tight sm:block">
-                      <span className="block max-w-32 truncate">
-                        {merchantLabel}
-                      </span>
-                      <PurchaseContextLabel group={group} compact />
-                      {contextCollides ? (
-                        <span
-                          data-testid="desktop-purchase-reference"
-                          className="block whitespace-nowrap font-mono text-[0.625rem] leading-tight text-[var(--text-muted)]"
-                        >
-                          #{index + 1} {purchaseReference}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="flex min-w-0 flex-col items-start leading-tight sm:hidden">
-                      <span
-                        data-testid="mobile-purchase-count"
-                        className="text-xs font-semibold tabular-nums"
-                        aria-hidden="true"
-                      >
-                        {group.totalItems}
-                      </span>
-                      <span
-                        data-testid="mobile-purchase-label"
-                        className="flex items-baseline gap-0.5 whitespace-nowrap text-[0.65rem]"
-                      >
-                        <span>{context.mobileLabel}</span>
-                        {contextCollides ? (
-                          <span
-                            data-testid="purchase-cue"
-                            className="text-[var(--text-muted)] tabular-nums"
-                          >
-                            {index + 1}
-                          </span>
-                        ) : null}
-                      </span>
-                    </span>
-                    <StatusPill
-                      variant="neutral"
-                      aria-label={`${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}`}
-                      className="hidden border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)] sm:inline-flex"
-                    >
-                      {group.totalItems}
-                    </StatusPill>
-                  </button>
+                    group={group}
+                    merchantLabel={merchantLabel}
+                    picture={profile?.picture}
+                    selected={group.id === activeGroup.id}
+                    purchaseIndex={index}
+                    onSelect={() => activatePurchase(group.id, index)}
+                  />
                 )
               })}
             </div>
           ) : (
-            <button
-              type="button"
-              aria-label={`${merchantName}, ${activeGroup.totalItems} cart ${activeGroup.totalItems === 1 ? "item" : "items"}, ${getPurchaseContext(activeGroup).label}`}
-              onClick={() => activatePurchase(activeGroup.id)}
-              className="flex min-h-11 w-fit min-w-[5.5rem] max-w-60 items-center justify-self-start gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-1.5 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:min-w-0 sm:gap-2 sm:px-3"
-            >
-              <Avatar
-                data-testid="purchase-tab-avatar"
-                className="h-7 w-7 shrink-0"
-              >
-                <AvatarImage src={activeProfile?.picture} alt="" />
-                <AvatarFallback>
-                  <MerchantAvatarFallback iconClassName="h-4 w-4" />
-                </AvatarFallback>
-              </Avatar>
-              <span className="flex flex-col items-start leading-tight sm:hidden">
-                <span
-                  data-testid="mobile-purchase-count"
-                  className="text-xs font-semibold tabular-nums"
-                  aria-hidden="true"
-                >
-                  {activeGroup.totalItems}
-                </span>
-                <span
-                  data-testid="mobile-purchase-label"
-                  className="whitespace-nowrap text-[0.65rem]"
-                >
-                  {getPurchaseContext(activeGroup).mobileLabel}
-                </span>
-              </span>
-              <span className="hidden min-w-0 text-left text-sm font-medium leading-tight sm:block">
-                <span className="block truncate">{merchantName}</span>
-                <PurchaseContextLabel group={activeGroup} compact />
-              </span>
-              <StatusPill
-                variant="neutral"
-                aria-label={`${activeGroup.totalItems} cart ${activeGroup.totalItems === 1 ? "item" : "items"}`}
-                className="hidden border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)] sm:inline-flex"
-              >
-                {activeGroup.totalItems}
-              </StatusPill>
-            </button>
+            <PurchaseTab
+              group={activeGroup}
+              merchantLabel={merchantName}
+              picture={activeProfile?.picture}
+              selected
+              onSelect={() => activatePurchase(activeGroup.id)}
+            />
           )}
 
           <div className="flex shrink-0 items-center gap-1 sm:gap-2">
