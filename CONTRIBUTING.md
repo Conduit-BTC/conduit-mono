@@ -290,6 +290,10 @@ Market runs in three single-worker jobs. Their project-aware discovery manifests
 must combine to the complete Market selection with no missing or repeated tests.
 Market browser fixtures use synthetic mainnet invoices so Spark wallet setup and
 manual invoice handoff share a supported network; Commerce uses testnet.
+The local `test:e2e`, `test:e2e:mobile`, and `test:e2e:webkit` commands run
+each selected area with its own network and verify their discovered test union.
+Use those commands for full runs; direct unscoped `playwright test` cannot
+serve Market and Commerce with different Lightning networks.
 Playwright area tags select the tests. CI rejects an untagged smoke test or a
 selected area that contains zero tests.
 

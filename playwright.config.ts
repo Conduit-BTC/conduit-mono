@@ -57,6 +57,15 @@ const productImageUploadCoverageFiles = [
 if (!new Set(["all", "market", "merchant", "commerce"]).has(smokeArea)) {
   throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
 }
+if (
+  smokeArea === "all" &&
+  !smokeDiscovery &&
+  !process.argv.includes("--list")
+) {
+  throw new Error(
+    "All-area Playwright execution needs separate network settings. Use bun run test:e2e, test:e2e:mobile, or test:e2e:webkit."
+  )
+}
 
 const relayWebServer = configuredRelayPort
   ? {
