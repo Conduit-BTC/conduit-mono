@@ -119,6 +119,54 @@ function prepared(
 }
 
 describe("durable order delivery staging", () => {
+  it("keeps a router plan binding local and rejects a different binding on restage", async () => {
+    const store = memoryRepository()
+    const checkoutSparkRouterBinding = {
+      checkoutId: "checkout-1",
+      planDigest: "a".repeat(64),
+      walletId: "spark-checkout-1",
+    }
+    const staged = await stageOrderRelayDelivery(
+      {
+        lifecycle: lifecycleInput({ checkoutSparkRouterBinding }),
+        prepared: prepared(),
+        leaseOwner: "foreground",
+      },
+      { repository: store.repository, now: () => 100 }
+    )
+    expect(staged.lifecycle.checkoutSparkRouterBinding).toEqual(
+      checkoutSparkRouterBinding
+    )
+    expect(store.read()?.checkoutSparkRouterBinding).toEqual(
+      checkoutSparkRouterBinding
+    )
+    await expect(
+      stageOrderRelayDelivery(
+        {
+          lifecycle: lifecycleInput({
+            checkoutSparkRouterBinding: {
+              ...checkoutSparkRouterBinding,
+              planDigest: "b".repeat(64),
+            },
+          }),
+          prepared: prepared(),
+          leaseOwner: "another-document",
+        },
+        { repository: store.repository, now: () => 200 }
+      )
+    ).rejects.toBeInstanceOf(OrderRelayDeliveryStageConflictError)
+    await expect(
+      stageOrderRelayDelivery(
+        {
+          lifecycle: lifecycleInput(),
+          prepared: prepared(),
+          leaseOwner: "another-document",
+        },
+        { repository: store.repository, now: () => 200 }
+      )
+    ).rejects.toBeInstanceOf(OrderRelayDeliveryStageConflictError)
+  })
+
   it("stages the exact wrap, authority, plan, and initial lifecycle atomically", async () => {
     const store = memoryRepository()
     const first = await stageOrderRelayDelivery(

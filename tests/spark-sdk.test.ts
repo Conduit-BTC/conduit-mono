@@ -1,13 +1,10 @@
 import { describe, expect, it } from "bun:test"
-import { createHash } from "node:crypto"
-import { finalizeEvent, getPublicKey } from "nostr-tools"
 
 import {
   decodeLightningInvoiceAmount,
   decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
   getLightningInvoiceNetwork,
-  hashSignedZapRequestDescription,
 } from "@conduit/core"
 
 import {
@@ -20,13 +17,7 @@ import {
 } from "../apps/market/src/lib/spark-sdk"
 import { MemorySparkDirectTransferSafetyStore } from "../apps/market/src/lib/spark-direct-transfer-safety"
 import { SparkWalletManager } from "../apps/market/src/lib/spark-wallet"
-import {
-  bolt11DescriptionHashField,
-  bolt11PlainDescriptionField,
-  bytesToBolt11Words,
-  makeBolt11Fixture,
-  type Bolt11FixtureField,
-} from "./support/bolt11-fixture"
+import { bytesToBolt11Words, makeBolt11Fixture } from "./support/bolt11-fixture"
 
 const MNEMONIC = "abandon ".repeat(11) + "about"
 const ZERO_PREIMAGE = "00".repeat(32)
@@ -38,22 +29,6 @@ const ZERO_PREIMAGE_FIXED_INVOICE = makeLightningInvoice(
   1_000
 )
 const PAYMENT_ATTEMPT_ID = "c7fb0ad2-c85c-4d93-b542-6dc9d10d8c00"
-const ZAP_TEST_KEY = new Uint8Array(32).fill(1)
-const SIGNED_ZAP_REQUEST_JSON = JSON.stringify(
-  finalizeEvent(
-    {
-      kind: 9734,
-      created_at: 1_800_000_000,
-      tags: [
-        ["p", getPublicKey(new Uint8Array(32).fill(2))],
-        ["amount", "1050000"],
-        ["relays", "wss://relay.conduit.market"],
-      ],
-      content: "Public checkout zap",
-    },
-    ZAP_TEST_KEY
-  )
-)
 const CHECKOUT_OUTGOING_ID = "c7fb0ad2-c85c-5d93-b542-6dc9d10d8c00"
 
 describe("first-party Spark SDK adapter", () => {
@@ -149,7 +124,6 @@ describe("first-party Spark SDK adapter", () => {
     )
 
     const request = await client.createCheckoutReceive?.({
-      invoiceKind: "plain",
       description: "Guest checkout",
       requiredNetSats: 1_000,
       grossFundingSats: 1_050,
@@ -195,302 +169,6 @@ describe("first-party Spark SDK adapter", () => {
     })
   })
 
-  it("requests and verifies an exact signed NIP-57 description-hash invoice", async () => {
-    const invoice = makeReceiveInvoice({
-      amountSats: 1_050,
-      expirySeconds: 300,
-      descriptionFields: [bolt11DescriptionHashField(SIGNED_ZAP_REQUEST_JSON)],
-    })
-    const nativeReceive = createLightningReceiveResult(invoice)
-    let createInput:
-      Parameters<SparkNativeWallet["createLightningInvoice"]>[0] | undefined
-    const wallet = createNativeWallet({
-      async createLightningInvoice(input) {
-        createInput = input
-        return nativeReceive
-      },
-      async getLightningReceiveRequest() {
-        return nativeReceive
-      },
-    })
-    const client = await openClient(createFactory(wallet))
-    const request = await client.createCheckoutReceive?.({
-      invoiceKind: "nip57_bound",
-      signedZapRequestJson: SIGNED_ZAP_REQUEST_JSON,
-      requiredNetSats: 1_000,
-      grossFundingSats: 1_050,
-      expirySecs: 300,
-    })
-
-    expect(createInput).toEqual({
-      amountSats: 1_050,
-      descriptionHash: createHash("sha256")
-        .update(SIGNED_ZAP_REQUEST_JSON, "utf8")
-        .digest("hex"),
-      expirySeconds: 300,
-      includeSparkAddress: false,
-      includeSparkInvoice: false,
-    })
-    expect(request?.paymentRequest).toBe(invoice)
-    await expect(
-      client.reconcileCheckoutReceive?.(request!)
-    ).resolves.toMatchObject({
-      state: "pending",
-      failureReason: null,
-    })
-  })
-
-  it("rejects missing, wrong, duplicate, and h-plus-d Spark invoice bindings", async () => {
-    const goodHash = bolt11DescriptionHashField(SIGNED_ZAP_REQUEST_JSON)
-    const cases: Bolt11FixtureField[][] = [
-      [],
-      [bolt11DescriptionHashField(`${SIGNED_ZAP_REQUEST_JSON} `)],
-      [goodHash, goodHash],
-      [goodHash, bolt11PlainDescriptionField()],
-      [{ tag: "h", words: goodHash.words.slice(0, 51) }],
-    ]
-
-    for (const descriptionFields of cases) {
-      const invoice = makeReceiveInvoice({
-        amountSats: 1_050,
-        expirySeconds: 300,
-        descriptionFields,
-      })
-      const client = await openClient(
-        createFactory(
-          createNativeWallet({
-            async createLightningInvoice() {
-              return createLightningReceiveResult(invoice)
-            },
-          })
-        )
-      )
-      await expect(
-        client.createCheckoutReceive?.({
-          invoiceKind: "nip57_bound",
-          signedZapRequestJson: SIGNED_ZAP_REQUEST_JSON,
-          requiredNetSats: 1_000,
-          grossFundingSats: 1_050,
-          expirySecs: 300,
-        })
-      ).rejects.toThrow("without the exact NIP-57 request binding")
-    }
-  })
-
-  it("binds exact signed JSON bytes and rejects invalid request evidence before SDK I/O", async () => {
-    const invoice = makeReceiveInvoice({
-      amountSats: 1_050,
-      expirySeconds: 300,
-      descriptionFields: [bolt11DescriptionHashField(SIGNED_ZAP_REQUEST_JSON)],
-    })
-    let createCalls = 0
-    const client = await openClient(
-      createFactory(
-        createNativeWallet({
-          async createLightningInvoice() {
-            createCalls += 1
-            return createLightningReceiveResult(invoice)
-          },
-        })
-      )
-    )
-    const request = (signedZapRequestJson: string) =>
-      client.createCheckoutReceive!({
-        invoiceKind: "nip57_bound",
-        signedZapRequestJson,
-        requiredNetSats: 1_000,
-        grossFundingSats: 1_050,
-        expirySecs: 300,
-      })
-
-    await expect(
-      request(JSON.stringify(JSON.parse(SIGNED_ZAP_REQUEST_JSON), null, 2))
-    ).rejects.toThrow("without the exact NIP-57 request binding")
-    expect(createCalls).toBe(1)
-
-    const unsigned = JSON.parse(SIGNED_ZAP_REQUEST_JSON)
-    delete unsigned.sig
-    await expect(request(JSON.stringify(unsigned))).rejects.toThrow(
-      "exact signed kind-9734"
-    )
-    const wrongAmount = JSON.parse(SIGNED_ZAP_REQUEST_JSON)
-    wrongAmount.tags[1][1] = "1049000"
-    await expect(request(JSON.stringify(wrongAmount))).rejects.toThrow(
-      "exact signed kind-9734"
-    )
-    const signedWrongAmount = JSON.stringify(
-      finalizeEvent(
-        {
-          kind: 9734,
-          created_at: 1_800_000_000,
-          tags: [
-            ["p", getPublicKey(new Uint8Array(32).fill(2))],
-            ["amount", "1049000"],
-          ],
-          content: "Public checkout zap",
-        },
-        ZAP_TEST_KEY
-      )
-    )
-    await expect(request(signedWrongAmount)).rejects.toThrow(
-      "recipient or amount is invalid"
-    )
-    await expect(request("not JSON")).rejects.toThrow("exact signed kind-9734")
-    expect(createCalls).toBe(1)
-  })
-
-  it("rejects malformed NIP-57 receipt relays and target tags before Spark SDK I/O", async () => {
-    let createCalls = 0
-    const client = await openClient(
-      createFactory(
-        createNativeWallet({
-          async createLightningInvoice() {
-            createCalls += 1
-            throw new Error(
-              "Spark SDK should not receive an invalid zap request"
-            )
-          },
-        })
-      )
-    )
-    const pubkey = getPublicKey(new Uint8Array(32).fill(2))
-    const baseTags = [
-      ["p", pubkey],
-      ["amount", "1050000"],
-      ["relays", "wss://relay.conduit.market"],
-    ]
-    const sign = (tags: string[][]) =>
-      JSON.stringify(
-        finalizeEvent(
-          {
-            kind: 9734,
-            created_at: 1_800_000_000,
-            tags,
-            content: "Public checkout zap",
-          },
-          ZAP_TEST_KEY
-        )
-      )
-    const request = (signedZapRequestJson: string) =>
-      client.createCheckoutReceive!({
-        invoiceKind: "nip57_bound",
-        signedZapRequestJson,
-        requiredNetSats: 1_000,
-        grossFundingSats: 1_050,
-        expirySecs: 300,
-      })
-
-    const invalidRelayTags = [
-      baseTags.slice(0, 2),
-      [...baseTags.slice(0, 2), ["relays"]],
-      [...baseTags, ["relays", "wss://other.conduit.market"]],
-      [...baseTags.slice(0, 2), ["relays", "https://relay.conduit.market"]],
-      [...baseTags.slice(0, 2), ["relays", "ws://relay.conduit.market"]],
-      [...baseTags.slice(0, 2), ["relays", "wss://127.0.0.1"]],
-      [...baseTags.slice(0, 2), ["relays", "wss://user@relay.conduit.market"]],
-      [
-        ...baseTags.slice(0, 2),
-        ["relays", "wss://relay.conduit.market?token=x"],
-      ],
-      [
-        ...baseTags.slice(0, 2),
-        ["relays", "wss://relay.conduit.market", "not a URL"],
-      ],
-    ]
-    for (const tags of invalidRelayTags) {
-      await expect(request(sign(tags))).rejects.toThrow(
-        "receipt relays are invalid"
-      )
-    }
-
-    const validCoordinate = `30402:${pubkey}:product`
-    const invalidTargetTags = [
-      [...baseTags, ["e", "not-an-event-id"]],
-      [...baseTags, ["e", "a".repeat(64)], ["e", "b".repeat(64)]],
-      [...baseTags, ["a", "30402:not-a-pubkey:product"]],
-      [...baseTags, ["a", `1:${pubkey}:product`]],
-      [...baseTags, ["a", `10000:${pubkey}:product`]],
-      [...baseTags, ["a", `0:${pubkey}:product`]],
-      [...baseTags, ["a", validCoordinate], ["a", validCoordinate]],
-      [...baseTags, ["P", "not-a-pubkey"]],
-      [...baseTags, ["P", pubkey], ["P", pubkey]],
-    ]
-    for (const tags of invalidTargetTags) {
-      await expect(request(sign(tags))).rejects.toThrow(
-        "target tags are invalid"
-      )
-    }
-    expect(createCalls).toBe(0)
-
-    for (const relay of ["wss://relay.conduit.market", "ws://localhost:7777"]) {
-      for (const coordinate of [
-        validCoordinate,
-        `10000:${pubkey}:`,
-        `0:${pubkey}:`,
-        `3:${pubkey}:`,
-        `30402:${pubkey}:`,
-      ]) {
-        const signed = sign([
-          ...baseTags.slice(0, 2),
-          ["relays", relay],
-          ["e", "a".repeat(64)],
-          ["a", coordinate],
-          ["P", pubkey],
-        ])
-        expect(
-          hashSignedZapRequestDescription({
-            zapRequestJson: signed,
-            expectedAmountMsats: 1_050_000,
-          })
-        ).toBe(createHash("sha256").update(signed, "utf8").digest("hex"))
-      }
-    }
-  })
-
-  it("keeps amount, network, and expiry checks on NIP-57-bound receives", async () => {
-    const descriptionFields = [
-      bolt11DescriptionHashField(SIGNED_ZAP_REQUEST_JSON),
-    ]
-    const invoices = [
-      makeReceiveInvoice({
-        amountSats: 1_049,
-        expirySeconds: 300,
-        descriptionFields,
-      }),
-      makeReceiveInvoice({
-        amountSats: 1_050,
-        expirySeconds: 300,
-        network: "regtest",
-        descriptionFields,
-      }),
-      makeReceiveInvoice({
-        amountSats: 1_050,
-        expirySeconds: 299,
-        descriptionFields,
-      }),
-    ]
-    for (const invoice of invoices) {
-      const client = await openClient(
-        createFactory(
-          createNativeWallet({
-            async createLightningInvoice() {
-              return createLightningReceiveResult(invoice)
-            },
-          })
-        )
-      )
-      await expect(
-        client.createCheckoutReceive?.({
-          invoiceKind: "nip57_bound",
-          signedZapRequestJson: SIGNED_ZAP_REQUEST_JSON,
-          requiredNetSats: 1_000,
-          grossFundingSats: 1_050,
-          expirySecs: 300,
-        })
-      ).rejects.toThrow()
-    }
-  })
-
   it("canonicalizes fractional provider timestamps while retaining receive identity", async () => {
     const invoice = makeReceiveInvoice({
       amountSats: 1_050,
@@ -521,7 +199,6 @@ describe("first-party Spark SDK adapter", () => {
     const client = await openClient(createFactory(wallet))
 
     const request = await client.createCheckoutReceive?.({
-      invoiceKind: "plain",
       description: "Guest checkout",
       requiredNetSats: 1_000,
       grossFundingSats: 1_050,
@@ -574,7 +251,6 @@ describe("first-party Spark SDK adapter", () => {
       createFactory(wallet, {}, "mainnet", { now: () => observedAt })
     )
     const request = (await client.createCheckoutReceive?.({
-      invoiceKind: "plain",
       description: "Guest checkout",
       requiredNetSats: 1_000,
       grossFundingSats: 1_050,
@@ -664,7 +340,6 @@ describe("first-party Spark SDK adapter", () => {
       expirySeconds: 300,
     })
     const request = {
-      invoiceKind: "plain" as const,
       description: "Guest checkout",
       requiredNetSats: 1_000,
       grossFundingSats: 1_050,
@@ -708,7 +383,6 @@ describe("first-party Spark SDK adapter", () => {
 
     await expect(
       client.createCheckoutReceive?.({
-        invoiceKind: "plain",
         description: "Guest checkout",
         requiredNetSats: 1_000,
         grossFundingSats: 1_050,
@@ -3296,14 +2970,12 @@ function makeReceiveInvoice({
   expirySeconds,
   network = "mainnet",
   includePaymentHash = true,
-  descriptionFields = [],
 }: {
   amountSats?: number
   createdAt?: number
   expirySeconds?: number
   network?: "mainnet" | "regtest"
   includePaymentHash?: boolean
-  descriptionFields?: Bolt11FixtureField[]
 } = {}): string {
   const prefix = network === "mainnet" ? "lnbc" : "lnbcrt"
   const hrp = amountSats === undefined ? prefix : `${prefix}${amountSats * 10}n`
@@ -3319,7 +2991,6 @@ function makeReceiveInvoice({
             },
           ]
         : []),
-      ...descriptionFields,
       ...(expirySeconds === undefined
         ? []
         : [{ tag: "x", words: numberToBolt11Words(expirySeconds) }]),

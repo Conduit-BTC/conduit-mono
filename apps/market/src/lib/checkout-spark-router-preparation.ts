@@ -1,5 +1,6 @@
 import {
   applyCheckoutSparkEvidence,
+  assertCheckoutSparkOutgoingInvoiceLifetime,
   buildCheckoutSparkRouterObligations,
   createCheckoutSparkReconciliation,
   freezeCheckoutSparkCommerceQuote,
@@ -506,10 +507,26 @@ export async function prepareCheckoutSparkRouterFunding(
   const publishRecoveryHandoff =
     dependencies.publishRecoveryHandoff ?? publishCheckoutSparkRecoveryHandoff
 
+  const preparedAt = now()
+  if (
+    !Number.isSafeInteger(preparedAt) ||
+    preparedAt < 0 ||
+    !Number.isSafeInteger(input.fundingExpirySecs) ||
+    input.fundingExpirySecs <= 0
+  ) {
+    throw new Error("Checkout Spark funding window is invalid.")
+  }
   const routerObligations = buildCheckoutSparkRouterObligations({
     ...input.routerObligationInputs,
     network: input.network,
-    nowSeconds: Math.floor(now() / 1_000),
+    nowSeconds: Math.floor(preparedAt / 1_000),
+  })
+  const anticipatedFundingExpiresAt =
+    preparedAt + input.fundingExpirySecs * 1_000
+  assertCheckoutSparkOutgoingInvoiceLifetime({
+    obligations: routerObligations.obligations,
+    fundingExpiresAt: anticipatedFundingExpiresAt,
+    takeoverAt: input.takeoverAt,
   })
   const commerceQuote = freezeCheckoutSparkCommerceQuote(
     buildCheckoutSparkCommerceEvidence(input.quoteAuthority),
@@ -532,7 +549,6 @@ export async function prepareCheckoutSparkRouterFunding(
   await openWallet(wallet)
   try {
     const funding = await createFundingReceive(wallet, {
-      invoiceKind: "plain",
       description: "Conduit checkout funding",
       requiredNetSats,
       grossFundingSats: input.grossFundingSats,
@@ -549,6 +565,11 @@ export async function prepareCheckoutSparkRouterFunding(
         "Checkout Spark funding request does not match its exact router terms."
       )
     }
+    assertCheckoutSparkOutgoingInvoiceLifetime({
+      obligations: routerObligations.obligations,
+      fundingExpiresAt: funding.expiresAt,
+      takeoverAt: input.takeoverAt,
+    })
     const plan = freezeCheckoutSparkPlan({
       checkoutId: input.checkoutId,
       orderId: input.orderId,
@@ -607,12 +628,26 @@ export async function prepareCheckoutSparkRouterFunding(
         "Checkout Spark recovery is not ready to expose the funding invoice."
       )
     }
+    const exposureTime = now()
+    if (
+      !Number.isSafeInteger(exposureTime) ||
+      exposureTime < plan.createdAt ||
+      exposureTime >= plan.funding.expiresAt ||
+      exposureTime >= plan.takeoverAt
+    ) {
+      throw new Error("Checkout Spark funding is no longer safe to expose.")
+    }
+    assertCheckoutSparkOutgoingInvoiceLifetime({
+      obligations: plan.obligations,
+      fundingExpiresAt: plan.funding.expiresAt,
+      takeoverAt: plan.takeoverAt,
+    })
 
     preparation = saveCheckoutSparkRouterPreparation(
       {
         ...preparation,
-        fundingInvoiceExposedAt: now(),
-        savedAt: now(),
+        fundingInvoiceExposedAt: exposureTime,
+        savedAt: exposureTime,
       },
       storage
     )
@@ -669,6 +704,11 @@ export async function retryCheckoutSparkRouterRecoveryAndResumeFunding(input: {
   if (plan.schemaVersion !== 2) {
     throw new Error("Legacy checkout Spark plans cannot expose new funding.")
   }
+  assertCheckoutSparkOutgoingInvoiceLifetime({
+    obligations: plan.obligations,
+    fundingExpiresAt: plan.funding.expiresAt,
+    takeoverAt: plan.takeoverAt,
+  })
   const currentTime = now()
   if (
     !Number.isSafeInteger(currentTime) ||
@@ -706,22 +746,30 @@ export async function retryCheckoutSparkRouterRecoveryAndResumeFunding(input: {
   }
   const acknowledged = getCheckoutSparkRecoveryDelivery(handoffId, storage)
   const current = getCheckoutSparkRouterPreparation(input.checkoutId, storage)
+  const exposureTime = now()
   if (
     !acknowledged?.deliveryProgress.acknowledgedRelayRefs.length ||
     current?.reconciliation.plan.planDigest !== plan.planDigest ||
     current.recoveryHandoffId !== handoffId ||
     current.fundingSubmissionState !== "not_started" ||
     !current.fundingReceive ||
-    now() >= plan.funding.expiresAt ||
-    now() >= plan.takeoverAt
+    !Number.isSafeInteger(exposureTime) ||
+    exposureTime < plan.createdAt ||
+    exposureTime >= plan.funding.expiresAt ||
+    exposureTime >= plan.takeoverAt
   ) {
     throw new Error("Checkout Spark funding is no longer safe to expose.")
   }
+  assertCheckoutSparkOutgoingInvoiceLifetime({
+    obligations: plan.obligations,
+    fundingExpiresAt: plan.funding.expiresAt,
+    takeoverAt: plan.takeoverAt,
+  })
   const exposed = saveCheckoutSparkRouterPreparation(
     {
       ...current,
-      fundingInvoiceExposedAt: current.fundingInvoiceExposedAt ?? now(),
-      savedAt: now(),
+      fundingInvoiceExposedAt: current.fundingInvoiceExposedAt ?? exposureTime,
+      savedAt: exposureTime,
     },
     storage
   )

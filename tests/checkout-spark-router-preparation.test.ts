@@ -22,10 +22,14 @@ const BUYER = NDKPrivateKeySigner.generate()
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
-function invoice(amountSats: number, paymentHashByte: number): string {
+function invoice(
+  amountSats: number,
+  paymentHashByte: number,
+  createdAt = CREATED_AT / 1_000
+): string {
   return makeSignedBolt11Fixture({
     hrp: `lnbc${amountSats * 10}n`,
-    createdAt: CREATED_AT / 1_000,
+    createdAt,
     fields: [
       bolt11PaymentHashField(new Uint8Array(32).fill(paymentHashByte)),
       bolt11PaymentSecretField(),
@@ -112,6 +116,112 @@ function fundingReceive() {
 }
 
 describe("checkout Spark router preparation", () => {
+  it("rejects an outgoing invoice that expires at the anticipated deadline before wallet creation", async () => {
+    let walletCreateCalls = 0
+    const input = preparationInput()
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        {
+          ...input,
+          routerObligationInputs: {
+            ...input.routerObligationInputs,
+            commerce: [
+              {
+                ...input.routerObligationInputs.commerce[0]!,
+                paymentRequest: invoice(1_000, 1, CREATED_AT / 1_000 - 2_700),
+              },
+            ],
+          },
+        },
+        {
+          now: () => CREATED_AT,
+          createWalletMaterial: () => {
+            walletCreateCalls += 1
+            return walletMaterial()
+          },
+        }
+      )
+    ).rejects.toThrow("outgoing invoice lifetime is insufficient")
+    expect(walletCreateCalls).toBe(0)
+  })
+
+  it("rejects a delayed actual receive deadline before recovery publication", async () => {
+    let closeCalls = 0
+    let publishCalls = 0
+    const input = preparationInput()
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        {
+          ...input,
+          storage: new MemoryStorage(),
+          routerObligationInputs: {
+            ...input.routerObligationInputs,
+            commerce: [
+              {
+                ...input.routerObligationInputs.commerce[0]!,
+                paymentRequest: invoice(1_000, 1, CREATED_AT / 1_000 - 2_650),
+              },
+            ],
+          },
+        },
+        {
+          now: () => CREATED_AT,
+          createWalletMaterial: () => walletMaterial(),
+          openWallet: async () => undefined,
+          createFundingReceive: async () => ({
+            ...fundingReceive(),
+            createdAt: CREATED_AT + 100_000,
+            expiresAt: CREATED_AT + 700_000,
+          }),
+          publishRecoveryHandoff: async () => {
+            publishCalls += 1
+            throw new Error("must not publish")
+          },
+          closeWallet: async () => {
+            closeCalls += 1
+          },
+        }
+      )
+    ).rejects.toThrow("outgoing invoice lifetime is insufficient")
+    expect(publishCalls).toBe(0)
+    expect(closeCalls).toBe(1)
+  })
+
+  it("keeps the persisted recovery handoff and hides funding when ACK arrives after expiry", async () => {
+    const storage = new MemoryStorage()
+    let currentTime = CREATED_AT
+    let closeCalls = 0
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        { ...preparationInput(), storage },
+        {
+          now: () => currentTime,
+          createWalletMaterial: () => walletMaterial(),
+          openWallet: async () => undefined,
+          createFundingReceive: async () => fundingReceive(),
+          publishRecoveryHandoff: async (input) => {
+            await input.onPersisted("handoff-delayed-ack")
+            currentTime = CREATED_AT + 600_000
+            return {
+              handoffId: "handoff-delayed-ack",
+              canExposeFundingInvoice: true as const,
+            }
+          },
+          closeWallet: async () => {
+            closeCalls += 1
+          },
+        }
+      )
+    ).rejects.toThrow("funding is no longer safe to expose")
+    const stored = getCheckoutSparkRouterPreparation(
+      preparationInput().checkoutId,
+      storage
+    )
+    expect(stored?.recoveryHandoffId).toBe("handoff-delayed-ack")
+    expect(stored?.fundingInvoiceExposedAt).toBeNull()
+    expect(closeCalls).toBe(0)
+  })
+
   it("rejects invalid economics before creating a wallet", async () => {
     let walletCreateCalls = 0
 

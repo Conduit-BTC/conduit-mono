@@ -267,6 +267,7 @@ export type CheckoutSparkNextAction =
         | "execution_authority_not_started"
         | "fee_exceeds_frozen_limit"
         | "fee_preflight_unavailable"
+        | "obligation_invoice_window_insufficient"
     }
   | { type: "ready_to_retire" }
 

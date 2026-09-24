@@ -1440,7 +1440,6 @@ describe("SparkWalletManager", () => {
     )
     await expect(
       manager.createCheckoutReceive("wallet-personal", {
-        invoiceKind: "plain",
         description: "Guest checkout",
         requiredNetSats: 1_000,
         grossFundingSats: 1_050,
@@ -1450,7 +1449,6 @@ describe("SparkWalletManager", () => {
     checkoutRequest = { ...request, walletId: "wallet-other" }
     await expect(
       manager.createCheckoutReceive("wallet-personal", {
-        invoiceKind: "plain",
         description: "Guest checkout",
         requiredNetSats: 1_000,
         grossFundingSats: 1_050,
@@ -1460,7 +1458,6 @@ describe("SparkWalletManager", () => {
     checkoutRequest = { ...request, network: "regtest" }
     await expect(
       manager.createCheckoutReceive("wallet-personal", {
-        invoiceKind: "plain",
         description: "Guest checkout",
         requiredNetSats: 1_000,
         grossFundingSats: 1_050,
@@ -1501,7 +1498,6 @@ describe("SparkWalletManager", () => {
     )
     await expect(
       manager.createCheckoutReceive("wallet-personal", {
-        invoiceKind: "plain",
         description: "Guest checkout",
         requiredNetSats: 1_000,
         grossFundingSats: 1_050,

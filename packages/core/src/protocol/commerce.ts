@@ -17,6 +17,7 @@ import { config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { normalizePublicMediaUrl } from "../network-target-safety"
+import { inspectCheckoutSparkRecoveryWrap } from "./checkout-spark-recovery"
 import { EVENT_KINDS } from "./kinds"
 import { NostrSignerError } from "./nostr-event-signer"
 import {
@@ -169,6 +170,13 @@ const EVENT_MARKET_HANDOFF_PAGE_LIMIT = 400
 const EVENT_MARKET_HANDOFF_BOUNDARY_LIMIT = 512
 const EVENT_MARKET_HANDOFF_PAGE_BUDGET_PER_READ = 8
 const EVENT_MARKET_HANDOFF_RETAINED_EVIDENCE_LIMIT = 1_024
+const CHECKOUT_SPARK_RECOVERY_PAGE_LIMIT = 400
+const CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT = 50
+const CHECKOUT_SPARK_RECOVERY_INSPECTION_BUDGET_MS = 15_000
+const CHECKOUT_SPARK_RECOVERY_UNWRAP_TIMEOUT_MS = 4_000
+const CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT = Symbol(
+  "checkout_spark_recovery_inspection_timeout"
+)
 
 export type CommerceReadSource = "commerce" | "public" | "local_cache"
 export type CommerceSortMode =
@@ -8557,6 +8565,14 @@ async function runPrivateMessageInboxSync(
       })
       continue
     }
+    if (outcome.status === "deferred_machine") {
+      // Only the generic inbox's in-memory filter handles this wrap. Do not
+      // cache its recovery payload or delete the relay ciphertext; the
+      // dedicated Merchant reader fetches and verifies it independently.
+      successful.add(outcome.wrapId)
+      retry.delete(outcome.wrapId)
+      continue
+    }
     if (outcome.status === "ignored") {
       successful.add(outcome.wrapId)
       retry.delete(outcome.wrapId)
@@ -9269,6 +9285,231 @@ export async function getEventMarketPrivateMessageList(
   principalPubkey: string
 ): Promise<EventMarketPrivateMessageListResult> {
   return await fetchEventMarketPrivateMessagesStrict(principalPubkey)
+}
+
+export interface MerchantCheckoutSparkRecoveryCandidate {
+  wrapId: string
+  checkoutId: string
+  orderId: string
+  planDigest: string
+  takeoverAt: number
+  preparedAt: number
+}
+
+export interface MerchantCheckoutSparkRecoveryListResult {
+  candidates: MerchantCheckoutSparkRecoveryCandidate[]
+  coverage: InboxReadCoverage
+  declarationState: InboxDeclarationState
+  malformedCount: number
+  decryptFailureCount: number
+  conflictCount: number
+}
+
+/**
+ * Discover merchant recovery authority without projecting wallet material into
+ * a conversation cache or a UI query result. This is one bounded page from
+ * signed kind-10050 inbox relays only. A capped, failed, or malformed read is
+ * never presented as proof that no recovery package exists. Call only from an
+ * explicit foreground recovery action, never a background polling interval.
+ */
+export async function getMerchantCheckoutSparkRecoveryList(
+  principalPubkey: string
+): Promise<MerchantCheckoutSparkRecoveryListResult> {
+  const authorization = resolveInboxSyncAuthorization(principalPubkey)
+  assertInboxSyncAuthority(authorization)
+  const signer = await resolveEnvelopeSigner()
+  assertInboxSyncAuthority(authorization)
+  if (!signer) {
+    throw new Error("Connect your Nostr signer to view checkout recoveries.")
+  }
+  const principal = principalPubkey.trim().toLowerCase()
+  if ((await signer.user()).pubkey?.trim().toLowerCase() !== principal) {
+    throw new ProtectedInboxAuthorityChangedError()
+  }
+  assertInboxSyncAuthority(authorization)
+
+  const declaration = await resolvePrincipalInboxDeclaration(
+    principal,
+    authorization
+  )
+  assertInboxSyncAuthority(authorization)
+  const relayUrls = normalizeOwnerSelectedRelayUrls(
+    declaration.state === "declared" ? declaration.relayUrls : []
+  )
+  if (relayUrls.length === 0) {
+    return {
+      candidates: [],
+      coverage: "unavailable",
+      declarationState: declaration.state,
+      malformedCount: 0,
+      decryptFailureCount: 0,
+      conflictCount: 0,
+    }
+  }
+
+  const read = await (testOverrides.readProtectedInbox ?? readProtectedInbox)({
+    principalPubkey: principal,
+    relayUrls,
+    ownerSelectedRelayUrls: relayUrls,
+    appRelayUrls: [],
+    limit: CHECKOUT_SPARK_RECOVERY_PAGE_LIMIT,
+    authorization,
+    accountNetworkLocalStateRepository:
+      testOverrides.accountNetworkLocalStateRepository,
+    connectTimeoutMs: 4_000,
+    queryTimeoutMs: 12_000,
+  })
+  assertInboxSyncAuthority(authorization)
+  const relayComplete =
+    read.coverage === "complete" &&
+    read.relayResult.attemptedCount === relayUrls.length &&
+    read.relayResult.completedCount === relayUrls.length &&
+    read.relayResult.failedCount === 0 &&
+    read.relayResult.relays.length === relayUrls.length &&
+    read.relayResult.relays.every(
+      (relay) =>
+        relay.status === "success" &&
+        relay.eventCount < CHECKOUT_SPARK_RECOVERY_PAGE_LIMIT &&
+        relay.malformedCount === 0 &&
+        relay.unusableCount === 0
+    )
+  const uniqueWraps = Array.from(
+    new Map(read.events.map((event) => [event.id, event])).values()
+  )
+  const pageCapped = uniqueWraps.length > CHECKOUT_SPARK_RECOVERY_PAGE_LIMIT
+  const inspectionCapped =
+    uniqueWraps.length > CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT
+  const distinctWraps = uniqueWraps
+    .sort(
+      (left, right) =>
+        right.created_at - left.created_at || left.id.localeCompare(right.id)
+    )
+    .slice(0, CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT)
+  const byCheckout = new Map<
+    string,
+    {
+      candidate: MerchantCheckoutSparkRecoveryCandidate
+      handoffId: string
+      senderPubkey: string
+      mnemonic: string
+      accountNumber: number
+    }
+  >()
+  const conflictingCheckouts = new Set<string>()
+  let malformedCount = 0
+  let decryptFailureCount = 0
+  let inspectionTimedOut = false
+  const inspectionDeadline =
+    Date.now() + CHECKOUT_SPARK_RECOVERY_INSPECTION_BUDGET_MS
+  for (const event of distinctWraps) {
+    assertInboxSyncAuthority(authorization)
+    const remainingMs = inspectionDeadline - Date.now()
+    if (remainingMs <= 0) {
+      inspectionTimedOut = true
+      break
+    }
+    const recipients = event.tags.filter((tag) => tag[0] === "p")
+    if (
+      recipients.length !== 1 ||
+      recipients[0]?.[1]?.toLowerCase() !== principal
+    ) {
+      malformedCount += 1
+      continue
+    }
+    const inspection = inspectCheckoutSparkRecoveryWrap({
+      signedRecipientWrap: event,
+      signer,
+      ...(testOverrides.giftUnwrap
+        ? { giftUnwrap: testOverrides.giftUnwrap }
+        : {}),
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const opened = await Promise.race([
+      inspection,
+      new Promise<typeof CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT>(
+        (resolve) => {
+          timer = setTimeout(
+            () => resolve(CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT),
+            Math.min(CHECKOUT_SPARK_RECOVERY_UNWRAP_TIMEOUT_MS, remainingMs)
+          )
+        }
+      ),
+    ]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer)
+    })
+    assertInboxSyncAuthority(authorization)
+    if (opened === CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT) {
+      inspectionTimedOut = true
+      break
+    }
+    if (opened.status === "ignored") continue
+    if (opened.status === "malformed") {
+      malformedCount += 1
+      continue
+    }
+    if (opened.status === "decrypt_failed") {
+      decryptFailureCount += 1
+      continue
+    }
+    const payload = opened.payload
+    const candidate: MerchantCheckoutSparkRecoveryCandidate = {
+      wrapId: opened.wrapId,
+      checkoutId: payload.plan.checkoutId,
+      orderId: payload.plan.orderId,
+      planDigest: payload.plan.planDigest,
+      takeoverAt: payload.plan.takeoverAt,
+      preparedAt: payload.preparedAt,
+    }
+    const previous = byCheckout.get(candidate.checkoutId)
+    if (previous) {
+      if (
+        previous.candidate.planDigest !== candidate.planDigest ||
+        previous.handoffId !== payload.handoffId ||
+        previous.senderPubkey !== payload.senderPubkey ||
+        previous.mnemonic !== payload.wallet.mnemonic ||
+        previous.accountNumber !== payload.wallet.accountNumber
+      ) {
+        conflictingCheckouts.add(candidate.checkoutId)
+      }
+      continue
+    }
+    byCheckout.set(candidate.checkoutId, {
+      candidate,
+      handoffId: payload.handoffId,
+      senderPubkey: payload.senderPubkey,
+      mnemonic: payload.wallet.mnemonic,
+      accountNumber: payload.wallet.accountNumber,
+    })
+  }
+  assertInboxSyncAuthority(authorization)
+  const coverage: InboxReadCoverage =
+    read.coverage === "unavailable"
+      ? "unavailable"
+      : relayComplete &&
+          !declaration.stale &&
+          !pageCapped &&
+          !inspectionCapped &&
+          !inspectionTimedOut &&
+          malformedCount === 0 &&
+          decryptFailureCount === 0 &&
+          conflictingCheckouts.size === 0
+        ? "complete"
+        : "partial"
+  return {
+    candidates: Array.from(byCheckout.entries())
+      .filter(([checkoutId]) => !conflictingCheckouts.has(checkoutId))
+      .map(([, entry]) => entry.candidate)
+      .sort(
+        (left, right) =>
+          left.takeoverAt - right.takeoverAt ||
+          left.checkoutId.localeCompare(right.checkoutId)
+      ),
+    coverage,
+    declarationState: declaration.state,
+    malformedCount,
+    decryptFailureCount,
+    conflictCount: conflictingCheckouts.size,
+  }
 }
 
 // --- General direct messages (kind 14), threaded by counterparty pubkey ---
