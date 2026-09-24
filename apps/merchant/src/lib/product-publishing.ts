@@ -213,6 +213,7 @@ export function getProductPreservedFulfillmentFields(product: ProductSchema) {
     shippingOptionDTag: product.shippingOptionDTag,
     shippingOptionRefs: product.shippingOptionRefs,
     collectionRefs: product.collectionRefs,
+    eventMarketRefs: product.eventMarketRefs,
     shippingOptionLaunchUnsupported: product.shippingOptionLaunchUnsupported,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,

@@ -100,6 +100,8 @@ export const productSchema = z.object({
   shippingOptionRefs: z.array(productShippingOptionReferenceSchema).optional(),
   /** Every kind-30405 collection request/reference, in first-seen order. */
   collectionRefs: z.array(z.string()).optional(),
+  /** Experimental kind-30409 Event Market associations, in signed order. */
+  eventMarketRefs: z.array(z.string()).optional(),
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries: z.array(z.string()).optional(),
   shippingCountryRules: z
