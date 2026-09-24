@@ -756,14 +756,19 @@ test("market cart HUD shows one purchase's details when its compact tab is opene
 
   const hud = page.getByRole("region", { name: "Cart inventory" })
   await expect(hud).toBeVisible()
-  await expect(hud.getByRole("group", { name: "Cart purchases" })).toHaveCount(
-    0
-  )
-  await page.setViewportSize({ width: 390, height: 900 })
-  const purchaseTab = hud.getByRole("button", {
+  const rail = hud.getByRole("group", { name: "Cart purchases" })
+  await expect(rail.getByRole("button")).toHaveCount(1)
+  const purchaseTab = rail.getByRole("button", {
     name: /Fixture Market, 1 cart item, Event pickup - Test location/,
   })
-  await expectMobilePurchaseTabLayout(purchaseTab)
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expectMobilePurchaseTabLayout(purchaseTab)
+    const railBounds = await rail.boundingBox()
+    const tabBounds = await purchaseTab.boundingBox()
+    expect(tabBounds!.width).toBeLessThan(96)
+    expect(railBounds!.width - tabBounds!.width).toBeGreaterThan(20)
+  }
   await expect(purchaseTab.getByTestId("purchase-tab-count")).toHaveText("1")
   await expect(purchaseTab.getByText("Fixture Market")).toBeHidden()
   await expect(purchaseTab.getByText("Test location")).toBeHidden()
