@@ -11,6 +11,7 @@ import {
   buildProductPublishResultTelemetryProperties,
   cacheSignedProductDeletionEvent,
   canonicalizeProductPrice,
+  decodeEventMarketReference,
   compileProductFulfillmentIntent,
   evaluateListingSafety,
   getCachedMerchantStorefront,
@@ -22,6 +23,7 @@ import {
   isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
+  readEventMarketRoster,
   resolveEventMarketOrganizerInbox,
   waitForVisibleDocument,
   type CommerceResult,
@@ -161,6 +163,7 @@ import {
   rememberDiscoveredEventMarket,
 } from "../lib/event-market-workflow"
 import { ensureMerchantBoothPickup } from "../lib/event-market-pickup"
+import { setEventMarketProductAssociation } from "../lib/event-market-product"
 import {
   getMerchantProductEventContext,
   type MerchantProductEventContext,
@@ -276,6 +279,7 @@ function createEmptyProductForm(
     format: "physical",
     fulfillment: "ship",
     eventMarketReference: "",
+    futureEventMarketReference: "",
     eventHandoffMode: "merchant_handoff",
     merchantPickupTitle: "Merchant booth pickup",
     merchantPickupLocation: "",
@@ -387,6 +391,7 @@ function productToForm(
     shippingPricingMode: getProductShippingPricingMode(product),
     fulfillment: "preserve",
     eventMarketReference: product.collectionRefs?.[0] ?? "",
+    futureEventMarketReference: product.eventMarketRefs?.[0] ?? "",
     eventHandoffMode: "merchant_handoff",
     merchantPickupTitle: "Merchant booth pickup",
     merchantPickupLocation: "",
@@ -975,7 +980,7 @@ async function publishProduct(
   const now = Date.now()
   const tags = formValidation.tags
 
-  const product: ProductSchema = canonicalizeProductPrice({
+  let product: ProductSchema = canonicalizeProductPrice({
     id: `30402:${signerPubkey}:${dTag}`,
     pubkey: signerPubkey,
     title,
@@ -1003,6 +1008,52 @@ async function publishProduct(
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
   })
+
+  const requestedMarket = form.futureEventMarketReference?.trim() ?? ""
+  const existingMarketRefs = existing?.product.eventMarketRefs ?? []
+  if (requestedMarket) {
+    const decoded = decodeEventMarketReference(requestedMarket, [
+      EVENT_KINDS.EVENT_MARKET,
+    ])
+    if (!decoded) throw new Error("Future Event Market reference is invalid.")
+    product = {
+      ...product,
+      eventMarketRefs: [
+        decoded.coordinate,
+        ...existingMarketRefs
+          .slice(1)
+          .filter((ref) => ref !== decoded.coordinate),
+      ],
+    }
+    if (!existingMarketRefs.includes(decoded.coordinate)) {
+      const marketRead = await readEventMarketRoster({
+        reference: decoded.coordinate,
+        authenticatedPubkey,
+        shouldContinue,
+      })
+      if (
+        marketRead.resolution.state !== "current" ||
+        marketRead.coverage !== "complete" ||
+        marketRead.calendarCoverage !== "complete" ||
+        !marketRead.calendar ||
+        !marketRead.retained
+      ) {
+        throw new Error(
+          "Current signed Event Market approval could not be confirmed. Retry before linking this product."
+        )
+      }
+      product = setEventMarketProductAssociation({
+        product,
+        market: marketRead.resolution.market,
+        enabled: true,
+      })
+    }
+  } else if (existingMarketRefs.length > 0) {
+    product = {
+      ...product,
+      eventMarketRefs: existingMarketRefs.slice(1),
+    }
+  }
 
   const plan = buildProductFamilyChangePlan({
     parentDTag: dTag,
@@ -3686,6 +3737,29 @@ function ProductsPage() {
                   form.images.some((image) => image.url.trim().length > 0)
                 }
               />
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-future-event-market">
+                  Future Event Market
+                </Label>
+                <Input
+                  id="product-future-event-market"
+                  value={form.futureEventMarketReference ?? ""}
+                  onChange={(event) =>
+                    setForm((previous) => ({
+                      ...previous,
+                      futureEventMarketReference: event.target.value,
+                    }))
+                  }
+                  placeholder="Event Market naddr or 30409 coordinate"
+                />
+                <p className="text-xs leading-5 text-[var(--text-muted)]">
+                  Your product joins when the organizer has approved your shop.
+                  The organizer sets the booth or pickup assignment. Clear this
+                  field to remove the product from that event; ordinary shop
+                  shipping stays the same.
+                </p>
+              </div>
 
               <div className="grid gap-1.5">
                 <Label htmlFor="product-tags">Tags</Label>

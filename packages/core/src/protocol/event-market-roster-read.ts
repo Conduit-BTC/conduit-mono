@@ -12,6 +12,7 @@ import {
   type ParsedEventMarketCalendar,
 } from "./event-market"
 import {
+  getEventMarketCandidateFilters,
   resolveEventMarketCalendar,
   resolveEventMarketProduct,
   resolveEventMarketRoster,
@@ -45,6 +46,13 @@ export interface EventMarketProductReadResult {
   coverage: EventMarketRosterReadCoverage
   retained: boolean
   actionable: boolean
+}
+
+export interface EventMarketCatalogReadResult {
+  marketRead: EventMarketRosterReadResult
+  products: EventMarketProductReadResult[]
+  coverage: EventMarketRosterReadCoverage
+  candidateCount: number
 }
 
 /** Freeze exact signed participation terms before adding a future-event cart line. */
@@ -798,5 +806,106 @@ export async function readEventMarketProduct(
       input.marketRead.coverage === "complete" &&
       input.marketRead.calendarCoverage === "complete" &&
       input.marketRead.retained,
+  }
+}
+
+/** Discover only approved authors, then resolve each candidate's exact signed head. */
+export async function readEventMarketCatalog(
+  input: {
+    reference: string
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+    signal?: AbortSignal
+  },
+  dependencies: RosterReadDependencies = defaultDependencies
+): Promise<EventMarketCatalogReadResult> {
+  const marketRead = await readEventMarketRoster(input, dependencies)
+  if (marketRead.resolution.state !== "current" || !marketRead.calendar) {
+    return {
+      marketRead,
+      products: [],
+      coverage: marketRead.coverage,
+      candidateCount: 0,
+    }
+  }
+  const market = marketRead.resolution.market
+  const approved = new Set(market.merchants.map((row) => row.pubkey))
+  const candidates = new Set<string>()
+  let incomplete =
+    marketRead.coverage !== "complete" ||
+    marketRead.calendarCoverage !== "complete"
+  const filters = getEventMarketCandidateFilters(market)
+  // One author per read gives each merchant's NIP-65 outbox a chance to contribute.
+  // A capped result is incomplete evidence, never proof that other products are absent.
+  candidateSearch: for (const filter of filters) {
+    for (const author of filter.authors) {
+      if (candidates.size >= 256) {
+        incomplete = true
+        break candidateSearch
+      }
+      let plan: EventMarketReadPlan
+      try {
+        plan = await dependencies.plan({
+          organizerPubkey: author,
+          authenticatedPubkey: input.authenticatedPubkey,
+          shouldContinue: input.shouldContinue,
+          signal: input.signal,
+        })
+      } catch (error) {
+        if (input.signal?.aborted || input.shouldContinue?.() === false)
+          throw error
+        incomplete = true
+        continue
+      }
+      let result: SignedFanoutResult
+      try {
+        result = await dependencies.fetch(
+          { ...filter, authors: [author], limit: 64 },
+          fanoutOptions(plan, input)
+        )
+      } catch (error) {
+        if (input.signal?.aborted || input.shouldContinue?.() === false)
+          throw error
+        incomplete = true
+        continue
+      }
+      if (
+        plan.relayHintTruncated ||
+        result.events.length >= 64 ||
+        result.relays.length === 0 ||
+        result.relays.some((relay) => relay.status !== "success")
+      )
+        incomplete = true
+      for (const event of result.events) {
+        if (
+          event.kind !== EVENT_KINDS.PRODUCT ||
+          event.pubkey !== author ||
+          !approved.has(author) ||
+          !isValidSignedPublicNostrEvent(event) ||
+          !event.tags.some(
+            (tag) => tag[0] === "a" && tag[1] === market.coordinate
+          )
+        )
+          continue
+        const dTags = event.tags.filter((tag) => tag[0] === "d")
+        if (dTags.length !== 1 || !dTags[0]?.[1]) continue
+        candidates.add(`${EVENT_KINDS.PRODUCT}:${author}:${dTags[0][1]}`)
+      }
+    }
+  }
+  const products: EventMarketProductReadResult[] = []
+  for (const productCoordinate of candidates) {
+    const read = await readEventMarketProduct(
+      { ...input, marketRead, productCoordinate },
+      dependencies
+    )
+    if (read.coverage !== "complete") incomplete = true
+    if (read.resolution.state === "eligible") products.push(read)
+  }
+  return {
+    marketRead,
+    products,
+    coverage: incomplete ? "partial" : "complete",
+    candidateCount: candidates.size,
   }
 }

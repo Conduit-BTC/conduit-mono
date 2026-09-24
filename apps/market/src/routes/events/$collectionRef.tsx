@@ -11,6 +11,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   buildMarketEventCatalogUrl,
   buildMerchantEventParticipationUrl,
+  decodeEventMarketReference,
   inferConduitAppOrigin,
   normalizePubkey,
   pubkeyToNpub,
@@ -32,6 +33,7 @@ import {
   useTimeBoundaryNow,
 } from "@conduit/ui"
 import { EventCatalogBrowser } from "../../components/EventCatalogBrowser"
+import { FutureEventMarketPage } from "../../components/FutureEventMarketPage"
 import { CopyButton } from "../../components/CopyButton"
 import {
   EventActorName,
@@ -82,9 +84,18 @@ import {
 } from "../../lib/pickup-handoff"
 
 export const Route = createFileRoute("/events/$collectionRef")({
-  component: EventCatalogPage,
+  component: EventCatalogRoute,
   validateSearch: parseEventCatalogSearch,
 })
+
+function EventCatalogRoute() {
+  const { collectionRef } = Route.useParams()
+  return decodeEventMarketReference(collectionRef, [30409]) ? (
+    <FutureEventMarketPage reference={collectionRef} />
+  ) : (
+    <EventCatalogPage />
+  )
+}
 
 type CatalogStateCopy = {
   title: string

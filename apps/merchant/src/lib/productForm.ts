@@ -68,6 +68,8 @@ export interface MerchantProductFormValues extends ProductPublishFormValues {
   variations: ProductVariationFormState
   fulfillment: ProductFulfillmentChoice
   eventMarketReference: string
+  /** Experimental kind-30409 association; separate from legacy local pickup. */
+  futureEventMarketReference?: string
   eventHandoffMode: EventMarketHandoffMode
   merchantPickupTitle: string
   merchantPickupLocation: string

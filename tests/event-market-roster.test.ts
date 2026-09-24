@@ -14,6 +14,7 @@ import {
   resolveEventMarketRoster,
   readEventMarketRoster,
   readEventMarketProduct,
+  readEventMarketCatalog,
   createEventMarketPickupSnapshot,
   type EventMarketMerchantRow,
 } from "@conduit/core"
@@ -362,6 +363,72 @@ describe("experimental Event Market roster", () => {
     expect(read.resolution.state).toBe("untagged")
     expect(read.coverage).toBe("stale")
     expect(read.actionable).toBe(false)
+  })
+
+  it("discovers only approved candidates after the signed roster and resolves newer untagged evidence", async () => {
+    const approved = roster([merchantRow])
+    const calendar = sign(
+      organizerSecret,
+      31923,
+      [
+        ["d", "fair"],
+        ["title", "Fair"],
+        ["start", "1790000000"],
+        ["D", "20717"],
+      ],
+      100
+    )
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    const untagged = product(merchantSecret, merchant, "soap", 101, false)
+    const spam = product(spammerSecret, spammer, "spam", 100)
+    const calls: Array<{
+      kinds: number[]
+      authors: string[]
+      eventTag?: string[]
+    }> = []
+    const read = await readEventMarketCatalog(
+      { reference: marketCoordinate },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => {
+          calls.push({
+            kinds: (filter.kinds ?? []) as number[],
+            authors: filter.authors ?? [],
+            eventTag: filter["#a"],
+          })
+          let events: SignedPublicNostrEvent[] = []
+          if (filter.kinds?.includes(30409 as never)) events = [approved]
+          if (filter.kinds?.includes(31923 as never)) events = [calendar]
+          if (filter.kinds?.includes(30402 as never)) events = [tagged, spam]
+          return {
+            events,
+            relays: [{ relayUrl: "wss://example.com", status: "success" }],
+          }
+        },
+        load: async () => [untagged],
+        retain: async () => undefined,
+      }
+    )
+    expect(read.marketRead.resolution.state).toBe("current")
+    expect(read.candidateCount).toBe(1)
+    expect(read.products).toHaveLength(0)
+    expect(read.coverage).toBe("partial")
+    const candidateCall = calls.find(
+      (call) =>
+        call.kinds.includes(30402) && call.eventTag?.includes(marketCoordinate)
+    )
+    expect(candidateCall?.authors).toEqual([merchant])
+    expect(calls[0]?.authors).toEqual([organizer])
   })
 
   it("freezes the signed roster row and product revision with the merchant as payee", () => {
