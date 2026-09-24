@@ -187,9 +187,9 @@ export function normalizeExactEventCatalogNaddr(value: string): string {
   if (!/^naddr1[023456789acdefghjklmnpqrstuvwxyz]+$/i.test(trimmed)) {
     throw new Error("Event link requires an exact event catalog naddr.")
   }
-  const decoded = decodeEventMarketReference(trimmed, [30405])
+  const decoded = decodeEventMarketReference(trimmed, [30405, 30409])
   if (!decoded) {
-    throw new Error("Event link requires a kind-30405 event catalog naddr.")
+    throw new Error("Event link requires a supported Event Market naddr.")
   }
   return encodeEventMarketNaddr(decoded.coordinate, decoded.relayHints)
 }

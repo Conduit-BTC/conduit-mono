@@ -1,11 +1,14 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, Plus, RefreshCw } from "lucide-react"
-import { useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
+  discoverFutureEventMarkets,
+  encodeEventMarketNaddr,
   getProfileDisplayLabel,
   useAuth,
   useConduitSession,
   useProfiles,
+  type EventMarketRosterReadResult,
 } from "@conduit/core"
 import {
   Button,
@@ -101,9 +104,61 @@ export function MerchantEventsTimeline({
     merchantPubkey,
     source: "combined",
   })
+  const futureAuthors = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [merchantPubkey, ...(discovery.organizerPubkeys ?? [])].filter(
+            Boolean
+          )
+        )
+      ),
+    [discovery.organizerPubkeys, merchantPubkey]
+  )
+  const futureQuery = useQuery({
+    queryKey: [
+      "merchant-future-event-timeline",
+      session.relayScope,
+      authenticatedPubkey,
+      futureAuthors.join(","),
+    ],
+    queryFn: ({ signal }) =>
+      discoverFutureEventMarkets({
+        organizerPubkeys: futureAuthors,
+        authenticatedPubkey,
+        signal,
+      }),
+    enabled: session.relaySettingsReady && !!merchantPubkey,
+    retry: false,
+    refetchInterval: 60_000,
+  })
+  const futureItems = useMemo(
+    () =>
+      (futureQuery.data?.markets ?? []).filter((read) => {
+        if (read.resolution.state !== "current" || !read.calendar) return false
+        const market = read.resolution.market
+        if (
+          relationship === "organizing" &&
+          market.organizerPubkey !== merchantPubkey
+        )
+          return false
+        if (
+          relationship === "selling" &&
+          !market.merchants.some((row) => row.pubkey === merchantPubkey)
+        )
+          return false
+        return true
+      }),
+    [futureQuery.data?.markets, merchantPubkey, relationship]
+  )
   const timelineBoundaries = useMemo(
-    () => getMerchantEventTimelineBoundaries(discovery.items),
-    [discovery.items]
+    () => [
+      ...getMerchantEventTimelineBoundaries(discovery.items),
+      ...futureItems.flatMap((read) =>
+        read.calendar ? [read.calendar.start, read.calendar.end] : []
+      ),
+    ],
+    [discovery.items, futureItems]
   )
   const nowMs = useTimeBoundaryNow(timelineBoundaries)
   const filteredItems = useMemo(
@@ -133,16 +188,26 @@ export function MerchantEventsTimeline({
   )
   const timelineAnchor = useEventTimelineAnchor({
     isFetching: discovery.isFetching,
-    itemCount: filteredItems.length,
-    pastCount: presentation.past.length,
+    itemCount: filteredItems.length + futureItems.length,
+    pastCount:
+      presentation.past.length +
+      futureItems.filter((read) => (read.calendar?.end ?? Infinity) <= nowMs)
+        .length,
     viewportKey,
   })
   const organizerPubkeys = useMemo(
     () =>
       Array.from(
-        new Set(presentedItems.map((item) => item.market.organizerPubkey))
+        new Set([
+          ...presentedItems.map((item) => item.market.organizerPubkey),
+          ...futureItems.flatMap((read) =>
+            read.resolution.state === "current"
+              ? [read.resolution.market.organizerPubkey]
+              : []
+          ),
+        ])
       ),
-    [presentedItems]
+    [futureItems, presentedItems]
   )
   const profiles = useProfiles(organizerPubkeys, {
     accountPubkey,
@@ -160,8 +225,9 @@ export function MerchantEventsTimeline({
     !discovery.isRefreshStale &&
     discovery.network.perspective.truncated !== true
   const resultPresentation = getResultPresentation({
-    resultCount: discovery.items.length,
-    visibleResultCount: filteredItems.length,
+    resultCount:
+      discovery.items.length + (futureQuery.data?.markets.length ?? 0),
+    visibleResultCount: filteredItems.length + futureItems.length,
     reliability: discoveryComplete ? "complete" : "degraded",
   })
   function openMarket(market: MerchantOrganizerEventMarket): void {
@@ -233,6 +299,72 @@ export function MerchantEventsTimeline({
     )
   }
 
+  function renderFutureEntry(read: EventMarketRosterReadResult) {
+    if (read.resolution.state !== "current" || !read.calendar) return null
+    const market = read.resolution.market
+    const calendar = read.calendar
+    const profile = profiles.getProfile(market.organizerPubkey)
+    return (
+      <EventTimelineEntry
+        key={market.coordinate}
+        date={{
+          dateTime: new Date(calendar.start).toISOString(),
+          day: new Intl.DateTimeFormat(undefined, { day: "numeric" }).format(
+            calendar.start
+          ),
+          month: new Intl.DateTimeFormat(undefined, { month: "short" }).format(
+            calendar.start
+          ),
+          year: new Intl.DateTimeFormat(undefined, { year: "numeric" }).format(
+            calendar.start
+          ),
+        }}
+        imageUrl={calendar.image}
+        organizerName={getProfileDisplayLabel(profile, market.organizerPubkey, {
+          lookupSettled: profiles.lookupSettled,
+        })}
+        organizerPending={!profiles.lookupSettled && !profile}
+        schedule={
+          calendar.kind === 31922 && calendar.startDate
+            ? calendar.startDate
+            : new Date(calendar.start).toLocaleString()
+        }
+        title={calendar.title}
+        onOpen={() => {
+          timelineAnchor.rememberPosition()
+          onOpen(
+            encodeEventMarketNaddr(market.coordinate, read.observedRelayUrls)
+          )
+        }}
+      />
+    )
+  }
+
+  function renderMixedEntries(
+    legacy: MerchantEventTimelineItem[],
+    future: EventMarketRosterReadResult[]
+  ) {
+    return [
+      ...legacy.map((item) => ({
+        start: item.market.source.calendar?.start ?? 0,
+        node: renderEntry(item),
+      })),
+      ...future.flatMap((read) =>
+        read.calendar
+          ? [{ start: read.calendar.start, node: renderFutureEntry(read) }]
+          : []
+      ),
+    ]
+      .sort((left, right) => left.start - right.start)
+      .map((entry) => entry.node)
+  }
+  const futurePast = futureItems.filter(
+    (read) => (read.calendar?.end ?? Infinity) <= nowMs
+  )
+  const futureUpcoming = futureItems.filter(
+    (read) => (read.calendar?.end ?? -Infinity) > nowMs
+  )
+
   return (
     <section className="space-y-5" aria-label="Events timeline">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -254,15 +386,18 @@ export function MerchantEventsTimeline({
           >
             {discovery.isInitialLoading
               ? "Loading events"
-              : `${filteredItems.length} ${filteredItems.length === 1 ? "event" : "events"}`}
+              : `${filteredItems.length + futureItems.length} ${filteredItems.length + futureItems.length === 1 ? "event" : "events"}`}
           </p>
           <Button
             type="button"
             variant="ghost"
             size="sm"
             aria-label="Refresh events"
-            disabled={discovery.isFetching}
-            onClick={discovery.refetch}
+            disabled={discovery.isFetching || futureQuery.isFetching}
+            onClick={() => {
+              discovery.refetch()
+              void futureQuery.refetch()
+            }}
           >
             <RefreshCw
               className={cn(
@@ -279,11 +414,12 @@ export function MerchantEventsTimeline({
 
       {discovery.isInitialLoading ? (
         <EventTimelineLoading />
-      ) : filteredItems.length > 0 ? (
+      ) : filteredItems.length + futureItems.length > 0 ? (
         <EventTimelineViewport
-          busy={discovery.isFetching}
-          currentAndFutureEvents={presentation.currentAndFuture.map(
-            renderEntry
+          busy={discovery.isFetching || futureQuery.isFetching}
+          currentAndFutureEvents={renderMixedEntries(
+            presentation.currentAndFuture,
+            futureUpcoming
           )}
           hiddenEarlierCount={presentation.hiddenEarlierCount}
           hiddenLaterCount={presentation.hiddenLaterCount}
@@ -291,7 +427,7 @@ export function MerchantEventsTimeline({
           onLoadEarlier={loadEarlier}
           onLoadLater={loadLater}
           pageSize={MERCHANT_EVENT_TIMELINE_PAGE_SIZE}
-          pastEvents={presentation.past.map(renderEntry)}
+          pastEvents={renderMixedEntries(presentation.past, futurePast)}
           viewportRef={timelineAnchor.timelineViewportRef}
         />
       ) : (

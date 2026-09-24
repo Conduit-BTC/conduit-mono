@@ -259,6 +259,7 @@ export function createCartItemFromProduct(
       : ({ type: "shipping" } as const))
   const pickup =
     resolvedFulfillment.type === "pickup" ? resolvedFulfillment : null
+  const eventMarketPickup = resolvedFulfillment.type === "event_market_pickup"
   const pickupPending = resolvedFulfillment.type === "event_pickup_pending"
   return {
     productId: product.id,
@@ -276,30 +277,42 @@ export function createCartItemFromProduct(
     tags: product.tags,
     format: product.format,
     fulfillment: resolvedFulfillment,
-    shippingCostSats: pickupPending
-      ? undefined
-      : (pickup?.costSats ?? product.shippingCostSats),
-    sourceShippingCost: pickupPending
-      ? undefined
-      : (pickup?.sourceCost ?? product.sourceShippingCost),
-    shippingOptionId: pickupPending
-      ? undefined
-      : (pickup?.option.coordinate ?? product.shippingOptionId),
-    shippingOptionDTag: pickupPending
-      ? undefined
-      : pickup?.option.coordinate.split(":").slice(2).join(":") ||
-        product.shippingOptionDTag,
+    shippingCostSats: eventMarketPickup
+      ? 0
+      : pickupPending
+        ? undefined
+        : (pickup?.costSats ?? product.shippingCostSats),
+    sourceShippingCost:
+      pickupPending || eventMarketPickup
+        ? undefined
+        : (pickup?.sourceCost ?? product.sourceShippingCost),
+    shippingOptionId:
+      pickupPending || eventMarketPickup
+        ? undefined
+        : (pickup?.option.coordinate ?? product.shippingOptionId),
+    shippingOptionDTag:
+      pickupPending || eventMarketPickup
+        ? undefined
+        : pickup?.option.coordinate.split(":").slice(2).join(":") ||
+          product.shippingOptionDTag,
     shippingOptionLaunchUnsupported:
-      pickup || pickupPending
+      pickup || pickupPending || eventMarketPickup
         ? undefined
         : product.shippingOptionLaunchUnsupported,
-    shippingCountries: pickup || pickupPending ? [] : product.shippingCountries,
+    shippingCountries:
+      pickup || pickupPending || eventMarketPickup
+        ? []
+        : product.shippingCountries,
     shippingCountryRules:
-      pickup || pickupPending ? [] : product.shippingCountryRules,
+      pickup || pickupPending || eventMarketPickup
+        ? []
+        : product.shippingCountryRules,
     productUpdatedAt: product.updatedAt,
     productEventId: product.sourceEventId,
     canonicalShippingResolved:
-      pickup || pickupPending ? false : canonicalShippingResolved,
+      pickup || pickupPending || eventMarketPickup
+        ? false
+        : canonicalShippingResolved,
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
@@ -381,9 +394,6 @@ export function getCartFulfillmentLane(
 export function getMixedFulfillmentBlockingMessage(
   items: Array<Pick<CartItem, "format" | "fulfillment">>
 ): string | null {
-  if (items.some((item) => item.fulfillment?.type === "event_market_pickup")) {
-    return "This Event Market needs current signed participation verification before checkout."
-  }
   if (items.some(isPendingEventPickupCartItem)) {
     return "Event pickup is still being verified. Review it after verification finishes."
   }
@@ -1520,6 +1530,7 @@ export function getCartCostSummary(
       !isPendingEventPickupCartItem(item) &&
       (item.format === "digital" ||
         isPickupCartItem(item) ||
+        item.fulfillment?.type === "event_market_pickup" ||
         (item.canonicalShippingResolved === true &&
           !!item.shippingOptionId &&
           (item.shippingCountryRules?.length ?? 0) > 0))
@@ -1542,7 +1553,9 @@ export function getCartCostSummary(
     count += item.quantity
 
     const price = getPriceSats(item, rateInput, {
-      allowZero: isPickupCartItem(item),
+      allowZero:
+        isPickupCartItem(item) ||
+        item.fulfillment?.type === "event_market_pickup",
     })
     if (price) {
       itemSubtotalSats += price.sats * item.quantity
@@ -1553,6 +1566,7 @@ export function getCartCostSummary(
 
     const hasShippingSnapshot =
       isPickupCartItem(item) ||
+      item.fulfillment?.type === "event_market_pickup" ||
       (item.canonicalShippingResolved === true &&
         !!item.shippingOptionId &&
         (item.shippingCountryRules?.length ?? 0) > 0)

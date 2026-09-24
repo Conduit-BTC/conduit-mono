@@ -14,6 +14,8 @@ import {
   config,
   db,
   encodeEventMarketNaddr,
+  formatEventMarketPickupClaimCode,
+  getFutureMarketClaimRef,
   deriveProtectedReadPresentationState,
   EVENT_KINDS,
   formatNpub,
@@ -575,8 +577,9 @@ function OrderItemsSection({
             },
             {
               allowZero:
-                isZeroCostPickupOrder(vm) &&
-                item.fulfillment?.type === "pickup",
+                (isZeroCostPickupOrder(vm) &&
+                  item.fulfillment?.type === "pickup") ||
+                item.fulfillment?.type === "event_market_pickup",
             }
           )
           return (
@@ -727,13 +730,18 @@ function OrderDetail({
   const eventActorPubkeys = useMemo(
     () =>
       Array.from(
-        new Set(
-          vm.pickupFulfillments.map(
+        new Set([
+          ...vm.pickupFulfillments.map(
             (pickup) => getPickupHandoffSummary(pickup).handlerPubkey
-          )
-        )
+          ),
+          ...vm.futureMarketFulfillments.map((pickup) =>
+            pickup.mode === "organizer_handoff"
+              ? pickup.organizerPubkey
+              : pickup.merchantPubkey
+          ),
+        ])
       ),
-    [vm.pickupFulfillments]
+    [vm.pickupFulfillments, vm.futureMarketFulfillments]
   )
   const eventActorProfiles = useProfiles(eventActorPubkeys, {
     accountPubkey,
@@ -2195,6 +2203,68 @@ function OrderDetail({
                 formatSats={formatSats}
               />
             </div>
+
+            {vm.futureMarketFulfillments.map((pickup) => {
+              const marketRef = encodeEventMarketNaddr(pickup.market.coordinate)
+              const handlerPubkey =
+                pickup.mode === "organizer_handoff"
+                  ? pickup.organizerPubkey
+                  : pickup.merchantPubkey
+              const claimCode =
+                pickup.mode === "organizer_handoff"
+                  ? formatEventMarketPickupClaimCode(
+                      getFutureMarketClaimRef({
+                        orderId: vm.orderId,
+                        merchantPubkey: vm.merchantPubkey,
+                        organizerPubkey: pickup.organizerPubkey,
+                        marketCoordinate: pickup.market.coordinate,
+                      })
+                    )
+                  : null
+              return (
+                <section
+                  key={pickup.market.coordinate}
+                  className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+                  data-testid="future-market-order-pickup"
+                >
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    Event pickup
+                  </h3>
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    {pickup.assignment}
+                  </p>
+                  <p className="mt-2 text-xs text-[var(--text-muted)]">
+                    Handled by{" "}
+                    <EventActorName
+                      identity={eventActorIdentity(handlerPubkey)}
+                    />
+                  </p>
+                  {claimCode && (
+                    <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
+                      <span className="text-[var(--text-secondary)]">
+                        Pickup code
+                      </span>
+                      <span className="flex items-center gap-2 font-mono font-semibold tracking-wide text-[var(--text-primary)]">
+                        {claimCode}
+                        <CopyButton
+                          value={claimCode}
+                          npub={false}
+                          label="Copy organizer pickup code"
+                        />
+                      </span>
+                    </div>
+                  )}
+                  <Button asChild variant="outline" className="mt-4 h-9">
+                    <Link
+                      to="/events/$collectionRef"
+                      params={{ collectionRef: marketRef }}
+                    >
+                      View event market
+                    </Link>
+                  </Button>
+                </section>
+              )
+            })}
 
             {/* Shipping address */}
             {vm.pickupFulfillments.map((pickup) => {

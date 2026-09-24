@@ -9,6 +9,7 @@ export function setEventMarketProductAssociation(input: {
   product: ProductSchema
   market: ParsedEventMarketRoster
   enabled: boolean
+  authorizationActive?: boolean
 }): ProductSchema {
   const product = parseAddressableCoordinate(input.product.id, [30402])
   if (
@@ -28,6 +29,9 @@ export function setEventMarketProductAssociation(input: {
       )
     ) {
       throw new Error("This merchant is not approved for the Event Market.")
+    }
+    if (!input.authorizationActive) {
+      throw new Error("A current organizer-signed merchant grant is required.")
     }
   }
   const refs = new Set(input.product.eventMarketRefs ?? [])

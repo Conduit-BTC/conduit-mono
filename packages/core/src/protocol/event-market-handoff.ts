@@ -6,6 +6,9 @@ import {
   eventMarketHandoffAckSchema,
   eventMarketClaimRefSchema,
   eventMarketReadyReceiptSchema,
+  futureMarketReadyReceiptSchema,
+  futureMarketRevocationSchema,
+  futureMarketHandoffAckSchema,
   orderSchema,
   resolveOrderPickupHandoffAuthority,
   type EventMarketFulfillmentRevocationSchema,
@@ -1534,6 +1537,31 @@ function isAuthorizedPrivateMessage(
   message: ParsedEventMarketPrivateMessage
 ): boolean {
   const payload = message.payload
+  if (
+    payload.type === "future_market_ready" ||
+    payload.type === "future_market_revoked" ||
+    payload.type === "future_market_handed_out"
+  ) {
+    const valid =
+      payload.type === "future_market_ready"
+        ? futureMarketReadyReceiptSchema.safeParse(payload).success
+        : payload.type === "future_market_revoked"
+          ? futureMarketRevocationSchema.safeParse(payload).success
+          : futureMarketHandoffAckSchema.safeParse(payload).success
+    return (
+      valid &&
+      message.senderPubkey.toLowerCase() ===
+        (payload.type === "future_market_handed_out"
+          ? payload.organizerPubkey
+          : payload.merchantPubkey
+        ).toLowerCase() &&
+      message.recipientPubkey.toLowerCase() ===
+        (payload.type === "future_market_handed_out"
+          ? payload.merchantPubkey
+          : payload.organizerPubkey
+        ).toLowerCase()
+    )
+  }
   const payloadIsValid =
     payload.type === "organizer_fulfillment_receipt"
       ? eventMarketReadyReceiptSchema.safeParse(payload).success

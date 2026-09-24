@@ -60,6 +60,9 @@ export const EVENT_KINDS = {
   /** Experimental Open Markets: organizer-signed Event Market roster */
   EVENT_MARKET: 30409,
 
+  /** Experimental Open Markets: immutable merchant grant/revoke transition */
+  EVENT_MARKET_AUTH: 3841,
+
   /** NIP-52: Date-based calendar event (addressable) */
   CALENDAR_DATE: 31922,
 

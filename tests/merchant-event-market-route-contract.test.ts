@@ -144,8 +144,10 @@ describe("merchant organizer event market route", () => {
     expect(route).not.toContain("requireAuth")
     expect(newRoute).not.toContain("requireAuth")
     expect(detailRoute).not.toContain("requireAuth")
-    expect(newRoute).toContain("onCreateDismiss={closeCreation}")
-    expect(newRoute).toContain('navigate({ to: "/events"')
+    expect(newRoute).toContain(
+      "<FutureEventMarketCreate onPublished={openEvent} />"
+    )
+    expect(newRoute).not.toContain("OrganizerEventMarketEditor")
     expect(root).toContain("if (!signerWorkspaceAvailable)")
     expect(root).toContain("<ConnectGate />")
     expect(root).toContain("<Outlet key={pubkey} />")
@@ -159,208 +161,15 @@ describe("merchant organizer event market route", () => {
   })
 
   it("links the Market event page to the canonical Merchant detail route", async () => {
-    const route = await Bun.file(
-      "apps/market/src/routes/events/$collectionRef.tsx"
-    ).text()
-
-    expect(route).toContain("buildMerchantEventParticipationUrl")
-    expect(route).toMatch(/inferConduitAppOrigin\(\s*"merchant"/)
-    expect(route).toContain("Sell here")
-  })
-
-  it("keeps protocol behavior behind the Merchant adapter", async () => {
-    const [route, timelineHook] = await Promise.all([
-      Bun.file("apps/merchant/src/routes/events.tsx").text(),
-      Bun.file("apps/merchant/src/hooks/useMerchantEventTimeline.ts").text(),
+    const [route, futurePage] = await Promise.all([
+      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
+      Bun.file("apps/market/src/components/FutureEventMarketPage.tsx").text(),
     ])
 
-    expect(timelineHook).toContain("listOrganizerEventMarkets")
-    expect(route).toContain("publishMerchantOrganizerEventMarket")
-    expect(route).toContain("publishMerchantOrganizerMembership")
-    expect(route).toContain("retryMerchantOrganizerRecord")
-    expect(route).not.toContain("NDKEvent")
-    expect(route).not.toContain("parseProductEvent")
-    expect(route).not.toContain("kind: 30405")
-    expect(route).not.toContain("kind: 30406")
-    expect(route.toLowerCase()).not.toContain("chicago")
-  })
-
-  it("binds owner relay reads to the live Merchant session", async () => {
-    const [route, detailRoute, adapter, handoff, merchandise] =
-      await Promise.all([
-        Bun.file("apps/merchant/src/routes/events.tsx").text(),
-        Bun.file("apps/merchant/src/routes/events/$collectionRef.tsx").text(),
-        Bun.file("apps/merchant/src/lib/event-market.ts").text(),
-        Bun.file("apps/merchant/src/lib/event-market-handoff.ts").text(),
-        Bun.file(
-          "packages/core/src/protocol/event-market-merchandise.ts"
-        ).text(),
-      ])
-
-    expect(detailRoute).toContain("accountPubkey,")
-    expect(detailRoute).toContain("signerReadiness,")
-    expect(detailRoute).toContain("isAuthGenerationCurrent,")
-    expect(detailRoute).toContain(
-      'signerReadiness === "ready" && pubkey === accountPubkey'
-    )
-    expect(detailRoute).toContain(
-      "const shouldContinue = () => isAuthGenerationCurrent(authGeneration)"
-    )
-    expect(route).toContain("merchantEventMarketQueryOptions(")
-    expect(route).toContain("queryFn: async ({ signal }) =>")
-    expect(route).toContain(
-      "shouldContinue: () => !signal.aborted && shouldContinue()"
-    )
-    expect(route).toContain("shouldContinue,")
-    expect(route).toContain("organizerPubkey: input.ownerPubkey,")
-    expect(route).toContain("authenticatedPubkey: input.ownerPubkey,")
-    expect(route).toContain(
-      "isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)"
-    )
-    expect(route).toContain("authenticatedPubkey: null,")
-    expect(route).toContain(
-      "shouldContinue: () => isCurrentOwner(input.ownerPubkey)"
-    )
-    expect(adapter).toContain("...(signal ? { signal } : {})")
-    expect(adapter).toContain("...(shouldContinue ? { shouldContinue } : {})")
-    expect(handoff).toContain("shouldContinue: input.shouldContinue")
-    expect(handoff).toContain("signal: input.signal")
-    expect(merchandise).toContain("shouldContinue: input.shouldContinue")
-  })
-
-  it("separates event discovery from ownership and publishes from the event", async () => {
-    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
-    const timeline = await Bun.file(
-      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
-    ).text()
-    const panel = await Bun.file(
-      "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
-    ).text()
-    const publisher = await Bun.file(
-      "apps/merchant/src/components/EventProductPublisherDialog.tsx"
-    ).text()
-    const adapter = await Bun.file(
-      "apps/merchant/src/lib/event-product-publishing.ts"
-    ).text()
-
-    expect(route).toContain("<MerchantEventsTimeline")
-    expect(route).not.toContain("<TabsTrigger")
-    expect(route).not.toContain("Merchant workspace")
-    expect(route).not.toContain("onSourceChange")
-    expect(timeline).not.toContain("Network perspective")
-    expect(timeline).not.toContain("Event timeline")
-    expect(timeline).not.toContain("Browse events from your network")
-    expect(timeline).toContain('aria-label="Events timeline"')
-    expect(route).toContain("Create event")
-    expect(timeline).toContain('source: "combined"')
-    expect(timeline).toContain('organizing: "Organizing"')
-    expect(timeline).toContain('selling: "Selling at"')
-    expect(timeline).not.toContain('saved: "Saved"')
-    expect(timeline).toContain("<EventTimelineEntry")
-    expect(timeline).not.toContain("Open a known event")
-    expect(timeline).not.toContain("Timeline may be incomplete")
-    expect(timeline).not.toContain("Discovery reached its current limit")
-    expect(timeline).toContain('aria-label="Refresh events"')
-    expect(route).toContain("merchantEventMarketQueryOptions")
-    expect(panel).toContain("Sell at this event")
-    expect(panel).toContain("Sellers at this event")
-    expect(panel).toContain(
-      "No participating sellers were discovered in this refresh."
-    )
-    expect(panel).toContain("Seller discovery is incomplete")
-    expect(panel).toContain("Seller discovery is temporarily unavailable")
-    expect(panel).not.toContain("No participating sellers are listed yet.")
-    expect(route).toContain("getMerchantEventSellerDiscoveryState")
-    expect(route).toContain(
-      "selectedPublishDeletion ?? selectedMarketQuery.data?.read"
-    )
-    expect(panel).not.toContain("Published by organizer")
-    expect(panel).not.toContain("Technical details")
-    expect(panel).not.toContain("formatEventRelayReadCoverage")
-    expect(panel).toContain("isParticipationProductAvailable")
-    expect(panel).toContain("eventMarketRequiredRecordsResolved")
-    expect(panel).toContain("<EventProductPublisherDialog")
-    expect(publisher).toContain("start from one of your")
-    expect(publisher).toContain("The original listing is never changed")
-    expect(publisher).toContain("Organizer hands it out")
-    expect(adapter).toContain("eventProductFormFromTemplate")
-    expect(adapter).toContain("signAndPublishProductListing")
-    expect(adapter).toContain("buildProductLocalPickupMetadata")
-  })
-
-  it("projects discovery through result consequences and exact-hydrates a selected event", async () => {
-    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
-    const timeline = await Bun.file(
-      "apps/merchant/src/components/MerchantEventsTimeline.tsx"
-    ).text()
-    const timelineHook = await Bun.file(
-      "apps/merchant/src/hooks/useMerchantEventTimeline.ts"
-    ).text()
-    const adapter = await Bun.file(
-      "apps/merchant/src/lib/event-market.ts"
-    ).text()
-    const core = await Bun.file(
-      "packages/core/src/protocol/event-market-discovery.ts"
-    ).text()
-    const query = await Bun.file(
-      "apps/merchant/src/lib/merchant-event-query.ts"
-    ).text()
-
-    expect(adapter).toContain("discoverFollowedOrganizerEventMarkets")
-    expect(core).toContain('projection: "discovery"')
-    expect(core).toContain("FOLLOWED_EVENT_MARKET_READ_CONCURRENCY = 4")
-    expect(route).not.toContain("getResultPresentation")
-    expect(core).toContain("FOLLOWED_EVENT_MARKET_CANDIDATE_TARGET_LIMIT = 128")
-    expect(core).toContain("kinds: [EVENT_KINDS.PRODUCT_COLLECTION]")
-    expect(core).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
-    expect(timelineHook).toContain("merchantEventTimelineQueryOptions(")
-    expect(timelineHook).toContain(
-      "MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS"
-    )
-    expect(query).toContain("discoverPerspectiveEventMarkets")
-    expect(timelineHook).toContain("includeEnded: true")
-    expect(timelineHook).toContain("resolveEventMarketPerspectiveAuthorPubkeys")
-    expect(timelineHook).toContain("qualifyMerchantEventTimelineNetwork")
-    expect(timelineHook).toContain("followingQuery.isRefetchError")
-    expect(timelineHook).toContain("followingQuery.isPaused")
-    expect(timelineHook).toContain("conduitQuery.isRefetchError")
-    expect(timelineHook).toContain("conduitQuery.isPaused")
-    expect(timelineHook).toContain("hydrateMerchantEventRelationships({")
-    expect(timelineHook).toContain(
-      "prioritizeMerchantEventRelationshipReferences({"
-    )
-    expect(timelineHook).toContain(
-      "if (authorPubkeys !== undefined) void refreshPerspective()"
-    )
-    expect(timelineHook).toContain("sellingCollectionCoordinates")
-    expect(timelineHook).toMatch(
-      /const productReadIncomplete =\s*\n\s*isCommerceReadIncomplete\(productsQuery\.data\?\.meta\) \|\|\s*\n\s*productsQuery\.isError \|\|\s*\n\s*productsQuery\.isPaused/
-    )
-    expect(timelineHook).toContain("isMerchantEventTimelineInitialLoading")
-    expect(timelineHook).toMatch(
-      /productRelationshipReadPending:\s*\n\s*productsQuery\.isPending && !productsQuery\.isPaused/
-    )
-    expect(timelineHook).toContain("listOrganizerEventMarkets")
-    expect(timelineHook).not.toContain("ORGANIZER_LIMIT")
-    expect(core).toContain("candidate-first relay scans")
-    expect(core).toContain("readEventMarketCollectionCandidates")
-    expect(timeline).toContain("getResultPresentation")
-    expect(timeline).toContain("Events couldn't be fully loaded")
-    expect(timeline).toContain("Retry to check for more events")
-    expect(timeline).toContain(
-      "Discovery is incomplete, so matching events may still be available."
-    )
-    expect(timeline).toContain('resultPresentation.visibility === "compact"')
-    expect(timeline).not.toContain("getOrganizerDiscoveryPresentation")
-    expect(timeline).not.toContain("planned bounded relay")
-    expect(route).not.toContain("getOrganizerDiscoveryPresentation")
-    expect(route).not.toContain("formatEventRelayReadCoverage")
-    expect(query).toContain("merchantEventMarketQueryOptions")
-    expect(query).toContain("resolveOrganizerEventMarketRead(")
-    expect(query).toContain("onProgress")
-    expect(query).toContain("complete: false")
-    expect(route).toContain("getSettledMerchantEventMarketRead")
-    expect(route).not.toContain("selectedFromDiscovery")
+    expect(route).toContain("<FutureEventMarketPage")
+    expect(futurePage).toContain("buildMerchantEventParticipationUrl")
+    expect(futurePage).toMatch(/inferConduitAppOrigin\(\s*"merchant"/)
+    expect(futurePage).toContain("Sell here")
   })
 
   it("keeps the initial timeline centered on Now while progressive results arrive", async () => {
@@ -392,110 +201,6 @@ describe("merchant organizer event market route", () => {
     expect(organizerPanel).not.toContain("formatEventRelayReadCoverage")
   })
 
-  it("keeps exact selections URL-backed and prevents stale organizer actions", async () => {
-    const [route, newRoute, detailRoute] = await Promise.all([
-      Bun.file("apps/merchant/src/routes/events.tsx").text(),
-      Bun.file("apps/merchant/src/routes/events/new.tsx").text(),
-      Bun.file("apps/merchant/src/routes/events/$collectionRef.tsx").text(),
-    ])
-    const panel = await Bun.file(
-      "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
-    ).text()
-
-    expect(detailRoute).toContain('to: "/events/$collectionRef"')
-    expect(detailRoute).toContain("params: { collectionRef: nextReference }")
-    expect(newRoute).toContain('to: "/events/$collectionRef"')
-    expect(route).not.toContain("embedded")
-    expect(route).not.toContain("onSelected")
-    expect(route).not.toContain("Open an organizer catalog")
-    expect(route).not.toContain("merchant-followed-event-markets")
-    expect(route).toContain(
-      "shouldResolveSelectedReference && !selectedSettledRead"
-    )
-    expect(route).toContain("!selectedReferenceResolutionPending &&")
-    expect(route).toContain("compact")
-    expect(panel).toContain("compact = false")
-    expect(panel).toContain("{compact ? (")
-  })
-
-  it("exposes signer, delivery, result recovery, and organizer acceptance workflows", async () => {
-    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
-    const editor = await Bun.file(
-      "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
-    ).text()
-    const panel = await Bun.file(
-      "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
-    ).text()
-
-    expect(editor).toContain("Confirm each organizer record in your signer")
-    expect(route).toContain(
-      'if (record.record === "collection") setPublishState("publishing")'
-    )
-    expect(editor).toContain("Everything here is published publicly")
-    expect(route).not.toContain("organizerCatalogPresentation")
-    expect(route).not.toContain("Open an organizer catalog")
-    expect(route).toContain("Event details couldn't be confirmed")
-    expect(route).toContain("Retry event details")
-    expect(panel).toContain("acknowledged")
-    expect(panel).toContain("rejected")
-    expect(panel).toContain("timed out")
-    expect(panel).toContain("Retry delivery")
-    expect(panel).toContain("Pending request")
-    expect(panel).not.toContain("getEventActionabilityPresentation")
-    expect(panel).not.toContain("Refresh evidence")
-    expect(panel).toContain(
-      'removable ? "Remove" : canAccept ? "Accept" : "Cannot accept"'
-    )
-    expect(panel).toContain("disabled={pending || (!removable && !canAccept)}")
-    expect(panel).toContain("<SignedProductPreview item={item} />")
-    expect(panel).toContain("Exact merchant-signed listing")
-    expect(panel).toContain("No signed product description.")
-    expect(panel).toContain("formatSourcePrice")
-    expect(panel).toContain("productPreview.images[0]")
-    expect(panel).toContain("isParticipationProductPreviewVerified")
-    expect(panel).toContain('data-preview-state="unavailable"')
-    expect(panel).toContain(
-      "The exact signed product preview is unavailable or no longer matches this request."
-    )
-    expect(panel).not.toContain("organizer-owned collection coordinate")
-    expect(route).toContain("loadOrganizerEventMarketDeliveryOutbox")
-    expect(route).toContain("saveOrganizerEventMarketDelivery")
-    expect(
-      route.match(/findSavedOrganizerEventMarketReference/g)?.length
-    ).toBeGreaterThanOrEqual(4)
-    expect(route).toContain("onPublished?.(reference)")
-  })
-
-  it("keeps reconnect and exact event-product retries inert until explicit review", async () => {
-    const [route, publisher] = await Promise.all([
-      Bun.file("apps/merchant/src/routes/events.tsx").text(),
-      Bun.file(
-        "apps/merchant/src/components/EventProductPublisherDialog.tsx"
-      ).text(),
-    ])
-    const exactProductRetry = publisher.slice(
-      publisher.indexOf("const retryProductDeliveryMutation"),
-      publisher.indexOf("const reviewAcceptanceMutation")
-    )
-    const recoveryNotice = route.slice(
-      route.indexOf("<SignerRecoveryNotice"),
-      route.indexOf("{publishState", route.indexOf("<SignerRecoveryNotice"))
-    )
-
-    expect(exactProductRetry).toContain("retryEventProductDelivery(")
-    expect(exactProductRetry).not.toContain("reviewAndAccept(")
-    expect(publisher).toContain("Retry exact product delivery")
-    expect(publisher).toContain("Retry exact acceptance")
-    expect(publisher).toContain("Review and accept")
-    expect(recoveryNotice).toContain(
-      'onReconnect={() => connect({ mode: "restore" })}'
-    )
-    expect(recoveryNotice).not.toContain(".mutate(")
-    expect(route).toContain(
-      'current === "awaiting_signature" || current === "publishing"'
-    )
-  })
-
   it("hydrates merchant identity without changing organizer acceptance authority", async () => {
     const panel = await Bun.file(
       "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
@@ -517,37 +222,6 @@ describe("merchant organizer event market route", () => {
     expect(panel).toContain("disabled={pending || (!removable && !canAccept)}")
   })
 
-  it("makes event authoring requirements and modal state explicit", async () => {
-    const route = await Bun.file("apps/merchant/src/routes/events.tsx").text()
-    const editor = await Bun.file(
-      "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
-    ).text()
-    const form = await Bun.file(
-      "apps/merchant/src/lib/event-market-form.ts"
-    ).text()
-    expect(editor).toContain("Fields marked Required")
-    expect(editor).toContain("RequiredFieldLabel")
-    expect(editor).toContain("Event photo URL")
-    expect(editor).toContain("https://nostrcheck.me/media")
-    expect(editor).toContain("Browser extension upload")
-    expect(editor).toContain("approve it with your Nostr signer")
-    expect(editor).toContain("Copy the direct HTTPS")
-    expect(editor).toContain("supports Blossom")
-    expect(editor).toContain("NIP-96")
-    expect(editor).toContain('rel="noopener noreferrer"')
-    expect(editor).toContain("getOrganizerEventTimezoneOptions")
-    expect(editor).toContain("No changes to publish")
-    expect(editor).toContain("isOrganizerEventMarketFormDirty")
-    expect(form).toContain('"America/Chicago"')
-    expect(form).toContain("browserTimezone()")
-
-    const openEdit = route.slice(
-      route.indexOf("function openEdit(): void"),
-      route.indexOf("async function copyShareLink")
-    )
-    expect(openEdit).toContain('setPublishState("idle")')
-  })
-
   it("keeps merchant booth pickup evidence on the merchant product graph", async () => {
     const adapter = await Bun.file(
       "apps/merchant/src/lib/event-market.ts"
@@ -566,7 +240,7 @@ describe("merchant organizer event market route", () => {
     )
   })
 
-  it("keeps product local-pickup import in a focused editor and Core-backed adapter", async () => {
+  it("keeps ordinary product shipping and future market tagging while retiring old pickup authoring", async () => {
     const products = await Bun.file(
       "apps/merchant/src/routes/products.tsx"
     ).text()
@@ -579,9 +253,11 @@ describe("merchant organizer event market route", () => {
     expect(products).toContain("buildProductLocalPickupMetadata")
     expect(editor).toContain('<SelectItem value="digital">Digital')
     expect(editor).toContain('<SelectItem value="ship">Ship')
-    expect(editor).toContain('<SelectItem value="local_pickup">Local pickup')
-    expect(editor).toContain("Event catalog naddr or link")
-    expect(editor).toContain("Your active organizer events")
+    expect(editor).not.toContain('<SelectItem value="local_pickup">')
+    expect(products).toContain("Collection-based event pickup is retired")
+    expect(products).toContain("readEventMarketAuthorization({")
+    expect(products).toContain("Event Market naddr or 30409 coordinate")
+    expect(products).toContain("Event Market")
     expect(products).toContain("listOrganizerEventMarkets")
     expect(products).toContain('market.state === "active"')
     expect(editor).toContain("Request pending")
@@ -825,5 +501,45 @@ describe("merchant organizer event market route", () => {
 
     unmount()
     expect(clock.pendingTimerCount()).toBe(0)
+  })
+
+  it("uses one future market writer and keeps historical event links read only", async () => {
+    const [newRoute, detailRoute, futureCreate, futureManager] =
+      await Promise.all([
+        Bun.file("apps/merchant/src/routes/events/new.tsx").text(),
+        Bun.file("apps/merchant/src/routes/events/$collectionRef.tsx").text(),
+        Bun.file(
+          "apps/merchant/src/components/FutureEventMarketCreate.tsx"
+        ).text(),
+        Bun.file(
+          "apps/merchant/src/components/FutureEventMarketManager.tsx"
+        ).text(),
+      ])
+    expect(newRoute).toContain("<FutureEventMarketCreate")
+    expect(newRoute).not.toContain("OrganizerEventMarketEditor")
+    expect(detailRoute).toContain(
+      "decodeEventMarketReference(collectionRef, [30409])"
+    )
+    expect(detailRoute).toContain("<LegacyEventReadOnly")
+    expect(detailRoute).not.toContain("publishMerchantOrganizerEventMarket")
+    expect(futureCreate).toContain("publishEventMarketRoster")
+    expect(futureManager).toContain("publishEventMarketAuthorization")
+    expect(futureManager).toContain("readEventMarketAuthorization")
+    expect(futureManager).toContain("expectedTipIds")
+    expect(futureManager).toContain("isAuthGenerationCurrent")
+  })
+
+  it("routes future catalog and products through current signed evidence", async () => {
+    const [marketRoute, futurePage, products] = await Promise.all([
+      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
+      Bun.file("apps/market/src/components/FutureEventMarketPage.tsx").text(),
+      Bun.file("apps/merchant/src/routes/products.tsx").text(),
+    ])
+    expect(marketRoute).toContain("<FutureEventMarketPage")
+    expect(futurePage).toContain("readEventMarketCatalog")
+    expect(futurePage).toContain("buildMerchantEventParticipationUrl")
+    expect(products).toContain("readEventMarketRoster")
+    expect(products).toContain("readEventMarketAuthorization")
+    expect(products).toContain("Collection-based event pickup is retired")
   })
 })

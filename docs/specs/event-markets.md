@@ -6,28 +6,43 @@
 
 ### Public wire and authority
 
-Future events use the experimental [Open Markets Event Market proposal](https://github.com/OpenMarketsFoundation/specification/pull/15). The organizer signs a dedicated addressable kind `30409` record, `30409:<organizer>:<market-d>`, that links exactly one same-author NIP-52 `31922` or `31923` calendar coordinate. Its required tags are one `d`, one calendar `a`, and `event_market` with version `1` and `open` or `closed`. Its replaceable revisions contain zero to 128 unique `merchant` rows:
+Future events use the experimental [Open Markets Event Market proposal](https://github.com/OpenMarketsFoundation/specification/pull/15). The organizer signs a dedicated addressable kind `30409` record, `30409:<organizer>:<market-d>`, that links exactly one same-author NIP-52 `31922` or `31923` calendar coordinate. Its required tags are one `d`, one calendar `a`, and `event_market` with version `2` and `open` or `closed`. Its replaceable revisions contain zero to 128 unique `merchant` rows:
 
 ```text
 ["d", "fair-2027-market"]
 ["a", "31923:<organizer>:fair-2027"]
-["event_market", "1", "open"]
+["event_market", "2", "open"]
 ["merchant", "<merchant-1>", "merchant_present", "Booth 12"]
 ["merchant", "<merchant-2>", "organizer_handoff", "North pickup desk"]
 ["prev", "<prior-signed-market-event-id>"]  // later revisions
 ```
 
-Roster membership is merchant approval. The organizer sets and may later edit each merchant's sole mode and public assignment. A duplicate or conflicting merchant row is invalid. The organizer's signed market state controls new commerce; calendar dates describe the event schedule. The optional `prev` tag identifies the signed parent used for an update. A writer checks the strongest known revision before editing, preserves unaffected rows, and surfaces known divergent ancestry. NIP-01 replacement is deterministic but not a global compare-and-swap.
+The organizer sets and may later edit each merchant's sole mode and public assignment. A duplicate or conflicting merchant row is invalid. The organizer's signed market state controls new commerce; calendar dates describe the event schedule. The `prev` tag identifies the signed parent on an update; the initial revision has none. A writer checks the strongest known revision before editing, preserves unaffected rows, and surfaces known divergent ancestry. NIP-01 replacement is deterministic but not a global compare-and-swap.
 
-Merchant enrollment is a merchant-level authenticated request or organizer invitation; neither grants admission. Approval writes a roster row with mode and assignment. Reapproval warns that all still-valid, still-tagged products become eligible again. A merchant's kind `30402` product references the market with `["a", "30409:<organizer>:<market-d>"]`. It carries no independent event pickup, booth, handler, or fee. Merchant product publication, edits, untagging, visibility, price, inventory, and payment destination remain under the merchant's signature. No organizer product acceptance occurs.
+Kind `3841` is a regular immutable organizer-signed authorization transition scoped to one market coordinate and merchant pubkey. Its empty content and required tags are:
+
+```text
+["openmarkets", "event-market-auth", "1"]
+["a", "30409:<organizer>:<market-d>"]
+["p", "<merchant>"]
+["state", "active" | "revoked"]
+["seq", "<canonical nonnegative decimal>"]
+["auth_parent", "<prior transition id>"]  // zero on a root; up to eight otherwise
+["repair", "<kind-5 id>", "<deleted transition id>"]  // only for a reviewed repair
+["alt", "Open Markets event merchant authorization"]
+```
+
+An active grant with validated observed ancestry and a current roster row are both required for new commerce. Observed incomparable tips, missing parents, and unresolved organizer deletion evidence block admission. A later stale relay response cannot restore a known revoke or erase a conflict. Merchant enrollment is an authenticated merchant-level request or organizer invitation; neither grants admission. Approval signs a causal active grant and adds a row. Revocation signs a descendant revoke and removes the row. Because these are separate relay writes, an interrupted operation must retain signed bytes for exact retry; either an absent row or revoked grant denies admission. Reapproval requires a descendant active grant and a row, and warns that all still-valid, still-tagged products become eligible again. Mode and assignment edits need only a roster revision.
+
+A merchant's kind `30402` product references the market with `["a", "30409:<organizer>:<market-d>"]`. It carries no independent event pickup, booth, handler, or fee. Merchant product publication, edits, untagging, visibility, price, inventory, and payment destination remain under the merchant's signature. No organizer product acceptance occurs. Earlier experimental version-1 `30409` revisions do not imply grants.
 
 ### Market and checkout behavior
 
-Read the known organizer-signed market record and its calendar before candidate discovery. Derive the finite approved merchant authors, then query kind `30402` by those authors and the exact market `#a` tag. Filters yield candidates only. Before showing an event product, including a direct product link, resolve the current signed product revision and applicable NIP-09 deletion evidence; verify merchant author, market tag, visibility, and valid product terms. A newer untagged or deleted revision supersedes an older tagged product. Retain stronger known signed market and product evidence when relays return stale or partial data. Surface incomplete evidence instead of treating it as proof of admission or removal.
+Read the known organizer-signed market record, causal authorization, and calendar before candidate discovery. Use the organizer's observed NIP-65 write relays with bounded hints and fallback relays; retain unioned signed observations. Derive the finite roster author set, then query kind `30402` by those authors and the exact market `#a` tag. Filters yield candidates only. Before showing an event product, including a direct product link, resolve the current signed product revision and applicable NIP-09 deletion evidence; verify merchant author, market tag, active grant, visibility, and valid product terms. A newer untagged or deleted revision supersedes an older tagged product. Retain stronger known signed market, authorization, and product evidence when relays return stale or partial data. Surface incomplete evidence instead of treating it as proof of admission or removal.
 
 An unpaid cart resolves current market, calendar, merchant row, product, and payment terms before purchase. Its participation identity is market coordinate plus merchant pubkey. Compatible products from that merchant at the same market form one purchase; a roster revision or booth rename alone does not split it. A material mode, assignment, calendar date, product, price, or payee change requires buyer review before payment. There is no separate buyer event-pickup fee; event costs belong in merchant prices, and the merchant remains payee.
 
-Created and paid orders retain the exact market revision, merchant row, calendar and product revisions, payee, and accepted terms. A later roster edit does not reinterpret an order. Material handoff changes to an existing order require an explicit authorized per-order update or transfer and buyer notice. Organizer handoff grants physical release duties only under the merchant's private order-specific authority. Private ready receipts, release, delivery, and recovery remain content-minimal and encrypted; the organizer does not gain the full merchant order or merchant payment authority.
+Created and paid orders retain the exact market revision, merchant row, observed authorization tip and required ancestry, relevant observed deletion evidence, calendar and product revisions, payee, and accepted terms. This is a bounded observation snapshot, not proof that no unseen event existed. A later roster edit does not reinterpret an order. Material handoff changes to an existing order require an explicit authorized per-order update or transfer and buyer notice. Organizer handoff grants physical release duties only under the merchant's private order-specific authority. The merchant's private ready receipt carries `releaseAuthorized: true` after its paid or zero-cost check; it carries no payment confirmation or full order. Private release, delivery, and recovery remain content-minimal and encrypted, and the organizer does not gain merchant payment authority.
 
 ### Compatibility and validation
 

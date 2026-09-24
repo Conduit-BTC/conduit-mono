@@ -89,7 +89,8 @@ export function hasExactZeroCostPickupTerms(
     (input.order.shippingCostSats ?? 0) === 0 &&
     input.order.items.every(
       (item) =>
-        item.fulfillment?.type === "pickup" &&
+        (item.fulfillment?.type === "pickup" ||
+          item.fulfillment?.type === "event_market_pickup") &&
         item.priceAtPurchase === 0 &&
         (item.shippingCostSats ?? 0) === 0
     )

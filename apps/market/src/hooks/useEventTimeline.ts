@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   discoverPerspectiveEventMarkets,
+  discoverFutureEventMarkets,
   extractFollowPubkeys,
   getFollowPubkeys,
   normalizePubkey,
@@ -11,6 +12,7 @@ import {
   useConduitSession,
   type EventMarketPerspectiveSnapshot,
   type FollowListResult,
+  type EventMarketRosterReadResult,
   type PerspectiveEventMarketDiscoveryResult,
 } from "@conduit/core"
 import {
@@ -32,6 +34,8 @@ export const MARKET_EVENT_TIMELINE_REFRESH_INTERVAL_MS = 60_000
 export interface EventTimelineDiscoveryResult {
   data: PerspectiveEventMarketDiscoveryResult | undefined
   markets: PerspectiveEventMarketDiscoveryResult["markets"]
+  futureMarkets: EventMarketRosterReadResult[]
+  organizerPubkeys: string[] | undefined
   profileRelayHintsByPubkey: Record<string, string[]>
   authorSource: PerspectiveAuthorSource
   effectiveSource: ProductCatalogSourceMode
@@ -275,6 +279,20 @@ export function useEventTimeline(
     enabled: session.relaySettingsReady && organizerPubkeys !== undefined,
     refetchInterval: MARKET_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
+  const futureQuery = useQuery({
+    queryKey: ["future-market-event-timeline", ...discoveryQueryKey],
+    queryFn: ({ signal }) =>
+      discoverFutureEventMarkets({
+        organizerPubkeys: organizerPubkeys ?? [],
+        authenticatedPubkey,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+      }),
+    enabled: session.relaySettingsReady && organizerPubkeys !== undefined,
+    retry: false,
+    refetchInterval: MARKET_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
+  })
   const queryDisplayState = getEventTimelineQueryDisplayState(discoveryQuery)
   const markets = useMemo(
     () => discoveryQuery.data?.markets ?? [],
@@ -302,34 +320,43 @@ export function useEventTimeline(
   const refreshGuestPerspective = guestMarket.refetch
   const refreshFollows = firstDegreeQuery.refetch
   const refreshDiscovery = discoveryQuery.refetch
+  const refreshFuture = futureQuery.refetch
   const refetch = useCallback(() => {
     if (effectiveSource !== "following") void refreshGuestPerspective()
     if (firstDegreeDiscoveryEnabled) void refreshFollows()
     void refreshDiscovery()
+    void refreshFuture()
   }, [
     effectiveSource,
     firstDegreeDiscoveryEnabled,
     refreshDiscovery,
+    refreshFuture,
     refreshFollows,
     refreshGuestPerspective,
   ])
   return {
     data: discoveryQuery.data,
     markets,
+    futureMarkets: futureQuery.data?.markets ?? [],
+    organizerPubkeys,
     profileRelayHintsByPubkey,
     authorSource: authorResolution.source,
     effectiveSource,
     isInitialLoading:
-      organizerPubkeys === undefined || queryDisplayState.isInitialLoading,
+      organizerPubkeys === undefined ||
+      (queryDisplayState.isInitialLoading && futureQuery.isPending),
     isFetching:
       discoveryQuery.isFetching ||
+      futureQuery.isFetching ||
       firstDegreeQuery.isFetching ||
       guestMarket.isRefreshing,
     isRefreshStale:
       queryDisplayState.isRefreshStale ||
+      futureQuery.isError ||
+      futureQuery.data?.coverage !== "complete" ||
       followRefreshStale ||
       (effectiveSource !== "following" && guestMarket.stale),
-    error: discoveryQuery.error,
+    error: discoveryQuery.error ?? futureQuery.error,
     refetch,
   }
 }

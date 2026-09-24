@@ -1,4 +1,5 @@
 import type { ProductSchema } from "../schemas"
+import type { EventMarketAuthorizationResolution } from "./event-market-authorization"
 import {
   isEventMarketAddressableRevisionDeleted,
   parseAddressableCoordinate,
@@ -98,7 +99,7 @@ export function buildEventMarketRosterDraft(
   const tags = [
     ["d", input.dTag],
     ["a", calendar.coordinate],
-    ["event_market", "1", input.state],
+    ["event_market", "2", input.state],
     ...input.merchants.map((row) => [
       "merchant",
       row.pubkey,
@@ -151,7 +152,7 @@ export function parseEventMarketRosterEvent(
     calendar.authorPubkey !== event.pubkey ||
     stateTags.length !== 1 ||
     stateTags[0]?.length !== 3 ||
-    stateTags[0][1] !== "1" ||
+    stateTags[0][1] !== "2" ||
     (state !== "open" && state !== "closed") ||
     previousTags.length > 1 ||
     (previousTags.length === 1 &&
@@ -232,14 +233,17 @@ export function resolveEventMarketRoster(input: {
   }
   const market = parseEventMarketRosterEvent(winner)
   if (!market) return { state: "malformed", eventId: winner.id }
-  const previous = revisions.find((event) => event.id !== winner.id)
-  if (
-    previous &&
-    market.previousEventId &&
-    market.previousEventId !== previous.id
-  ) {
-    return { state: "conflicting", eventId: winner.id }
+  const byId = new Map(revisions.map((event) => [event.id, event]))
+  const ancestorIds = new Set<string>()
+  let cursor: SignedPublicNostrEvent | undefined = winner
+  while (cursor && !ancestorIds.has(cursor.id)) {
+    ancestorIds.add(cursor.id)
+    const previous: string[][] = cursor.tags.filter((tag) => tag[0] === "prev")
+    cursor =
+      previous.length === 1 ? byId.get(previous[0]?.[1] ?? "") : undefined
   }
+  if (revisions.some((event) => !ancestorIds.has(event.id)))
+    return { state: "conflicting", eventId: winner.id }
   return { state: "current", market }
 }
 
@@ -297,6 +301,7 @@ export type EventMarketProductResolution =
         | "hidden"
         | "malformed"
         | "deleted"
+        | "unauthorized"
     }
   | {
       state: "eligible"
@@ -311,6 +316,7 @@ export function resolveEventMarketProduct(input: {
   productCoordinate: string
   revisions: readonly SignedPublicNostrEvent[]
   deletions?: readonly SignedPublicNostrEvent[]
+  authorization?: EventMarketAuthorizationResolution
 }): EventMarketProductResolution {
   const coordinate = parseAddressableCoordinate(input.productCoordinate, [
     EVENT_KINDS.PRODUCT,
@@ -320,6 +326,7 @@ export function resolveEventMarketProduct(input: {
     (row) => row.pubkey === coordinate.authorPubkey
   )
   if (!merchant) return { state: "unapproved" }
+  if (input.authorization?.state !== "active") return { state: "unauthorized" }
   const revisions = input.revisions
     .filter(
       (event) =>

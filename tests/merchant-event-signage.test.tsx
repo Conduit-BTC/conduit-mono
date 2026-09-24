@@ -5,6 +5,8 @@ import {
   encodeEventMarketNaddr,
   pubkeyToNpub,
   type Profile,
+  type ParsedEventMarketRoster,
+  type ParsedEventMarketCalendar,
 } from "@conduit/core"
 import { EventQrPrintPages } from "../apps/merchant/src/components/EventQrPrintPreview"
 import type {
@@ -14,6 +16,7 @@ import type {
 import {
   EVENT_SIGN_QR_MAX_BYTES,
   buildEventQrSignSheet,
+  buildFutureEventQrSignSheets,
   buildMerchantEventQrSignSheet,
   buildMerchantEventQrSignSheets,
   formatEventSignSchedule,
@@ -159,6 +162,55 @@ describe("merchant event sign eligibility", () => {
 })
 
 describe("event sign composition", () => {
+  it("uses kind-30409 market and merchant links for future signs", () => {
+    const coordinate = `30409:${ORGANIZER}:future-market`
+    const roster = {
+      coordinate,
+      organizerPubkey: ORGANIZER,
+      calendarCoordinate: `31922:${ORGANIZER}:future-market-calendar`,
+      eventId: "c".repeat(64),
+      createdAt: 1,
+      state: "open",
+      merchants: [
+        {
+          pubkey: MERCHANT_A,
+          mode: "merchant_present",
+          assignment: "Booth 12",
+        },
+      ],
+    } as ParsedEventMarketRoster
+    const calendar = {
+      coordinate: roster.calendarCoordinate,
+      eventId: "d".repeat(64),
+      authorPubkey: ORGANIZER,
+      dTag: "future-market-calendar",
+      kind: 31922,
+      title: "Future Market",
+      content: "",
+      locations: ["Riverfront Hall"],
+      start: Date.UTC(2026, 9, 17),
+      end: Date.UTC(2026, 9, 18),
+      startDate: "2026-10-17",
+      endDate: "2026-10-18",
+      createdAt: 1,
+    } as ParsedEventMarketCalendar
+    const [event, booth] = buildFutureEventQrSignSheets({
+      market: roster,
+      calendar,
+      location: MERCHANT_LOCATION,
+    })
+    expect(
+      decodeEventMarketReference(
+        new URL(event!.url).pathname.split("/").at(-1)!,
+        [30409]
+      )?.coordinate
+    ).toBe(coordinate)
+    expect(booth?.url).toContain(`?merchant=${pubkeyToNpub(MERCHANT_A)}`)
+    expect(booth?.location).toBe("Booth 12")
+    expect(event?.qrValue).toBe(event?.url)
+    expect(booth?.qrValue).toBe(booth?.url)
+  })
+
   it("treats date-based calendar ends as exclusive", () => {
     const singleDay = market([], {
       start: "2026-10-17",

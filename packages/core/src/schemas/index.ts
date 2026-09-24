@@ -1,5 +1,7 @@
 import { z } from "zod"
 import { normalizePublicMediaUrl } from "../network-target-safety"
+import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
+import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 
 const publicMediaUrlSchema = z
   .string()
@@ -349,6 +351,18 @@ export const orderPickupFulfillmentSchema = z
     }
   })
 
+const signedEventMarketEvidenceSchema = z
+  .object({
+    id: hex64Schema,
+    pubkey: hex64Schema,
+    created_at: z.number().int().min(0),
+    kind: z.number().int().min(0),
+    tags: z.array(z.array(z.string()).min(1)),
+    content: z.string(),
+    sig: z.string().regex(/^[0-9a-f]{128}$/i),
+  })
+  .refine(isValidSignedPublicNostrEvent, "Signed evidence must be valid.")
+
 /** Future Event Market snapshot. The public roster supplies handoff terms. */
 export const orderEventMarketPickupFulfillmentSchema = z
   .object({
@@ -357,6 +371,21 @@ export const orderEventMarketPickupFulfillmentSchema = z
     merchantPubkey: hex64Schema,
     payeePubkey: hex64Schema,
     market: pickupEvidenceCoordinateSchema,
+    /** Exact organizer-signed merchant grant accepted for this order. */
+    grant: z.object({
+      kind: z.literal(3841),
+      pubkey: hex64Schema,
+      eventId: hex64Schema,
+      createdAt: z.number().int().min(0),
+      /** Causal signed grant and revoke evidence observed at order creation. */
+      ancestryEventIds: z.array(hex64Schema).min(1).max(128),
+      observedDeletionEventIds: z.array(hex64Schema).max(128),
+      signedEvidence: z.object({
+        tip: signedEventMarketEvidenceSchema,
+        ancestry: z.array(signedEventMarketEvidenceSchema).min(1).max(128),
+        deletions: z.array(signedEventMarketEvidenceSchema).max(128),
+      }),
+    }),
     calendar: pickupEvidenceCoordinateSchema.extend({
       start: z.number().int().min(0),
       end: z.number().int().min(0),
@@ -379,6 +408,74 @@ export const orderEventMarketPickupFulfillmentSchema = z
         code: "custom",
         path: ["market"],
         message: "Market must be organizer-authored kind 30409.",
+      })
+    }
+    if (fulfillment.grant.pubkey.toLowerCase() !== organizer) {
+      context.addIssue({
+        code: "custom",
+        path: ["grant"],
+        message:
+          "Merchant admission must be an organizer-signed kind 3841 grant.",
+      })
+    }
+    if (
+      !fulfillment.grant.ancestryEventIds.includes(fulfillment.grant.eventId)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["grant", "ancestryEventIds"],
+        message: "Grant ancestry must include the accepted signed tip.",
+      })
+    }
+    const signed = fulfillment.grant.signedEvidence
+    if (
+      signed.tip.id !== fulfillment.grant.eventId ||
+      signed.tip.created_at * 1_000 !== fulfillment.grant.createdAt ||
+      JSON.stringify(signed.ancestry.map((event) => event.id).sort()) !==
+        JSON.stringify([...fulfillment.grant.ancestryEventIds].sort()) ||
+      JSON.stringify(signed.deletions.map((event) => event.id).sort()) !==
+        JSON.stringify([...fulfillment.grant.observedDeletionEventIds].sort())
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["grant", "signedEvidence"],
+        message:
+          "The signed authorization bundle must match the exact saved event IDs.",
+      })
+    } else {
+      const resolved = resolveEventMarketAuthorization({
+        marketCoordinate: fulfillment.market.coordinate,
+        merchantPubkey: fulfillment.merchantPubkey,
+        transitions: signed.ancestry,
+        deletions: signed.deletions,
+      })
+      if (
+        resolved.state !== "active" ||
+        resolved.tip.eventId !== signed.tip.id ||
+        signed.tip.pubkey !== fulfillment.organizerPubkey
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["grant", "signedEvidence"],
+          message:
+            "The signed authorization bundle must validate to the accepted grant.",
+        })
+      }
+    }
+    if (
+      new Set([
+        fulfillment.market.eventId,
+        fulfillment.calendar.eventId,
+        fulfillment.product.eventId,
+        ...fulfillment.grant.ancestryEventIds,
+        ...fulfillment.grant.observedDeletionEventIds,
+      ]).size > 64
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["grant"],
+        message:
+          "Signed Event Market order evidence exceeds the bounded recovery read.",
       })
     }
     if (
@@ -720,9 +817,16 @@ export const orderSchema = z
     const firstPickup = order.items.find(
       (item) => item.fulfillment?.type === "pickup"
     )?.fulfillment
-    const hasPickup = firstPickup?.type === "pickup"
+    const firstFuture = order.items.find(
+      (item) => item.fulfillment?.type === "event_market_pickup"
+    )?.fulfillment
+    const hasPickup =
+      firstPickup?.type === "pickup" ||
+      firstFuture?.type === "event_market_pickup"
     const pickupOnly = order.items.every(
-      (item) => item.fulfillment?.type === "pickup"
+      (item) =>
+        item.fulfillment?.type === "pickup" ||
+        item.fulfillment?.type === "event_market_pickup"
     )
     const hasShipping = order.items.some(
       (item) =>
@@ -753,6 +857,61 @@ export const orderSchema = z
             "Pickup items from different organizer event graphs require separate orders.",
         })
       }
+      if (item.fulfillment?.type === "event_market_pickup") {
+        const fulfillment = item.fulfillment
+        if (
+          fulfillment.merchantPubkey.toLowerCase() !==
+            order.merchantPubkey.toLowerCase() ||
+          fulfillment.payeePubkey.toLowerCase() !==
+            order.merchantPubkey.toLowerCase() ||
+          firstFuture?.type !== "event_market_pickup" ||
+          fulfillment.market.coordinate !== firstFuture.market.coordinate ||
+          fulfillment.market.eventId !== firstFuture.market.eventId ||
+          fulfillment.calendar.eventId !== firstFuture.calendar.eventId ||
+          fulfillment.grant.eventId !== firstFuture.grant.eventId ||
+          fulfillment.mode !== firstFuture.mode ||
+          fulfillment.assignment !== firstFuture.assignment
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["items", index, "fulfillment"],
+            message:
+              "Future Event Market items require one exact merchant admission and assignment.",
+          })
+        }
+      }
+    }
+    if (firstFuture?.type === "event_market_pickup") {
+      const eventIds = new Set([
+        firstFuture.market.eventId,
+        firstFuture.calendar.eventId,
+        ...firstFuture.grant.ancestryEventIds,
+        ...firstFuture.grant.observedDeletionEventIds,
+        ...order.items.flatMap((item) =>
+          item.fulfillment?.type === "event_market_pickup"
+            ? [item.fulfillment.product.eventId]
+            : []
+        ),
+      ])
+      if (eventIds.size > 64) {
+        context.addIssue({
+          code: "custom",
+          path: ["items"],
+          message:
+            "Signed Event Market order evidence exceeds the bounded recovery read.",
+        })
+      }
+    }
+    if (
+      firstPickup?.type === "pickup" &&
+      firstFuture?.type === "event_market_pickup"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["items"],
+        message:
+          "Legacy and future Event Market pickup require separate orders.",
+      })
     }
     if (hasPickup && hasShipping) {
       context.addIssue({
@@ -807,6 +966,22 @@ export const eventMarketReceiptItemSchema = z
     quantity: z.number().int().min(1).max(10_000),
     /** Reserved for a future signed-product option projection. */
     variants: z.tuple([]).default([]),
+  })
+  .strict()
+
+const futureMarketReceiptItemSchema = z
+  .object({
+    product: pickupEvidenceCoordinateSchema,
+    quantity: z.number().int().min(1).max(10_000),
+    selectedSpecifications: z
+      .array(
+        z.object({
+          key: z.string().min(1).max(80),
+          value: z.string().min(1).max(200),
+        })
+      )
+      .max(32)
+      .optional(),
   })
   .strict()
 
@@ -957,6 +1132,102 @@ export type EventMarketHandoffAckSchema = z.infer<
   typeof eventMarketHandoffAckSchema
 >
 
+/** Order-specific physical release; no buyer identity, payment, or full order. */
+const futureMarketPrivateGraphSchema = z.object({
+  claimRef: eventMarketClaimRefSchema,
+  merchantPubkey: hex64Schema,
+  organizerPubkey: hex64Schema,
+  market: pickupEvidenceCoordinateSchema,
+  calendar: pickupEvidenceCoordinateSchema,
+  grant: z.object({
+    eventId: hex64Schema,
+    createdAt: z.number().int().min(0),
+  }),
+})
+
+function refineFutureMarketPrivateGraph(
+  graph: z.infer<typeof futureMarketPrivateGraphSchema>,
+  context: z.RefinementCtx
+): void {
+  const market = eventMarketCoordinateAuthority(graph.market.coordinate)
+  const calendar = eventMarketCoordinateAuthority(graph.calendar.coordinate)
+  if (
+    !market ||
+    market.kind !== 30409 ||
+    market.authorPubkey !== graph.organizerPubkey.toLowerCase() ||
+    !calendar ||
+    ![31922, 31923].includes(calendar.kind) ||
+    calendar.authorPubkey !== graph.organizerPubkey.toLowerCase() ||
+    graph.merchantPubkey.toLowerCase() === graph.organizerPubkey.toLowerCase()
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["market"],
+      message: "Future organizer release graph authority is invalid.",
+    })
+  }
+}
+
+export const futureMarketReadyReceiptSchema = futureMarketPrivateGraphSchema
+  .extend({
+    version: z.literal(2),
+    type: z.literal("future_market_ready"),
+    releaseAuthorized: z.literal(true),
+    items: z.array(futureMarketReceiptItemSchema).min(1).max(64),
+    issuedAt: z.number().int().min(0),
+  })
+  .strict()
+  .superRefine((receipt, context) => {
+    refineFutureMarketPrivateGraph(receipt, context)
+    const products = new Set<string>()
+    for (const [index, item] of receipt.items.entries()) {
+      const product = eventMarketCoordinateAuthority(item.product.coordinate)
+      if (
+        !product ||
+        product.kind !== 30402 ||
+        product.authorPubkey !== receipt.merchantPubkey.toLowerCase() ||
+        products.has(item.product.coordinate)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["items", index],
+          message: "Ready receipt product authority is invalid.",
+        })
+      }
+      products.add(item.product.coordinate)
+    }
+  })
+
+export const futureMarketRevocationSchema = futureMarketPrivateGraphSchema
+  .extend({
+    version: z.literal(2),
+    type: z.literal("future_market_revoked"),
+    readyReceiptId: hex64Schema,
+    issuedAt: z.number().int().min(0),
+  })
+  .strict()
+  .superRefine(refineFutureMarketPrivateGraph)
+
+export const futureMarketHandoffAckSchema = futureMarketPrivateGraphSchema
+  .extend({
+    version: z.literal(2),
+    type: z.literal("future_market_handed_out"),
+    readyReceiptId: hex64Schema,
+    handedOutAt: z.number().int().min(0),
+  })
+  .strict()
+  .superRefine(refineFutureMarketPrivateGraph)
+
+export type FutureMarketReadyReceiptSchema = z.infer<
+  typeof futureMarketReadyReceiptSchema
+>
+export type FutureMarketRevocationSchema = z.infer<
+  typeof futureMarketRevocationSchema
+>
+export type FutureMarketHandoffAckSchema = z.infer<
+  typeof futureMarketHandoffAckSchema
+>
+
 /**
  * Kind-16 message types used in MVP order conversations.
  */
@@ -971,6 +1242,9 @@ export const orderMessageTypeSchema = z.enum([
   "organizer_fulfillment_receipt",
   "organizer_fulfillment_revocation",
   "organizer_handoff_ack",
+  "future_market_ready",
+  "future_market_revoked",
+  "future_market_handed_out",
 ])
 
 export type OrderMessageTypeSchema = z.infer<typeof orderMessageTypeSchema>

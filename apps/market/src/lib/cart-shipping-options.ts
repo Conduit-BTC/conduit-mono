@@ -17,7 +17,11 @@ export function getCartShippingOptionCoordinates(items: CartItem[]): string[] {
     new Set(
       items
         .filter(isPhysicalItem)
-        .filter((item) => item.fulfillment?.type !== "pickup")
+        .filter(
+          (item) =>
+            item.fulfillment?.type !== "pickup" &&
+            item.fulfillment?.type !== "event_market_pickup"
+        )
         .flatMap((item) =>
           item.shippingOptionId ? [item.shippingOptionId] : []
         )
@@ -50,7 +54,11 @@ export function prepareCartFulfillment(
 ): PreparedCartFulfillment {
   const resolutions = new Map<string, PreparedProductFulfillment>()
   const preparedItems = items.map((item) => {
-    if (item.fulfillment?.type === "pickup") return item
+    if (
+      item.fulfillment?.type === "pickup" ||
+      item.fulfillment?.type === "event_market_pickup"
+    )
+      return item
 
     const resolution = resolveProductFulfillment(
       {
@@ -140,7 +148,11 @@ export function hasPhysicalItemsMissingShippingZone(
 ): boolean {
   return items
     .filter(isPhysicalItem)
-    .filter((item) => item.fulfillment?.type !== "pickup")
+    .filter(
+      (item) =>
+        item.fulfillment?.type !== "pickup" &&
+        item.fulfillment?.type !== "event_market_pickup"
+    )
     .some((item) => {
       return !hasCartItemShippingSnapshot(item)
     })
@@ -157,7 +169,9 @@ export function getCartShippingOptionsAvailable(items: CartItem[]): boolean {
     .filter(isPhysicalItem)
     .every(
       (item) =>
-        item.fulfillment?.type === "pickup" || hasCartItemShippingSnapshot(item)
+        item.fulfillment?.type === "pickup" ||
+        item.fulfillment?.type === "event_market_pickup" ||
+        hasCartItemShippingSnapshot(item)
     )
 }
 
@@ -167,7 +181,11 @@ export function getCartShippingDestinationEligibility(
 ): ShippingDestinationEligibility {
   const results = items
     .filter(isPhysicalItem)
-    .filter((item) => item.fulfillment?.type !== "pickup")
+    .filter(
+      (item) =>
+        item.fulfillment?.type !== "pickup" &&
+        item.fulfillment?.type !== "event_market_pickup"
+    )
     .map((item) => {
       const itemOptions = getCartShippingOptionSnapshots([item])
       return getShippingDestinationEligibility(destination, itemOptions)

@@ -7,9 +7,13 @@ import {
   resolveEventMarketProductFulfillment,
   resolveEventMarketProductParticipation,
   resolveOrderPickupHandoffAuthority,
+  readEventMarketOrderEvidenceByIds,
+  verifyEventMarketOrderEvidence,
   type CommerceProductRecord,
   type EventMarketResolution,
+  type EventMarketOrderEvidenceResult,
   type OrderPickupFulfillmentSchema,
+  type OrderSchema,
   type OrderSummary,
   type Product,
   type ProductsByIdsResult,
@@ -45,9 +49,12 @@ export type MerchantPickupAuthorizationResult =
     }
 
 export function getMerchantPickupOrganizerProfileRelayHints(
-  result: MerchantPickupAuthorizationResult | undefined
+  result:
+    | MerchantPickupAuthorizationResult
+    | EventMarketOrderEvidenceResult
+    | undefined
 ): string[] {
-  return result?.status === "verified"
+  return result?.status === "verified" && "market" in result
     ? getResolvedEventMarketRelayHints(result.market)
     : []
 }
@@ -73,6 +80,66 @@ export interface MerchantPickupAuthorizationDependencies {
 const DEFAULT_DEPENDENCIES: MerchantPickupAuthorizationDependencies = {
   getEventMarket,
   getProductsByIds,
+}
+
+/** Historical signed evidence verifies a created future order's exact terms. */
+export async function verifyFutureEventMarketOrderAuthorization(input: {
+  order: OrderSchema
+  merchantPubkey: string
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
+}): Promise<ReturnType<typeof verifyEventMarketOrderEvidence>> {
+  return (await readVerifiedFutureEventMarketOrderEvidence(input)).result
+}
+
+export async function readVerifiedFutureEventMarketOrderEvidence(input: {
+  order: OrderSchema
+  merchantPubkey: string
+  authenticatedPubkey?: string | null
+  shouldContinue?: () => boolean
+}): Promise<{
+  result: ReturnType<typeof verifyEventMarketOrderEvidence>
+  events: Awaited<
+    ReturnType<typeof readEventMarketOrderEvidenceByIds>
+  >["events"]
+}> {
+  const future = input.order.items.filter(
+    (item) => item.fulfillment?.type === "event_market_pickup"
+  )
+  const first = future[0]?.fulfillment
+  if (
+    first?.type !== "event_market_pickup" ||
+    input.order.merchantPubkey !== input.merchantPubkey ||
+    future.length !== input.order.items.length
+  )
+    return { result: { status: "invalid", reason: "order" }, events: [] }
+  const ids = [
+    ...new Set([
+      first.market.eventId,
+      first.calendar.eventId,
+      ...first.grant.ancestryEventIds,
+      ...first.grant.observedDeletionEventIds,
+      ...future.flatMap((item) =>
+        item.fulfillment?.type === "event_market_pickup"
+          ? [item.fulfillment.product.eventId]
+          : []
+      ),
+    ]),
+  ]
+  const read = await readEventMarketOrderEvidenceByIds({
+    marketCoordinate: first.market.coordinate,
+    merchantPubkey: input.merchantPubkey,
+    eventIds: ids,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+  })
+  return {
+    events: read.events,
+    result: verifyEventMarketOrderEvidence({
+      order: input.order,
+      events: read.events,
+    }),
+  }
 }
 
 function canonicalCoordinate(
@@ -512,13 +579,23 @@ export async function verifyMerchantPickupOrderAuthorization(
 }
 
 export function getMerchantPickupAuthorizationMessage(
-  result: MerchantPickupAuthorizationResult | undefined
+  result:
+    | MerchantPickupAuthorizationResult
+    | EventMarketOrderEvidenceResult
+    | undefined
 ): string {
   if (!result) {
     return "Checking current signed organizer and product evidence."
   }
   if (result.status === "verified") {
-    return "Current signed organizer and product evidence is verified."
+    return "market" in result
+      ? "Current signed organizer and product evidence is verified."
+      : "The order's exact signed Event Market evidence is verified."
+  }
+  if (result.status === "invalid") {
+    return result.reason === "missing_evidence"
+      ? "The order's exact signed Event Market evidence is unavailable. Retry when relay access recovers."
+      : "The order's signed Event Market evidence does not match its created terms."
   }
   if (result.status === "not_required") {
     return "Pickup verification is not required."

@@ -7,6 +7,8 @@ import {
   normalizePubkey,
   type ConduitBrowserLocation,
   type Profile,
+  type ParsedEventMarketRoster,
+  type ParsedEventMarketCalendar,
 } from "@conduit/core"
 import {
   isParticipationProductPreviewVerified,
@@ -66,7 +68,7 @@ function buildEventSignQrUrl(
     merchantPubkey
       ? getEventMarketMerchantFilterUrl(reference, merchantPubkey, location)
       : getEventMarketUrl(reference, location)
-  const decoded = decodeEventMarketReference(naddr, [30405])
+  const decoded = decodeEventMarketReference(naddr, [30405, 30409])
   if (!decoded) return buildUrl(naddr)
 
   let selectedRelayHints: string[] = []
@@ -86,6 +88,60 @@ function buildEventSignQrUrl(
 function cleanOptionalText(value: string | undefined): string | undefined {
   const cleaned = value?.trim()
   return cleaned || undefined
+}
+
+/** Future signs always resolve to the kind-30409 catalog and its merchant filter. */
+export function buildFutureEventQrSignSheets(input: {
+  market: ParsedEventMarketRoster
+  calendar: ParsedEventMarketCalendar
+  profiles?: Record<string, Profile | undefined>
+  relayHints?: readonly string[]
+  location?: ConduitBrowserLocation
+}): EventQrSignSheet[] {
+  const { market, calendar, profiles, location } = input
+  const naddr = encodeEventMarketNaddr(market.coordinate, input.relayHints)
+  const eventTitle = calendar.title
+  const schedule =
+    calendar.kind === 31922 && calendar.startDate
+      ? calendar.startDate
+      : new Date(calendar.start).toLocaleString()
+  const eventLocation =
+    calendar.locations.join(", ") ||
+    calendar.geohash ||
+    "See the event catalog for location details"
+  const bannerUrl = normalizePublicMediaUrl(calendar.image) ?? undefined
+  const event: EventQrSignSheet = {
+    id: `${market.coordinate}:event`,
+    kind: "event",
+    url: getEventMarketUrl(naddr, location),
+    qrValue: buildEventSignQrUrl(naddr, undefined, location),
+    eventTitle,
+    schedule,
+    location: eventLocation,
+    ...(bannerUrl ? { bannerUrl } : {}),
+  }
+  const booths = market.merchants.map((row): EventQrSignSheet => {
+    const profile = profiles?.[row.pubkey]
+    const name = getProfileName(profile) ?? formatNpub(row.pubkey)
+    const imageUrl = normalizePublicMediaUrl(profile?.picture) ?? undefined
+    return {
+      id: `${market.coordinate}:${row.pubkey}`,
+      kind: "merchant",
+      url: getEventMarketMerchantFilterUrl(naddr, row.pubkey, location),
+      qrValue: buildEventSignQrUrl(naddr, row.pubkey, location),
+      eventTitle,
+      schedule,
+      location: row.assignment,
+      ...(bannerUrl ? { bannerUrl } : {}),
+      merchant: {
+        pubkey: row.pubkey,
+        name,
+        ...(imageUrl ? { imageUrl } : {}),
+        fallback: getMerchantSignImageFallback(name, row.pubkey),
+      },
+    }
+  })
+  return [event, ...booths]
 }
 
 export function formatEventSignSchedule(

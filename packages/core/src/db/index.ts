@@ -181,6 +181,19 @@ export interface CachedEventMarketRosterEvidence {
   cachedAt: number
 }
 
+/** Exact paired organizer signatures kept outside admitted relay evidence. */
+export interface EventMarketMerchantDecisionJob {
+  id: string
+  marketCoordinate: string
+  merchantPubkey: string
+  action: "approve" | "revoke"
+  roster: SignedPublicNostrEvent
+  authorization: SignedPublicNostrEvent
+  status: "pending" | "acknowledged"
+  createdAt: number
+  updatedAt: number
+}
+
 export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
 
 export type ProductDeletionRelayDeliveryStatus =
@@ -1009,6 +1022,10 @@ class ConduitDB extends Dexie {
   ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
   eventMarketEvidence!: EntityTable<CachedEventMarketEvidence, "id">
   eventMarketRosterEvidence!: EntityTable<CachedEventMarketRosterEvidence, "id">
+  eventMarketMerchantDecisionJobs!: EntityTable<
+    EventMarketMerchantDecisionJob,
+    "id"
+  >
   wallets!: EntityTable<WalletDescriptor, "id">
   walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
   shoppingCarts!: EntityTable<StoredShoppingCart, "id">
@@ -1204,6 +1221,11 @@ class ConduitDB extends Dexie {
 
     this.version(20).stores({
       eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
+    })
+
+    this.version(21).stores({
+      eventMarketMerchantDecisionJobs:
+        "id, marketCoordinate, merchantPubkey, status, updatedAt",
     })
   }
 }

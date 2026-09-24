@@ -28,9 +28,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
-- `docs/specs/event-markets.md`: organizer-authored calendar/collection,
-  merchant- or organizer-operated pickup, private handoff receipts, catalog
-  membership, and checkout provenance contract
+- `docs/specs/event-markets.md`: organizer-authored Event Market and NIP-52
+  calendar, causal merchant authorization, product association, checkout and
+  private handoff provenance; named legacy collection and pickup readers
 - `docs/knowledge/decentralized-network-product-posture.md`: product decisions
   under partial, delayed, divergent, and unevenly adopted network state
 - `docs/knowledge/compatibility-exception-template.md`: required governance for

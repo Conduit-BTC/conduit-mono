@@ -51,6 +51,7 @@ export const MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS = 60_000
 export interface MerchantEventTimelineDiscovery {
   network: PerspectiveEventMarketDiscoveryResult | undefined
   items: MerchantEventTimelineItem[]
+  organizerPubkeys: string[] | undefined
   sellingCollectionCoordinates: string[]
   profileRelayHintsByPubkey: Record<string, string[]>
   authorSource: EventMarketPerspectiveAuthorSource
@@ -591,6 +592,7 @@ export function useMerchantEventTimeline(input: {
   return {
     network,
     items,
+    organizerPubkeys: authorPubkeys,
     sellingCollectionCoordinates,
     profileRelayHintsByPubkey,
     authorSource: authorResolution.source,

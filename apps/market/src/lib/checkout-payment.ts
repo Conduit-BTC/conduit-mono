@@ -232,6 +232,7 @@ function isCheckoutShippingCostResolvable(item: CartItem): boolean {
   return (
     item.format === "digital" ||
     item.fulfillment?.type === "pickup" ||
+    item.fulfillment?.type === "event_market_pickup" ||
     (item.canonicalShippingResolved === true &&
       !!item.shippingOptionId &&
       (item.shippingCountryRules?.length ?? 0) > 0)
@@ -272,7 +273,9 @@ export function buildCheckoutPricingIntent(
   let needsFreshQuote = false
 
   for (const item of items) {
-    const pickupAllowsZero = item.fulfillment?.type === "pickup"
+    const pickupAllowsZero =
+      item.fulfillment?.type === "pickup" ||
+      item.fulfillment?.type === "event_market_pickup"
     const priced = getPriceSats(item, rateInput, {
       allowZero: pickupAllowsZero,
     })
@@ -408,7 +411,8 @@ export function buildCheckoutPricingIntent(
     pricedItems.length > 0 &&
     pricedItems.every(
       (item) =>
-        item.fulfillment?.type === "pickup" &&
+        (item.fulfillment?.type === "pickup" ||
+          item.fulfillment?.type === "event_market_pickup") &&
         item.priceAtPurchase === 0 &&
         item.shippingCostSats === 0
     )

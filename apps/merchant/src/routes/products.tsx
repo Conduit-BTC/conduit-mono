@@ -23,6 +23,7 @@ import {
   isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
+  readEventMarketAuthorization,
   readEventMarketRoster,
   resolveEventMarketOrganizerInbox,
   waitForVisibleDocument,
@@ -824,6 +825,11 @@ async function publishProduct(
     )
   }
   const localPickup = form.fulfillment === "local_pickup"
+  if (localPickup) {
+    throw new Error(
+      "Collection-based event pickup is retired. Associate an ordinary physical product with an Event Market instead."
+    )
+  }
   const presetShippingConfig = loadShippingConfig(merchantPubkey)
   const formValidation = validateProductPublishForm(
     localPickup || preserveFulfillment
@@ -1026,26 +1032,37 @@ async function publishProduct(
       ],
     }
     if (!existingMarketRefs.includes(decoded.coordinate)) {
-      const marketRead = await readEventMarketRoster({
-        reference: decoded.coordinate,
-        authenticatedPubkey,
-        shouldContinue,
-      })
+      const [marketRead, authorizationRead] = await Promise.all([
+        readEventMarketRoster({
+          reference: decoded.coordinate,
+          authenticatedPubkey,
+          shouldContinue,
+        }),
+        readEventMarketAuthorization({
+          marketCoordinate: decoded.coordinate,
+          merchantPubkey: signerPubkey,
+          authenticatedPubkey,
+          shouldContinue,
+        }),
+      ])
       if (
         marketRead.resolution.state !== "current" ||
         marketRead.coverage !== "complete" ||
         marketRead.calendarCoverage !== "complete" ||
         !marketRead.calendar ||
-        !marketRead.retained
+        !marketRead.retained ||
+        authorizationRead.resolution.state !== "active" ||
+        !authorizationRead.actionable
       ) {
         throw new Error(
-          "Current signed Event Market approval could not be confirmed. Retry before linking this product."
+          "Current organizer-signed Event Market approval and grant could not be confirmed. Retry before linking this product."
         )
       }
       product = setEventMarketProductAssociation({
         product,
         market: marketRead.resolution.market,
         enabled: true,
+        authorizationActive: true,
       })
     }
   } else if (existingMarketRefs.length > 0) {
@@ -3740,7 +3757,7 @@ function ProductsPage() {
 
               <div className="grid gap-1.5">
                 <Label htmlFor="product-future-event-market">
-                  Future Event Market
+                  Event Market
                 </Label>
                 <Input
                   id="product-future-event-market"
@@ -3754,10 +3771,9 @@ function ProductsPage() {
                   placeholder="Event Market naddr or 30409 coordinate"
                 />
                 <p className="text-xs leading-5 text-[var(--text-muted)]">
-                  Your product joins when the organizer has approved your shop.
-                  The organizer sets the booth or pickup assignment. Clear this
-                  field to remove the product from that event; ordinary shop
-                  shipping stays the same.
+                  The organizer approves your shop and sets the public booth or
+                  pickup assignment. Clear this field to remove this product
+                  from the event. Your ordinary shop shipping stays available.
                 </p>
               </div>
 

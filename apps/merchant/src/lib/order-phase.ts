@@ -136,6 +136,10 @@ type PickupFulfillment = Extract<
   NonNullable<OrderSummary["items"][number]["fulfillment"]>,
   { type: "pickup" }
 >
+type FuturePickupFulfillment = Extract<
+  NonNullable<OrderSummary["items"][number]["fulfillment"]>,
+  { type: "event_market_pickup" }
+>
 
 export interface MerchantOrderPickupContext {
   organizerPubkey: PickupFulfillment["organizerPubkey"]
@@ -148,6 +152,7 @@ export interface MerchantOrderFulfillment {
   mode: MerchantOrderFulfillmentMode
   requiresShipping: boolean
   pickup: MerchantOrderPickupContext | null
+  futureMarket?: FuturePickupFulfillment | null
   /** Any buyer-authored pickup claim restricts shipping actions until verified. */
   hasPickupClaim: boolean
 }
@@ -155,10 +160,7 @@ export interface MerchantOrderFulfillment {
 function getOrderItemFulfillmentMode(
   item: OrderSummary["items"][number]
 ): MerchantOrderFulfillmentMode {
-  // Future Event Market orders require their own signed handoff adapter.
-  // Until that adapter is present, never reinterpret their roster snapshot
-  // as a shipment or a legacy pickup option.
-  if (item.fulfillment?.type === "event_market_pickup") return "unknown"
+  if (item.fulfillment?.type === "event_market_pickup") return "pickup"
   if (item.fulfillment) return item.fulfillment.type
   // The listing format is part of the signed order snapshot. Legacy digital
   // orders can therefore skip shipping; a legacy physical item cannot prove
@@ -244,6 +246,40 @@ export function getMerchantOrderFulfillment(
       pickup: null,
       hasPickupClaim,
     }
+  }
+
+  const futureFulfillments = items.flatMap((item) =>
+    item.fulfillment?.type === "event_market_pickup" ? [item.fulfillment] : []
+  )
+  if (futureFulfillments.length > 0) {
+    const firstFuture = futureFulfillments[0]!
+    const coherent =
+      futureFulfillments.length === items.length &&
+      futureFulfillments.every(
+        (fulfillment) =>
+          fulfillment.market.coordinate === firstFuture.market.coordinate &&
+          fulfillment.market.eventId === firstFuture.market.eventId &&
+          fulfillment.grant.eventId === firstFuture.grant.eventId &&
+          fulfillment.calendar.eventId === firstFuture.calendar.eventId &&
+          fulfillment.mode === firstFuture.mode &&
+          fulfillment.assignment === firstFuture.assignment &&
+          fulfillment.merchantPubkey === firstFuture.merchantPubkey
+      )
+    return coherent
+      ? {
+          mode: "pickup",
+          requiresShipping: false,
+          pickup: null,
+          futureMarket: firstFuture,
+          hasPickupClaim: true,
+        }
+      : {
+          mode: "unknown",
+          requiresShipping: false,
+          pickup: null,
+          futureMarket: null,
+          hasPickupClaim: true,
+        }
   }
 
   const pickupFulfillments = items.flatMap((item) =>

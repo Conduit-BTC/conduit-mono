@@ -434,11 +434,17 @@ const LEGACY_ORDER_MESSAGE_TYPES = new Set([
   "organizer_fulfillment_receipt",
   "organizer_fulfillment_revocation",
   "organizer_handoff_ack",
+  "future_market_ready",
+  "future_market_revoked",
+  "future_market_handed_out",
 ])
 const EVENT_MARKET_PRIVATE_MESSAGE_TYPES = new Set([
   "organizer_fulfillment_receipt",
   "organizer_fulfillment_revocation",
   "organizer_handoff_ack",
+  "future_market_ready",
+  "future_market_revoked",
+  "future_market_handed_out",
 ])
 
 function classifyLegacyOrderRumor(

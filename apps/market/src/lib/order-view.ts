@@ -127,6 +127,10 @@ export interface OrderViewModel {
   requiresShipping: boolean
   requiresPickup: boolean
   pickupFulfillments: CartPickupFulfillment[]
+  futureMarketFulfillments: Extract<
+    CartItemFulfillment,
+    { type: "event_market_pickup" }
+  >[]
   totalSats: number | null
   currency: string
   shippingAddress: OrderSummary["shippingAddress"]
@@ -277,7 +281,11 @@ export function isZeroCostPickupOrder(
     vm.items.length > 0 &&
     vm.items.every((item) => {
       const fulfillment = item.fulfillment
-      if (fulfillment?.type !== "pickup") return false
+      if (
+        fulfillment?.type !== "pickup" &&
+        fulfillment?.type !== "event_market_pickup"
+      )
+        return false
       const productZero = getPriceSats(
         {
           price: item.priceAtPurchase,
@@ -288,6 +296,14 @@ export function isZeroCostPickupOrder(
         null,
         { allowZero: true }
       )
+      if (fulfillment.type === "event_market_pickup") {
+        return (
+          productZero?.sats === 0 &&
+          productZero.approximate === false &&
+          item.shippingCostSats === 0 &&
+          fulfillment.payeePubkey === fulfillment.merchantPubkey
+        )
+      }
       const pickupSourceMatchesSnapshot =
         item.sourceShippingCost?.amount === fulfillment.sourceCost.amount &&
         item.sourceShippingCost.currency === fulfillment.sourceCost.currency &&
@@ -616,6 +632,15 @@ export function buildOrderViewModel(
       )
     ).values()
   )
+  const futureMarketFulfillments = Array.from(
+    new Map(
+      items.flatMap((item) =>
+        item.fulfillment?.type === "event_market_pickup"
+          ? [[item.fulfillment.market.coordinate, item.fulfillment] as const]
+          : []
+      )
+    ).values()
+  )
 
   const totalSats = lifecycle?.totalSats ?? (summary ? summary.subtotal : null)
 
@@ -709,7 +734,8 @@ export function buildOrderViewModel(
     paymentStatus === "ambiguous" && zapReceiptStatus === "receipt_not_observed"
   const zeroCostPickupOrder = isZeroCostPickupOrder({
     totalSats,
-    requiresPickup: pickupFulfillments.length > 0,
+    requiresPickup:
+      pickupFulfillments.length > 0 || futureMarketFulfillments.length > 0,
     items,
   })
   const actionNeeded =
@@ -750,10 +776,14 @@ export function buildOrderViewModel(
       items.length === 0 ||
       items.some(
         (item) =>
-          item.format !== "digital" && item.fulfillment?.type !== "pickup"
+          item.format !== "digital" &&
+          item.fulfillment?.type !== "pickup" &&
+          item.fulfillment?.type !== "event_market_pickup"
       ),
-    requiresPickup: pickupFulfillments.length > 0,
+    requiresPickup:
+      pickupFulfillments.length > 0 || futureMarketFulfillments.length > 0,
     pickupFulfillments,
+    futureMarketFulfillments,
     totalSats,
     currency: lifecycle?.currency ?? summary?.currency ?? "SATS",
     shippingAddress:
@@ -1070,6 +1100,10 @@ export function buildOrderTimeline(
   const pickupHandoff = vm.pickupFulfillments[0]
     ? getPickupHandoffSummary(vm.pickupFulfillments[0])
     : null
+  const futureHandoff = vm.futureMarketFulfillments[0]
+  const organizerHandoff =
+    pickupHandoff?.mode === "organizer_handoff" ||
+    futureHandoff?.mode === "organizer_handoff"
   const rowOrder: readonly OrderTimelineRowKey[] = isZeroCostPickupOrder(vm)
     ? ["order_sent", "merchant_confirmation", "fulfillment", "complete"]
     : vm.buyerIdentityKind === "guest_ephemeral"
@@ -1091,11 +1125,12 @@ export function buildOrderTimeline(
       title =
         status === "complete"
           ? "Pickup complete"
-          : (pickupHandoff?.label ?? "Event pickup")
+          : (pickupHandoff?.label ??
+            (organizerHandoff ? "Pickup from event organizer" : "Event pickup"))
       subtitle =
         status === "complete"
           ? "The pickup order was marked complete."
-          : pickupHandoff?.mode === "organizer_handoff"
+          : organizerHandoff
             ? isZeroCostPickupOrder(vm)
               ? "No payment is required. The organizer handles pickup after the merchant sends the minimal private pickup receipt."
               : "The organizer handles pickup after the merchant confirms payment and sends the minimal private pickup receipt."
