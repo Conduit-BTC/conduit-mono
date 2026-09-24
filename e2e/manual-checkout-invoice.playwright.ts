@@ -140,7 +140,7 @@ for (const scenario of scenarios) {
         }
         signedZapRequest = signedZap ?? ""
         generatedInvoice = makeBolt11Fixture({
-          hrp: "lntb10u",
+          hrp: "lnbc10u",
           createdAt,
           fields: [
             bolt11PaymentHashField(),
@@ -530,7 +530,7 @@ for (const scenario of scenarios) {
         merchantSecret
       )
     const unrelatedInvoice = makeBolt11Fixture({
-      hrp: "lntb10u",
+      hrp: "lnbc10u",
       createdAt,
       fields: [
         bolt11PaymentHashField(new Uint8Array(32).fill(8)),

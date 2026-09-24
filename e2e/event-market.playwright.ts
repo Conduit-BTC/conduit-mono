@@ -5360,7 +5360,7 @@ test("guest booth checkout reaches a manual invoice without reading unselected p
   const metadata = JSON.stringify([["text/plain", "Synthetic booth merchant"]])
   let callbackRequests = 0
   const invoice = makeBolt11Fixture({
-    hrp: "lntb20u",
+    hrp: "lnbc20u",
     createdAt: Math.floor(Date.now() / 1000),
     fields: [bolt11PaymentHashField(), bolt11DescriptionHashField(metadata)],
   })
