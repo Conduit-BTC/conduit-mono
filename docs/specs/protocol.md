@@ -9,6 +9,8 @@ References:
 - NIP-52 calendar events plus Open Markets / Gamma product collections and
   pickup options, as bounded by `docs/specs/event-markets.md`
 - One-way checkout architecture note: `docs/knowledge/one-way-checkout-multi-rail-payments.md`
+- Target universal checkout payment and recovery contract:
+  `docs/specs/universal-checkout-router.md`
 - External protocol references: `docs/knowledge/external-nostr-references.md`
 - Protected relay reads and rollout:
   `docs/knowledge/nip42-protected-read-rollout.md`
@@ -84,7 +86,17 @@ Portable Wallet provider may create or restore a separate self-custodial wallet
 seed under the requirements in `docs/specs/wallets.md`; this does not authorize
 generation, storage, or access to a user's Nostr account key.
 
+The target checkout-scoped Spark router has a separate, temporary wallet
+credential with a merchant-assisted recovery path. It is neither a reusable
+registered Portable Wallet nor a Nostr account key. Its protected recovery
+message uses only the merchant's valid, current kind `10050` route and the
+NIP-17/NIP-59 boundary in `docs/specs/universal-checkout-router.md`.
+
 ### Client Ephemeral Guest Order Key Exception
+
+The 24-hour guest order-signing key below is distinct from checkout-scoped
+Spark wallet recovery material. Its expiry does not revoke the merchant's
+ability to resume an already-funded router checkout under the frozen plan.
 
 Guest external-wallet checkout may create a per-order browser-generated key to
 sign the outbound private order and any external-payment report delivered to the
@@ -771,6 +783,13 @@ The distinct `claim` tag prevents this redacted organizer workflow from being
 grouped into the buyer-to-merchant order conversation.
 
 ## Payment Metadata
+
+The following readiness and fallback rules describe existing direct-payment
+orders. For new orders after the universal router cutover, payment metadata
+supplies signed recipient/obligation evidence, while a funding wallet pays the
+router's single private invoice. A missing recipient, amount, or recovery
+route blocks invoice exposure; it does not authorize direct-recipient payment.
+See `docs/specs/universal-checkout-router.md`.
 
 Merchant payment readiness may come from:
 
