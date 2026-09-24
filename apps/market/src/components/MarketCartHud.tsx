@@ -500,13 +500,16 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     aria-label={`${merchantLabel}, ${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}, ${context.label}${contextCollides ? `, reference ${purchaseReference}` : ""}, purchase ${index + 1}`}
                     onClick={() => activatePurchase(group.id, index)}
                     className={cn(
-                      "market-cart-hud-item flex min-h-11 min-w-14 max-w-60 shrink-0 flex-col items-center justify-center gap-0.5 rounded-lg border px-1 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:min-w-0 sm:flex-row sm:gap-2 sm:px-3",
+                      "market-cart-hud-item flex min-h-11 min-w-[5.5rem] max-w-60 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 motion-reduce:transition-none sm:min-w-0 sm:gap-2 sm:px-3",
                       selected
                         ? "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
                         : "border-transparent text-[var(--text-secondary)] hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]"
                     )}
                   >
-                    <Avatar className="hidden h-7 w-7 shrink-0 sm:flex">
+                    <Avatar
+                      data-testid="purchase-tab-avatar"
+                      className="h-7 w-7 shrink-0"
+                    >
                       <AvatarImage src={profile?.picture} alt="" />
                       <AvatarFallback>
                         <MerchantAvatarFallback iconClassName="h-4 w-4" />
@@ -526,23 +529,28 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         </span>
                       ) : null}
                     </span>
-                    <span
-                      data-testid="mobile-purchase-count"
-                      className="text-xs font-semibold tabular-nums sm:hidden"
-                      aria-hidden="true"
-                    >
-                      {group.totalItems}
-                    </span>
-                    <span className="flex items-baseline gap-0.5 text-[0.65rem] leading-tight sm:hidden">
-                      <span>{context.mobileLabel}</span>
-                      {contextCollides ? (
-                        <span
-                          data-testid="purchase-cue"
-                          className="text-[var(--text-muted)] tabular-nums"
-                        >
-                          {index + 1}
-                        </span>
-                      ) : null}
+                    <span className="flex min-w-0 flex-col items-start leading-tight sm:hidden">
+                      <span
+                        data-testid="mobile-purchase-count"
+                        className="text-xs font-semibold tabular-nums"
+                        aria-hidden="true"
+                      >
+                        {group.totalItems}
+                      </span>
+                      <span
+                        data-testid="mobile-purchase-label"
+                        className="flex items-baseline gap-0.5 whitespace-nowrap text-[0.65rem]"
+                      >
+                        <span>{context.mobileLabel}</span>
+                        {contextCollides ? (
+                          <span
+                            data-testid="purchase-cue"
+                            className="text-[var(--text-muted)] tabular-nums"
+                          >
+                            {index + 1}
+                          </span>
+                        ) : null}
+                      </span>
                     </span>
                     <StatusPill
                       variant="neutral"
@@ -560,14 +568,32 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               type="button"
               aria-label={`${merchantName}, ${activeGroup.totalItems} cart ${activeGroup.totalItems === 1 ? "item" : "items"}, ${getPurchaseContext(activeGroup).label}`}
               onClick={() => activatePurchase(activeGroup.id)}
-              className="flex min-h-11 w-fit min-w-0 max-w-60 items-center justify-self-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:px-3"
+              className="flex min-h-11 w-fit min-w-[5.5rem] max-w-60 items-center justify-self-start gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-1.5 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:min-w-0 sm:gap-2 sm:px-3"
             >
-              <Avatar className="h-7 w-7 shrink-0">
+              <Avatar
+                data-testid="purchase-tab-avatar"
+                className="h-7 w-7 shrink-0"
+              >
                 <AvatarImage src={activeProfile?.picture} alt="" />
                 <AvatarFallback>
                   <MerchantAvatarFallback iconClassName="h-4 w-4" />
                 </AvatarFallback>
               </Avatar>
+              <span className="flex flex-col items-start leading-tight sm:hidden">
+                <span
+                  data-testid="mobile-purchase-count"
+                  className="text-xs font-semibold tabular-nums"
+                  aria-hidden="true"
+                >
+                  {activeGroup.totalItems}
+                </span>
+                <span
+                  data-testid="mobile-purchase-label"
+                  className="whitespace-nowrap text-[0.65rem]"
+                >
+                  {getPurchaseContext(activeGroup).mobileLabel}
+                </span>
+              </span>
               <span className="hidden min-w-0 text-left text-sm font-medium leading-tight sm:block">
                 <span className="block truncate">{merchantName}</span>
                 <PurchaseContextLabel group={activeGroup} compact />
@@ -575,7 +601,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               <StatusPill
                 variant="neutral"
                 aria-label={`${activeGroup.totalItems} cart ${activeGroup.totalItems === 1 ? "item" : "items"}`}
-                className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
+                className="hidden border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)] sm:inline-flex"
               >
                 {activeGroup.totalItems}
               </StatusPill>

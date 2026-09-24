@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import { nip19 } from "nostr-tools"
 import {
   finalizeEvent,
@@ -212,7 +212,7 @@ async function readCanonicalCartProductIds(page: Page): Promise<string[]> {
 
 async function seedMerchantProfile(
   page: Page,
-  profile: { pubkey: string; name: string; lud16?: string },
+  profile: { pubkey: string; name: string; lud16?: string; picture?: string },
   includeSignedFrontier = false
 ): Promise<void> {
   const event = includeSignedFrontier
@@ -221,7 +221,11 @@ async function seedMerchantProfile(
           kind: 0,
           created_at: Math.floor(Date.now() / 1_000),
           tags: [],
-          content: JSON.stringify({ name: profile.name, lud16: profile.lud16 }),
+          content: JSON.stringify({
+            name: profile.name,
+            lud16: profile.lud16,
+            picture: profile.picture,
+          }),
         },
         MERCHANT_SECRETS[MERCHANTS.indexOf(profile.pubkey)]!
       )
@@ -240,6 +244,7 @@ async function seedMerchantProfile(
             pubkey: row.pubkey,
             name: row.name,
             displayName: row.name,
+            ...(row.picture ? { picture: row.picture } : {}),
             ...(row.lud16 ? { lud16: row.lud16 } : {}),
             ...(event
               ? {
@@ -258,6 +263,37 @@ async function seedMerchantProfile(
     },
     { row: profile, event }
   )
+}
+
+async function expectMobilePurchaseTabLayout(tab: Locator): Promise<void> {
+  const avatar = tab.getByTestId("purchase-tab-avatar")
+  const count = tab.getByTestId("mobile-purchase-count")
+  const label = tab.getByTestId("mobile-purchase-label")
+  await expect(avatar).toBeVisible()
+  await expect(count).toBeVisible()
+  await expect(label).toBeVisible()
+  const boxes = await tab.evaluate((element) => {
+    const bounds = (testId: string) =>
+      element
+        .querySelector(`[data-testid='${testId}']`)!
+        .getBoundingClientRect()
+    const avatar = bounds("purchase-tab-avatar")
+    const count = bounds("mobile-purchase-count")
+    const label = bounds("mobile-purchase-label")
+    return {
+      avatarRight: avatar.right,
+      avatarTop: avatar.top,
+      avatarBottom: avatar.bottom,
+      countLeft: count.left,
+      countTop: count.top,
+      labelTop: label.top,
+      labelBottom: label.bottom,
+    }
+  })
+  expect(boxes.avatarRight).toBeLessThanOrEqual(boxes.countLeft)
+  expect(boxes.avatarTop).toBeLessThanOrEqual(boxes.countTop + 2)
+  expect(boxes.avatarBottom).toBeGreaterThanOrEqual(boxes.labelBottom - 2)
+  expect(boxes.countTop).toBeLessThan(boxes.labelTop)
 }
 
 async function expectInsideHud(page: Page): Promise<void> {
@@ -332,6 +368,7 @@ test("market cart HUD keeps every fixed control inside the HUD across merchant-c
         )
         if (width === 390) {
           const firstTab = rail.getByRole("button").first()
+          await expectMobilePurchaseTabLayout(firstTab)
           await expect(
             firstTab.getByTestId("mobile-purchase-count")
           ).toHaveText(/^[12]$/)
@@ -517,6 +554,13 @@ test("market cart HUD rail activation expands a collapsed HUD for pointer and ke
 test("market cart HUD distinguishes same-merchant delivery and pickup purchases @market", async ({
   page,
 }) => {
+  const picture = "https://cdn.conduit.market/test/cart-hud-avatar.svg"
+  await page.route(picture, (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><circle cx="20" cy="20" r="20" fill="#8b5cf6"/></svg>',
+    })
+  )
   await page.addInitScript((seed) => {
     localStorage.setItem("conduit:cart", JSON.stringify(seed))
   }, sameMerchantFulfillmentCartSeed())
@@ -524,6 +568,7 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
   await seedMerchantProfile(page, {
     pubkey: MERCHANT_A,
     name: "Fixture Market",
+    picture,
   })
   await page.reload()
 
@@ -551,6 +596,12 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
   await expect(selectors.nth(2)).not.toContainText("Event pickup")
 
   await page.setViewportSize({ width: 390, height: 900 })
+  for (const selector of await selectors.all()) {
+    await expectMobilePurchaseTabLayout(selector)
+    await expect(
+      selector.getByTestId("purchase-tab-avatar").locator("img")
+    ).toBeVisible()
+  }
   const fixtureGroups = await page.evaluate(async (seed) => {
     const { getCartPurchaseReference, groupCartPurchases } =
       await import("/src/lib/cart-model.ts")
@@ -658,7 +709,7 @@ test("market cart HUD distinguishes same-merchant delivery and pickup purchases 
   for (const [index, purchaseGroup] of pickupGroups.entries()) {
     const selector = selectors.nth(index + 1)
     await selector.evaluate((element) => {
-      element.scrollIntoView({ block: "nearest", inline: "nearest" })
+      element.scrollIntoView({ block: "nearest", inline: "center" })
     })
     const visibleBounds = await rail.boundingBox()
     const cue = selector.getByTestId("purchase-cue")
@@ -809,9 +860,10 @@ test("market cart HUD shows one purchase's details when its compact tab is opene
   const purchaseTab = hud.getByRole("button", {
     name: /Fixture Market, 1 cart item, Event pickup - Test location/,
   })
-  await expect(purchaseTab.locator(".rounded-full").first()).toBeVisible()
-  await expect(purchaseTab.locator("[aria-label='1 cart item']")).toHaveText(
-    "1"
+  await expectMobilePurchaseTabLayout(purchaseTab)
+  await expect(purchaseTab.getByTestId("mobile-purchase-count")).toHaveText("1")
+  await expect(purchaseTab.getByTestId("mobile-purchase-label")).toHaveText(
+    "Pickup"
   )
   await expect(purchaseTab.getByText("Fixture Market")).toBeHidden()
   await expect(purchaseTab.getByText("Test location")).toBeHidden()
