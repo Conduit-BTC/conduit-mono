@@ -54,23 +54,23 @@ The current product uses focused pages plus dashboard readiness. Do not re-open 
 6. Record processing, shipment, and completion through contextual actions
 
 For `guest_ephemeral` orders, buyer contact occurs out of band using the
-structured recovery channel required by that checkout flow and shown in order
-details. Pickup requires at least one of email or phone; shipping retains its
-stricter contact/address contract. The guest pubkey is an outbound order
-sender, not a reply-capable Nostr inbox; Merchant must not claim to send Nostr
-invoice, status, shipping, or reply messages to that key. Merchant may still
+structured recovery channel required by that checkout flow and available to the
+merchant handling the order. Pickup requires at least one of email or phone;
+shipping retains its stricter contact/address contract. The guest pubkey is an
+outbound order sender, not a reply-capable Nostr inbox; Merchant must not claim
+to send Nostr invoice, status, shipping, or reply messages to that key. Merchant may still
 record decisions and fulfillment as encrypted messages addressed to itself so
-the order has a durable operational trail. Guest actions must be labeled as
-records of out-of-band work, not as buyer DMs or proof that the buyer was
-notified.
+the order has a durable operational trail. Guest actions must be represented
+truthfully as records of out-of-band work, not as buyer DMs or proof that the
+buyer was notified.
 
 A confirmed paid order does not require a separate accept action. Its ordinary
 next step is fulfillment, with cancellation plus explicit manual-refund
 coordination as the alternative. Buyer-reported payment and payment proof are
-not equivalent to confirmed settlement and remain in a verification queue until
-the merchant confirms payment or cancels the order. An ordinary invoice action is hidden
-after settlement is confirmed; requesting additional funds for a paid order is
-not part of the standard workflow.
+not equivalent to confirmed settlement and remain identifiable for verification
+until the merchant confirms payment or cancels the order. An ordinary invoice
+action is unavailable after settlement is confirmed; requesting additional
+funds for a paid order is not part of the standard workflow.
 
 ### Communication
 
@@ -80,8 +80,9 @@ not part of the standard workflow.
    workspace, where order-linked previews link back to the order
 3. Reply via signed/encrypted NIP-17 messages
 4. Preserve payment requests, payment proofs, status updates, shipping updates, and receipts as conversation evidence
-5. See explicit loading, stale/degraded, and decrypt-failed/retry states rather
-   than silently missing messages
+5. Preserve explicit loading, stale/degraded, and decrypt-failed/retry states;
+   give the merchant actionable failure and retry information when messaging
+   work is affected rather than silently omitting messages
 
 General direct messages and order-linked conversations stay separate. See
 `docs/specs/messaging.md`.
@@ -183,19 +184,14 @@ available only as raw/provenance data. Publishing emits one `t` tag per
 canonical product tag, so editing and republishing a legacy listing also
 migrates its public tags to the canonical form.
 
-Product tag entry is an editable multi-value combobox. While the merchant types
-a non-empty value, it may suggest canonical tags from the signed-in merchant's
-already-loaded product catalog without starting another relay query. Suggestions
-exclude selected tags and are labeled `From your catalog`. Matching prefix
-values rank first, followed by catalog usage count and then alphabetically.
-Selecting a suggestion adds it as a chip, but unmatched freeform values remain
-valid. A non-empty draft commits through the same normalization and validation
-path when the merchant presses Enter, submits the form, or leaves the field, so
-typed tags are not lost on blur. The combobox supports pointer and touch
-selection without premature blur commit, Arrow key navigation, Escape to close,
-IME-safe input, and the WAI-ARIA editable-combobox contract. Empty and no-match
-states do not render a popup, and the popup remains contained by the product
-dialog on narrow viewports.
+Product tag entry accepts multiple canonical values and freeform tags. It may
+suggest canonical tags from the signed-in merchant's already-loaded product
+catalog without starting another relay query. Suggestions exclude selected
+tags and rank matching prefixes before catalog usage count and alphabetical
+order. A non-empty draft is normalized and validated on form submission and
+must not be lost when focus changes. Whatever control is used must support
+keyboard, pointer, touch, and IME input accessibly without an accidental commit
+or clipped choices on narrow viewports.
 
 Conduit-generated product events also include checkout zap policy tags:
 
@@ -211,7 +207,7 @@ The `custom` setting permits shopper-written comments only for shopper-signed
 public zaps. Anonymous public zaps always use Conduit's fixed item-count message,
 so merchants cannot receive arbitrary anonymous comment text through that path.
 When editing an imported or legacy listing whose explicit policy tags are
-missing or malformed, Merchant Portal should show the policy as unknown and
+missing or malformed, Merchant Portal must retain the policy as unknown and
 prefill the edit form with the private-safe choice. Saving the product writes
 an explicit policy and sets the local policy confidence to known.
 
@@ -278,25 +274,21 @@ The merchant workspace projects this event history onto four independent axes:
 - **Fulfillment:** `not_started`, `processing`, `shipped`, or `complete`
 - **Communication:** `nostr_replyable`, `guest_out_of_band`, or `unknown`
 
-The axes determine a contextual next action. The primary UI must not expose the
-raw status vocabulary as a general-purpose manual console. Useful queue filters
-are **Paid—fulfill**, **Payment reported—verify**, **Unpaid—review**, **Shipped**,
-and **Closed**, plus an all-orders view.
+The axes determine eligible next actions. Merchants must be able to find orders
+that need payment verification, decision, fulfillment, or communication, without
+one prescribed queue or filter set. Progress information must distinguish
+completed work, the current task, and later gates truthfully; an in-progress
+shipment cannot be represented as completed. Cancelled and refund-requested
+orders must not imply that a later fulfillment task is active.
 
-Order-progress copy is state-aware: completed rows describe what happened, the
-single active row names the current task and tells the merchant how to advance,
-and waiting rows describe the later gate. A row must not use completed-state
-wording such as `Shipped` while its status is still in progress. The Actions
-surface presents the recommended **Next step** first. Cancellation and other
-destructive alternatives appear afterward under **Other actions**, use
-destructive styling, and retain confirmation plus refund-risk copy where funds
-have already moved or payment evidence suggests they may have moved. Cancelled
-and refund-requested orders stop at their terminal row instead of presenting a
-later fulfillment task as active or waiting. When the buyer has no confirmed
-Nostr reply inbox, the next-step prompt must direct the merchant to the order's
-out-of-band contact details rather than offering an invoice that cannot be
-delivered. After verifying out-of-band settlement, the merchant can record a
-self-copy payment confirmation that unlocks fulfillment.
+Cancellation and other destructive actions require confirmation. Before
+cancelling when funds have moved or payment evidence suggests they may have
+moved, the merchant must understand that cancellation does not reverse payment
+and any refund requires separate manual coordination. When the buyer has no
+confirmed Nostr reply inbox, the merchant needs the order's out-of-band contact
+path; an invoice action that cannot reach the buyer is unavailable. After
+verifying out-of-band settlement, the merchant can record a self-copy payment
+confirmation that unlocks fulfillment.
 
 Shipment is one domain action: it requires a tracking code and carrier, accepts
 an optional tracking URL and additional notes, records the shipping update, and
@@ -348,13 +340,13 @@ Lightning address (`lud16`) and NWC/WebLN readiness can contribute to payment el
 
 ## Relay Settings
 
-Merchant's `/network` route is a navigation shell around the same shared
-account-level Network experience used by Market. The state model, controls,
-ordering, mutation flow, and copy must not diverge between the two apps. The
+Merchant's `/network` route uses the same account-level Network state and
+mutation rules as Market. Both apps preserve identical relay authority,
+evidence, ordering, and safety decisions while presentation may vary. The
 durable contract lives in
 [Conduit Relay Architecture](./relay/conduit_relay_architecture.md).
 
-The screen presents two equal, transparent sections:
+The account-level Network experience distinguishes two runtime layers:
 
 - **App Relays** is the versioned Conduit baseline and starts enabled.
 - **Your Relays** displays signed NIP-65 `kind:10002` Read/Publish and owner
@@ -368,10 +360,11 @@ Your Relays toggle. A valid recipient declaration is exclusive for delivery.
 Signed events are portable account state; the layer toggles are versioned local
 Conduit policy and do not rewrite those events.
 
-Turning App Relays off warns when Your Relays is disabled, the enabled personal
-list has no positively qualified commerce Publish relay, or no valid private
-inbox is current. Unknown evidence is **Not verified**, not broken. The merchant
-may explicitly proceed, and the cutoff is rechecked with durable exclusions
+Before turning App Relays off, the merchant understands any material loss of
+coverage when Your Relays is disabled, the enabled personal list has no
+positively qualified commerce Publish relay, or no valid private inbox is
+current. Unknown evidence is unverified, not broken. The merchant may explicitly
+proceed, and the cutoff is rechecked with durable exclusions
 immediately before later I/O.
 
 NIP-65 uses no marker when a relay is both Read and Publish, and exactly one

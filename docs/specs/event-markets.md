@@ -323,7 +323,8 @@ visibility or organizer receipt.
 Private organizer receipts, revocations, and acknowledgements require a usable
 recipient kind-10050 inbox. Each signed gift wrap is persisted before its first
 relay I/O; retry reuses the exact immutable wrap. Zero ACKs remain an explicit
-undelivered state, partial delivery remains visible, and a merchant-delivered
+undelivered state, partial delivery remains observable to the merchant for
+recovery, and a merchant-delivered
 order is not duplicated merely because the separate organizer leg needs retry.
 The Merchant outbox retains only the exact encrypted wraps plus the bounded,
 account-scoped receipt identity and public graph scope needed for retry or a
@@ -442,7 +443,8 @@ ambiguous-payment reconciliation retain their independent safeguards.
   contact, addresses, notes, invoices, proofs, payment secrets, and arbitrary
   extra keys.
 - Receipt, revocation, and acknowledgement wraps persist before relay I/O,
-  retry the exact signed events, expose zero/partial ACK states, and remain
+  retry the exact signed events, retain zero/partial ACK states for merchant
+  recovery, and remain
   idempotent across reload.
 - A found valid ready receipt remains actionable when the inbox is capped,
   partial, stale, or otherwise cannot prove completeness; no valid receipt
@@ -453,7 +455,7 @@ ambiguous-payment reconciliation retain their independent safeguards.
 - Signed-in pickup completes without a contact form. Guest pickup requires one
   merchant-only recovery method and never copies it to the organizer.
 - Cross-app browser fixtures cover event creation, both handoff modes,
-  organizer acceptance, checkout disclosure/no address, paid or zero-cost ready
+  organizer acceptance, informed pickup handoff/no address, paid or zero-cost ready
   delivery, organizer handoff acknowledgement, and merchant completion.
 - Ordinary shipping, digital products, legacy single-recipient orders, and
   non-event Gamma collections keep their prior behavior.

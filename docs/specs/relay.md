@@ -15,19 +15,18 @@ layers. Market and Merchant expose the same account-level Network experience:
 NIP-17 `kind:10050` remains the signed Private inbox declaration. A valid owner
 declaration remains active for Conduit inbox reads regardless of the Your Relays
 toggle, and a valid recipient declaration remains exclusive for delivery. The
-UI presents separate App Relays and Your Relays sections with configured,
-advertised, or observed evidence. Advertised relay-protocol capabilities remain
-weaker supporting evidence. App Relays starts as a collapsed accessible
-disclosure whose visible summary derives its route count from the registry;
-expansion is informational and Your Relays remains immediately available below.
+Network experience distinguishes App Relays from signed Your Relays membership
+and keeps configured, advertised, and observed evidence classes truthful.
+Advertised relay-protocol capabilities remain weaker supporting evidence.
+Account owners can inspect effective routing state and the source and freshness
+of material capability claims without a mandated section order or layout.
 
 Transport eligibility is authority-scoped. An authenticated owner may
 explicitly select either `ws://` or `wss://` relays in Network for eligible
 activity on that owner's account, including keeping an existing selection. The
-UI keeps Review and Save available for `ws://`, while showing **Unencrypted
-connection** and explaining that transport encryption is absent and the relay
-should be used only when the owner controls it or explicitly trusts the relay
-and network path.
+owner may commit a `ws://` selection only after being informed that transport
+encryption is absent and the relay should be used only when the owner controls
+it or explicitly trusts the relay and network path.
 
 No remote source transfers that permission. A `ws://` URL learned through
 discovery, metadata, event hints, cache provenance, fallback configuration, or
@@ -54,7 +53,7 @@ Minimum expectations:
   especially `kind:30402`, derived from the earlier GammaMarkets `market-spec`
 - NIP-17 suitability for buyer/merchant messages when the relay is used for DMs
 - NIP-42 support for recipient-protected inbox reads, or an honest
-  untested/advertised/unavailable warning state
+  untested/advertised/unavailable capability state
 - reliable reads and writes for supported commerce event kinds
 - replaceable or parameterized replaceable event handling for product state
 
@@ -73,8 +72,8 @@ Current capability presentation may use:
 - a versioned configured compatibility registry;
 - scoped runtime observations that already exist for the relevant operation.
 
-Every badge must retain its evidence class and freshness. NIP-11 alone is
-advertised evidence, not proof of current health, successful reads or writes,
+Every capability claim must retain its evidence class and freshness. NIP-11
+alone is advertised evidence, not proof of current health, successful reads or writes,
 or application behavior. Its `supported_nips` list must not be used to require
 client/application/event NIPs such as NIP-17, NIP-33, NIP-65, NIP-99, or Open
 Markets product semantics.
@@ -91,7 +90,7 @@ mutate signed account state.
 
 Auth capability has separate evidence states: untested, advertised by NIP-11,
 challenge observed, a matching positive auth `OK` observed, and
-rejected/unavailable. UI and compatibility decisions must not label an
+rejected/unavailable. Product and compatibility decisions must not label an
 advertised relay as verified or successfully authenticated without runtime
 evidence from the current behavior.
 
@@ -184,8 +183,11 @@ For private or restricted messaging behavior, Conduit should prefer relays that
 demonstrate NIP-42 authentication support. Advertisement is weaker evidence and
 must be labeled as such. Private inbox membership comes from the user's
 `kind:10050` event, not from a NIP-11 claim or generic NIP-65 relay membership.
-Conduit should show honest warnings and may limit protected messaging use where
-the required access-control evidence is absent.
+Conduit must not claim protected messaging is verified where required
+access-control evidence is absent, and may limit use where that evidence is
+required. Account owners receive actionable information when this affects a
+messaging action; detailed capability state remains available in Network or
+diagnostics.
 
 ## Integration
 
@@ -278,8 +280,9 @@ recovery batch immediately after the atomic local commit. Unsigned drafts,
 cancelled signer flows, and missing required signatures change nothing.
 
 The effective configuration retains at least one Publish relay while either
-layer is enabled. A single Publish relay is valid with a redundancy warning. A
-reviewed signed change cannot eliminate the last usable Private inbox without
+layer is enabled. A single Publish relay is valid; the owner can understand its
+reduced redundancy before a relevant relay change. A reviewed signed change
+cannot eliminate the last usable Private inbox without
 selecting a replacement. An account that already has no usable Private inbox
 may still change Read or Publish roles; this does not force inbox setup for an
 unrelated change. Removing a current Private inbox always requires selecting a
@@ -287,21 +290,22 @@ current replacement, even when a different recovery-only read route survives.
 For an account that is already signed-empty, the guard also prevents removing
 its final recovery-only read route.
 
-Turning App Relays off is a signer-free local action, but it warns when Your
-Relays is disabled, no enabled personal Publish member has positively
-established commerce compatibility, or no valid private inbox is current.
-Unknown capability is **Not verified**, not broken. The user may explicitly
-proceed. Every executor rechecks current layer policy and durable whole-relay
-exclusions immediately before final I/O.
+Turning App Relays off is a signer-free local action. Before committing it, the
+owner must understand any material loss of coverage when Your Relays is disabled,
+no enabled personal Publish member has positively established commerce
+compatibility, or no valid private inbox is current. Unknown capability is
+unverified, not broken; the owner may explicitly proceed. Every executor
+rechecks current layer policy and durable whole-relay exclusions immediately
+before final I/O.
 
 When complete bounded reconciliation observes neither setup event within the
-queried plan and retains no valid frontier, **Match Conduit defaults** reviews
+queried plan and retains no valid frontier, an explicit setup action reviews
 and may publish both NIP-65 and NIP-17 events through the sole Network mutation
-owner. The review states that signed preferences may exist outside the queried
-plan and that publication may supersede them. Only changed kinds are signed,
-every required exact event and immutable target plan is staged before
-publication, and retries reuse those bytes. Existing observed setups use **Add
-missing Conduit defaults** and preserve personal tags and exclusions.
+owner. The owner understands that signed preferences may exist outside the
+queried plan and that publication may supersede them. Only changed kinds are
+signed, every required exact event and immutable target plan is staged before
+publication, and retries reuse those bytes. Existing observed setups add only
+missing Conduit defaults and preserve personal tags and exclusions.
 Partial/unavailable discovery, `signed_empty`, and `malformed` states never
 trigger a silent replacement.
 
@@ -333,7 +337,8 @@ New source-aware relay outcome work should be documented before replacing curren
 - reliable NIP-11 availability
 - consistent acceptance of supported commerce event kinds
 - low-latency commerce reads under normal load
-- clear warning states for unreachable or partially compatible relays
+- actionable account-owner information for unreachable or partially compatible
+  relays when those states affect a current operation
 - no reliance on a single relay for baseline Nostr interoperability
 - identical account-level Network behavior in Market and Merchant
 - App Relays enabled by default with source-aware, deduplicated execution
