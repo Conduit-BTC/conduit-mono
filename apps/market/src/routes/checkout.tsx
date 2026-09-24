@@ -726,7 +726,7 @@ function CheckoutMerchantIdentityLink({
         </AvatarFallback>
       </Avatar>
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="truncate text-base font-semibold text-[var(--text-primary)]">
+        <span className="min-w-0 truncate text-base font-semibold text-[var(--text-primary)]">
           {merchantName}
         </span>
         {merchantNip05 ? (
@@ -836,7 +836,7 @@ function OrderSummary({
 
   return (
     <aside
-      className={`rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 ${className}`}
+      className={`min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 ${className}`}
     >
       <div className="border-b border-[var(--border)] pb-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -3978,7 +3978,7 @@ function CheckoutPage() {
         </div>
       ) : null}
 
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]">
         <OrderSummary
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
@@ -4707,7 +4707,7 @@ function CheckoutPage() {
                 )}
 
                 {/* Action buttons */}
-                <div className="sticky bottom-[var(--market-fixed-footer-height,0px)] z-20 -mx-5 mt-6 flex flex-wrap gap-3 border-t border-[var(--border)] bg-[var(--surface)] px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:static sm:mx-0 sm:border-0 sm:p-0">
+                <div className="mt-6 flex flex-wrap gap-3 border-t border-[var(--border)] pt-4 sm:border-0 sm:pt-0">
                   {!isGuestCheckout && directCheckoutEligible && (
                     <HoldToReleaseButton
                       className="h-11 w-full px-5 text-sm sm:w-auto"
