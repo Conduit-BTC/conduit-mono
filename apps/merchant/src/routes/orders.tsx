@@ -4448,17 +4448,27 @@ function OrdersWorkspace() {
                         </section>
                       )}
 
-                    {orderSummary.guestContact && (
-                      <section className={panelCard}>
-                        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                          Guest contact
-                        </h3>
-                        <div className="mt-3 space-y-1 text-sm text-[var(--text-secondary)]">
-                          <div>Phone: {orderSummary.guestContact.phone}</div>
-                          <div>Email: {orderSummary.guestContact.email}</div>
-                        </div>
-                      </section>
-                    )}
+                    {orderSummary.guestContact &&
+                      (orderSummary.guestContact.phone ||
+                        orderSummary.guestContact.email) && (
+                        <section className={panelCard}>
+                          <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                            Guest contact
+                          </h3>
+                          <div className="mt-3 space-y-1 text-sm text-[var(--text-secondary)]">
+                            {orderSummary.guestContact.phone && (
+                              <div>
+                                Phone: {orderSummary.guestContact.phone}
+                              </div>
+                            )}
+                            {orderSummary.guestContact.email && (
+                              <div>
+                                Email: {orderSummary.guestContact.email}
+                              </div>
+                            )}
+                          </div>
+                        </section>
+                      )}
 
                     {orderSummary.orderNote && (
                       <section className={panelCard}>

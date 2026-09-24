@@ -45,11 +45,8 @@ const SHIPPING_COUNTRY_CODES = new Set(
 
 export const sanitizeShippingPhoneInput = sanitizePhoneInput
 
-export const SHIPPING_PHONE_HELP_ID = "ship-phone-help"
 export const SHIPPING_PHONE_ERROR_ID = "ship-phone-error"
 export const SHIPPING_EMAIL_ERROR_ID = "ship-email-error"
-export const SHIPPING_PHONE_HELP_COPY =
-  "Use + country code if this number is outside the delivery country."
 
 function normalizeRecipientName(value: string): string {
   return value.trim().replace(/\s+/gu, " ")
@@ -77,12 +74,6 @@ export function hasPreservedShippingRecipientName(
     normalizeRecipientName(marker) ===
       `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim()
   )
-}
-
-export function getShippingPhoneDescribedBy(hasError: boolean): string {
-  return hasError
-    ? `${SHIPPING_PHONE_HELP_ID} ${SHIPPING_PHONE_ERROR_ID}`
-    : SHIPPING_PHONE_HELP_ID
 }
 
 export function getShippingRegionRequirement(
@@ -224,23 +215,6 @@ function appendRequiredGuestContactErrors(
   return next
 }
 
-function appendRequiredGuestPickupContactError(
-  errors: ShippingValidationError[],
-  shipping: ShippingFormState
-): ShippingValidationError[] {
-  const next = [...errors]
-  if (
-    shipping.phone.trim().length === 0 &&
-    shipping.email.trim().length === 0
-  ) {
-    next.push({
-      field: "email",
-      message: "Email or phone is required for guest pickup recovery",
-    })
-  }
-  return next
-}
-
 export function validateGuestContactFields(
   shipping: ShippingFormState
 ): ShippingValidationError[] {
@@ -268,7 +242,7 @@ export function validatePickupContactFields(
 export function validateGuestPickupContactFields(
   shipping: ShippingFormState
 ): ShippingValidationError[] {
-  return appendRequiredGuestPickupContactError(
+  return appendRequiredGuestContactErrors(
     validateContactFields(shipping),
     shipping
   )

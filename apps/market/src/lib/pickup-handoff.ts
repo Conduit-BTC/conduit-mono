@@ -8,12 +8,6 @@ import {
 } from "@conduit/core"
 import type { CartItem, CartPickupFulfillment } from "./cart-model"
 
-export const ORGANIZER_HANDOFF_DISCLOSURE =
-  "The merchant asked the event organizer to handle pickup. After the merchant confirms payment (or immediately for a zero-cost order), the organizer receives a minimal private pickup receipt with item references, quantities, and event pickup identity. Pickup is not ready until the organizer receives that merchant confirmation. Contact details, addresses, notes, invoices, and payment secrets are not shared."
-
-export const MERCHANT_HANDOFF_PRIVACY_COPY =
-  "Your private order and payment updates go only to the merchant; no organizer receipt is sent."
-
 export type PickupHandoffSummary = {
   mode: "merchant_handoff" | "organizer_handoff"
   handlerPubkey: string
@@ -42,14 +36,6 @@ export function getCartPickupHandoffSummary(
       item.fulfillment?.type === "pickup"
   )?.fulfillment
   return pickup ? getPickupHandoffSummary(pickup) : null
-}
-
-export function getPickupHandoffPrivacyCopy(
-  summary: PickupHandoffSummary
-): string {
-  return summary.mode === "organizer_handoff"
-    ? ORGANIZER_HANDOFF_DISCLOSURE
-    : MERCHANT_HANDOFF_PRIVACY_COPY
 }
 
 /**

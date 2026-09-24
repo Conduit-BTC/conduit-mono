@@ -53,10 +53,7 @@ import {
 } from "../../hooks/useProgressiveProducts"
 import { getProductAddAvailability, selectCartLine } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
-import {
-  getPickupHandoffPrivacyCopy,
-  getPickupHandoffSummary,
-} from "../../lib/pickup-handoff"
+import { getPickupHandoffSummary } from "../../lib/pickup-handoff"
 import {
   cartItemInputFromProductSelection,
   getProductSelection,
@@ -680,31 +677,28 @@ function ProductPage() {
                     <Link
                       to="/store/$pubkey"
                       params={{ pubkey: pubkeyToNpub(product.pubkey) }}
-                      className="block min-w-0 rounded-md transition-colors hover:text-secondary-300"
+                      className="flex min-w-0 items-center gap-1.5 rounded-md transition-colors hover:text-secondary-300"
                     >
                       {merchantIdentityPending ? (
-                        <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
-                          <span className="inline-block max-w-full animate-pulse truncate">
+                        <div className="min-w-0 truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
+                          <span className="block max-w-full animate-pulse truncate">
                             {merchantName}
                           </span>
                         </div>
                       ) : (
-                        <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
+                        <div className="min-w-0 truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
                           {merchantName}
                         </div>
                       )}
-                    </Link>
-                    {merchantNip05 ? (
-                      <div
-                        className="mt-1 truncate text-xs font-medium text-[var(--text-muted)]"
-                        title={merchantNip05}
-                      >
+                      {merchantNip05 ? (
                         <Nip05TrustIndicator
                           pubkey={product.pubkey}
                           nip05={merchantNip05}
+                          display="icon"
                         />
-                      </div>
-                    ) : (
+                      ) : null}
+                    </Link>
+                    {!merchantNip05 ? (
                       <div className="mt-1 flex min-w-0 items-center gap-2">
                         <Link
                           to="/store/$pubkey"
@@ -718,7 +712,7 @@ function ProductPage() {
                           label="Copy npub"
                         />
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -864,8 +858,7 @@ function ProductPage() {
                         <span>
                           {productPickupHandoff.label}. Handled by{" "}
                           <EventActorName identity={pickupHandlerIdentity} />.
-                          No delivery address is requested.{" "}
-                          {getPickupHandoffPrivacyCopy(productPickupHandoff)}
+                          No delivery address is requested.
                         </span>
                         <EventActorProvenance
                           pubkey={productPickupHandoff.handlerPubkey}

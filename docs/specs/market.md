@@ -118,11 +118,11 @@ the ranking policy to graph storage and synchronization.
 
 1. Review cart
 2. Enter or confirm shipping/contact details (validated for internal consistency before direct payment — see address validity below)
-3. Create a signed order message for each merchant, persist a durable order lifecycle record, and navigate to the status-first Orders tracker (`/orders?order=<orderId>`)
-4. Use fast checkout when merchant readiness and buyer wallet capability allow it; otherwise the order still starts and Orders surfaces an external-wallet QR fallback
+3. Create a signed order message for each merchant, persist a durable order lifecycle record, and open that order in Orders (`/orders?order=<orderId>`)
+4. Use fast checkout when merchant readiness and buyer wallet capability allow it; otherwise the order still starts and Orders provides an external-wallet payment path
 5. Payment, payment proof, and order/payment/shipping state are owned by Orders, not an inline checkout dead-end
 
-Checkout collects intent and **starts** the order; Orders owns everything after an order exists. See `docs/specs/order-lifecycle.md` for the durable lifecycle record, status-first tracker, retry idempotency, external-wallet fallback, and the address-validity policy.
+Checkout collects intent and **starts** the order; Orders owns everything after an order exists. See `docs/specs/order-lifecycle.md` for the durable lifecycle record, order-state semantics, retry idempotency, external-wallet fallback, and the address-validity policy.
 
 Guest external-wallet checkout is the bounded exception: a per-order
 `guest_ephemeral` key submits the encrypted order and payment report, while
@@ -304,25 +304,25 @@ payment flow can rely on those terms.
 
 ## Orders Surface
 
-Orders is the canonical status and order-history surface. It renders interpreted
-order state from the durable lifecycle record (and relay messages), not a raw
-conversation/message-count replay.
+Orders is the canonical order-state and history surface. It derives interpreted
+state from the durable lifecycle record and valid relay-observed messages, not a
+raw conversation or message-count replay. The selected order is deep-linkable
+via `/orders?order=<orderId>` and available from local state before relay
+readback. The customer can determine the current order state, relevant order
+details, and an appropriate next action. Settlement, merchant decision,
+fulfillment, communication, and recovery remain distinct as defined in
+`docs/specs/order-lifecycle.md`.
 
-- Deep-linkable selection via `/orders?order=<orderId>`; the selected order is
-  visible immediately from local state before relay readback.
-- A status-first detail view: header status pill + next action, a 7-stage
-  timeline (order sent → invoice received → payment sent → receipt sent →
-  merchant confirmation → fulfillment/shipping → complete), items, shipping
-  address, and collapsed technical details. No primary `Conversation` section.
-- External-wallet QR/copy/open fallback for signed-in buyers who can request an
-  invoice but lack automatic NWC/WebLN payment; after paying externally the buyer
-  sends the receipt from the same order.
-- Recovery actions appear only when safe (retry payment only when funds did not
-  move; resend receipt only after payment moved); retries reuse the original
-  `orderId` and never duplicate the merchant order.
-- `Message merchant` / `Open in messages` remains as a secondary support escape
-  hatch. Desktop is master/detail; mobile lands on the current order with a
-  `Change order` selector and All/Pending/In progress/Completed filters.
+Signed-in buyers who receive an invoice but lack automatic NWC/WebLN payment
+retain an external-wallet payment path and a way to send payment evidence from
+the same order. Recovery actions are available only when their safety
+predicates hold: payment retry requires evidence that funds did not move;
+receipt/proof resend follows a payment that moved and a failed proof delivery.
+All retries retain the original `orderId` and cannot duplicate the merchant
+order. Order-linked
+support remains reachable without making raw message history the authority for
+order state. Layout, status visualization, navigation, and filter choices are
+presentation decisions.
 
 ### Address validity
 
@@ -341,13 +341,15 @@ the country-specific checkout label. Missing blocking fields (`name`, `street`,
 invalid postal formats, and obvious street/locality junk remain blocking errors.
 Incomplete local confidence, unprofiled countries, missing expected region data,
 missing street/building numbers, and known postal-to-region or
-postal-to-locality contradictions are advisory warnings: checkout must tell the
-buyer that the address could not be fully validated locally, but direct payment
-remains available when merchant shipping-zone and payment gates pass.
+postal-to-locality contradictions are advisory. The customer receives relevant,
+actionable information that local validation is incomplete and the merchant may
+need to confirm details. This does not block direct payment when merchant
+shipping-zone and payment gates pass.
 
-The checkout UI must show address/contact validity separately from merchant
-shipping-zone eligibility. Shipping-zone success must not be the only green/pass
-state while address/contact validity is missing, invalid, or unverified. See
+Address/contact validity and merchant shipping-zone eligibility remain distinct
+in state and in any checkout decision communicated to the customer. Shipping-zone
+success must not imply that missing, invalid, or unverified address/contact
+details were validated or that delivery is guaranteed. See
 `docs/specs/order-lifecycle.md` for the full policy.
 
 For fixed product shipping, Market resolves only the exact Gamma kind `30406`
@@ -380,7 +382,16 @@ authorize direct payment. See `docs/specs/fixed-product-shipping.md`.
 
 ## Trust Context
 
-Checkout must not treat trust as binary. Buyer-facing trust context should show what is known, loading, unavailable, or absent before payment-sensitive actions. Slow hydration should not block browsing unless the buyer is about to send funds.
+Trust and network evidence retain distinct known, loading, unavailable,
+partial, and absent-within-scope states with provenance and freshness. An
+unresolved, unavailable, partial, or absent-within-scope observation must not
+become confirmed positive evidence where that evidence is required for a
+consequential action. Slow
+hydration does not block browsing; payment-sensitive actions use the positive
+evidence their specific safety gates require. Technical evidence state belongs
+in diagnostics or recovery unless it materially changes or blocks the
+customer's current action. Customer-required information must remain available
+before that action without mandating relay or trust diagnostics in checkout.
 
 ## Environment
 

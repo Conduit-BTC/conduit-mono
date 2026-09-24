@@ -1064,6 +1064,12 @@ export interface OrderLifecycle {
 
   invoice?: string
   paymentHash?: string
+  /** Ordered local-only history of superseded manual invoices. */
+  priorExpiredManualInvoices?: Array<{
+    invoice: string
+    paymentHash: string
+    expiresAt: number
+  }>
   preimage?: string
   feeMsats?: number
   zapRequestId?: string

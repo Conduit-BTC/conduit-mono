@@ -133,9 +133,10 @@ The exception is constrained as follows:
   durable order history.
 - Merchant clients must treat `buyerIdentityKind: "guest_ephemeral"` as
   outbound-only and use the structured recovery channel required by the exact
-  checkout flow for invoices, fulfillment updates, and other follow-up. Pickup
-  requires at least one of email or phone; shipping retains its stricter
-  address/contact contract.
+  checkout flow for invoices, fulfillment updates, and other follow-up. New
+  guest orders require both email and phone; shipping additionally requires its
+  address contract. Historical pickup orders with one contact method remain
+  readable but do not define the new-order requirement.
 - Same-session recovery means local invoice/payment-report continuity only. It
   does not promise merchant status recovery, a private conversation, or durable
   order history.
@@ -353,19 +354,18 @@ Source relay URLs and encoded reference relay hints are client-side fetch hints:
 
 These hints may bias fanout for related reads such as merchant profile hydration, product detail refreshes, and order/message trust context. They do not replace the relay planner, NIP-65 handling, default relay policy, or user relay settings.
 
-Page-level ownership:
+Read ownership:
 
-- Market browse owns visible/background merchant profile hydration for product cards and store facets.
+- Market browse owns merchant profile hydration for discovered products and store facets.
 - Storefront and product detail routes can force a bounded profile retry because the user explicitly navigated to that merchant or listing.
 - Orders, messages, checkout, and merchant order surfaces should batch profile lookups and avoid per-row retry loops.
 - Deletion checks should not hide already available products while profile/social metadata is still hydrating.
 
-UX contract:
+Product availability contract:
 
-- show cached or progressively fetched products as soon as they are usable
-- show stable skeleton/pending states for merchant names and avatars while lookup is active
-- after bounded lookup attempts settle empty, show a final fallback such as `Store npub...` without pending animation
-- do not shift product grid layout when profile names, avatars, tag counts, or trust metadata hydrate
+- cached or progressively fetched products become usable without waiting for optional profile or trust hydration;
+- unresolved merchant identity remains distinguishable from confirmed identity, without implying a missing profile is still loading after bounded attempts settle;
+- optional hydration must not invalidate an already usable product or destabilize an in-progress buyer action.
 
 Implementation notes live in `docs/nips/` for compact agent preflight context. Canonical protocol behavior still comes from the public NIPs and GammaMarkets `market-spec`.
 
@@ -549,7 +549,7 @@ Current private-message code may continue to interoperate with NIP-44 v2, which 
 New secure messaging work should route sends and unwraps through a shared `@conduit/core` boundary that:
 
 - preserves NIP-44 v2 as the default for existing signers and peers
-- keeps NIP-44 v3 readiness visible without making it the default send path before source and capability gates are satisfied
+- retains NIP-44 v3 readiness in implementation planning without making it the default send path before source and capability gates are satisfied
 - keeps kind `10050` authoritative and applies the separately gated, bounded
   validated-kind-16 compatibility lane only under the rules above
 - rejects authenticated-context mismatches instead of returning plaintext when versioned encryption support adds that requirement
@@ -563,7 +563,8 @@ Conduit supports kind-4 NIP-04 only as a separate, bounded, read-only recovery
 lane. It never publishes kind `4`, never uses NIP-04 as a NIP-17 fallback, and
 never merges a legacy thread with a NIP-17 thread between the same participants.
 Conversation identity is transport-qualified. Legacy fetch, signer, and decrypt
-failures must remain visible and retryable, while logs and diagnostics remain
+failures must remain retryable and cannot silently produce a complete empty
+conversation for the affected person; logs and diagnostics remain
 content-free.
 
 ## Legacy Conduit Order Message Payload (CND-128)

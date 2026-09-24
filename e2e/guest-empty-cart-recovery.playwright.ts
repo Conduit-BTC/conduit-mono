@@ -128,7 +128,10 @@ test("accepted guest order reopens after an empty-cart reload @market", async ({
     page.getByRole("heading", { name: "Orders", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByText("Order accepted; payment has not started", { exact: true })
+    page.getByText(
+      "Continue payment for the accepted order. This does not resend the order.",
+      { exact: true }
+    )
   ).toBeVisible()
   await expect(
     page.getByRole("button", { name: "Continue payment" })

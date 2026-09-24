@@ -34,7 +34,11 @@ export function resolvePlaywrightWebServerTarget(
     VITE_ENABLE_TELEMETRY_TEST_HOOKS: "true",
     VITE_PLAUSIBLE_SRC: "data:text/javascript,",
     VITE_TELEMETRY_ALLOWED_HOSTS: "127.0.0.1",
-    ...(commerceIncluded ? { VITE_LIGHTNING_NETWORK: "testnet" } : {}),
+    ...(commerceIncluded
+      ? { VITE_LIGHTNING_NETWORK: "testnet" }
+      : smokeArea === "market"
+        ? { VITE_LIGHTNING_NETWORK: "mainnet" }
+        : {}),
   }
 
   const targets: Record<string, PlaywrightWebServerTarget> = {

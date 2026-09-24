@@ -42,10 +42,12 @@ export function Nip05TrustIndicator({
   pubkey,
   nip05,
   className = "",
+  display = "full",
 }: {
   pubkey: string
   nip05: string
   className?: string
+  display?: "full" | "icon"
 }) {
   const verification = useNip05Verification(pubkey, nip05)
   const displayLabel = getNip05DisplayLabel(nip05)
@@ -67,6 +69,20 @@ export function Nip05TrustIndicator({
       : verification.status === "invalid"
         ? "NIP-05 verification failed"
         : null
+
+  if (display === "icon") {
+    if (!label) return null
+    return (
+      <span
+        className={`inline-flex shrink-0 items-center ${className}`}
+        role="img"
+        aria-label={`${label}: ${displayLabel}`}
+        title={`${label}: ${displayLabel}`}
+      >
+        {icon}
+      </span>
+    )
+  }
 
   return (
     <span className={`inline-flex min-w-0 items-center gap-1.5 ${className}`}>

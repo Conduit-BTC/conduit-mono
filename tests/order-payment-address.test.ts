@@ -5,7 +5,10 @@ import {
   type OrderLifecycle,
   type SelectedProfileContext,
 } from "@conduit/core"
-import { checkOrderPaymentAddressUpdate } from "../apps/market/src/lib/order-payment-address"
+import {
+  checkOrderPaymentAddressForRenewal,
+  checkOrderPaymentAddressUpdate,
+} from "../apps/market/src/lib/order-payment-address"
 
 const MERCHANT = "a".repeat(64)
 const BUYER = "b".repeat(64)
@@ -147,6 +150,20 @@ describe("checking an updated order payment address", () => {
       { getProfiles: async () => profileResult() }
     )
     expect(result.status).toBe("updated")
+  })
+
+  it("checks signed address evidence for a manual-required invoice without replacement admission", async () => {
+    const result = await checkOrderPaymentAddressForRenewal(
+      lifecycle({
+        checkoutMode: "private_checkout",
+        paymentTarget: { type: "manual" },
+        invoiceStatus: "manual_required",
+        paymentStatus: "manual_required",
+      }),
+      {},
+      { getProfiles: async () => profileResult("old@wallet.example") }
+    )
+    expect(result).toEqual({ status: "unchanged" })
   })
 
   it("checks fresh payment evidence with account authority and preserves the review snapshot", async () => {

@@ -26,6 +26,8 @@ export interface RefreshChipProps extends Omit<
   doneLabel?: string
   /** How long the done confirmation stays visible, in ms. */
   doneDurationMs?: number
+  /** Keep the stateful refresh action in a compact icon button. */
+  iconOnly?: boolean
 }
 
 /**
@@ -65,6 +67,7 @@ function RefreshChip({
   refreshingLabel = "Refreshing...",
   doneLabel = "Updated",
   doneDurationMs = 2000,
+  iconOnly = false,
   disabled = false,
   className,
   ...props
@@ -99,7 +102,7 @@ function RefreshChip({
     <Button
       type="button"
       variant="outline"
-      size="sm"
+      size={iconOnly ? "icon" : "sm"}
       disabled={disabled}
       aria-label={accessibleLabel}
       aria-busy={refreshingPhase}
@@ -120,7 +123,8 @@ function RefreshChip({
           () => setPhase("idle")
         )
       }}
-      className={cn("shrink-0", className)}
+      title={iconOnly ? accessibleLabel : undefined}
+      className={cn("shrink-0", iconOnly && "border-0", className)}
       {...props}
     >
       <span className="inline-flex items-center gap-1">
@@ -143,41 +147,43 @@ function RefreshChip({
             />
           )}
         </span>
-        <span className="inline-grid h-4 items-center justify-items-center">
-          <span
-            aria-hidden={renderedPhase !== "idle"}
-            className={cn(
-              "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
-              renderedPhase === "idle"
-                ? "opacity-100 text-[var(--text-primary)]"
-                : "opacity-0"
-            )}
-          >
-            {idleLabel}
+        {!iconOnly && (
+          <span className="inline-grid h-4 items-center justify-items-center">
+            <span
+              aria-hidden={renderedPhase !== "idle"}
+              className={cn(
+                "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
+                renderedPhase === "idle"
+                  ? "opacity-100 text-[var(--text-primary)]"
+                  : "opacity-0"
+              )}
+            >
+              {idleLabel}
+            </span>
+            <span
+              aria-hidden={!refreshingPhase}
+              className={cn(
+                "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
+                refreshingPhase
+                  ? "opacity-100 text-[var(--text-secondary)]"
+                  : "opacity-0"
+              )}
+            >
+              {refreshingLabel}
+            </span>
+            <span
+              aria-hidden={renderedPhase !== "done"}
+              className={cn(
+                "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
+                renderedPhase === "done"
+                  ? "opacity-100 text-[var(--success)]"
+                  : "opacity-0"
+              )}
+            >
+              {doneLabel}
+            </span>
           </span>
-          <span
-            aria-hidden={!refreshingPhase}
-            className={cn(
-              "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
-              refreshingPhase
-                ? "opacity-100 text-[var(--text-secondary)]"
-                : "opacity-0"
-            )}
-          >
-            {refreshingLabel}
-          </span>
-          <span
-            aria-hidden={renderedPhase !== "done"}
-            className={cn(
-              "col-start-1 row-start-1 whitespace-nowrap transition-opacity duration-200",
-              renderedPhase === "done"
-                ? "opacity-100 text-[var(--success)]"
-                : "opacity-0"
-            )}
-          >
-            {doneLabel}
-          </span>
-        </span>
+        )}
       </span>
     </Button>
   )

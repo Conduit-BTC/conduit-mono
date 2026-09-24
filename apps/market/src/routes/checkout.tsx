@@ -97,12 +97,8 @@ import {
   PaymentTargetSelectContent,
   PaymentTargetSelectValue,
 } from "../components/PaymentTargetSelectContent"
-import { CheckoutAvailabilityNotice } from "../components/CheckoutAvailabilityNotice"
 import { CheckoutMerchantPaymentNotice } from "../components/CheckoutMerchantPaymentNotice"
-import {
-  EventActorName,
-  EventActorProvenance,
-} from "../components/EventActorIdentity"
+import { EventActorName } from "../components/EventActorIdentity"
 import { SignerSwitch } from "../components/SignerSwitch"
 import {
   type CartItem,
@@ -162,14 +158,11 @@ import {
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
   getCheckoutEvidenceCheckingLabel,
-  getShippingPhoneDescribedBy,
   getShippingRegionRequirement,
   getValidationErrorFields,
   sanitizeShippingPhoneInput,
   SHIPPING_EMAIL_ERROR_ID,
   SHIPPING_PHONE_ERROR_ID,
-  SHIPPING_PHONE_HELP_COPY,
-  SHIPPING_PHONE_HELP_ID,
   shippingFieldLabel,
   validateGuestContactFields,
   validateGuestPickupContactFields,
@@ -234,11 +227,7 @@ import {
   runOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
-import {
-  getCartPickupHandoffSummary,
-  getPickupHandoffPrivacyCopy,
-  type PickupHandoffSummary,
-} from "../lib/pickup-handoff"
+import { getCartPickupHandoffSummary } from "../lib/pickup-handoff"
 import {
   getCheckoutOrderPaymentTarget,
   getCheckoutPaymentTargetOptions,
@@ -269,16 +258,6 @@ type CheckoutSearch = {
 }
 
 type CheckoutTelemetryMode = "checkout" | "order_first" | CheckoutZapMode
-
-function getCheckoutPickupPrivacyCopy(
-  handoff: PickupHandoffSummary,
-  paymentRequired: boolean
-): string {
-  if (paymentRequired) return getPickupHandoffPrivacyCopy(handoff)
-  return handoff.mode === "organizer_handoff"
-    ? "No payment is required. The merchant sends the organizer a minimal private pickup receipt with item references, quantities, and event pickup identity before pickup is ready. Contact details, addresses, notes, invoices, and payment secrets are not shared."
-    : "No payment is required. The private order goes only to the merchant; no organizer receipt is sent."
-}
 
 /** Priced "ok" intent — the only shape we proceed to payment with. */
 const CHECKOUT_PRICE_REFRESH_TIMEOUT_MS = 5_000
@@ -643,7 +622,7 @@ function CheckoutBreadcrumb({
       {current === "order" && (
         <>
           <span>/</span>
-          <span className={currentClassName}>Order</span>
+          <span className={currentClassName}>Checkout</span>
         </>
       )}
       {current !== "order" && includesShippingStep && (
@@ -740,30 +719,23 @@ function CheckoutMerchantIdentityLink({
       ].join(" ")}
       aria-label={`Visit ${merchantName} merchant page`}
     >
-      <Avatar className="h-12 w-12 shrink-0 border border-[var(--border)]">
+      <Avatar className="size-10 shrink-0 border border-[var(--border)]">
         <AvatarImage src={merchantProfile?.picture} alt={merchantName} />
         <AvatarFallback>
           <MerchantAvatarFallback />
         </AvatarFallback>
       </Avatar>
-      <div className="min-w-0">
-        <div className="text-xs font-medium uppercase text-[var(--text-muted)]">
-          Merchant
-        </div>
-        <div className="mt-1 truncate text-base font-semibold text-[var(--text-primary)]">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate text-base font-semibold text-[var(--text-primary)]">
           {merchantName}
-        </div>
-        {merchantNip05 && (
-          <div
-            className="mt-1 truncate text-xs font-medium text-[var(--text-muted)]"
-            title={merchantNip05}
-          >
-            <Nip05TrustIndicator
-              pubkey={merchantPubkey}
-              nip05={merchantNip05}
-            />
-          </div>
-        )}
+        </span>
+        {merchantNip05 ? (
+          <Nip05TrustIndicator
+            pubkey={merchantPubkey}
+            nip05={merchantNip05}
+            display="icon"
+          />
+        ) : null}
       </div>
     </Link>
   )
@@ -779,6 +751,7 @@ function OrderSummary({
   availabilityByProductId,
   pickupHandlerIdentity,
   formatPrice,
+  className = "",
 }: {
   items: CartItem[]
   merchantPubkey: string
@@ -789,6 +762,7 @@ function OrderSummary({
   availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
   pickupHandlerIdentity: EventActorIdentityView | null
   formatPrice: PriceFormatter
+  className?: string
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey, {
     accountPubkey,
@@ -799,6 +773,13 @@ function OrderSummary({
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
   const fulfillmentLane = getCartFulfillmentLane(items)
   const pickupHandoff = getCartPickupHandoffSummary(items)
+  const pickupFulfillment = items.find(
+    (item) => item.fulfillment?.type === "pickup"
+  )?.fulfillment
+  const pickupLocation =
+    pickupFulfillment?.type === "pickup"
+      ? (pickupFulfillment.option.location ?? pickupFulfillment.option.geohash)
+      : null
   const pricing = buildCheckoutPricingIntent(items, btcUsdRate)
   const pricingUnavailable = {
     state: "invalid" as const,
@@ -854,10 +835,12 @@ function OrderSummary({
               }).primary
 
   return (
-    <aside className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+    <aside
+      className={`rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6 ${className}`}
+    >
       <div className="border-b border-[var(--border)] pb-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <h2 className="text-2xl font-semibold text-[var(--text-primary)]">
+          <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)] sm:text-2xl">
             Order summary
           </h2>
           <div className="text-sm text-[var(--text-secondary)]">
@@ -905,7 +888,7 @@ function OrderSummary({
           return (
             <div
               key={item.cartLineId ?? getCartItemKey(item)}
-              className={`grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0 ${
+              className={`grid grid-cols-[56px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0 ${
                 unavailable ? "opacity-80" : ""
               }`}
             >
@@ -925,7 +908,7 @@ function OrderSummary({
                 />
               </div>
               <div className="min-w-0">
-                <div className="line-clamp-2 text-base font-medium leading-7 text-[var(--text-primary)]">
+                <div className="line-clamp-2 text-sm font-medium leading-5 text-[var(--text-primary)] sm:text-base">
                   {item.title}
                 </div>
                 {soldOut || insufficientStock ? (
@@ -935,26 +918,9 @@ function OrderSummary({
                       : `Only ${availability?.stock ?? 0} available`}
                   </Badge>
                 ) : null}
-                {item.tags && item.tags.length > 0 && (
-                  <div className="mt-1 line-clamp-1 text-xs text-[var(--text-muted)]">
-                    {item.tags.slice(0, 4).join(", ")}
-                  </div>
-                )}
-                {item.fulfillment?.type === "pickup" ? (
-                  <div className="mt-1 flex items-start gap-1.5 text-xs leading-5 text-[var(--text-secondary)]">
-                    <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-secondary-400" />
-                    <span>
-                      {item.fulfillment.option.title}
-                      {item.fulfillment.option.location ||
-                      item.fulfillment.option.geohash
-                        ? ` · ${item.fulfillment.option.location ?? item.fulfillment.option.geohash}`
-                        : ""}
-                    </span>
-                  </div>
-                ) : null}
               </div>
               <div className="text-right">
-                <div className="text-lg font-semibold text-[var(--text-primary)]">
+                <div className="text-sm font-semibold text-[var(--text-primary)] sm:text-base">
                   {linePrice.primary}
                 </div>
                 {linePrice.secondary && (
@@ -982,19 +948,23 @@ function OrderSummary({
           </span>
           <span>{itemSubtotalPrice.primary}</span>
         </div>
-        <div className="mt-3 flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
-          <span>
+        <div className="mt-3 flex items-start justify-between gap-3 text-sm text-[var(--text-secondary)]">
+          <span className="min-w-0">
             {pickupHandoff && pickupHandlerIdentity ? (
               <>
-                <span className="block">{pickupHandoff.label}</span>
+                <span className="flex items-start gap-1.5 text-pretty">
+                  <MapPin
+                    className="mt-0.5 size-3.5 shrink-0 text-secondary-400"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {pickupHandoff.label}
+                    {pickupLocation ? ` · ${pickupLocation}` : ""}
+                  </span>
+                </span>
                 <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
                   Handled by <EventActorName identity={pickupHandlerIdentity} />
                 </span>
-                <EventActorProvenance
-                  pubkey={pickupHandoff.handlerPubkey}
-                  copyLabel="Copy pickup handler npub"
-                  className="mt-1 flex text-xs"
-                />
               </>
             ) : fulfillmentLane === "pickup" ? (
               "Event pickup"
@@ -1004,9 +974,9 @@ function OrderSummary({
           </span>
           <span>{shippingLabel}</span>
         </div>
-        <div className="mt-5 flex items-end justify-between gap-3">
+        <div className="mt-5 flex items-end justify-between gap-3 border-t border-[var(--border)] pt-4">
           <div className="text-lg font-semibold text-[var(--text-primary)]">
-            Due to merchant
+            Total
           </div>
           <div className="text-right">
             <div className="text-3xl font-semibold text-secondary-400">
@@ -1124,6 +1094,7 @@ function CheckoutPage() {
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
   const checkoutWorkOwnerRef = useRef<string | null>(null)
+  const checkoutWorkOwnerInitializedRef = useRef(false)
   const checkoutShippingInitializedRef = useRef(false)
   const presetMaySeedShippingRef = useRef(false)
   const presetSeededShippingRef = useRef(false)
@@ -1320,12 +1291,20 @@ function CheckoutPage() {
   ])
 
   useLayoutEffect(() => {
+    if (authPending) return
+
     const previousOwner = checkoutWorkOwnerRef.current
     checkoutWorkOwnerRef.current = draftOwnerIdentity
-    if (!previousOwner || previousOwner === draftOwnerIdentity) return
+    if (!checkoutWorkOwnerInitializedRef.current) {
+      checkoutWorkOwnerInitializedRef.current = true
+      return
+    }
+    if (previousOwner === draftOwnerIdentity) return
     if (sparkFeeApproval.quote) sparkFeeApproval.decline()
     setStep("shipping")
-    setShipping(DEFAULT_CHECKOUT_SHIPPING)
+    if (previousOwner !== null) {
+      setShipping(DEFAULT_CHECKOUT_SHIPPING)
+    }
     setNote("")
     setPaymentTargetSelection(null)
     setAutoZapAuthorization(null)
@@ -1335,7 +1314,7 @@ function CheckoutPage() {
     setShippingAttempted(false)
     setShippingErrors([])
     setTouchedShippingFields(new Set())
-  }, [draftOwnerIdentity, sparkFeeApproval])
+  }, [authPending, draftOwnerIdentity, sparkFeeApproval])
 
   useEffect(() => {
     const preset = getIdentityBoundShippingPreset(
@@ -1580,24 +1559,6 @@ function CheckoutPage() {
   })
   const checkoutEvidenceIsChecking = checkoutEvidenceCheckingLabel !== null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
-  const checkoutAvailabilityVerified =
-    checkoutAvailability.readDecision.status === "verified_at_read"
-  const checkoutAvailabilityPartial =
-    checkoutAvailability.readDecision.status === "verified_at_read" &&
-    checkoutAvailability.readDecision.coverage === "partial"
-  const checkoutUsesLastReportedQuantity =
-    checkoutAvailabilityVerified &&
-    checkoutItems.some((item) => {
-      const availability = checkoutAvailability.availabilityByProductId.get(
-        item.productId
-      )
-      return (
-        availability?.refreshed === true &&
-        typeof availability.stock === "number" &&
-        availability.stock > 0 &&
-        item.quantity === availability.stock
-      )
-    })
   const publicZapPolicy = useMemo(
     () => getCartPublicZapPolicy(checkoutItems),
     [checkoutItems]
@@ -1609,8 +1570,7 @@ function CheckoutPage() {
         ? "At least one product is missing public zap policy metadata, so checkout will use a private invoice."
         : null
   const requiresCheckoutDetailsStep = isShippingCheckout || isGuestCheckout
-  const requiresBothContactMethods = isGuestCheckout && !isPickupCheckout
-  const requiresPickupRecoveryContact = isGuestCheckout && isPickupCheckout
+  const requiresBothContactMethods = isGuestCheckout
   const liveShippingErrors = useMemo(() => {
     if (isPickupCheckout) {
       return isGuestCheckout ? validateGuestPickupContactFields(shipping) : []
@@ -1662,7 +1622,6 @@ function CheckoutPage() {
     merchantPubkey: selectedMerchant ?? null,
     requireCompleteProfileEvidence: true,
   })
-  const merchantProfile = merchantTrust.profile
   const merchantLud16 = getMerchantPaymentLud16({
     profileState: merchantTrust.profileEvidenceState,
     lud16: merchantTrust.profileEvidenceLud16,
@@ -2029,9 +1988,6 @@ function CheckoutPage() {
     }
   })()
 
-  const visibleCheckoutStep: CheckoutStep =
-    !requiresCheckoutDetailsStep && step === "shipping" ? "payment" : step
-
   function recordCheckoutStepResult(input: {
     checkoutMode: CheckoutTelemetryMode
     latencyMs?: number
@@ -2230,20 +2186,21 @@ function CheckoutPage() {
     }
   }
 
-  function continueToPayment(): void {
+  function validateCheckoutDetailsForSubmit(): boolean {
+    if (!requiresCheckoutDetailsStep) return true
     if (fulfillmentBlockingMessage) {
       setError(fulfillmentBlockingMessage)
-      return
+      return false
     }
     if (checkoutEvidenceIsChecking) {
       setError(
         "Wait while Conduit checks current product and fulfillment evidence."
       )
-      return
+      return false
     }
     if (checkoutAvailabilityMessage) {
       setError(checkoutAvailabilityMessage)
-      return
+      return false
     }
     setShippingAttempted(true)
     setTouchedShippingFields(new Set(SHIPPING_VALIDATION_FIELDS))
@@ -2260,7 +2217,24 @@ function CheckoutPage() {
         stepName: "shipping",
       })
       setError(blockingMessage)
-      return
+      const firstField = errors[0]?.field
+      if (firstField) {
+        window.requestAnimationFrame(() => {
+          const fieldId: Record<ShippingFieldKey, string> = {
+            country: "ship-country",
+            firstName: "ship-first-name",
+            lastName: "ship-last-name",
+            street: "ship-street",
+            postalCode: "ship-postal",
+            city: "ship-city",
+            state: "ship-state",
+            email: "ship-email",
+            phone: "ship-phone",
+          }
+          document.getElementById(fieldId[firstField])?.focus()
+        })
+      }
+      return false
     }
     recordCheckoutStepResult({
       checkoutMode: "checkout",
@@ -2268,7 +2242,7 @@ function CheckoutPage() {
       stepName: "shipping",
     })
     setError(null)
-    setStep("payment")
+    return true
   }
 
   function markShippingFieldTouched(field: ShippingFieldKey): void {
@@ -2296,14 +2270,6 @@ function CheckoutPage() {
       setError(null)
     }
   }, [error, shippingAttempted, shippingErrors.length])
-
-  // Skip checkout details only when no shipping address or guest contact is needed.
-  useEffect(() => {
-    if (!cart.hydrated || !selectedPurchase) return
-    if (!requiresCheckoutDetailsStep && step === "shipping") {
-      setStep("payment")
-    }
-  }, [cart.hydrated, requiresCheckoutDetailsStep, selectedPurchase, step])
 
   // ─── Build shipping address from form state ──────────────────────────────
 
@@ -2347,13 +2313,6 @@ function CheckoutPage() {
     if (!isGuestCheckout) return undefined
     const email = shipping.email.trim()
     const phone = shipping.phone.trim()
-    if (isPickupCheckout) {
-      if (!email && !phone) return undefined
-      return {
-        ...(email ? { email } : {}),
-        ...(phone ? { phone } : {}),
-      }
-    }
     if (!email || !phone) return undefined
     return { email, phone }
   }
@@ -2477,6 +2436,7 @@ function CheckoutPage() {
     if (!selectedMerchant || !selectedPurchase || checkoutItems.length === 0) {
       return
     }
+    if (!validateCheckoutDetailsForSubmit()) return
     if (checkoutRecoveryIsChecking || checkoutRecoveryBlockingMessage) {
       setError(
         checkoutRecoveryBlockingMessage ??
@@ -2573,7 +2533,7 @@ function CheckoutPage() {
         : ("signed_in" as const)
       const guestContact = buildGuestContact()
       if (guestIdentity && !guestContact) {
-        throw new Error("Email or phone is required for guest pickup recovery.")
+        throw new Error("Phone and email are required for guest checkout.")
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
@@ -2905,6 +2865,7 @@ function CheckoutPage() {
     if (!selectedMerchant || !selectedPurchase || checkoutItems.length === 0) {
       return
     }
+    if (!validateCheckoutDetailsForSubmit()) return
     if (checkoutRecoveryIsChecking || checkoutRecoveryBlockingMessage) {
       setError(
         checkoutRecoveryBlockingMessage ??
@@ -3188,11 +3149,7 @@ function CheckoutPage() {
         : ("signed_in" as const)
       const guestContact = buildGuestContact()
       if (guestIdentity && !guestContact) {
-        throw new Error(
-          isPickupCheckout
-            ? "Email or phone is required for guest pickup recovery."
-            : "Phone and email are required for guest checkout."
-        )
+        throw new Error("Phone and email are required for guest checkout.")
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
@@ -3406,7 +3363,7 @@ function CheckoutPage() {
       paymentInFlightRef.current = false
       void navigate({
         to: "/orders",
-        search: { order: orderId },
+        search: { order: orderId, focus: "payment" },
         replace: true,
       })
     } catch (e) {
@@ -3458,7 +3415,7 @@ function CheckoutPage() {
         })
         void navigate({
           to: "/orders",
-          search: { order: publishedOrderId },
+          search: { order: publishedOrderId, focus: "payment" },
           replace: true,
         })
         return
@@ -3946,22 +3903,11 @@ function CheckoutPage() {
 
   return (
     <div className="space-y-6">
-      <CheckoutBreadcrumb
-        current={visibleCheckoutStep === "payment" ? "send-order" : "shipping"}
-        detailsLabel={
-          isPickupCheckout
-            ? "Recovery contact"
-            : isAllDigital
-              ? "Contact"
-              : "Shipping"
-        }
-        includesShippingStep={requiresCheckoutDetailsStep}
-        onShippingClick={
-          visibleCheckoutStep === "payment" && requiresCheckoutDetailsStep
-            ? () => setStep("shipping")
-            : undefined
-        }
-      />
+      <CheckoutBreadcrumb current="order" includesShippingStep={false} />
+
+      <h1 className="text-balance text-3xl font-semibold text-[var(--text-primary)] sm:text-4xl">
+        Checkout
+      </h1>
 
       {remoteSignerRecovery ? (
         <SignerRecoveryNotice
@@ -4032,43 +3978,33 @@ function CheckoutPage() {
         </div>
       ) : null}
 
-      {!checkoutAvailability.isChecking && !hasUnavailableCheckoutItems && (
-        <CheckoutAvailabilityNotice
-          lastQuantityReported={checkoutUsesLastReportedQuantity}
-          partialCoverage={checkoutAvailabilityPartial}
-        />
-      )}
-
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]">
+        <OrderSummary
+          items={checkoutItems}
+          merchantPubkey={selectedMerchant!}
+          accountPubkey={draftOwnerIdentity}
+          authenticatedPubkey={signedBuyerPubkey}
+          shouldContinue={() => authGenerationRef.current === authGeneration}
+          btcUsdRate={btcUsdRate}
+          availabilityByProductId={checkoutAvailability.availabilityByProductId}
+          pickupHandlerIdentity={pickupHandlerIdentity}
+          formatPrice={shopperPricing.formatPrice}
+          className="lg:order-2 lg:sticky lg:top-6"
+        />
         <section className="space-y-5">
           {/* ── Shipping step ─────────────────────────────────────────────── */}
-          {visibleCheckoutStep === "shipping" && (
+          {requiresCheckoutDetailsStep && (
             <>
-              <div>
-                <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-                  {isPickupCheckout
-                    ? "Pickup recovery"
-                    : isAllDigital
-                      ? "Contact"
-                      : "Shipping"}
-                </h1>
-                <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-                  {isPickupCheckout
-                    ? "Add either email or phone so the merchant has one private recovery method for this guest pickup. No delivery address is collected, and the contact stays with the merchant."
-                    : isGuestCheckout
-                      ? isAllDigital
-                        ? "Add phone and email so the merchant can follow up on this guest order."
-                        : "Add delivery and contact details so the merchant can fulfill this guest order."
-                      : "Add delivery details for this order. Merchant follow-up and payment requests are sent through your Nostr account after the order is sent."}
-                </p>
-              </div>
-
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
-                <div className="text-sm font-medium text-[var(--text-primary)]">
-                  {isPickupCheckout
-                    ? "Merchant-only recovery"
-                    : "Delivery details"}
-                </div>
+                <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
+                  {isShippingCheckout ? "Delivery details" : "Contact"}
+                </h2>
+                {isGuestCheckout && isPickupCheckout ? (
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Email and phone are required for this guest order. Only the
+                    merchant receives your contact details.
+                  </p>
+                ) : null}
 
                 <div className="mt-5 grid gap-4">
                   {shippingAttempted && shippingErrors.length > 0 && (
@@ -4278,20 +4214,21 @@ function CheckoutPage() {
                   )}
 
                   {/* Contact */}
-                  <div className="border-t border-[var(--border)] pt-5">
-                    <div className="flex items-center justify-between gap-3">
+                  <div
+                    className={
+                      isShippingCheckout
+                        ? "border-t border-[var(--border)] pt-5"
+                        : ""
+                    }
+                  >
+                    {isShippingCheckout ? (
                       <div className="text-sm font-medium text-[var(--text-primary)]">
                         Contact
                       </div>
-                      <div className="text-xs text-[var(--text-muted)]">
-                        {requiresPickupRecoveryContact
-                          ? "email or phone required"
-                          : isGuestCheckout
-                            ? "required"
-                            : "(optional)"}
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-4">
+                    ) : null}
+                    <div
+                      className={`${isShippingCheckout ? "mt-4" : ""} grid gap-4 sm:grid-cols-2`}
+                    >
                       <div className="grid gap-1.5">
                         <Label htmlFor="ship-phone">
                           Phone
@@ -4312,21 +4249,17 @@ function CheckoutPage() {
                           }
                           onBlur={() => markShippingFieldTouched("phone")}
                           autoComplete="tel"
-                          placeholder="+1 555 123 4567"
+                          placeholder="555 123 4567"
                           aria-invalid={fieldInvalid("phone")}
                           aria-required={requiresBothContactMethods}
                           required={requiresBothContactMethods}
-                          aria-describedby={getShippingPhoneDescribedBy(
+                          aria-describedby={
                             fieldInvalid("phone")
-                          )}
+                              ? SHIPPING_PHONE_ERROR_ID
+                              : undefined
+                          }
                           className={fieldClassName("phone")}
                         />
-                        <p
-                          id={SHIPPING_PHONE_HELP_ID}
-                          className="text-xs text-[var(--text-muted)]"
-                        >
-                          {SHIPPING_PHONE_HELP_COPY}
-                        </p>
                         {fieldInvalid("phone") && (
                           <p
                             id={SHIPPING_PHONE_ERROR_ID}
@@ -4378,42 +4311,12 @@ function CheckoutPage() {
                     </div>
                   </div>
 
-                  {isPickupCheckout ? (
-                    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-xs leading-5 text-[var(--text-secondary)]">
-                      <div className="flex items-start gap-2">
-                        <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-secondary-400" />
-                        <div>
-                          <div className="font-medium text-[var(--text-primary)]">
-                            {pickupHandoff?.label ?? "Signed event pickup"}
-                          </div>
-                          <div className="mt-1">
-                            {pickupHandoff && pickupHandlerIdentity ? (
-                              <>
-                                Handled by{" "}
-                                <EventActorName
-                                  identity={pickupHandlerIdentity}
-                                />
-                                .{" "}
-                              </>
-                            ) : null}
-                            {paymentRequired
-                              ? "No delivery address is requested. Signed pickup evidence and cost are checked again before payment."
-                              : "No delivery address is requested. Signed pickup evidence and cost are checked again before order submission."}
-                            {pickupHandoff
-                              ? ` ${getCheckoutPickupPrivacyCopy(pickupHandoff, paymentRequired)}`
-                              : null}
-                            {pickupHandoff ? (
-                              <EventActorProvenance
-                                pubkey={pickupHandoff.handlerPubkey}
-                                copyLabel="Copy pickup handler npub"
-                                className="mt-1 flex"
-                              />
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : isShippingCheckout ? (
+                  {isShippingCheckout &&
+                  (!currentAddressValidity.canSubmitOrder ||
+                    currentAddressValidity.warnings.length > 0 ||
+                    !["not_required", "allowed"].includes(
+                      shippingCheckoutState
+                    )) ? (
                     <div
                       className={[
                         "rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-xs leading-5 text-[var(--text-secondary)]",
@@ -4458,71 +4361,14 @@ function CheckoutPage() {
                       </div>
                     </div>
                   ) : null}
-
-                  <CheckoutMerchantPaymentNotice
-                    state={merchantPaymentReadiness}
-                    isGuestCheckout={isGuestCheckout}
-                  />
-
-                  <Button
-                    className="mt-2 h-11 w-full text-sm"
-                    disabled={
-                      checkoutEvidenceIsChecking ||
-                      hasUnavailableCheckoutItems ||
-                      fulfillmentBlockingMessage !== null
-                    }
-                    onClick={continueToPayment}
-                  >
-                    {checkoutEvidenceCheckingLabel
-                      ? checkoutEvidenceCheckingLabel
-                      : fulfillmentBlockingMessage
-                        ? "Review cart fulfillment"
-                        : hasUnavailableCheckoutItems
-                          ? "Update cart quantities"
-                          : "Continue to Send Order"}
-                  </Button>
-
-                  <p
-                    className="text-xs leading-6 text-[var(--text-muted)]"
-                    role={isGuestCheckout ? "note" : undefined}
-                  >
-                    {isGuestCheckout
-                      ? isPickupCheckout
-                        ? "Your order is sent privately with a temporary key used only for this order and its payment report. Keep this tab open until payment is reported; the merchant-only email or phone is only a recovery method."
-                        : "Your order details will be sent privately with a temporary key that this client uses only for this order and its payment report. Keep this tab open until the payment is reported; merchant follow-up uses the required phone and email contact details."
-                      : "Your order details will be sent to the merchant through your signed Nostr account so they can follow up with payment and fulfillment."}
-                  </p>
                 </div>
               </div>
             </>
           )}
 
-          {/* ── Payment step ──────────────────────────────────────────────── */}
-          {visibleCheckoutStep === "payment" && (
+          {/* ── Order action ──────────────────────────────────────────────── */}
+          {
             <>
-              <div>
-                <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-                  Send Order
-                </h1>
-                <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-                  {isGuestCheckout
-                    ? "Send the order with a temporary guest key, then pay the Lightning invoice with your wallet."
-                    : directCheckoutEligible
-                      ? selectedPaymentTarget.type === "manual"
-                        ? "Send the order and show its Lightning invoice for manual payment."
-                        : selectedPaymentTarget.type === "webln"
-                          ? weblnAvailable
-                            ? "Your browser wallet is ready. Zap out now, or send the order first and pay later."
-                            : "Your selected browser wallet is unavailable. You can still create the order and retry payment from Orders."
-                          : wallet.status === "pay-capable"
-                            ? "Your selected wallet is ready. Zap out now, or send the order first and pay later."
-                            : "Create the order now, then resolve the selected wallet before retrying payment."
-                      : pricingOnlyFastCheckoutBlocker
-                        ? "Conduit is refreshing the price conversion before offering zap out. You can still send the order first."
-                        : "Send the order to the merchant first. They can confirm shipping and reply with payment details."}
-                </p>
-              </div>
-
               {!isGuestCheckout && (
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -4660,75 +4506,6 @@ function CheckoutPage() {
                 </div>
               )}
 
-              {isAllDigital && (
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-400">
-                      <CheckIcon className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        Digital delivery
-                      </div>
-                      <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
-                        This merchant cart contains only digital products, so no
-                        shipping address is needed.{" "}
-                        {isGuestCheckout
-                          ? "The merchant will use your required phone and email contact details for follow-up."
-                          : "Merchant follow-up happens through the order thread after the order is sent."}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {isPickupCheckout && (
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-400">
-                      <MapPin className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        {pickupHandoff?.label ?? "Event pickup"}
-                      </div>
-                      <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
-                        {pickupHandoff && pickupHandlerIdentity ? (
-                          <>
-                            Handled by{" "}
-                            <EventActorName identity={pickupHandlerIdentity} />
-                            .{" "}
-                          </>
-                        ) : null}
-                        {paymentRequired
-                          ? "No delivery address is included. Signed pickup evidence is refreshed before order submission and payment."
-                          : "No delivery address is included. Signed pickup evidence is refreshed before order submission."}
-                        {pickupHandoff
-                          ? ` ${getCheckoutPickupPrivacyCopy(pickupHandoff, paymentRequired)}`
-                          : null}
-                        {requiresPickupRecoveryContact
-                          ? " Your email or phone remains in the merchant-only order for guest recovery."
-                          : null}
-                      </p>
-                      {pickupHandoff ? (
-                        <EventActorProvenance
-                          pubkey={pickupHandoff.handlerPubkey}
-                          copyLabel="Copy pickup handler npub"
-                          className="mt-1 flex text-xs"
-                        />
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <CheckoutMerchantIdentityLink
-                merchantPubkey={selectedMerchant!}
-                merchantProfile={merchantProfile}
-                merchantName={merchantName}
-                className="lg:hidden"
-              />
-
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
                 {/* Zap out banner */}
                 <CheckoutMerchantPaymentNotice
@@ -4737,6 +4514,7 @@ function CheckoutPage() {
                 />
 
                 {paymentRequired &&
+                  !isGuestCheckout &&
                   !lnurlProbing &&
                   showFastCheckoutSurface && (
                     <div className="rounded-2xl border border-secondary-500/30 bg-secondary-500/8 p-5">
@@ -4755,11 +4533,7 @@ function CheckoutPage() {
                       <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
                         {pricingOnlyFastCheckoutBlocker
                           ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
-                          : isGuestCheckout
-                            ? selectedZapMode === "anonymous_public_zap"
-                              ? "Conduit will deliver the private order with a guest key and request an Anon-signed public zap invoice. Payment stays in your Lightning wallet."
-                              : "Conduit will deliver the private order with a guest key and request a Lightning invoice. Payment stays in your Lightning wallet."
-                            : selectedPaymentTargetDescription}
+                          : selectedPaymentTargetDescription}
                       </p>
                       {!isGuestCheckout &&
                         selectedWallet &&
@@ -4902,59 +4676,6 @@ function CheckoutPage() {
                     </div>
                   )}
 
-                {/* What happens next (order-first) */}
-                {!showFastCheckoutSurface && !lnurlProbing && (
-                  <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
-                    <div className="text-sm font-medium text-[var(--text-primary)]">
-                      What happens next
-                    </div>
-                    <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--text-secondary)]">
-                      <li>
-                        1. Your order is sent to the merchant through Nostr.
-                      </li>
-                      <li>
-                        {verifiedZeroCostPickup
-                          ? "2. No payment is required. The merchant reviews the order and coordinates pickup."
-                          : isGuestCheckout
-                            ? "2. Pay the invoice shown here and send the receipt before closing this tab."
-                            : "2. The merchant reviews the order and replies with payment details."}
-                      </li>
-                      <li>
-                        {isGuestCheckout
-                          ? isPickupCheckout
-                            ? "3. The merchant can use your submitted email or phone only if guest recovery is needed."
-                            : "3. The merchant follows up using the phone and email contact details submitted at checkout."
-                          : "3. You track order updates from the merchant in your order history."}
-                      </li>
-                    </ul>
-                    {!wallets.loading && fastUnavailableReasons.length > 0 && (
-                      <div className="mt-4 border-t border-[var(--border)] pt-4">
-                        <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                          Zap out unavailable
-                        </div>
-                        <ul className="mt-3 space-y-2 text-xs leading-5 text-[var(--text-secondary)]">
-                          {fastUnavailableReasons.map((reason) => (
-                            <li key={reason}>- {reason}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {!wallets.loading &&
-                      !wallets.initializationError &&
-                      eligibleWallets.length === 0 && (
-                        <div className="mt-4 border-t border-[var(--border)] pt-4 text-xs text-[var(--text-muted)]">
-                          <Link
-                            to="/wallet"
-                            className="underline underline-offset-2 hover:text-[var(--text-secondary)]"
-                          >
-                            Add or connect a wallet
-                          </Link>{" "}
-                          to unlock zap out on future orders.
-                        </div>
-                      )}
-                  </div>
-                )}
-
                 {/* Order note */}
                 <div className="mt-6 grid gap-1.5">
                   <Label htmlFor="order-note">Order note (optional)</Label>
@@ -4986,10 +4707,10 @@ function CheckoutPage() {
                 )}
 
                 {/* Action buttons */}
-                <div className="mt-6 flex flex-wrap gap-3">
+                <div className="sticky bottom-[var(--market-fixed-footer-height,0px)] z-20 -mx-5 mt-6 flex flex-wrap gap-3 border-t border-[var(--border)] bg-[var(--surface)] px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:static sm:mx-0 sm:border-0 sm:p-0">
                   {!isGuestCheckout && directCheckoutEligible && (
                     <HoldToReleaseButton
-                      className="h-11 px-5 text-sm"
+                      className="h-11 w-full px-5 text-sm sm:w-auto"
                       disabled={
                         checkoutRecoveryIsChecking ||
                         checkoutRecoveryBlockingMessage !== null ||
@@ -5036,7 +4757,7 @@ function CheckoutPage() {
                     !fastEligible &&
                     manualInvoiceEligible && (
                       <Button
-                        className="h-11 px-5 text-sm"
+                        className="h-11 w-full px-5 text-sm sm:w-auto"
                         disabled={
                           checkoutRecoveryIsChecking ||
                           checkoutRecoveryBlockingMessage !== null ||
@@ -5046,13 +4767,13 @@ function CheckoutPage() {
                         onClick={() => void payNow()}
                       >
                         <OrderIcon className="h-4 w-4" />
-                        Send order and show invoice
+                        Send order
                       </Button>
                     )}
                   {pricingOnlyFastCheckoutBlocker &&
                     !directCheckoutEligible && (
                       <Button
-                        className="h-11 px-5 text-sm"
+                        className="h-11 w-full px-5 text-sm sm:w-auto"
                         disabled={pricingRefreshState === "refreshing"}
                         onClick={() => void refreshCheckoutPricing(true)}
                       >
@@ -5074,7 +4795,7 @@ function CheckoutPage() {
                     !fastEligible &&
                     (verifiedZeroCostPickup ? (
                       <Button
-                        className="h-11 px-5 text-sm"
+                        className="h-11 w-full px-5 text-sm sm:w-auto"
                         disabled={
                           checkoutRecoveryIsChecking ||
                           checkoutRecoveryBlockingMessage !== null ||
@@ -5094,7 +4815,7 @@ function CheckoutPage() {
                         variant={
                           pricingOnlyFastCheckoutBlocker ? "outline" : "primary"
                         }
-                        className="h-11 px-5 text-sm"
+                        className="h-11 w-full px-5 text-sm sm:w-auto"
                         disabled={hasUnpricedCheckoutItems}
                         onClick={() => setConnectOpen(true)}
                       >
@@ -5112,7 +4833,7 @@ function CheckoutPage() {
                           ? "outline"
                           : "primary"
                       }
-                      className="h-11 px-5 text-sm"
+                      className="h-11 w-full px-5 text-sm sm:w-auto"
                       disabled={
                         checkoutRecoveryIsChecking ||
                         checkoutRecoveryBlockingMessage !== null ||
@@ -5135,23 +4856,18 @@ function CheckoutPage() {
                             : "Send order"}
                     </Button>
                   )}
+                  {pickupHandoff?.mode === "organizer_handoff" && (
+                    <p className="w-full text-pretty text-xs leading-4 text-[var(--text-muted)]">
+                      When your order is ready, the merchant privately shares
+                      its items, quantities, and pickup code with the event
+                      organizer.
+                    </p>
+                  )}
                 </div>
               </div>
             </>
-          )}
+          }
         </section>
-
-        <OrderSummary
-          items={checkoutItems}
-          merchantPubkey={selectedMerchant!}
-          accountPubkey={draftOwnerIdentity}
-          authenticatedPubkey={signedBuyerPubkey}
-          shouldContinue={shouldContinueBuyerSession}
-          btcUsdRate={btcUsdRate}
-          availabilityByProductId={checkoutAvailability.availabilityByProductId}
-          pickupHandlerIdentity={pickupHandlerIdentity}
-          formatPrice={shopperPricing.formatPrice}
-        />
       </div>
 
       {lightningOverlay}
