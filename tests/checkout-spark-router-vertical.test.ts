@@ -21,6 +21,7 @@ import {
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
 import { checkoutSparkQuoteFixture } from "./support/checkout-spark-quote-fixture"
+import { withMockRouterInvoiceWitnesses } from "./support/checkout-spark-invoice-witness-fixture"
 
 const CREATED_AT = 1_800_000_000_000
 const RELAY = "wss://merchant.inbox.relay.dev"
@@ -92,8 +93,13 @@ function input(storage: MemoryStorage) {
         maxFeeSats: 24,
       },
     },
+    invoiceWitnesses: [],
     storage,
   }
+}
+
+async function readyInput(storage: MemoryStorage) {
+  return withMockRouterInvoiceWitnesses(input(storage), CREATED_AT / 1_000)
 }
 
 function fundingReceive() {
@@ -127,40 +133,43 @@ describe("checkout Spark router unfunded vertical flow", () => {
     const checkoutId = input(storage).checkoutId
     let recoveryWasDurableBeforePublish = false
 
-    const prepared = await prepareCheckoutSparkRouterFunding(input(storage), {
-      now: () => CREATED_AT + 1_000,
-      createWalletMaterial: () => ({
-        walletId: fundingReceive().walletId,
-        mnemonic: MNEMONIC,
-        accountNumber: 0,
-        network: "mainnet",
-      }),
-      openWallet: async () => undefined,
-      createFundingReceive: async () => fundingReceive(),
-      publishRecoveryHandoff: (handoff) =>
-        publishCheckoutSparkRecoveryHandoff({
-          ...handoff,
-          storage,
-          now: () => CREATED_AT + 1_000,
-          transport: {
-            recipientInboxRelays: [RELAY],
-            publishFn: (async () => {
-              const frozen = getCheckoutSparkRouterPreparation(
-                checkoutId,
-                storage
-              )
-              recoveryWasDurableBeforePublish =
-                frozen?.recoveryHandoffId !== null &&
-                frozen?.fundingInvoiceExposedAt === null &&
-                getCheckoutSparkRecoveryDelivery(
-                  frozen?.recoveryHandoffId ?? "",
-                  storage
-                ) !== null
-              return relayDelivery(true)
-            }) as never,
-          },
+    const prepared = await prepareCheckoutSparkRouterFunding(
+      await readyInput(storage),
+      {
+        now: () => CREATED_AT + 1_000,
+        createWalletMaterial: () => ({
+          walletId: fundingReceive().walletId,
+          mnemonic: MNEMONIC,
+          accountNumber: 0,
+          network: "mainnet",
         }),
-    })
+        openWallet: async () => undefined,
+        createFundingReceive: async () => fundingReceive(),
+        publishRecoveryHandoff: (handoff) =>
+          publishCheckoutSparkRecoveryHandoff({
+            ...handoff,
+            storage,
+            now: () => CREATED_AT + 1_000,
+            transport: {
+              recipientInboxRelays: [RELAY],
+              publishFn: (async () => {
+                const frozen = getCheckoutSparkRouterPreparation(
+                  checkoutId,
+                  storage
+                )
+                recoveryWasDurableBeforePublish =
+                  frozen?.recoveryHandoffId !== null &&
+                  frozen?.fundingInvoiceExposedAt === null &&
+                  getCheckoutSparkRecoveryDelivery(
+                    frozen?.recoveryHandoffId ?? "",
+                    storage
+                  ) !== null
+                return relayDelivery(true)
+              }) as never,
+            },
+          }),
+      }
+    )
 
     expect(recoveryWasDurableBeforePublish).toBe(true)
     expect(
@@ -257,7 +266,7 @@ describe("checkout Spark router unfunded vertical flow", () => {
   it("keeps the invoice hidden on zero ACK and retries the exact signed wrap", async () => {
     const storage = new MemoryStorage()
     await expect(
-      prepareCheckoutSparkRouterFunding(input(storage), {
+      prepareCheckoutSparkRouterFunding(await readyInput(storage), {
         now: () => CREATED_AT + 1_000,
         createWalletMaterial: () => ({
           walletId: fundingReceive().walletId,

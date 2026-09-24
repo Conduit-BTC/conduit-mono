@@ -94,6 +94,7 @@ function invoice(
 
 function input(context: SelectedProfileContext, shouldContinue = () => true) {
   return {
+    checkoutId: "checkout-recipient-invoice-1",
     recipientPubkey: context.profile.pubkey,
     accountPubkey: "a".repeat(64),
     authenticatedPubkey: "a".repeat(64),
@@ -133,6 +134,7 @@ describe("checkout Spark recipient invoice witness", () => {
     expect(fetchMetadata).toHaveBeenCalledWith(LUD16)
     expect(fetchInvoice).toHaveBeenCalledWith(CALLBACK, 5_000)
     expect(witness).toEqual({
+      checkoutId: "checkout-recipient-invoice-1",
       recipientPubkey: context.profile.pubkey,
       profileEventId: context.frontier?.eventId,
       profileEventCreatedAt: context.frontier?.eventCreatedAt,

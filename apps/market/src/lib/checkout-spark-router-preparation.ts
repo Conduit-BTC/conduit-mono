@@ -31,6 +31,10 @@ import type {
 } from "./spark-wallet"
 import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
 import type { CheckoutSparkQuoteAuthority } from "./checkout-spark-quote-authority"
+import {
+  assertCheckoutSparkRouterInvoiceWitnesses,
+  type CheckoutSparkPayoutInvoiceWitness,
+} from "./checkout-spark-recipient-invoice-witness"
 
 const STORAGE_KEY = "conduit:checkout-spark-router-preparations:v1"
 const MAX_STORED_PREPARATIONS = 64
@@ -74,6 +78,7 @@ export interface PrepareCheckoutSparkRouterFundingInput {
     BuildCheckoutSparkRouterObligationsInput,
     "network" | "nowSeconds"
   >
+  invoiceWitnesses: readonly CheckoutSparkPayoutInvoiceWitness[]
   storage?: CheckoutSparkRouterStorage | null
 }
 
@@ -538,6 +543,13 @@ export async function prepareCheckoutSparkRouterFunding(
   ) {
     throw new Error("Checkout Spark obligations differ from the signed quote.")
   }
+  assertCheckoutSparkRouterInvoiceWitnesses({
+    checkoutId: input.checkoutId,
+    network: input.network,
+    nowSeconds: Math.floor(preparedAt / 1_000),
+    obligations: routerObligations.obligations,
+    witnesses: input.invoiceWitnesses,
+  })
   const requiredNetSats = routerObligations.requiredNetSats
   const wallet = createWalletMaterial(input.network)
   if (wallet.network !== input.network) {

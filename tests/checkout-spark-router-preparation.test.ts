@@ -10,6 +10,7 @@ import {
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
 import { checkoutSparkQuoteFixture } from "./support/checkout-spark-quote-fixture"
+import { withMockRouterInvoiceWitnesses } from "./support/checkout-spark-invoice-witness-fixture"
 
 import {
   getCheckoutSparkRouterPreparation,
@@ -87,7 +88,15 @@ function preparationInput() {
         maxFeeSats: 24,
       },
     },
+    invoiceWitnesses: [],
   }
+}
+
+async function readyInput(checkoutId = preparationInput().checkoutId) {
+  return withMockRouterInvoiceWitnesses(
+    { ...preparationInput(), checkoutId },
+    CREATED_AT / 1_000
+  )
 }
 
 function walletMaterial() {
@@ -149,20 +158,26 @@ describe("checkout Spark router preparation", () => {
     let closeCalls = 0
     let publishCalls = 0
     const input = preparationInput()
+    const delayedInput = {
+      ...input,
+      routerObligationInputs: {
+        ...input.routerObligationInputs,
+        commerce: [
+          {
+            ...input.routerObligationInputs.commerce[0]!,
+            paymentRequest: invoice(1_000, 1, CREATED_AT / 1_000 - 2_650),
+          },
+        ],
+      },
+    }
     await expect(
       prepareCheckoutSparkRouterFunding(
         {
-          ...input,
+          ...(await withMockRouterInvoiceWitnesses(
+            delayedInput,
+            CREATED_AT / 1_000
+          )),
           storage: new MemoryStorage(),
-          routerObligationInputs: {
-            ...input.routerObligationInputs,
-            commerce: [
-              {
-                ...input.routerObligationInputs.commerce[0]!,
-                paymentRequest: invoice(1_000, 1, CREATED_AT / 1_000 - 2_650),
-              },
-            ],
-          },
         },
         {
           now: () => CREATED_AT,
@@ -193,7 +208,7 @@ describe("checkout Spark router preparation", () => {
     let closeCalls = 0
     await expect(
       prepareCheckoutSparkRouterFunding(
-        { ...preparationInput(), storage },
+        { ...(await readyInput()), storage },
         {
           now: () => currentTime,
           createWalletMaterial: () => walletMaterial(),
@@ -272,12 +287,61 @@ describe("checkout Spark router preparation", () => {
     expect(walletCreateCalls).toBe(0)
   })
 
+  it("blocks valid same-amount invoice substitutions before creating a wallet", async () => {
+    let walletCreateCalls = 0
+    const dependencies = {
+      now: () => CREATED_AT,
+      createWalletMaterial: () => {
+        walletCreateCalls += 1
+        return walletMaterial()
+      },
+    }
+
+    const merchantInput = await readyInput()
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        {
+          ...merchantInput,
+          routerObligationInputs: {
+            ...merchantInput.routerObligationInputs,
+            commerce: [
+              {
+                ...merchantInput.routerObligationInputs.commerce[0]!,
+                paymentRequest: invoice(1_000, 3),
+              },
+            ],
+          },
+        },
+        dependencies
+      )
+    ).rejects.toThrow("witnesses do not match")
+
+    const conduitInput = await readyInput()
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        {
+          ...conduitInput,
+          routerObligationInputs: {
+            ...conduitInput.routerObligationInputs,
+            conduit: {
+              ...conduitInput.routerObligationInputs.conduit,
+              paymentRequest: invoice(111, 3),
+            },
+          },
+        },
+        dependencies
+      )
+    ).rejects.toThrow("witnesses do not match")
+
+    expect(walletCreateCalls).toBe(0)
+  })
+
   it("persists the frozen plan and exact recovery handoff before exposing funding", async () => {
     const storage = new MemoryStorage()
     const calls: string[] = []
 
     const result = await prepareCheckoutSparkRouterFunding(
-      { ...preparationInput(), storage },
+      { ...(await readyInput()), storage },
       {
         now: () => CREATED_AT,
         createWalletMaterial: () => walletMaterial(),
@@ -344,7 +408,7 @@ describe("checkout Spark router preparation", () => {
 
     await expect(
       prepareCheckoutSparkRouterFunding(
-        { ...preparationInput(), storage },
+        { ...(await readyInput()), storage },
         {
           now: () => CREATED_AT,
           createWalletMaterial: () => walletMaterial(),
@@ -378,7 +442,7 @@ describe("checkout Spark router preparation", () => {
 
     await expect(
       prepareCheckoutSparkRouterFunding(
-        { ...preparationInput(), storage },
+        { ...(await readyInput()), storage },
         {
           now: () => CREATED_AT,
           createWalletMaterial: () => walletMaterial(),
@@ -407,7 +471,7 @@ describe("checkout Spark router preparation", () => {
     const fractionalNow = CREATED_AT + 375
     const prepared = await prepareCheckoutSparkRouterFunding(
       {
-        ...preparationInput(),
+        ...(await readyInput()),
         storage,
       },
       {
@@ -430,8 +494,7 @@ describe("checkout Spark router preparation", () => {
     await expect(
       prepareCheckoutSparkRouterFunding(
         {
-          ...preparationInput(),
-          checkoutId: "checkout-mismatched-receive",
+          ...(await readyInput("checkout-mismatched-receive")),
           storage: new MemoryStorage(),
         },
         {
