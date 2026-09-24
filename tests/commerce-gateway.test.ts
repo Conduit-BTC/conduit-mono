@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent, nip19 } from "@nostr-dev-kit/ndk"
+import { NDKEvent, NDKUser, nip19, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
+  buildCheckoutSparkRecoveryRumor,
   cacheParsedOrderMessage,
+  createCheckoutSparkRecoveryPayload,
   getBuyerConversationList,
   getCachedBuyerConversationList,
   getCachedMerchantConversationList,
@@ -22,11 +24,13 @@ import {
   getMarketplaceProductsProgressive,
   getMerchantConversationList,
   getMerchantStorefront,
+  openCheckoutSparkRecoveryWrap,
   getProductImageCandidates,
   getProductDetail,
   getProductsByIds,
   getCachedProductsByIds,
   getProfiles,
+  freezeCheckoutSparkPlan,
   __resetRelayHealth,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
@@ -4817,6 +4821,165 @@ describe("commerce gateway", () => {
     expect(strictHandoffRead.messages.map((message) => message.type)).toEqual([
       "organizer_fulfillment_receipt",
     ])
+    expect(unwrapCalls).toBe(2)
+  })
+
+  it("leaves checkout Spark recovery wraps for the dedicated reader without treating them as order failures", async () => {
+    const plan = freezeCheckoutSparkPlan({
+      checkoutId: "checkout-recovery-cache-isolation",
+      orderId: "order-recovery-cache-isolation",
+      merchantPubkey: MERCHANT_A_PUBKEY,
+      walletId: "spark-checkout-wallet",
+      network: "mainnet",
+      createdAt: FIXED_NOW,
+      takeoverAt: FIXED_NOW + 120_000,
+      funding: {
+        requestId: "receive-recovery-cache-isolation",
+        paymentRequest: "lnbc-router-funding",
+        paymentHash: "b".repeat(64),
+        requiredNetSats: 1_235,
+        grossFundingSats: 1_240,
+        createdAt: FIXED_NOW,
+        expiresAt: FIXED_NOW + 60_000,
+      },
+      obligations: [
+        {
+          kind: "merchant",
+          recipientId: MERCHANT_A_PUBKEY,
+          paymentRequest: "lnbc-merchant",
+          amountSats: 1_000,
+          maxFeeSats: 100,
+        },
+        {
+          kind: "conduit",
+          recipientId: "conduithodlings@strike.me",
+          paymentRequest: "lnbc-conduit",
+          amountSats: 111,
+          maxFeeSats: 24,
+        },
+      ],
+      commerceQuote: {
+        commerceTotalSats: 1_000,
+        lines: [
+          {
+            productCoordinate: `30402:${MERCHANT_A_PUBKEY}:recovery-fixture`,
+            productEventId: "d".repeat(64),
+            merchantPubkey: MERCHANT_A_PUBKEY,
+            quantity: 1,
+            unitMerchandiseSats: 1_000,
+            unitShippingSats: 0,
+          },
+        ],
+      },
+    })
+    const rumor = buildCheckoutSparkRecoveryRumor(
+      createCheckoutSparkRecoveryPayload({
+        plan,
+        senderPubkey: getPublicKey(MERCHANT_B_SECRET),
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        accountNumber: 0,
+        preparedAt: FIXED_NOW + 1_000,
+      })
+    )
+    const wrappedEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.GIFT_WRAP,
+        created_at: Math.floor(FIXED_NOW / 1_000),
+        content: "opaque ciphertext",
+        tags: [["p", MERCHANT_A_PUBKEY]],
+      },
+      new Uint8Array(32).fill(3)
+    )
+    let unwrapCalls = 0
+    let cachedDirectCount = 0
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async () => {
+        unwrapCalls += 1
+        return rumor
+      },
+      putCachedDirectMessages: async (rows) => {
+        cachedDirectCount += rows.length
+      },
+    })
+
+    const first = await getMerchantConversationList({
+      principalPubkey: MERCHANT_A_PUBKEY,
+    })
+    const second = await getMerchantConversationList({
+      principalPubkey: MERCHANT_A_PUBKEY,
+    })
+
+    expect(first.data).toEqual([])
+    expect(second.data).toEqual([])
+    expect(first.meta.decryptFailures).toBeUndefined()
+    expect(second.meta.decryptFailures).toBeUndefined()
+    expect(cachedOrderMessages).toEqual([])
+    expect(cachedDirectCount).toBe(0)
+    // Generic reads classify the wrap once; Merchant's dedicated recovery
+    // reader must still discover the same exact relay ciphertext.
+    expect(unwrapCalls).toBe(1)
+    const recovery = await openCheckoutSparkRecoveryWrap({
+      signedRecipientWrap: wrappedEvent,
+      signer: {
+        user: async () => new NDKUser({ pubkey: MERCHANT_A_PUBKEY }),
+      } as NDKSigner,
+      giftUnwrap: async () => rumor,
+    })
+    expect(recovery.wrapId).toBe(wrappedEvent.id)
+    expect(recovery.payload.plan.orderId).toBe(plan.orderId)
+    expect(unwrapCalls).toBe(1)
+  })
+
+  it("keeps malformed recovery claims retryable in the generic inbox", async () => {
+    const wrappedEvent = {
+      id: "malformed-checkout-recovery-wrap",
+      kind: EVENT_KINDS.GIFT_WRAP,
+      pubkey: "wrapper",
+      created_at: Math.floor(FIXED_NOW / 1_000),
+      content: "opaque ciphertext",
+      tags: [["p", MERCHANT_A_PUBKEY]],
+    }
+    let unwrapCalls = 0
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async () => {
+        unwrapCalls += 1
+        return {
+          kind: EVENT_KINDS.ORDER,
+          tags: [
+            ["p", MERCHANT_A_PUBKEY],
+            ["type", "checkout_spark_recovery"],
+          ],
+          content: "{}",
+        } as never
+      },
+    })
+
+    const first = await getMerchantConversationList({
+      principalPubkey: MERCHANT_A_PUBKEY,
+    })
+    const second = await getMerchantConversationList({
+      principalPubkey: MERCHANT_A_PUBKEY,
+    })
+
+    expect(first.data).toEqual([])
+    expect(second.data).toEqual([])
+    expect(first.meta.decryptFailures).toEqual([
+      { wrapId: wrappedEvent.id, reason: "malformed" },
+    ])
+    expect(second.meta.decryptFailures).toEqual(first.meta.decryptFailures)
     expect(unwrapCalls).toBe(2)
   })
 

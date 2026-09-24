@@ -14,6 +14,7 @@ import {
   CheckoutSparkRepositoryConflictError,
   type CheckoutSparkRepositorySnapshot,
 } from "./checkout-spark-repository"
+import { hasCheckoutSparkProviderSendWindow } from "./checkout-spark-invoice-expiry"
 
 type ObligationEvidence = Extract<CheckoutSparkEvidence, { type: "obligation" }>
 
@@ -200,6 +201,19 @@ function currentResult(
   }
 }
 
+function invoiceWindowWait(
+  state: CheckoutSparkReconciliation
+): CheckoutSparkOutgoingStepResult {
+  return {
+    state,
+    nextAction: {
+      type: "wait",
+      reason: "obligation_invoice_window_insufficient",
+    },
+    sendAttempted: false,
+  }
+}
+
 function hasSendAuthority(
   state: CheckoutSparkReconciliation,
   actor: CheckoutSparkActor,
@@ -306,6 +320,14 @@ async function step(
   if (!hasSendAuthority(state, input.actor, input.now())) {
     return currentResult(state, input, false)
   }
+  if (
+    !hasCheckoutSparkProviderSendWindow({
+      paymentRequest: obligation.paymentRequest,
+      nowMs: input.now(),
+    })
+  ) {
+    return invoiceWindowWait(state)
+  }
 
   let preflight: Awaited<ReturnType<CheckoutSparkOutgoingProvider["preflight"]>>
   try {
@@ -329,6 +351,14 @@ async function step(
   if (!hasSendAuthority(state, input.actor, input.now())) {
     return currentResult(state, input, false)
   }
+  if (
+    !hasCheckoutSparkProviderSendWindow({
+      paymentRequest: obligation.paymentRequest,
+      nowMs: input.now(),
+    })
+  ) {
+    return invoiceWindowWait(state)
+  }
 
   // Persist uncertainty before crossing the irreversible provider boundary.
   // If the tab dies between this save and send, recovery must not infer that
@@ -339,14 +369,22 @@ async function step(
     observationTime(state, input.now())
   )
   state = await persist(possibleSend)
-  if (!hasSendAuthority(state, input.actor, input.now())) {
+  const sendAt = input.now()
+  const stillAuthorized = hasSendAuthority(state, input.actor, sendAt)
+  const invoiceReady = hasCheckoutSparkProviderSendWindow({
+    paymentRequest: obligation.paymentRequest,
+    nowMs: sendAt,
+  })
+  if (!stillAuthorized || !invoiceReady) {
     // This invocation has not called `send`. If it is still alive after the
     // durable write, it can clear its own intent; a crash in this tiny gap
     // intentionally leaves ambiguity rather than risking a duplicate send.
     state = await persist(
       clearOwnUnsentMarker(state, position, observationTime(state, input.now()))
     )
-    return currentResult(state, input, false)
+    return stillAuthorized
+      ? invoiceWindowWait(state)
+      : currentResult(state, input, false)
   }
 
   let sent: CheckoutSparkOutgoingObservation | CheckoutSparkKnownNotSent

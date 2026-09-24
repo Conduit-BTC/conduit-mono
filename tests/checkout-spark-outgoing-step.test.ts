@@ -2,6 +2,14 @@ import { describe, expect, it } from "bun:test"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 
 import { ConduitDB } from "@conduit/core/db"
+import {
+  bolt11PaymentHashField,
+  bolt11PlainDescriptionField,
+} from "./support/bolt11-fixture"
+import {
+  bolt11PaymentSecretField,
+  makeSignedBolt11Fixture,
+} from "./support/signed-bolt11-fixture"
 
 import {
   applyCheckoutSparkEvidence,
@@ -21,6 +29,22 @@ import {
 
 const CREATED_AT = 1_800_000_000_000
 
+function invoice(
+  amountSats: number,
+  paymentHashByte: number,
+  createdAt = CREATED_AT / 1_000
+): string {
+  return makeSignedBolt11Fixture({
+    hrp: `lnbc${amountSats * 10}n`,
+    createdAt,
+    fields: [
+      bolt11PaymentHashField(new Uint8Array(32).fill(paymentHashByte)),
+      bolt11PaymentSecretField(),
+      bolt11PlainDescriptionField(),
+    ],
+  })
+}
+
 async function withDatabase(
   run: (
     repository: DexieCheckoutSparkRepository,
@@ -39,7 +63,9 @@ async function withDatabase(
   }
 }
 
-function fundedState(): CheckoutSparkReconciliation {
+function fundedState(
+  merchantInvoiceCreatedAt = CREATED_AT / 1_000
+): CheckoutSparkReconciliation {
   const plan = freezeCheckoutSparkPlan({
     checkoutId: "checkout-1",
     orderId: "order-1",
@@ -61,14 +87,14 @@ function fundedState(): CheckoutSparkReconciliation {
       {
         kind: "merchant",
         recipientId: "a".repeat(64),
-        paymentRequest: "lnbc-merchant",
+        paymentRequest: invoice(1_000, 1, merchantInvoiceCreatedAt),
         amountSats: 1_000,
         maxFeeSats: 100,
       },
       {
         kind: "conduit",
         recipientId: "conduit-test-recipient",
-        paymentRequest: "lnbc-conduit",
+        paymentRequest: invoice(111, 2),
         amountSats: 111,
         maxFeeSats: 24,
       },
@@ -304,6 +330,53 @@ describe("checkout Spark one-obligation step", () => {
     expect(run.saves).toBe(3)
   })
 
+  it("settles commerce before Conduit and never replays commerce after a fee-leg delay", async () => {
+    const run = harness()
+
+    run.setPreflightState("fee_over_cap")
+    const blockedCommerce = await run.step()
+    expect(blockedCommerce.sendAttempted).toBe(false)
+    expect(run.sends).toHaveLength(0)
+    expect(blockedCommerce.state.obligations.map((item) => item.state)).toEqual(
+      ["not_found", "unreconciled"]
+    )
+
+    run.setPreflightState("ready")
+    const settledCommerce = await run.step()
+    expect(settledCommerce.state.obligations.map((item) => item.state)).toEqual(
+      ["paid", "unreconciled"]
+    )
+    expect(run.sends.map((target) => target.obligation.kind)).toEqual([
+      "merchant",
+    ])
+
+    run.setPreflightState("fee_over_cap")
+    const blockedFee = await run.step()
+    expect(blockedFee.sendAttempted).toBe(false)
+    expect(blockedFee.state.obligations.map((item) => item.state)).toEqual([
+      "paid",
+      "not_found",
+    ])
+    expect(run.sends.map((target) => target.obligation.kind)).toEqual([
+      "merchant",
+    ])
+
+    run.setPreflightState("ready")
+    const settledFee = await run.step()
+    expect(settledFee.state.obligations.map((item) => item.state)).toEqual([
+      "paid",
+      "paid",
+    ])
+    expect(run.sends.map((target) => target.obligation.kind)).toEqual([
+      "merchant",
+      "conduit",
+    ])
+
+    const complete = await run.step()
+    expect(complete.sendAttempted).toBe(false)
+    expect(run.sends).toHaveLength(2)
+  })
+
   it.each(["fee_over_cap", "unavailable"] as const)(
     "keeps an unpaid obligation retryable when fee preflight is %s",
     async (preflightState) => {
@@ -456,6 +529,75 @@ describe("checkout Spark one-obligation step", () => {
     expect(shopper.state.obligations[0]!.state).toBe("not_found")
     expect(run.saves).toBe(1)
     expect(run.sends).toHaveLength(0)
+  })
+
+  it("does not preflight or send a leg with less than the provider window remaining", async () => {
+    const run = harness(fundedState(CREATED_AT / 1_000 - 3_540))
+    const result = await run.step()
+    expect(result.nextAction).toEqual({
+      type: "wait",
+      reason: "obligation_invoice_window_insufficient",
+    })
+    expect(result.sendAttempted).toBe(false)
+    expect(result.state.obligations[0]!.state).toBe("not_found")
+    expect(run.preflights).toHaveLength(0)
+    expect(run.sends).toHaveLength(0)
+    const again = await run.step()
+    expect(again.sendAttempted).toBe(false)
+    expect(run.sends).toHaveLength(0)
+  })
+
+  it("rechecks invoice lifetime after fee preflight before persisting send intent", async () => {
+    const run = harness(fundedState(CREATED_AT / 1_000 - 3_480))
+    run.setNow(CREATED_AT + 100)
+    run.onPreflight(() => run.setNow(CREATED_AT + 60_000))
+    const result = await run.step("merchant")
+    expect(result.nextAction).toEqual({
+      type: "wait",
+      reason: "obligation_invoice_window_insufficient",
+    })
+    expect(result.state.obligations[0]!.state).toBe("not_found")
+    expect(run.saves).toBe(1)
+    expect(run.sends).toHaveLength(0)
+  })
+
+  it("clears only its own unsent marker when invoice lifetime expires during write-ahead save", async () => {
+    const initial = fundedState(CREATED_AT / 1_000 - 3_480)
+    const memory = memoryStore(initial)
+    let now = CREATED_AT + 100
+    let sends = 0
+    memory.onSave((count) => {
+      if (count === 2) now = CREATED_AT + 60_000
+    })
+    const input = {
+      checkoutId: initial.plan.checkoutId,
+      planDigest: initial.plan.planDigest,
+      actor: "merchant" as const,
+      now: () => now,
+      store: memory.store,
+      provider: {
+        preflight: readyPreflight,
+        async reconcile(target: CheckoutSparkOutgoingTarget) {
+          return observation(target, "not_found")
+        },
+        async send(target: CheckoutSparkOutgoingTarget) {
+          sends += 1
+          return observation(target, "paid")
+        },
+      },
+    }
+    const result = await runCheckoutSparkOutgoingStep(input)
+    expect(result.nextAction).toEqual({
+      type: "wait",
+      reason: "obligation_invoice_window_insufficient",
+    })
+    expect(result.state.obligations[0]!.state).toBe("not_found")
+    expect(memory.saves).toBe(3)
+    expect(sends).toBe(0)
+
+    const again = await runCheckoutSparkOutgoingStep(input)
+    expect(again.sendAttempted).toBe(false)
+    expect(sends).toBe(0)
   })
 
   it("clears its own unsent marker if takeover occurs during the durable save", async () => {

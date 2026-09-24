@@ -1027,8 +1027,11 @@ function resolvedCheckoutResult(
   return { status: "ambiguous" }
 }
 
-function validateCheckoutReceiveInput(
-  request: SparkCheckoutReceiveInput
+function validateCheckoutReceiveTerms(
+  request: Pick<
+    SparkCheckoutReceiveInput,
+    "requiredNetSats" | "grossFundingSats" | "expirySecs"
+  >
 ): void {
   if (
     !Number.isSafeInteger(request.requiredNetSats) ||
@@ -1049,11 +1052,19 @@ function validateCheckoutReceiveInput(
   }
 }
 
+function validateCheckoutReceiveInput(
+  request: SparkCheckoutReceiveInput
+): void {
+  validateCheckoutReceiveTerms(request)
+  if (typeof request.description !== "string") {
+    throw new Error("Checkout receive description is invalid.")
+  }
+}
+
 function validateCheckoutReceiveRequest(
   request: SparkCheckoutReceiveRequest
 ): void {
-  validateCheckoutReceiveInput({
-    description: "",
+  validateCheckoutReceiveTerms({
     requiredNetSats: request.requiredNetSats,
     grossFundingSats: request.grossFundingSats,
     expirySecs: request.expirySecs,

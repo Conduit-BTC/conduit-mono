@@ -51,6 +51,7 @@ export type StagedOrderLifecycleInput = Pick<
   | "buyerIdentityKind"
   | "merchantPubkey"
   | "checkoutMode"
+  | "checkoutSparkRouterBinding"
   | "publicZapSigner"
   | "publicZapFallback"
   | "merchantLightningAddress"
@@ -202,6 +203,7 @@ function immutableLifecycleSnapshot(
     buyerIdentityKind: lifecycle.buyerIdentityKind,
     merchantPubkey: lifecycle.merchantPubkey,
     checkoutMode: lifecycle.checkoutMode,
+    checkoutSparkRouterBinding: lifecycle.checkoutSparkRouterBinding,
     publicZapSigner: lifecycle.publicZapSigner,
     publicZapFallback: lifecycle.publicZapFallback,
     merchantLightningAddress: lifecycle.merchantLightningAddress,

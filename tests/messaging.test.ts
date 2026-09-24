@@ -357,6 +357,78 @@ describe("unwrapGiftWrap", () => {
     })
   })
 
+  it("defers a machine-only checkout recovery wrap without exposing its rumor", async () => {
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      rumor(EVENT_KINDS.ORDER, {
+        tags: [
+          ["p", "recipient"],
+          ["type", "checkout_spark_recovery"],
+          ["order", "order-1"],
+          ["checkout", "checkout-1"],
+          ["handoff", "a".repeat(64)],
+        ],
+        content: JSON.stringify({ mnemonic: "machine-only recovery material" }),
+      })
+    const outcome = await unwrapGiftWrap(wrap("w-recovery"), signer, {
+      giftUnwrap,
+    })
+
+    expect(outcome).toEqual({
+      status: "deferred_machine",
+      wrapId: "w-recovery",
+      kind: EVENT_KINDS.ORDER,
+    })
+    expect(JSON.stringify(outcome)).not.toContain(
+      "machine-only recovery material"
+    )
+  })
+
+  it("does not defer an incomplete checkout recovery envelope", async () => {
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      rumor(EVENT_KINDS.ORDER, {
+        tags: [
+          ["p", "recipient"],
+          ["type", "checkout_spark_recovery"],
+        ],
+        content: "{}",
+      })
+
+    expect(
+      await unwrapGiftWrap(wrap("w-incomplete-recovery"), signer, {
+        giftUnwrap,
+      })
+    ).toEqual({
+      status: "decrypt_failed",
+      wrapId: "w-incomplete-recovery",
+      reason: "malformed",
+    })
+  })
+
+  it("rejects a recovery marker mixed into ordinary order type tags", async () => {
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      rumor(EVENT_KINDS.ORDER, {
+        tags: [
+          ["p", "recipient"],
+          ["type", "order"],
+          ["type", "checkout_spark_recovery"],
+          ["order", "order-1"],
+        ],
+        content: JSON.stringify({ mnemonic: "machine-only recovery material" }),
+      })
+
+    const outcome = await unwrapGiftWrap(wrap("w-mixed-recovery"), signer, {
+      giftUnwrap,
+    })
+    expect(outcome).toEqual({
+      status: "decrypt_failed",
+      wrapId: "w-mixed-recovery",
+      reason: "malformed",
+    })
+    expect(JSON.stringify(outcome)).not.toContain(
+      "machine-only recovery material"
+    )
+  })
+
   it("reports a partial Conduit kind-16 envelope as content-free malformed", async () => {
     const giftUnwrap: GiftUnwrapFn = async () =>
       rumor(EVENT_KINDS.ORDER, {

@@ -701,6 +701,13 @@ export type OrderCheckoutMode =
   | "pay_later"
   | "external_wallet"
 
+/** Exact local-only plan identity; never included in the encrypted order payload. */
+export interface OrderCheckoutSparkRouterBinding {
+  checkoutId: string
+  planDigest: string
+  walletId: string
+}
+
 export type OrderPublicZapSigner = "anon" | "shopper"
 
 export type OrderBuyerIdentityKind = "signed_in" | "guest_ephemeral"
@@ -875,6 +882,8 @@ export interface OrderLifecycle {
   buyerIdentityKind?: OrderBuyerIdentityKind
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode
+  /** When present, legacy direct-payment retries must not pay this order. */
+  checkoutSparkRouterBinding?: OrderCheckoutSparkRouterBinding
   publicZapSigner?: OrderPublicZapSigner
   /** A public anon-zap attempt failed before invoice issuance and continued privately. */
   publicZapFallback?: boolean

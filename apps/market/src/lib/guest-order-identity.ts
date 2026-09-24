@@ -165,7 +165,9 @@ function createEphemeralOrderSigner(
         if (
           eventOrderId !== orderId ||
           recipient !== merchantPubkey ||
-          (type !== "order" && type !== "payment_proof")
+          (type !== "order" &&
+            type !== "payment_proof" &&
+            type !== "checkout_spark_recovery")
         ) {
           throw new Error("Guest signer cannot sign outside its order scope.")
         }

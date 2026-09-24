@@ -19,8 +19,26 @@ import {
 } from "./event-market-adapter"
 import { assertCartPickupHandlerReady } from "./pickup-handoff"
 
+export type CheckoutShippingOptionEvidence =
+  | { status: "verified"; options: readonly ParsedShippingOption[] }
+  | { status: "not_required"; options: readonly [] }
+  | { status: "unavailable_order_first"; options: readonly [] }
+
 export type CheckoutAuthorizationResult =
-  { status: "ok"; items: CartItem[] } | { status: "changed" }
+  | {
+      status: "ok"
+      items: CartItem[]
+      /** Products returned by the checkout's live listing/availability read. */
+      listingReadProducts: readonly Product[]
+      /** Products chosen by fulfillment resolution and used to rebuild items.
+       * A pickup catalog can supply a different product projection. A later
+       * quote must reconcile both sources before treating either as authority. */
+      fulfillmentResolvedProducts: readonly Product[]
+      /** Preserve the source read state; [] alone cannot mean both no option
+       * was needed and an order-first shipping lookup failed. */
+      shippingOptionEvidence: CheckoutShippingOptionEvidence
+    }
+  | { status: "changed" }
 
 export type CheckoutAuthorizationMode = "direct_payment" | "order_first"
 
@@ -116,6 +134,12 @@ export async function authorizeCurrentCheckoutItems(input: {
     return {
       status: "ok",
       items: prepareCartFulfillment(refreshedRawItems, []).items,
+      listingReadProducts: input.refreshedProducts,
+      fulfillmentResolvedProducts: resolvedProducts,
+      shippingOptionEvidence: {
+        status: "unavailable_order_first",
+        options: [],
+      },
     }
   }
   const prepared = prepareCartFulfillment(refreshedRawItems, shippingOptions)
@@ -137,5 +161,14 @@ export async function authorizeCurrentCheckoutItems(input: {
       }))
   await authorizePickupHandlers(prepared.items)
 
-  return { status: "ok", items: prepared.items }
+  return {
+    status: "ok",
+    items: prepared.items,
+    listingReadProducts: input.refreshedProducts,
+    fulfillmentResolvedProducts: resolvedProducts,
+    shippingOptionEvidence:
+      shippingCoordinates.length === 0
+        ? { status: "not_required", options: [] }
+        : { status: "verified", options: shippingOptions },
+  }
 }

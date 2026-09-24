@@ -2,7 +2,8 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 
 const HEX_64 = /^[0-9a-f]{64}$/
-const PLAN_DIGEST_DOMAIN = "conduit:checkout-spark-plan:v1"
+const PLAN_DIGEST_DOMAIN_V1 = "conduit:checkout-spark-plan:v1"
+const PLAN_DIGEST_DOMAIN_V2 = "conduit:checkout-spark-plan:v2"
 const OBLIGATION_ID_DOMAIN = "conduit:checkout-spark-obligation:v1"
 const OUTGOING_ID_DOMAIN = "conduit:checkout-spark-outgoing:v1"
 const MAX_OPAQUE_ID_LENGTH = 256
@@ -72,6 +73,25 @@ export interface CheckoutSparkObligationPlanInput {
   maxFeeSats: number
 }
 
+/** Public signed-source and price facts that authorized one checkout quote. */
+export interface CheckoutSparkCommerceQuoteLine {
+  productCoordinate: string
+  productEventId: string
+  merchantPubkey: string
+  quantity: number
+  unitMerchandiseSats: number
+  unitShippingSats: number
+  shippingOption?: {
+    coordinate: string
+    eventId: string
+  }
+}
+
+export interface CheckoutSparkCommerceQuote {
+  commerceTotalSats: number
+  lines: readonly CheckoutSparkCommerceQuoteLine[]
+}
+
 export interface FreezeCheckoutSparkPlanInput {
   checkoutId: string
   orderId: string
@@ -82,6 +102,8 @@ export interface FreezeCheckoutSparkPlanInput {
   takeoverAt: number
   funding: CheckoutSparkFundingPlanInput
   obligations: readonly CheckoutSparkObligationPlanInput[]
+  /** Required by new checkout preparations; absent only for legacy v1 restore. */
+  commerceQuote?: CheckoutSparkCommerceQuote
 }
 
 export type CheckoutSparkFundingPlan = CheckoutSparkFundingPlanInput
@@ -93,7 +115,7 @@ export interface CheckoutSparkObligationPlan extends CheckoutSparkObligationPlan
 }
 
 export interface CheckoutSparkPlan {
-  schemaVersion: 1
+  schemaVersion: 1 | 2
   planDigest: string
   checkoutId: string
   orderId: string
@@ -104,6 +126,7 @@ export interface CheckoutSparkPlan {
   takeoverAt: number
   funding: CheckoutSparkFundingPlan
   obligations: readonly CheckoutSparkObligationPlan[]
+  commerceQuote?: CheckoutSparkCommerceQuote
 }
 
 export type CheckoutSparkActor = "shopper" | "merchant"
@@ -244,6 +267,7 @@ export type CheckoutSparkNextAction =
         | "execution_authority_not_started"
         | "fee_exceeds_frozen_limit"
         | "fee_preflight_unavailable"
+        | "obligation_invoice_window_insufficient"
     }
   | { type: "ready_to_retire" }
 
@@ -289,6 +313,124 @@ function normalizeTimestamp(value: number, label: string): number {
     throw new Error(`${label} is invalid.`)
   }
   return value
+}
+
+function normalizeCommerceCoordinate(
+  value: string,
+  kind: 30402 | 30406,
+  label: string
+): string {
+  const coordinate = normalizeBoundedString(
+    value,
+    label,
+    MAX_RECIPIENT_ID_LENGTH
+  )
+  if (
+    coordinate !== value ||
+    !new RegExp(`^${kind}:[0-9a-f]{64}:.+$`).test(coordinate)
+  ) {
+    throw new Error(`${label} is invalid.`)
+  }
+  return coordinate
+}
+
+function normalizeCommerceQuote(
+  input: CheckoutSparkCommerceQuote,
+  merchantPubkey: string
+): CheckoutSparkCommerceQuote {
+  const commerceTotalSats = normalizeSats(
+    input.commerceTotalSats,
+    "Commerce quote total"
+  )
+  if (!Array.isArray(input.lines) || input.lines.length === 0) {
+    throw new Error("Checkout Spark commerce quote needs product lines.")
+  }
+  const lines = input.lines.map((candidate) => {
+    const productCoordinate = normalizeCommerceCoordinate(
+      candidate.productCoordinate,
+      30402,
+      "Commerce product coordinate"
+    )
+    const lineMerchant = normalizeHex64(
+      candidate.merchantPubkey,
+      "Commerce merchant"
+    )
+    if (
+      lineMerchant !== merchantPubkey ||
+      !productCoordinate.startsWith(`30402:${lineMerchant}:`) ||
+      !Number.isSafeInteger(candidate.quantity) ||
+      candidate.quantity <= 0
+    ) {
+      throw new Error("Checkout Spark commerce line authority is invalid.")
+    }
+    const shippingOption = candidate.shippingOption
+      ? Object.freeze({
+          coordinate: normalizeCommerceCoordinate(
+            candidate.shippingOption.coordinate,
+            30406,
+            "Commerce shipping coordinate"
+          ),
+          eventId: normalizeHex64(
+            candidate.shippingOption.eventId,
+            "Commerce shipping event"
+          ),
+        })
+      : undefined
+    const unitShippingSats = normalizeSats(
+      candidate.unitShippingSats,
+      "Commerce unit shipping",
+      { allowZero: true }
+    )
+    if (unitShippingSats > 0 && !shippingOption) {
+      throw new Error("Checkout Spark priced shipping lacks signed evidence.")
+    }
+    return Object.freeze({
+      productCoordinate,
+      productEventId: normalizeHex64(
+        candidate.productEventId,
+        "Commerce product event"
+      ),
+      merchantPubkey: lineMerchant,
+      quantity: candidate.quantity,
+      unitMerchandiseSats: normalizeSats(
+        candidate.unitMerchandiseSats,
+        "Commerce unit merchandise",
+        { allowZero: true }
+      ),
+      unitShippingSats,
+      ...(shippingOption ? { shippingOption } : {}),
+    })
+  })
+  if (
+    new Set(lines.map((line) => line.productCoordinate)).size !== lines.length
+  ) {
+    throw new Error("Checkout Spark commerce quote repeats a product.")
+  }
+  const total = lines.reduce(
+    (sum, line) =>
+      sum +
+      BigInt(line.quantity) *
+        (BigInt(line.unitMerchandiseSats) + BigInt(line.unitShippingSats)),
+    0n
+  )
+  if (total !== BigInt(commerceTotalSats)) {
+    throw new Error("Checkout Spark commerce quote total is inconsistent.")
+  }
+  return Object.freeze({
+    commerceTotalSats,
+    lines: Object.freeze(lines),
+  })
+}
+
+/** Validate and copy quote evidence before a checkout wallet is opened. */
+export function freezeCheckoutSparkCommerceQuote(
+  input: CheckoutSparkCommerceQuote,
+  merchantPubkey: string
+): CheckoutSparkCommerceQuote {
+  return normalizeCommerceQuote(
+    input,
+    normalizeHex64(merchantPubkey, "Commerce merchant")
+  )
 }
 
 function deriveObligationId(input: {
@@ -345,7 +487,7 @@ function canonicalPlanValue(
   plan: Omit<CheckoutSparkPlan, "planDigest">
 ): unknown {
   return [
-    PLAN_DIGEST_DOMAIN,
+    plan.schemaVersion === 2 ? PLAN_DIGEST_DOMAIN_V2 : PLAN_DIGEST_DOMAIN_V1,
     plan.schemaVersion,
     plan.checkoutId,
     plan.orderId,
@@ -373,6 +515,24 @@ function canonicalPlanValue(
       obligation.amountSats,
       obligation.maxFeeSats,
     ]),
+    ...(plan.schemaVersion === 2
+      ? [
+          [
+            plan.commerceQuote!.commerceTotalSats,
+            plan.commerceQuote!.lines.map((line) => [
+              line.productCoordinate,
+              line.productEventId,
+              line.merchantPubkey,
+              line.quantity,
+              line.unitMerchandiseSats,
+              line.unitShippingSats,
+              line.shippingOption
+                ? [line.shippingOption.coordinate, line.shippingOption.eventId]
+                : null,
+            ]),
+          ],
+        ]
+      : []),
   ]
 }
 
@@ -386,6 +546,19 @@ function refreezePlan(plan: CheckoutSparkPlan): CheckoutSparkPlan {
     createdAt: plan.createdAt,
     takeoverAt: plan.takeoverAt,
     funding: { ...plan.funding },
+    ...(plan.commerceQuote
+      ? {
+          commerceQuote: {
+            commerceTotalSats: plan.commerceQuote.commerceTotalSats,
+            lines: plan.commerceQuote.lines.map((line) => ({
+              ...line,
+              ...(line.shippingOption
+                ? { shippingOption: { ...line.shippingOption } }
+                : {}),
+            })),
+          },
+        }
+      : {}),
     obligations: plan.obligations.map((obligation) => ({
       kind: obligation.kind,
       recipientId: obligation.recipientId,
@@ -397,7 +570,11 @@ function refreezePlan(plan: CheckoutSparkPlan): CheckoutSparkPlan {
 }
 
 function canonicalizePlan(plan: CheckoutSparkPlan): CheckoutSparkPlan {
-  if (plan.schemaVersion !== 1) {
+  if (
+    (plan.schemaVersion !== 1 && plan.schemaVersion !== 2) ||
+    (plan.schemaVersion === 1 && plan.commerceQuote !== undefined) ||
+    (plan.schemaVersion === 2 && plan.commerceQuote === undefined)
+  ) {
     throw new Error("Checkout Spark plan version is invalid.")
   }
   const canonical = refreezePlan(plan)
@@ -683,8 +860,24 @@ export function freezeCheckoutSparkPlan(
     )
   }
 
+  const commerceQuote = input.commerceQuote
+    ? normalizeCommerceQuote(input.commerceQuote, merchantPubkey)
+    : undefined
+  if (commerceQuote) {
+    const commerceSum = obligations.reduce(
+      (sum, obligation) =>
+        sum +
+        (obligation.kind === "merchant" || obligation.kind === "supplier"
+          ? BigInt(obligation.amountSats)
+          : 0n),
+      0n
+    )
+    if (commerceSum !== BigInt(commerceQuote.commerceTotalSats)) {
+      throw new Error("Checkout Spark commerce legs differ from signed quote.")
+    }
+  }
   const planWithoutDigest: Omit<CheckoutSparkPlan, "planDigest"> = {
-    schemaVersion: 1,
+    schemaVersion: commerceQuote ? 2 : 1,
     checkoutId,
     orderId,
     merchantPubkey,
@@ -694,6 +887,7 @@ export function freezeCheckoutSparkPlan(
     takeoverAt,
     funding,
     obligations: Object.freeze(obligations),
+    ...(commerceQuote ? { commerceQuote } : {}),
   }
   return Object.freeze({
     ...planWithoutDigest,
