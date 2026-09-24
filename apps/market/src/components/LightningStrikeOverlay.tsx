@@ -28,98 +28,110 @@ interface BoltPath {
   isHero: boolean
 }
 
+interface BranchSeed {
+  x: number
+  y: number
+  angle: number
+  length: number
+  depth: number
+  isHero: boolean
+}
+
+const MAX_BOLT_PATHS = 160
+const BRANCH_LIMITS = [4, 3, 2, 0] as const
 const branchWidth = (base: number, depth: number) => base * 0.68 ** depth
 
 /**
- * Recursively generate a jagged lightning bolt with random branching forks.
- * Each segment is offset perpendicular to the main axis with sin-tapered
- * jitter so the endpoints stay anchored. Three generations of progressively
- * shorter forks give each strike a visible, self-similar silhouette.
- *
- * `isHero` propagates to all sub-branches: a hero strike's children are
- * also hero, so the entire dominant channel renders thick + white-hot.
+ * Grow a bounded set of wandering channels from the center. Each channel
+ * changes direction gradually and can sprout shorter lateral branches along
+ * its length. Processing breadth first keeps every main channel visible even
+ * when the path budget is reached.
  */
-function generateLightningBolt(
-  startX: number,
-  startY: number,
-  endX: number,
-  endY: number,
-  segments: number,
-  jitter: number,
-  isHero: boolean,
-  depth: number = 0
-): BoltPath[] {
-  const result: BoltPath[] = []
-  const points: { x: number; y: number }[] = []
+function generateLightningPaths(w: number, h: number): BoltPath[] {
+  const cx = w / 2
+  const cy = h / 2
+  const reach = Math.max(w, h) * 1.08
+  const rootCount = 5
+  const heroIndex = Math.floor(Math.random() * rootCount)
+  const queue: BranchSeed[] = Array.from({ length: rootCount }, (_, i) => {
+    const isHero = i === heroIndex || i === (heroIndex + 2) % rootCount
+    return {
+      x: cx,
+      y: cy,
+      angle: (i / rootCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.8,
+      length:
+        reach *
+        (isHero ? 0.9 + Math.random() * 0.2 : 0.7 + Math.random() * 0.25),
+      depth: 0,
+      isHero,
+    }
+  })
+  const paths: BoltPath[] = []
+  const baseStep = Math.max(9, Math.min(w, h) * 0.027)
 
-  const dx = endX - startX
-  const dy = endY - startY
-  const stepX = dx / segments
-  const stepY = dy / segments
-  const baseAngle = Math.atan2(dy, dx)
-  const perpAngle = baseAngle + Math.PI / 2
+  for (
+    let index = 0;
+    index < queue.length && paths.length < MAX_BOLT_PATHS;
+    index++
+  ) {
+    const seed = queue[index]
+    const steps = Math.max(
+      5,
+      Math.ceil(seed.length / (baseStep * 0.82 ** seed.depth))
+    )
+    const points = [{ x: seed.x, y: seed.y }]
+    const branchLimit = BRANCH_LIMITS[seed.depth] ?? 0
+    let x = seed.x
+    let y = seed.y
+    let heading = seed.angle
+    let turn = 0
+    let branches = 0
+    let lastFork = -4
 
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments
-    // Sin-taper keeps endpoints anchored, peaks jitter at the midpoint.
-    const taper = Math.sin(t * Math.PI)
-    const offset = (Math.random() - 0.5) * jitter * taper
-    points.push({
-      x: startX + stepX * i + Math.cos(perpAngle) * offset,
-      y: startY + stepY * i + Math.sin(perpAngle) * offset,
+    for (let step = 1; step <= steps; step++) {
+      // Correlated turns produce tortuous channels without independent zigzags.
+      turn =
+        turn * 0.58 + (Math.random() - 0.5) * (seed.depth === 0 ? 0.32 : 0.42)
+      heading += turn + Math.sin(seed.angle - heading) * 0.06
+      const stride = (seed.length / steps) * (0.8 + Math.random() * 0.4)
+      x += Math.cos(heading) * stride
+      y += Math.sin(heading) * stride
+      points.push({ x, y })
+
+      if (
+        branches < branchLimit &&
+        step >= 3 &&
+        step <= steps - 2 &&
+        step - lastFork >= 4 &&
+        Math.random() < (seed.depth === 0 ? 0.22 : 0.18)
+      ) {
+        const side = Math.random() < 0.5 ? -1 : 1
+        queue.push({
+          x,
+          y,
+          angle: heading + side * (0.4 + Math.random() * 0.65),
+          length: seed.length * (0.38 + Math.random() * 0.22),
+          depth: seed.depth + 1,
+          isHero: seed.isHero,
+        })
+        branches++
+        lastFork = step
+      }
+    }
+
+    paths.push({
+      d: points
+        .map(
+          (point, i) =>
+            `${i === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`
+        )
+        .join(" "),
+      depth: seed.depth,
+      isHero: seed.isHero,
     })
   }
 
-  result.push({
-    d: points
-      .map(
-        (p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`
-      )
-      .join(" "),
-    isHero,
-    depth,
-  })
-
-  if (depth < 3) {
-    // Keep the fork count bounded while adding fine twigs at the outer edges.
-    const branchCount = isHero
-      ? depth === 0
-        ? 5 + Math.floor(Math.random() * 3) // 5-7 at top of hero
-        : depth === 1
-          ? 2 + Math.floor(Math.random() * 2) // 2-3 per large branch
-          : 1 + Math.floor(Math.random() * 2) // 1-2 fine twigs
-      : depth === 0
-        ? 2 + Math.floor(Math.random() * 3) // 2-4 at top of normal
-        : depth === 1
-          ? 1 + Math.floor(Math.random() * 2) // 1-2 per branch
-          : 1 // one fine twig
-    const totalLen = Math.hypot(dx, dy)
-
-    for (let b = 0; b < branchCount; b++) {
-      // Pick a random middle vertex as the branch root.
-      const branchIdx = 1 + Math.floor(Math.random() * (points.length - 2))
-      const root = points[branchIdx]
-      const side = Math.random() < 0.5 ? -1 : 1
-      const branchAngle = baseAngle + side * (0.35 + Math.random() * 0.7)
-      const branchLength = totalLen * (0.28 + Math.random() * 0.25)
-      const ex = root.x + Math.cos(branchAngle) * branchLength
-      const ey = root.y + Math.sin(branchAngle) * branchLength
-      result.push(
-        ...generateLightningBolt(
-          root.x,
-          root.y,
-          ex,
-          ey,
-          Math.max(4, Math.floor(segments * 0.7)),
-          jitter * 0.62,
-          isHero,
-          depth + 1
-        )
-      )
-    }
-  }
-
-  return result
+  return paths
 }
 
 /**
@@ -130,10 +142,10 @@ function generateLightningBolt(
  *  - bolts: layered soft-glow + mid + bright-core; 1-2 hero strikes get a
  *    thicker stroke and a white-hot `--primary-50` core for natural
  *    real-lightning hierarchy where one channel dominates.
- *  - center: aura halo + ringed bolt icon
+ *  - center: compact purple glow behind the bolt icon
  *
  * Reduced motion: hides the procedural lightning storm and shows a static
- * ringed bolt before still calling `onComplete()` after `durationMs`.
+ * bolt before still calling `onComplete()` after `durationMs`.
  */
 export function LightningStrikeOverlay({
   open,
@@ -167,46 +179,10 @@ export function LightningStrikeOverlay({
     const h = window.innerHeight
     setSize({ w, h })
 
-    // Start strikes from just outside the central aura so they look like
-    // they emerge from the orb. Reach overshoots the viewport so branches
-    // never end abruptly mid-screen.
-    const cx = w / 2
-    const cy = h / 2
-    const startRadius = 70
-    const maxReach = Math.max(w, h) * 1.05
-    const strikeCount = 13
-    const newBolts: BoltPath[] = []
-
-    // Pick two hero strike indices spaced apart so the dominant channels
-    // don't overlap. Hero strikes form the "main flash" of the storm.
-    const heroIdx1 = Math.floor(Math.random() * strikeCount)
-    const offset = 4 + Math.floor(Math.random() * 5)
-    const heroIdx2 = (heroIdx1 + offset) % strikeCount
-
-    for (let i = 0; i < strikeCount; i++) {
-      const isHero = i === heroIdx1 || i === heroIdx2
-      const baseAngle =
-        (i / strikeCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.5
-      // Hero strikes reach further; the dominant channel is longer.
-      const reach = isHero
-        ? maxReach * (0.85 + Math.random() * 0.25)
-        : maxReach * (0.5 + Math.random() * 0.45)
-      const sx = cx + Math.cos(baseAngle) * startRadius
-      const sy = cy + Math.sin(baseAngle) * startRadius
-      const ex = cx + Math.cos(baseAngle) * reach
-      const ey = cy + Math.sin(baseAngle) * reach
-      // Hero strikes use slightly tighter jitter so the spine reads as a
-      // strong, mostly-straight discharge channel; normal bolts wobble more.
-      const segments = isHero
-        ? 12 + Math.floor(Math.random() * 4)
-        : 9 + Math.floor(Math.random() * 5)
-      const jitter = isHero ? Math.min(w, h) * 0.04 : Math.min(w, h) * 0.055
-      newBolts.push(
-        ...generateLightningBolt(sx, sy, ex, ey, segments, jitter, isHero)
-      )
-    }
-
-    setBolts(newBolts)
+    const reducedMotion = window.matchMedia?.(
+      "(prefers-reduced-motion: reduce)"
+    ).matches
+    setBolts(reducedMotion ? [] : generateLightningPaths(w, h))
 
     const exitAt = Math.max(durationMs - 280, 100)
     const exitTimer = window.setTimeout(() => setExiting(true), exitAt)
@@ -387,27 +363,14 @@ export function LightningStrikeOverlay({
         </g>
       </svg>
 
-      {/* Central aura -- large glowing orb behind the ring */}
+      {/* Compact center flash covers the roots beneath the bolt icon. */}
       <span
         aria-hidden="true"
         className={[
-          "absolute h-72 w-72 rounded-full",
-          "bg-[radial-gradient(circle,color-mix(in_srgb,var(--primary-400)_55%,transparent)_0%,color-mix(in_srgb,var(--primary-600)_25%,transparent)_45%,transparent_75%)]",
+          "absolute h-40 w-40 rounded-full",
+          "bg-[radial-gradient(circle,color-mix(in_srgb,var(--primary-400)_70%,transparent)_0%,color-mix(in_srgb,var(--primary-600)_30%,transparent)_35%,transparent_72%)]",
           "animate-[lso-aura_1200ms_ease-out_forwards]",
           "motion-reduce:animate-none motion-reduce:opacity-70",
-        ].join(" ")}
-      />
-
-      {/* Bright ring -- the magenta-purple disc the bolt sits inside */}
-      <span
-        aria-hidden="true"
-        className={[
-          "absolute h-36 w-36 rounded-full",
-          "border-2 border-[color-mix(in_srgb,var(--primary-300)_85%,transparent)]",
-          "bg-[radial-gradient(circle,color-mix(in_srgb,var(--primary-300)_25%,transparent)_0%,transparent_70%)]",
-          "shadow-[0_0_50px_color-mix(in_srgb,var(--primary-400)_75%,transparent),0_0_120px_color-mix(in_srgb,var(--primary-500)_50%,transparent)]",
-          "animate-[lso-ring_1100ms_cubic-bezier(0.15,0.9,0.3,1)_forwards]",
-          "motion-reduce:animate-none motion-reduce:scale-100",
         ].join(" ")}
       />
 
@@ -417,7 +380,7 @@ export function LightningStrikeOverlay({
         className={[
           "relative z-10 flex h-20 w-20 items-center justify-center",
           "text-[var(--primary-50)]",
-          "drop-shadow-[0_0_18px_color-mix(in_srgb,var(--primary-200)_85%,transparent)]",
+          "drop-shadow-[0_0_10px_color-mix(in_srgb,var(--primary-300)_85%,transparent)]",
           "animate-[lso-bolt_1100ms_cubic-bezier(0.15,0.9,0.25,1)_forwards]",
           "motion-reduce:animate-none motion-reduce:scale-100",
         ].join(" ")}
@@ -439,13 +402,6 @@ export function LightningStrikeOverlay({
           25%  { transform: scale(1.1);  opacity: 1; }
           70%  { transform: scale(1);    opacity: 0.85; }
           100% { transform: scale(1.15); opacity: 0; }
-        }
-        @keyframes lso-ring {
-          0%   { transform: scale(0.4);  opacity: 0; }
-          20%  { transform: scale(1.15); opacity: 1; }
-          50%  { transform: scale(0.95); opacity: 1; }
-          80%  { transform: scale(1.05); opacity: 0.9; }
-          100% { transform: scale(1.1);  opacity: 0; }
         }
         @keyframes lso-soft {
           0%   { opacity: 0; }
