@@ -195,6 +195,11 @@ interface AuthorizationEvidence {
 
 export type EventMarketAuthorizationResolution =
   | { state: "invalid_reference" | "missing" | "malformed" }
+  | {
+      state: "deleted_unknown"
+      deletions: SignedPublicNostrEvent[]
+      missingTargetIds: string[]
+    }
   | { state: "missing_parent"; missingParentIds: string[] }
   | { state: "conflicting"; tips: ParsedEventMarketAuthorization[] }
   | ({ state: "deleted" | "revoked" | "active" } & AuthorizationEvidence)
@@ -227,7 +232,37 @@ export function resolveEventMarketAuthorization(input: {
         .map((event) => [event.id, event])
     ).values(),
   ]
-  if (candidates.length === 0) return { state: "missing" }
+  if (candidates.length === 0) {
+    const scopedDeletions = (input.deletions ?? []).filter(
+      (event) =>
+        event.kind === EVENT_KINDS.DELETION &&
+        event.pubkey === market.authorPubkey &&
+        isValidSignedPublicNostrEvent(event) &&
+        event.tags.some(
+          (tag) => tag[0] === "a" && tag[1] === market.coordinate
+        ) &&
+        event.tags.some(
+          (tag) => tag[0] === "p" && tag[1] === input.merchantPubkey
+        ) &&
+        event.tags.some((tag) => tag[0] === "e" && HEX_64.test(tag[1] ?? ""))
+    )
+    if (scopedDeletions.length > 0) {
+      return {
+        state: "deleted_unknown",
+        deletions: scopedDeletions,
+        missingTargetIds: [
+          ...new Set(
+            scopedDeletions.flatMap((event) =>
+              event.tags
+                .filter((tag) => tag[0] === "e" && HEX_64.test(tag[1] ?? ""))
+                .map((tag) => tag[1]!)
+            )
+          ),
+        ],
+      }
+    }
+    return { state: "missing" }
+  }
   const parsed = candidates.map(parseEventMarketAuthorizationEvent)
   if (parsed.some((event) => !event)) return { state: "malformed" }
   const transitions = parsed as ParsedEventMarketAuthorization[]

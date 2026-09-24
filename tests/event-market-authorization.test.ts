@@ -140,6 +140,10 @@ describe("Event Market causal authorization", () => {
       tip: { eventId: revoke.id },
     })
     expect(reduce([grant], [erased])).toMatchObject({ state: "deleted" })
+    expect(reduce([], [erased])).toMatchObject({
+      state: "deleted_unknown",
+      missingTargetIds: [revoke.id],
+    })
     const unrepaired = transition("active", [parsed(revoke)], 111)
     expect(reduce([grant, revoke, unrepaired], [erased])).toMatchObject({
       state: "deleted",

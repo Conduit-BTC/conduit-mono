@@ -467,6 +467,71 @@ describe("experimental Event Market roster", () => {
     expect(calls[0]?.authors).toEqual([organizer])
   })
 
+  it("keeps an eligible product visible but marks partial authorization coverage", async () => {
+    const approved = roster([merchantRow])
+    const calendar = sign(
+      organizerSecret,
+      31923,
+      [
+        ["d", "fair"],
+        ["title", "Fair"],
+        ["start", "1790000000"],
+        ["D", "20717"],
+      ],
+      100
+    )
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    const active = grant()
+    const read = await readEventMarketCatalog(
+      { reference: marketCoordinate },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com", "wss://fallback.example.com"],
+          candidateRelayUrls: [
+            "wss://example.com",
+            "wss://fallback.example.com",
+          ],
+          maxRelayAttempts: 2,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: ["wss://fallback.example.com"],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => ({
+          events: filter.kinds?.includes(30409 as never)
+            ? [approved]
+            : filter.kinds?.includes(31923 as never)
+              ? [calendar]
+              : filter.kinds?.includes(30402 as never)
+                ? [tagged]
+                : filter.kinds?.includes(3841 as never)
+                  ? [active]
+                  : [],
+          relays: [
+            { relayUrl: "wss://example.com", status: "success" },
+            ...(filter.kinds?.includes(3841 as never)
+              ? [
+                  {
+                    relayUrl: "wss://fallback.example.com",
+                    status: "failed" as const,
+                  },
+                ]
+              : []),
+          ],
+        }),
+        load: async () => [],
+        retain: async () => undefined,
+      }
+    )
+    expect(read.products).toHaveLength(1)
+    expect(read.products[0]?.resolution.state).toBe("eligible")
+    expect(read.products[0]?.authorization?.resolution.state).toBe("active")
+    expect(read.products[0]?.actionable).toBe(false)
+    expect(read.coverage).toBe("partial")
+  })
+
   it("freezes the signed roster row and product revision with the merchant as payee", () => {
     const currentMarket = parseEventMarketRosterEvent(roster([merchantRow]))!
     const signedProduct = product(merchantSecret, merchant, "soap", 100)

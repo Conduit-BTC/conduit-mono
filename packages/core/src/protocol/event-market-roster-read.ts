@@ -1188,7 +1188,13 @@ export async function readEventMarketCatalog(
       { ...input, marketRead, productCoordinate },
       dependencies
     )
-    if (read.coverage !== "complete") incomplete = true
+    if (
+      read.coverage !== "complete" ||
+      (read.authorization &&
+        (read.authorization.coverage !== "complete" ||
+          !read.authorization.retained))
+    )
+      incomplete = true
     if (read.resolution.state === "eligible") products.push(read)
   }
   return {

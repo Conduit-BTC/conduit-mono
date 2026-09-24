@@ -373,6 +373,68 @@ describe("future Event Market organizer updates", () => {
     })
   })
 
+  it("does not sign a first approval when a scoped deletion target is unavailable", async () => {
+    let signed = false
+    const deletedTarget = "a".repeat(64)
+    const deletion = finalizeEvent(
+      {
+        kind: 5,
+        created_at: 101,
+        tags: [
+          ["e", deletedTarget],
+          ["a", marketCoordinate],
+          ["p", merchant],
+        ],
+        content: "",
+      },
+      secret
+    )
+    await expect(
+      publishEventMarketMerchantDecision(
+        {
+          organizerPubkey: organizer,
+          authenticatedPubkey: organizer,
+          dTag: "fair-market",
+          calendarCoordinate,
+          merchantPubkey: merchant,
+          action: "approve",
+          row: initialRow,
+          expectedPreviousEventId: empty.id,
+          expectedAuthorizationTipIds: [],
+        },
+        {
+          ...storage,
+          read: async () => ({
+            coordinate: marketCoordinate,
+            resolution: {
+              state: "current",
+              market: parseEventMarketRosterEvent(empty)!,
+            },
+            coverage: "complete",
+            retained: true,
+            observedRelayUrls: [],
+          }),
+          readAuthorization: async () => ({
+            resolution: {
+              state: "deleted_unknown",
+              deletions: [deletion],
+              missingTargetIds: [deletedTarget],
+            },
+            coverage: "partial",
+            retained: true,
+            observedRelayUrls: [],
+          }),
+          sign: async () => {
+            signed = true
+            return empty
+          },
+          publish: async () => delivery,
+        }
+      )
+    ).rejects.toThrow("organizer review")
+    expect(signed).toBe(false)
+  })
+
   it("signs a descendant revoke and publishes it before row removal", async () => {
     const activeDraft = buildEventMarketAuthorizationDraft({
       marketCoordinate,
