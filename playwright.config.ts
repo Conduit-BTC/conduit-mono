@@ -50,7 +50,8 @@ const mobileTestFiles = [
   "**/mobile-safari-baseline.playwright.ts",
   "**/event-sign-preview-mobile.playwright.ts",
 ]
-const productImageUploadCoverageFiles = [
+const responsiveCoverageFiles = [
+  "**/not-found.playwright.ts",
   "**/merchant-product-image-preview.playwright.ts",
 ]
 
@@ -127,12 +128,12 @@ export default defineConfig({
     },
     {
       name: "mobile-chromium",
-      testMatch: [...mobileTestFiles, ...productImageUploadCoverageFiles],
+      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles],
       use: { ...devices["Pixel 7"] },
     },
     {
       name: "mobile-webkit",
-      testMatch: [...mobileTestFiles, ...productImageUploadCoverageFiles],
+      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles],
       use: { ...devices["iPhone 13"] },
     },
   ],

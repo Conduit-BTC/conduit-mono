@@ -92,6 +92,12 @@ function RootLayout() {
 }
 
 function MerchantProductRoot({ pathname }: { pathname: string }) {
+  const isNotFound = useRouterState({
+    select: (state) =>
+      state.matches.some(
+        (match) => match._notFound || match.status === "notFound"
+      ),
+  })
   const {
     authUrl,
     dismissAuthUrl,
@@ -179,18 +185,27 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   }, [pathname])
 
   useEffect(() => {
-    const title =
-      signerWorkspaceAvailable || signerRestoring
+    const title = isNotFound
+      ? "Not Found"
+      : signerWorkspaceAvailable || signerRestoring
         ? getPageTitle(pathname)
         : "Connect"
     document.title = `${title} | Conduit Merchant`
-  }, [pathname, signerRestoring, signerWorkspaceAvailable])
+  }, [isNotFound, pathname, signerRestoring, signerWorkspaceAvailable])
 
   useEffect(() => {
     recordBrowserTelemetryPageView({ app: "merchant", pathname })
   }, [pathname])
 
   throwSyntheticClientErrorForTelemetryTest()
+
+  if (isNotFound && !signerWorkspaceAvailable) {
+    return (
+      <MerchantPublicAboutShell pageTitle="Not Found">
+        <Outlet />
+      </MerchantPublicAboutShell>
+    )
+  }
 
   if (shouldDelayAuthFallback) {
     return (

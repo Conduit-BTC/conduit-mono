@@ -10,14 +10,16 @@ const SHOW_DEVTOOLS =
 
 export function MerchantPublicAboutShell({
   children,
+  pageTitle = "About",
 }: {
   children: ReactNode
+  pageTitle?: string
 }) {
   useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
 
   useEffect(() => {
-    document.title = "About | Conduit Merchant"
-  }, [])
+    document.title = `${pageTitle} | Conduit Merchant`
+  }, [pageTitle])
 
   return (
     <div className="min-h-dvh bg-[var(--background)] text-[var(--text-primary)]">
@@ -42,7 +44,7 @@ export function MerchantPublicAboutShell({
         >
           <a
             href="/about"
-            aria-current="page"
+            aria-current={pageTitle === "About" ? "page" : undefined}
             className="rounded-sm underline underline-offset-4 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             About
