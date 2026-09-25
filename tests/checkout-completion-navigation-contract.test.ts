@@ -45,6 +45,27 @@ describe("checkout completion navigation contracts", () => {
     expect(ordersRoute).toContain("View full order details")
   })
 
+  it("reserves lightning for a durable payment-sent result", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+    const lightning = await Bun.file(
+      "apps/market/src/components/LightningStrikeOverlay.tsx"
+    ).text()
+
+    expect(checkoutRoute).not.toContain("LightningStrikeOverlay")
+    expect(ordersRoute).toMatch(
+      /getOrderPaymentState\(current\.orderId\)\?\.lifecycle\?\.paymentStatus\s*!==\s*"paid"/
+    )
+    expect(ordersRoute).toContain('current.paymentStatus !== "paid"')
+    expect(ordersRoute).toContain("celebratedOrdersRef.current.has")
+    expect(lightning).toContain("pointer-events-none fixed inset-0")
+    expect(lightning).not.toContain("bg-black/60 backdrop-blur-sm")
+  })
+
   it("does not fall back from a missing focused order while reads are pending or unavailable", async () => {
     const ordersRoute = await Bun.file(
       "apps/market/src/routes/orders.tsx"

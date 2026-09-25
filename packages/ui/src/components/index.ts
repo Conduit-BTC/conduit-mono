@@ -19,6 +19,11 @@ export {
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
 export {
+  ProjectTip,
+  type ProjectTipPayResult,
+  type ProjectTipProps,
+} from "./ProjectTip"
+export {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,

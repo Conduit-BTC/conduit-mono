@@ -278,6 +278,7 @@ export {
 } from "./context/ConduitSessionContext"
 
 // Hooks
+export { useProjectTipReceipt } from "./hooks/useProjectTipReceipt"
 export { useNip07Availability } from "./hooks/useNip07Availability"
 export {
   useProfile,

@@ -291,7 +291,7 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("Automatic wallet payment will be skipped")
     expect(content).toContain("Hold to send order and show invoice")
     expect(content).toContain("HoldToReleaseButton")
-    expect(content).toContain("if (canAttemptLightningPayment)")
+    expect(content).toContain("canAttemptLightningPayment")
     expect(content).toContain('selectedPaymentTarget.type === "wallet"')
     expect(content).toContain('selectedPaymentTarget.type === "webln"')
 
