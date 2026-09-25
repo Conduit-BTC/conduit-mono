@@ -2,10 +2,16 @@ import { describe, expect, it } from "bun:test"
 import type {
   AuthorizedAnonZapPricing,
   BtcUsdRateQuote,
+  LnurlPayMetadata,
   SignedPublicNostrEvent,
 } from "@conduit/core"
 import { buildShippingOptionDeletionEventDraft } from "@conduit/core"
 import { fetchTrustedPricingRateQuote } from "@conduit/core/pricing/trusted-rate-provider"
+import {
+  PROJECT_TIP_LIGHTNING_ADDRESS,
+  PROJECT_TIP_LNURL,
+  PROJECT_TIP_PAY_REQUEST_URL,
+} from "@conduit/core/protocol/project-tip"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 
 import {
@@ -13,6 +19,7 @@ import {
   enforceAnonZapAuthorityRateLimit,
   getAnonZapCommerceRelays,
   signAuthorizedAnonZapRequest,
+  signAnonymousProjectTipRequest,
   type AnonZapPagesDependencies,
   type AnonZapPagesEnv,
 } from "../apps/market/functions/_lib/anon-zap-checkout-auth"
@@ -678,6 +685,74 @@ describe("Anon zap Pages proxy", () => {
     expect(keys[2]).toMatch(/^authorization:merchant:[0-9a-f]{64}$/)
     expect(JSON.stringify(keys)).not.toContain("203.0.113.10")
     expect(JSON.stringify(keys)).not.toContain(MERCHANT_PUBKEY)
+  })
+
+  it("keeps project-tip and checkout authorization capacity separate", async () => {
+    const counts = new Map<string, number>()
+    const seenKeys: string[][] = []
+    const tipMetadata: LnurlPayMetadata = {
+      payRequestUrl: PROJECT_TIP_PAY_REQUEST_URL,
+      lnurl: PROJECT_TIP_LNURL,
+      callback: "https://wallet.conduit.market/lnurl/callback",
+      minSendable: 100_000,
+      maxSendable: 100_000_000,
+      tag: "payRequest",
+      allowsNostr: true,
+      nostrPubkey: ATTESTATION_PUBKEY,
+      metadata: "[]",
+    }
+    const sharedEnv = env({
+      ANON_ZAP_RATE_LIMIT_SERVICE: rateLimitService((keys, scope) => {
+        expect(scope).toBe("authorization")
+        seenKeys.push(keys)
+        for (const key of keys) {
+          const count = counts.get(key) ?? 0
+          if (count >= 1) return false
+          counts.set(key, count + 1)
+        }
+        return true
+      }),
+      ANON_ZAP_SIGNER_SERVICE: {
+        fetch: async () =>
+          Response.json({ id: "a".repeat(64), rawEvent: { kind: 9734 } }),
+      },
+    })
+    const checkout = () =>
+      authorizeAnonZapRequest(
+        post(
+          "https://shop.conduit.market/api/anon-zap-authorize",
+          checkoutIntent()
+        ),
+        sharedEnv,
+        createDependencies()
+      )
+    const tip = () =>
+      signAnonymousProjectTipRequest(
+        post("https://shop.conduit.market/api/project-tip-sign", {
+          amountSats: 111,
+        }),
+        sharedEnv,
+        {
+          fetchTipMetadata: async (address) => {
+            expect(address).toBe(PROJECT_TIP_LIGHTNING_ADDRESS)
+            return tipMetadata
+          },
+        }
+      )
+
+    expect((await tip()).status).toBe(200)
+    expect((await tip()).status).toBe(429)
+    expect((await checkout()).status).toBe(200)
+    expect(seenKeys[0]).toEqual([
+      "authorization:project-tip:global",
+      expect.stringMatching(/^authorization:project-tip:source:[0-9a-f]{64}$/),
+    ])
+    expect(seenKeys[2]?.[0]).toBe("authorization:global")
+
+    counts.clear()
+    expect((await checkout()).status).toBe(200)
+    expect((await checkout()).status).toBe(429)
+    expect((await tip()).status).toBe(200)
   })
 
   it("fails closed when Cloudflare request-source identity is unavailable", async () => {

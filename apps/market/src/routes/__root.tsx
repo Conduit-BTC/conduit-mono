@@ -28,6 +28,7 @@ import {
   type MarketChromeState,
 } from "../components/MarketHeader"
 import { MarketCartHud } from "../components/MarketCartHud"
+import { MarketProjectTip } from "../components/MarketProjectTip"
 import { EventActorIdentityProvider } from "../hooks/useEventActorIdentity"
 import { usePendingEventPickupCartResolution } from "../hooks/usePendingEventPickupCartResolution"
 
@@ -123,6 +124,9 @@ function RootShell({
           </Link>
         }
         activeHref={pathname}
+        tipAction={
+          <MarketProjectTip className="min-h-11 shrink-0 gap-1 px-1 text-[11px] font-medium text-[var(--text-primary)] hover:text-primary-500 sm:text-xs" />
+        }
         reportBugHref={reportBugHref}
         hidden={mobileChromeHidden}
       />

@@ -157,6 +157,7 @@ test("market mobile chrome hides while scrolling down and returns on scroll up @
     footer.getByText("About", { exact: true }),
     footer.getByRole("link", { name: "Terms" }),
     footer.getByRole("link", { name: "Privacy" }),
+    footer.getByRole("button", { name: "Leave a Tip" }),
     footer.getByRole("link", { name: "Report a Bug" }),
   ]
 
@@ -194,7 +195,11 @@ test("market mobile chrome hides while scrolling down and returns on scroll up @
       return box!.y + box!.height / 2
     })
   )
-  expect(Math.max(...linkCenters) - Math.min(...linkCenters)).toBeLessThan(1)
+  expect(
+    Math.max(...linkCenters.slice(0, 3)) - Math.min(...linkCenters.slice(0, 3))
+  ).toBeLessThan(1)
+  expect(Math.abs(linkCenters[3]! - linkCenters[4]!)).toBeLessThan(1)
+  expect(linkCenters[3]).toBeGreaterThan(linkCenters[0]!)
   expect(
     await footer.evaluate(
       (element) => element.scrollWidth <= element.clientWidth
@@ -225,6 +230,47 @@ test("market mobile chrome hides while scrolling down and returns on scroll up @
   await expect(footer).toHaveClass(/translate-y-0/)
 
   expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(12)
+})
+
+test("market guest tip dialog offers fixed and custom sats without starting payment @market", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 700 })
+  await page.goto(`${marketUrl}/about`)
+  await page
+    .getByRole("contentinfo")
+    .getByRole("button", { name: "Leave a Tip" })
+    .click()
+  const dialog = page.getByRole("dialog", { name: "Leave a tip" })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText("Anon Conduit Shopper")
+  await expect(dialog.locator("svg").first()).toHaveCSS(
+    "color",
+    "rgb(211, 41, 115)"
+  )
+  await dialog.getByText("What gets posted?").click()
+  await expect(dialog).toContainText(
+    "Supporting Conduit's open market mission."
+  )
+  for (const amount of ["111 sats", "1,111 sats", "11,111 sats"]) {
+    await expect(
+      dialog.getByRole("button", { name: new RegExp(`^${amount}`) })
+    ).toBeVisible()
+  }
+  await dialog.getByRole("button", { name: "Choose another amount" }).click()
+  await dialog
+    .getByRole("spinbutton", { name: "Custom amount (sats)" })
+    .fill("99")
+  await expect(dialog.getByRole("button", { name: "Send tip" })).toBeDisabled()
+  await dialog
+    .getByRole("spinbutton", { name: "Custom amount (sats)" })
+    .fill("100")
+  await expect(
+    dialog.getByRole("button", { name: "Send 100 sats" })
+  ).toBeEnabled()
+  await expectNoHorizontalOverflow(page)
+  await dialog.getByRole("button", { name: "Close" }).click()
+  await expect(dialog).toHaveCount(0)
 })
 
 test("market signed-in mobile header keeps buyer actions beside search in two rows @market", async ({

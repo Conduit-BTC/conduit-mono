@@ -83,6 +83,7 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { MarketProjectTip } from "../components/MarketProjectTip"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import { useCart } from "../hooks/useCart"
 import { groupCartPurchases } from "../lib/cart-model"
@@ -1703,6 +1704,15 @@ function OrderDetail({
       {paymentFocused && !showExternalWallet && !headerStatus.actionNeeded && (
         <div>
           <OrderHeaderPill status={headerStatus} />
+        </div>
+      )}
+
+      {!zeroCostPickupOrder && isBuyerOrderPaid(vm) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+          <p className="text-sm text-[var(--text-secondary)]">
+            Had a good experience?
+          </p>
+          <MarketProjectTip className="min-h-11 text-primary-500" />
         </div>
       )}
 

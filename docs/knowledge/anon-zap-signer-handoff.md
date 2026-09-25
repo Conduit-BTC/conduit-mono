@@ -6,13 +6,14 @@ deployment records, dashboard links, or operator-only runbooks.
 
 This note is subordinate to the normative signer exception in
 `docs/specs/protocol.md`. It records the runtime and request contract needed to
-operate that exception; it does not widen the events, identities, or checkout
-flows the signer may authorize.
+operate that exception; it does not widen the events or identities the signer
+may authorize.
 
 ## Scope
 
-The signer exists only to sign validated NIP-57 zap request drafts as the
-shared Anon Conduit Shopper identity. It is not a general event signer, buyer
+The signer exists only to sign validated NIP-57 zap request drafts for
+merchant-authorized public checkout zaps and the fixed Conduit.Market project
+tip as the shared Anon Conduit Shopper identity. It is not a general event signer, buyer
 account, merchant signer, wallet service, payment custodian, NIP-17 order
 sender, or payment-proof sender.
 
@@ -27,7 +28,7 @@ Before public anonymous checkout zaps are enabled, an operator must confirm the
 identity profile is live on common Nostr clients and relays:
 
 - display name is the approved Anon Conduit Shopper name or approved variant
-- kind `0` profile text says the identity is a shared checkout signal, not an
+- kind `0` profile text says the identity is a shared public-zap signal, not an
   individual shopper
 - image and optional profile fields are approved for public zap surfaces
 - public runtime config has the identity `npub` and, where code needs it, the
@@ -76,6 +77,14 @@ signed product/profile events, derives fiat-priced totals with a server-owned
 rate quote, and forwards only the canonical public draft to the signer Worker.
 The browser supplies product coordinates and quantities, not an authoritative
 amount or comment.
+
+The project-tip Pages route accepts only a whole-sat amount. It resolves the
+fixed Conduit.Market Lightning address and constructs the fixed-recipient,
+fixed-message draft. Its Worker authorization has the explicit `project_tip`
+scope and a fresh request nonce, not a checkout session or merchant policy.
+The Worker checks that scope against the exact tip recipient, LNURL, public
+message, amount minimum, and allowed tags before using the same service key.
+The browser cannot supply a destination, message, or checkout context.
 
 The Market authorization boundary also receives ordinary connection metadata
 and uses source IP information to enforce fail-closed rate limits. It does not
@@ -175,7 +184,9 @@ Signer Worker config:
   minting a fresh authorization cannot bypass merchant-level limits. The Worker
   fails closed when the binding is missing or unavailable.
 - `ANON_AUTHORIZATION_RATE_LIMITER`: independently tuned rate-limit binding for
-  pseudonymous checkout source and merchant authorization buckets.
+  checkout global, pseudonymous source, and merchant authorization buckets.
+  Project tips use separate global and pseudonymous source keys in the same
+  binding, so tip traffic cannot consume checkout authorization capacity.
 - `ANON_AUTHORITY_RATE_LIMITER`: higher-capacity rate-limit binding for bounded
   Zapouts authority batches and fallback-recipient metadata egress. A normal
   feed load cannot exhaust the signer or checkout namespace.
