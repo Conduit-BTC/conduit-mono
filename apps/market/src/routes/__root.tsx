@@ -48,6 +48,12 @@ function RootShell({
   children: React.ReactNode
   cartHud?: React.ReactNode
 }) {
+  const isNotFound = useRouterState({
+    select: (state) =>
+      state.matches.some(
+        (match) => match._notFound || match.status === "notFound"
+      ),
+  })
   const footerRef = useRef<HTMLElement>(null)
   const chromeState = useMarketChromeState()
   const mobileChromeHidden =
@@ -94,7 +100,7 @@ function RootShell({
 
   return (
     <div
-      className="flex min-h-screen min-w-0 flex-col overflow-x-clip"
+      className={`flex min-w-0 flex-col overflow-x-clip ${isNotFound ? "min-h-dvh" : "min-h-screen"}`}
       style={
         {
           "--market-footer-hidden-shift": mobileChromeHidden
@@ -104,13 +110,20 @@ function RootShell({
             "var(--market-fixed-footer-height, 0px)",
           "--order-messages-hidden-shift":
             "var(--market-footer-hidden-shift, 0px)",
-          paddingBottom:
-            "calc(var(--market-hud-height, 0px) + var(--market-fixed-footer-height, 0px) + max(1.5rem, env(safe-area-inset-bottom)))",
+          paddingBottom: isNotFound
+            ? "var(--market-fixed-footer-height, 0px)"
+            : "calc(var(--market-hud-height, 0px) + var(--market-fixed-footer-height, 0px) + max(1.5rem, env(safe-area-inset-bottom)))",
         } as React.CSSProperties
       }
     >
       <MarketHeader chromeState={chromeState} />
-      <main className="mx-auto min-w-0 w-full max-w-7xl flex-1 px-4 pb-12 pt-6">
+      <main
+        className={
+          isNotFound
+            ? "flex min-w-0 w-full flex-1"
+            : "mx-auto min-w-0 w-full max-w-7xl flex-1 px-4 pb-12 pt-6"
+        }
+      >
         {children}
       </main>
       <LegalFooter
