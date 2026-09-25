@@ -65,11 +65,13 @@ import {
   cn,
 } from "@conduit/ui"
 import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix"
+import { ListingAreaPicker } from "../components/ListingAreaPicker"
 import { ProductInboxReadinessDialog } from "../components/ProductInboxReadinessDialog"
 import { ProductPaymentSetupNotice } from "../components/ProductPaymentSetupNotice"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
+import { getListingAreaForPublication } from "../lib/listingArea"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
 import { getProductUrl } from "../lib/market-links"
@@ -269,6 +271,10 @@ function createEmptyProductForm(
   return {
     title: "",
     summary: "",
+    listingAreaCountry: "",
+    listingAreaState: "",
+    listingAreaPlaceId: null,
+    listingAreaMode: "clear",
     price: "0",
     stock: "",
     variations: createEmptyProductVariationForm(),
@@ -379,6 +385,11 @@ function productToForm(
   return {
     title: product.title,
     summary: product.summary ?? "",
+    listingAreaCountry: "",
+    listingAreaState: "",
+    listingAreaPlaceId: null,
+    listingAreaMode:
+      product.location || product.geohash ? "unchanged" : "clear",
     price: formatProductAmountInput(source?.amount ?? product.price),
     stock: typeof product.stock === "number" ? String(product.stock) : "",
     variations: family.variationForm.state,
@@ -974,6 +985,10 @@ async function publishProduct(
   const summary = form.summary.trim()
   const now = Date.now()
   const tags = formValidation.tags
+  const listingArea = await getListingAreaForPublication(
+    form,
+    existing?.product
+  )
 
   const product: ProductSchema = canonicalizeProductPrice({
     id: `30402:${signerPubkey}:${dTag}`,
@@ -998,7 +1013,8 @@ async function publishProduct(
     publicZapEnabled: form.publicZapEnabled,
     zapMessagePolicy: form.zapMessagePolicy,
     publicZapPolicyKnown: true,
-    location: undefined,
+    location: listingArea.location,
+    geohash: listingArea.geohash,
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
   })
@@ -1006,6 +1022,8 @@ async function publishProduct(
   const plan = buildProductFamilyChangePlan({
     parentDTag: dTag,
     baseProduct: product,
+    listingAreaMode:
+      form.listingAreaMode === "unchanged" ? "preserve" : "apply",
     variations: form.variations,
     preservationBaselineVariations: existing?.variationForm.state,
     currency,
@@ -3670,6 +3688,48 @@ function ProductsPage() {
                   </div>
                 </div>
               </div>
+
+              <ListingAreaPicker
+                countryCode={form.listingAreaCountry}
+                stateCode={form.listingAreaState}
+                placeId={form.listingAreaPlaceId}
+                preservedLocation={
+                  form.listingAreaMode === "unchanged"
+                    ? editing?.product.location
+                    : undefined
+                }
+                onCountryChange={(code) =>
+                  setForm((current) => ({
+                    ...current,
+                    listingAreaCountry: code,
+                    listingAreaState: "",
+                    listingAreaPlaceId: null,
+                    listingAreaMode: "clear",
+                  }))
+                }
+                onStateChange={(code) =>
+                  setForm((current) => ({
+                    ...current,
+                    listingAreaState: code,
+                    listingAreaPlaceId: null,
+                    listingAreaMode: "clear",
+                  }))
+                }
+                onPlaceChange={(id) =>
+                  setForm((current) => ({
+                    ...current,
+                    listingAreaPlaceId: id,
+                    listingAreaMode: id === null ? "clear" : "selected",
+                  }))
+                }
+                onClear={() =>
+                  setForm((current) => ({
+                    ...current,
+                    listingAreaPlaceId: null,
+                    listingAreaMode: "clear",
+                  }))
+                }
+              />
 
               <ProductImageUrlCollectionField
                 id="product-image"

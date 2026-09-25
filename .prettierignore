@@ -8,3 +8,5 @@ bun.lock
 **/pnpm-lock.yaml
 **/*.gen.ts
 **/routeTree.gen.ts
+# Generated compact GeoNames place indexes and source manifest.
+apps/merchant/public/places/**/*.json

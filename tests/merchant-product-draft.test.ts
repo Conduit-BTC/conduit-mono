@@ -80,6 +80,10 @@ function form(
   return {
     title: "Pocket Relay",
     summary: "A local-first relay appliance",
+    listingAreaCountry: "",
+    listingAreaState: "",
+    listingAreaPlaceId: null,
+    listingAreaMode: "clear",
     price: "25",
     stock: "12",
     variations: createEmptyProductVariationForm(),
@@ -129,6 +133,50 @@ function legacyForm(
 }
 
 describe("merchant product drafts", () => {
+  it("retains a selected listing-area ID and rejects unsupported country drafts", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const selected = form({
+      listingAreaCountry: "US",
+      listingAreaState: "CA",
+      listingAreaPlaceId: 5378538,
+      listingAreaMode: "selected",
+    })
+    expect(saveProductDraft(draftTarget, selected, storage)).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft).toEqual(selected)
+    const key = getProductDraftStorageKey(draftTarget)!
+    const tampered = JSON.parse(storage.getItem(key)!)
+    tampered.form.listingAreaCountry = "RU"
+    storage.setItem(key, JSON.stringify(tampered))
+    expect(loadProductDraft(draftTarget, storage).draft).toBeNull()
+    tampered.form.listingAreaCountry = "US"
+    tampered.form.listingAreaState = "XX"
+    storage.setItem(key, JSON.stringify(tampered))
+    expect(loadProductDraft(draftTarget, storage).draft).toBeNull()
+  })
+
+  it("clears a version 8 US place that has no state partition", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const selected = form({
+      listingAreaCountry: "US",
+      listingAreaState: "CA",
+      listingAreaPlaceId: 5378538,
+      listingAreaMode: "selected",
+    })
+    saveProductDraft(draftTarget, selected, storage)
+    const key = getProductDraftStorageKey(draftTarget)!
+    const stored = JSON.parse(storage.getItem(key)!)
+    stored.version = 8
+    delete stored.form.listingAreaState
+    storage.setItem(key, JSON.stringify(stored))
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      listingAreaCountry: "US",
+      listingAreaState: "",
+      listingAreaPlaceId: null,
+      listingAreaMode: "clear",
+    })
+  })
   it("keeps draft publication bound to the original merchant", () => {
     const accountA = "a".repeat(64)
     const accountB = "b".repeat(64)

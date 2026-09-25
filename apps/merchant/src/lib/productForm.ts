@@ -65,6 +65,10 @@ export interface ProductPublishFormValues {
 
 export interface MerchantProductFormValues extends ProductPublishFormValues {
   summary: string
+  listingAreaCountry: string
+  listingAreaState: string
+  listingAreaPlaceId: number | null
+  listingAreaMode: "unchanged" | "selected" | "clear"
   variations: ProductVariationFormState
   fulfillment: ProductFulfillmentChoice
   eventMarketReference: string

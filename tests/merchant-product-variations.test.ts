@@ -152,6 +152,160 @@ function toFamily(
 }
 
 describe("merchant product variation planning", () => {
+  it("applies a selected listing area to every new physical or digital listing", () => {
+    for (const format of ["physical", "digital"] as const) {
+      const plan = buildProductFamilyChangePlan({
+        parentDTag: `area-${format}`,
+        baseProduct: baseProduct({
+          format,
+          location: "Oakland, Alameda County, California, United States",
+          geohash: "9q9p",
+        }),
+        listingAreaMode: "apply",
+        variations: sizeVariationForm("S, M"),
+        currency: "USD",
+        now: NOW,
+      })
+      expect(plan.publish).toHaveLength(3)
+      for (const target of plan.publish) {
+        const tags = buildProductListingEventDraft({
+          product: target.product,
+          dTag: target.dTag,
+        }).tags
+        expect(tags).toContainEqual([
+          "location",
+          "Oakland, Alameda County, California, United States",
+        ])
+        expect(tags).toContainEqual(["g", "9q9p"])
+      }
+    }
+  })
+
+  it("preserves each existing family member's area until explicitly changed or cleared", () => {
+    const initial = buildProductFamilyChangePlan({
+      parentDTag: "area-family",
+      baseProduct: baseProduct({ location: "Original root", geohash: "9q8y" }),
+      listingAreaMode: "apply",
+      variations: sizeVariationForm("S"),
+      currency: "USD",
+      now: NOW,
+    })
+    const existing = toFamily(initial)
+    existing.variations[0]!.product.location = "Original variation"
+    existing.variations[0]!.product.geohash = "9q9p"
+    const variations = getProductVariationFormState(
+      existing.root,
+      existing.variations
+    ).state
+    const unchanged = buildProductFamilyChangePlan({
+      parentDTag: "area-family",
+      baseProduct: { ...existing.root.product, title: "Updated title" },
+      listingAreaMode: "preserve",
+      variations,
+      currency: "USD",
+      existing,
+      now: NOW + 1000,
+    })
+    expect(
+      unchanged.desired.map(({ product }) => [
+        product.location,
+        product.geohash,
+      ])
+    ).toEqual([
+      ["Original root", "9q8y"],
+      ["Original variation", "9q9p"],
+    ])
+    const cleared = buildProductFamilyChangePlan({
+      parentDTag: "area-family",
+      baseProduct: {
+        ...existing.root.product,
+        location: undefined,
+        geohash: undefined,
+      },
+      listingAreaMode: "apply",
+      variations,
+      currency: "USD",
+      existing,
+      now: NOW + 1000,
+    })
+    expect(
+      cleared.desired.every(
+        ({ product }) => !product.location && !product.geohash
+      )
+    ).toBe(true)
+    expect(cleared.publish).toHaveLength(2)
+    const changed = buildProductFamilyChangePlan({
+      parentDTag: "area-family",
+      baseProduct: {
+        ...existing.root.product,
+        location: "New area",
+        geohash: "9q9n",
+      },
+      listingAreaMode: "apply",
+      variations,
+      currency: "USD",
+      existing,
+      now: NOW + 1000,
+    })
+    expect(
+      changed.desired.every(
+        ({ product }) =>
+          product.location === "New area" && product.geohash === "9q9n"
+      )
+    ).toBe(true)
+
+    const preservedFulfillment = buildProductFamilyChangePlanWithFulfillment({
+      parentDTag: "area-family",
+      baseProduct: {
+        ...existing.root.product,
+        title: "Preserved fulfillment edit",
+      },
+      listingAreaMode: "preserve",
+      variations,
+      currency: "USD",
+      fulfillmentIntent: {
+        kind: "preserve_existing",
+        baseline: existing.root.product,
+      },
+      authoringCountries: [],
+      existing,
+      now: NOW + 1000,
+    })
+    expect(
+      preservedFulfillment.desired.map(({ product }) => [
+        product.location,
+        product.geohash,
+      ])
+    ).toEqual([
+      ["Original root", "9q8y"],
+      ["Original variation", "9q9p"],
+    ])
+    const clearedWithPreservedFulfillment =
+      buildProductFamilyChangePlanWithFulfillment({
+        parentDTag: "area-family",
+        baseProduct: {
+          ...existing.root.product,
+          location: undefined,
+          geohash: undefined,
+        },
+        listingAreaMode: "apply",
+        variations,
+        currency: "USD",
+        fulfillmentIntent: {
+          kind: "preserve_existing",
+          baseline: existing.root.product,
+        },
+        authoringCountries: [],
+        existing,
+        now: NOW + 1000,
+      })
+    expect(clearedWithPreservedFulfillment.publish).toHaveLength(2)
+    expect(
+      clearedWithPreservedFulfillment.desired.every(
+        ({ product }) => !product.location && !product.geohash
+      )
+    ).toBe(true)
+  })
   it("publishes a custom variation image URL containing a comma unchanged", () => {
     const imageUrl =
       "https://images.example.com/resize,w_1200/product.png?fit=crop,center"

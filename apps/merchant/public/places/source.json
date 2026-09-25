@@ -1,0 +1,2022 @@
+{
+  "source": "GeoNames cities500",
+  "sourceUrl": "https://download.geonames.org/export/dump/",
+  "license": "CC BY 4.0",
+  "sources": [
+    {
+      "name": "cities500.zip",
+      "sha256": "6ec75fdc8a46372f5f81b3d1431ece9afdccc98153b26ed58d01b59a24a6c259"
+    },
+    {
+      "name": "admin1CodesASCII.txt",
+      "sha256": "1da92a6323a5fec3176f3f743bf4cf4040fd56a876da55e46fbca23c863aa60a"
+    },
+    {
+      "name": "admin2Codes.txt",
+      "sha256": "63a82be925b8704abae683a89e32f40b22f618a93efc4e676e912873f8a3be20"
+    }
+  ],
+  "acceptedCountryCodes": [
+    "AD",
+    "AE",
+    "AG",
+    "AI",
+    "AL",
+    "AM",
+    "AO",
+    "AQ",
+    "AR",
+    "AS",
+    "AT",
+    "AU",
+    "AW",
+    "AX",
+    "AZ",
+    "BA",
+    "BB",
+    "BD",
+    "BE",
+    "BF",
+    "BG",
+    "BH",
+    "BI",
+    "BJ",
+    "BL",
+    "BM",
+    "BN",
+    "BO",
+    "BQ",
+    "BR",
+    "BS",
+    "BT",
+    "BV",
+    "BW",
+    "BZ",
+    "CA",
+    "CC",
+    "CD",
+    "CF",
+    "CG",
+    "CH",
+    "CI",
+    "CK",
+    "CL",
+    "CM",
+    "CN",
+    "CO",
+    "CR",
+    "CV",
+    "CW",
+    "CX",
+    "CY",
+    "CZ",
+    "DE",
+    "DJ",
+    "DK",
+    "DM",
+    "DO",
+    "DZ",
+    "EC",
+    "EE",
+    "EG",
+    "EH",
+    "ES",
+    "ET",
+    "FI",
+    "FJ",
+    "FK",
+    "FM",
+    "FO",
+    "FR",
+    "GA",
+    "GB",
+    "GD",
+    "GE",
+    "GF",
+    "GG",
+    "GH",
+    "GI",
+    "GL",
+    "GM",
+    "GN",
+    "GP",
+    "GQ",
+    "GR",
+    "GS",
+    "GT",
+    "GU",
+    "GW",
+    "GY",
+    "HK",
+    "HM",
+    "HN",
+    "HR",
+    "HU",
+    "ID",
+    "IE",
+    "IL",
+    "IM",
+    "IN",
+    "IO",
+    "IQ",
+    "IS",
+    "IT",
+    "JE",
+    "JM",
+    "JO",
+    "JP",
+    "KE",
+    "KG",
+    "KH",
+    "KI",
+    "KM",
+    "KN",
+    "KR",
+    "KW",
+    "KY",
+    "KZ",
+    "LA",
+    "LB",
+    "LC",
+    "LI",
+    "LK",
+    "LR",
+    "LS",
+    "LT",
+    "LU",
+    "LV",
+    "LY",
+    "MA",
+    "MC",
+    "MD",
+    "ME",
+    "MF",
+    "MG",
+    "MH",
+    "MK",
+    "ML",
+    "MM",
+    "MN",
+    "MO",
+    "MP",
+    "MQ",
+    "MR",
+    "MS",
+    "MT",
+    "MU",
+    "MV",
+    "MW",
+    "MX",
+    "MY",
+    "MZ",
+    "NA",
+    "NC",
+    "NE",
+    "NF",
+    "NG",
+    "NI",
+    "NL",
+    "NO",
+    "NP",
+    "NR",
+    "NU",
+    "NZ",
+    "OM",
+    "PA",
+    "PE",
+    "PF",
+    "PG",
+    "PH",
+    "PK",
+    "PL",
+    "PM",
+    "PN",
+    "PR",
+    "PS",
+    "PT",
+    "PW",
+    "PY",
+    "QA",
+    "RE",
+    "RO",
+    "RS",
+    "RW",
+    "SA",
+    "SB",
+    "SC",
+    "SE",
+    "SG",
+    "SH",
+    "SI",
+    "SJ",
+    "SK",
+    "SL",
+    "SM",
+    "SN",
+    "SO",
+    "SR",
+    "ST",
+    "SV",
+    "SX",
+    "SZ",
+    "TC",
+    "TD",
+    "TF",
+    "TG",
+    "TH",
+    "TJ",
+    "TK",
+    "TL",
+    "TN",
+    "TO",
+    "TR",
+    "TT",
+    "TV",
+    "TW",
+    "TZ",
+    "UG",
+    "UM",
+    "US",
+    "UY",
+    "UZ",
+    "VA",
+    "VC",
+    "VE",
+    "VG",
+    "VI",
+    "VN",
+    "VU",
+    "WF",
+    "WS",
+    "YT",
+    "ZA",
+    "ZM",
+    "ZW"
+  ],
+  "rows": 220174,
+  "sizes": [
+    {
+      "code": "AD",
+      "count": 20,
+      "bytes": 1208,
+      "gzipBytes": 555
+    },
+    {
+      "code": "AE",
+      "count": 107,
+      "bytes": 6996,
+      "gzipBytes": 2729
+    },
+    {
+      "code": "AG",
+      "count": 41,
+      "bytes": 2881,
+      "gzipBytes": 1003
+    },
+    {
+      "code": "AI",
+      "count": 14,
+      "bytes": 915,
+      "gzipBytes": 396
+    },
+    {
+      "code": "AL",
+      "count": 419,
+      "bytes": 31506,
+      "gzipBytes": 8508
+    },
+    {
+      "code": "AM",
+      "count": 625,
+      "bytes": 46804,
+      "gzipBytes": 12795
+    },
+    {
+      "code": "AO",
+      "count": 565,
+      "bytes": 31556,
+      "gzipBytes": 11449
+    },
+    {
+      "code": "AQ",
+      "count": 0,
+      "bytes": 2,
+      "gzipBytes": 22
+    },
+    {
+      "code": "AR",
+      "count": 1205,
+      "bytes": 107384,
+      "gzipBytes": 33149
+    },
+    {
+      "code": "AS",
+      "count": 28,
+      "bytes": 1889,
+      "gzipBytes": 699
+    },
+    {
+      "code": "AT",
+      "count": 3045,
+      "bytes": 276324,
+      "gzipBytes": 66815
+    },
+    {
+      "code": "AU",
+      "count": 4901,
+      "bytes": 374437,
+      "gzipBytes": 116008
+    },
+    {
+      "code": "AW",
+      "count": 14,
+      "bytes": 734,
+      "gzipBytes": 376
+    },
+    {
+      "code": "AX",
+      "count": 21,
+      "bytes": 1501,
+      "gzipBytes": 589
+    },
+    {
+      "code": "AZ",
+      "count": 246,
+      "bytes": 14617,
+      "gzipBytes": 5963
+    },
+    {
+      "code": "BA",
+      "count": 313,
+      "bytes": 19940,
+      "gzipBytes": 6999
+    },
+    {
+      "code": "BB",
+      "count": 16,
+      "bytes": 1031,
+      "gzipBytes": 487
+    },
+    {
+      "code": "BD",
+      "count": 164,
+      "bytes": 12218,
+      "gzipBytes": 4324
+    },
+    {
+      "code": "BE",
+      "count": 2256,
+      "bytes": 177525,
+      "gzipBytes": 48051
+    },
+    {
+      "code": "BF",
+      "count": 118,
+      "bytes": 8838,
+      "gzipBytes": 3067
+    },
+    {
+      "code": "BG",
+      "count": 333,
+      "bytes": 24355,
+      "gzipBytes": 7997
+    },
+    {
+      "code": "BH",
+      "count": 12,
+      "bytes": 757,
+      "gzipBytes": 394
+    },
+    {
+      "code": "BI",
+      "count": 33,
+      "bytes": 2169,
+      "gzipBytes": 916
+    },
+    {
+      "code": "BJ",
+      "count": 87,
+      "bytes": 5562,
+      "gzipBytes": 2299
+    },
+    {
+      "code": "BL",
+      "count": 1,
+      "bytes": 52,
+      "gzipBytes": 68
+    },
+    {
+      "code": "BM",
+      "count": 12,
+      "bytes": 796,
+      "gzipBytes": 368
+    },
+    {
+      "code": "BN",
+      "count": 63,
+      "bytes": 4262,
+      "gzipBytes": 1497
+    },
+    {
+      "code": "BO",
+      "count": 183,
+      "bytes": 13602,
+      "gzipBytes": 4508
+    },
+    {
+      "code": "BQ",
+      "count": 10,
+      "bytes": 615,
+      "gzipBytes": 331
+    },
+    {
+      "code": "BR",
+      "count": 5898,
+      "bytes": 461593,
+      "gzipBytes": 150110
+    },
+    {
+      "code": "BS",
+      "count": 28,
+      "bytes": 1821,
+      "gzipBytes": 899
+    },
+    {
+      "code": "BT",
+      "count": 34,
+      "bytes": 2042,
+      "gzipBytes": 881
+    },
+    {
+      "code": "BV",
+      "count": 0,
+      "bytes": 2,
+      "gzipBytes": 22
+    },
+    {
+      "code": "BW",
+      "count": 139,
+      "bytes": 8016,
+      "gzipBytes": 3152
+    },
+    {
+      "code": "BZ",
+      "count": 138,
+      "bytes": 9562,
+      "gzipBytes": 3214
+    },
+    {
+      "code": "CA",
+      "count": 3299,
+      "bytes": 268704,
+      "gzipBytes": 82604
+    },
+    {
+      "code": "CC",
+      "count": 1,
+      "bytes": 54,
+      "gzipBytes": 70
+    },
+    {
+      "code": "CD",
+      "count": 118,
+      "bytes": 7719,
+      "gzipBytes": 3301
+    },
+    {
+      "code": "CF",
+      "count": 51,
+      "bytes": 3456,
+      "gzipBytes": 1504
+    },
+    {
+      "code": "CG",
+      "count": 60,
+      "bytes": 3374,
+      "gzipBytes": 1467
+    },
+    {
+      "code": "CH",
+      "count": 1897,
+      "bytes": 141182,
+      "gzipBytes": 43117
+    },
+    {
+      "code": "CI",
+      "count": 5136,
+      "bytes": 343037,
+      "gzipBytes": 106549
+    },
+    {
+      "code": "CK",
+      "count": 2,
+      "bytes": 123,
+      "gzipBytes": 108
+    },
+    {
+      "code": "CL",
+      "count": 315,
+      "bytes": 27353,
+      "gzipBytes": 8162
+    },
+    {
+      "code": "CM",
+      "count": 145,
+      "bytes": 7839,
+      "gzipBytes": 3121
+    },
+    {
+      "code": "CN",
+      "count": 16055,
+      "bytes": 1077416,
+      "gzipBytes": 308087
+    },
+    {
+      "code": "CO",
+      "count": 1180,
+      "bytes": 87024,
+      "gzipBytes": 29683
+    },
+    {
+      "code": "CR",
+      "count": 137,
+      "bytes": 10175,
+      "gzipBytes": 3489
+    },
+    {
+      "code": "CV",
+      "count": 228,
+      "bytes": 17966,
+      "gzipBytes": 5527
+    },
+    {
+      "code": "CW",
+      "count": 14,
+      "bytes": 729,
+      "gzipBytes": 384
+    },
+    {
+      "code": "CX",
+      "count": 1,
+      "bytes": 61,
+      "gzipBytes": 77
+    },
+    {
+      "code": "CY",
+      "count": 132,
+      "bytes": 8751,
+      "gzipBytes": 3421
+    },
+    {
+      "code": "CZ",
+      "count": 2779,
+      "bytes": 230469,
+      "gzipBytes": 62577
+    },
+    {
+      "code": "DE",
+      "count": 11921,
+      "bytes": 831302,
+      "gzipBytes": 246172
+    },
+    {
+      "code": "DJ",
+      "count": 32,
+      "bytes": 1834,
+      "gzipBytes": 853
+    },
+    {
+      "code": "DK",
+      "count": 508,
+      "bytes": 39719,
+      "gzipBytes": 11632
+    },
+    {
+      "code": "DM",
+      "count": 20,
+      "bytes": 1408,
+      "gzipBytes": 573
+    },
+    {
+      "code": "DO",
+      "count": 214,
+      "bytes": 17391,
+      "gzipBytes": 5793
+    },
+    {
+      "code": "DZ",
+      "count": 353,
+      "bytes": 23915,
+      "gzipBytes": 9698
+    },
+    {
+      "code": "EC",
+      "count": 542,
+      "bytes": 38504,
+      "gzipBytes": 12377
+    },
+    {
+      "code": "EE",
+      "count": 218,
+      "bytes": 14782,
+      "gzipBytes": 4926
+    },
+    {
+      "code": "EG",
+      "count": 260,
+      "bytes": 15941,
+      "gzipBytes": 6757
+    },
+    {
+      "code": "EH",
+      "count": 27,
+      "bytes": 1385,
+      "gzipBytes": 693
+    },
+    {
+      "code": "ES",
+      "count": 7422,
+      "bytes": 630040,
+      "gzipBytes": 168881
+    },
+    {
+      "code": "ET",
+      "count": 255,
+      "bytes": 15428,
+      "gzipBytes": 5522
+    },
+    {
+      "code": "FI",
+      "count": 930,
+      "bytes": 66987,
+      "gzipBytes": 19936
+    },
+    {
+      "code": "FJ",
+      "count": 16,
+      "bytes": 1051,
+      "gzipBytes": 505
+    },
+    {
+      "code": "FK",
+      "count": 1,
+      "bytes": 52,
+      "gzipBytes": 68
+    },
+    {
+      "code": "FM",
+      "count": 62,
+      "bytes": 4474,
+      "gzipBytes": 1430
+    },
+    {
+      "code": "FO",
+      "count": 35,
+      "bytes": 2243,
+      "gzipBytes": 941
+    },
+    {
+      "code": "FR",
+      "count": 15364,
+      "bytes": 1182547,
+      "gzipBytes": 353640
+    },
+    {
+      "code": "GA",
+      "count": 50,
+      "bytes": 3011,
+      "gzipBytes": 1312
+    },
+    {
+      "code": "GB",
+      "count": 5919,
+      "bytes": 415652,
+      "gzipBytes": 130775
+    },
+    {
+      "code": "GD",
+      "count": 10,
+      "bytes": 728,
+      "gzipBytes": 366
+    },
+    {
+      "code": "GE",
+      "count": 218,
+      "bytes": 15285,
+      "gzipBytes": 5330
+    },
+    {
+      "code": "GF",
+      "count": 20,
+      "bytes": 1272,
+      "gzipBytes": 558
+    },
+    {
+      "code": "GG",
+      "count": 12,
+      "bytes": 726,
+      "gzipBytes": 357
+    },
+    {
+      "code": "GH",
+      "count": 120,
+      "bytes": 8268,
+      "gzipBytes": 3468
+    },
+    {
+      "code": "GI",
+      "count": 7,
+      "bytes": 378,
+      "gzipBytes": 226
+    },
+    {
+      "code": "GL",
+      "count": 18,
+      "bytes": 1146,
+      "gzipBytes": 556
+    },
+    {
+      "code": "GM",
+      "count": 180,
+      "bytes": 10768,
+      "gzipBytes": 3386
+    },
+    {
+      "code": "GN",
+      "count": 83,
+      "bytes": 6217,
+      "gzipBytes": 2081
+    },
+    {
+      "code": "GP",
+      "count": 25,
+      "bytes": 1872,
+      "gzipBytes": 671
+    },
+    {
+      "code": "GQ",
+      "count": 27,
+      "bytes": 1544,
+      "gzipBytes": 752
+    },
+    {
+      "code": "GR",
+      "count": 1986,
+      "bytes": 157257,
+      "gzipBytes": 44739
+    },
+    {
+      "code": "GS",
+      "count": 1,
+      "bytes": 50,
+      "gzipBytes": 66
+    },
+    {
+      "code": "GT",
+      "count": 340,
+      "bytes": 27151,
+      "gzipBytes": 8739
+    },
+    {
+      "code": "GU",
+      "count": 28,
+      "bytes": 1807,
+      "gzipBytes": 759
+    },
+    {
+      "code": "GW",
+      "count": 52,
+      "bytes": 3144,
+      "gzipBytes": 1272
+    },
+    {
+      "code": "GY",
+      "count": 23,
+      "bytes": 1669,
+      "gzipBytes": 757
+    },
+    {
+      "code": "HK",
+      "count": 325,
+      "bytes": 23293,
+      "gzipBytes": 6978
+    },
+    {
+      "code": "HM",
+      "count": 0,
+      "bytes": 2,
+      "gzipBytes": 22
+    },
+    {
+      "code": "HN",
+      "count": 544,
+      "bytes": 45018,
+      "gzipBytes": 12271
+    },
+    {
+      "code": "HR",
+      "count": 1215,
+      "bytes": 91831,
+      "gzipBytes": 28198
+    },
+    {
+      "code": "HU",
+      "count": 1226,
+      "bytes": 79705,
+      "gzipBytes": 26353
+    },
+    {
+      "code": "ID",
+      "count": 9302,
+      "bytes": 707799,
+      "gzipBytes": 176044
+    },
+    {
+      "code": "IE",
+      "count": 566,
+      "bytes": 39058,
+      "gzipBytes": 12190
+    },
+    {
+      "code": "IL",
+      "count": 724,
+      "bytes": 47318,
+      "gzipBytes": 15588
+    },
+    {
+      "code": "IM",
+      "count": 21,
+      "bytes": 1136,
+      "gzipBytes": 510
+    },
+    {
+      "code": "IN",
+      "count": 7115,
+      "bytes": 506727,
+      "gzipBytes": 182922
+    },
+    {
+      "code": "IO",
+      "count": 2,
+      "bytes": 111,
+      "gzipBytes": 110
+    },
+    {
+      "code": "IQ",
+      "count": 174,
+      "bytes": 12567,
+      "gzipBytes": 4947
+    },
+    {
+      "code": "IS",
+      "count": 50,
+      "bytes": 3964,
+      "gzipBytes": 1628
+    },
+    {
+      "code": "IT",
+      "count": 11856,
+      "bytes": 944232,
+      "gzipBytes": 268918
+    },
+    {
+      "code": "JE",
+      "count": 6,
+      "bytes": 351,
+      "gzipBytes": 229
+    },
+    {
+      "code": "JM",
+      "count": 104,
+      "bytes": 8104,
+      "gzipBytes": 2960
+    },
+    {
+      "code": "JO",
+      "count": 148,
+      "bytes": 8468,
+      "gzipBytes": 3482
+    },
+    {
+      "code": "JP",
+      "count": 2190,
+      "bytes": 149513,
+      "gzipBytes": 50991
+    },
+    {
+      "code": "KE",
+      "count": 336,
+      "bytes": 20609,
+      "gzipBytes": 7860
+    },
+    {
+      "code": "KG",
+      "count": 112,
+      "bytes": 6785,
+      "gzipBytes": 2613
+    },
+    {
+      "code": "KH",
+      "count": 341,
+      "bytes": 25675,
+      "gzipBytes": 8807
+    },
+    {
+      "code": "KI",
+      "count": 37,
+      "bytes": 2850,
+      "gzipBytes": 929
+    },
+    {
+      "code": "KM",
+      "count": 119,
+      "bytes": 7113,
+      "gzipBytes": 2365
+    },
+    {
+      "code": "KN",
+      "count": 18,
+      "bytes": 1317,
+      "gzipBytes": 603
+    },
+    {
+      "code": "KR",
+      "count": 311,
+      "bytes": 22268,
+      "gzipBytes": 6827
+    },
+    {
+      "code": "KW",
+      "count": 28,
+      "bytes": 1855,
+      "gzipBytes": 812
+    },
+    {
+      "code": "KY",
+      "count": 72,
+      "bytes": 3988,
+      "gzipBytes": 1595
+    },
+    {
+      "code": "KZ",
+      "count": 353,
+      "bytes": 21649,
+      "gzipBytes": 8493
+    },
+    {
+      "code": "LA",
+      "count": 117,
+      "bytes": 7650,
+      "gzipBytes": 2813
+    },
+    {
+      "code": "LB",
+      "count": 52,
+      "bytes": 3379,
+      "gzipBytes": 1365
+    },
+    {
+      "code": "LC",
+      "count": 38,
+      "bytes": 2548,
+      "gzipBytes": 1112
+    },
+    {
+      "code": "LI",
+      "count": 14,
+      "bytes": 771,
+      "gzipBytes": 360
+    },
+    {
+      "code": "LK",
+      "count": 89,
+      "bytes": 7221,
+      "gzipBytes": 2300
+    },
+    {
+      "code": "LR",
+      "count": 27,
+      "bytes": 1682,
+      "gzipBytes": 808
+    },
+    {
+      "code": "LS",
+      "count": 47,
+      "bytes": 2828,
+      "gzipBytes": 1153
+    },
+    {
+      "code": "LT",
+      "count": 164,
+      "bytes": 11459,
+      "gzipBytes": 4078
+    },
+    {
+      "code": "LU",
+      "count": 235,
+      "bytes": 16194,
+      "gzipBytes": 5140
+    },
+    {
+      "code": "LV",
+      "count": 147,
+      "bytes": 10827,
+      "gzipBytes": 3876
+    },
+    {
+      "code": "LY",
+      "count": 119,
+      "bytes": 7397,
+      "gzipBytes": 3108
+    },
+    {
+      "code": "MA",
+      "count": 480,
+      "bytes": 36771,
+      "gzipBytes": 12034
+    },
+    {
+      "code": "MC",
+      "count": 12,
+      "bytes": 890,
+      "gzipBytes": 361
+    },
+    {
+      "code": "MD",
+      "count": 101,
+      "bytes": 6129,
+      "gzipBytes": 2497
+    },
+    {
+      "code": "ME",
+      "count": 66,
+      "bytes": 3846,
+      "gzipBytes": 1598
+    },
+    {
+      "code": "MF",
+      "count": 9,
+      "bytes": 487,
+      "gzipBytes": 293
+    },
+    {
+      "code": "MG",
+      "count": 152,
+      "bytes": 11385,
+      "gzipBytes": 3765
+    },
+    {
+      "code": "MH",
+      "count": 26,
+      "bytes": 1511,
+      "gzipBytes": 695
+    },
+    {
+      "code": "MK",
+      "count": 302,
+      "bytes": 17435,
+      "gzipBytes": 6958
+    },
+    {
+      "code": "ML",
+      "count": 94,
+      "bytes": 5573,
+      "gzipBytes": 2333
+    },
+    {
+      "code": "MM",
+      "count": 579,
+      "bytes": 43087,
+      "gzipBytes": 13173
+    },
+    {
+      "code": "MN",
+      "count": 332,
+      "bytes": 19812,
+      "gzipBytes": 6347
+    },
+    {
+      "code": "MO",
+      "count": 8,
+      "bytes": 499,
+      "gzipBytes": 276
+    },
+    {
+      "code": "MP",
+      "count": 10,
+      "bytes": 633,
+      "gzipBytes": 318
+    },
+    {
+      "code": "MQ",
+      "count": 23,
+      "bytes": 1710,
+      "gzipBytes": 608
+    },
+    {
+      "code": "MR",
+      "count": 88,
+      "bytes": 5407,
+      "gzipBytes": 2416
+    },
+    {
+      "code": "MS",
+      "count": 4,
+      "bytes": 245,
+      "gzipBytes": 158
+    },
+    {
+      "code": "MT",
+      "count": 71,
+      "bytes": 4178,
+      "gzipBytes": 1806
+    },
+    {
+      "code": "MU",
+      "count": 116,
+      "bytes": 7441,
+      "gzipBytes": 2776
+    },
+    {
+      "code": "MV",
+      "count": 34,
+      "bytes": 2109,
+      "gzipBytes": 920
+    },
+    {
+      "code": "MW",
+      "count": 39,
+      "bytes": 3111,
+      "gzipBytes": 1050
+    },
+    {
+      "code": "MX",
+      "count": 16880,
+      "bytes": 1319269,
+      "gzipBytes": 448784
+    },
+    {
+      "code": "MY",
+      "count": 740,
+      "bytes": 52907,
+      "gzipBytes": 17277
+    },
+    {
+      "code": "MZ",
+      "count": 94,
+      "bytes": 6232,
+      "gzipBytes": 2431
+    },
+    {
+      "code": "NA",
+      "count": 93,
+      "bytes": 6103,
+      "gzipBytes": 2346
+    },
+    {
+      "code": "NC",
+      "count": 63,
+      "bytes": 4647,
+      "gzipBytes": 1626
+    },
+    {
+      "code": "NE",
+      "count": 74,
+      "bytes": 4560,
+      "gzipBytes": 1845
+    },
+    {
+      "code": "NF",
+      "count": 1,
+      "bytes": 52,
+      "gzipBytes": 68
+    },
+    {
+      "code": "NG",
+      "count": 927,
+      "bytes": 58780,
+      "gzipBytes": 22671
+    },
+    {
+      "code": "NI",
+      "count": 168,
+      "bytes": 13278,
+      "gzipBytes": 4312
+    },
+    {
+      "code": "NL",
+      "count": 2035,
+      "bytes": 156416,
+      "gzipBytes": 44600
+    },
+    {
+      "code": "NO",
+      "count": 632,
+      "bytes": 40422,
+      "gzipBytes": 14991
+    },
+    {
+      "code": "NP",
+      "count": 84,
+      "bytes": 6054,
+      "gzipBytes": 2380
+    },
+    {
+      "code": "NR",
+      "count": 15,
+      "bytes": 936,
+      "gzipBytes": 407
+    },
+    {
+      "code": "NU",
+      "count": 1,
+      "bytes": 50,
+      "gzipBytes": 66
+    },
+    {
+      "code": "NZ",
+      "count": 732,
+      "bytes": 57042,
+      "gzipBytes": 15110
+    },
+    {
+      "code": "OM",
+      "count": 42,
+      "bytes": 2772,
+      "gzipBytes": 1186
+    },
+    {
+      "code": "PA",
+      "count": 801,
+      "bytes": 67701,
+      "gzipBytes": 18114
+    },
+    {
+      "code": "PE",
+      "count": 2296,
+      "bytes": 186040,
+      "gzipBytes": 51942
+    },
+    {
+      "code": "PF",
+      "count": 45,
+      "bytes": 3236,
+      "gzipBytes": 1180
+    },
+    {
+      "code": "PG",
+      "count": 59,
+      "bytes": 3977,
+      "gzipBytes": 1661
+    },
+    {
+      "code": "PH",
+      "count": 4530,
+      "bytes": 378052,
+      "gzipBytes": 96529
+    },
+    {
+      "code": "PK",
+      "count": 576,
+      "bytes": 44466,
+      "gzipBytes": 14588
+    },
+    {
+      "code": "PL",
+      "count": 3869,
+      "bytes": 305727,
+      "gzipBytes": 92411
+    },
+    {
+      "code": "PM",
+      "count": 2,
+      "bytes": 134,
+      "gzipBytes": 120
+    },
+    {
+      "code": "PN",
+      "count": 1,
+      "bytes": 53,
+      "gzipBytes": 69
+    },
+    {
+      "code": "PR",
+      "count": 227,
+      "bytes": 17709,
+      "gzipBytes": 6219
+    },
+    {
+      "code": "PS",
+      "count": 448,
+      "bytes": 28980,
+      "gzipBytes": 9944
+    },
+    {
+      "code": "PT",
+      "count": 1079,
+      "bytes": 73590,
+      "gzipBytes": 24978
+    },
+    {
+      "code": "PW",
+      "count": 29,
+      "bytes": 1737,
+      "gzipBytes": 751
+    },
+    {
+      "code": "PY",
+      "count": 173,
+      "bytes": 14327,
+      "gzipBytes": 5108
+    },
+    {
+      "code": "QA",
+      "count": 43,
+      "bytes": 3138,
+      "gzipBytes": 1213
+    },
+    {
+      "code": "RE",
+      "count": 28,
+      "bytes": 1919,
+      "gzipBytes": 712
+    },
+    {
+      "code": "RO",
+      "count": 7149,
+      "bytes": 553137,
+      "gzipBytes": 173207
+    },
+    {
+      "code": "RS",
+      "count": 492,
+      "bytes": 34290,
+      "gzipBytes": 10700
+    },
+    {
+      "code": "RW",
+      "count": 51,
+      "bytes": 4157,
+      "gzipBytes": 1314
+    },
+    {
+      "code": "SA",
+      "count": 161,
+      "bytes": 10607,
+      "gzipBytes": 4146
+    },
+    {
+      "code": "SB",
+      "count": 23,
+      "bytes": 1593,
+      "gzipBytes": 697
+    },
+    {
+      "code": "SC",
+      "count": 26,
+      "bytes": 1676,
+      "gzipBytes": 769
+    },
+    {
+      "code": "SE",
+      "count": 1326,
+      "bytes": 98518,
+      "gzipBytes": 29755
+    },
+    {
+      "code": "SG",
+      "count": 121,
+      "bytes": 6659,
+      "gzipBytes": 2510
+    },
+    {
+      "code": "SH",
+      "count": 6,
+      "bytes": 411,
+      "gzipBytes": 270
+    },
+    {
+      "code": "SI",
+      "count": 602,
+      "bytes": 45453,
+      "gzipBytes": 13631
+    },
+    {
+      "code": "SJ",
+      "count": 2,
+      "bytes": 141,
+      "gzipBytes": 133
+    },
+    {
+      "code": "SK",
+      "count": 832,
+      "bytes": 68320,
+      "gzipBytes": 19437
+    },
+    {
+      "code": "SL",
+      "count": 88,
+      "bytes": 5747,
+      "gzipBytes": 1983
+    },
+    {
+      "code": "SM",
+      "count": 15,
+      "bytes": 932,
+      "gzipBytes": 432
+    },
+    {
+      "code": "SN",
+      "count": 157,
+      "bytes": 9385,
+      "gzipBytes": 3756
+    },
+    {
+      "code": "SO",
+      "count": 76,
+      "bytes": 4248,
+      "gzipBytes": 1967
+    },
+    {
+      "code": "SR",
+      "count": 35,
+      "bytes": 2441,
+      "gzipBytes": 975
+    },
+    {
+      "code": "ST",
+      "count": 51,
+      "bytes": 4089,
+      "gzipBytes": 1278
+    },
+    {
+      "code": "SV",
+      "count": 102,
+      "bytes": 7161,
+      "gzipBytes": 2455
+    },
+    {
+      "code": "SX",
+      "count": 7,
+      "bytes": 404,
+      "gzipBytes": 250
+    },
+    {
+      "code": "SZ",
+      "count": 25,
+      "bytes": 1558,
+      "gzipBytes": 661
+    },
+    {
+      "code": "TC",
+      "count": 11,
+      "bytes": 624,
+      "gzipBytes": 339
+    },
+    {
+      "code": "TD",
+      "count": 74,
+      "bytes": 4344,
+      "gzipBytes": 1956
+    },
+    {
+      "code": "TF",
+      "count": 1,
+      "bytes": 69,
+      "gzipBytes": 89
+    },
+    {
+      "code": "TG",
+      "count": 35,
+      "bytes": 1915,
+      "gzipBytes": 846
+    },
+    {
+      "code": "TH",
+      "count": 1085,
+      "bytes": 83747,
+      "gzipBytes": 25580
+    },
+    {
+      "code": "TJ",
+      "count": 103,
+      "bytes": 6764,
+      "gzipBytes": 2494
+    },
+    {
+      "code": "TK",
+      "count": 3,
+      "bytes": 190,
+      "gzipBytes": 157
+    },
+    {
+      "code": "TL",
+      "count": 32,
+      "bytes": 2128,
+      "gzipBytes": 939
+    },
+    {
+      "code": "TN",
+      "count": 286,
+      "bytes": 22582,
+      "gzipBytes": 7835
+    },
+    {
+      "code": "TO",
+      "count": 47,
+      "bytes": 2935,
+      "gzipBytes": 1093
+    },
+    {
+      "code": "TR",
+      "count": 4032,
+      "bytes": 285783,
+      "gzipBytes": 93793
+    },
+    {
+      "code": "TT",
+      "count": 27,
+      "bytes": 1893,
+      "gzipBytes": 796
+    },
+    {
+      "code": "TV",
+      "count": 12,
+      "bytes": 754,
+      "gzipBytes": 357
+    },
+    {
+      "code": "TW",
+      "count": 89,
+      "bytes": 5905,
+      "gzipBytes": 2078
+    },
+    {
+      "code": "TZ",
+      "count": 324,
+      "bytes": 20383,
+      "gzipBytes": 7267
+    },
+    {
+      "code": "UG",
+      "count": 212,
+      "bytes": 16375,
+      "gzipBytes": 4853
+    },
+    {
+      "code": "UM",
+      "count": 0,
+      "bytes": 2,
+      "gzipBytes": 22
+    },
+    {
+      "code": "UY",
+      "count": 154,
+      "bytes": 11649,
+      "gzipBytes": 4328
+    },
+    {
+      "code": "UZ",
+      "count": 221,
+      "bytes": 14228,
+      "gzipBytes": 4986
+    },
+    {
+      "code": "VA",
+      "count": 1,
+      "bytes": 54,
+      "gzipBytes": 70
+    },
+    {
+      "code": "VC",
+      "count": 25,
+      "bytes": 1774,
+      "gzipBytes": 693
+    },
+    {
+      "code": "VE",
+      "count": 414,
+      "bytes": 33423,
+      "gzipBytes": 11680
+    },
+    {
+      "code": "VG",
+      "count": 2,
+      "bytes": 107,
+      "gzipBytes": 101
+    },
+    {
+      "code": "VI",
+      "count": 8,
+      "bytes": 657,
+      "gzipBytes": 301
+    },
+    {
+      "code": "VN",
+      "count": 915,
+      "bytes": 76791,
+      "gzipBytes": 23236
+    },
+    {
+      "code": "VU",
+      "count": 10,
+      "bytes": 569,
+      "gzipBytes": 322
+    },
+    {
+      "code": "WF",
+      "count": 8,
+      "bytes": 430,
+      "gzipBytes": 225
+    },
+    {
+      "code": "WS",
+      "count": 74,
+      "bytes": 4255,
+      "gzipBytes": 1615
+    },
+    {
+      "code": "YT",
+      "count": 66,
+      "bytes": 3935,
+      "gzipBytes": 1459
+    },
+    {
+      "code": "ZA",
+      "count": 989,
+      "bytes": 91489,
+      "gzipBytes": 24575
+    },
+    {
+      "code": "ZM",
+      "count": 98,
+      "bytes": 6446,
+      "gzipBytes": 2395
+    },
+    {
+      "code": "ZW",
+      "count": 69,
+      "bytes": 4660,
+      "gzipBytes": 1726
+    }
+  ],
+  "usStateSizes": [
+    {
+      "code": "AK",
+      "name": "Alaska",
+      "count": 121,
+      "bytes": 9833,
+      "gzipBytes": 3232
+    },
+    {
+      "code": "AL",
+      "name": "Alabama",
+      "count": 425,
+      "bytes": 30812,
+      "gzipBytes": 10012
+    },
+    {
+      "code": "AR",
+      "name": "Arkansas",
+      "count": 305,
+      "bytes": 22331,
+      "gzipBytes": 7364
+    },
+    {
+      "code": "AZ",
+      "name": "Arizona",
+      "count": 286,
+      "bytes": 21130,
+      "gzipBytes": 6866
+    },
+    {
+      "code": "CA",
+      "name": "California",
+      "count": 1242,
+      "bytes": 99300,
+      "gzipBytes": 29117
+    },
+    {
+      "code": "CO",
+      "name": "Colorado",
+      "count": 287,
+      "bytes": 21444,
+      "gzipBytes": 7010
+    },
+    {
+      "code": "CT",
+      "name": "Connecticut",
+      "count": 198,
+      "bytes": 19528,
+      "gzipBytes": 4495
+    },
+    {
+      "code": "DC",
+      "name": "District of Columbia",
+      "count": 55,
+      "bytes": 4225,
+      "gzipBytes": 1351
+    },
+    {
+      "code": "DE",
+      "name": "Delaware",
+      "count": 56,
+      "bytes": 4142,
+      "gzipBytes": 1321
+    },
+    {
+      "code": "FL",
+      "name": "Florida",
+      "count": 867,
+      "bytes": 65590,
+      "gzipBytes": 20116
+    },
+    {
+      "code": "GA",
+      "name": "Georgia",
+      "count": 478,
+      "bytes": 34445,
+      "gzipBytes": 11571
+    },
+    {
+      "code": "HI",
+      "name": "Hawaii",
+      "count": 254,
+      "bytes": 19389,
+      "gzipBytes": 6023
+    },
+    {
+      "code": "IA",
+      "name": "Iowa",
+      "count": 457,
+      "bytes": 31234,
+      "gzipBytes": 10728
+    },
+    {
+      "code": "ID",
+      "name": "Idaho",
+      "count": 136,
+      "bytes": 9540,
+      "gzipBytes": 3409
+    },
+    {
+      "code": "IL",
+      "name": "Illinois",
+      "count": 993,
+      "bytes": 72713,
+      "gzipBytes": 22061
+    },
+    {
+      "code": "IN",
+      "name": "Indiana",
+      "count": 493,
+      "bytes": 35677,
+      "gzipBytes": 11438
+    },
+    {
+      "code": "KS",
+      "name": "Kansas",
+      "count": 299,
+      "bytes": 21128,
+      "gzipBytes": 7161
+    },
+    {
+      "code": "KY",
+      "name": "Kentucky",
+      "count": 375,
+      "bytes": 27859,
+      "gzipBytes": 8999
+    },
+    {
+      "code": "LA",
+      "name": "Louisiana",
+      "count": 375,
+      "bytes": 28907,
+      "gzipBytes": 8981
+    },
+    {
+      "code": "MA",
+      "name": "Massachusetts",
+      "count": 488,
+      "bytes": 39533,
+      "gzipBytes": 10438
+    },
+    {
+      "code": "MD",
+      "name": "Maryland",
+      "count": 612,
+      "bytes": 48848,
+      "gzipBytes": 13684
+    },
+    {
+      "code": "ME",
+      "name": "Maine",
+      "count": 350,
+      "bytes": 24795,
+      "gzipBytes": 7785
+    },
+    {
+      "code": "MI",
+      "name": "Michigan",
+      "count": 549,
+      "bytes": 40643,
+      "gzipBytes": 12852
+    },
+    {
+      "code": "MN",
+      "name": "Minnesota",
+      "count": 515,
+      "bytes": 38538,
+      "gzipBytes": 11965
+    },
+    {
+      "code": "MO",
+      "name": "Missouri",
+      "count": 520,
+      "bytes": 38747,
+      "gzipBytes": 12422
+    },
+    {
+      "code": "MS",
+      "name": "Mississippi",
+      "count": 277,
+      "bytes": 21067,
+      "gzipBytes": 6851
+    },
+    {
+      "code": "MT",
+      "name": "Montana",
+      "count": 156,
+      "bytes": 11581,
+      "gzipBytes": 4063
+    },
+    {
+      "code": "NC",
+      "name": "North Carolina",
+      "count": 593,
+      "bytes": 47477,
+      "gzipBytes": 13994
+    },
+    {
+      "code": "ND",
+      "name": "North Dakota",
+      "count": 117,
+      "bytes": 8914,
+      "gzipBytes": 2977
+    },
+    {
+      "code": "NE",
+      "name": "Nebraska",
+      "count": 217,
+      "bytes": 15521,
+      "gzipBytes": 5397
+    },
+    {
+      "code": "NH",
+      "name": "New Hampshire",
+      "count": 222,
+      "bytes": 17682,
+      "gzipBytes": 4875
+    },
+    {
+      "code": "NJ",
+      "name": "New Jersey",
+      "count": 590,
+      "bytes": 45712,
+      "gzipBytes": 12714
+    },
+    {
+      "code": "NM",
+      "name": "New Mexico",
+      "count": 219,
+      "bytes": 16998,
+      "gzipBytes": 5369
+    },
+    {
+      "code": "NV",
+      "name": "Nevada",
+      "count": 79,
+      "bytes": 5721,
+      "gzipBytes": 2054
+    },
+    {
+      "code": "NY",
+      "name": "New York",
+      "count": 1262,
+      "bytes": 94846,
+      "gzipBytes": 27808
+    },
+    {
+      "code": "OH",
+      "name": "Ohio",
+      "count": 866,
+      "bytes": 60942,
+      "gzipBytes": 19402
+    },
+    {
+      "code": "OK",
+      "name": "Oklahoma",
+      "count": 355,
+      "bytes": 25496,
+      "gzipBytes": 8359
+    },
+    {
+      "code": "OR",
+      "name": "Oregon",
+      "count": 262,
+      "bytes": 19008,
+      "gzipBytes": 6209
+    },
+    {
+      "code": "PA",
+      "name": "Pennsylvania",
+      "count": 1478,
+      "bytes": 117403,
+      "gzipBytes": 32716
+    },
+    {
+      "code": "RI",
+      "name": "Rhode Island",
+      "count": 52,
+      "bytes": 4223,
+      "gzipBytes": 1244
+    },
+    {
+      "code": "SC",
+      "name": "South Carolina",
+      "count": 306,
+      "bytes": 24788,
+      "gzipBytes": 7222
+    },
+    {
+      "code": "SD",
+      "name": "South Dakota",
+      "count": 152,
+      "bytes": 11777,
+      "gzipBytes": 3915
+    },
+    {
+      "code": "TN",
+      "name": "Tennessee",
+      "count": 371,
+      "bytes": 27802,
+      "gzipBytes": 9004
+    },
+    {
+      "code": "TX",
+      "name": "Texas",
+      "count": 1282,
+      "bytes": 90598,
+      "gzipBytes": 30773
+    },
+    {
+      "code": "UT",
+      "name": "Utah",
+      "count": 233,
+      "bytes": 16378,
+      "gzipBytes": 5342
+    },
+    {
+      "code": "VA",
+      "name": "Virginia",
+      "count": 459,
+      "bytes": 34902,
+      "gzipBytes": 11140
+    },
+    {
+      "code": "VT",
+      "name": "Vermont",
+      "count": 117,
+      "bytes": 8682,
+      "gzipBytes": 2748
+    },
+    {
+      "code": "WA",
+      "name": "Washington",
+      "count": 483,
+      "bytes": 37301,
+      "gzipBytes": 11272
+    },
+    {
+      "code": "WI",
+      "name": "Wisconsin",
+      "count": 574,
+      "bytes": 42735,
+      "gzipBytes": 13224
+    },
+    {
+      "code": "WV",
+      "name": "West Virginia",
+      "count": 247,
+      "bytes": 19277,
+      "gzipBytes": 5983
+    },
+    {
+      "code": "WY",
+      "name": "Wyoming",
+      "count": 80,
+      "bytes": 5891,
+      "gzipBytes": 2122
+    }
+  ]
+}

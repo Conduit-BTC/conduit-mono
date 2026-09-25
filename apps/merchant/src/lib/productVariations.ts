@@ -1376,7 +1376,8 @@ function buildVariationProduct(
   currency: string,
   existing: ProductListingRecordLike | undefined,
   now: number,
-  preserveExistingFulfillment = false
+  preserveExistingFulfillment = false,
+  listingAreaMode: "preserve" | "apply" = "apply"
 ): ProductSchema {
   const dTag =
     row.dTag ??
@@ -1399,6 +1400,9 @@ function buildVariationProduct(
     images: buildVariationImages(row, existing, parent),
     format: row.format === "inherit" ? parent.format : row.format,
     visibility: parent.visibility,
+    ...(listingAreaMode === "apply" || !existing
+      ? { location: parent.location, geohash: parent.geohash }
+      : {}),
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
   }
@@ -1556,7 +1560,8 @@ function buildPreservedProductFamilyChangePlan<
         input.currency,
         existing,
         input.now ?? Date.now(),
-        true
+        true,
+        input.listingAreaMode ?? "apply"
       )
       desired.push({
         dTag: existing.dTag,
@@ -1597,6 +1602,7 @@ export function buildProductFamilyChangePlan<
 >(input: {
   parentDTag: string
   baseProduct: ProductSchema
+  listingAreaMode?: "preserve" | "apply"
   variations: ProductVariationFormState
   currency: string
   fulfillmentIntent: ProductPublicationFulfillmentIntent
@@ -1684,7 +1690,9 @@ export function buildProductFamilyChangePlan<
             { ...row, dTag },
             input.currency,
             existing,
-            now
+            now,
+            false,
+            input.listingAreaMode ?? "apply"
           ),
           existing,
           !row.inheritShipping && !row.shippingCost.trim()

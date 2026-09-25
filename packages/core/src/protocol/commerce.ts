@@ -2038,6 +2038,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
     location: product.location,
+    geohash: product.geohash,
     eventId: record.eventId,
     eventCreatedAt: record.eventCreatedAt,
     dTag: record.dTag ?? undefined,
@@ -2100,6 +2101,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     zapMessagePolicy,
     publicZapPolicyKnown: row.publicZapPolicyKnown ?? false,
     location: row.location,
+    geohash: row.geohash,
     createdAt: row.createdAt ?? row.cachedAt,
     updatedAt: row.updatedAt ?? row.cachedAt,
   }
