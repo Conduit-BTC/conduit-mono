@@ -108,7 +108,11 @@ export async function resolveCurrentFutureEventMarketFulfillments(
     }
     let current: OrderEventMarketPickupFulfillmentSchema
     try {
-      current = dependencies.snapshot({ marketRead, productRead })
+      current = dependencies.snapshot({
+        marketRead,
+        productRead,
+        selectedOccurrenceCoordinate: saved.calendar.coordinate,
+      })
     } catch {
       return null
     }

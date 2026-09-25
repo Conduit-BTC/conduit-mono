@@ -20,6 +20,10 @@ import {
   type EventMarketMerchantRow,
 } from "./event-market-roster"
 import { readEventMarketRoster } from "./event-market-roster-read"
+import {
+  buildEventMarketSeriesDraft,
+  parseEventMarketSeriesEvent,
+} from "./event-market-schedule"
 import { waitForVisibleDocument } from "./interactive-signer"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
@@ -103,6 +107,35 @@ const defaultDependencies: RosterPublishDependencies = {
   publish: publishRoster,
 }
 
+/** Content-free per-record relay outcomes for an organizer publication. */
+export function summarizeEventMarketPublishDelivery(
+  delivery: PublishWithPlannerResult
+): {
+  acknowledged: number
+  rejected: number
+  timedOut: number
+  otherFailed: number
+} {
+  const rejected = new Set(delivery.rejectedRelayUrls ?? [])
+  const failed = delivery.failedRelayUrls.filter(
+    (url) => !delivery.successfulRelayUrls.includes(url)
+  )
+  const timedOut = failed.filter(
+    (url) =>
+      !rejected.has(url) &&
+      /timeout|acknowledg/i.test(delivery.relayFailureMessages[url] ?? "")
+  ).length
+  return {
+    acknowledged: delivery.successfulRelayUrls.length,
+    rejected: [...rejected].filter((url) => failed.includes(url)).length,
+    timedOut,
+    otherFailed:
+      failed.length -
+      [...rejected].filter((url) => failed.includes(url)).length -
+      timedOut,
+  }
+}
+
 /** Compare the strongest known signed head before requesting an organizer signature. */
 export async function publishEventMarketRoster(
   input: {
@@ -116,6 +149,9 @@ export async function publishEventMarketRoster(
     shouldContinue?: () => boolean
     /** Durable exact-retry save. Must finish before any relay publish begins. */
     onSignedLocal: (event: SignedPublicNostrEvent) => Promise<void>
+    onDelivery?: (
+      delivery: ReturnType<typeof summarizeEventMarketPublishDelivery>
+    ) => void
   },
   dependencies: RosterPublishDependencies = defaultDependencies
 ): Promise<{
@@ -215,6 +251,7 @@ export async function publishEventMarketRoster(
     organizerPubkey,
     input.shouldContinue
   )
+  input.onDelivery?.(summarizeEventMarketPublishDelivery(delivery))
   if (delivery.successfulRelayUrls.length === 0) {
     throw new Error(
       "The signed Event Market roster was saved for retry but no relay acknowledged it."
@@ -349,6 +386,369 @@ export async function publishFutureEventMarketCalendar(input: {
   if (delivery.successfulRelayUrls.length === 0)
     throw new Error(
       "The signed calendar was saved for retry but no relay acknowledged it."
+    )
+  return { signedEvent, delivery }
+}
+
+/** Publish new concrete NIP-52 dates before the signed finite calendar that lists them. */
+export async function publishFutureEventMarketSeries(
+  input: {
+    organizerPubkey: string
+    authenticatedPubkey: string | null
+    scheduleDTag: string
+    title: string
+    newOccurrences: readonly EventMarketCalendarDraftInput[]
+    /** Existing coordinates to retain on an extension, in their current order. */
+    retainedMemberCoordinates?: readonly string[]
+    /** Explicit future members to remove from a current schedule. */
+    removedMemberCoordinates?: readonly string[]
+    marketCoordinate?: string
+    expectedPreviousEventId?: string
+    shouldContinue?: () => boolean
+    onSignedLocal: (event: SignedPublicNostrEvent) => Promise<void>
+    onProgress?: (progress: {
+      record: "occurrence" | "schedule"
+      index?: number
+      total: number
+      phase: "signing" | "signed" | "publishing" | "acknowledged"
+    }) => void
+    onDelivery?: (outcome: {
+      record: "occurrence" | "schedule"
+      index?: number
+      delivery: ReturnType<typeof summarizeEventMarketPublishDelivery>
+    }) => void
+    /** Previously saved records resume with their identical signed bytes. */
+    savedSignedEvents?: readonly SignedPublicNostrEvent[]
+  },
+  dependencies: RosterPublishDependencies = defaultDependencies
+): Promise<{
+  occurrences: Array<{
+    signedEvent: SignedPublicNostrEvent
+    delivery: PublishWithPlannerResult
+  }>
+  schedule: {
+    signedEvent: SignedPublicNostrEvent
+    delivery: PublishWithPlannerResult
+  }
+}> {
+  const organizerPubkey = input.organizerPubkey.toLowerCase()
+  if (
+    !/^[0-9a-f]{64}$/.test(organizerPubkey) ||
+    input.authenticatedPubkey?.toLowerCase() !== organizerPubkey ||
+    input.newOccurrences.length > 32
+  )
+    throw new Error(
+      "The authenticated organizer and at most 32 new dates are required."
+    )
+  const scheduleCoordinate = `${EVENT_KINDS.CALENDAR}:${organizerPubkey}:${input.scheduleDTag}`
+  let previousCreatedAt = 0
+  let currentMembers: string[] = []
+  let currentOccurrences: Array<{ coordinate: string; end: number }> = []
+  if (input.marketCoordinate) {
+    const read = await dependencies.read({
+      reference: input.marketCoordinate,
+      authenticatedPubkey: organizerPubkey,
+      shouldContinue: input.shouldContinue,
+    })
+    if (
+      read.resolution.state !== "current" ||
+      read.resolution.market.organizerPubkey !== organizerPubkey ||
+      read.resolution.market.calendarCoordinate !== scheduleCoordinate ||
+      read.schedule?.kind !== "series" ||
+      read.calendarCoverage !== "complete" ||
+      read.schedule.series.eventId !== input.expectedPreviousEventId
+    )
+      throw new Error(
+        "Schedule changed. Review the latest signed dates before editing."
+      )
+    previousCreatedAt = read.schedule.series.createdAt
+    currentMembers = read.schedule.series.memberCoordinates
+    currentOccurrences = read.schedule.occurrences.map((entry) => ({
+      coordinate: entry.occurrence.coordinate,
+      end: entry.occurrence.end,
+    }))
+  } else if (input.expectedPreviousEventId) {
+    throw new Error("Schedule edits require the current market reference.")
+  }
+  const removed = new Set(input.removedMemberCoordinates ?? [])
+  if (
+    [...removed].some(
+      (coordinate) =>
+        !currentMembers.includes(coordinate) ||
+        !currentOccurrences.some(
+          (entry) => entry.coordinate === coordinate && entry.end > Date.now()
+        )
+    ) ||
+    (input.retainedMemberCoordinates ?? []).some(
+      (coordinate) =>
+        !currentMembers.includes(coordinate) || removed.has(coordinate)
+    ) ||
+    currentMembers.some(
+      (coordinate) =>
+        !removed.has(coordinate) &&
+        !(input.retainedMemberCoordinates ?? []).includes(coordinate)
+    )
+  )
+    throw new Error("Review the current schedule before removing dates.")
+  const occurrenceDrafts = input.newOccurrences.map(
+    buildEventMarketCalendarDraft
+  )
+  const newCoordinates = input.newOccurrences.map(
+    (occurrence, index) =>
+      `${occurrenceDrafts[index]!.kind}:${organizerPubkey}:${occurrence.dTag}`
+  )
+  const memberCoordinates = [
+    ...(input.retainedMemberCoordinates ?? []),
+    ...newCoordinates,
+  ]
+  const draft = buildEventMarketSeriesDraft({
+    dTag: input.scheduleDTag,
+    organizerPubkey,
+    title: input.title,
+    memberCoordinates,
+  })
+  const expectedDrafts = new Map([
+    ...occurrenceDrafts.map(
+      (occurrenceDraft, index) =>
+        [newCoordinates[index]!, occurrenceDraft] as const
+    ),
+    [scheduleCoordinate, draft] as const,
+  ])
+  const saved = new Map<string, SignedPublicNostrEvent>()
+  for (const event of input.savedSignedEvents ?? []) {
+    if (!isValidSignedPublicNostrEvent(event)) continue
+    const coordinate = `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
+    const expected = expectedDrafts.get(coordinate)
+    if (
+      !expected ||
+      JSON.stringify(event.tags) !== JSON.stringify(expected.tags) ||
+      event.content !== expected.content
+    )
+      continue
+    const prior = saved.get(coordinate)
+    if (prior && prior.id !== event.id)
+      throw new Error(
+        "Multiple saved signatures for one prepared date need organizer review."
+      )
+    saved.set(coordinate, event)
+  }
+  const occurrences: Array<{
+    signedEvent: SignedPublicNostrEvent
+    delivery: PublishWithPlannerResult
+  }> = []
+  for (const [index, occurrenceDraft] of occurrenceDrafts.entries()) {
+    input.onProgress?.({
+      record: "occurrence",
+      index: index + 1,
+      total: occurrenceDrafts.length,
+      phase: "signing",
+    })
+    const coordinate = newCoordinates[index]!
+    const prior = saved.get(coordinate)
+    const signedEvent =
+      prior ??
+      (await dependencies.sign({
+        draft: occurrenceDraft,
+        createdAt: Math.floor(Date.now() / 1_000),
+        organizerPubkey,
+        shouldContinue: input.shouldContinue,
+      }))
+    const parsed = parseEventMarketCalendarEvent(signedEvent)
+    if (
+      !parsed ||
+      parsed.coordinate !== coordinate ||
+      JSON.stringify(signedEvent.tags) !==
+        JSON.stringify(occurrenceDraft.tags) ||
+      signedEvent.content !== occurrenceDraft.content
+    )
+      throw new Error(
+        "Saved or signer-provided occurrence differs from the prepared date."
+      )
+    if (!prior) await input.onSignedLocal(signedEvent)
+    input.onProgress?.({
+      record: "occurrence",
+      index: index + 1,
+      total: occurrenceDrafts.length,
+      phase: "signed",
+    })
+    input.onProgress?.({
+      record: "occurrence",
+      index: index + 1,
+      total: occurrenceDrafts.length,
+      phase: "publishing",
+    })
+    const delivery = await dependencies.publish(
+      signedEvent,
+      organizerPubkey,
+      input.shouldContinue
+    )
+    occurrences.push({ signedEvent, delivery })
+    input.onDelivery?.({
+      record: "occurrence",
+      index: index + 1,
+      delivery: summarizeEventMarketPublishDelivery(delivery),
+    })
+    if (delivery.successfulRelayUrls.length === 0)
+      throw new Error(
+        "A signed date was saved for exact retry but no relay acknowledged it."
+      )
+    input.onProgress?.({
+      record: "occurrence",
+      index: index + 1,
+      total: occurrenceDrafts.length,
+      phase: "acknowledged",
+    })
+  }
+  input.onProgress?.({
+    record: "schedule",
+    total: occurrenceDrafts.length,
+    phase: "signing",
+  })
+  const savedSchedule = saved.get(scheduleCoordinate)
+  const signedSchedule =
+    savedSchedule ??
+    (await dependencies.sign({
+      draft,
+      createdAt: Math.max(
+        Math.floor(Date.now() / 1_000),
+        Math.floor(previousCreatedAt / 1_000) + (previousCreatedAt ? 1 : 0)
+      ),
+      organizerPubkey,
+      shouldContinue: input.shouldContinue,
+    }))
+  const parsedSchedule = parseEventMarketSeriesEvent(signedSchedule)
+  if (
+    !parsedSchedule ||
+    parsedSchedule.coordinate !== scheduleCoordinate ||
+    (savedSchedule &&
+      previousCreatedAt > 0 &&
+      signedSchedule.created_at <= Math.floor(previousCreatedAt / 1_000)) ||
+    JSON.stringify(signedSchedule.tags) !== JSON.stringify(draft.tags) ||
+    signedSchedule.content !== draft.content
+  )
+    throw new Error(
+      "Saved or signer-provided schedule differs from the prepared dates."
+    )
+  if (!savedSchedule) await input.onSignedLocal(signedSchedule)
+  input.onProgress?.({
+    record: "schedule",
+    total: occurrenceDrafts.length,
+    phase: "signed",
+  })
+  input.onProgress?.({
+    record: "schedule",
+    total: occurrenceDrafts.length,
+    phase: "publishing",
+  })
+  const scheduleDelivery = await dependencies.publish(
+    signedSchedule,
+    organizerPubkey,
+    input.shouldContinue
+  )
+  input.onDelivery?.({
+    record: "schedule",
+    delivery: summarizeEventMarketPublishDelivery(scheduleDelivery),
+  })
+  if (scheduleDelivery.successfulRelayUrls.length === 0)
+    throw new Error(
+      "The signed schedule was saved for exact retry but no relay acknowledged it."
+    )
+  input.onProgress?.({
+    record: "schedule",
+    total: occurrenceDrafts.length,
+    phase: "acknowledged",
+  })
+  return {
+    occurrences,
+    schedule: { signedEvent: signedSchedule, delivery: scheduleDelivery },
+  }
+}
+
+/** Replace one listed occurrence without changing the market or its member list. */
+export async function publishFutureEventMarketOccurrenceRevision(input: {
+  marketCoordinate: string
+  organizerPubkey: string
+  authenticatedPubkey: string | null
+  expectedPreviousEventId: string
+  calendar: EventMarketCalendarDraftInput
+  /** Saved signature from an interrupted attempt; publish its identical bytes. */
+  savedSignedEvent?: SignedPublicNostrEvent
+  shouldContinue?: () => boolean
+  onSignedLocal: (event: SignedPublicNostrEvent) => Promise<void>
+  onDelivery?: (
+    delivery: ReturnType<typeof summarizeEventMarketPublishDelivery>
+  ) => void
+}): Promise<{
+  signedEvent: SignedPublicNostrEvent
+  delivery: PublishWithPlannerResult
+}> {
+  const organizerPubkey = input.organizerPubkey.toLowerCase()
+  if (
+    !/^[0-9a-f]{64}$/.test(organizerPubkey) ||
+    input.authenticatedPubkey?.toLowerCase() !== organizerPubkey
+  )
+    throw new Error("The authenticated organizer is required.")
+  const draft = buildEventMarketCalendarDraft(input.calendar)
+  const occurrenceCoordinate = `${draft.kind}:${organizerPubkey}:${input.calendar.dTag}`
+  const read = await readEventMarketRoster({
+    reference: input.marketCoordinate,
+    authenticatedPubkey: organizerPubkey,
+    shouldContinue: input.shouldContinue,
+  })
+  const current =
+    read.schedule?.kind === "series"
+      ? read.schedule.occurrences.find(
+          (entry) => entry.occurrence.coordinate === occurrenceCoordinate
+        )
+      : undefined
+  if (
+    read.resolution.state !== "current" ||
+    read.calendarCoverage !== "complete" ||
+    read.schedule?.kind !== "series" ||
+    !current ||
+    current.coverage !== "complete" ||
+    (current.occurrence.eventId !== input.expectedPreviousEventId &&
+      current.occurrence.eventId !== input.savedSignedEvent?.id) ||
+    current.occurrence.end <= Date.now()
+  )
+    throw new Error(
+      "Occurrence changed. Review the latest signed date before editing."
+    )
+  const createdAt = Math.max(
+    Math.floor(Date.now() / 1_000),
+    Math.floor(current.occurrence.createdAt / 1_000) + 1
+  )
+  const signedEvent =
+    input.savedSignedEvent ??
+    (await signRoster({
+      draft,
+      createdAt,
+      organizerPubkey,
+      shouldContinue: input.shouldContinue,
+    }))
+  const parsed = parseEventMarketCalendarEvent(signedEvent)
+  if (
+    !parsed ||
+    parsed.coordinate !== occurrenceCoordinate ||
+    (!input.savedSignedEvent && signedEvent.created_at !== createdAt) ||
+    (input.savedSignedEvent &&
+      current.occurrence.eventId !== signedEvent.id &&
+      signedEvent.created_at <=
+        Math.floor(current.occurrence.createdAt / 1_000)) ||
+    JSON.stringify(signedEvent.tags) !== JSON.stringify(draft.tags) ||
+    signedEvent.content !== draft.content
+  )
+    throw new Error("Signer changed the selected occurrence.")
+  if (!input.savedSignedEvent) await input.onSignedLocal(signedEvent)
+  const delivery = await publishRoster(
+    signedEvent,
+    organizerPubkey,
+    input.shouldContinue
+  )
+  input.onDelivery?.(summarizeEventMarketPublishDelivery(delivery))
+  if (delivery.successfulRelayUrls.length === 0)
+    throw new Error(
+      "The signed occurrence was saved for exact retry but no relay acknowledged it."
     )
   return { signedEvent, delivery }
 }

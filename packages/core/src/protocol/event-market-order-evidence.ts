@@ -6,6 +6,7 @@ import {
 import { parseEventMarketCalendarEvent } from "./event-market"
 import { resolveEventMarketAuthorization } from "./event-market-authorization"
 import { parseEventMarketRosterEvent } from "./event-market-roster"
+import { parseEventMarketSeriesEvent } from "./event-market-schedule"
 import { parseProductEvent } from "./products"
 import {
   isValidSignedPublicNostrEvent,
@@ -65,6 +66,7 @@ export function verifyEventMarketOrderEvidence(input: {
         item.fulfillment.market.coordinate !== first.market.coordinate ||
         item.fulfillment.market.eventId !== first.market.eventId ||
         item.fulfillment.calendar.eventId !== first.calendar.eventId ||
+        item.fulfillment.schedule?.eventId !== first.schedule?.eventId ||
         item.fulfillment.grant.eventId !== first.grant.eventId ||
         item.fulfillment.mode !== first.mode ||
         item.fulfillment.assignment !== first.assignment
@@ -74,17 +76,22 @@ export function verifyEventMarketOrderEvidence(input: {
   const ids = new Set<string>([
     first.market.eventId,
     first.calendar.eventId,
+    ...(first.schedule ? [first.schedule.eventId] : []),
     ...first.grant.ancestryEventIds,
     ...first.grant.observedDeletionEventIds,
     ...future.map((item) => item.fulfillment.product.eventId),
   ])
-  const embeddedGrantEvidence = [
+  const embeddedEvidence = [
+    first.market.signedEvent,
+    first.calendar.signedEvent,
+    ...(first.schedule ? [first.schedule.signedEvent] : []),
+    ...future.map((item) => item.fulfillment.product.signedEvent),
     first.grant.signedEvidence.tip,
     ...first.grant.signedEvidence.ancestry,
     ...first.grant.signedEvidence.deletions,
   ]
   const byId = new Map(
-    [...embeddedGrantEvidence, ...input.events]
+    [...input.events, ...embeddedEvidence]
       .filter(
         (event) => ids.has(event.id) && isValidSignedPublicNostrEvent(event)
       )
@@ -111,11 +118,22 @@ export function verifyEventMarketOrderEvidence(input: {
   const calendar = parseEventMarketCalendarEvent(
     byId.get(first.calendar.eventId)!
   )
+  const series = first.schedule
+    ? parseEventMarketSeriesEvent(byId.get(first.schedule.eventId)!)
+    : null
   if (
     !calendar ||
     calendar.coordinate !== first.calendar.coordinate ||
     calendar.createdAt !== first.calendar.createdAt ||
-    calendar.coordinate !== market.calendarCoordinate ||
+    (first.schedule
+      ? !series ||
+        series.coordinate !== first.schedule.coordinate ||
+        series.createdAt !== first.schedule.createdAt ||
+        series.coordinate !== market.calendarCoordinate ||
+        series.organizerPubkey !== market.organizerPubkey ||
+        !series.memberCoordinates.includes(calendar.coordinate)
+      : calendar.coordinate !== market.calendarCoordinate) ||
+    calendar.authorPubkey !== market.organizerPubkey ||
     calendar.start !== first.calendar.start ||
     calendar.end !== first.calendar.end
   )

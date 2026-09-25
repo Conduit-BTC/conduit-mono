@@ -6,6 +6,7 @@ import {
 } from "nostr-tools/pure"
 import {
   buildEventMarketAuthorizationDraft,
+  buildEventMarketRosterDraft,
   orderItemSchema,
   parseProductEvent,
   type Product,
@@ -27,9 +28,25 @@ import { isZeroCostPickupOrder } from "../apps/market/src/lib/order-view"
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
-const merchant = "b".repeat(64)
-const eventId = "c".repeat(64)
+const merchantSecret = generateSecretKey()
+const merchant = getPublicKey(merchantSecret)
 const marketCoordinate = `30409:${organizer}:fair-market`
+const calendarCoordinate = `31923:${organizer}:fair`
+const calendar = finalizeEvent(
+  {
+    kind: 31923,
+    tags: [
+      ["d", "fair"],
+      ["title", "Fair"],
+      ["start", "1790000000"],
+      ["end", "1790003600"],
+      ["D", "20717"],
+    ],
+    content: "",
+    created_at: 100,
+  },
+  organizerSecret
+)
 const grantDraft = buildEventMarketAuthorizationDraft({
   marketCoordinate,
   merchantPubkey: merchant,
@@ -42,9 +59,37 @@ const grant = finalizeEvent({ ...grantDraft, created_at: 1 }, organizerSecret)
 function item(
   dTag: string,
   assignment = "Booth 12",
-  marketEventId = eventId
+  marketEventId?: string
 ): CartItem {
   const productId = `30402:${merchant}:${dTag}`
+  const market = finalizeEvent(
+    {
+      ...buildEventMarketRosterDraft({
+        dTag: "fair-market",
+        organizerPubkey: organizer,
+        calendarCoordinate,
+        state: "open",
+        merchants: [{ pubkey: merchant, mode: "merchant_present", assignment }],
+      }),
+      created_at: 100,
+    },
+    organizerSecret
+  )
+  const product = finalizeEvent(
+    {
+      kind: 30402,
+      tags: [
+        ["d", dTag],
+        ["title", dTag],
+        ["price", "12", "USD"],
+        ["type", "simple", "physical"],
+        ["a", marketCoordinate],
+      ],
+      content: dTag,
+      created_at: 100,
+    },
+    merchantSecret
+  )
   return {
     productId,
     merchantPubkey: merchant,
@@ -60,8 +105,9 @@ function item(
       payeePubkey: merchant,
       market: {
         coordinate: marketCoordinate,
-        eventId: marketEventId,
-        createdAt: 100,
+        eventId: marketEventId ?? market.id,
+        createdAt: 100_000,
+        signedEvent: market,
       },
       grant: {
         kind: 3841,
@@ -73,13 +119,19 @@ function item(
         signedEvidence: { tip: grant, ancestry: [grant], deletions: [] },
       },
       calendar: {
-        coordinate: `31923:${organizer}:fair`,
-        eventId,
-        createdAt: 100,
-        start: 200,
-        end: 300,
+        coordinate: calendarCoordinate,
+        eventId: calendar.id,
+        createdAt: 100_000,
+        start: 1_790_000_000_000,
+        end: 1_790_003_600_000,
+        signedEvent: calendar,
       },
-      product: { coordinate: productId, eventId, createdAt: 100 },
+      product: {
+        coordinate: productId,
+        eventId: product.id,
+        createdAt: 100_000,
+        signedEvent: product,
+      },
       mode: "merchant_present",
       assignment,
     },
@@ -173,22 +225,31 @@ describe("future Event Market cart and order snapshots", () => {
   })
   it("requires actionable exact signed evidence before a future checkout", async () => {
     const cartItem = item("soap")
+    const candleItem = item("candles")
     const snapshot = cartItem.fulfillment
-    if (snapshot?.type !== "event_market_pickup")
+    const candleSnapshot = candleItem.fulfillment
+    if (
+      snapshot?.type !== "event_market_pickup" ||
+      candleSnapshot?.type !== "event_market_pickup"
+    )
       throw new Error("Missing snapshot")
+    const snapshots = new Map([
+      [cartItem.productId, snapshot],
+      [candleItem.productId, candleSnapshot],
+    ])
     const currentProduct = {
       id: cartItem.productId,
       pubkey: merchant,
       format: "physical",
-      sourceEventId: eventId,
-      updatedAt: 1_000,
+      sourceEventId: snapshot.product.eventId,
+      updatedAt: snapshot.product.createdAt,
     } as Product
     const marketRead = {} as EventMarketRosterReadResult
     const productRead = {
       actionable: true,
       resolution: {
         state: "eligible",
-        revision: { id: eventId, created_at: 1 },
+        revision: { id: snapshot.product.eventId, created_at: 100 },
       },
     } as EventMarketProductReadResult
     let marketReads = 0
@@ -201,27 +262,38 @@ describe("future Event Market cart and order snapshots", () => {
         productCoordinate,
       }: {
         productCoordinate: string
-      }) => ({
-        ...productRead,
-        productCoordinate,
-      }),
+      }) => {
+        const currentSnapshot = snapshots.get(productCoordinate)!
+        return {
+          ...productRead,
+          productCoordinate,
+          resolution: {
+            ...productRead.resolution,
+            revision: {
+              id: currentSnapshot.product.eventId,
+              created_at: 100,
+            },
+          },
+        }
+      },
       snapshot: ({
         productRead: read,
       }: {
         productRead: EventMarketProductReadResult
-      }) => ({
-        ...snapshot,
-        product: { ...snapshot.product, coordinate: read.productCoordinate },
-      }),
+      }) => snapshots.get(read.productCoordinate)!,
     } as unknown as Parameters<
       typeof resolveCurrentFutureEventMarketFulfillments
     >[1]
     const current = await resolveCurrentFutureEventMarketFulfillments(
       {
-        items: [cartItem, item("candles")],
+        items: [cartItem, candleItem],
         products: [
           currentProduct,
-          { ...currentProduct, id: `30402:${merchant}:candles` },
+          {
+            ...currentProduct,
+            id: candleItem.productId,
+            sourceEventId: candleSnapshot.product.eventId,
+          },
         ],
       },
       dependencies
@@ -304,6 +376,27 @@ describe("future Event Market cart and order snapshots", () => {
     expect(getCartCommerceFingerprint([first])).not.toBe(
       getCartCommerceFingerprint([item("soap", "Booth 14")])
     )
+  })
+
+  it("keeps two selected occurrences of one merchant product in separate purchases", () => {
+    const first = item("soap")
+    const second = item("soap")
+    if (
+      first.fulfillment?.type !== "event_market_pickup" ||
+      second.fulfillment?.type !== "event_market_pickup"
+    )
+      throw new Error("Missing future pickup")
+    second.fulfillment = {
+      ...second.fulfillment,
+      calendar: {
+        ...second.fulfillment.calendar,
+        coordinate: `31923:${organizer}:fair-next-week`,
+      },
+    }
+    const groups = groupCartPurchases([first, second])
+    expect(groups).toHaveLength(2)
+    expect(new Set(groups.map((group) => group.id)).size).toBe(2)
+    expect(getMixedFulfillmentBlockingMessage([first, second])).not.toBeNull()
   })
 
   it("keeps exact market, product, merchant assignment, and payee in a created order", () => {

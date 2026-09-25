@@ -97,6 +97,7 @@ export const EVENT_MARKET_ADDRESSABLE_KINDS = [
   EVENT_KINDS.EVENT_MARKET,
   EVENT_KINDS.CALENDAR_DATE,
   EVENT_KINDS.CALENDAR_TIME,
+  EVENT_KINDS.CALENDAR,
 ] as const
 
 export const EVENT_MARKET_CALENDAR_KINDS = [
@@ -183,6 +184,7 @@ export interface EventMarketCollectionDraftInput {
 }
 
 export interface ParsedEventMarketCalendar {
+  signedEvent?: SignedPublicNostrEvent
   coordinate: string
   eventId: string
   authorPubkey: string
@@ -897,6 +899,7 @@ export function parseEventMarketCalendarEvent(
   )
 
   return {
+    signedEvent: event,
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
     authorPubkey: coordinate.authorPubkey,

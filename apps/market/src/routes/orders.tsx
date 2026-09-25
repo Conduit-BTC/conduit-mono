@@ -15,6 +15,7 @@ import {
   db,
   encodeEventMarketNaddr,
   formatEventMarketPickupClaimCode,
+  formatEventMarketPickupDate,
   getFutureMarketClaimRef,
   deriveProtectedReadPresentationState,
   EVENT_KINDS,
@@ -2232,6 +2233,9 @@ function OrderDetail({
                   </h3>
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
                     {pickup.assignment}
+                  </p>
+                  <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                    Selected date: {formatEventMarketPickupDate(pickup)}
                   </p>
                   <p className="mt-2 text-xs text-[var(--text-muted)]">
                     Handled by{" "}

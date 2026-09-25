@@ -1,5 +1,22 @@
 export type OrganizerCalendarType = "timed" | "date"
 
+export const MAX_ORGANIZER_EVENT_DATES = 32
+
+export interface OrganizerEventDateRow {
+  id: string
+  start: string
+  end: string
+}
+
+export interface OrganizerWeeklyDatePattern {
+  firstDate: string
+  throughDate: string
+  weekdays: number[]
+  startTime: string
+  endTime: string
+  timezone: string
+}
+
 export interface OrganizerEventMarketFormValues {
   calendarType: OrganizerCalendarType
   title: string
@@ -66,6 +83,7 @@ export interface PreparedOrganizerEventMarketForm {
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 const LOCAL_DATE_TIME_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
+const LOCAL_TIME_PATTERN = /^(\d{2}):(\d{2})$/
 const DEFAULT_ORGANIZER_EVENT_TIMEZONES = [
   "UTC",
   "America/New_York",
@@ -243,6 +261,14 @@ export function localDateTimeToEpochSeconds(
     minute: Number(match[5]),
     second: Number(match[6] ?? "0"),
   }
+  if (
+    !isValidCalendarDate(value.slice(0, 10)) ||
+    desired.hour > 23 ||
+    desired.minute > 59 ||
+    desired.second > 59
+  ) {
+    throw new Error("Enter a valid local date, time, and timezone.")
+  }
   const utcGuess = Date.UTC(
     desired.year,
     desired.month - 1,
@@ -252,9 +278,15 @@ export function localDateTimeToEpochSeconds(
     desired.second
   )
 
-  let epochMs = utcGuess
-  for (let iteration = 0; iteration < 3; iteration += 1) {
-    const observed = timezoneParts(epochMs, timezone)
+  // Sampling either side of the local day finds both offsets at a DST fold.
+  // A single round trip can silently choose one of two valid instants.
+  const offsets = new Set<number>()
+  for (const probe of [
+    utcGuess - 86_400_000,
+    utcGuess,
+    utcGuess + 86_400_000,
+  ]) {
+    const observed = timezoneParts(probe, timezone)
     const observedAsUtc = Date.UTC(
       observed.year,
       observed.month - 1,
@@ -263,26 +295,134 @@ export function localDateTimeToEpochSeconds(
       observed.minute,
       observed.second
     )
-    const correction = utcGuess - observedAsUtc
-    if (correction === 0) break
-    epochMs += correction
+    offsets.add(observedAsUtc - probe)
   }
-
-  const roundTrip = timezoneParts(epochMs, timezone)
-  if (
-    roundTrip.year !== desired.year ||
-    roundTrip.month !== desired.month ||
-    roundTrip.day !== desired.day ||
-    roundTrip.hour !== desired.hour ||
-    roundTrip.minute !== desired.minute ||
-    roundTrip.second !== desired.second
-  ) {
+  const matches = [...offsets]
+    .map((offset) => utcGuess - offset)
+    .filter((epochMs) => {
+      const roundTrip = timezoneParts(epochMs, timezone)
+      return (
+        roundTrip.year === desired.year &&
+        roundTrip.month === desired.month &&
+        roundTrip.day === desired.day &&
+        roundTrip.hour === desired.hour &&
+        roundTrip.minute === desired.minute &&
+        roundTrip.second === desired.second
+      )
+    })
+  if (matches.length === 0) {
     throw new Error(
       "That local time does not exist in the selected timezone. Choose another time."
     )
   }
+  if (matches.length > 1) {
+    throw new Error(
+      "That local time occurs twice in the selected timezone. Choose another time."
+    )
+  }
 
-  return Math.floor(epochMs / 1000)
+  return Math.floor(matches[0] / 1000)
+}
+
+export function generateOrganizerWeeklyDates(
+  pattern: OrganizerWeeklyDatePattern
+): OrganizerEventDateRow[] {
+  const { firstDate, throughDate, startTime, endTime, timezone } = pattern
+  if (!isValidCalendarDate(firstDate) || !isValidCalendarDate(throughDate)) {
+    throw new Error("Choose valid first and through dates.")
+  }
+  if (throughDate < firstDate) {
+    throw new Error("Through date must be on or after the first date.")
+  }
+  if (
+    pattern.weekdays.length === 0 ||
+    pattern.weekdays.some((day) => !Number.isInteger(day) || day < 0 || day > 6)
+  ) {
+    throw new Error("Choose at least one weekday.")
+  }
+  const startMatch = LOCAL_TIME_PATTERN.exec(startTime)
+  const endMatch = LOCAL_TIME_PATTERN.exec(endTime)
+  if (
+    !startMatch ||
+    !endMatch ||
+    Number(startMatch[1]) > 23 ||
+    Number(endMatch[1]) > 23 ||
+    Number(startMatch[2]) > 59 ||
+    Number(endMatch[2]) > 59 ||
+    endTime <= startTime
+  ) {
+    throw new Error(
+      "Choose start and end hours on the same day, with end after start."
+    )
+  }
+  if (!isValidTimezone(timezone)) {
+    throw new Error("Choose a valid IANA timezone.")
+  }
+
+  const weekdays = new Set(pattern.weekdays)
+  const rows: OrganizerEventDateRow[] = []
+  let dayMs = Date.parse(`${firstDate}T00:00:00Z`)
+  const throughMs = Date.parse(`${throughDate}T00:00:00Z`)
+  while (dayMs <= throughMs) {
+    const day = new Date(dayMs)
+    if (weekdays.has(day.getUTCDay())) {
+      const date = day.toISOString().slice(0, 10)
+      const start = `${date}T${startTime}`
+      const end = `${date}T${endTime}`
+      try {
+        const startSeconds = localDateTimeToEpochSeconds(start, timezone)
+        const endSeconds = localDateTimeToEpochSeconds(end, timezone)
+        if (endSeconds <= startSeconds) {
+          throw new Error("End must be after start in the selected timezone.")
+        }
+      } catch (cause) {
+        throw new Error(
+          `${date}: ${cause instanceof Error ? cause.message : "Invalid local hours."}`,
+          { cause }
+        )
+      }
+      rows.push({ id: `weekly-${date}`, start, end })
+      if (rows.length > MAX_ORGANIZER_EVENT_DATES) {
+        throw new Error(
+          `Generate at most ${MAX_ORGANIZER_EVENT_DATES} dates at a time.`
+        )
+      }
+    }
+    dayMs += 86_400_000
+  }
+  if (rows.length === 0)
+    throw new Error("No selected weekdays fall in that date range.")
+  return rows
+}
+
+export function prepareOrganizerEventMarketDates(
+  form: OrganizerEventMarketFormValues,
+  rows: OrganizerEventDateRow[],
+  options: { requireFutureStart?: boolean; nowMs?: number } = {}
+): PreparedOrganizerEventMarketForm[] {
+  if (rows.length === 0 || rows.length > MAX_ORGANIZER_EVENT_DATES) {
+    throw new Error(`Add 1 to ${MAX_ORGANIZER_EVENT_DATES} dates.`)
+  }
+  const seen = new Set<string>()
+  return rows.map((row, index) => {
+    let prepared: PreparedOrganizerEventMarketForm
+    try {
+      prepared = prepareOrganizerEventMarketForm(
+        { ...form, start: row.start, end: row.end },
+        options
+      )
+    } catch (cause) {
+      throw new Error(
+        `Date ${index + 1}: ${cause instanceof Error ? cause.message : "Invalid date."}`,
+        { cause }
+      )
+    }
+    const key = `${prepared.calendar.kind}:${String(prepared.calendar.start)}`
+    if (seen.has(key))
+      throw new Error(`Date ${index + 1} duplicates another start.`)
+    seen.add(key)
+    return prepared
+  })
 }
 
 function addError(

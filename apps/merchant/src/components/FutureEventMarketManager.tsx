@@ -1,18 +1,23 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   buildDirectMessageRumor,
+  buildEventMarketCalendarDraft,
+  buildEventMarketSeriesDraft,
   decodeEventMarketReference,
   EVENT_KINDS,
   getNdk,
   encodeEventMarketNaddr,
   listPendingEventMarketMerchantDecisions,
+  loadRetainedSignedEventMarketEvidence,
   normalizePubkey,
   publishEventMarketMerchantDecision,
   publishEventMarketRoster,
   publishPrivateMessage,
   previewEventMarketMerchantProducts,
   publishFutureEventMarketCalendar,
+  publishFutureEventMarketOccurrenceRevision,
+  publishFutureEventMarketSeries,
   readEventMarketAuthorization,
   readEventMarketRoster,
   retainSignedEventMarketEvidence,
@@ -23,6 +28,8 @@ import {
   useConduitSession,
   type EventMarketMerchantMode,
   type EventMarketMerchantRow,
+  type EventMarketCalendarDraftInput,
+  type EventMarketSchedule,
   type ParsedEventMarketCalendar,
   type ParsedEventMarketRoster,
 } from "@conduit/core"
@@ -47,6 +54,7 @@ import { EventQrPrintPreview } from "./EventQrPrintPreview"
 import { FutureOrganizerClaimQueue } from "./FutureOrganizerClaimQueue"
 import {
   epochSecondsToLocalDateTime,
+  getOrganizerEventStartMinimum,
   localDateTimeToEpochSeconds,
 } from "../lib/event-market-form"
 import { getMerchantEventParticipationUrl } from "../lib/market-links"
@@ -55,6 +63,108 @@ function errorText(error: unknown): string {
   return error instanceof Error
     ? error.message
     : "The signed change could not be completed."
+}
+
+function formatOrganizerOccurrenceDate(
+  calendar: ParsedEventMarketCalendar,
+  timestamp = calendar.start
+): string {
+  if (calendar.kind === 31922)
+    return timestamp === calendar.start
+      ? (calendar.startDate ?? new Date(timestamp).toISOString().slice(0, 10))
+      : (calendar.endDate ?? new Date(timestamp).toISOString().slice(0, 10))
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: calendar.startTzid ?? "UTC",
+    timeZoneName: "short",
+  }).format(timestamp)
+}
+
+type FrozenSeriesMutation =
+  | {
+      version: 1
+      action: "edit"
+      marketCoordinate: string
+      occurrenceCoordinate: string
+      expectedPreviousEventId: string
+      expectedPreviousCreatedAt: number
+      calendar: EventMarketCalendarDraftInput
+    }
+  | {
+      version: 1
+      action: "add" | "remove"
+      marketCoordinate: string
+      expectedPreviousEventId: string
+      expectedPreviousCreatedAt: number
+      scheduleDTag: string
+      title: string
+      retainedMemberCoordinates: string[]
+      removedMemberCoordinates: string[]
+      newOccurrences: EventMarketCalendarDraftInput[]
+    }
+
+function mutationStorageKey(marketCoordinate: string): string {
+  return `conduit:future-event-market-series-edit:1:${marketCoordinate}`
+}
+
+function readSeriesMutation(
+  marketCoordinate: string
+): FrozenSeriesMutation | null {
+  if (typeof localStorage === "undefined") return null
+  const raw = localStorage.getItem(mutationStorageKey(marketCoordinate))
+  if (!raw) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (cause) {
+    throw new Error("Saved date edit could not be read.", { cause })
+  }
+  const value = parsed as Record<string, unknown>
+  if (
+    !value ||
+    value.version !== 1 ||
+    value.marketCoordinate !== marketCoordinate ||
+    (value.action !== "edit" &&
+      value.action !== "add" &&
+      value.action !== "remove") ||
+    typeof value.expectedPreviousEventId !== "string" ||
+    typeof value.expectedPreviousCreatedAt !== "number" ||
+    !Number.isFinite(value.expectedPreviousCreatedAt) ||
+    (value.action === "edit" &&
+      (typeof value.occurrenceCoordinate !== "string" || !value.calendar)) ||
+    (value.action !== "edit" &&
+      (typeof value.scheduleDTag !== "string" ||
+        typeof value.title !== "string" ||
+        !Array.isArray(value.retainedMemberCoordinates) ||
+        !Array.isArray(value.removedMemberCoordinates) ||
+        !Array.isArray(value.newOccurrences)))
+  ) {
+    throw new Error("Saved date edit needs organizer review before resuming.")
+  }
+  return value as FrozenSeriesMutation
+}
+
+function saveSeriesMutation(mutation: FrozenSeriesMutation): void {
+  if (typeof localStorage === "undefined") {
+    throw new Error("Local storage is required to resume date publishing.")
+  }
+  const key = mutationStorageKey(mutation.marketCoordinate)
+  const serialized = JSON.stringify(mutation)
+  try {
+    if (localStorage.getItem(key)) {
+      throw new Error("A saved date change is already awaiting publication.")
+    }
+    localStorage.setItem(key, serialized)
+    if (localStorage.getItem(key) !== serialized) {
+      throw new Error("The date change was not saved.")
+    }
+  } catch (cause) {
+    throw new Error("Save the date change locally before signing.", { cause })
+  }
 }
 
 function MarketLifecycleEditor({
@@ -222,6 +332,650 @@ function MarketLifecycleEditor({
         >
           Save event details
         </Button>
+        {error ? (
+          <p role="alert" className="text-sm text-[var(--destructive)]">
+            {error}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function SeriesDateManager({
+  market,
+  schedule,
+  scheduleCoverage,
+  selectedOccurrence,
+  onSelectOccurrence,
+  authenticatedPubkey,
+  onChanged,
+}: {
+  market: ParsedEventMarketRoster
+  schedule: Extract<EventMarketSchedule, { kind: "series" }>
+  scheduleCoverage?: "complete" | "partial" | "stale" | "unavailable"
+  selectedOccurrence?: string
+  onSelectOccurrence?: (coordinate: string) => void
+  authenticatedPubkey: string
+  onChanged: () => void
+}) {
+  const { authGeneration, isAuthGenerationCurrent } = useAuth()
+  const [localSelection, setLocalSelection] = useState<string | undefined>()
+  const fallback =
+    schedule.occurrences.find((entry) => entry.occurrence.end > Date.now()) ??
+    schedule.occurrences.at(-1)
+  const chosenCoordinate =
+    selectedOccurrence ?? localSelection ?? fallback?.occurrence.coordinate
+  const chosen = schedule.occurrences.find(
+    (entry) => entry.occurrence.coordinate === chosenCoordinate
+  )
+  const seed = chosen?.occurrence ?? fallback?.occurrence
+  const timezone = seed?.startTzid || "UTC"
+  const [title, setTitle] = useState(seed?.title ?? schedule.series.title)
+  const [location, setLocation] = useState(seed?.locations[0] ?? "")
+  const [start, setStart] = useState(
+    seed?.kind === 31922
+      ? (seed.startDate ?? "")
+      : seed
+        ? epochSecondsToLocalDateTime(seed.start / 1_000, timezone)
+        : ""
+  )
+  const [end, setEnd] = useState(
+    seed?.kind === 31922
+      ? (seed.endDate ?? "")
+      : seed
+        ? epochSecondsToLocalDateTime(seed.end / 1_000, timezone)
+        : ""
+  )
+  const [newKind, setNewKind] = useState<31922 | 31923>(
+    seed?.kind === 31922 ? 31922 : 31923
+  )
+  const [newTitle, setNewTitle] = useState(seed?.title ?? schedule.series.title)
+  const [newLocation, setNewLocation] = useState(seed?.locations[0] ?? "")
+  const [newStart, setNewStart] = useState("")
+  const [newEnd, setNewEnd] = useState("")
+  const [newTimezone, setNewTimezone] = useState(timezone)
+  const [pendingMutation, setPendingMutation] =
+    useState<FrozenSeriesMutation | null>(null)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState("")
+  const [step, setStep] = useState("")
+  const [deliveryOutcomes, setDeliveryOutcomes] = useState<
+    Record<string, string>
+  >({})
+
+  useEffect(() => {
+    try {
+      setPendingMutation(readSeriesMutation(market.coordinate))
+    } catch (cause) {
+      setError(errorText(cause))
+    }
+  }, [market.coordinate])
+
+  function choose(coordinate: string): void {
+    setLocalSelection(coordinate)
+    onSelectOccurrence?.(coordinate)
+  }
+
+  function calendarDraft(input: {
+    source: ParsedEventMarketCalendar
+    dTag: string
+    kind: 31922 | 31923
+    title: string
+    location: string
+    start: string
+    end: string
+    timezone: string
+  }): EventMarketCalendarDraftInput {
+    const common = {
+      dTag: input.dTag,
+      title: input.title.trim(),
+      content: input.source.signedEvent?.content ?? "",
+      summary: input.source.summary,
+      image: input.source.image,
+      locations: [input.location.trim(), ...input.source.locations.slice(1)],
+      geohash: input.source.geohash,
+    }
+    return input.kind === 31922
+      ? { ...common, kind: 31922, start: input.start, end: input.end }
+      : {
+          ...common,
+          kind: 31923,
+          start: localDateTimeToEpochSeconds(input.start, input.timezone),
+          end: localDateTimeToEpochSeconds(input.end, input.timezone),
+          startTzid: input.timezone,
+          endTzid: input.timezone,
+        }
+  }
+
+  async function runMutation(mutation: FrozenSeriesMutation): Promise<void> {
+    setPending(true)
+    setError("")
+    try {
+      const signed = await loadRetainedSignedEventMarketEvidence(
+        market.coordinate
+      )
+      const shouldContinue = () => isAuthGenerationCurrent(authGeneration)
+      if (mutation.action === "edit") {
+        const expected = buildEventMarketCalendarDraft(mutation.calendar)
+        const saved = signed.filter(
+          (event) =>
+            event.id !== mutation.expectedPreviousEventId &&
+            event.created_at >
+              Math.floor(mutation.expectedPreviousCreatedAt / 1_000) &&
+            `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}` ===
+              mutation.occurrenceCoordinate &&
+            JSON.stringify(event.tags) === JSON.stringify(expected.tags) &&
+            event.content === expected.content
+        )
+        if (saved.length > 1) {
+          throw new Error("Multiple saved revisions need organizer review.")
+        }
+        const current = schedule.occurrences.find(
+          (entry) =>
+            entry.occurrence.coordinate === mutation.occurrenceCoordinate
+        )
+        if (saved[0] && current?.occurrence.eventId === saved[0].id) {
+          setStep("Signed date is already current.")
+        } else {
+          setStep(saved[0] ? "Retrying saved date…" : "Signing date revision…")
+          await publishFutureEventMarketOccurrenceRevision({
+            marketCoordinate: market.coordinate,
+            organizerPubkey: market.organizerPubkey,
+            authenticatedPubkey,
+            expectedPreviousEventId: mutation.expectedPreviousEventId,
+            calendar: mutation.calendar,
+            savedSignedEvent: saved[0],
+            shouldContinue,
+            onSignedLocal: (event) =>
+              retainSignedEventMarketEvidence(market.coordinate, event),
+            onDelivery: (delivery) =>
+              setDeliveryOutcomes((current) => ({
+                ...current,
+                "Selected date": `${delivery.acknowledged} ACK · ${delivery.rejected} rejected · ${delivery.timedOut} timed out${delivery.otherFailed ? ` · ${delivery.otherFailed} other failure` : ""}`,
+              })),
+          })
+        }
+      } else {
+        const expectedSchedule = buildEventMarketSeriesDraft({
+          dTag: mutation.scheduleDTag,
+          organizerPubkey: market.organizerPubkey,
+          title: mutation.title,
+          memberCoordinates: [
+            ...mutation.retainedMemberCoordinates,
+            ...mutation.newOccurrences.map(
+              (calendar) =>
+                `${calendar.kind}:${market.organizerPubkey}:${calendar.dTag}`
+            ),
+          ],
+        })
+        const expectedOccurrences = mutation.newOccurrences.map((calendar) => ({
+          coordinate: `${calendar.kind}:${market.organizerPubkey}:${calendar.dTag}`,
+          draft: buildEventMarketCalendarDraft(calendar),
+        }))
+        const matchingSigned = signed.filter((event) => {
+          if (
+            event.created_at <=
+            Math.floor(mutation.expectedPreviousCreatedAt / 1_000)
+          )
+            return false
+          const coordinate = `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
+          const expected =
+            coordinate === schedule.coordinate
+              ? expectedSchedule
+              : expectedOccurrences.find(
+                  (item) => item.coordinate === coordinate
+                )?.draft
+          return (
+            !!expected &&
+            JSON.stringify(event.tags) === JSON.stringify(expected.tags) &&
+            event.content === expected.content
+          )
+        })
+        const savedSchedule = matchingSigned.find(
+          (event) =>
+            event.kind === 31924 &&
+            event.id !== mutation.expectedPreviousEventId
+        )
+        if (savedSchedule && schedule.series.eventId === savedSchedule.id) {
+          setStep("Signed schedule is already current.")
+        } else {
+          await publishFutureEventMarketSeries({
+            organizerPubkey: market.organizerPubkey,
+            authenticatedPubkey,
+            marketCoordinate: market.coordinate,
+            expectedPreviousEventId: mutation.expectedPreviousEventId,
+            scheduleDTag: mutation.scheduleDTag,
+            title: mutation.title,
+            retainedMemberCoordinates: mutation.retainedMemberCoordinates,
+            removedMemberCoordinates: mutation.removedMemberCoordinates,
+            newOccurrences: mutation.newOccurrences,
+            savedSignedEvents: matchingSigned,
+            shouldContinue,
+            onSignedLocal: (event) =>
+              retainSignedEventMarketEvidence(market.coordinate, event),
+            onProgress: (progress) => {
+              const record =
+                progress.record === "schedule"
+                  ? "Schedule"
+                  : `Date ${progress.index} of ${progress.total}`
+              setStep(`${record}: ${progress.phase}`)
+            },
+            onDelivery: ({ record, index, delivery }) => {
+              const label = record === "schedule" ? "Schedule" : `Date ${index}`
+              setDeliveryOutcomes((current) => ({
+                ...current,
+                [label]: `${delivery.acknowledged} ACK · ${delivery.rejected} rejected · ${delivery.timedOut} timed out${delivery.otherFailed ? ` · ${delivery.otherFailed} other failure` : ""}`,
+              }))
+            },
+          })
+        }
+      }
+      localStorage.removeItem(mutationStorageKey(market.coordinate))
+      setPendingMutation(null)
+      onChanged()
+    } catch (cause) {
+      setError(errorText(cause))
+      onChanged()
+    } finally {
+      setPending(false)
+    }
+  }
+
+  function startMutation(mutation: FrozenSeriesMutation): void {
+    try {
+      setDeliveryOutcomes({})
+      saveSeriesMutation(mutation)
+      setPendingMutation(mutation)
+      void runMutation(mutation)
+    } catch (cause) {
+      setError(errorText(cause))
+    }
+  }
+
+  function editDate(): void {
+    if (
+      !chosen ||
+      chosen.coverage !== "complete" ||
+      chosen.occurrence.end <= Date.now()
+    )
+      return
+    try {
+      const calendar = calendarDraft({
+        source: chosen.occurrence,
+        dTag: chosen.occurrence.dTag,
+        kind: chosen.occurrence.kind,
+        title,
+        location,
+        start,
+        end,
+        timezone,
+      })
+      buildEventMarketCalendarDraft(calendar)
+      startMutation({
+        version: 1,
+        action: "edit",
+        marketCoordinate: market.coordinate,
+        occurrenceCoordinate: chosen.occurrence.coordinate,
+        expectedPreviousEventId: chosen.occurrence.eventId,
+        expectedPreviousCreatedAt: chosen.occurrence.createdAt,
+        calendar,
+      })
+    } catch (cause) {
+      setError(errorText(cause))
+    }
+  }
+
+  function addDate(): void {
+    if (!seed) return
+    try {
+      const calendar = calendarDraft({
+        source: seed,
+        dTag: `${market.coordinate.split(":").slice(2).join(":")}-date-${crypto.randomUUID().slice(0, 8)}`,
+        kind: newKind,
+        title: newTitle,
+        location: newLocation,
+        start: newStart,
+        end: newEnd,
+        timezone: newTimezone,
+      })
+      buildEventMarketCalendarDraft(calendar)
+      if (
+        calendar.kind === 31922
+          ? calendar.start < getOrganizerEventStartMinimum("date")
+          : calendar.start * 1_000 <= Date.now()
+      ) {
+        throw new Error("New date must start in the future.")
+      }
+      startMutation({
+        version: 1,
+        action: "add",
+        marketCoordinate: market.coordinate,
+        expectedPreviousEventId: schedule.series.eventId,
+        expectedPreviousCreatedAt: schedule.series.createdAt,
+        scheduleDTag: schedule.coordinate.split(":").slice(2).join(":"),
+        title: schedule.series.title,
+        retainedMemberCoordinates: schedule.series.memberCoordinates,
+        removedMemberCoordinates: [],
+        newOccurrences: [calendar],
+      })
+    } catch (cause) {
+      setError(errorText(cause))
+    }
+  }
+
+  function removeDate(): void {
+    if (!chosen || chosen.occurrence.end <= Date.now()) return
+    startMutation({
+      version: 1,
+      action: "remove",
+      marketCoordinate: market.coordinate,
+      expectedPreviousEventId: schedule.series.eventId,
+      expectedPreviousCreatedAt: schedule.series.createdAt,
+      scheduleDTag: schedule.coordinate.split(":").slice(2).join(":"),
+      title: schedule.series.title,
+      retainedMemberCoordinates: schedule.series.memberCoordinates.filter(
+        (coordinate) => coordinate !== chosen.occurrence.coordinate
+      ),
+      removedMemberCoordinates: [chosen.occurrence.coordinate],
+      newOccurrences: [],
+    })
+  }
+
+  async function changeOpenState(): Promise<void> {
+    setPending(true)
+    setError("")
+    try {
+      await publishEventMarketRoster({
+        organizerPubkey: market.organizerPubkey,
+        authenticatedPubkey,
+        dTag: market.coordinate.split(":").slice(2).join(":"),
+        calendarCoordinate: market.calendarCoordinate,
+        state: market.state === "open" ? "closed" : "open",
+        merchants: market.merchants,
+        expectedPreviousEventId: market.eventId,
+        shouldContinue: () => isAuthGenerationCurrent(authGeneration),
+        onSignedLocal: (event) =>
+          retainSignedEventMarketEvidence(market.coordinate, event),
+      })
+      onChanged()
+    } catch (cause) {
+      setError(errorText(cause))
+      onChanged()
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const selectedFuture = !!chosen && chosen.occurrence.end > Date.now()
+  const editReady = selectedFuture && chosen?.coverage === "complete"
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Event dates</CardTitle>
+        <CardDescription>
+          {schedule.series.memberCoordinates.length} dates belong to this signed
+          schedule. Adding or removing a date keeps the other members and
+          approved merchants in place. Existing orders keep their signed terms.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={pending || !!pendingMutation}
+          onClick={() => void changeOpenState()}
+        >
+          {market.state === "open"
+            ? "Close Event Market"
+            : "Reopen Event Market"}
+        </Button>
+        {scheduleCoverage !== "complete" ||
+        schedule.unresolvedCoordinates.length > 0 ? (
+          <p role="status" className="text-sm text-[var(--text-secondary)]">
+            {schedule.occurrences.length} of{" "}
+            {schedule.series.memberCoordinates.length} dates are verified in
+            this read. Missing or partial date evidence does not remove a signed
+            schedule member. Refresh before editing an unavailable date.
+          </p>
+        ) : null}
+        <div className="space-y-1">
+          <Label htmlFor="future-series-date-choice">Choose date</Label>
+          <Select value={chosenCoordinate} onValueChange={choose}>
+            <SelectTrigger id="future-series-date-choice">
+              <SelectValue placeholder="Choose a date" />
+            </SelectTrigger>
+            <SelectContent>
+              {schedule.series.memberCoordinates.map((coordinate) => {
+                const entry = schedule.occurrences.find(
+                  (item) => item.occurrence.coordinate === coordinate
+                )
+                return (
+                  <SelectItem key={coordinate} value={coordinate}>
+                    {entry
+                      ? formatOrganizerOccurrenceDate(entry.occurrence)
+                      : "Date details unavailable"}
+                  </SelectItem>
+                )
+              })}
+            </SelectContent>
+          </Select>
+        </div>
+        {chosen ? (
+          <p className="text-sm text-[var(--text-secondary)]">
+            {formatOrganizerOccurrenceDate(chosen.occurrence)} –{" "}
+            {formatOrganizerOccurrenceDate(
+              chosen.occurrence,
+              chosen.occurrence.end
+            )}{" "}
+            · {chosen.coverage} evidence
+          </p>
+        ) : chosenCoordinate ? (
+          <p role="status">
+            The selected date is not verified in the current signed schedule.
+          </p>
+        ) : null}
+        {pendingMutation ? (
+          <div className="space-y-2 rounded-lg border border-[var(--border)] p-3">
+            <p role="status">
+              A signed {pendingMutation.action} change is saved for exact retry.
+              Review the current schedule before starting another change.
+            </p>
+            <Button
+              type="button"
+              disabled={pending}
+              onClick={() => void runMutation(pendingMutation)}
+            >
+              Resume publishing
+            </Button>
+          </div>
+        ) : null}
+        {editReady && chosen ? (
+          <div className="space-y-3 rounded-lg border border-[var(--border)] p-3">
+            <h3 className="font-medium">Edit selected date</h3>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label htmlFor="series-edit-title">Title</Label>
+                <Input
+                  id="series-edit-title"
+                  value={title}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setTitle(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-edit-location">Location</Label>
+                <Input
+                  id="series-edit-location"
+                  value={location}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setLocation(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-edit-start">
+                  Start{" "}
+                  {chosen.occurrence.kind === 31923 ? `(${timezone})` : ""}
+                </Label>
+                <Input
+                  id="series-edit-start"
+                  type={
+                    chosen.occurrence.kind === 31922 ? "date" : "datetime-local"
+                  }
+                  value={start}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setStart(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-edit-end">
+                  End {chosen.occurrence.kind === 31923 ? `(${timezone})` : ""}
+                </Label>
+                <Input
+                  id="series-edit-end"
+                  type={
+                    chosen.occurrence.kind === 31922 ? "date" : "datetime-local"
+                  }
+                  value={end}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setEnd(event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                disabled={
+                  pending ||
+                  !!pendingMutation ||
+                  !title.trim() ||
+                  !location.trim()
+                }
+                onClick={editDate}
+              >
+                Save selected date
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  pending ||
+                  !!pendingMutation ||
+                  schedule.series.memberCoordinates.length <= 1
+                }
+                onClick={removeDate}
+              >
+                Remove future date
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {chosen && !editReady ? (
+          <p className="text-sm text-[var(--text-secondary)]">
+            Past or partially verified dates remain visible but cannot be edited
+            or removed.
+          </p>
+        ) : null}
+        {seed ? (
+          <div className="space-y-3 rounded-lg border border-[var(--border)] p-3">
+            <h3 className="font-medium">Add date</h3>
+            <div className="space-y-1">
+              <Label htmlFor="series-new-kind">Date type</Label>
+              <Select
+                value={String(newKind)}
+                onValueChange={(value) =>
+                  setNewKind(Number(value) as 31922 | 31923)
+                }
+              >
+                <SelectTrigger id="series-new-kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="31923">Timed event</SelectItem>
+                  <SelectItem value="31922">All-day event</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label htmlFor="series-new-title">Title</Label>
+                <Input
+                  id="series-new-title"
+                  value={newTitle}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setNewTitle(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-new-location">Location</Label>
+                <Input
+                  id="series-new-location"
+                  value={newLocation}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setNewLocation(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-new-start">Start</Label>
+                <Input
+                  id="series-new-start"
+                  type={newKind === 31922 ? "date" : "datetime-local"}
+                  value={newStart}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setNewStart(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-new-end">End</Label>
+                <Input
+                  id="series-new-end"
+                  type={newKind === 31922 ? "date" : "datetime-local"}
+                  value={newEnd}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setNewEnd(event.target.value)}
+                />
+              </div>
+              {newKind === 31923 ? (
+                <div className="space-y-1">
+                  <Label htmlFor="series-new-timezone">Time zone</Label>
+                  <Input
+                    id="series-new-timezone"
+                    value={newTimezone}
+                    disabled={pending || !!pendingMutation}
+                    onChange={(event) => setNewTimezone(event.target.value)}
+                  />
+                </div>
+              ) : null}
+            </div>
+            <Button
+              type="button"
+              disabled={
+                pending ||
+                !!pendingMutation ||
+                !newTitle.trim() ||
+                !newLocation.trim() ||
+                !newStart ||
+                !newEnd
+              }
+              onClick={addDate}
+            >
+              Add signed date
+            </Button>
+          </div>
+        ) : null}
+        {step ? <p role="status">{step}</p> : null}
+        {Object.keys(deliveryOutcomes).length > 0 ? (
+          <ul
+            aria-label="Date publication outcomes"
+            className="space-y-1 text-sm text-[var(--text-secondary)]"
+          >
+            {Object.entries(deliveryOutcomes).map(([record, outcome]) => (
+              <li key={record}>
+                {record}: {outcome}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {error ? (
           <p role="alert" className="text-sm text-[var(--destructive)]">
             {error}
@@ -631,7 +1385,15 @@ function MerchantAuthorityRow({
   )
 }
 
-export function FutureEventMarketManager({ reference }: { reference: string }) {
+export function FutureEventMarketManager({
+  reference,
+  selectedOccurrence,
+  onSelectOccurrence,
+}: {
+  reference: string
+  selectedOccurrence?: string
+  onSelectOccurrence?: (coordinate: string) => void
+}) {
   const {
     accountPubkey,
     pubkey,
@@ -670,6 +1432,12 @@ export function FutureEventMarketManager({ reference }: { reference: string }) {
   const market =
     result?.resolution.state === "current" ? result.resolution.market : null
   const calendar = result?.calendar
+  const series = result?.schedule?.kind === "series" ? result.schedule : null
+  const selectedCalendar = series
+    ? (series.occurrences.find(
+        (entry) => entry.occurrence.coordinate === selectedOccurrence
+      )?.occurrence ?? (selectedOccurrence ? null : calendar))
+    : calendar
   const merchantIds = useMemo(
     () =>
       Array.from(
@@ -777,13 +1545,16 @@ export function FutureEventMarketManager({ reference }: { reference: string }) {
           {decisionError}
         </p>
       ) : null}
-      {market && calendar ? (
+      {market && (calendar || series) ? (
         <>
           <header className="space-y-2">
-            <h1 className="text-3xl font-semibold">{calendar.title}</h1>
+            <h1 className="text-3xl font-semibold">
+              {series?.series.title ?? calendar?.title}
+            </h1>
             <p className="text-sm text-[var(--text-muted)]">
               {market.state === "open" ? "Open" : "Closed"} ·{" "}
-              {calendar.locations.join(", ") || "Location not published"}
+              {selectedCalendar?.locations.join(", ") ||
+                "Selected date details unavailable"}
             </p>
           </header>
           <div className="flex flex-wrap gap-3">
@@ -829,11 +1600,23 @@ export function FutureEventMarketManager({ reference }: { reference: string }) {
               Retry signed market delivery
             </Button>
           ) : null}
-          {canManage && authenticatedPubkey ? (
+          {canManage && authenticatedPubkey && !series && calendar ? (
             <MarketLifecycleEditor
               key={`${calendar.eventId}:${market.eventId}`}
               market={market}
               calendar={calendar}
+              authenticatedPubkey={authenticatedPubkey}
+              onChanged={() => void query.refetch()}
+            />
+          ) : null}
+          {canManage && authenticatedPubkey && series ? (
+            <SeriesDateManager
+              key={`${series.series.eventId}:${selectedOccurrence ?? "default"}`}
+              market={market}
+              schedule={series}
+              scheduleCoverage={result?.scheduleCoverage}
+              selectedOccurrence={selectedOccurrence}
+              onSelectOccurrence={onSelectOccurrence}
               authenticatedPubkey={authenticatedPubkey}
               onChanged={() => void query.refetch()}
             />
@@ -891,7 +1674,7 @@ export function FutureEventMarketManager({ reference }: { reference: string }) {
           <EventQrPrintPreview
             open={printOpen}
             onOpenChange={setPrintOpen}
-            title={`Signs for ${calendar.title}`}
+            title={`Signs for ${series?.series.title ?? calendar?.title ?? "Event Market"}`}
             sheets={sheets}
             mode="merchant-batch"
             eventState={canManage ? "active" : "stale"}

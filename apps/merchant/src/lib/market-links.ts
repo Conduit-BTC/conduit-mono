@@ -4,6 +4,7 @@ import {
   buildMerchantEventParticipationUrl,
   inferConduitAppOrigin,
   normalizeExactEventCatalogNaddr,
+  parseAddressableCoordinate,
   pubkeyToNpub,
   type ConduitBrowserLocation,
 } from "@conduit/core"
@@ -87,6 +88,7 @@ export function getMerchantEventParticipationUrl(
 export interface MerchantEventsSearch {
   event?: string
   relation?: MerchantEventRelationshipFilter
+  occurrence?: string
 }
 
 export interface MerchantAuthHandoffSearch extends MerchantEventsSearch {
@@ -113,6 +115,10 @@ export function parseMerchantEventsSearch(
   return {
     ...(event ? { event } : {}),
     ...(relation ? { relation } : {}),
+    ...(typeof search.occurrence === "string" &&
+    parseAddressableCoordinate(search.occurrence, [31922, 31923])
+      ? { occurrence: search.occurrence }
+      : {}),
   }
 }
 

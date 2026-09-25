@@ -1,5 +1,5 @@
 import { ChevronDown, SearchX, ShoppingCart, Store } from "lucide-react"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   buildMarketProductShareUrl,
@@ -10,6 +10,7 @@ import {
   getListingSafetyDisplay,
   getProfileName,
   isCommerceReadIncomplete,
+  parseAddressableCoordinate,
   readEventMarketProduct,
   readEventMarketRoster,
   pubkeyToNpub,
@@ -26,6 +27,12 @@ import {
   AvatarImage,
   Badge,
   Button,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   getResultPresentation,
   RefreshChip,
   ShareLinkButton,
@@ -65,8 +72,15 @@ import {
 } from "../../lib/productVariations"
 
 export const Route = createFileRoute("/products/$productId")({
-  validateSearch: (raw: Record<string, unknown>): { event?: string } =>
-    typeof raw.event === "string" ? { event: raw.event } : {},
+  validateSearch: (
+    raw: Record<string, unknown>
+  ): { event?: string; occurrence?: string } => ({
+    ...(typeof raw.event === "string" ? { event: raw.event } : {}),
+    ...(typeof raw.occurrence === "string" &&
+    parseAddressableCoordinate(raw.occurrence, [31922, 31923])
+      ? { occurrence: raw.occurrence }
+      : {}),
+  }),
   component: ProductPage,
 })
 
@@ -98,6 +112,7 @@ function getMarketProductShareUrl(
 }
 
 function ProductPage() {
+  const navigate = useNavigate({ from: Route.fullPath })
   const { authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
@@ -109,7 +124,8 @@ function ProductPage() {
   const accountPubkey = authenticatedPubkey
   const cart = useCart()
   const { productId } = Route.useParams()
-  const { event: eventMarketReference } = Route.useSearch()
+  const { event: eventMarketReference, occurrence: selectedOccurrence } =
+    Route.useSearch()
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
   const [selectedProductId, setSelectedProductId] = useState("")
   const [quantity, setQuantity] = useState(1)
@@ -195,7 +211,10 @@ function ProductPage() {
   const eventMarketFulfillment = (() => {
     if (!eventMarketReference || !eventMarketQuery.data) return null
     try {
-      return createEventMarketPickupSnapshot(eventMarketQuery.data)
+      return createEventMarketPickupSnapshot({
+        ...eventMarketQuery.data,
+        selectedOccurrenceCoordinate: selectedOccurrence,
+      })
     } catch {
       return null
     }
@@ -362,6 +381,8 @@ function ProductPage() {
     }
     const url = new URL(ordinaryProductShareUrl)
     url.searchParams.set("event", eventMarketReference)
+    if (selectedOccurrence)
+      url.searchParams.set("occurrence", selectedOccurrence)
     return url.toString()
   })()
   const productPresenceCount = useProductLivePresenceCount({
@@ -911,6 +932,49 @@ function ProductPage() {
                     </button>
                   </div>
 
+                  {eventMarketQuery.data?.marketRead.schedule?.kind ===
+                  "series" ? (
+                    <div className="min-w-[12rem] space-y-1">
+                      <Label htmlFor="product-event-date">Choose date</Label>
+                      <Select
+                        value={selectedOccurrence ?? ""}
+                        onValueChange={(coordinate) =>
+                          void navigate({
+                            search: {
+                              event: eventMarketReference,
+                              occurrence: coordinate,
+                            },
+                            replace: true,
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          id="product-event-date"
+                          aria-label="Choose date"
+                        >
+                          <SelectValue placeholder="Confirm pickup date" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {eventMarketQuery.data.marketRead.schedule.occurrences.map(
+                            (entry) => (
+                              <SelectItem
+                                key={entry.occurrence.coordinate}
+                                value={entry.occurrence.coordinate}
+                                disabled={
+                                  entry.coverage !== "complete" ||
+                                  entry.occurrence.end <= Date.now()
+                                }
+                              >
+                                {new Date(
+                                  entry.occurrence.start
+                                ).toLocaleString()}
+                              </SelectItem>
+                            )
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
                   <Button
                     className="min-w-[12rem] flex-1"
                     disabled={
@@ -960,6 +1024,11 @@ function ProductPage() {
                       <Link
                         to="/events/$collectionRef"
                         params={{ collectionRef: productEventNaddr }}
+                        search={
+                          selectedOccurrence
+                            ? { occurrence: selectedOccurrence }
+                            : {}
+                        }
                         className="font-medium text-secondary-400 hover:text-secondary-300"
                       >
                         View event catalog

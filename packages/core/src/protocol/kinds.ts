@@ -68,6 +68,7 @@ export const EVENT_KINDS = {
 
   /** NIP-52: Time-based calendar event (addressable) */
   CALENDAR_TIME: 31923,
+  CALENDAR: 31924,
 
   /** NIP-04: Legacy encrypted DM */
   DM_LEGACY: 4,

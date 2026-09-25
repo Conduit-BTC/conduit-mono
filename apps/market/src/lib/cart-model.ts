@@ -422,6 +422,8 @@ export function getMixedFulfillmentBlockingMessage(
       (item) =>
         item.fulfillment?.type !== "event_market_pickup" ||
         item.fulfillment.market.coordinate !== firstMarket.market.coordinate ||
+        item.fulfillment.calendar.coordinate !==
+          firstMarket.calendar.coordinate ||
         item.fulfillment.merchantPubkey !== firstMarket.merchantPubkey
     )
   ) {
@@ -452,6 +454,8 @@ export function isSameCartFulfillment(
       right.fulfillment?.type === "event_market_pickup" &&
       left.fulfillment.market.coordinate ===
         right.fulfillment.market.coordinate &&
+      left.fulfillment.calendar.coordinate ===
+        right.fulfillment.calendar.coordinate &&
       left.fulfillment.merchantPubkey === right.fulfillment.merchantPubkey &&
       left.fulfillment.payeePubkey === right.fulfillment.payeePubkey
     )
@@ -1357,6 +1361,7 @@ export function getCartLineFulfillmentId(
     return JSON.stringify([
       "event_market_pickup",
       item.fulfillment.market.coordinate,
+      item.fulfillment.calendar.coordinate,
       item.fulfillment.product.coordinate,
       item.fulfillment.product.eventId,
       item.fulfillment.mode,
@@ -1403,6 +1408,7 @@ export function getCartPurchaseGroupId(
         ? JSON.stringify([
             "event_market_pickup",
             item.fulfillment.market.coordinate,
+            item.fulfillment.calendar.coordinate,
             item.fulfillment.merchantPubkey,
             item.fulfillment.payeePubkey,
           ])

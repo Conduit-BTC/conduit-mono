@@ -13,6 +13,7 @@ import {
   getEventMarketReadPlan,
   isEventMarketAddressableRevisionDeleted,
   parseAddressableCoordinate,
+  parseEventMarketCalendarEvent,
   type EventMarketReadPlan,
   type ParsedEventMarketCalendar,
 } from "./event-market"
@@ -25,6 +26,11 @@ import {
   type EventMarketRosterResolution,
 } from "./event-market-roster"
 import { EVENT_KINDS } from "./kinds"
+import {
+  resolveEventMarketOccurrence,
+  resolveEventMarketSeries,
+  type EventMarketSchedule,
+} from "./event-market-schedule"
 import { parseProductEvent } from "./products"
 import { fetchEventsFanoutDetailed, type FetchEventsFanoutOptions } from "./ndk"
 import {
@@ -44,6 +50,8 @@ export interface EventMarketRosterReadResult {
   observedRelayUrls: string[]
   calendar?: ParsedEventMarketCalendar | null
   calendarCoverage?: EventMarketRosterReadCoverage
+  schedule?: EventMarketSchedule
+  scheduleCoverage?: EventMarketRosterReadCoverage
 }
 
 export interface EventMarketProductReadResult {
@@ -62,19 +70,64 @@ export interface EventMarketCatalogReadResult {
   candidateCount: number
 }
 
+/** Buyer and merchant label derived from the exact signed pickup occurrence. */
+export function formatEventMarketPickupDate(
+  fulfillment: Pick<OrderEventMarketPickupFulfillmentSchema, "calendar">
+): string {
+  const calendar = parseEventMarketCalendarEvent(
+    fulfillment.calendar.signedEvent
+  )
+  if (!calendar || calendar.coordinate !== fulfillment.calendar.coordinate)
+    return "Selected event date unavailable"
+  if (calendar.kind === EVENT_KINDS.CALENDAR_DATE)
+    return (
+      calendar.startDate ?? new Date(calendar.start).toISOString().slice(0, 10)
+    )
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: calendar.startTzid ?? "UTC",
+      timeZoneName: "short",
+    }).format(new Date(calendar.start))
+  } catch {
+    return new Date(calendar.start).toISOString()
+  }
+}
+
 /** Freeze exact signed participation terms before adding a future-event cart line. */
 export function createEventMarketPickupSnapshot(input: {
   marketRead: EventMarketRosterReadResult
   productRead: EventMarketProductReadResult
+  selectedOccurrenceCoordinate?: string
 }): OrderEventMarketPickupFulfillmentSchema {
   const market = input.marketRead.resolution
   const product = input.productRead.resolution
-  const calendar = input.marketRead.calendar
+  const schedule = input.marketRead.schedule
+  const selected =
+    schedule?.kind === "series"
+      ? schedule.occurrences.find(
+          (entry) =>
+            entry.occurrence.coordinate ===
+              input.selectedOccurrenceCoordinate &&
+            entry.coverage === "complete"
+        )
+      : undefined
+  const calendar =
+    schedule?.kind === "series"
+      ? selected?.occurrence
+      : input.marketRead.calendar
   const authorization = input.productRead.authorization?.resolution
   if (
     market.state !== "current" ||
     market.market.state !== "open" ||
     !calendar ||
+    (schedule?.kind === "series" &&
+      (input.marketRead.calendarCoverage !== "complete" ||
+        calendar.end <= Date.now())) ||
     product.state !== "eligible" ||
     authorization?.state !== "active" ||
     !input.productRead.actionable ||
@@ -91,6 +144,7 @@ export function createEventMarketPickupSnapshot(input: {
       coordinate: market.market.coordinate,
       eventId: market.market.eventId,
       createdAt: market.market.createdAt * 1_000,
+      signedEvent: market.market.signedEvent,
     },
     calendar: {
       coordinate: calendar.coordinate,
@@ -98,11 +152,23 @@ export function createEventMarketPickupSnapshot(input: {
       createdAt: calendar.createdAt,
       start: calendar.start,
       end: calendar.end,
+      signedEvent: calendar.signedEvent,
     },
+    ...(schedule?.kind === "series"
+      ? {
+          schedule: {
+            coordinate: schedule.coordinate,
+            eventId: schedule.series.eventId,
+            createdAt: schedule.series.createdAt,
+            signedEvent: schedule.series.signedEvent,
+          },
+        }
+      : {}),
     product: {
       coordinate: input.productRead.productCoordinate,
       eventId: product.revision.id,
       createdAt: product.revision.created_at * 1_000,
+      signedEvent: product.revision,
     },
     grant: {
       kind: EVENT_KINDS.EVENT_MARKET_AUTH,
@@ -174,6 +240,17 @@ async function loadRetained(
     .map((row) => row.signedEvent)
 }
 
+/** Exact saved public records for interrupted organizer publication. */
+export async function loadRetainedSignedEventMarketEvidence(
+  marketCoordinate: string
+): Promise<SignedPublicNostrEvent[]> {
+  const coordinate = parseAddressableCoordinate(marketCoordinate, [
+    EVENT_KINDS.EVENT_MARKET,
+  ])
+  if (!coordinate || coordinate.coordinate !== marketCoordinate) return []
+  return loadRetained(marketCoordinate)
+}
+
 async function retainSigned(
   coordinate: string,
   events: readonly SignedPublicNostrEvent[]
@@ -219,6 +296,7 @@ export async function retainSignedEventMarketEvidence(
       EVENT_KINDS.EVENT_MARKET,
       EVENT_KINDS.CALENDAR_DATE,
       EVENT_KINDS.CALENDAR_TIME,
+      EVENT_KINDS.CALENDAR,
       EVENT_KINDS.EVENT_MARKET_AUTH,
     ].includes(signedEvent.kind as never)
   )
@@ -529,6 +607,258 @@ export async function readEventMarketRoster(
   if (resolution.state !== "current") {
     return { coordinate, resolution, coverage, retained, observedRelayUrls }
   }
+  const linkedCoordinate = parseAddressableCoordinate(
+    resolution.market.calendarCoordinate,
+    [EVENT_KINDS.CALENDAR_DATE, EVENT_KINDS.CALENDAR_TIME, EVENT_KINDS.CALENDAR]
+  )!
+  if (linkedCoordinate.kind === EVENT_KINDS.CALENDAR) {
+    const [masterRead, masterCoordinateDeletions] = await Promise.all([
+      safeFetch({
+        kinds: [EVENT_KINDS.CALENDAR as NDKKind],
+        authors: [decoded.authorPubkey],
+        "#d": [linkedCoordinate.dTag],
+        limit: 64,
+      }),
+      safeFetch({
+        kinds: [EVENT_KINDS.DELETION],
+        authors: [decoded.authorPubkey],
+        "#a": [linkedCoordinate.coordinate],
+        limit: 64,
+      }),
+    ])
+    const knownMaster = [...loadedEvents, ...masterRead.events].filter(
+      (event) =>
+        event.kind === EVENT_KINDS.CALENDAR &&
+        event.pubkey === decoded.authorPubkey &&
+        event.tags.some(
+          (tag) => tag[0] === "d" && tag[1] === linkedCoordinate.dTag
+        ) &&
+        isValidSignedPublicNostrEvent(event)
+    )
+    const masterIdDeletions =
+      knownMaster.length > 0
+        ? await safeFetch({
+            kinds: [EVENT_KINDS.DELETION],
+            authors: [decoded.authorPubkey],
+            "#e": knownMaster.slice(0, 32).map((event) => event.id),
+            limit: 64,
+          })
+        : { events: [], relays: [] }
+    const masterReads = [
+      masterRead,
+      masterCoordinateDeletions,
+      ...(knownMaster.length > 0 ? [masterIdDeletions] : []),
+    ]
+    const liveMaster = masterReads.flatMap((read) => read.events)
+    const masterEvidence = [
+      ...new Map(
+        [...loadedEvents, ...liveMaster]
+          .filter(
+            (event) =>
+              event.pubkey === decoded.authorPubkey &&
+              isValidSignedPublicNostrEvent(event)
+          )
+          .map((event) => [event.id, event])
+      ).values(),
+    ]
+    try {
+      await dependencies.retain(coordinate, liveMaster)
+    } catch {
+      retained = false
+    }
+    const seriesResolution = resolveEventMarketSeries({
+      coordinate: linkedCoordinate.coordinate,
+      organizerPubkey: decoded.authorPubkey,
+      revisions: masterEvidence,
+      deletions: masterEvidence.filter(
+        (event) => event.kind === EVENT_KINDS.DELETION
+      ),
+    })
+    const masterRelayStates = masterReads.flatMap((read) => read.relays)
+    const masterCoverage: EventMarketRosterReadCoverage =
+      seriesResolution.state === "current" &&
+      !liveMaster.some((event) => event.id === seriesResolution.series.eventId)
+        ? "stale"
+        : masterRelayStates.length === 0 ||
+            masterRelayStates.every((relay) => relay.status === "failed")
+          ? "unavailable"
+          : !retained ||
+              plan.relayHintTruncated ||
+              knownMaster.length > 32 ||
+              masterReads.some((read) => read.relays.length === 0) ||
+              masterRelayStates.some((relay) => relay.status !== "success") ||
+              masterRead.events.length >= 64 ||
+              masterCoordinateDeletions.events.length >= 64 ||
+              masterIdDeletions.events.length >= 64
+            ? "partial"
+            : "complete"
+    if (seriesResolution.state !== "current") {
+      return {
+        coordinate,
+        resolution,
+        coverage,
+        retained,
+        observedRelayUrls,
+        calendar: null,
+        calendarCoverage: masterCoverage,
+        scheduleCoverage: masterCoverage,
+      }
+    }
+    const members = seriesResolution.series.memberCoordinates.map((value) =>
+      parseAddressableCoordinate(value, [
+        EVENT_KINDS.CALENDAR_DATE,
+        EVENT_KINDS.CALENDAR_TIME,
+      ])!
+    )
+    const occurrences: Extract<
+      EventMarketSchedule,
+      { kind: "series" }
+    >["occurrences"] = []
+    const unresolvedCoordinates: string[] = []
+    let scheduleCoverage: EventMarketRosterReadCoverage = masterCoverage
+    const memberRelayUrls = new Set<string>()
+    for (let offset = 0; offset < members.length; offset += 32) {
+      const batch = members.slice(offset, offset + 32)
+      const [memberRead, memberCoordinateDeletions] = await Promise.all([
+        safeFetch({
+          kinds: [
+            EVENT_KINDS.CALENDAR_DATE as NDKKind,
+            EVENT_KINDS.CALENDAR_TIME as NDKKind,
+          ],
+          authors: [decoded.authorPubkey],
+          "#d": batch.map((member) => member.dTag),
+          limit: 128,
+        }),
+        safeFetch({
+          kinds: [EVENT_KINDS.DELETION],
+          authors: [decoded.authorPubkey],
+          "#a": batch.map((member) => member.coordinate),
+          limit: 128,
+        }),
+      ])
+      const knownMemberIds = [
+        ...new Set(
+          [...loadedEvents, ...memberRead.events]
+            .filter(
+              (event) =>
+                batch.some(
+                  (member) =>
+                    event.kind === member.kind &&
+                    event.pubkey === decoded.authorPubkey &&
+                    event.tags.some(
+                      (tag) => tag[0] === "d" && tag[1] === member.dTag
+                    )
+                ) && isValidSignedPublicNostrEvent(event)
+            )
+            .map((event) => event.id)
+        ),
+      ]
+      const memberIdDeletions =
+        knownMemberIds.length > 0
+          ? await safeFetch({
+              kinds: [EVENT_KINDS.DELETION],
+              authors: [decoded.authorPubkey],
+              "#e": knownMemberIds.slice(0, 128),
+              limit: 128,
+            })
+          : { events: [], relays: [] }
+      const memberReads = [
+        memberRead,
+        memberCoordinateDeletions,
+        ...(knownMemberIds.length > 0 ? [memberIdDeletions] : []),
+      ]
+      const liveMembers = memberReads.flatMap((read) => read.events)
+      try {
+        await dependencies.retain(coordinate, liveMembers)
+      } catch {
+        retained = false
+      }
+      const evidence = [
+        ...new Map(
+          [...loadedEvents, ...liveMembers]
+            .filter(
+              (event) =>
+                event.pubkey === decoded.authorPubkey &&
+                isValidSignedPublicNostrEvent(event)
+            )
+            .map((event) => [event.id, event])
+        ).values(),
+      ]
+      const liveIds = new Set(liveMembers.map((event) => event.id))
+      const relayStates = memberReads.flatMap((read) => read.relays)
+      relayStates.forEach((relay) => memberRelayUrls.add(relay.relayUrl))
+      const batchCoverage: EventMarketRosterReadCoverage =
+        relayStates.length === 0 ||
+        relayStates.every((relay) => relay.status === "failed")
+          ? "unavailable"
+          : !retained ||
+              plan.relayHintTruncated ||
+              knownMemberIds.length > 128 ||
+              memberReads.some((read) => read.relays.length === 0) ||
+              relayStates.some((relay) => relay.status !== "success") ||
+              memberRead.events.length >= 128 ||
+              memberCoordinateDeletions.events.length >= 128 ||
+              memberIdDeletions.events.length >= 128
+            ? "partial"
+            : "complete"
+      for (const member of batch) {
+        const resolved = resolveEventMarketOccurrence({
+          coordinate: member.coordinate,
+          organizerPubkey: decoded.authorPubkey,
+          revisions: evidence,
+          deletions: evidence.filter(
+            (event) => event.kind === EVENT_KINDS.DELETION
+          ),
+        })
+        if (!resolved) {
+          unresolvedCoordinates.push(member.coordinate)
+          scheduleCoverage = "partial"
+          continue
+        }
+        const memberCoverage = liveIds.has(resolved.signedEvent.id)
+          ? batchCoverage
+          : "stale"
+        if (memberCoverage !== "complete") scheduleCoverage = "partial"
+        occurrences.push({
+          occurrence: resolved.occurrence,
+          occurrenceEvent: resolved.signedEvent,
+          coverage: memberCoverage,
+        })
+      }
+    }
+    occurrences.sort(
+      (left, right) =>
+        left.occurrence.start - right.occurrence.start ||
+        left.occurrence.coordinate.localeCompare(right.occurrence.coordinate)
+    )
+    const selected =
+      occurrences.find((entry) => entry.occurrence.end > Date.now()) ??
+      occurrences.at(-1)
+    const schedule: EventMarketSchedule = {
+      kind: "series",
+      coordinate: linkedCoordinate.coordinate,
+      series: seriesResolution.series,
+      occurrences,
+      unresolvedCoordinates,
+    }
+    return {
+      coordinate,
+      resolution,
+      coverage,
+      retained,
+      observedRelayUrls: [
+        ...new Set([
+          ...observedRelayUrls,
+          ...masterRelayStates.map((relay) => relay.relayUrl),
+          ...memberRelayUrls,
+        ]),
+      ],
+      calendar: selected?.occurrence ?? null,
+      calendarCoverage: masterCoverage,
+      schedule,
+      scheduleCoverage,
+    }
+  }
   const calendarCoordinate = parseAddressableCoordinate(
     resolution.market.calendarCoordinate,
     [EVENT_KINDS.CALENDAR_DATE, EVENT_KINDS.CALENDAR_TIME]
@@ -667,6 +997,17 @@ export async function readEventMarketRoster(
     ],
     calendar,
     calendarCoverage,
+    ...(calendar?.signedEvent
+      ? {
+          schedule: {
+            kind: "single" as const,
+            coordinate: calendar.coordinate,
+            occurrence: calendar,
+            occurrenceEvent: calendar.signedEvent,
+          },
+          scheduleCoverage: calendarCoverage,
+        }
+      : {}),
   }
 }
 

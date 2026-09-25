@@ -84,6 +84,7 @@ export function buildEventMarketRosterDraft(
   const calendar = parseAddressableCoordinate(input.calendarCoordinate, [
     EVENT_KINDS.CALENDAR_DATE,
     EVENT_KINDS.CALENDAR_TIME,
+    EVENT_KINDS.CALENDAR,
   ])
   if (
     !HEX_64.test(input.organizerPubkey) ||
@@ -138,6 +139,7 @@ export function parseEventMarketRosterEvent(
   const calendar = parseAddressableCoordinate(calendarTags[0]?.[1], [
     EVENT_KINDS.CALENDAR_DATE,
     EVENT_KINDS.CALENDAR_TIME,
+    EVENT_KINDS.CALENDAR,
   ])
   const state = stateTags[0]?.[2]
   const previousEventId = previousTags[0]?.[1]
