@@ -281,13 +281,17 @@ describe("Market wallet route contracts", () => {
     expect(targetContent).toContain("Previously selected wallet (unavailable)")
     expect(targetContent).toContain("textValue=")
     expect(content).toContain("paymentTarget: storedPaymentTarget")
-    expect(content).toContain("sparkFeeApproval.requestApproval")
+    expect(content).toContain(
+      "queueSparkPaymentHandoff(serviceCtx, purchaseCleanup)"
+    )
+    const orders = await readFile("apps/market/src/routes/orders.tsx", "utf8")
+    expect(orders).toContain("approveFee: sparkFeeApproval.requestApproval")
     expect(content).toContain("Wallet balance")
     expect(content).toContain("getKnownWalletPaymentConstraint")
     expect(content).toContain("Automatic wallet payment will be skipped")
     expect(content).toContain("Hold to send order and show invoice")
     expect(content).toContain("HoldToReleaseButton")
-    expect(content).toContain("if (canAttemptLightningPayment)")
+    expect(content).toContain("canAttemptLightningPayment")
     expect(content).toContain('selectedPaymentTarget.type === "wallet"')
     expect(content).toContain('selectedPaymentTarget.type === "webln"')
 

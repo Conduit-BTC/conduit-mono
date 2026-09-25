@@ -83,6 +83,8 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { MarketProjectTip } from "../components/MarketProjectTip"
+import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import { useCart } from "../hooks/useCart"
 import { groupCartPurchases } from "../lib/cart-model"
 import { CopyButton } from "../components/CopyButton"
@@ -148,6 +150,7 @@ import {
   validateMerchantInvoicePaymentAction,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import { takeSparkPaymentHandoff } from "../lib/order-payment-handoff"
 import {
   checkOrderPaymentAddressUpdate,
   type OrderPaymentAddressUpdate,
@@ -1198,6 +1201,11 @@ function OrderDetail({
     })
   }
 
+  const finishAcceptedOrderRecoveryRef = useRef(finishAcceptedOrderRecovery)
+  useLayoutEffect(() => {
+    finishAcceptedOrderRecoveryRef.current = finishAcceptedOrderRecovery
+  })
+
   async function retryStagedOrderDelivery(): Promise<void> {
     const lifecycle = row.lifecycle
     if (!lifecycle?.orderRelayDelivery) {
@@ -1241,6 +1249,43 @@ function OrderDetail({
     }
     await finishAcceptedOrderRecovery(current)
   }
+
+  useEffect(() => {
+    if (
+      !paymentFocused ||
+      !actionsReady ||
+      row.lifecycle?.orderDeliveryStatus !== "sent" ||
+      row.lifecycle.paymentTarget?.type !== "wallet" ||
+      row.lifecycle.paymentTarget.providerId !== "spark"
+    ) {
+      return
+    }
+    const handoff = takeSparkPaymentHandoff(vm.orderId, buyerPubkey)
+    if (!handoff) return
+    void withBusy(async () => {
+      await runOrderPayment({
+        ...handoff.context,
+        approveFee: sparkFeeApproval.requestApproval,
+      })
+      await handoff.purchaseCleanup
+      const current = await getOrderLifecycle(vm.orderId)
+      if (!current || !hasCheckoutPaymentProgress(current)) {
+        throw new Error(
+          "Payment did not start. Continue this accepted order from here."
+        )
+      }
+      await finishAcceptedOrderRecoveryRef.current(current)
+    })
+  }, [
+    actionsReady,
+    buyerPubkey,
+    paymentFocused,
+    row.lifecycle?.orderDeliveryStatus,
+    row.lifecycle?.paymentTarget,
+    sparkFeeApproval.requestApproval,
+    vm.orderId,
+    withBusy,
+  ])
 
   async function confirmPaymentAddressUpdate(): Promise<void> {
     const pending = paymentAddressUpdate
@@ -1659,6 +1704,15 @@ function OrderDetail({
       {paymentFocused && !showExternalWallet && !headerStatus.actionNeeded && (
         <div>
           <OrderHeaderPill status={headerStatus} />
+        </div>
+      )}
+
+      {!zeroCostPickupOrder && isBuyerOrderPaid(vm) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+          <p className="text-sm text-[var(--text-secondary)]">
+            Had a good experience?
+          </p>
+          <MarketProjectTip className="min-h-11 text-primary-500" />
         </div>
       )}
 
@@ -2485,6 +2539,12 @@ function OrdersPage() {
   const [tab, setTab] = useState<PhaseTab>("all")
   const [changeOrderOpen, setChangeOrderOpen] = useState(false)
   const [signerReconnectPending, setSignerReconnectPending] = useState(false)
+  const [lightningPlaying, setLightningPlaying] = useState(false)
+  const priorSelectedPaymentRef = useRef<{
+    orderId: string
+    paymentStatus: string
+  } | null>(null)
+  const celebratedOrdersRef = useRef(new Set<string>())
   const [, setGuestSessionEpoch] = useState(0)
   const guestIdentity =
     !hasAccount && selectedFromUrl
@@ -2826,6 +2886,46 @@ function OrdersPage() {
     }
   }, [paymentAttemptQuery.data, selected])
 
+  useEffect(() => {
+    const current = selectedRow?.lifecycle
+    if (!current) return
+    const previous = priorSelectedPaymentRef.current
+    priorSelectedPaymentRef.current = {
+      orderId: current.orderId,
+      paymentStatus: current.paymentStatus,
+    }
+    if (
+      current.paymentStatus !== "paid" ||
+      getOrderPaymentState(current.orderId)?.lifecycle?.paymentStatus !==
+        "paid" ||
+      celebratedOrdersRef.current.has(current.orderId)
+    ) {
+      return
+    }
+    const observedTransition =
+      previous?.orderId === current.orderId && previous.paymentStatus !== "paid"
+    if (paymentFocused || observedTransition) {
+      celebratedOrdersRef.current.add(current.orderId)
+      setLightningPlaying(true)
+    }
+  }, [paymentFocused, selectedRow])
+
+  useEffect(() => {
+    if (
+      !paymentFocused ||
+      !selectedRow ||
+      selectedRow.orderId !== selectedFromUrl ||
+      selectedRow.lifecycle?.paymentStatus !== "paid"
+    ) {
+      return
+    }
+    void navigate({
+      to: "/orders",
+      search: { order: selectedRow.orderId },
+      replace: true,
+    })
+  }, [navigate, paymentFocused, selectedFromUrl, selectedRow])
+
   const hasOrders = orders.length > 0
   const focusedOrderPending =
     paymentFocused &&
@@ -2838,6 +2938,10 @@ function OrdersPage() {
 
   return (
     <div className="space-y-6">
+      <LightningStrikeOverlay
+        open={lightningPlaying}
+        onComplete={() => setLightningPlaying(false)}
+      />
       {paymentFocused && activeBuyerPubkey && (
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">

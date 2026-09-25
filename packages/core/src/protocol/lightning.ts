@@ -1,7 +1,7 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { secp256k1 } from "@noble/curves/secp256k1.js"
 import { sha256 } from "@noble/hashes/sha2.js"
-import { bytesToHex, concatBytes } from "@noble/hashes/utils.js"
+import { bytesToHex, concatBytes, hexToBytes } from "@noble/hashes/utils.js"
 
 import { config } from "../config"
 import { normalizePublicHttpsUrl } from "../network-target-safety"
@@ -163,7 +163,9 @@ export async function fetchLnurlPayMetadataFromUrl(
   try {
     const res = await (options.fetchImpl ?? fetch)(safePayRequestUrl, {
       headers: { accept: "application/json" },
-      redirect: "error",
+      // Cloudflare's edge fetch accepts manual but can reject error mode.
+      // A redirect is still rejected below because a 3xx response is not ok.
+      redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) throw new Error(`LNURL endpoint returned ${res.status}`)
@@ -458,6 +460,30 @@ export async function fetchZapInvoice(
       { cause: e }
     )
   }
+}
+
+/** Cash App consumes an already validated mainnet invoice. */
+export function getCashAppLightningUrl(
+  invoice: string,
+  expectedAmountSats: number | null,
+  nowSeconds = Math.floor(Date.now() / 1_000)
+): string | null {
+  if (
+    expectedAmountSats === null ||
+    expectedAmountSats <= 0 ||
+    !Number.isSafeInteger(expectedAmountSats * 1_000) ||
+    getLightningInvoiceNetwork(invoice) !== "mainnet" ||
+    !decodeLightningInvoicePaymentHash(invoice) ||
+    !isValidLightningInvoice(invoice) ||
+    !validateLightningInvoiceForPayment({
+      invoice,
+      expectedAmountMsats: expectedAmountSats * 1_000,
+      nowSeconds,
+    }).ok
+  ) {
+    return null
+  }
+  return `https://cash.app/launch/lightning/${normalizeLightningInvoice(invoice)}`
 }
 
 export type LightningInvoiceNetwork =
@@ -975,6 +1001,20 @@ export function decodeLightningInvoicePaymentHash(
 
   const paymentHashBytes = wordsToBytes(paymentHash.words, 32)
   return paymentHashBytes ? bytesToHex(paymentHashBytes) : null
+}
+
+/** A wallet preimage proves payment of this exact invoice, not just another invoice. */
+export function isLightningPaymentPreimageForInvoice(
+  invoice: string,
+  preimage: string
+): boolean {
+  if (!/^[0-9a-f]{64}$/i.test(preimage)) return false
+  const paymentHash = decodeLightningInvoicePaymentHash(invoice)
+  return (
+    paymentHash !== null &&
+    bytesToHex(sha256(hexToBytes(preimage))).toLowerCase() ===
+      paymentHash.toLowerCase()
+  )
 }
 
 export type ZapInvoiceBindingErrorCode =

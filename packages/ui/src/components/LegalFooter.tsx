@@ -10,6 +10,7 @@ export interface LegalFooterProps {
   privacyHref?: string
   termsHref?: string
   reportBugHref: string
+  tipAction?: ReactNode
   hidden?: boolean
 }
 
@@ -42,6 +43,7 @@ export const LegalFooter = forwardRef<HTMLElement, LegalFooterProps>(
       privacyHref = "/privacy-policy",
       termsHref = "/terms-of-service",
       reportBugHref,
+      tipAction,
       hidden = false,
     },
     ref
@@ -61,7 +63,7 @@ export const LegalFooter = forwardRef<HTMLElement, LegalFooterProps>(
           className
         )}
       >
-        <div className="mx-auto flex w-full max-w-7xl flex-nowrap items-center justify-between gap-3 whitespace-nowrap text-[11px] font-medium sm:text-xs">
+        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-2 whitespace-nowrap text-[11px] font-medium min-[360px]:flex-nowrap min-[360px]:justify-between sm:text-xs">
           <nav
             className="flex shrink-0 items-center gap-2.5 sm:gap-3"
             aria-label="Legal links"
@@ -105,16 +107,19 @@ export const LegalFooter = forwardRef<HTMLElement, LegalFooterProps>(
               </a>
             )}
           </nav>
-          <a
-            href={reportBugHref}
-            target="_blank"
-            rel="noopener noreferrer"
-            referrerPolicy="no-referrer"
-            className="inline-flex shrink-0 items-center gap-1.5 text-[var(--text-primary)] transition-colors hover:text-primary-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-          >
-            <Bug className="size-4" aria-hidden="true" />
-            <span>Report a Bug</span>
-          </a>
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+            {tipAction}
+            <a
+              href={reportBugHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              referrerPolicy="no-referrer"
+              className="inline-flex min-h-11 shrink-0 items-center gap-1.5 text-[var(--text-primary)] transition-colors hover:text-primary-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            >
+              <Bug className="size-4" aria-hidden="true" />
+              <span>Report a Bug</span>
+            </a>
+          </div>
         </div>
       </footer>
     )
