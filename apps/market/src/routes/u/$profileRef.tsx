@@ -10,6 +10,7 @@ import {
   useProfile,
 } from "@conduit/core"
 import { Globe, Store, UserRound, Zap } from "lucide-react"
+import { BrainstormGlobalScoreLink } from "../../components/BrainstormGlobalScoreLink"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -134,6 +135,7 @@ function PublicProfilePage() {
                   >
                     {formatNpub(pubkey, 8)}
                   </Badge>
+                  <BrainstormGlobalScoreLink pubkey={pubkey} />
                 </div>
                 <RichProfileText
                   text={
