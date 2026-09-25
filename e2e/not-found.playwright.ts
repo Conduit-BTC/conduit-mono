@@ -52,6 +52,14 @@ for (const app of ["market", "merchant"] as const) {
           document.documentElement.clientWidth
       )
     ).toBe(true)
+    const scene = await page.locator(".network-not-found").boundingBox()
+    const header = await page.getByRole("banner").boundingBox()
+    const footer = await page.getByRole("contentinfo").boundingBox()
+    expect(scene).not.toBeNull()
+    expect(scene!.x).toBe(0)
+    expect(scene!.width).toBe(header!.width)
+    expect(scene!.y).toBeCloseTo(header!.y + header!.height, 0)
+    expect(scene!.y + scene!.height).toBeGreaterThanOrEqual(footer!.y - 1)
     if (process.env.NOT_FOUND_EVIDENCE_DIR) {
       await page.screenshot({
         path: `${process.env.NOT_FOUND_EVIDENCE_DIR}/${app}-${testInfo.project.name}.png`,
@@ -129,7 +137,21 @@ test("merchant signed-in missing page keeps workspace navigation @merchant", asy
   await expect(
     page.getByRole("heading", { name: "You have left the network." })
   ).toBeVisible()
-  await expect(page.locator("[data-merchant-main-scroll]")).toBeVisible()
+  const main = page.locator("[data-merchant-main-scroll]")
+  await expect(main).toBeVisible()
+  const scene = await page.locator(".network-not-found").boundingBox()
+  const workspace = await main.boundingBox()
+  expect(scene!.x).toBe(workspace!.x)
+  expect(scene!.width).toBe(workspace!.width)
+  expect(scene!.y + scene!.height).toBeGreaterThanOrEqual(
+    page.viewportSize()!.height - 1
+  )
+  if (process.env.NOT_FOUND_EVIDENCE_DIR) {
+    await page.screenshot({
+      path: `${process.env.NOT_FOUND_EVIDENCE_DIR}/merchant-workspace-${page.viewportSize()!.width}.png`,
+      fullPage: true,
+    })
+  }
   await expect(
     page.getByRole("heading", { name: "Sign in to Conduit" })
   ).toHaveCount(0)

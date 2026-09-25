@@ -4,10 +4,10 @@
   container-type: inline-size;
   display: flex;
   align-items: center;
-  min-height: clamp(480px, 68svh, 720px);
+  flex: 1;
+  min-width: 0;
+  min-height: 100%;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 2rem;
   background: var(--neutral-950);
   color: var(--on-primary);
 }
@@ -30,7 +30,7 @@
   background: linear-gradient(
     90deg,
     var(--neutral-950),
-    color-mix(in srgb, var(--neutral-950) 80%, transparent) 35%,
+    color-mix(in srgb, var(--neutral-950) 65%, transparent) 35%,
     color-mix(in srgb, var(--primary-950) 25%, transparent)
   );
 }
@@ -104,13 +104,6 @@
   background: var(--neutral-800);
 }
 
-@media (max-width: 640px) {
-  .network-not-found {
-    min-height: 520px;
-    border-radius: 1.5rem;
-  }
-}
-
 @container (max-width: 800px) {
   .network-not-found__content {
     padding: 8rem 1.5rem 5.5rem;
@@ -124,7 +117,7 @@
     background: linear-gradient(
       0deg,
       var(--neutral-950),
-      color-mix(in srgb, var(--neutral-950) 80%, transparent) 55%,
+      color-mix(in srgb, var(--neutral-950) 65%, transparent) 55%,
       color-mix(in srgb, var(--primary-950) 30%, transparent)
     );
   }

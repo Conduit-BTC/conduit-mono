@@ -46,7 +46,13 @@ const AUTH_GATE_GRACE_MS = 650
 const SHOW_DEVTOOLS =
   import.meta.env.DEV && import.meta.env.VITE_DISABLE_DEVTOOLS !== "true"
 
-function RootShell({ children }: { children: ReactNode }) {
+function RootShell({
+  children,
+  fullBleed = false,
+}: {
+  children: ReactNode
+  fullBleed?: boolean
+}) {
   return (
     <div className="min-h-dvh overflow-x-hidden bg-[var(--background)] text-[var(--text-primary)] lg:h-dvh lg:overflow-hidden">
       <MerchantReadinessProvider>
@@ -57,9 +63,19 @@ function RootShell({ children }: { children: ReactNode }) {
             <div className="min-h-dvh min-w-0 lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
               <main
                 data-merchant-main-scroll
-                className="min-w-0 px-4 pb-28 pt-[calc(6.5rem+env(safe-area-inset-top))] sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-20"
+                className={
+                  fullBleed
+                    ? "flex min-h-dvh min-w-0 pt-[calc(5rem+env(safe-area-inset-top))] lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pt-0"
+                    : "min-w-0 px-4 pb-28 pt-[calc(6.5rem+env(safe-area-inset-top))] sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-20"
+                }
               >
-                <div className="mx-auto w-full min-w-0 max-w-[1280px]">
+                <div
+                  className={
+                    fullBleed
+                      ? "flex w-full min-w-0"
+                      : "mx-auto w-full min-w-0 max-w-[1280px]"
+                  }
+                >
                   {children}
                 </div>
               </main>
@@ -205,7 +221,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
 
   if (isNotFound && !signerWorkspaceAvailable) {
     return (
-      <MerchantPublicAboutShell pageTitle="Not Found">
+      <MerchantPublicAboutShell pageTitle="Not Found" fullBleed>
         <Outlet />
       </MerchantPublicAboutShell>
     )
@@ -238,7 +254,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   }
 
   return (
-    <RootShell>
+    <RootShell fullBleed={isNotFound}>
       <Outlet key={pubkey} />
       {authUrl && (
         <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
