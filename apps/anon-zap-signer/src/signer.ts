@@ -6,6 +6,10 @@ import {
   verifyAnonZapProviderAttestation,
 } from "@conduit/core/protocol/anon-zap"
 import {
+  isAuthorizedProjectTipDraft,
+  type ProjectTipSigningAuthorization,
+} from "@conduit/core/protocol/project-tip-authorization"
+import {
   finalizeEvent,
   getPublicKey,
   nip19,
@@ -53,13 +57,15 @@ export type AnonZapSignerRequestOptions = {
   waitUntil?: (promise: Promise<unknown>) => void
 }
 
-type AnonZapSigningAuthorization = {
+type CheckoutSigningAuthorization = {
   checkoutSessionId: string
   merchantPubkey: string
   amountMsats: number
   lnurl: string
   publicZapPolicy: "anonymous_public_zap_allowed"
 }
+type AnonZapSigningAuthorization =
+  CheckoutSigningAuthorization | ProjectTipSigningAuthorization
 
 const MAX_REQUEST_BYTES = 8_192
 const DEFAULT_MAX_CLOCK_SKEW_SECONDS = 5 * 60
@@ -320,9 +326,14 @@ function parseDraft(value: unknown): AnonZapRequestDraft | null {
 }
 
 function parseAuthorization(
-  value: unknown
+  value: unknown,
+  draft: AnonZapRequestDraft
 ): AnonZapSigningAuthorization | null {
   if (!isRecord(value)) return null
+  if (value.scope === "project_tip") {
+    return isAuthorizedProjectTipDraft(draft, value) ? value : null
+  }
+  if (value.scope !== undefined) return null
   if (
     typeof value.checkoutSessionId !== "string" ||
     !/^[A-Za-z0-9:_-]{8,128}$/.test(value.checkoutSessionId)
@@ -361,6 +372,12 @@ function assertAuthorizedDraft(
   draft: AnonZapRequestDraft,
   authorization: AnonZapSigningAuthorization
 ): void {
+  if ("scope" in authorization) {
+    if (!isAuthorizedProjectTipDraft(draft, authorization)) {
+      throw new Error("Project tip authorization does not match request.")
+    }
+    return
+  }
   const merchantTag = getAnonZapDraftTag(draft, "p")
   if (merchantTag?.[1]?.toLowerCase() !== authorization.merchantPubkey) {
     throw new Error("Zap request authorization does not match merchant.")
@@ -512,16 +529,23 @@ async function assertWorkerRateLimit(
   }
   try {
     const secret = env.ANON_SIGNER_REQUEST_AUTH_SECRET!.trim()
+    const isProjectTip = "scope" in authorization
     const keys = await Promise.all([
       createRequestSignature(
         secret,
-        "signer-session-rate-limit-v1",
-        authorization.checkoutSessionId
+        isProjectTip
+          ? "signer-project-tip-request-rate-limit-v1"
+          : "signer-session-rate-limit-v1",
+        isProjectTip ? authorization.requestId : authorization.checkoutSessionId
       ),
       createRequestSignature(
         secret,
-        "signer-merchant-rate-limit-v1",
-        authorization.merchantPubkey
+        isProjectTip
+          ? "signer-project-tip-target-rate-limit-v1"
+          : "signer-merchant-rate-limit-v1",
+        isProjectTip
+          ? authorization.recipientPubkey
+          : authorization.merchantPubkey
       ),
     ])
     for (const key of keys) {
@@ -712,7 +736,7 @@ export async function handleAnonZapSignerRequest(
         options
       )
     }
-    const authorization = parseAuthorization(body.authorization)
+    const authorization = parseAuthorization(body.authorization, draft)
     if (!authorization) {
       return scheduleTelemetry(
         errorResponse("Invalid zap request authorization.", 400, corsHeaders),

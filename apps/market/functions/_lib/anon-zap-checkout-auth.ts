@@ -10,6 +10,16 @@ import {
   type SignedPublicNostrEvent,
 } from "@conduit/core/protocol/anon-zap-checkout"
 import { fetchEventsFanoutDetailed } from "@conduit/core/protocol/ndk"
+import { fetchLnurlPayMetadata } from "@conduit/core/protocol/lightning"
+import {
+  PROJECT_TIP_LIGHTNING_ADDRESS,
+  PROJECT_TIP_MESSAGE,
+  PROJECT_TIP_RECIPIENT_PUBKEY,
+  isAuthorizedProjectTipDraft,
+  validateProjectTipAmount,
+  validateProjectTipMetadata,
+  type ProjectTipSigningAuthorization,
+} from "@conduit/core/protocol/project-tip"
 import { parseProductEvent } from "@conduit/core/protocol/products"
 import {
   parseShippingOptionAddress,
@@ -91,7 +101,7 @@ type AnonZapAuthorizationTokenPayload = {
   version: 1
   expiresAt: number
   draft: AnonZapRequestDraft
-  authorization: AnonZapSigningAuthorization
+  authorization: AnonZapSigningAuthorization | ProjectTipSigningAuthorization
   relayUrls: string[]
 }
 
@@ -887,7 +897,10 @@ function parseAuthorizationPayload(
   const validation = validateAnonZapRequestDraft(draft)
   if (!validation.ok) return null
   const authorization = value.authorization
-  if (
+  if (authorization.scope === "project_tip") {
+    if (!isAuthorizedProjectTipDraft(draft, authorization)) return null
+  } else if (
+    authorization.scope !== undefined ||
     typeof authorization.checkoutSessionId !== "string" ||
     typeof authorization.merchantPubkey !== "string" ||
     typeof authorization.amountMsats !== "number" ||
@@ -900,7 +913,8 @@ function parseAuthorizationPayload(
     version: 1,
     expiresAt: value.expiresAt,
     draft,
-    authorization: authorization as AnonZapSigningAuthorization,
+    authorization: authorization as
+      AnonZapSigningAuthorization | ProjectTipSigningAuthorization,
     relayUrls: value.relayUrls as string[],
   }
 }
@@ -1309,5 +1323,100 @@ export async function signAuthorizedAnonZapRequest(
       ? 503
       : 403
     return jsonResponse({ error: message }, status, corsHeaders)
+  }
+}
+
+/** Same signer and rate-limit boundary as guest checkout, with no client-supplied destination. */
+export async function signAnonymousProjectTipRequest(
+  request: Request,
+  env: AnonZapPagesEnv,
+  dependencies: { fetchTipMetadata: typeof fetchLnurlPayMetadata } = {
+    fetchTipMetadata: fetchLnurlPayMetadata,
+  }
+): Promise<Response> {
+  const corsHeaders = getCorsHeaders(request, env)
+  try {
+    const body = await readRequestJson(request)
+    if (!isRecord(body) || Object.keys(body).length !== 1) {
+      return jsonResponse({ error: "Invalid tip request." }, 400, corsHeaders)
+    }
+    const amountMsats = validateProjectTipAmount(body.amountSats as number)
+    const secret = getSharedSecret(env)
+    const rateLimitError = await enforceAnonZapAuthorizationRateLimits(
+      request,
+      env,
+      secret,
+      PROJECT_TIP_RECIPIENT_PUBKEY,
+      corsHeaders
+    )
+    if (rateLimitError) return rateLimitError
+
+    const metadata = await dependencies.fetchTipMetadata(
+      PROJECT_TIP_LIGHTNING_ADDRESS
+    )
+    validateProjectTipMetadata(metadata, amountMsats)
+    const relayUrls = getAnonZapReceiptRelays(env).slice(0, 8)
+    const draft: AnonZapRequestDraft = {
+      kind: 9734,
+      createdAt: Math.floor(Date.now() / 1_000),
+      content: PROJECT_TIP_MESSAGE,
+      tags: [
+        ["p", PROJECT_TIP_RECIPIENT_PUBKEY],
+        ["amount", String(amountMsats)],
+        ["lnurl", metadata.lnurl],
+        ["relays", ...relayUrls],
+      ],
+    }
+    const payload: AnonZapAuthorizationTokenPayload = {
+      version: 1,
+      expiresAt: draft.createdAt + getAuthTtlSeconds(env),
+      draft,
+      authorization: {
+        scope: "project_tip",
+        requestId: createCheckoutSessionId(),
+        recipientPubkey: PROJECT_TIP_RECIPIENT_PUBKEY,
+        amountMsats,
+        lnurl: metadata.lnurl,
+      },
+      relayUrls,
+    }
+    if (!isAuthorizedProjectTipDraft(draft, payload.authorization)) {
+      throw new Error("Project tip authorization is invalid.")
+    }
+    const authorizationToken = await createAuthorizationToken(payload, secret)
+    const signedResponse = await signAuthorizedAnonZapRequest(
+      new Request(request.url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(request.headers.get("origin")
+            ? { origin: request.headers.get("origin")! }
+            : {}),
+        },
+        body: JSON.stringify({ authorizationToken, zapRequest: draft }),
+      }),
+      env
+    )
+    if (!signedResponse.ok) return signedResponse
+    const signed = (await signedResponse.json()) as Record<string, unknown>
+    return jsonResponse(
+      {
+        ...signed,
+        amountMsats,
+        callback: metadata.callback,
+        lnurlNostrPubkey: metadata.nostrPubkey,
+      },
+      200,
+      corsHeaders
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Tip unavailable."
+    return jsonResponse(
+      { error: message },
+      /not configured|temporarily unavailable|Failed to reach/i.test(message)
+        ? 503
+        : 400,
+      corsHeaders
+    )
   }
 }
