@@ -4,6 +4,7 @@
  * (`apps/posthog-proxy`). Keep this module import-free so edge bundles can
  * consume it without pulling app or protocol code.
  */
+import { activeCheckoutPartnerCodes } from "./checkout-partner-registry"
 
 export const browserTelemetryEventNames = [
   "app_load_result",
@@ -17,6 +18,7 @@ export const browserTelemetryEventNames = [
   "checkout_step_result",
   "checkout_success",
   "checkout_result",
+  "checkout_handoff_result",
   "relay_connect_result",
   "relay_publish_result",
   "nip17_compatibility_result",
@@ -76,6 +78,8 @@ export const browserTelemetryPropertyNames = [
   "ack_outcome",
   "repair_outcome",
   "block_reason",
+  "handoff_stage",
+  "partner_code",
   "page_url",
   "page_path",
 ] as const
@@ -188,6 +192,11 @@ export const browserTelemetryEventPropertyContracts = {
       "product_type",
     ],
     optional: timePropertyNames,
+  },
+  checkout_handoff_result: {
+    apps: marketTelemetryApps,
+    required: ["surface", "handoff_stage", "mode"],
+    optional: ["partner_code"],
   },
   relay_connect_result: {
     apps: sharedTelemetryApps,
@@ -376,6 +385,9 @@ const browserTelemetryLabelValues = {
     "direct_payment",
   ],
   mode: [
+    "buy",
+    "cart",
+    "unknown",
     "handled",
     "unhandled",
     "automatic",
@@ -446,6 +458,16 @@ const browserTelemetryLabelValues = {
     "recipient_declaration_malformed",
     "not_applicable",
   ],
+  handoff_stage: [
+    "arrival",
+    "products_resolved",
+    "checkout_ready",
+    "cart_conflict",
+    "retryable_lookup_failure",
+    "rejected_link",
+    "order_submitted",
+  ],
+  partner_code: activeCheckoutPartnerCodes(),
 } as const satisfies Record<
   BrowserTelemetryLabelPropertyName,
   readonly string[]

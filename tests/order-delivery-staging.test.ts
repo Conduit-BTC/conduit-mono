@@ -119,6 +119,34 @@ function prepared(
 }
 
 describe("durable order delivery staging", () => {
+  it("binds a claimed referral only to its exact local order snapshot", async () => {
+    const store = memoryRepository()
+    const claimedReferralSource = {
+      partnerCode: "marketplace_a",
+      linkMode: "buy" as const,
+    }
+    const first = await stageOrderRelayDelivery(
+      {
+        lifecycle: lifecycleInput({ claimedReferralSource }),
+        prepared: prepared(),
+        leaseOwner: "foreground",
+      },
+      { repository: store.repository, now: () => 100 }
+    )
+    expect(first.lifecycle.claimedReferralSource).toEqual(claimedReferralSource)
+    expect(store.read()?.claimedReferralSource).toEqual(claimedReferralSource)
+    await expect(
+      stageOrderRelayDelivery(
+        {
+          lifecycle: lifecycleInput(),
+          prepared: prepared(),
+          leaseOwner: "another-document",
+        },
+        { repository: store.repository, now: () => 200 }
+      )
+    ).rejects.toBeInstanceOf(OrderRelayDeliveryStageConflictError)
+  })
+
   it("stages the exact wrap, authority, plan, and initial lifecycle atomically", async () => {
     const store = memoryRepository()
     const first = await stageOrderRelayDelivery(

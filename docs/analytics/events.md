@@ -36,6 +36,8 @@ Runtime telemetry events may only use these fields:
 - `ack_outcome`
 - `repair_outcome`
 - `block_reason`
+- `handoff_stage`
+- `partner_code` (registered public business source code only)
 
 ## Retention and Redaction
 
@@ -332,6 +334,18 @@ failure, blocked direct-payment, or degraded local tracking outcomes. It must
 use enum and bucket properties only and must not contain invoice strings, order
 contents, item titles, buyer identity, merchant identity, or shipping/contact
 data.
+
+<!-- telemetry-event: checkout_handoff_result properties=event_name,app,page_url,page_path,surface,handoff_stage,mode,partner_code -->
+
+### `checkout_handoff_result`
+
+Market counts a checkout link landing and finite handoff stages. `partner_code`
+is optional and accepted only when the code is active in the shared, bounded
+registry. It is a claimed public business source, never a shopper, click, order,
+or payout identifier. A copied link can claim another source. Browser telemetry
+is optional, so these counts are measured Market arrivals and outcomes, not
+complete partner clicks, settled orders, or GMV. No fragment, product reference,
+cart contents, merchant key, invoice, or payment content is sent.
 
 <!-- telemetry-event: wallet_connect_result properties=event_name,app,page_url,page_path,rail,method,status,latency_bucket,count,time_bucket -->
 

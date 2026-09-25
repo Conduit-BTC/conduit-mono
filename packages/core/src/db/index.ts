@@ -862,6 +862,11 @@ export interface OrderLifecycleItem {
  */
 export interface OrderLifecycle {
   orderId: string
+  /** Buyer-local claimed referral source; never authorizes payment or payout. */
+  claimedReferralSource?: {
+    partnerCode: string
+    linkMode: "buy" | "cart"
+  }
   buyerPubkey: string
   buyerIdentityKind?: OrderBuyerIdentityKind
   merchantPubkey: string

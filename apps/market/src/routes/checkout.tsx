@@ -232,6 +232,11 @@ import {
 } from "../lib/checkout-payment-target"
 import type { CheckoutPaymentTarget } from "../lib/payment-rails"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
+import { useCheckoutIntentImport } from "../hooks/useCheckoutIntentImport"
+import {
+  getCheckoutReferralClaim,
+  recordCheckoutReferralOrderSubmitted,
+} from "../lib/checkout-referral"
 
 import {
   formatBalanceFreshness,
@@ -477,8 +482,72 @@ export const Route = createFileRoute("/checkout")({
     purchase: typeof search.purchase === "string" ? search.purchase : undefined,
     intent: search.intent === "zap" ? "zap" : undefined,
   }),
-  component: CheckoutPage,
+  component: CheckoutEntry,
 })
+
+const CHECKOUT_LINK_ERRORS = {
+  invalid_intent:
+    "This checkout link is invalid. Ask the marketplace for a new link.",
+  unsupported_version:
+    "This checkout link uses a version Market cannot open yet.",
+  merchant_scope_mismatch:
+    "These products come from different merchants and need separate checkouts.",
+  product_unresolved:
+    "A linked product could not be found on the checked relays. Try again later.",
+  relay_unavailable:
+    "Product availability could not be confirmed from the checked relays. Try again.",
+  product_unavailable:
+    "A linked product is unavailable or does not have enough stock.",
+  incompatible_checkout:
+    "These items need a different checkout or event pickup link.",
+  cart_changed:
+    "Your cart changed while this link was opening. Review and try again.",
+  navigation_failed:
+    "The linked purchase was saved, but checkout could not open. Try again.",
+  session_changed:
+    "Your account changed while this link was opening. Try again.",
+  storage_unavailable:
+    "This browser could not safely save the linked purchase. Check browser storage and try again.",
+} as const
+
+function CheckoutEntry() {
+  const handoff = useCheckoutIntentImport()
+  if (handoff.state.status === "idle") return <CheckoutPage />
+  return (
+    <div className="mx-auto flex min-h-[60vh] max-w-2xl items-center justify-center px-4">
+      <section className="w-full rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
+        <h1 className="text-3xl font-semibold text-[var(--text-primary)]">
+          {handoff.state.status === "loading"
+            ? "Opening linked checkout"
+            : handoff.state.status === "conflict"
+              ? "Choose your purchase"
+              : "Checkout link needs attention"}
+        </h1>
+        <p className="mt-4 text-sm leading-7 text-[var(--text-secondary)]">
+          {handoff.state.status === "loading"
+            ? "Checking current signed product details and your cart…"
+            : handoff.state.status === "conflict"
+              ? "You already have a different purchase for this merchant. Choose which items to use."
+              : CHECKOUT_LINK_ERRORS[handoff.state.error]}
+        </p>
+        {handoff.state.status !== "loading" && (
+          <div className="mt-7 flex flex-wrap justify-center gap-3">
+            {handoff.state.status === "conflict" ? (
+              <Button onClick={() => void handoff.useLinkedItems()}>
+                Use linked items
+              </Button>
+            ) : (
+              <Button onClick={handoff.retry}>Try again</Button>
+            )}
+            <Button variant="outline" onClick={handoff.keepCart}>
+              Keep my cart
+            </Button>
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
 
 // ─── Small presentational helpers ────────────────────────────────────────────
 
@@ -1332,6 +1401,19 @@ function CheckoutPage() {
       ? matchingMerchantPurchases[0]
       : undefined
   const selectedMerchant = selectedPurchase?.merchantPubkey
+  useEffect(() => {
+    if (!cart.hydrated) return
+    getCheckoutReferralClaim(
+      selectedMerchant,
+      selectedPurchase?.id,
+      selectedPurchase?.items ?? []
+    )
+  }, [
+    cart.hydrated,
+    selectedMerchant,
+    selectedPurchase?.id,
+    selectedPurchase?.items,
+  ])
   const checkoutRecoveryScope = `${authGeneration}:${search.merchant ?? "none"}:${search.purchase ?? "none"}:${selectedPurchase?.id ?? "none"}:${cart.mutationSequence}`
   const [checkoutRecoveryResolution, setCheckoutRecoveryResolution] = useState<{
     scope: string
@@ -2555,6 +2637,11 @@ function CheckoutPage() {
       const addressValidity = computeAddressValidity(shippingAddress)
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
+        claimedReferralSource: getCheckoutReferralClaim(
+          selectedMerchant,
+          selectedPurchase?.id,
+          checkoutItems
+        ),
         createdAt: orderCreatedAt,
         buyerPubkey,
         buyerIdentityKind,
@@ -2601,6 +2688,11 @@ function CheckoutPage() {
       )
       startOrderPostAcceptanceWork = delivery.startPostAcceptanceWork ?? null
       orderDelivered = true
+      recordCheckoutReferralOrderSubmitted(
+        selectedMerchant,
+        selectedPurchase?.id,
+        checkoutItems
+      )
       recordCheckoutStepResult({
         checkoutMode: "order_first",
         latencyMs: performance.now() - orderDeliveryStartedAt,
@@ -3173,6 +3265,11 @@ function CheckoutPage() {
       // Orders can render it immediately, then hand payment to the service.
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
+        claimedReferralSource: getCheckoutReferralClaim(
+          selectedMerchant,
+          selectedPurchase?.id,
+          checkoutItems
+        ),
         createdAt: orderCreatedAt,
         buyerPubkey,
         buyerIdentityKind,
@@ -3237,6 +3334,11 @@ function CheckoutPage() {
       startOrderPostAcceptanceWork =
         orderDelivery.startPostAcceptanceWork ?? null
       orderDelivered = true
+      recordCheckoutReferralOrderSubmitted(
+        selectedMerchant,
+        selectedPurchase?.id,
+        checkoutItems
+      )
       if (!shouldContinueBuyerSession()) {
         throw new Error(
           "Order delivery stopped after relay acceptance because the buyer session changed."
