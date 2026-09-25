@@ -99,6 +99,42 @@ for (const app of ["market", "merchant"] as const) {
     await expect(page.locator(".network-not-found video")).toHaveCount(0)
   })
 
+  test(`${app} data saver avoids downloads and responds to preference changes @${app}`, async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const connection = Object.assign(new EventTarget(), { saveData: true })
+      Object.defineProperty(navigator, "connection", { value: connection })
+      window.addEventListener("test:toggle-data-saver", () => {
+        connection.saveData = !connection.saveData
+        connection.dispatchEvent(new Event("change"))
+      })
+    })
+    const videoRequests: string[] = []
+    page.on("request", (request) => {
+      if (request.url().includes("space-loop"))
+        videoRequests.push(request.url())
+    })
+    await page.goto(url)
+    await expect(
+      page.getByRole("heading", { name: "You have left the network." })
+    ).toBeVisible()
+    await expect(page.locator(".network-not-found video")).toHaveCount(0)
+    expect(videoRequests).toEqual([])
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("test:toggle-data-saver"))
+    )
+    await expect(page.locator(".network-not-found video")).toHaveCount(1)
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("test:toggle-data-saver"))
+    )
+    await expect(page.locator(".network-not-found video")).toHaveCount(0)
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("test:toggle-data-saver"))
+    )
+    await expect(page.locator(".network-not-found video")).toHaveCount(1)
+  })
+
   test(`${app} failed media keeps the poster and recovery link @${app}`, async ({
     page,
   }) => {

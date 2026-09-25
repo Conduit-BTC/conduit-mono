@@ -11,19 +11,23 @@ const posterUrl = new URL(
   import.meta.url
 ).href
 const motionQuery = "(prefers-reduced-motion: reduce)"
+type NavigatorWithConnection = Navigator & {
+  connection?: EventTarget & { saveData?: boolean }
+}
 
 function subscribeMotion(callback: () => void) {
   const query = window.matchMedia(motionQuery)
+  const connection = (navigator as NavigatorWithConnection).connection
   query.addEventListener("change", callback)
-  return () => query.removeEventListener("change", callback)
+  connection?.addEventListener("change", callback)
+  return () => {
+    query.removeEventListener("change", callback)
+    connection?.removeEventListener("change", callback)
+  }
 }
 
 function motionAllowed() {
-  const connection = (
-    navigator as Navigator & {
-      connection?: { saveData?: boolean }
-    }
-  ).connection
+  const connection = (navigator as NavigatorWithConnection).connection
   return !window.matchMedia(motionQuery).matches && !connection?.saveData
 }
 
