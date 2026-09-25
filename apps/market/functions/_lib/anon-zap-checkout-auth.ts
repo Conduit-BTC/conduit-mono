@@ -10,6 +10,16 @@ import {
   type SignedPublicNostrEvent,
 } from "@conduit/core/protocol/anon-zap-checkout"
 import { fetchEventsFanoutDetailed } from "@conduit/core/protocol/ndk"
+import { fetchLnurlPayMetadata } from "@conduit/core/protocol/lightning"
+import {
+  PROJECT_TIP_LIGHTNING_ADDRESS,
+  PROJECT_TIP_MESSAGE,
+  PROJECT_TIP_RECIPIENT_PUBKEY,
+  isAuthorizedProjectTipDraft,
+  validateProjectTipAmount,
+  validateProjectTipMetadata,
+  type ProjectTipSigningAuthorization,
+} from "@conduit/core/protocol/project-tip"
 import { parseProductEvent } from "@conduit/core/protocol/products"
 import {
   parseShippingOptionAddress,
@@ -91,7 +101,7 @@ type AnonZapAuthorizationTokenPayload = {
   version: 1
   expiresAt: number
   draft: AnonZapRequestDraft
-  authorization: AnonZapSigningAuthorization
+  authorization: AnonZapSigningAuthorization | ProjectTipSigningAuthorization
   relayUrls: string[]
 }
 
@@ -666,7 +676,8 @@ async function enforceAnonZapAuthorizationRateLimits(
   request: Request,
   env: AnonZapPagesEnv,
   secret: string,
-  merchantPubkey: string,
+  target:
+    { type: "checkout"; merchantPubkey: string } | { type: "project_tip" },
   corsHeaders: HeadersInit
 ): Promise<Response | null> {
   const source = getCloudflareSource(request)
@@ -677,17 +688,31 @@ async function enforceAnonZapAuthorizationRateLimits(
     )
   }
   try {
-    const [sourceKey, merchantKey] = await Promise.all([
-      hmacSha256(secret, `${RATE_LIMIT_SOURCE_DOMAIN}.${source}`),
-      hmacSha256(secret, `${RATE_LIMIT_MERCHANT_DOMAIN}.${merchantPubkey}`),
-    ])
+    const sourceKey = bytesToHex(
+      await hmacSha256(secret, `${RATE_LIMIT_SOURCE_DOMAIN}.${source}`)
+    )
+    let keys: string[]
+    if (target.type === "project_tip") {
+      keys = [
+        "authorization:project-tip:global",
+        `authorization:project-tip:source:${sourceKey}`,
+      ]
+    } else {
+      const merchantKey = bytesToHex(
+        await hmacSha256(
+          secret,
+          `${RATE_LIMIT_MERCHANT_DOMAIN}.${target.merchantPubkey}`
+        )
+      )
+      keys = [
+        "authorization:global",
+        `authorization:source:${sourceKey}`,
+        `authorization:merchant:${merchantKey}`,
+      ]
+    }
     return applyRequiredRateLimits(
       "authorization",
-      [
-        "authorization:global",
-        `authorization:source:${bytesToHex(sourceKey)}`,
-        `authorization:merchant:${bytesToHex(merchantKey)}`,
-      ],
+      keys,
       env,
       {
         unavailable: "Anon zap authorization rate limiting is unavailable.",
@@ -887,7 +912,10 @@ function parseAuthorizationPayload(
   const validation = validateAnonZapRequestDraft(draft)
   if (!validation.ok) return null
   const authorization = value.authorization
-  if (
+  if (authorization.scope === "project_tip") {
+    if (!isAuthorizedProjectTipDraft(draft, authorization)) return null
+  } else if (
+    authorization.scope !== undefined ||
     typeof authorization.checkoutSessionId !== "string" ||
     typeof authorization.merchantPubkey !== "string" ||
     typeof authorization.amountMsats !== "number" ||
@@ -900,7 +928,8 @@ function parseAuthorizationPayload(
     version: 1,
     expiresAt: value.expiresAt,
     draft,
-    authorization: authorization as AnonZapSigningAuthorization,
+    authorization: authorization as
+      AnonZapSigningAuthorization | ProjectTipSigningAuthorization,
     relayUrls: value.relayUrls as string[],
   }
 }
@@ -994,7 +1023,7 @@ export async function authorizeAnonZapRequest(
       request,
       env,
       sharedSecret,
-      intent.merchantPubkey,
+      { type: "checkout", merchantPubkey: intent.merchantPubkey },
       corsHeaders
     )
     if (rateLimitError) return rateLimitError
@@ -1205,6 +1234,75 @@ export async function authorizeAnonZapRequest(
   }
 }
 
+async function forwardAuthorizedAnonZapRequest(
+  request: Request,
+  env: AnonZapPagesEnv,
+  payload: AnonZapAuthorizationTokenPayload,
+  dependencies: AnonZapPagesDependencies
+): Promise<Response> {
+  const corsHeaders = getCorsHeaders(request, env)
+  const signerUrl = getSignerUrl(env)
+  const localSignerFallbackAllowed =
+    env.ANON_ZAP_ALLOW_INSECURE_LOCALHOST === "true" &&
+    isExplicitLocalhost(new URL(signerUrl).hostname)
+  if (
+    !env.ANON_ZAP_SIGNER_SERVICE &&
+    dependencies === defaultDependencies &&
+    !localSignerFallbackAllowed
+  ) {
+    throw new Error("Anon zap signer is not configured.")
+  }
+  const signerBody = JSON.stringify({
+    zapRequest: payload.draft,
+    authorization: payload.authorization,
+  })
+  const timestamp = String(dependencies.nowSeconds())
+  const signature = bytesToHex(
+    await hmacSha256(getSharedSecret(env), `${timestamp}.${signerBody}`)
+  )
+  const headers = new Headers({
+    "content-type": "application/json",
+    [AUTH_TIMESTAMP_HEADER]: timestamp,
+    [AUTH_SIGNATURE_HEADER]: signature,
+  })
+  const origin = request.headers.get("origin")
+  if (origin) headers.set("origin", origin)
+  let signerResponse: Response
+  try {
+    const signerRequestInit: RequestInit = {
+      method: "POST",
+      headers,
+      body: signerBody,
+      signal: AbortSignal.timeout(SIGNER_REQUEST_TIMEOUT_MS),
+    }
+    signerResponse = env.ANON_ZAP_SIGNER_SERVICE
+      ? await env.ANON_ZAP_SIGNER_SERVICE.fetch(
+          new Request(signerUrl, signerRequestInit)
+        )
+      : await dependencies.fetchSigner(signerUrl, signerRequestInit)
+  } catch {
+    throw new Error("Anon zap signer is temporarily unavailable.")
+  }
+  if (!signerResponse.ok) {
+    throw new Error("Anon zap signer is temporarily unavailable.")
+  }
+  const signed = (await signerResponse.json()) as unknown
+  if (!isRecord(signed) || typeof signed.id !== "string" || !signed.rawEvent) {
+    throw new Error("Anon zap signer returned an invalid event.")
+  }
+  return jsonResponse(
+    {
+      id: signed.id,
+      rawEvent: signed.rawEvent,
+      requestCreatedAt: payload.draft.createdAt,
+      lnurl: payload.authorization.lnurl,
+      relayUrls: payload.relayUrls,
+    },
+    200,
+    corsHeaders
+  )
+}
+
 export async function signAuthorizedAnonZapRequest(
   request: Request,
   env: AnonZapPagesEnv,
@@ -1239,69 +1337,11 @@ export async function signAuthorizedAnonZapRequest(
       )
     }
 
-    const signerUrl = getSignerUrl(env)
-    const localSignerFallbackAllowed =
-      env.ANON_ZAP_ALLOW_INSECURE_LOCALHOST === "true" &&
-      isExplicitLocalhost(new URL(signerUrl).hostname)
-    if (
-      !env.ANON_ZAP_SIGNER_SERVICE &&
-      dependencies === defaultDependencies &&
-      !localSignerFallbackAllowed
-    ) {
-      throw new Error("Anon zap signer is not configured.")
-    }
-    const signerBody = JSON.stringify({
-      zapRequest: payload.draft,
-      authorization: payload.authorization,
-    })
-    const timestamp = String(nowSeconds)
-    const signature = bytesToHex(
-      await hmacSha256(secret, `${timestamp}.${signerBody}`)
-    )
-    const headers = new Headers({
-      "content-type": "application/json",
-      [AUTH_TIMESTAMP_HEADER]: timestamp,
-      [AUTH_SIGNATURE_HEADER]: signature,
-    })
-    const origin = request.headers.get("origin")
-    if (origin) headers.set("origin", origin)
-    let signerResponse: Response
-    try {
-      const signerRequestInit: RequestInit = {
-        method: "POST",
-        headers,
-        body: signerBody,
-        signal: AbortSignal.timeout(SIGNER_REQUEST_TIMEOUT_MS),
-      }
-      signerResponse = env.ANON_ZAP_SIGNER_SERVICE
-        ? await env.ANON_ZAP_SIGNER_SERVICE.fetch(
-            new Request(signerUrl, signerRequestInit)
-          )
-        : await dependencies.fetchSigner(signerUrl, signerRequestInit)
-    } catch {
-      throw new Error("Anon zap signer is temporarily unavailable.")
-    }
-    if (!signerResponse.ok) {
-      throw new Error("Anon zap signer is temporarily unavailable.")
-    }
-    const signed = (await signerResponse.json()) as unknown
-    if (
-      !isRecord(signed) ||
-      typeof signed.id !== "string" ||
-      !signed.rawEvent
-    ) {
-      throw new Error("Anon zap signer returned an invalid event.")
-    }
-    return jsonResponse(
-      {
-        id: signed.id,
-        rawEvent: signed.rawEvent,
-        requestCreatedAt: payload.draft.createdAt,
-        lnurl: payload.authorization.lnurl,
-        relayUrls: payload.relayUrls,
-      },
-      200,
-      corsHeaders
+    return await forwardAuthorizedAnonZapRequest(
+      request,
+      env,
+      payload,
+      dependencies
     )
   } catch (error) {
     const message = error instanceof Error ? error.message : "Signing failed."
@@ -1309,5 +1349,92 @@ export async function signAuthorizedAnonZapRequest(
       ? 503
       : 403
     return jsonResponse({ error: message }, status, corsHeaders)
+  }
+}
+
+/** Same signer and rate-limit boundary as guest checkout, with no client-supplied destination. */
+export async function signAnonymousProjectTipRequest(
+  request: Request,
+  env: AnonZapPagesEnv,
+  dependencies: { fetchTipMetadata: typeof fetchLnurlPayMetadata } = {
+    fetchTipMetadata: fetchLnurlPayMetadata,
+  }
+): Promise<Response> {
+  const corsHeaders = getCorsHeaders(request, env)
+  try {
+    const body = await readRequestJson(request)
+    if (!isRecord(body) || Object.keys(body).length !== 1) {
+      return jsonResponse({ error: "Invalid tip request." }, 400, corsHeaders)
+    }
+    const amountMsats = validateProjectTipAmount(body.amountSats as number)
+    const secret = getSharedSecret(env)
+    const rateLimitError = await enforceAnonZapAuthorizationRateLimits(
+      request,
+      env,
+      secret,
+      { type: "project_tip" },
+      corsHeaders
+    )
+    if (rateLimitError) return rateLimitError
+
+    const metadata = await dependencies.fetchTipMetadata(
+      PROJECT_TIP_LIGHTNING_ADDRESS
+    )
+    validateProjectTipMetadata(metadata, amountMsats)
+    const relayUrls = getAnonZapReceiptRelays(env).slice(0, 8)
+    const draft: AnonZapRequestDraft = {
+      kind: 9734,
+      createdAt: Math.floor(Date.now() / 1_000),
+      content: PROJECT_TIP_MESSAGE,
+      tags: [
+        ["p", PROJECT_TIP_RECIPIENT_PUBKEY],
+        ["amount", String(amountMsats)],
+        ["lnurl", metadata.lnurl],
+        ["relays", ...relayUrls],
+      ],
+    }
+    const payload: AnonZapAuthorizationTokenPayload = {
+      version: 1,
+      expiresAt: draft.createdAt + getAuthTtlSeconds(env),
+      draft,
+      authorization: {
+        scope: "project_tip",
+        requestId: createCheckoutSessionId(),
+        recipientPubkey: PROJECT_TIP_RECIPIENT_PUBKEY,
+        amountMsats,
+        lnurl: metadata.lnurl,
+      },
+      relayUrls,
+    }
+    if (!isAuthorizedProjectTipDraft(draft, payload.authorization)) {
+      throw new Error("Project tip authorization is invalid.")
+    }
+    const signedResponse = await forwardAuthorizedAnonZapRequest(
+      request,
+      env,
+      payload,
+      defaultDependencies
+    )
+    if (!signedResponse.ok) return signedResponse
+    const signed = (await signedResponse.json()) as Record<string, unknown>
+    return jsonResponse(
+      {
+        ...signed,
+        amountMsats,
+        callback: metadata.callback,
+        lnurlNostrPubkey: metadata.nostrPubkey,
+      },
+      200,
+      corsHeaders
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Tip unavailable."
+    return jsonResponse(
+      { error: message },
+      /not configured|temporarily unavailable|Failed to reach/i.test(message)
+        ? 503
+        : 400,
+      corsHeaders
+    )
   }
 }

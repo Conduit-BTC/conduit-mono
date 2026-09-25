@@ -155,6 +155,7 @@ Use these first in app code:
 
 - `#05001D` -> `--background`
 - `#BB00FF` -> `--primary-500`
+- `#D32973` -> `--project-tip-heart` for the shared project-tip heart
 - merchant pink/rose glows -> `--tertiary-500`
 - dark card tones around `#211E31` -> express through `--surface`, `--surface-elevated`, and `--surface-dialog`
 - white text/icons -> `--text-primary` or token foreground equivalents
