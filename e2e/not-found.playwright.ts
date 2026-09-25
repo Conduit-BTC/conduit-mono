@@ -96,8 +96,12 @@ for (const app of ["market", "merchant"] as const) {
   test(`${app} failed media keeps the poster and recovery link @${app}`, async ({
     page,
   }) => {
+    const failedDownload = page.waitForEvent("requestfailed", {
+      predicate: (request) => request.url().includes("space-loop"),
+    })
     await page.route("**/*space-loop*", (route) => route.abort())
     await page.goto(url)
+    await failedDownload
     await expect(
       page.getByRole("heading", { name: "You have left the network." })
     ).toBeVisible()

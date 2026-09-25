@@ -8,3 +8,5 @@
 - The Bitcoin symbol is a separate Lucide icon, not part of the licensed footage.
 
 Serve these assets locally. Do not replace them with third-party embeds or tracking URLs.
+
+The 812 KiB clip is fetched once per mount and played from a browser object URL. [Cloudflare Pages returns 200 for range requests](https://developers.cloudflare.com/pages/configuration/serving-pages/#behavior), which breaks WebKit seeking and looping with a direct media URL. Abort the fetch and revoke the object URL on unmount or when reduced motion is enabled. Keep replacement clips small; this approach buffers the entire clip before playback.

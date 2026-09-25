@@ -1,5 +1,5 @@
 import { ArrowLeft, Bitcoin, Pause, Play } from "lucide-react"
-import { useRef, useState, useSyncExternalStore } from "react"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react"
 
 import { Button } from "./Button"
 import "../styles/not-found.css"
@@ -45,6 +45,40 @@ export function NotFoundPage({
   const [playing, setPlaying] = useState(false)
   const [failed, setFailed] = useState(false)
 
+  const [videoSource, setVideoSource] = useState<{
+    url: string
+    signal: AbortSignal
+  } | null>(null)
+
+  useEffect(() => {
+    if (!allowMotion) return
+    const controller = new AbortController()
+    let objectUrl: string | undefined
+
+    async function loadVideo() {
+      try {
+        // Pages lacks range responses. A local blob keeps WebKit looping reliably.
+        const response = await fetch(videoUrl, { signal: controller.signal })
+        if (!response.ok) throw new Error("Video unavailable")
+        const blob = await response.blob()
+        if (controller.signal.aborted) return
+        objectUrl = URL.createObjectURL(blob)
+        setVideoSource({ url: objectUrl, signal: controller.signal })
+      } catch {
+        if (!controller.signal.aborted) setFailed(true)
+      }
+    }
+
+    void loadVideo()
+    return () => {
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [allowMotion])
+
+  const showVideo =
+    allowMotion && !failed && videoSource && !videoSource.signal.aborted
+
   async function togglePlayback() {
     const video = videoRef.current
     if (!video) return
@@ -63,11 +97,11 @@ export function NotFoundPage({
   return (
     <section className="network-not-found" aria-labelledby="not-found-title">
       <img className="network-not-found__media" src={posterUrl} alt="" />
-      {allowMotion && !failed && (
+      {showVideo && (
         <video
           ref={videoRef}
           className="network-not-found__media"
-          src={videoUrl}
+          src={videoSource.url}
           poster={posterUrl}
           autoPlay
           muted
@@ -98,7 +132,7 @@ export function NotFoundPage({
           </a>
         </Button>
       </div>
-      {allowMotion && !failed && (
+      {showVideo && (
         <Button
           className="network-not-found__playback"
           variant="outline"
