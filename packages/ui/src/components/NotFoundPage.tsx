@@ -98,10 +98,7 @@ export function NotFoundPage({
       <div className="network-not-found__content">
         <p className="network-not-found__code">404 / OUT OF ORBIT</p>
         <h1 id="not-found-title">You have left the network.</h1>
-        <p className="network-not-found__description">
-          This page is lost in space. Your next connection is closer than you
-          think.
-        </p>
+        <p className="network-not-found__description">Let’s get you back.</p>
         <Button size="lg" asChild>
           <a href={backTo}>
             <ArrowLeft size={18} aria-hidden="true" />
