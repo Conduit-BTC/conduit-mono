@@ -7,7 +7,6 @@ import {
   MapPin,
   ReceiptText,
   ShoppingCart,
-  Store,
   Zap,
 } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
@@ -144,11 +143,6 @@ import {
   type CartAvailabilityReadDecision,
   type CartProductAvailability,
 } from "../lib/cart-model"
-import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
-import {
-  SparkFeeApprovalDialog,
-  useSparkFeeApproval,
-} from "../components/SparkFeeApprovalDialog"
 import {
   buildShippingAddressFromForm,
   isFastCheckoutEligible,
@@ -227,6 +221,7 @@ import {
   runOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import { queueSparkPaymentHandoff } from "../lib/order-payment-handoff"
 import { getCartPickupHandoffSummary } from "../lib/pickup-handoff"
 import {
   getCheckoutOrderPaymentTarget,
@@ -248,8 +243,7 @@ type PriceFormatter = (
   options?: ShopperPriceDisplayOptions
 ) => ShopperPriceDisplay
 
-type CheckoutStep =
-  "shipping" | "payment" | "signing" | "sending" | "sent" | "paying" | "paid"
+type CheckoutStep = "shipping" | "payment" | "signing" | "sending"
 
 type CheckoutSearch = {
   merchant?: string
@@ -497,10 +491,6 @@ function LightningIcon({ className = "h-4 w-4" }: { className?: string }) {
 
 function OrderIcon({ className = "h-4 w-4" }: { className?: string }) {
   return <ReceiptText className={className} />
-}
-
-function CheckIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return <Check className={className} />
 }
 
 function SpinnerIcon({ className = "h-5 w-5" }: { className?: string }) {
@@ -1111,15 +1101,8 @@ function CheckoutPage() {
   const [touchedShippingFields, setTouchedShippingFields] = useState<
     Set<ShippingFieldKey>
   >(() => new Set())
-  const [sentOrderId, setSentOrderId] = useState<string | null>(null)
-  const [showSentGlow, setShowSentGlow] = useState(false)
-  // paidNotice carries any non-critical delivery notice from the order publish.
-  const [paidNotice, setPaidNotice] = useState<string | null>(null)
-  // Lightning-strike click feedback while the order publishes before navigation.
-  const [overlayPlaying, setOverlayPlaying] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [signerReconnectPending, setSignerReconnectPending] = useState(false)
-  const sparkFeeApproval = useSparkFeeApproval()
   // Synchronous re-entrancy guard for the payment flow. A `step`/`disabled`
   // check can't prevent a double-click because the state change doesn't commit
   // until React re-renders; this ref flips synchronously inside the click's
@@ -1229,12 +1212,6 @@ function CheckoutPage() {
   }, [accountPubkey, authGeneration, autoZapAuthorization, signerConnected])
 
   useEffect(() => {
-    if (!signerConnected && sparkFeeApproval.quote) {
-      sparkFeeApproval.decline()
-    }
-  }, [signerConnected, sparkFeeApproval])
-
-  useEffect(() => {
     if (authPending) return
 
     const preset = getIdentityBoundShippingPreset(
@@ -1300,7 +1277,6 @@ function CheckoutPage() {
       return
     }
     if (previousOwner === draftOwnerIdentity) return
-    if (sparkFeeApproval.quote) sparkFeeApproval.decline()
     setStep("shipping")
     if (previousOwner !== null) {
       setShipping(DEFAULT_CHECKOUT_SHIPPING)
@@ -1314,7 +1290,7 @@ function CheckoutPage() {
     setShippingAttempted(false)
     setShippingErrors([])
     setTouchedShippingFields(new Set())
-  }, [authPending, draftOwnerIdentity, sparkFeeApproval])
+  }, [authPending, draftOwnerIdentity])
 
   useEffect(() => {
     const preset = getIdentityBoundShippingPreset(
@@ -2254,12 +2230,6 @@ function CheckoutPage() {
     })
   }
 
-  useEffect(() => {
-    if (!showSentGlow) return
-    const id = window.setTimeout(() => setShowSentGlow(false), 650)
-    return () => window.clearTimeout(id)
-  }, [showSentGlow])
-
   // Clear inline error when all validation errors are resolved
   useEffect(() => {
     if (
@@ -2476,7 +2446,6 @@ function CheckoutPage() {
     let purchaseClaim: CartPurchaseClaim | null = null
 
     setError(null)
-    setPaidNotice(null)
     setStep(isGuestCheckout ? "sending" : "signing")
 
     try {
@@ -2643,12 +2612,7 @@ function CheckoutPage() {
         )
       }
 
-      if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
-      await resolveCheckoutOrderAttempt(orderId)
       void startOrderPostAcceptanceWork?.()
-      setSentOrderId(orderId)
-      setShowSentGlow(true)
-      setStep("sent")
       paymentInFlightRef.current = false
       recordCheckoutSuccess({
         amountSats: orderTotalSats,
@@ -2664,6 +2628,12 @@ function CheckoutPage() {
         to: "/orders",
         search: { order: orderId },
         replace: true,
+      })
+      void (async () => {
+        if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
+        await resolveCheckoutOrderAttempt(orderId)
+      })().catch(() => {
+        // The durable recovery marker remains available in Orders.
       })
     } catch (e) {
       void startOrderPostAcceptanceWork?.()
@@ -2690,12 +2660,6 @@ function CheckoutPage() {
       if (acceptedOrder && publishedOrderId) {
         if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
         await resolveCheckoutOrderAttempt(publishedOrderId).catch(() => {})
-        setPaidNotice(
-          "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
-        )
-        setSentOrderId(publishedOrderId)
-        setShowSentGlow(true)
-        setStep("sent")
         paymentInFlightRef.current = false
         recordCheckoutSuccess({
           amountSats: orderTotalSats,
@@ -2953,7 +2917,6 @@ function CheckoutPage() {
     paymentInFlightRef.current = true
 
     setError(null)
-    setPaidNotice(null)
     setStep("sending")
     const checkoutRevalidationStartedAt = performance.now()
 
@@ -3286,7 +3249,6 @@ function CheckoutPage() {
       })
       clearCheckoutShippingSession()
 
-      if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
       recordCheckoutSuccess({
         amountSats: checkoutPricing.totalSats,
         checkoutMode,
@@ -3300,9 +3262,18 @@ function CheckoutPage() {
         status: "success",
       })
 
-      // Fire-and-forget: the service continues after we navigate away. With no
-      // automatic rail it stops at manual_required and the external-wallet QR
-      // appears on Orders (CND-120).
+      // Payment continues on the focused surface after the durable first ACK.
+      // The non-interactive rails can run in the background; Spark's fee
+      // approval is owned by the focused order detail.
+      const purchaseCleanup = Promise.resolve()
+        .then(() =>
+          purchaseClaim ? cart.consumePurchase(purchaseClaim) : undefined
+        )
+        .then(() => {})
+      const postAcceptanceWork = startOrderPostAcceptanceWork?.()
+      void postAcceptanceWork?.catch(() => {
+        // The payment service keeps the original rejection for proof recovery.
+      })
       const serviceCtx: OrderPaymentContext = {
         orderId,
         buyerPubkey,
@@ -3332,33 +3303,30 @@ function CheckoutPage() {
               }
             : undefined,
         paymentTarget: storedPaymentTarget,
-        approveFee:
-          storedPaymentTarget.type === "wallet" &&
-          storedPaymentTarget.providerId === "spark"
-            ? sparkFeeApproval.requestApproval
-            : undefined,
         formatSatsAmount: (sats) =>
           shopperPricing.formatSatsAmount(sats).primary,
         beforeBackgroundProofDelivery: async () => {
-          await startOrderPostAcceptanceWork?.()
+          await postAcceptanceWork
         },
       }
 
-      if (serviceCtx.approveFee) {
-        try {
-          await runOrderPayment(serviceCtx)
-          await resolveCheckoutOrderAttemptAfterPaymentProgress(orderId)
-        } finally {
-          void startOrderPostAcceptanceWork?.()
-        }
+      if (
+        storedPaymentTarget.type === "wallet" &&
+        storedPaymentTarget.providerId === "spark"
+      ) {
+        queueSparkPaymentHandoff(serviceCtx, purchaseCleanup)
       } else {
         void runOrderPayment(serviceCtx)
-          .then(() => resolveCheckoutOrderAttemptAfterPaymentProgress(orderId))
-          .catch(() => {})
-          .finally(() => {
-            void startOrderPostAcceptanceWork?.()
+          .then(async () => {
+            await purchaseCleanup
+            await resolveCheckoutOrderAttemptAfterPaymentProgress(orderId)
           })
+          .catch(() => {})
       }
+
+      void purchaseCleanup.catch(() => {
+        // Orders retains the accepted-order recovery marker if cleanup fails.
+      })
 
       paymentInFlightRef.current = false
       void navigate({
@@ -3394,12 +3362,6 @@ function CheckoutPage() {
       if (acceptedOrder && publishedOrderId) {
         const deliveredAmountSats = publishedTotalSats ?? total
         if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
-        setPaidNotice(
-          "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
-        )
-        setSentOrderId(publishedOrderId)
-        setShowSentGlow(true)
-        setStep("sent")
         paymentInFlightRef.current = false
         recordCheckoutSuccess({
           amountSats: deliveredAmountSats,
@@ -3600,7 +3562,6 @@ function CheckoutPage() {
     autoZapStartedRef.current = true
     autoZapAuthorizationGenerationRef.current = null
     setAutoZapAuthorization(null)
-    setOverlayPlaying(true)
     void payNowRef.current(autoZapAuthorization)
   }, [
     autoZapAuthorization,
@@ -3617,150 +3578,13 @@ function CheckoutPage() {
     signedBuyerPubkey,
   ])
 
-  // --- Full-screen transition states --------------------------------------
-  // Note: `paying` and `paid` are NOT handled here. They render inline inside
-  // the main checkout grid so the OrderSummary stays visible alongside the
-  // PaymentTracker (CND-2A: replace dead-air interrupt with in-page tracker).
-
-  // The fast-zap lightning-strike is `fixed inset-0 z-50` click feedback. It
-  // must sit ABOVE whichever screen is mounted (including the "Sending your
-  // order…" transition), so it renders alongside every early return rather
-  // than only inside the main checkout grid — otherwise `setStep("sending")`
-  // swaps the grid out before the storm ever mounts.
-  const lightningOverlay = (
-    <LightningStrikeOverlay
-      open={overlayPlaying}
-      onComplete={() => setOverlayPlaying(false)}
-    />
-  )
-  const sparkFeeDialog = (
-    <SparkFeeApprovalDialog
-      controller={sparkFeeApproval}
-      walletLabel={
-        selectedWallet?.providerId === "spark"
-          ? (eligibleWalletDisplayLabels.get(selectedWallet.id) ??
-            selectedWallet.label)
-          : undefined
-      }
-    />
-  )
-
   if (authPending) {
     return (
-      <div className="flex min-h-[70vh] items-center justify-center">
-        <section className="w-full max-w-xl rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-          <SpinnerIcon className="mx-auto h-8 w-8 animate-spin text-secondary-400" />
-          <h1 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">
-            Restoring checkout
-          </h1>
-          <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-            Checking whether this browser has a connected signer before choosing
-            the checkout path.
-          </p>
-        </section>
-      </div>
-    )
-  }
-
-  if (step === "sending") {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center">
-        {lightningOverlay}
-        {sparkFeeDialog}
-        <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,var(--primary-500),var(--primary-600))] px-8 py-14 text-center text-white shadow-[0_24px_60px_color-mix(in_srgb,var(--primary-500)_40%,transparent)] sm:px-12">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--text-inverse)_20%,transparent)] bg-[color-mix(in_srgb,var(--text-inverse)_10%,transparent)]">
-            <SpinnerIcon className="h-8 w-8 animate-spin" />
-          </div>
-          <h1 className="mt-8 text-4xl font-semibold tracking-tight">
-            Sending your order...
-          </h1>
-          <div className="mx-auto mt-8 h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-black/15">
-            <div className="h-full w-1/2 animate-pulse rounded-full bg-white" />
-          </div>
-          <p className="mx-auto mt-8 max-w-md text-sm leading-7 text-white/85">
-            Your order is being sent to Nostr delivery relays for merchant
-            pickup. This may take a few seconds depending on your signer and
-            relay connection.
-          </p>
-        </section>
-      </div>
-    )
-  }
-
-  if (step === "signing") {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center">
-        <section className="w-full max-w-3xl rounded-[2rem] border border-[var(--border)] bg-[var(--surface)] px-8 py-14 text-center shadow-[var(--shadow-xl)] sm:px-12">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-300">
-            <KeyRound className="h-8 w-8" />
-          </div>
-          <h1 className="mt-8 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Awaiting signature...
-          </h1>
-          <div className="mx-auto mt-8 h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-[var(--surface-elevated)]">
-            <div className="h-full w-1/3 animate-pulse rounded-full bg-secondary-400" />
-          </div>
-          <p className="mx-auto mt-8 max-w-md text-sm leading-7 text-[var(--text-secondary)]">
-            Confirm this order in your signer to continue. Once the signature is
-            approved, Conduit will send the order request to the merchant.
-          </p>
-        </section>
-      </div>
-    )
-  }
-
-  if (step === "paid") {
-    // Render inline (within the main grid) -- handled below alongside the
-    // active payment tracker so OrderSummary remains visible. We intentionally
-    // do not early-return here.
-  }
-
-  if (step === "sent") {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center">
-        <section className="relative w-full max-w-3xl overflow-hidden rounded-[2rem] border border-[var(--border)] bg-[var(--surface)] px-8 py-14 text-center sm:px-12">
-          <div
-            aria-hidden="true"
-            className={[
-              "pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,color-mix(in_srgb,var(--primary-500)_22%,transparent),color-mix(in_srgb,var(--primary-600)_18%,transparent))] transition-opacity duration-700",
-              showSentGlow ? "opacity-100" : "opacity-0",
-            ].join(" ")}
-          />
-          <div className="relative mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-300">
-            <CheckIcon className="h-8 w-8" />
-          </div>
-          <h1 className="relative mt-8 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Order request submitted
-          </h1>
-          <div className="relative mx-auto mt-8 h-1 w-full max-w-sm rounded-full bg-secondary-500/50" />
-          <p className="relative mx-auto mt-8 max-w-xl text-lg leading-9 text-[var(--text-primary)]">
-            {paidNotice ??
-              "Your order request has been sent to the merchant. They will review it and follow up with confirmation and payment details."}
-          </p>
-          <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
-            You can review this order from Orders, keep browsing products, or
-            check back later for the merchant response.
-          </p>
-          {sentOrderId && (
-            <div className="relative mt-6 text-xs font-mono text-[var(--text-muted)]">
-              {sentOrderId}
-            </div>
-          )}
-          <div className="relative mt-8 flex flex-wrap justify-center gap-3">
-            <Button asChild variant="outline" className="h-11 px-5 text-sm">
-              <Link to="/orders">
-                <OrderIcon className="h-4 w-4" />
-                View orders
-              </Link>
-            </Button>
-            <Button asChild className="h-11 px-5 text-sm">
-              <Link to="/products">
-                <Store className="h-4 w-4" />
-                Browse more products
-              </Link>
-            </Button>
-          </div>
-        </section>
+      <div
+        role="status"
+        className="py-12 text-center text-sm text-[var(--text-secondary)]"
+      >
+        Restoring checkout…
       </div>
     )
   }
@@ -3851,9 +3675,7 @@ function CheckoutPage() {
     )
   }
 
-  // While paying / completed we intentionally keep the order visible even if
-  // the cart is being cleared, so the tracker holds (CND-89).
-  if (checkoutItems.length === 0 && step !== "paying" && step !== "paid") {
+  if (checkoutItems.length === 0 && step !== "signing" && step !== "sending") {
     return (
       <div className="space-y-6">
         <CheckoutBreadcrumb current="order" />
@@ -3908,6 +3730,19 @@ function CheckoutPage() {
       <h1 className="text-balance text-3xl font-semibold text-[var(--text-primary)] sm:text-4xl">
         Checkout
       </h1>
+
+      {(step === "signing" || step === "sending") && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-primary)]"
+        >
+          <SpinnerIcon className="h-5 w-5 animate-spin" />
+          {step === "signing"
+            ? "Confirm the order in your signer. Checkout will continue after approval."
+            : "Sending your order to the merchant…"}
+        </div>
+      )}
 
       {remoteSignerRecovery ? (
         <SignerRecoveryNotice
@@ -3978,7 +3813,10 @@ function CheckoutPage() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]">
+      <div
+        inert={step === "signing" || step === "sending"}
+        className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]"
+      >
         <OrderSummary
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
@@ -4730,9 +4568,6 @@ function CheckoutPage() {
                         !paymentInFlightRef.current
                       }
                       onHoldComplete={() => {
-                        if (canAttemptLightningPayment) {
-                          setOverlayPlaying(true)
-                        }
                         void payNow()
                       }}
                       chargedLabel={
@@ -4870,8 +4705,6 @@ function CheckoutPage() {
         </section>
       </div>
 
-      {lightningOverlay}
-      {sparkFeeDialog}
       <SignerSwitch
         open={connectOpen}
         onOpenChange={setConnectOpen}

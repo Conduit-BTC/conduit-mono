@@ -45,6 +45,27 @@ describe("checkout completion navigation contracts", () => {
     expect(ordersRoute).toContain("View full order details")
   })
 
+  it("reserves lightning for a durable payment-sent result", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+    const lightning = await Bun.file(
+      "apps/market/src/components/LightningStrikeOverlay.tsx"
+    ).text()
+
+    expect(checkoutRoute).not.toContain("LightningStrikeOverlay")
+    expect(ordersRoute).toMatch(
+      /getOrderPaymentState\(current\.orderId\)\?\.lifecycle\?\.paymentStatus\s*!==\s*"paid"/
+    )
+    expect(ordersRoute).toContain('current.paymentStatus !== "paid"')
+    expect(ordersRoute).toContain("celebratedOrdersRef.current.has")
+    expect(lightning).toContain("pointer-events-none fixed inset-0")
+    expect(lightning).not.toContain("bg-black/60 backdrop-blur-sm")
+  })
+
   it("does not fall back from a missing focused order while reads are pending or unavailable", async () => {
     const ordersRoute = await Bun.file(
       "apps/market/src/routes/orders.tsx"
@@ -141,7 +162,7 @@ describe("checkout completion navigation contracts", () => {
 
     const payNowStart = checkoutRoute.indexOf("async function payNow(")
     const payNowEnd = checkoutRoute.indexOf(
-      "// --- Full-screen transition states",
+      "// ─── Empty / multi-merchant guards",
       payNowStart
     )
     const payNowSource = checkoutRoute.slice(payNowStart, payNowEnd)
@@ -234,7 +255,7 @@ describe("checkout completion navigation contracts", () => {
     ).text()
     const payNowIndex = checkoutRoute.indexOf("async function payNow(")
     const payNowEnd = checkoutRoute.indexOf(
-      "// --- Full-screen transition states",
+      "// ─── Empty / multi-merchant guards",
       payNowIndex
     )
     const payNowSource = checkoutRoute.slice(payNowIndex, payNowEnd)
@@ -253,27 +274,40 @@ describe("checkout completion navigation contracts", () => {
       "orderDelivered = true",
       orderPublishIndex
     )
-    const sparkFeeApprovalIndex = payNowSource.indexOf(
-      "sparkFeeApproval.requestApproval",
+    const sparkHandoffIndex = payNowSource.indexOf(
+      "queueSparkPaymentHandoff(serviceCtx, purchaseCleanup)",
       lifecycleIndex
-    )
-    const sparkPaymentIndex = payNowSource.indexOf(
-      "await runOrderPayment(serviceCtx)",
-      sparkFeeApprovalIndex
     )
     const otherPaymentIndex = payNowSource.indexOf(
       "void runOrderPayment(serviceCtx)",
-      sparkPaymentIndex
+      lifecycleIndex
     )
+    const focusedNavigationIndex = payNowSource.indexOf(
+      'search: { order: orderId, focus: "payment" }',
+      lifecycleIndex
+    )
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
 
     expect(payNowIndex).toBeGreaterThan(-1)
     expect(payNowEnd).toBeGreaterThan(payNowIndex)
     expect(authorizationIndex).toBeGreaterThan(availabilityIndex)
     expect(orderPublishIndex).toBeGreaterThan(authorizationIndex)
     expect(lifecycleIndex).toBeGreaterThan(orderPublishIndex)
-    expect(sparkFeeApprovalIndex).toBeGreaterThan(lifecycleIndex)
-    expect(sparkPaymentIndex).toBeGreaterThan(sparkFeeApprovalIndex)
-    expect(otherPaymentIndex).toBeGreaterThan(sparkPaymentIndex)
+    expect(sparkHandoffIndex).toBeGreaterThan(lifecycleIndex)
+    expect(otherPaymentIndex).toBeGreaterThan(lifecycleIndex)
+    expect(focusedNavigationIndex).toBeGreaterThan(lifecycleIndex)
+    expect(ordersRoute).toContain(
+      "takeSparkPaymentHandoff(vm.orderId, buyerPubkey)"
+    )
+    expect(ordersRoute).toContain(
+      "approveFee: sparkFeeApproval.requestApproval"
+    )
+    expect(ordersRoute).toContain(
+      'selectedRow.lifecycle?.paymentStatus !== "paid"'
+    )
+    expect(checkoutRoute).not.toContain("sparkFeeApproval.requestApproval")
     expect(checkoutRoute).not.toContain("prepareAnonZapCheckout")
     expect(checkoutRoute).not.toContain("pendingAnonAuthorization")
     expect(checkoutRoute).toContain("for (const item of checkoutPricing.items)")
@@ -300,7 +334,6 @@ describe("checkout completion navigation contracts", () => {
     expect(orderPublish).toContain("releaseLease: true")
     expect(orderPublish).toContain("pending.has(relayUrl)")
     expect(checkoutRoute).toContain("delivery.startPostAcceptanceWork ?? null")
-    expect(checkoutRoute).toContain(".finally(() => {")
     expect(checkoutRoute).toContain("isAuthGenerationCurrent(authGeneration)")
     expect(checkoutRoute).toContain(
       "resolveCheckoutOrderAttemptAfterPaymentProgress(orderId)"
