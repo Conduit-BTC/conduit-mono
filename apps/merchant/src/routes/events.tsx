@@ -77,11 +77,11 @@ export function EventsDirectoryPage() {
             replace: true,
           })
         }
-        onOpen={(reference) =>
+        onOpen={(reference, occurrence) =>
           void navigate({
             to: "/events/$collectionRef",
             params: { collectionRef: reference },
-            search: {},
+            search: occurrence ? { occurrence } : {},
           })
         }
         onCreate={createEvent}

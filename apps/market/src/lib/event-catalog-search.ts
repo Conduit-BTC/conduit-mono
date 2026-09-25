@@ -1,7 +1,12 @@
-import { normalizePubkey, pubkeyToNpub } from "@conduit/core"
+import {
+  normalizePubkey,
+  parseAddressableCoordinate,
+  pubkeyToNpub,
+} from "@conduit/core"
 
 export interface EventCatalogSearch {
   merchant?: string
+  occurrence?: string
 }
 
 export function parseEventCatalogSearch(
@@ -11,5 +16,12 @@ export function parseEventCatalogSearch(
     typeof raw.merchant === "string"
       ? (normalizePubkey(raw.merchant) ?? undefined)
       : undefined
-  return merchant ? { merchant: pubkeyToNpub(merchant) } : {}
+  const occurrence =
+    typeof raw.occurrence === "string"
+      ? parseAddressableCoordinate(raw.occurrence, [31922, 31923])?.coordinate
+      : undefined
+  return {
+    ...(merchant ? { merchant: pubkeyToNpub(merchant) } : {}),
+    ...(occurrence ? { occurrence } : {}),
+  }
 }

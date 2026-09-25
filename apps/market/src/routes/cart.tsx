@@ -14,6 +14,7 @@ import {
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
+  formatEventMarketPickupDate,
   getProfilePaymentAddress,
   formatNpub,
   getCachedMarketplaceProducts,
@@ -732,6 +733,7 @@ function CartLineItem({
                 ? "Pickup from event organizer"
                 : "Pickup from merchant booth"}
               {` · ${futurePickup.assignment}`}
+              {` · ${formatEventMarketPickupDate(futurePickup)}`}
             </span>
           </div>
         ) : null}
@@ -941,7 +943,7 @@ function MerchantCartCard({
   const purchaseReference = getCartPurchaseReference(group.id)
   const purchaseLabel =
     group.kind === "pickup"
-      ? `Event pickup · ${group.items[0]?.fulfillment?.type === "pickup" ? group.items[0].fulfillment.option.title : group.items[0]?.fulfillment?.type === "event_market_pickup" ? group.items[0].fulfillment.assignment : "Pickup"}`
+      ? `Event pickup · ${group.items[0]?.fulfillment?.type === "pickup" ? group.items[0].fulfillment.option.title : group.items[0]?.fulfillment?.type === "event_market_pickup" ? `${group.items[0].fulfillment.assignment} · ${formatEventMarketPickupDate(group.items[0].fulfillment)}` : "Pickup"}`
       : group.items.some((item) => item.format !== "digital")
         ? "Shipping / delivery"
         : "Digital delivery"

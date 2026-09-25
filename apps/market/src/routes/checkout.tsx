@@ -22,6 +22,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  formatEventMarketPickupDate,
   getProfilePaymentAddress,
   hasFreshProfilePaymentAddress,
   EVENT_KINDS,
@@ -784,6 +785,10 @@ function OrderSummary({
       : pickupFulfillment?.type === "event_market_pickup"
         ? pickupFulfillment.assignment
         : null
+  const pickupDate =
+    pickupFulfillment?.type === "event_market_pickup"
+      ? formatEventMarketPickupDate(pickupFulfillment)
+      : null
   const pricing = buildCheckoutPricingIntent(items, btcUsdRate)
   const pricingUnavailable = {
     state: "invalid" as const,
@@ -965,6 +970,7 @@ function OrderSummary({
                   <span>
                     {pickupHandoff.label}
                     {pickupLocation ? ` · ${pickupLocation}` : ""}
+                    {pickupDate ? ` · ${pickupDate}` : ""}
                   </span>
                 </span>
                 <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
@@ -3813,7 +3819,7 @@ function CheckoutPage() {
                 const label = pickup
                   ? `Event pickup · ${pickup.option.title}`
                   : futurePickup
-                    ? `Event pickup · ${futurePickup.assignment}`
+                    ? `Event pickup · ${futurePickup.assignment} · ${formatEventMarketPickupDate(futurePickup)}`
                     : group.items.some((item) => item.format !== "digital")
                       ? "Shipping / delivery"
                       : "Digital delivery"

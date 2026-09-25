@@ -1,6 +1,8 @@
 import { z } from "zod"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
+import { parseEventMarketCalendarEvent } from "../protocol/event-market"
+import { parseEventMarketSeriesEvent } from "../protocol/event-market-schedule"
 import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 
 const publicMediaUrlSchema = z
@@ -363,6 +365,31 @@ const signedEventMarketEvidenceSchema = z
   })
   .refine(isValidSignedPublicNostrEvent, "Signed evidence must be valid.")
 
+const signedPickupEvidenceCoordinateSchema =
+  pickupEvidenceCoordinateSchema.extend({
+    /** Exact signed revision retained with the private order. */
+    signedEvent: signedEventMarketEvidenceSchema,
+  })
+
+function signedEvidenceMatchesCoordinate(evidence: {
+  coordinate: string
+  eventId: string
+  createdAt: number
+  signedEvent: z.infer<typeof signedEventMarketEvidenceSchema>
+}): boolean {
+  const [kind, author, ...dTagParts] = evidence.coordinate.split(":")
+  const dTags = evidence.signedEvent.tags.filter((tag) => tag[0] === "d")
+  return (
+    evidence.signedEvent.id === evidence.eventId &&
+    evidence.signedEvent.created_at * 1_000 === evidence.createdAt &&
+    Number(kind) === evidence.signedEvent.kind &&
+    author?.toLowerCase() === evidence.signedEvent.pubkey &&
+    dTags.length === 1 &&
+    dTags[0]?.length === 2 &&
+    dTags[0]?.[1] === dTagParts.join(":")
+  )
+}
+
 /** Future Event Market snapshot. The public roster supplies handoff terms. */
 export const orderEventMarketPickupFulfillmentSchema = z
   .object({
@@ -370,7 +397,7 @@ export const orderEventMarketPickupFulfillmentSchema = z
     organizerPubkey: hex64Schema,
     merchantPubkey: hex64Schema,
     payeePubkey: hex64Schema,
-    market: pickupEvidenceCoordinateSchema,
+    market: signedPickupEvidenceCoordinateSchema,
     /** Exact organizer-signed merchant grant accepted for this order. */
     grant: z.object({
       kind: z.literal(3841),
@@ -386,11 +413,13 @@ export const orderEventMarketPickupFulfillmentSchema = z
         deletions: z.array(signedEventMarketEvidenceSchema).max(128),
       }),
     }),
-    calendar: pickupEvidenceCoordinateSchema.extend({
+    calendar: signedPickupEvidenceCoordinateSchema.extend({
       start: z.number().int().min(0),
       end: z.number().int().min(0),
     }),
-    product: pickupEvidenceCoordinateSchema,
+    /** Exact 31924 revision that includes the selected occurrence, when present. */
+    schedule: signedPickupEvidenceCoordinateSchema.optional(),
+    product: signedPickupEvidenceCoordinateSchema,
     mode: z.enum(["merchant_present", "organizer_handoff"]),
     assignment: z.string().min(1).max(120),
   })
@@ -400,6 +429,100 @@ export const orderEventMarketPickupFulfillmentSchema = z
       coordinate.split(":", 3)[1]?.toLowerCase()
     const organizer = fulfillment.organizerPubkey.toLowerCase()
     const merchant = fulfillment.merchantPubkey.toLowerCase()
+    for (const field of ["market", "calendar", "product"] as const) {
+      if (!signedEvidenceMatchesCoordinate(fulfillment[field])) {
+        context.addIssue({
+          code: "custom",
+          path: [field, "signedEvent"],
+          message:
+            "Signed evidence must match the exact saved revision and coordinate.",
+        })
+      }
+    }
+    if (
+      fulfillment.schedule &&
+      !signedEvidenceMatchesCoordinate(fulfillment.schedule)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["schedule", "signedEvent"],
+        message: "Signed schedule must match the exact saved revision.",
+      })
+    }
+    const marketEvent = fulfillment.market.signedEvent
+    const marketCalendarTags = marketEvent.tags.filter((tag) => tag[0] === "a")
+    const marketStateTags = marketEvent.tags.filter(
+      (tag) => tag[0] === "event_market"
+    )
+    const rosterRows = marketEvent.tags.filter((tag) => tag[0] === "merchant")
+    const matchingRows = rosterRows.filter((tag) => tag[1] === merchant)
+    if (
+      marketCalendarTags.length !== 1 ||
+      marketCalendarTags[0]?.[1] !==
+        (fulfillment.schedule?.coordinate ?? fulfillment.calendar.coordinate) ||
+      marketStateTags.length !== 1 ||
+      marketStateTags[0]?.[1] !== "2" ||
+      marketStateTags[0]?.[2] !== "open" ||
+      matchingRows.length !== 1 ||
+      matchingRows[0]?.[2] !== fulfillment.mode ||
+      matchingRows[0]?.[3] !== fulfillment.assignment
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["market", "signedEvent"],
+        message:
+          "Signed market roster must contain the saved date and merchant terms.",
+      })
+    }
+    if (fulfillment.schedule) {
+      const series = parseEventMarketSeriesEvent(
+        fulfillment.schedule.signedEvent
+      )
+      if (
+        !series ||
+        series.coordinate !== fulfillment.schedule.coordinate ||
+        series.organizerPubkey !== organizer ||
+        !series.memberCoordinates.includes(fulfillment.calendar.coordinate)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["schedule", "signedEvent"],
+          message: "Signed schedule must include the selected date.",
+        })
+      }
+    } else if (marketCalendarTags[0]?.[1]?.startsWith("31924:")) {
+      context.addIssue({
+        code: "custom",
+        path: ["schedule"],
+        message: "A series order requires its exact signed schedule.",
+      })
+    }
+    const signedCalendar = parseEventMarketCalendarEvent(
+      fulfillment.calendar.signedEvent
+    )
+    if (
+      !signedCalendar ||
+      signedCalendar.coordinate !== fulfillment.calendar.coordinate ||
+      signedCalendar.start !== fulfillment.calendar.start ||
+      signedCalendar.end !== fulfillment.calendar.end
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["calendar", "signedEvent"],
+        message: "Signed calendar must contain the saved pickup time.",
+      })
+    }
+    if (
+      !fulfillment.product.signedEvent.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === fulfillment.market.coordinate
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["product", "signedEvent"],
+        message: "Signed product must associate with the saved market.",
+      })
+    }
     if (
       kind(fulfillment.market.coordinate) !== 30409 ||
       author(fulfillment.market.coordinate) !== organizer
@@ -868,6 +991,7 @@ export const orderSchema = z
           fulfillment.market.coordinate !== firstFuture.market.coordinate ||
           fulfillment.market.eventId !== firstFuture.market.eventId ||
           fulfillment.calendar.eventId !== firstFuture.calendar.eventId ||
+          fulfillment.schedule?.eventId !== firstFuture.schedule?.eventId ||
           fulfillment.grant.eventId !== firstFuture.grant.eventId ||
           fulfillment.mode !== firstFuture.mode ||
           fulfillment.assignment !== firstFuture.assignment
@@ -885,6 +1009,7 @@ export const orderSchema = z
       const eventIds = new Set([
         firstFuture.market.eventId,
         firstFuture.calendar.eventId,
+        ...(firstFuture.schedule ? [firstFuture.schedule.eventId] : []),
         ...firstFuture.grant.ancestryEventIds,
         ...firstFuture.grant.observedDeletionEventIds,
         ...order.items.flatMap((item) =>

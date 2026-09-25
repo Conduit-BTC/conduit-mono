@@ -1,6 +1,6 @@
 import { ArrowLeft, ExternalLink } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import {
   buildMarketEventCatalogUrl,
   decodeEventMarketReference,
@@ -25,8 +25,21 @@ export const Route = createFileRoute("/events/$collectionRef")({
 
 function EventDetailPage() {
   const { collectionRef } = Route.useParams()
+  const { occurrence } = Route.useSearch()
+  const navigate = useNavigate({ from: Route.fullPath })
   if (decodeEventMarketReference(collectionRef, [30409])) {
-    return <FutureEventMarketManager reference={collectionRef} />
+    return (
+      <FutureEventMarketManager
+        reference={collectionRef}
+        selectedOccurrence={occurrence}
+        onSelectOccurrence={(coordinate) =>
+          void navigate({
+            search: (previous) => ({ ...previous, occurrence: coordinate }),
+            replace: true,
+          })
+        }
+      />
+    )
   }
   return <LegacyEventReadOnly reference={collectionRef} />
 }

@@ -1235,6 +1235,114 @@ test("future Event Market catalog follows signed merchant approval and current p
   ).toBeVisible()
 })
 
+test("signed series dates open one market and keep separate buyer choices @market @merchant @commerce", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1_000)
+  const firstStart =
+    Math.floor((createdAt + 30 * 86_400) / 86_400) * 86_400 + 10 * 3_600
+  const secondStart = firstStart + 7 * 86_400
+  const occurrence = (dTag: string, start: number) =>
+    signEvent(ORGANIZER_SECRET, {
+      kind: 31923,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["d", dTag],
+        ["title", "Series Fair"],
+        ["start", String(start)],
+        ["end", String(start + 6 * 3_600)],
+        ["start_tzid", "UTC"],
+        ["end_tzid", "UTC"],
+        ["location", "Town Hall"],
+        ["D", String(Math.floor(start / 86_400))],
+      ],
+    })
+  const first = occurrence("series-fair-first", firstStart)
+  const second = occurrence("series-fair-second", secondStart)
+  const schedule = signEvent(ORGANIZER_SECRET, {
+    kind: 31924,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "series-fair-schedule"],
+      ["title", "Series Fair"],
+      ["a", eventCoordinate(first)],
+      ["a", eventCoordinate(second)],
+    ],
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "series-fair"],
+      ["a", eventCoordinate(schedule)],
+      ["event_market", "2", "open"],
+      ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 12"],
+    ],
+  })
+  const grant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["openmarkets", "event-market-auth", "1"],
+      ["a", eventCoordinate(market)],
+      ["p", MERCHANT_PUBKEY],
+      ["state", "active"],
+      ["seq", "0"],
+      ["alt", "Open Markets event merchant authorization"],
+    ],
+  })
+  const product = signEvent(MERCHANT_SECRET, {
+    kind: 30402,
+    created_at: createdAt,
+    content: "Series soap",
+    tags: [
+      ["d", "series-soap"],
+      ["title", "Series soap"],
+      ["price", "12", "USD"],
+      ["type", "simple", "physical"],
+      ["a", eventCoordinate(market)],
+    ],
+  })
+  relay.seed(
+    first,
+    second,
+    schedule,
+    market,
+    grant,
+    product,
+    createFollowList("buyer", [ORGANIZER_PUBKEY], createdAt + 1),
+    createFollowList("merchant", [ORGANIZER_PUBKEY], createdAt + 1)
+  )
+  await gotoAs(page, marketUrl, "/events?source=following", "buyer")
+  await expect(
+    page.getByRole("button", { name: /^Open Series Fair\./ })
+  ).toHaveCount(2)
+  await page
+    .getByRole("button", { name: /^Open Series Fair\./ })
+    .first()
+    .click()
+  expect(new URL(page.url()).searchParams.get("occurrence")).toBe(
+    eventCoordinate(first)
+  )
+  await expect(page.getByRole("heading", { name: "Series soap" })).toBeVisible()
+  await page.getByRole("combobox", { name: "Choose date" }).click()
+  await page.getByRole("option").last().click()
+  expect(new URL(page.url()).searchParams.get("occurrence")).toBe(
+    eventCoordinate(second)
+  )
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await expect(
+    page.getByRole("button", { name: /^Open Series Fair\./ })
+  ).toHaveCount(2)
+})
+
 test("Merchant links an approved shop product and Market discovers it without pickup records @market @merchant", async ({
   page,
 }) => {
@@ -1709,4 +1817,84 @@ test("organizer creates and closes one future Event Market without legacy event 
   await expect(page.getByText(/Closed · Town Hall/)).toBeVisible()
   await page.getByRole("button", { name: "Reopen Event Market" }).click()
   await expect(page.getByText(/Open · Town Hall/)).toBeVisible()
+})
+
+test("organizer generates weekly dates and publishes one signed series @merchant @commerce", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await gotoAs(page, merchantUrl, "/events/new", "organizer")
+  await page.getByLabel("Event title").fill("Weekly Future Fair")
+  await page.getByLabel("Description").fill("A weekly organizer market")
+  await page
+    .getByLabel("Banner URL")
+    .fill("https://cdn.conduit.market/conduit-test/template-product.svg")
+  await page.getByLabel("Location", { exact: true }).fill("Town Hall")
+  await page.getByRole("combobox", { name: "Dates" }).click()
+  await page.getByRole("option", { name: "Multiple dates" }).click()
+  await page.getByLabel("Time zone").fill("UTC")
+  await page.getByRole("button", { name: "Generate weekly dates" }).click()
+  await page.getByRole("checkbox", { name: "Saturday" }).check()
+  await page.getByLabel("First date").fill("2030-06-01")
+  await page.getByLabel("Through date").fill("2030-06-08")
+  await page.getByLabel("Start hour").fill("10:00")
+  await page.getByLabel("End hour").fill("16:00")
+  await page
+    .getByRole("button", { name: "Generate dates", exact: true })
+    .click()
+  await expect(page.getByText(/2 of 32 dates/)).toBeVisible()
+  await page.getByRole("button", { name: "Publish Event Market" }).click()
+  await expect(page).toHaveURL(/\/events\/naddr1/)
+  await expect(
+    page.getByRole("heading", { name: "Weekly Future Fair" })
+  ).toBeVisible()
+  const published = uniquePublishedEvents(relay.publications)
+  expect(published.filter((event) => event.kind === 31923)).toHaveLength(2)
+  expect(published.filter((event) => event.kind === 31924)).toHaveLength(1)
+  expect(published.filter((event) => event.kind === 30409)).toHaveLength(1)
+  expect(published.map((event) => event.kind)).toEqual([
+    31923, 31923, 31924, 30409,
+  ])
+  await page.locator("#series-new-start").fill("2030-06-15T10:00")
+  await page.locator("#series-new-end").fill("2030-06-15T16:00")
+  await page.getByRole("button", { name: "Add signed date" }).click()
+  await expect
+    .poll(
+      () =>
+        uniquePublishedEvents(relay.publications).filter(
+          (event) => event.kind === 31924
+        ).length
+    )
+    .toBe(2)
+  expect(
+    uniquePublishedEvents(relay.publications).filter(
+      (event) => event.kind === 31923
+    )
+  ).toHaveLength(3)
+  await page.locator("#series-edit-title").fill("Weekly Future Fair updated")
+  await page.getByRole("button", { name: "Save selected date" }).click()
+  await expect
+    .poll(
+      () =>
+        uniquePublishedEvents(relay.publications).filter(
+          (event) => event.kind === 31923
+        ).length
+    )
+    .toBe(4)
+  await page.getByRole("button", { name: "Remove future date" }).click()
+  await expect
+    .poll(
+      () =>
+        uniquePublishedEvents(relay.publications).filter(
+          (event) => event.kind === 31924
+        ).length
+    )
+    .toBe(3)
+  expect(
+    uniquePublishedEvents(relay.publications).filter(
+      (event) => event.kind === 30409
+    )
+  ).toHaveLength(1)
 })

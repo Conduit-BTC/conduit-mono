@@ -1,11 +1,13 @@
 import { describe, expect, it } from "bun:test"
 import {
   createEmptyOrganizerEventMarketForm,
+  generateOrganizerWeeklyDates,
   getOrganizerEventEndMinimum,
   getOrganizerEventStartMinimum,
   getOrganizerEventTimezoneOptions,
   isOrganizerEventMarketFormDirty,
   localDateTimeToEpochSeconds,
+  prepareOrganizerEventMarketDates,
   prepareOrganizerEventMarketForm,
   slugifyEventMarketTitle,
   validateOrganizerEventMarketForm,
@@ -133,6 +135,77 @@ describe("merchant organizer event form", () => {
     expect(() =>
       localDateTimeToEpochSeconds("2026-03-08T02:30", "America/New_York")
     ).toThrow("does not exist")
+    expect(() =>
+      localDateTimeToEpochSeconds("2026-11-01T01:30", "America/New_York")
+    ).toThrow("occurs twice")
+  })
+
+  it("expands selected weekdays to editable concrete dates across a DST change", () => {
+    const dates = generateOrganizerWeeklyDates({
+      firstDate: "2026-03-01",
+      throughDate: "2026-03-15",
+      weekdays: [0],
+      startTime: "09:00",
+      endTime: "14:00",
+      timezone: "America/New_York",
+    })
+    expect(dates.map((date) => date.start)).toEqual([
+      "2026-03-01T09:00",
+      "2026-03-08T09:00",
+      "2026-03-15T09:00",
+    ])
+    const prepared = prepareOrganizerEventMarketDates(validForm(), dates)
+    expect(prepared.map((date) => date.calendar.start)).toEqual([
+      1_772_373_600, 1_772_974_800, 1_773_579_600,
+    ])
+  })
+
+  it("rejects a generated skipped or repeated local hour with its date", () => {
+    const pattern = {
+      firstDate: "2026-03-08",
+      throughDate: "2026-03-08",
+      weekdays: [0],
+      startTime: "02:30",
+      endTime: "03:30",
+      timezone: "America/New_York",
+    }
+    expect(() => generateOrganizerWeeklyDates(pattern)).toThrow(
+      "2026-03-08: That local time does not exist"
+    )
+    expect(() =>
+      generateOrganizerWeeklyDates({
+        ...pattern,
+        firstDate: "2026-11-01",
+        throughDate: "2026-11-01",
+        startTime: "01:30",
+        endTime: "02:30",
+      })
+    ).toThrow("2026-11-01: That local time occurs twice")
+  })
+
+  it("caps generated dates and rejects duplicate or invalid edited rows", () => {
+    expect(() =>
+      generateOrganizerWeeklyDates({
+        firstDate: "2026-01-01",
+        throughDate: "2026-03-01",
+        weekdays: [0, 1, 2, 3, 4, 5, 6],
+        startTime: "09:00",
+        endTime: "17:00",
+        timezone: "UTC",
+      })
+    ).toThrow("at most 32")
+    const rows = [
+      { id: "a", start: "2026-08-15T09:00", end: "2026-08-15T14:00" },
+      { id: "b", start: "2026-08-15T09:00", end: "2026-08-15T15:00" },
+    ]
+    expect(() => prepareOrganizerEventMarketDates(validForm(), rows)).toThrow(
+      "duplicates another start"
+    )
+    expect(() =>
+      prepareOrganizerEventMarketDates(validForm(), [
+        { id: "a", start: "2026-11-01T01:30", end: "2026-11-01T03:00" },
+      ])
+    ).toThrow("Date 1: That local time occurs twice")
   })
 
   it("requires future starts only for new-event validation", () => {

@@ -22,7 +22,13 @@ import {
   Combobox,
   EventPageHeader,
   Input,
+  Label,
   QRCodeSVG,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@conduit/ui"
 import { useCart } from "../hooks/useCart"
 import { useMerchantIdentities } from "../hooks/useMerchantIdentities"
@@ -35,13 +41,16 @@ import { PRODUCT_GRID_CLASS_NAME, ProductGridCard } from "./ProductGridCard"
 type FutureEventMarketPageProps = {
   reference: string
   selectedMerchant?: string
+  selectedOccurrence?: string
   onMerchantChange: (pubkey: string | undefined) => void
+  onOccurrenceChange: (coordinate: string | undefined) => void
 }
 
 function FutureEventProductCard({
   entry,
   merchantName,
   marketCoordinate,
+  selectedOccurrence,
   canPurchase,
   quote,
   preference,
@@ -51,6 +60,7 @@ function FutureEventProductCard({
   entry: EventMarketProductReadResult
   merchantName: string
   marketCoordinate: string
+  selectedOccurrence?: string
   canPurchase: boolean
   quote: ReturnType<typeof useShopperPricing>["quote"]
   preference: ReturnType<typeof useShopperPricing>["preference"]
@@ -81,7 +91,10 @@ function FutureEventProductCard({
         void navigate({
           to: "/products/$productId",
           params: { productId: activeProductId },
-          search: { event: marketCoordinate },
+          search: {
+            event: marketCoordinate,
+            ...(selectedOccurrence ? { occurrence: selectedOccurrence } : {}),
+          },
         })
       }
       onAddToCart={
@@ -101,7 +114,9 @@ function FutureEventProductCard({
 export function FutureEventMarketPage({
   reference,
   selectedMerchant,
+  selectedOccurrence,
   onMerchantChange,
+  onOccurrenceChange,
 }: FutureEventMarketPageProps) {
   const session = useConduitSession()
   const authenticatedPubkey =
@@ -126,7 +141,12 @@ export function FutureEventMarketPage({
   const marketResolution = catalog?.marketRead.resolution
   const market =
     marketResolution?.state === "current" ? marketResolution.market : null
-  const calendar = catalog?.marketRead.calendar
+  const schedule = catalog?.marketRead.schedule
+  const series = schedule?.kind === "series" ? schedule : null
+  const selectedDate = series?.occurrences.find(
+    (entry) => entry.occurrence.coordinate === selectedOccurrence
+  )
+  const calendar = selectedDate?.occurrence ?? catalog?.marketRead.calendar
   const organizerPubkey = market?.organizerPubkey ?? ""
   const organizerProfile = useProfile(organizerPubkey, {
     accountPubkey: authenticatedPubkey,
@@ -208,6 +228,10 @@ export function FutureEventMarketPage({
     catalog?.coverage === "complete" &&
     catalog.marketRead.coverage === "complete" &&
     catalog.marketRead.calendarCoverage === "complete" &&
+    (!series ||
+      (!!selectedDate &&
+        selectedDate.coverage === "complete" &&
+        selectedDate.occurrence.end > Date.now())) &&
     !!calendar
 
   async function addProduct(
@@ -230,6 +254,7 @@ export function FutureEventMarketPage({
       const fulfillment = createEventMarketPickupSnapshot({
         marketRead: catalog.marketRead,
         productRead: entry,
+        selectedOccurrenceCoordinate: selectedOccurrence,
       })
       await cart.addItem(
         cartItemInputFromProductSelection(
@@ -249,7 +274,10 @@ export function FutureEventMarketPage({
     void navigate({
       to: "/products/$productId",
       params: { productId },
-      search: { event: market.coordinate },
+      search: {
+        event: market.coordinate,
+        ...(selectedOccurrence ? { occurrence: selectedOccurrence } : {}),
+      },
     })
   }
 
@@ -313,6 +341,41 @@ export function FutureEventMarketPage({
           }
           shareLabel={selectedMerchant ? "Share this view" : "Share event"}
         >
+          {series ? (
+            <div className="max-w-sm space-y-1">
+              <Label htmlFor="event-market-date">Choose date</Label>
+              <Select
+                value={selectedDate?.occurrence.coordinate ?? ""}
+                onValueChange={(coordinate) => onOccurrenceChange(coordinate)}
+              >
+                <SelectTrigger id="event-market-date" aria-label="Choose date">
+                  <SelectValue placeholder="Confirm a pickup date" />
+                </SelectTrigger>
+                <SelectContent>
+                  {series.occurrences.map((entry) => (
+                    <SelectItem
+                      key={entry.occurrence.coordinate}
+                      value={entry.occurrence.coordinate}
+                      disabled={
+                        entry.coverage !== "complete" ||
+                        entry.occurrence.end <= Date.now()
+                      }
+                    >
+                      {formatEventTimelineSchedule(entry.occurrence)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {series.unresolvedCoordinates.length > 0 ? (
+                <p
+                  role="status"
+                  className="text-sm text-[var(--text-secondary)]"
+                >
+                  Some listed dates could not be verified yet.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <p className="text-sm text-[var(--text-secondary)]">
             {market.state === "open" ? "Open" : "Closed"} ·{" "}
             {market.merchants.length} approved{" "}
@@ -411,6 +474,7 @@ export function FutureEventMarketPage({
                           .displayName
                       }
                       marketCoordinate={market.coordinate}
+                      selectedOccurrence={selectedOccurrence}
                       canPurchase={canPurchase}
                       quote={pricing.quote}
                       preference={pricing.preference}

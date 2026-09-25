@@ -16,6 +16,7 @@ import {
   decodeLightningInvoiceAmount,
   deriveProtectedReadPresentationState,
   formatNpub,
+  formatEventMarketPickupDate,
   getNdk,
   getCachedMerchantConversationList,
   getCachedMerchantStorefront,
@@ -1205,6 +1206,9 @@ function OrdersWorkspace() {
   const selectedPickupSnapshot = selectedOrder?.items.flatMap((item) =>
     item.fulfillment?.type === "pickup" ? [item.fulfillment] : []
   )[0]
+  const selectedFuturePickup = selectedOrder?.items.find(
+    (item) => item.fulfillment?.type === "event_market_pickup"
+  )?.fulfillment
   const selectedPickupAuthority =
     selectedPickupSnapshot?.type === "pickup"
       ? resolveOrderPickupHandoffAuthority(selectedPickupSnapshot)
@@ -3249,6 +3253,21 @@ function OrdersWorkspace() {
 
                 <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
                   <div className="min-w-0 space-y-4">
+                    {selectedFuturePickup?.type === "event_market_pickup" ? (
+                      <section className={panelCard}>
+                        <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+                          Event pickup date
+                        </h2>
+                        <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                          {formatEventMarketPickupDate(selectedFuturePickup)} ·{" "}
+                          {selectedFuturePickup.assignment}
+                        </p>
+                        <p className="mt-1 text-xs text-[var(--text-muted)]">
+                          This order keeps the signed date accepted by the
+                          buyer.
+                        </p>
+                      </section>
+                    ) : null}
                     <section className={panelCard}>
                       <h2 className="text-lg font-semibold text-[var(--text-primary)]">
                         Order progress

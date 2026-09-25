@@ -82,9 +82,22 @@ function EventCatalogRoute() {
     <FutureEventMarketPage
       reference={collectionRef}
       selectedMerchant={normalizePubkey(search.merchant) ?? undefined}
+      selectedOccurrence={search.occurrence}
+      onOccurrenceChange={(occurrence) =>
+        void navigate({
+          search: {
+            ...(search.merchant ? { merchant: search.merchant } : {}),
+            ...(occurrence ? { occurrence } : {}),
+          },
+          replace: true,
+        })
+      }
       onMerchantChange={(merchant) =>
         void navigate({
-          search: merchant ? { merchant: pubkeyToNpub(merchant) } : {},
+          search: {
+            ...(merchant ? { merchant: pubkeyToNpub(merchant) } : {}),
+            ...(search.occurrence ? { occurrence: search.occurrence } : {}),
+          },
           replace: true,
         })
       }
