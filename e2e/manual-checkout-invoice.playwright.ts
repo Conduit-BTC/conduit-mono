@@ -553,11 +553,14 @@ for (const scenario of scenarios) {
       name: "Copy invoice",
       exact: true,
     })
+    const paymentSentLightning = page.getByTestId("payment-sent-lightning")
+    await expect(paymentSentLightning).toHaveCount(0)
     if (scenario.stop) await expect(copyInvoice).toHaveCount(0)
     else await expect(copyInvoice).toBeVisible()
 
     const exactReceipt = receipt(generatedInvoice)
     await publishTestRelayEvents([exactReceipt])
+    if (!scenario.stop) await expect(paymentSentLightning).toBeVisible()
     await expect.poll(paymentState, { timeout: 20_000 }).toEqual({
       paymentStatus: "paid",
       zapReceiptStatus: "observed",
@@ -567,6 +570,11 @@ for (const scenario of scenarios) {
     await expect(
       page.getByRole("button", { name: "Copy invoice", exact: true })
     ).toHaveCount(0)
+    if (!scenario.stop) {
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toBeVisible()
+    }
     if (scenario.stop) {
       await expect(
         page
