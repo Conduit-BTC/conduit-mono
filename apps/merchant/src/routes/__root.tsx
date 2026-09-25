@@ -118,7 +118,11 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
   const shouldDelayAuthFallback =
     !!pubkey && !signerWorkspaceAvailable && !authFallbackReady
 
-  useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
+  useEffect(() => {
+    // The public shell owns its error listener while it is mounted.
+    if (isNotFound && !signerWorkspaceAvailable) return
+    return installBrowserClientErrorTelemetry("merchant")
+  }, [isNotFound, signerWorkspaceAvailable])
 
   useEffect(() => {
     if (appLoadTelemetrySentRef.current) return
