@@ -239,25 +239,23 @@ default-branch-controlled automation; candidate workflows do not receive a
 write token. Bot-authored PRs receive a noncanonical preview check and cannot
 satisfy the required `preview-links` context.
 
-Privileged agent reviews run only from default-branch workflow definitions.
-They check out an immutable base SHA and fetch the candidate SHA as Git object
-data. They do not check out, install, import, or execute candidate content.
-Automatic simplify handoffs must match the exact review run, run attempt,
-repository, pull request, base SHA, and head SHA. Use `/agent simplify` for a
-trusted manual rerun. `/agent review` starts an advisory rerun on `main`; its
-job name is unique so it cannot be confused with the automatic
-`agent-review-handoff` result for the candidate.
+Account-authenticated agent workflows run outside this public repository.
+The reviewer receives immutable source snapshots and no GitHub token. Trusted
+delivery code validates inline locations and rechecks the PR base and head.
+It submits actionable findings as resolvable inline review conversations.
+Schema and SHA checks reject malformed or stale results. Human approval remains
+mandatory; candidate prompt injection can still affect review quality.
 
-The current Sudden action needs a narrowly scoped pull-request-write token to
-submit inline reviews. Base-trusted workflows and object-only candidate reads
-reduce risk, but they do not mechanically eliminate candidate prompt injection.
-Schema and SHA gates fail malformed or stale review results. Human approval
-remains mandatory.
+Use an exact `/agent review` or `/agent simplify` PR comment for an advisory
+rerun. Owners, members, and collaborators can use conversation or inline review
+comments. Requests are polled and may be delayed. Automatic correctness review
+runs for each eligible head. A clean correctness pass can start one automatic
+Ponytail pass per PR; new heads do not rearm it after an attempt or failure.
+See [Agent Automation Boundary](docs/knowledge/agent-automation-boundary.md).
 
-`agent-review-handoff` remains an advisory review signal and is not a required
-branch-protection context. It reports whether Sudden reviewed the exact head and
-produced a valid code-review handoff; it does not determine mergeability.
-Keep strict up-to-date branch protection enabled so a base change invalidates the candidate checks.
+The former `agent-review-handoff` workflow context is retired. Agent reviews
+remain advisory and do not determine mergeability. Keep strict up-to-date branch
+protection enabled so a base change invalidates candidate checks.
 
 The final Ponytail review must state exactly one of `Ponytail outcome: LEAN`,
 `Ponytail outcome: FINDINGS`, or `Ponytail outcome: DELIVERY BLOCKED`. `LEAN`

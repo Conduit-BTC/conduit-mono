@@ -15,7 +15,6 @@ const allShardSmokeInfrastructure = new Set([
   "scripts/ci/validate_playwright_smoke_areas.ts",
   "scripts/dev/run_playwright_web_server.ts",
   "scripts/dev/run_playwright_e2e.ts",
-  "tests/agent-review-handoff.test.ts",
   "tests/playwright-smoke-areas.test.ts",
   "tests/run-playwright-e2e.test.ts",
   "tests/pr-evidence-contract.test.ts",
