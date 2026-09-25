@@ -219,16 +219,15 @@ describe("pull request evidence contract", () => {
     }
   })
 
-  it("documents the commerce shard transition and active authoring boundary", () => {
+  it("documents current commerce shard selection and authoring boundary", () => {
     expect(testingSpec).toContain(
-      "`@commerce` remains reserved until AC-SELECT-2, tracked by CND-193, is"
+      "`@commerce` runs for affected critical commerce paths"
     )
+    expect(testingSpec).toContain("shared Playwright and runtime changes run")
     expect(testingSpec).toContain(
-      "shared commerce changes must run the applicable"
+      "The current selector includes `@commerce` for changes to:"
     )
-    expect(testingSpec).toContain(
-      "After AC-SELECT-2 is implemented, run `@commerce` for changes to:"
-    )
+    expect(testingSpec).toContain("[x] **AC-SELECT-2:**")
     expect(contributing).toContain(
       "Use `@commerce` only for the hermetic\ncross-app flow that requires both Market and Merchant"
     )
