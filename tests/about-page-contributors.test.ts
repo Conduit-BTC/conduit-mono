@@ -194,7 +194,7 @@ describe("About page contributor build data", () => {
     expect(snapshot).toEqual(generatedFallback)
   })
 
-  it("falls back after a refresh failure and rejects a stale snapshot", async () => {
+  it("falls back after a refresh failure and marks an old snapshot stale", async () => {
     const fetchImpl: typeof fetch = async () =>
       jsonResponse({ message: "rate limited" }, 403)
 
@@ -212,7 +212,17 @@ describe("About page contributor build data", () => {
       fallbackSnapshot: generatedFallback,
       now: new Date("2026-09-20T01:00:00.000Z"),
     })
-    expect(stale).toEqual({
+    expect(stale).toEqual({ ...generatedFallback, status: "stale" })
+  })
+
+  it("rejects invalid fallback data", async () => {
+    const snapshot = await loadRepositoryContributorSnapshot({
+      token: null,
+      fallbackSnapshot: { ...generatedFallback, generatedAt: "invalid" },
+      now: new Date("2026-09-20T01:00:00.000Z"),
+    })
+
+    expect(snapshot).toEqual({
       status: "unavailable",
       methodology: "merged-pr-activity-v1",
       generatedAt: null,

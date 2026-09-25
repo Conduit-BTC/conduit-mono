@@ -1,0 +1,97 @@
+name: Refresh Repository Contributors
+
+on:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-repository-contributors
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Create repository write token
+        id: app_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          token: ${{ steps.app_token.outputs.token }}
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Refresh the generated snapshot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          existing_branch="$(gh pr list --state open --limit 100 --json headRefName --jq '.[] | select(.headRefName | startswith("chore/refresh-contributors-")) | .headRefName' | head -n 1)"
+          if [[ -n "$existing_branch" ]]; then
+            git fetch origin "$existing_branch"
+            git switch -c "$existing_branch" FETCH_HEAD
+            branch="$existing_branch"
+          else
+            branch="chore/refresh-contributors-${GITHUB_RUN_ID}"
+            git switch -c "$branch"
+          fi
+
+          bun run contributors:refresh
+
+          git add -- scripts/vite/repository_contributors.generated.json
+          if git diff --cached --quiet; then
+            echo "Contributor snapshot is unchanged."
+            exit 0
+          fi
+
+          git config user.name "conduit-agent-ops"
+          git config user.email "agent-ops@conduit.market"
+          git commit -m "chore(about): refresh repository contributors"
+          git push origin "HEAD:refs/heads/$branch"
+
+          if [[ -z "$existing_branch" ]]; then
+            cat > "$RUNNER_TEMP/contributors-pr.md" <<'EOF'
+          ## Summary
+
+          Refresh the checked-in repository contributor activity snapshot used by Market and Merchant About pages.
+
+          ## Why
+
+          The build falls back to this snapshot when a live GitHub refresh is unavailable. A weekly update keeps its counts and timestamp current without requiring a GitHub token in the public app.
+
+          ## What changed
+
+          - Regenerated `repository_contributors.generated.json` from merged pull requests.
+
+          ## Validation
+
+          - `bun run contributors:refresh` completed with the repository GitHub App token.
+          - Review the contributor and commit-count delta before merging.
+
+          ## Risks and follow-ups
+
+          - Counts reflect GitHub data at the recorded source revision. The About page displays the snapshot timestamp and marks older data as stale.
+          - Human review and merge are required before the new snapshot reaches published builds.
+          EOF
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "chore(about): refresh repository contributors" \
+              --body-file "$RUNNER_TEMP/contributors-pr.md"
+          fi

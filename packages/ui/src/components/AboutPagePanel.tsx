@@ -45,7 +45,7 @@ export interface AboutPageContributor {
 }
 
 export interface AboutPageContributorSnapshot {
-  status: "available" | "unavailable"
+  status: "available" | "stale" | "unavailable"
   methodology: "merged-pr-activity-v1"
   generatedAt: string | null
   sourceRevision: string | null
@@ -580,7 +580,13 @@ function ContributorsCard({
   contributorsUrl: string
 }) {
   const contributorDataAvailable =
-    contributors.status === "available" && contributors.contributors.length > 0
+    contributors.status !== "unavailable" &&
+    contributors.contributors.length > 0
+  const contributorDataIsStale =
+    contributors.status === "stale" ||
+    (contributors.generatedAt !== null &&
+      Date.now() - new Date(contributors.generatedAt).getTime() >
+        14 * 24 * 60 * 60 * 1000)
 
   return (
     <Card className="p-6">
@@ -603,6 +609,18 @@ function ContributorsCard({
           </time>
         ) : null}
       </div>
+
+      {contributorDataAvailable && contributorDataIsStale ? (
+        <div
+          role="status"
+          className="mt-5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+        >
+          <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            This contributor snapshot is out of date. The counts below reflect
+            the last refresh shown above.
+          </p>
+        </div>
+      ) : null}
 
       {contributorDataAvailable ? (
         <ul className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
