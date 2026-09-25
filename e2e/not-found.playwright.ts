@@ -32,11 +32,9 @@ for (const app of ["market", "merchant"] as const) {
           element.muted && element.loop && element.playsInline
       )
     ).toBe(true)
-    await page.getByRole("button", { name: "Pause background video" }).click()
-    await expect
-      .poll(() => video.evaluate((element: HTMLVideoElement) => element.paused))
-      .toBe(true)
-    await page.getByRole("button", { name: "Play background video" }).click()
+    await expect(
+      page.getByRole("button", { name: /background video/ })
+    ).toHaveCount(0)
     await video.evaluate((element: HTMLVideoElement) => {
       element.currentTime = element.duration - 0.2
     })

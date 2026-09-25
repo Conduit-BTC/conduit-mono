@@ -1,5 +1,5 @@
-import { ArrowLeft, Bitcoin, Pause, Play } from "lucide-react"
-import { useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { ArrowLeft } from "lucide-react"
+import { useEffect, useState, useSyncExternalStore } from "react"
 
 import { Button } from "./Button"
 import "../styles/not-found.css"
@@ -36,13 +36,11 @@ export function NotFoundPage({
   backTo = "/",
   backLabel = "Go home",
 }: NotFoundPageProps) {
-  const videoRef = useRef<HTMLVideoElement>(null)
   const allowMotion = useSyncExternalStore(
     subscribeMotion,
     motionAllowed,
     () => false
   )
-  const [playing, setPlaying] = useState(false)
   const [failed, setFailed] = useState(false)
 
   const [videoSource, setVideoSource] = useState<{
@@ -79,27 +77,11 @@ export function NotFoundPage({
   const showVideo =
     allowMotion && !failed && videoSource && !videoSource.signal.aborted
 
-  async function togglePlayback() {
-    const video = videoRef.current
-    if (!video) return
-    if (!video.paused) {
-      video.pause()
-      return
-    }
-    try {
-      await video.play()
-    } catch {
-      // Autoplay and power-saving policies can reject playback. Keep the poster.
-      setPlaying(false)
-    }
-  }
-
   return (
     <section className="network-not-found" aria-labelledby="not-found-title">
       <img className="network-not-found__media" src={posterUrl} alt="" />
       {showVideo && (
         <video
-          ref={videoRef}
           className="network-not-found__media"
           src={videoSource.url}
           poster={posterUrl}
@@ -109,15 +91,10 @@ export function NotFoundPage({
           playsInline
           preload="metadata"
           aria-hidden="true"
-          onPlaying={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
           onError={() => setFailed(true)}
         />
       )}
       <div className="network-not-found__shade" />
-      <div className="network-not-found__coin" aria-hidden="true">
-        <Bitcoin strokeWidth={1.25} />
-      </div>
       <div className="network-not-found__content">
         <p className="network-not-found__code">404 / OUT OF ORBIT</p>
         <h1 id="not-found-title">You have left the network.</h1>
@@ -132,23 +109,6 @@ export function NotFoundPage({
           </a>
         </Button>
       </div>
-      {showVideo && (
-        <Button
-          className="network-not-found__playback"
-          variant="outline"
-          onClick={() => void togglePlayback()}
-          aria-label={
-            playing ? "Pause background video" : "Play background video"
-          }
-        >
-          {playing ? (
-            <Pause size={16} aria-hidden="true" />
-          ) : (
-            <Play size={16} aria-hidden="true" />
-          )}
-          <span>{playing ? "Pause" : "Play"}</span>
-        </Button>
-      )}
     </section>
   )
 }

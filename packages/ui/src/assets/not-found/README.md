@@ -5,7 +5,6 @@
 - Original: https://videos.pexels.com/video-files/33506229/14251140_1920_1080_30fps.mp4
 - Adaptation: first six seconds, followed by their reverse for a continuous 12-second loop. Resized to 1280 × 720, 24 fps, H.264, CRF 28, without audio, with fast-start metadata.
 - Poster: first frame, 1280 × 720 JPEG.
-- The Bitcoin symbol is a separate Lucide icon, not part of the licensed footage.
 
 Serve these assets locally. Do not replace them with third-party embeds or tracking URLs.
 
