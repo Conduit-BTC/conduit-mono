@@ -107,8 +107,9 @@ a temporary order-scoped browser key, and an NIP-46 connection may use an
 encrypted browser-local client key; neither is a Conduit-custodied user account
 key. The only approved server-side private-key exception is the Anon Conduit
 Shopper public zap signer described in `docs/specs/protocol.md`; it is limited
-to authenticated, merchant-authorized public zap request signing and does not
-authorize user key custody.
+to authenticated, merchant-authorized checkout zap requests and fixed-scope
+Conduit.Market project tip zap requests created by the trusted server boundary.
+It does not authorize user key custody or general-purpose event signing.
 
 ### Product Discovery
 
