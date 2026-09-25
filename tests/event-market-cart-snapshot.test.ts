@@ -6,6 +6,7 @@ import {
 } from "nostr-tools/pure"
 import {
   buildEventMarketAuthorizationDraft,
+  buildEventMarketRosterDraft,
   orderItemSchema,
   orderSchema,
   parseEventMarketAuthorizationEvent,
@@ -21,9 +22,27 @@ import { getEventMarketCartReviewReasons } from "../apps/market/src/lib/event-ma
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
-const merchant = "b".repeat(64)
-const eventId = "c".repeat(64)
+const merchantSecret = generateSecretKey()
+const merchant = getPublicKey(merchantSecret)
 const marketCoordinate = `30409:${organizer}:fair-market`
+const calendarCoordinate = `31923:${organizer}:fair`
+const calendarStart = 1_790_000_000
+const calendarEnd = calendarStart + 3_600
+const signedCalendar = finalizeEvent(
+  {
+    kind: 31923,
+    created_at: 100,
+    tags: [
+      ["d", "fair"],
+      ["title", "Fair"],
+      ["start", String(calendarStart)],
+      ["end", String(calendarEnd)],
+      ["D", String(Math.floor(calendarStart / 86_400))],
+    ],
+    content: "",
+  },
+  organizerSecret
+)
 const signedGrant = finalizeEvent(
   {
     kind: 3841,
@@ -45,15 +64,44 @@ const grant = JSON.parse(JSON.stringify(signedGrant)) as typeof signedGrant
 function item(
   dTag: string,
   assignment = "Booth 12",
-  marketEventId = eventId
+  marketCreatedAt = 100
 ): CartItem {
   const productId = `30402:${merchant}:${dTag}`
+  const signedMarket = finalizeEvent(
+    {
+      ...buildEventMarketRosterDraft({
+        dTag: "fair-market",
+        organizerPubkey: organizer,
+        calendarCoordinate,
+        state: "open",
+        merchants: [{ pubkey: merchant, mode: "merchant_present", assignment }],
+      }),
+      created_at: marketCreatedAt,
+    },
+    organizerSecret
+  )
+  const signedProduct = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: 100,
+      tags: [
+        ["d", dTag],
+        ["title", dTag],
+        ["price", "12", "USD"],
+        ["type", "simple", "physical"],
+        ["a", marketCoordinate],
+      ],
+      content: dTag,
+    },
+    merchantSecret
+  )
   return {
     productId,
     merchantPubkey: merchant,
     title: dTag,
     price: 12,
     currency: "USD",
+    sourcePrice: { amount: 12, currency: "USD", normalizedCurrency: "USD" },
     format: "physical",
     quantity: 1,
     fulfillment: {
@@ -63,17 +111,24 @@ function item(
       payeePubkey: merchant,
       market: {
         coordinate: marketCoordinate,
-        eventId: marketEventId,
-        createdAt: 100,
+        eventId: signedMarket.id,
+        createdAt: marketCreatedAt * 1_000,
+        signedEvent: signedMarket,
       },
       calendar: {
-        coordinate: `31923:${organizer}:fair`,
-        eventId,
-        createdAt: 100,
-        start: 200,
-        end: 300,
+        coordinate: calendarCoordinate,
+        eventId: signedCalendar.id,
+        createdAt: signedCalendar.created_at * 1_000,
+        start: calendarStart * 1_000,
+        end: calendarEnd * 1_000,
+        signedEvent: signedCalendar,
       },
-      product: { coordinate: productId, eventId, createdAt: 100 },
+      product: {
+        coordinate: productId,
+        eventId: signedProduct.id,
+        createdAt: signedProduct.created_at * 1_000,
+        signedEvent: signedProduct,
+      },
       authorization: { tip: grant, ancestry: [grant], deletions: [] },
       mode: "merchant_present",
       assignment,
@@ -93,6 +148,7 @@ function order(items: CartItem[] = [item("soap")]) {
       quantity: source.quantity,
       priceAtPurchase: source.price,
       currency: source.currency,
+      sourcePrice: source.sourcePrice,
       fulfillment: source.fulfillment,
     })),
     subtotal: items.reduce((sum, source) => sum + source.price, 0),
@@ -105,7 +161,7 @@ function order(items: CartItem[] = [item("soap")]) {
 describe("future Event Market cart and order snapshots", () => {
   it("groups two merchant products by market identity, not roster revision or booth label", () => {
     const first = item("soap")
-    const second = item("candles", "Booth 14", "d".repeat(64))
+    const second = item("candles", "Booth 14", 101)
     const groups = groupCartPurchases([first, second])
     expect(groups).toHaveLength(1)
     expect(groups[0]?.kind).toBe("pickup")
@@ -128,11 +184,13 @@ describe("future Event Market cart and order snapshots", () => {
       quantity: 1,
       priceAtPurchase: 12,
       currency: "USD",
+      sourcePrice: source.sourcePrice,
       fulfillment: source.fulfillment,
     })
-    expect(parsed.fulfillment).toEqual(source.fulfillment)
-    expect(orderSchema.parse(order()).items[0]?.fulfillment).toEqual(
-      source.fulfillment
+    const signedSnapshot = JSON.parse(JSON.stringify(source.fulfillment))
+    expect(parsed.fulfillment).toEqual(signedSnapshot)
+    expect(orderSchema.parse(order([source])).items[0]?.fulfillment).toEqual(
+      signedSnapshot
     )
     const withoutGrant = {
       ...source.fulfillment,
@@ -156,6 +214,63 @@ describe("future Event Market cart and order snapshots", () => {
         shippingCostSats: 10,
       })
     ).toThrow()
+  })
+
+  it("rejects invented market, calendar, product, and price claims beside a real grant", () => {
+    const accepted = orderSchema.parse(order())
+    const line = accepted.items[0]!
+    const fulfillment = line.fulfillment
+    if (fulfillment?.type !== "event_market_pickup")
+      throw new Error("Missing Event Market pickup")
+    const laterMarket = item("soap", "Booth 14", 101).fulfillment
+    if (laterMarket?.type !== "event_market_pickup")
+      throw new Error("Missing later Event Market pickup")
+    const fabricated = [
+      {
+        ...fulfillment,
+        market: { ...fulfillment.market, eventId: "d".repeat(64) },
+      },
+      { ...fulfillment, mode: "organizer_handoff" as const },
+      { ...fulfillment, assignment: "Invented booth" },
+      { ...fulfillment, market: laterMarket.market },
+      {
+        ...fulfillment,
+        calendar: {
+          ...fulfillment.calendar,
+          start: fulfillment.calendar.start + 1_000,
+        },
+      },
+      {
+        ...fulfillment,
+        product: { ...fulfillment.product, eventId: "e".repeat(64) },
+      },
+      {
+        ...fulfillment,
+        product: {
+          ...fulfillment.product,
+          signedEvent: {
+            ...fulfillment.product.signedEvent,
+            content: "altered after signing",
+          },
+        },
+      },
+    ]
+    for (const claim of fabricated) {
+      expect(
+        orderSchema.safeParse({
+          ...accepted,
+          items: [{ ...line, fulfillment: claim }],
+        }).success
+      ).toBe(false)
+    }
+    expect(
+      orderSchema.safeParse({
+        ...accepted,
+        items: [{ ...line, sourcePrice: { ...line.sourcePrice!, amount: 1 } }],
+      }).success
+    ).toBe(false)
+    expect(orderSchema.parse(accepted)).toEqual(accepted)
+    expect(fulfillment.market.eventId).not.toBe(laterMarket.market.eventId)
   })
 
   it("keeps the accepted signed authorization history in historical orders", () => {
@@ -329,7 +444,7 @@ describe("future Event Market cart and order snapshots", () => {
     ).toBe(false)
     expect(
       orderSchema.safeParse(
-        order([item("soap"), item("candles", "Booth 12", "e".repeat(64))])
+        order([item("soap"), item("candles", "Booth 12", 101)])
       ).success
     ).toBe(false)
     const laterGrant = JSON.parse(

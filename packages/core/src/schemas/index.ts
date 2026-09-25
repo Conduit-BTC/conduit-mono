@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
+import { projectSignedProductPreviewEvidence } from "../protocol/product-event-evidence"
 import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 
 const publicMediaUrlSchema = z
@@ -363,6 +364,75 @@ const signedEventMarketEvidenceSchema = z
   })
   .refine(isValidSignedPublicNostrEvent, "Signed evidence must be valid.")
 
+type SignedEventMarketEvidence = z.infer<typeof signedEventMarketEvidenceSchema>
+
+function signedSnapshotCoordinateMatches(
+  event: SignedEventMarketEvidence,
+  snapshot: PickupEvidenceCoordinateSchema,
+  kinds: readonly number[],
+  author: string
+): boolean {
+  const dTags = event.tags.filter((tag) => tag[0] === "d")
+  return (
+    kinds.includes(event.kind) &&
+    event.pubkey === author &&
+    dTags.length === 1 &&
+    dTags[0]?.length === 2 &&
+    `${event.kind}:${event.pubkey}:${dTags[0][1]}` === snapshot.coordinate &&
+    event.id === snapshot.eventId &&
+    event.created_at * 1_000 === snapshot.createdAt
+  )
+}
+
+function signedCalendarTimes(
+  event: SignedEventMarketEvidence
+): { start: number; end: number } | null {
+  const startTags = event.tags.filter((tag) => tag[0] === "start")
+  const endTags = event.tags.filter((tag) => tag[0] === "end")
+  if (
+    startTags.length !== 1 ||
+    startTags[0]?.length !== 2 ||
+    endTags.length > 1 ||
+    (endTags.length === 1 && endTags[0]?.length !== 2)
+  )
+    return null
+  const startValue = startTags[0]?.[1]
+  const endValue = endTags[0]?.[1]
+  if (event.kind === 31922) {
+    const parseDate = (value: string | undefined): number | null => {
+      if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+      const timestamp = Date.parse(`${value}T00:00:00.000Z`)
+      return Number.isFinite(timestamp) &&
+        new Date(timestamp).toISOString().slice(0, 10) === value
+        ? timestamp
+        : null
+    }
+    const start = parseDate(startValue)
+    const end = endValue === undefined ? null : parseDate(endValue)
+    return start !== null &&
+      (endValue === undefined || (end !== null && end > start))
+      ? { start, end: end ?? start + 86_400_000 }
+      : null
+  }
+  if (event.kind !== 31923) return null
+  const parseTime = (value: string | undefined): number | null => {
+    if (!value || !/^[1-9]\d*$/.test(value)) return null
+    const seconds = Number(value)
+    const milliseconds = seconds * 1_000
+    return Number.isSafeInteger(seconds) &&
+      Number.isSafeInteger(milliseconds) &&
+      Number.isFinite(new Date(milliseconds).getTime())
+      ? milliseconds
+      : null
+  }
+  const start = parseTime(startValue)
+  const end = endValue === undefined ? null : parseTime(endValue)
+  return start !== null &&
+    (endValue === undefined || (end !== null && end > start))
+    ? { start, end: end ?? start }
+    : null
+}
+
 /** Future Event Market snapshot freezes both roster and causal grant evidence. */
 export const orderEventMarketPickupFulfillmentSchema = z
   .object({
@@ -370,12 +440,17 @@ export const orderEventMarketPickupFulfillmentSchema = z
     organizerPubkey: hex64Schema,
     merchantPubkey: hex64Schema,
     payeePubkey: hex64Schema,
-    market: pickupEvidenceCoordinateSchema,
+    market: pickupEvidenceCoordinateSchema.extend({
+      signedEvent: signedEventMarketEvidenceSchema,
+    }),
     calendar: pickupEvidenceCoordinateSchema.extend({
       start: z.number().int().min(0),
       end: z.number().int().min(0),
+      signedEvent: signedEventMarketEvidenceSchema,
     }),
-    product: pickupEvidenceCoordinateSchema,
+    product: pickupEvidenceCoordinateSchema.extend({
+      signedEvent: signedEventMarketEvidenceSchema,
+    }),
     authorization: z.object({
       tip: signedEventMarketEvidenceSchema,
       ancestry: z.array(signedEventMarketEvidenceSchema),
@@ -432,6 +507,80 @@ export const orderEventMarketPickupFulfillmentSchema = z
         code: "custom",
         path: ["calendar", "end"],
         message: "Calendar end must follow start.",
+      })
+    }
+    const signedMarket = fulfillment.market.signedEvent
+    const signedCalendar = fulfillment.calendar.signedEvent
+    const signedProduct = fulfillment.product.signedEvent
+    if (
+      !signedSnapshotCoordinateMatches(
+        signedMarket,
+        fulfillment.market,
+        [30409],
+        organizer
+      ) ||
+      signedMarket.content !== "" ||
+      JSON.stringify(signedMarket.tags.filter((tag) => tag[0] === "a")) !==
+        JSON.stringify([["a", fulfillment.calendar.coordinate]]) ||
+      JSON.stringify(
+        signedMarket.tags.filter((tag) => tag[0] === "event_market")
+      ) !== JSON.stringify([["event_market", "2", "open"]]) ||
+      JSON.stringify(
+        signedMarket.tags.filter(
+          (tag) => tag[0] === "merchant" && tag[1] === merchant
+        )
+      ) !==
+        JSON.stringify([
+          ["merchant", merchant, fulfillment.mode, fulfillment.assignment],
+        ])
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["market"],
+        message: "Market terms must match the exact signed organizer roster.",
+      })
+    }
+    const calendarTimes = signedCalendarTimes(signedCalendar)
+    if (
+      !signedSnapshotCoordinateMatches(
+        signedCalendar,
+        fulfillment.calendar,
+        [31922, 31923],
+        organizer
+      ) ||
+      !calendarTimes ||
+      calendarTimes.start !== fulfillment.calendar.start ||
+      calendarTimes.end !== fulfillment.calendar.end
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["calendar"],
+        message: "Calendar dates must match the exact signed event.",
+      })
+    }
+    if (
+      !signedSnapshotCoordinateMatches(
+        signedProduct,
+        fulfillment.product,
+        [30402],
+        merchant
+      ) ||
+      signedProduct.tags.filter(
+        (tag) =>
+          tag[0] === "a" &&
+          tag[1] === fulfillment.market.coordinate &&
+          tag.length === 2
+      ).length !== 1 ||
+      signedProduct.tags.some(
+        (tag) =>
+          tag[0] === "visibility" &&
+          ["hidden", "private"].includes(tag[1]?.toLowerCase() ?? "")
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["product"],
+        message: "Product must match the exact signed merchant listing.",
       })
     }
     const authorization = fulfillment.authorization
@@ -730,6 +879,29 @@ export const orderItemSchema = z
           path: ["fulfillment", "product", "coordinate"],
           message:
             "Event Market product evidence must match the ordered product.",
+        })
+      }
+      const signedTerms = projectSignedProductPreviewEvidence(
+        item.fulfillment.product.signedEvent
+      )
+      if (
+        !signedTerms ||
+        signedTerms.priceStatus !== "resolved" ||
+        signedTerms.format !== "physical" ||
+        (item.title !== undefined && item.title !== signedTerms.title) ||
+        !item.sourcePrice ||
+        item.sourcePrice.amount !== signedTerms.sourcePrice?.amount ||
+        item.sourcePrice.currency !== signedTerms.sourcePrice.currency ||
+        item.sourcePrice.normalizedCurrency !==
+          signedTerms.sourcePrice.normalizedCurrency ||
+        (signedTerms.currency === "SATS" &&
+          (item.currency !== "SATS" ||
+            item.priceAtPurchase !== signedTerms.price))
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["fulfillment", "product"],
+          message: "Order terms must match the signed product revision.",
         })
       }
       if (

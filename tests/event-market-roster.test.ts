@@ -456,6 +456,7 @@ describe("experimental Event Market roster", () => {
       }
     )
     expect(read.marketRead.resolution.state).toBe("current")
+    expect(read.marketRead.calendarSignedEvent?.id).toBe(calendar.id)
     expect(read.candidateCount).toBe(1)
     expect(read.products).toHaveLength(0)
     expect(read.coverage).toBe("partial")
@@ -540,19 +541,18 @@ describe("experimental Event Market roster", () => {
       productCoordinate,
       revisions: [signedProduct],
     })
-    const calendar = parseEventMarketCalendarEvent(
-      sign(
-        organizerSecret,
-        31923,
-        [
-          ["d", "fair"],
-          ["title", "Fair"],
-          ["start", "1790000000"],
-          ["D", "20717"],
-        ],
-        100
-      )
-    )!
+    const signedCalendar = sign(
+      organizerSecret,
+      31923,
+      [
+        ["d", "fair"],
+        ["title", "Fair"],
+        ["start", "1790000000"],
+        ["D", "20717"],
+      ],
+      100
+    )
+    const calendar = parseEventMarketCalendarEvent(signedCalendar)!
     const marketRead = {
       coordinate: marketCoordinate,
       resolution: { state: "current" as const, market: currentMarket },
@@ -560,6 +560,7 @@ describe("experimental Event Market roster", () => {
       retained: true,
       observedRelayUrls: ["wss://example.com"],
       calendar,
+      calendarSignedEvent: signedCalendar,
       calendarCoverage: "complete" as const,
     }
     const productRead = {

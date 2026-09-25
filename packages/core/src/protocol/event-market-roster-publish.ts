@@ -473,7 +473,9 @@ export async function publishEventMarketMerchantDecision(
     marketRead.resolution.market.eventId !== input.expectedPreviousEventId ||
     marketRead.resolution.market.calendarCoordinate !==
       input.calendarCoordinate ||
-    !authorizationRead.retained
+    !authorizationRead.retained ||
+    (authorizationRead.resolution.state === "missing" &&
+      authorizationRead.coverage !== "complete")
   ) {
     throw new Error(
       "Current signed Event Market authority needs organizer review."

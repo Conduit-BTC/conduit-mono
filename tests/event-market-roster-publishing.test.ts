@@ -435,6 +435,54 @@ describe("future Event Market organizer updates", () => {
     expect(signed).toBe(false)
   })
 
+  it.each(["partial", "stale", "unavailable"] as const)(
+    "does not sign a first approval from a %s empty authorization read",
+    async (coverage) => {
+      let signed = false
+      await expect(
+        publishEventMarketMerchantDecision(
+          {
+            organizerPubkey: organizer,
+            authenticatedPubkey: organizer,
+            dTag: "fair-market",
+            calendarCoordinate,
+            merchantPubkey: merchant,
+            action: "approve",
+            row: initialRow,
+            expectedPreviousEventId: empty.id,
+            expectedAuthorizationTipIds: [],
+          },
+          {
+            ...storage,
+            read: async () => ({
+              coordinate: marketCoordinate,
+              resolution: {
+                state: "current",
+                market: parseEventMarketRosterEvent(empty)!,
+              },
+              coverage: "complete",
+              retained: true,
+              observedRelayUrls: ["wss://example.com"],
+            }),
+            readAuthorization: async () => ({
+              resolution: { state: "missing" },
+              coverage,
+              retained: true,
+              observedRelayUrls:
+                coverage === "unavailable" ? [] : ["wss://example.com"],
+            }),
+            sign: async () => {
+              signed = true
+              return empty
+            },
+            publish: async () => delivery,
+          }
+        )
+      ).rejects.toThrow("organizer review")
+      expect(signed).toBe(false)
+    }
+  )
+
   it("signs a descendant revoke and publishes it before row removal", async () => {
     const activeDraft = buildEventMarketAuthorizationDraft({
       marketCoordinate,
