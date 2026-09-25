@@ -676,7 +676,8 @@ async function enforceAnonZapAuthorizationRateLimits(
   request: Request,
   env: AnonZapPagesEnv,
   secret: string,
-  merchantPubkey: string,
+  target:
+    { type: "checkout"; merchantPubkey: string } | { type: "project_tip" },
   corsHeaders: HeadersInit
 ): Promise<Response | null> {
   const source = getCloudflareSource(request)
@@ -687,17 +688,31 @@ async function enforceAnonZapAuthorizationRateLimits(
     )
   }
   try {
-    const [sourceKey, merchantKey] = await Promise.all([
-      hmacSha256(secret, `${RATE_LIMIT_SOURCE_DOMAIN}.${source}`),
-      hmacSha256(secret, `${RATE_LIMIT_MERCHANT_DOMAIN}.${merchantPubkey}`),
-    ])
+    const sourceKey = bytesToHex(
+      await hmacSha256(secret, `${RATE_LIMIT_SOURCE_DOMAIN}.${source}`)
+    )
+    let keys: string[]
+    if (target.type === "project_tip") {
+      keys = [
+        "authorization:project-tip:global",
+        `authorization:project-tip:source:${sourceKey}`,
+      ]
+    } else {
+      const merchantKey = bytesToHex(
+        await hmacSha256(
+          secret,
+          `${RATE_LIMIT_MERCHANT_DOMAIN}.${target.merchantPubkey}`
+        )
+      )
+      keys = [
+        "authorization:global",
+        `authorization:source:${sourceKey}`,
+        `authorization:merchant:${merchantKey}`,
+      ]
+    }
     return applyRequiredRateLimits(
       "authorization",
-      [
-        "authorization:global",
-        `authorization:source:${bytesToHex(sourceKey)}`,
-        `authorization:merchant:${bytesToHex(merchantKey)}`,
-      ],
+      keys,
       env,
       {
         unavailable: "Anon zap authorization rate limiting is unavailable.",
@@ -1008,7 +1023,7 @@ export async function authorizeAnonZapRequest(
       request,
       env,
       sharedSecret,
-      intent.merchantPubkey,
+      { type: "checkout", merchantPubkey: intent.merchantPubkey },
       corsHeaders
     )
     if (rateLimitError) return rateLimitError
@@ -1346,7 +1361,7 @@ export async function signAnonymousProjectTipRequest(
       request,
       env,
       secret,
-      PROJECT_TIP_RECIPIENT_PUBKEY,
+      { type: "project_tip" },
       corsHeaders
     )
     if (rateLimitError) return rateLimitError

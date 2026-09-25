@@ -184,7 +184,9 @@ Signer Worker config:
   minting a fresh authorization cannot bypass merchant-level limits. The Worker
   fails closed when the binding is missing or unavailable.
 - `ANON_AUTHORIZATION_RATE_LIMITER`: independently tuned rate-limit binding for
-  pseudonymous checkout source and merchant authorization buckets.
+  checkout global, pseudonymous source, and merchant authorization buckets.
+  Project tips use separate global and pseudonymous source keys in the same
+  binding, so tip traffic cannot consume checkout authorization capacity.
 - `ANON_AUTHORITY_RATE_LIMITER`: higher-capacity rate-limit binding for bounded
   Zapouts authority batches and fallback-recipient metadata egress. A normal
   feed load cannot exhaust the signer or checkout namespace.

@@ -583,7 +583,7 @@ async function handleInternalRateLimitRequest(
   }
   const keyPattern =
     body.scope === "authorization"
-      ? /^authorization:(?:global|(?:source|merchant):[0-9a-f]{64})$/
+      ? /^authorization:(?:global|(?:source|merchant):[0-9a-f]{64}|project-tip:(?:global|source:[0-9a-f]{64}))$/
       : /^authority:(?:global|(?:source|source-recipient):[0-9a-f]{64})$/
   if (
     !body.keys.every((key) => typeof key === "string" && keyPattern.test(key))
