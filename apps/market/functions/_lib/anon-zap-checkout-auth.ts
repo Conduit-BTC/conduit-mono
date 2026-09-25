@@ -1234,6 +1234,75 @@ export async function authorizeAnonZapRequest(
   }
 }
 
+async function forwardAuthorizedAnonZapRequest(
+  request: Request,
+  env: AnonZapPagesEnv,
+  payload: AnonZapAuthorizationTokenPayload,
+  dependencies: AnonZapPagesDependencies
+): Promise<Response> {
+  const corsHeaders = getCorsHeaders(request, env)
+  const signerUrl = getSignerUrl(env)
+  const localSignerFallbackAllowed =
+    env.ANON_ZAP_ALLOW_INSECURE_LOCALHOST === "true" &&
+    isExplicitLocalhost(new URL(signerUrl).hostname)
+  if (
+    !env.ANON_ZAP_SIGNER_SERVICE &&
+    dependencies === defaultDependencies &&
+    !localSignerFallbackAllowed
+  ) {
+    throw new Error("Anon zap signer is not configured.")
+  }
+  const signerBody = JSON.stringify({
+    zapRequest: payload.draft,
+    authorization: payload.authorization,
+  })
+  const timestamp = String(dependencies.nowSeconds())
+  const signature = bytesToHex(
+    await hmacSha256(getSharedSecret(env), `${timestamp}.${signerBody}`)
+  )
+  const headers = new Headers({
+    "content-type": "application/json",
+    [AUTH_TIMESTAMP_HEADER]: timestamp,
+    [AUTH_SIGNATURE_HEADER]: signature,
+  })
+  const origin = request.headers.get("origin")
+  if (origin) headers.set("origin", origin)
+  let signerResponse: Response
+  try {
+    const signerRequestInit: RequestInit = {
+      method: "POST",
+      headers,
+      body: signerBody,
+      signal: AbortSignal.timeout(SIGNER_REQUEST_TIMEOUT_MS),
+    }
+    signerResponse = env.ANON_ZAP_SIGNER_SERVICE
+      ? await env.ANON_ZAP_SIGNER_SERVICE.fetch(
+          new Request(signerUrl, signerRequestInit)
+        )
+      : await dependencies.fetchSigner(signerUrl, signerRequestInit)
+  } catch {
+    throw new Error("Anon zap signer is temporarily unavailable.")
+  }
+  if (!signerResponse.ok) {
+    throw new Error("Anon zap signer is temporarily unavailable.")
+  }
+  const signed = (await signerResponse.json()) as unknown
+  if (!isRecord(signed) || typeof signed.id !== "string" || !signed.rawEvent) {
+    throw new Error("Anon zap signer returned an invalid event.")
+  }
+  return jsonResponse(
+    {
+      id: signed.id,
+      rawEvent: signed.rawEvent,
+      requestCreatedAt: payload.draft.createdAt,
+      lnurl: payload.authorization.lnurl,
+      relayUrls: payload.relayUrls,
+    },
+    200,
+    corsHeaders
+  )
+}
+
 export async function signAuthorizedAnonZapRequest(
   request: Request,
   env: AnonZapPagesEnv,
@@ -1268,69 +1337,11 @@ export async function signAuthorizedAnonZapRequest(
       )
     }
 
-    const signerUrl = getSignerUrl(env)
-    const localSignerFallbackAllowed =
-      env.ANON_ZAP_ALLOW_INSECURE_LOCALHOST === "true" &&
-      isExplicitLocalhost(new URL(signerUrl).hostname)
-    if (
-      !env.ANON_ZAP_SIGNER_SERVICE &&
-      dependencies === defaultDependencies &&
-      !localSignerFallbackAllowed
-    ) {
-      throw new Error("Anon zap signer is not configured.")
-    }
-    const signerBody = JSON.stringify({
-      zapRequest: payload.draft,
-      authorization: payload.authorization,
-    })
-    const timestamp = String(nowSeconds)
-    const signature = bytesToHex(
-      await hmacSha256(secret, `${timestamp}.${signerBody}`)
-    )
-    const headers = new Headers({
-      "content-type": "application/json",
-      [AUTH_TIMESTAMP_HEADER]: timestamp,
-      [AUTH_SIGNATURE_HEADER]: signature,
-    })
-    const origin = request.headers.get("origin")
-    if (origin) headers.set("origin", origin)
-    let signerResponse: Response
-    try {
-      const signerRequestInit: RequestInit = {
-        method: "POST",
-        headers,
-        body: signerBody,
-        signal: AbortSignal.timeout(SIGNER_REQUEST_TIMEOUT_MS),
-      }
-      signerResponse = env.ANON_ZAP_SIGNER_SERVICE
-        ? await env.ANON_ZAP_SIGNER_SERVICE.fetch(
-            new Request(signerUrl, signerRequestInit)
-          )
-        : await dependencies.fetchSigner(signerUrl, signerRequestInit)
-    } catch {
-      throw new Error("Anon zap signer is temporarily unavailable.")
-    }
-    if (!signerResponse.ok) {
-      throw new Error("Anon zap signer is temporarily unavailable.")
-    }
-    const signed = (await signerResponse.json()) as unknown
-    if (
-      !isRecord(signed) ||
-      typeof signed.id !== "string" ||
-      !signed.rawEvent
-    ) {
-      throw new Error("Anon zap signer returned an invalid event.")
-    }
-    return jsonResponse(
-      {
-        id: signed.id,
-        rawEvent: signed.rawEvent,
-        requestCreatedAt: payload.draft.createdAt,
-        lnurl: payload.authorization.lnurl,
-        relayUrls: payload.relayUrls,
-      },
-      200,
-      corsHeaders
+    return await forwardAuthorizedAnonZapRequest(
+      request,
+      env,
+      payload,
+      dependencies
     )
   } catch (error) {
     const message = error instanceof Error ? error.message : "Signing failed."
@@ -1398,19 +1409,11 @@ export async function signAnonymousProjectTipRequest(
     if (!isAuthorizedProjectTipDraft(draft, payload.authorization)) {
       throw new Error("Project tip authorization is invalid.")
     }
-    const authorizationToken = await createAuthorizationToken(payload, secret)
-    const signedResponse = await signAuthorizedAnonZapRequest(
-      new Request(request.url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(request.headers.get("origin")
-            ? { origin: request.headers.get("origin")! }
-            : {}),
-        },
-        body: JSON.stringify({ authorizationToken, zapRequest: draft }),
-      }),
-      env
+    const signedResponse = await forwardAuthorizedAnonZapRequest(
+      request,
+      env,
+      payload,
+      defaultDependencies
     )
     if (!signedResponse.ok) return signedResponse
     const signed = (await signedResponse.json()) as Record<string, unknown>

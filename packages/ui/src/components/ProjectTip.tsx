@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type ReactNode } from "react"
+import { useId, useRef, useState } from "react"
 import { Copy, ExternalLink, Heart, QrCode } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
 import {
@@ -42,7 +42,6 @@ export type ProjectTipProps = {
   rateQuote?: BtcUsdRateQuote | null
   rateIsFetching?: boolean
   onRefreshRate?: () => void
-  trigger?: ReactNode
   className?: string
 }
 
@@ -56,7 +55,6 @@ export function ProjectTip({
   rateQuote = null,
   rateIsFetching = false,
   onRefreshRate,
-  trigger,
   className,
 }: ProjectTipProps) {
   const [open, setOpen] = useState(false)
@@ -228,15 +226,11 @@ export function ProjectTip({
           }
         }}
       >
-        {trigger ?? (
-          <>
-            <Heart
-              className="size-5 fill-current text-[var(--project-tip-heart)]"
-              aria-hidden="true"
-            />
-            Leave a Tip
-          </>
-        )}
+        <Heart
+          className="size-5 fill-current text-[var(--project-tip-heart)]"
+          aria-hidden="true"
+        />
+        Leave a Tip
       </Button>
       <Dialog
         open={open}

@@ -4,7 +4,6 @@ import {
   fetchZapInvoice,
   isValidSignedPublicNostrEvent,
   PROJECT_TIP_LIGHTNING_ADDRESS,
-  PROJECT_TIP_RECIPIENT_PUBKEY,
   validateLightningInvoiceForPayment,
   validateProjectTipAmount,
   validateProjectTipMetadata,
@@ -74,12 +73,6 @@ export async function prepareAnonymousProjectTip(
     createdAt: signed.created_at,
   })
   assertProjectTipSignature(signed, draft)
-  if (
-    signed.tags.find((tag) => tag[0] === "p")?.[1] !==
-    PROJECT_TIP_RECIPIENT_PUBKEY
-  ) {
-    throw new Error("The tip recipient changed.")
-  }
   const result = await fetchZapInvoice(
     metadata.callback,
     amountMsats,
