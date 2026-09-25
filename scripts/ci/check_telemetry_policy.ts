@@ -28,6 +28,8 @@ export const allowedTelemetryProperties = new Set([
   "ack_outcome",
   "repair_outcome",
   "block_reason",
+  "handoff_stage",
+  "partner_code",
 ])
 
 const gmvTelemetryEventName = "commerce_gmv_estimated"
