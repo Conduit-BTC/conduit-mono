@@ -278,7 +278,7 @@ describe("network settings view", () => {
   })
 
   it("keeps configured Conduit uses separate from observed capability", () => {
-    const configuredUrl = "wss://relay.conduit.market"
+    const configuredUrl = "wss://conduit-congee.fly.dev"
     const observedUrl = "wss://observed.example"
     const rows = [configuredUrl, observedUrl].map((url, position) => ({
       url,
@@ -344,7 +344,9 @@ describe("network settings view", () => {
         },
       }),
       localState: localState({
-        relayScans: [scan("wss://relay.conduit.market", { reachable: false })],
+        relayScans: [
+          scan("wss://conduit-congee.fly.dev", { reachable: false }),
+        ],
       }),
     })
 
@@ -357,8 +359,6 @@ describe("network settings view", () => {
       view.appRelays?.rows.map((row) => [row.capability.relayName, row.url])
     ).toEqual([
       ["Conduit Marketplace Relay", "wss://conduit-congee.fly.dev"],
-      ["Conduit Relay", "wss://relay.conduit.market"],
-      ["Ditto Relay", "wss://relay.ditto.pub"],
       ["Dreamith Relay", "wss://relay.dreamith.to"],
       ["Primal Public Relay", "wss://relay.primal.net"],
       ["nos.lol", "wss://nos.lol"],
@@ -369,20 +369,10 @@ describe("network settings view", () => {
       readEnabled: true,
       publishEnabled: true,
       privateInboxEnabled: true,
-      capability: {
-        relayName: "Conduit Marketplace Relay",
-        relayIconFallbackUrl: "/images/logo/logo-icon.svg",
-      },
-    })
-    expect(view.appRelays?.rows[1]).toMatchObject({
-      url: "wss://relay.conduit.market",
-      readEnabled: true,
-      publishEnabled: true,
-      privateInboxEnabled: true,
       reachability: "issue",
       capability: {
         nip11: "unavailable",
-        relayName: "Conduit Relay",
+        relayName: "Conduit Marketplace Relay",
         relayIconUrl: "https://nostr.build/example-relay.png",
         relayIconFallbackUrl: "/images/logo/logo-icon.svg",
       },
@@ -394,8 +384,6 @@ describe("network settings view", () => {
     })
     expect(view.setupRecommendation?.rows.map((row) => row.url)).toEqual([
       "wss://conduit-congee.fly.dev",
-      "wss://relay.conduit.market",
-      "wss://relay.ditto.pub",
       "wss://relay.dreamith.to",
       "wss://relay.primal.net",
     ])

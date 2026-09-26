@@ -54,6 +54,17 @@ const MERCHANT_SECRET = new Uint8Array(32).fill(4)
 const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
+const originalCommerceRelayUrls = [...config.commerceRelayUrls]
+const testCommerceFallbackRelays = [
+  "wss://relay.dreamith.to",
+  "wss://relay.primal.net",
+]
+function addTestCommerceFallbackRelays(): void {
+  config.commerceRelayUrls = [
+    ...originalCommerceRelayUrls,
+    ...testCommerceFallbackRelays,
+  ]
+}
 const allowAllAccountNetworkLocalStateRepository = {
   get: async () => undefined,
 }
@@ -278,6 +289,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  config.commerceRelayUrls = [...originalCommerceRelayUrls]
   __resetCommerceTestOverrides()
   __resetRelayPublishTestOverrides()
   __resetNdkTestState()
@@ -551,6 +563,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("does not infer owner relay authority from a signed product author", async () => {
+    addTestCommerceFallbackRelays()
     const authenticatedPubkeys: Array<string | null | undefined> = []
     const relayUrl = config.commerceRelayUrls[1]!
     __setRelayPublishTestOverrides({
@@ -593,6 +606,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("retains a fallback-only listing ACK for an immediate deletion", async () => {
+    addTestCommerceFallbackRelays()
     const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-single",
@@ -620,6 +634,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("preserves fallback provenance when its post-ACK cache write fails", async () => {
+    addTestCommerceFallbackRelays()
     const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-volatile",
@@ -680,6 +695,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("retains per-listing fallback ACKs outside the bundle intersection", async () => {
+    addTestCommerceFallbackRelays()
     const [firstFallbackRelayUrl, secondFallbackRelayUrl] =
       config.commerceRelayUrls
     const first = makeSignedProductEvent({

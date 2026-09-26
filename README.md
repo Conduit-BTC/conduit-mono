@@ -139,9 +139,8 @@ only when the runtime app and hostname are the exact official pair:
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 
 ```text
-wss://relay.conduit.market
+wss://conduit-congee.fly.dev
 wss://nos.lol
-wss://relay.ditto.pub
 wss://relay.primal.net
 ```
 
@@ -209,8 +208,8 @@ Actions variables are used when explicit `VITE_BUILD_*` overrides are absent.
 Dry-run first:
 
 ```bash
-NIP89_APP=market NIP89_NSEC=<market-nsec> NIP89_RELAY_URLS=wss://relay.conduit.market bun run nip89:publish-handler -- --dry-run
-NIP89_APP=merchant NIP89_NSEC=<merchant-nsec> NIP89_RELAY_URLS=wss://relay.conduit.market bun run nip89:publish-handler -- --dry-run
+NIP89_APP=market NIP89_NSEC=<market-nsec> NIP89_RELAY_URLS=wss://conduit-congee.fly.dev bun run nip89:publish-handler -- --dry-run
+NIP89_APP=merchant NIP89_NSEC=<merchant-nsec> NIP89_RELAY_URLS=wss://conduit-congee.fly.dev bun run nip89:publish-handler -- --dry-run
 ```
 
 Then publish without `--dry-run` and verify the resulting `31990` events on the

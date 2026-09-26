@@ -771,7 +771,7 @@ describe("durable product deletion delivery", () => {
   })
 
   it("preserves both possible sources for ambiguous legacy App overlaps", async () => {
-    const legacyAppRelayUrl = "wss://relay.ditto.pub"
+    const legacyAppRelayUrl = "wss://relay.dreamith.to"
     const cases = [
       {
         appEnabled: true,
@@ -851,7 +851,7 @@ describe("durable product deletion delivery", () => {
   it("keeps source authority independent when it overlaps an app deletion target", async () => {
     const repository = new MemoryProductDeletionOutbox()
     const event = signedDeletionEvent("5".repeat(64))
-    const overlapRelayUrl = "wss://relay.ditto.pub"
+    const overlapRelayUrl = "wss://relay.dreamith.to"
     const accountNetworkLocalStateRepository =
       createInMemoryAccountNetworkLocalStateRepository()
     await accountNetworkLocalStateRepository.updateRoutingPolicy(

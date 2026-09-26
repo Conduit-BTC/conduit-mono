@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
 import {
+  config,
   emptyAccountNetworkLocalState,
   resumePendingOrderRelayDeliveries,
   retryOrderRelayDelivery,
@@ -15,6 +16,12 @@ import {
 import { requiresAcceptedOrderPaymentContinuation } from "../apps/market/src/lib/checkout-order-attempt"
 
 const BUYER = getPublicKey(generateSecretKey())
+const originalCompatibilityRelays = config.dmCompatibilityOrderRelayUrls
+const originalInboxFallbacks = config.commerceDmFallbackRelayUrls
+afterEach(() => {
+  config.dmCompatibilityOrderRelayUrls = originalCompatibilityRelays
+  config.commerceDmFallbackRelayUrls = originalInboxFallbacks
+})
 const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
 const WRAP_SECRET = generateSecretKey()
@@ -308,7 +315,12 @@ describe("order relay delivery retry", () => {
   })
 
   it("replays a partial compatibility order only to its original approved target", async () => {
-    const relayUrls = ["wss://relay.conduit.market", "wss://relay.ditto.pub"]
+    const relayUrls = [
+      "wss://conduit-congee.fly.dev",
+      "wss://relay.dreamith.to",
+    ]
+    config.dmCompatibilityOrderRelayUrls = relayUrls
+    config.commerceDmFallbackRelayUrls = relayUrls
     const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
     candidate.orderRelayDelivery = {
       ...candidate.orderRelayDelivery!,

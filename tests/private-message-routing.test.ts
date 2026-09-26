@@ -1483,7 +1483,7 @@ describe("inbox declaration discovery planning", () => {
     expect(inboxDeclarationPublishRelayUrls(owner)).toEqual([
       // Shared relays remain reserved; owner relays fill the remaining cap.
       ...sharedInboxDiscoveryRelayUrls(),
-      ...owner.slice(0, 3),
+      ...owner,
     ])
   })
 })
@@ -1494,10 +1494,7 @@ describe("planInboxReadRelays", () => {
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
     })
 
-    expect(plan.relayUrls).toEqual([
-      "wss://relay.conduit.market",
-      "wss://relay.ditto.pub",
-    ])
+    expect(plan.relayUrls).toEqual(["wss://conduit-congee.fly.dev"])
   })
 
   it("unions declared and compatibility reads with sources", () => {
@@ -1710,10 +1707,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     })
 
     expect(selection.route).toBe("compatibility_order")
-    expect(selection.relayUrls).toEqual([
-      "wss://relay.conduit.market",
-      "wss://relay.ditto.pub",
-    ])
+    expect(selection.relayUrls).toEqual(["wss://conduit-congee.fly.dev"])
   })
 
   it("always prefers a valid declaration over compatibility", () => {

@@ -18,7 +18,7 @@ const OWNER = "a".repeat(64)
 const PERSONAL_RELAY = "wss://personal.example"
 const PERSONAL_ONLY_RELAY = "wss://personal-only.example"
 const REMOTE_PERSONAL_OVERLAP_RELAY = "wss://relay.nostr.band"
-const OVERLAP_RELAY = "wss://relay.ditto.pub"
+const OVERLAP_RELAY = "wss://conduit-congee.fly.dev"
 const DECLARED_INBOX = "wss://inbox.example"
 const REMOVED_APP_RELAY = "wss://relay.damus.io"
 

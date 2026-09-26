@@ -6265,7 +6265,7 @@ describe("commerce gateway", () => {
       sort: "newest",
     })
 
-    expect(deletionFetchCalls).toBe(12)
+    expect(deletionFetchCalls).toBe(6)
     expect(maxActiveDeletionFetches).toBeGreaterThan(1)
     expect(maxActiveDeletionFetches).toBeLessThanOrEqual(8)
     expect(result.data).toHaveLength(129)
