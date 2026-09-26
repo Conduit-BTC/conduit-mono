@@ -26,6 +26,7 @@ export function useSignerPairing(options: UseSignerPairingOptions): {
   }, [options])
   const ownedAttempt = useRef<object | null>(null)
   const ownedPromise = useRef<Promise<void> | null>(null)
+  const intentVersion = useRef(0)
   const prepareOnMount = useRef(
     options.autoPrepare &&
       !options.connectPending &&
@@ -38,6 +39,7 @@ export function useSignerPairing(options: UseSignerPairingOptions): {
   const begin = useCallback(
     async (connect = latest.current.onConnect): Promise<void> => {
       if (ownedAttempt.current) return
+      intentVersion.current += 1
       const attempt = {}
       ownedAttempt.current = attempt
       const promise = (async () => connect())()
@@ -65,6 +67,8 @@ export function useSignerPairing(options: UseSignerPairingOptions): {
   const start = useCallback(() => run(latest.current.onConnect), [run])
 
   const cancel = useCallback((): void => {
+    // Invalidate a browser-signer switch even after its pairing was canceled.
+    intentVersion.current += 1
     if (!ownedAttempt.current) return
     ownedAttempt.current = null
     // Invoke synchronously: a deferred generic cancel could abort a newer
@@ -76,9 +80,11 @@ export function useSignerPairing(options: UseSignerPairingOptions): {
     async (connect: () => Promise<void> | void): Promise<void> => {
       const previous = ownedPromise.current
       cancel()
+      const switchVersion = intentVersion.current
       // Wait for the canceled NIP-46 operation to release its auth lock before
       // asking a browser signer to connect.
       if (previous) await previous.catch(() => undefined)
+      if (switchVersion !== intentVersion.current) return
       await connect()
     },
     [cancel]

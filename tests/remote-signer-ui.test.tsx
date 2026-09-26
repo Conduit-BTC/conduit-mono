@@ -413,7 +413,8 @@ describe("remote signer UI", () => {
 
     expect(markup.includes("Cancel pairing")).toBe(true)
     expect(hasDisabledButton(markup, "Cancel pairing")).toBe(false)
-    expect(markup.includes('role="status"')).toBe(false)
+    expect(markup.includes('role="status"')).toBe(true)
+    expect(markup.includes("Ready. Open Clave to approve sign-in.")).toBe(true)
   })
 
   it("uses visible remote pairing labels with decorative icons", () => {

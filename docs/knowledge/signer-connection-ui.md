@@ -35,7 +35,9 @@ NIP-07 and NIP-46 connections.
 
 "Other ways to connect" keeps QR, copy, and bunker entry collapsed on mobile.
 The app choice handles preparation until its link is ready, with no extra setup
-button or repeated key-custody text. A pending reconnect label appears only
+button or repeated key-custody text. When preparation starts from the app button,
+the ready link says "Open Clave" or "Open Amber" and receives focus; its status
+is announced to assistive technology. A pending reconnect label appears only
 while restoration is active.
 QR and copied links carry the same client-initiated request; a bunker link starts
 from the signer.

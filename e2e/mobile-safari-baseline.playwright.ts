@@ -106,15 +106,17 @@ async function installInertMobilePairing(page: Page): Promise<void> {
   await page.routeWebSocket(/.*/, () => {})
   await page.addInitScript(() => {
     // Mask before the sign-in surface can automatically prepare a connection.
-    // Hidden controls retain their layout and stay out of failure snapshots.
+    // Mask connection values in snapshots while keeping app links focusable.
     const mask = document.createElement("style")
     mask.textContent = `
       [aria-label="Nostr Connect connection QR code"],
       [aria-label="Nostr Connect connection URL"],
-      a[href^="nostrconnect:"],
+      a[href^="nostrconnect:"] {
+        visibility: hidden !important;
+      }
       a[href^="intent://"],
       a[href^="https://clave.casa/connect/"] {
-        visibility: hidden !important;
+        opacity: 0 !important;
       }
     `
     const installMask = () => {
@@ -1319,6 +1321,22 @@ test.describe("CND-162 mobile browser baseline", () => {
           exact: true,
         })
       ).toBeEnabled()
+      await dialog
+        .getByRole("button", {
+          name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",
+          exact: true,
+        })
+        .tap()
+      const readyApp = dialog.getByRole("link", {
+        name: `Open ${primaryApp}`,
+        exact: true,
+        includeHidden: true,
+      })
+      await expect(readyApp).toHaveCount(1)
+      await expect(readyApp).toBeFocused()
+      await expect(dialog.getByRole("status")).toHaveText(
+        `Ready. Open ${primaryApp} to approve sign-in.`
+      )
       await closeButton.tap()
       await expect(dialog).not.toBeVisible()
 
