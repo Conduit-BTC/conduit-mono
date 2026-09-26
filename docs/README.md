@@ -49,6 +49,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### QA Runbooks
 
+- `docs/knowledge/checkout-with-conduit.md`: public V1 product/cart link format,
+  validation limits, relay hints, and checkout authority.
+
 - `docs/knowledge/event-catalog-progressive-loading.md`: progressive browsing,
   scoped query sharing, and the boundary between display and pickup authorization
 - `docs/knowledge/merchant-product-mutation-boundary.md`: owned-product editing

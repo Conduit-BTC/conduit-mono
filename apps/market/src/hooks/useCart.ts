@@ -22,6 +22,7 @@ import {
   decrementCartRepositoryItem,
   getCartRepositorySnapshot,
   incrementCartRepositoryItem,
+  installCheckoutIntentPurchase,
   refreshAndIncrementCartRepositoryItem,
   removeCartRepositoryItem,
   subscribeToCartRepository,
@@ -226,6 +227,7 @@ export function useCart() {
     hydrated: snap.hydrated,
     persistenceMode: snap.persistenceMode,
     mutationSequence: snap.mutationSequence,
+    revision: snap.revision,
     addItem,
     incrementItem,
     refreshAndIncrementItem,
@@ -236,5 +238,6 @@ export function useCart() {
     clearPurchase,
     capturePurchase: captureCartPurchase,
     consumePurchase: consumeCartPurchase,
+    installCheckoutIntentPurchase,
   }
 }
