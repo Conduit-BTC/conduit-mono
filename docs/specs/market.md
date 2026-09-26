@@ -4,7 +4,11 @@
 
 Conduit Market is the buyer-facing marketplace for discovering products, evaluating merchant trust context, managing a cart, placing orders, sending payments, and tracking buyer-merchant communication over Nostr-native protocols.
 
-This spec covers current Market scope.
+This spec describes the current Market behavior. The target for **new**
+payments after the universal checkout cutover is
+[`universal-checkout-router.md`](universal-checkout-router.md); the direct
+payment, manual merchant invoice, and public-zap paths below remain
+pre-cutover behavior, not router fallbacks.
 
 ## References
 
@@ -115,6 +119,12 @@ discovery policies can then order the prepared state without coupling the UI or
 the ranking policy to graph storage and synchronization.
 
 ### Checkout
+
+The steps below describe the current, pre-router checkout. After cutover, all
+eligible funding sources pay the same private, checkout-scoped Spark invoice;
+they do not pay a merchant or other recipient directly from Market. The
+router's evidence, recovery, and settlement gates are defined in
+[`universal-checkout-router.md`](universal-checkout-router.md).
 
 1. Review cart
 2. Enter or confirm shipping/contact details (validated for internal consistency before direct payment — see address validity below)
@@ -229,9 +239,18 @@ Market checkout should distinguish:
 - paid/processing/shipped/complete
 - failed, expired, disputed, or unverifiable payment state
 
-Fast checkout must remain explicitly gated. The fallback merchant payment-request path is a required baseline, not a deprecated edge case.
+For existing direct-payment orders, fast checkout remains explicitly gated and
+the merchant payment-request path remains supported. It is not a fallback for
+a **new router checkout** after cutover. The handling of a later
+merchant-issued payment request for a new router order is an open migration
+question in the router spec; historical orders retain their original flow.
 
 ### Public Zap Payment Option
+
+This option describes the pre-router direct-payment flow. The first universal
+router release does not issue a public zap request or claim a zap receipt for
+its private funding invoice or required payouts. Optional public display on a
+settled payout is separate later work.
 
 Checkout may offer a public zap payment option only when all product policy,
 pricing, shipping, merchant payment readiness, and buyer wallet gates pass.

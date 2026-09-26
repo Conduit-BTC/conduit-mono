@@ -3,6 +3,11 @@
 Durable buyer order tracking for Conduit Market (CND-122, consolidating the
 external-wallet fallback CND-120 and address-validity gates CND-127).
 
+The direct-payment state flow below describes existing orders and the current
+pre-router implementation. New payments after the universal router cutover
+must follow [`universal-checkout-router.md`](universal-checkout-router.md),
+while historical orders keep their original payment and fulfillment authority.
+
 ## Overview
 
 Checkout collects intent and **starts** an order; everything after an order
@@ -60,6 +65,13 @@ fixed cost.
 
 ## State flow
 
+The steps in this section are the current direct-payment flow. Router funding
+is only a receive into a temporary wallet, not proof that any merchant,
+supplier, organizer, or platform obligation settled. Orders and Merchant
+recovery must use the same frozen plan and stable outgoing IDs across refresh,
+browser suspension, and takeover. An ambiguous result pauses its exact leg;
+it must not issue a second payment or switch to a direct-recipient fallback.
+
 1. Every checkout mode publishes the encrypted order first, then calls
    `createOrderLifecycle(...)` with `orderDeliveryStatus: "sent"` and navigates
    to `/orders?order=<orderId>`. Anonymous public-zap preparation begins only
@@ -99,6 +111,12 @@ existence. A derived status label, stage display, or list marker is one possible
 presentation of that projection, not an additional lifecycle authority.
 
 ## Order flows and gates
+
+These are the existing direct-payment order flows. The first router release
+can be validated on a prepaid checkout, but merchant-issued `pay_later` or
+`payment_request` after creation of a new router order needs a defined route
+before that flow can be cut over. Historical orders retain their original
+payment authority.
 
 Two checkout flows are first-class and produce the same NIP-17 order messages
 (`order`, `payment_request`, `payment_proof`, `receipt`, `status_update`,
@@ -278,6 +296,10 @@ protocol non-goals (`docs/specs/protocol.md`). Therefore:
 - Guest recovery is same-tab and payment-only: it does not fetch merchant
   replies, expose a guest DM inbox, or retain the decrypted order/contact payload
   as durable buyer history.
+
+The guest's 24-hour Nostr order-signing-key window does not limit the exact
+merchant's separate checkout-scoped Spark wallet recovery authority. The
+encrypted machine-only recovery package is not an ordinary guest message.
 
 ## Address validity policy (CND-127)
 
