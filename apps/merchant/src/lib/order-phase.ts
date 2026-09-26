@@ -155,6 +155,10 @@ export interface MerchantOrderFulfillment {
 function getOrderItemFulfillmentMode(
   item: OrderSummary["items"][number]
 ): MerchantOrderFulfillmentMode {
+  // Future Event Market orders require their own signed handoff adapter.
+  // Until that adapter is present, never reinterpret their roster snapshot
+  // as a shipment or a legacy pickup option.
+  if (item.fulfillment?.type === "event_market_pickup") return "unknown"
   if (item.fulfillment) return item.fulfillment.type
   // The listing format is part of the signed order snapshot. Legacy digital
   // orders can therefore skip shipping; a legacy physical item cannot prove
@@ -193,7 +197,9 @@ export function getMerchantOrderFulfillment(
   items: OrderSummary["items"]
 ): MerchantOrderFulfillment {
   const hasPickupClaim = items.some(
-    (item) => item.fulfillment?.type === "pickup"
+    (item) =>
+      item.fulfillment?.type === "pickup" ||
+      item.fulfillment?.type === "event_market_pickup"
   )
   if (items.length === 0) {
     return {
@@ -209,7 +215,10 @@ export function getMerchantOrderFulfillment(
     itemModes.filter((mode) => mode !== "digital" && mode !== "unknown")
   )
   const invalidPickupFormat = items.some(
-    (item) => item.fulfillment?.type === "pickup" && item.format !== "physical"
+    (item) =>
+      (item.fulfillment?.type === "pickup" ||
+        item.fulfillment?.type === "event_market_pickup") &&
+      item.format !== "physical"
   )
   if (
     invalidPickupFormat ||

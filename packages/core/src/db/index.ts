@@ -107,6 +107,7 @@ export interface CachedProduct {
   shippingOptionLaunchUnsupported?: boolean
   shippingOptionRefs?: ProductShippingOptionReference[]
   collectionRefs?: string[]
+  eventMarketRefs?: string[]
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string
@@ -171,6 +172,27 @@ export interface CachedEventMarketEvidence {
   signedEvent: SignedPublicNostrEvent
   sourceRelayUrls: string[]
   cachedAt: number
+}
+
+/** Retained public revisions for the experimental merchant-roster contract. */
+export interface CachedEventMarketRosterEvidence {
+  id: string
+  marketCoordinate: string
+  signedEvent: SignedPublicNostrEvent
+  cachedAt: number
+}
+
+/** Exact, paired organizer signatures kept outside admitted relay evidence. */
+export interface EventMarketMerchantDecisionJob {
+  id: string
+  marketCoordinate: string
+  merchantPubkey: string
+  action: "approve" | "revoke"
+  roster: SignedPublicNostrEvent
+  authorization: SignedPublicNostrEvent
+  status: "pending" | "acknowledged"
+  createdAt: number
+  updatedAt: number
 }
 
 export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
@@ -1000,6 +1022,11 @@ class ConduitDB extends Dexie {
   >
   ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
   eventMarketEvidence!: EntityTable<CachedEventMarketEvidence, "id">
+  eventMarketRosterEvidence!: EntityTable<CachedEventMarketRosterEvidence, "id">
+  eventMarketMerchantDecisionJobs!: EntityTable<
+    EventMarketMerchantDecisionJob,
+    "id"
+  >
   wallets!: EntityTable<WalletDescriptor, "id">
   walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
   shoppingCarts!: EntityTable<StoredShoppingCart, "id">
@@ -1191,6 +1218,15 @@ class ConduitDB extends Dexie {
       // Shared, signer-independent shopper state. Market owns the opaque
       // payload while Core supplies one serialized cross-tab transaction lane.
       shoppingCarts: "id, updatedAt",
+    })
+
+    this.version(20).stores({
+      eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
+    })
+
+    this.version(21).stores({
+      eventMarketMerchantDecisionJobs:
+        "id, [marketCoordinate+merchantPubkey], status, createdAt",
     })
   }
 }

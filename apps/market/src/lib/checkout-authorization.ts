@@ -55,6 +55,15 @@ export async function authorizeCurrentCheckoutItems(input: {
   resolveProductFulfillment?: CheckoutProductFulfillmentResolver
   authorizePickupHandlers?: CheckoutPickupHandlerAuthorizer
 }): Promise<CheckoutAuthorizationResult> {
+  // Future Event Market payment stays disabled until its composed handoff path
+  // can recheck both organizer authorities at the payment boundary.
+  if (
+    [...input.rawItems, ...input.reviewedItems].some(
+      (item) => item.fulfillment?.type === "event_market_pickup"
+    )
+  ) {
+    return { status: "changed" }
+  }
   const fulfillmentResolutions = input.resolveProductFulfillment
     ? await Promise.all(
         input.refreshedProducts.map((product) =>

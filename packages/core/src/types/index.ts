@@ -56,6 +56,8 @@ export interface Product {
   shippingOptionRefs?: ProductShippingOptionReference[]
   /** Repeated kind-30405 collection references in signed tag order. */
   collectionRefs?: string[]
+  /** Repeated kind-30409 Event Market association references in signed tag order. */
+  eventMarketRefs?: string[]
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries?: string[]
   shippingCountryRules?: Array<{

@@ -472,6 +472,37 @@ describe("merchant product event delivery", () => {
     expect(product?.shippingOptionLaunchUnsupported).toBe(false)
   })
 
+  it("preserves signed Event Market references through the product cache", async () => {
+    const dTag = "cached-event-market-reference"
+    const marketReference = `30409:${"b".repeat(64)}:future-fair`
+    const draft = buildProductListingEventDraft({
+      product: {
+        ...makeProduct(dTag),
+        eventMarketRefs: [marketReference],
+      },
+      dTag,
+    })
+    const event = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: draft.kind,
+          created_at: Math.floor(NOW / 1000),
+          content: draft.content,
+          tags: draft.tags,
+        },
+        MERCHANT_SECRET
+      )
+    )
+    await cacheSignedProductListingEvent(event)
+    expect(cachedProducts[0]?.eventMarketRefs).toEqual([marketReference])
+    const product = await readProductAfterCacheReload(
+      structuredClone(cachedProducts),
+      dTag
+    )
+    expect(product?.eventMarketRefs).toEqual([marketReference])
+  })
+
   it("fails legacy or malformed referenced cache rows closed", async () => {
     const dTag = "cached-ambiguous-shipping-reference"
     const event = makeSignedProductEventWithShippingTags({

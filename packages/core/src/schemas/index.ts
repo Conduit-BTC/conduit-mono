@@ -1,5 +1,8 @@
 import { z } from "zod"
 import { normalizePublicMediaUrl } from "../network-target-safety"
+import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
+import { projectSignedProductPreviewEvidence } from "../protocol/product-event-evidence"
+import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 
 const publicMediaUrlSchema = z
   .string()
@@ -100,6 +103,8 @@ export const productSchema = z.object({
   shippingOptionRefs: z.array(productShippingOptionReferenceSchema).optional(),
   /** Every kind-30405 collection request/reference, in first-seen order. */
   collectionRefs: z.array(z.string()).optional(),
+  /** Experimental kind-30409 Event Market associations, in signed order. */
+  eventMarketRefs: z.array(z.string()).optional(),
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries: z.array(z.string()).optional(),
   shippingCountryRules: z
@@ -347,10 +352,313 @@ export const orderPickupFulfillmentSchema = z
     }
   })
 
+const signedEventMarketEvidenceSchema = z
+  .object({
+    id: hex64Schema,
+    pubkey: hex64Schema,
+    created_at: z.number().int().min(0),
+    kind: z.number().int().min(0),
+    tags: z.array(z.array(z.string()).min(1)),
+    content: z.string(),
+    sig: z.string().regex(/^[0-9a-f]{128}$/i),
+  })
+  .refine(isValidSignedPublicNostrEvent, "Signed evidence must be valid.")
+
+type SignedEventMarketEvidence = z.infer<typeof signedEventMarketEvidenceSchema>
+
+function signedSnapshotCoordinateMatches(
+  event: SignedEventMarketEvidence,
+  snapshot: PickupEvidenceCoordinateSchema,
+  kinds: readonly number[],
+  author: string
+): boolean {
+  const dTags = event.tags.filter((tag) => tag[0] === "d")
+  return (
+    kinds.includes(event.kind) &&
+    event.pubkey === author &&
+    dTags.length === 1 &&
+    dTags[0]?.length === 2 &&
+    `${event.kind}:${event.pubkey}:${dTags[0][1]}` === snapshot.coordinate &&
+    event.id === snapshot.eventId &&
+    event.created_at * 1_000 === snapshot.createdAt
+  )
+}
+
+function signedCalendarTimes(
+  event: SignedEventMarketEvidence
+): { start: number; end: number } | null {
+  const startTags = event.tags.filter((tag) => tag[0] === "start")
+  const endTags = event.tags.filter((tag) => tag[0] === "end")
+  if (
+    startTags.length !== 1 ||
+    startTags[0]?.length !== 2 ||
+    endTags.length > 1 ||
+    (endTags.length === 1 && endTags[0]?.length !== 2)
+  )
+    return null
+  const startValue = startTags[0]?.[1]
+  const endValue = endTags[0]?.[1]
+  if (event.kind === 31922) {
+    const parseDate = (value: string | undefined): number | null => {
+      if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+      const timestamp = Date.parse(`${value}T00:00:00.000Z`)
+      return Number.isFinite(timestamp) &&
+        new Date(timestamp).toISOString().slice(0, 10) === value
+        ? timestamp
+        : null
+    }
+    const start = parseDate(startValue)
+    const end = endValue === undefined ? null : parseDate(endValue)
+    return start !== null &&
+      (endValue === undefined || (end !== null && end > start))
+      ? { start, end: end ?? start + 86_400_000 }
+      : null
+  }
+  if (event.kind !== 31923) return null
+  const parseTime = (value: string | undefined): number | null => {
+    if (!value || !/^[1-9]\d*$/.test(value)) return null
+    const seconds = Number(value)
+    const milliseconds = seconds * 1_000
+    return Number.isSafeInteger(seconds) &&
+      Number.isSafeInteger(milliseconds) &&
+      Number.isFinite(new Date(milliseconds).getTime())
+      ? milliseconds
+      : null
+  }
+  const start = parseTime(startValue)
+  const end = endValue === undefined ? null : parseTime(endValue)
+  return start !== null &&
+    (endValue === undefined || (end !== null && end > start))
+    ? { start, end: end ?? start }
+    : null
+}
+
+/** Future Event Market snapshot freezes both roster and causal grant evidence. */
+export const orderEventMarketPickupFulfillmentSchema = z
+  .object({
+    type: z.literal("event_market_pickup"),
+    organizerPubkey: hex64Schema,
+    merchantPubkey: hex64Schema,
+    payeePubkey: hex64Schema,
+    market: pickupEvidenceCoordinateSchema.extend({
+      signedEvent: signedEventMarketEvidenceSchema,
+    }),
+    calendar: pickupEvidenceCoordinateSchema.extend({
+      start: z.number().int().min(0),
+      end: z.number().int().min(0),
+      signedEvent: signedEventMarketEvidenceSchema,
+    }),
+    product: pickupEvidenceCoordinateSchema.extend({
+      signedEvent: signedEventMarketEvidenceSchema,
+    }),
+    authorization: z.object({
+      tip: signedEventMarketEvidenceSchema,
+      ancestry: z.array(signedEventMarketEvidenceSchema),
+      deletions: z.array(signedEventMarketEvidenceSchema),
+    }),
+    mode: z.enum(["merchant_present", "organizer_handoff"]),
+    assignment: z.string().min(1).max(120),
+  })
+  .superRefine((fulfillment, context) => {
+    const kind = (coordinate: string) => Number(coordinate.split(":", 1)[0])
+    const author = (coordinate: string) =>
+      coordinate.split(":", 3)[1]?.toLowerCase()
+    const organizer = fulfillment.organizerPubkey.toLowerCase()
+    const merchant = fulfillment.merchantPubkey.toLowerCase()
+    if (
+      kind(fulfillment.market.coordinate) !== 30409 ||
+      author(fulfillment.market.coordinate) !== organizer
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["market"],
+        message: "Market must be organizer-authored kind 30409.",
+      })
+    }
+    if (
+      ![31922, 31923].includes(kind(fulfillment.calendar.coordinate)) ||
+      author(fulfillment.calendar.coordinate) !== organizer
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["calendar"],
+        message: "Calendar must be organizer-authored NIP-52.",
+      })
+    }
+    if (
+      kind(fulfillment.product.coordinate) !== 30402 ||
+      author(fulfillment.product.coordinate) !== merchant
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["product"],
+        message: "Product must be merchant-authored kind 30402.",
+      })
+    }
+    if (fulfillment.payeePubkey.toLowerCase() !== merchant) {
+      context.addIssue({
+        code: "custom",
+        path: ["payeePubkey"],
+        message: "The merchant remains the payee.",
+      })
+    }
+    if (fulfillment.calendar.end < fulfillment.calendar.start) {
+      context.addIssue({
+        code: "custom",
+        path: ["calendar", "end"],
+        message: "Calendar end must follow start.",
+      })
+    }
+    const signedMarket = fulfillment.market.signedEvent
+    const signedCalendar = fulfillment.calendar.signedEvent
+    const signedProduct = fulfillment.product.signedEvent
+    if (
+      !signedSnapshotCoordinateMatches(
+        signedMarket,
+        fulfillment.market,
+        [30409],
+        organizer
+      ) ||
+      signedMarket.content !== "" ||
+      JSON.stringify(signedMarket.tags.filter((tag) => tag[0] === "a")) !==
+        JSON.stringify([["a", fulfillment.calendar.coordinate]]) ||
+      JSON.stringify(
+        signedMarket.tags.filter((tag) => tag[0] === "event_market")
+      ) !== JSON.stringify([["event_market", "2", "open"]]) ||
+      JSON.stringify(
+        signedMarket.tags.filter(
+          (tag) => tag[0] === "merchant" && tag[1] === merchant
+        )
+      ) !==
+        JSON.stringify([
+          ["merchant", merchant, fulfillment.mode, fulfillment.assignment],
+        ])
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["market"],
+        message: "Market terms must match the exact signed organizer roster.",
+      })
+    }
+    const calendarTimes = signedCalendarTimes(signedCalendar)
+    if (
+      !signedSnapshotCoordinateMatches(
+        signedCalendar,
+        fulfillment.calendar,
+        [31922, 31923],
+        organizer
+      ) ||
+      !calendarTimes ||
+      calendarTimes.start !== fulfillment.calendar.start ||
+      calendarTimes.end !== fulfillment.calendar.end
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["calendar"],
+        message: "Calendar dates must match the exact signed event.",
+      })
+    }
+    if (
+      !signedSnapshotCoordinateMatches(
+        signedProduct,
+        fulfillment.product,
+        [30402],
+        merchant
+      ) ||
+      signedProduct.tags.filter(
+        (tag) =>
+          tag[0] === "a" &&
+          tag[1] === fulfillment.market.coordinate &&
+          tag.length === 2
+      ).length !== 1 ||
+      signedProduct.tags.some(
+        (tag) =>
+          tag[0] === "visibility" &&
+          ["hidden", "private"].includes(tag[1]?.toLowerCase() ?? "")
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["product"],
+        message: "Product must match the exact signed merchant listing.",
+      })
+    }
+    const authorization = fulfillment.authorization
+    const expectedScope = fulfillment.market.coordinate
+    const expectedMerchant = fulfillment.merchantPubkey.toLowerCase()
+    const ancestryIds = new Set(authorization.ancestry.map((event) => event.id))
+    const singleton = (
+      event: z.infer<typeof signedEventMarketEvidenceSchema>,
+      name: string
+    ) => event.tags.filter((tag) => tag[0] === name)
+    const tip = authorization.tip
+    if (
+      tip.kind !== 3841 ||
+      tip.pubkey.toLowerCase() !== organizer ||
+      tip.content !== "" ||
+      JSON.stringify(singleton(tip, "openmarkets")) !==
+        JSON.stringify([["openmarkets", "event-market-auth", "1"]]) ||
+      JSON.stringify(singleton(tip, "a")) !==
+        JSON.stringify([["a", expectedScope]]) ||
+      JSON.stringify(singleton(tip, "p")) !==
+        JSON.stringify([["p", expectedMerchant]]) ||
+      JSON.stringify(singleton(tip, "state")) !==
+        JSON.stringify([["state", "active"]]) ||
+      singleton(tip, "seq").length !== 1 ||
+      !/^(0|[1-9][0-9]*)$/.test(singleton(tip, "seq")[0]?.[1] ?? "") ||
+      !authorization.ancestry.some((event) => event.id === tip.id)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization", "tip"],
+        message: "Authorization tip must be the signed active organizer grant.",
+      })
+    }
+    if (
+      authorization.ancestry.some(
+        (event) =>
+          event.kind !== 3841 ||
+          event.pubkey.toLowerCase() !== organizer ||
+          JSON.stringify(singleton(event, "a")) !==
+            JSON.stringify([["a", expectedScope]]) ||
+          JSON.stringify(singleton(event, "p")) !==
+            JSON.stringify([["p", expectedMerchant]])
+      ) ||
+      authorization.deletions.some(
+        (event) =>
+          event.kind !== 5 ||
+          event.pubkey.toLowerCase() !== organizer ||
+          !event.tags.some(
+            (tag) => tag[0] === "e" && ancestryIds.has(tag[1] ?? "")
+          )
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization"],
+        message: "Authorization history must be organizer-signed.",
+      })
+    }
+    const causal = resolveEventMarketAuthorization({
+      marketCoordinate: expectedScope,
+      merchantPubkey: expectedMerchant,
+      transitions: authorization.ancestry,
+      deletions: authorization.deletions,
+    })
+    if (causal.state !== "active" || causal.tip.eventId !== tip.id) {
+      context.addIssue({
+        code: "custom",
+        path: ["authorization"],
+        message: "Authorization history must validate to the accepted grant.",
+      })
+    }
+  })
+
 export const orderItemFulfillmentSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("digital") }),
   z.object({ type: z.literal("shipping") }),
   orderPickupFulfillmentSchema,
+  orderEventMarketPickupFulfillmentSchema,
 ])
 
 export type PickupEvidenceCoordinateSchema = z.infer<
@@ -358,6 +666,9 @@ export type PickupEvidenceCoordinateSchema = z.infer<
 >
 export type OrderPickupFulfillmentSchema = z.infer<
   typeof orderPickupFulfillmentSchema
+>
+export type OrderEventMarketPickupFulfillmentSchema = z.infer<
+  typeof orderEventMarketPickupFulfillmentSchema
 >
 export type OrderItemFulfillmentSchema = z.infer<
   typeof orderItemFulfillmentSchema
@@ -449,6 +760,23 @@ function hasSamePickupEvidenceRevision(
     leftCoordinate === rightCoordinate &&
     left.eventId.toLowerCase() === right.eventId.toLowerCase() &&
     left.createdAt === right.createdAt
+  )
+}
+
+function hasSameSignedEvidenceIds(
+  left: readonly { id: string }[],
+  right: readonly { id: string }[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left
+      .map((event) => event.id)
+      .sort()
+      .join(":") ===
+      right
+        .map((event) => event.id)
+        .sort()
+        .join(":")
   )
 }
 
@@ -544,6 +872,55 @@ export const orderItemSchema = z
         message: "Fulfillment type must match the signed product format.",
       })
     }
+    if (item.fulfillment.type === "event_market_pickup") {
+      if (item.fulfillment.product.coordinate !== item.productId) {
+        context.addIssue({
+          code: "custom",
+          path: ["fulfillment", "product", "coordinate"],
+          message:
+            "Event Market product evidence must match the ordered product.",
+        })
+      }
+      const signedTerms = projectSignedProductPreviewEvidence(
+        item.fulfillment.product.signedEvent
+      )
+      if (
+        !signedTerms ||
+        signedTerms.priceStatus !== "resolved" ||
+        signedTerms.format !== "physical" ||
+        (item.title !== undefined && item.title !== signedTerms.title) ||
+        !item.sourcePrice ||
+        item.sourcePrice.amount !== signedTerms.sourcePrice?.amount ||
+        item.sourcePrice.currency !== signedTerms.sourcePrice.currency ||
+        item.sourcePrice.normalizedCurrency !==
+          signedTerms.sourcePrice.normalizedCurrency ||
+        (signedTerms.currency === "SATS" &&
+          (item.currency !== "SATS" ||
+            item.priceAtPurchase !== signedTerms.price))
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["fulfillment", "product"],
+          message: "Order terms must match the signed product revision.",
+        })
+      }
+      if (
+        item.shippingOptionId ||
+        item.shippingOptionDTag ||
+        (item.shippingCostSats ?? 0) !== 0 ||
+        item.sourceShippingCost !== undefined ||
+        item.shippingCountries !== undefined ||
+        item.shippingCountryRules !== undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["shippingOptionId"],
+          message:
+            "Event Market pickup has no separate buyer fee or pickup option.",
+        })
+      }
+      return
+    }
     if (item.fulfillment.type !== "pickup") return
     if (item.fulfillment.product.coordinate !== item.productId) {
       context.addIssue({
@@ -624,8 +1001,15 @@ export const orderSchema = z
       (item) => item.fulfillment?.type === "pickup"
     )?.fulfillment
     const hasPickup = firstPickup?.type === "pickup"
+    const firstEventMarketPickup = order.items.find(
+      (item) => item.fulfillment?.type === "event_market_pickup"
+    )?.fulfillment
+    const hasEventMarketPickup =
+      firstEventMarketPickup?.type === "event_market_pickup"
     const pickupOnly = order.items.every(
-      (item) => item.fulfillment?.type === "pickup"
+      (item) =>
+        item.fulfillment?.type === "pickup" ||
+        item.fulfillment?.type === "event_market_pickup"
     )
     const hasShipping = order.items.some(
       (item) =>
@@ -644,6 +1028,59 @@ export const orderSchema = z
           message: "Pickup product evidence must belong to the order merchant.",
         })
       }
+      if (item.fulfillment?.type === "event_market_pickup") {
+        if (
+          item.fulfillment.merchantPubkey.toLowerCase() !==
+            order.merchantPubkey.toLowerCase() ||
+          item.fulfillment.payeePubkey.toLowerCase() !==
+            order.merchantPubkey.toLowerCase()
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["items", index, "fulfillment", "merchantPubkey"],
+            message:
+              "Event Market merchant and payee must match the order recipient.",
+          })
+        }
+        if (
+          firstEventMarketPickup?.type === "event_market_pickup" &&
+          (item.fulfillment.market.coordinate !==
+            firstEventMarketPickup.market.coordinate ||
+            item.fulfillment.market.eventId !==
+              firstEventMarketPickup.market.eventId ||
+            item.fulfillment.calendar.coordinate !==
+              firstEventMarketPickup.calendar.coordinate ||
+            item.fulfillment.calendar.eventId !==
+              firstEventMarketPickup.calendar.eventId ||
+            item.fulfillment.calendar.start !==
+              firstEventMarketPickup.calendar.start ||
+            item.fulfillment.calendar.end !==
+              firstEventMarketPickup.calendar.end ||
+            item.fulfillment.merchantPubkey !==
+              firstEventMarketPickup.merchantPubkey ||
+            item.fulfillment.payeePubkey !==
+              firstEventMarketPickup.payeePubkey ||
+            item.fulfillment.mode !== firstEventMarketPickup.mode ||
+            item.fulfillment.assignment !== firstEventMarketPickup.assignment ||
+            item.fulfillment.authorization.tip.id !==
+              firstEventMarketPickup.authorization.tip.id ||
+            !hasSameSignedEvidenceIds(
+              item.fulfillment.authorization.ancestry,
+              firstEventMarketPickup.authorization.ancestry
+            ) ||
+            !hasSameSignedEvidenceIds(
+              item.fulfillment.authorization.deletions,
+              firstEventMarketPickup.authorization.deletions
+            ))
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["items", index, "fulfillment"],
+            message:
+              "Event Market items must share one accepted market and assignment.",
+          })
+        }
+      }
       if (
         firstPickup?.type === "pickup" &&
         item.fulfillment?.type === "pickup" &&
@@ -657,18 +1094,39 @@ export const orderSchema = z
         })
       }
     }
-    if (hasPickup && hasShipping) {
+    if ((hasPickup || hasEventMarketPickup) && hasShipping) {
       context.addIssue({
         code: "custom",
         path: ["items"],
         message: "Pickup and shipped items require separate orders.",
       })
     }
-    if (hasPickup && order.shippingAddress) {
+    if ((hasPickup || hasEventMarketPickup) && order.shippingAddress) {
       context.addIssue({
         code: "custom",
         path: ["shippingAddress"],
         message: "Pickup orders must not include a delivery address.",
+      })
+    }
+    if (hasEventMarketPickup && hasPickup) {
+      context.addIssue({
+        code: "custom",
+        path: ["items"],
+        message:
+          "Legacy and future Event Market pickup require separate orders.",
+      })
+    }
+    if (
+      hasEventMarketPickup &&
+      ((order.shippingCostSats ?? 0) !== 0 ||
+        (order.shippingCostStatus !== undefined &&
+          order.shippingCostStatus !== "not_required" &&
+          order.shippingCostStatus !== "included"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["shippingCostSats"],
+        message: "Event Market pickup has no separate order shipping charge.",
       })
     }
     if (order.buyerIdentityKind === "guest_ephemeral" && !order.guestContact) {

@@ -57,6 +57,12 @@ export const EVENT_KINDS = {
   /** Shipping option for a product */
   SHIPPING_OPTION: 30406,
 
+  /** Experimental Open Markets: organizer-signed Event Market roster */
+  EVENT_MARKET: 30409,
+
+  /** Experimental Open Markets: immutable Event Market merchant authorization */
+  EVENT_MARKET_AUTH: 3841,
+
   /** NIP-52: Date-based calendar event (addressable) */
   CALENDAR_DATE: 31922,
 

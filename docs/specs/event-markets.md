@@ -1,13 +1,60 @@
 # Event Markets And Local Pickup
 
-**Status:** implementation contract
+**Status:** future-event implementation contract, not yet enabled. The kind `30409` contract below applies to future Event Markets. The current live event and its existing orders retain the legacy `30405`/`30406` contract described in the compatibility section. No automatic migration or dual authority is implied.
 
-This contract defines organizer-authored event catalogs and fixed-location
-pickup across `@conduit/core`, Market, and Merchant. It uses existing Nostr and
-Open Markets event kinds. It does not create a Conduit event kind, registry, or
-location tag.
+## Future Event Market contract
 
-## Public sources
+### Public wire and authority
+
+Future events use the experimental [Open Markets Event Market proposal](https://github.com/OpenMarketsFoundation/specification/pull/15). The organizer signs a dedicated addressable kind `30409` record, `30409:<organizer>:<market-d>`, that links exactly one same-author NIP-52 `31922` or `31923` calendar coordinate. Its required tags are one `d`, one calendar `a`, and `event_market` with version `2` and `open` or `closed`. Its replaceable revisions contain zero to 128 unique `merchant` rows:
+
+```text
+["d", "fair-2027-market"]
+["a", "31923:<organizer>:fair-2027"]
+["event_market", "2", "open"]
+["merchant", "<merchant-1>", "merchant_present", "Booth 12"]
+["merchant", "<merchant-2>", "organizer_handoff", "North pickup desk"]
+["prev", "<prior-signed-market-event-id>"]  // later revisions
+```
+
+The organizer sets and may later edit each merchant's sole mode and public assignment. A duplicate or conflicting merchant row is invalid. The organizer's signed market state controls new commerce; calendar dates describe the event schedule. The `prev` tag identifies the signed parent used for an update; initial revisions have no parent. A writer checks the strongest known revision before editing, preserves unaffected rows, and surfaces known divergent ancestry. A missing intermediate revision alone does not prove a fork. NIP-01 replacement is deterministic but not a global compare-and-swap. An unsupported, malformed, deleted, or version-1 current revision cannot fall back to an older roster for admission.
+
+Kind `3841` is a regular immutable organizer-signed authorization transition scoped to `(market coordinate, merchant pubkey)`. Its content is empty and its profile tags are:
+
+```text
+["openmarkets", "event-market-auth", "1"]
+["a", "30409:<organizer>:<market-d>"]
+["p", "<merchant-pubkey>"]
+["state", "active|revoked"]
+["seq", "<canonical-nonnegative-decimal>"]
+["auth_parent", "<signed-transition-id>"]  // zero on a root, one to eight otherwise
+["repair", "<deletion-id>", "<deleted-transition-id>"]  // only on repair
+["alt", "Open Markets event merchant authorization"]
+```
+
+The profile marker, scope, state, sequence, and `alt` are singletons. A root has sequence zero; a descendant has `1 + max(parent sequence)`. Validate each signed parent payload against the same scope and recompute the sequence. Exactly one observed active tip with validated ancestry permits the grant gate. A revoked tip denies it. Incomparable observed tips conflict even when their states match; reconciliation descends from every observed tip. An intentional regrant descends from the revoke. Missing parents and relevant observed NIP-09 deletions block new commerce. A deletion of a revoke never revives an earlier grant. A repair names the exact deletion and target and retains the signed affected ancestry. These judgments are relative to observed signed evidence, not proof of globally complete history.
+
+Merchant enrollment is a merchant-level authenticated request or organizer invitation; neither grants admission. Approval requires both a current roster row with mode and assignment and a causal active grant. Revocation signs a descendant revoke and removes the row. These are separate relay events, so the writer retains exact signed bytes for safe retries and either interrupted state denies admission. Mode or assignment edits need only a roster revision. Reapproval warns that all still-valid, still-tagged products become eligible again. A merchant's kind `30402` product references the market with `["a", "30409:<organizer>:<market-d>"]`. It carries no independent event pickup, booth, handler, or fee. Merchant product publication, edits, untagging, visibility, price, inventory, and payment destination remain under the merchant's signature. No organizer product acceptance occurs. Version-1 markets never imply grants.
+
+### Market and checkout behavior
+
+Read the known organizer-signed market record, its calendar, and each merchant's causal authorization before candidate discovery. Discover organizer evidence through the best observed NIP-65 write relays, supplemented by hints and fallbacks. Derive the finite roster author set, then query kind `30402` by those authors and the exact market `#a` tag. Filters yield candidates only. Before showing an event product, including a direct product link, resolve the current signed product revision and applicable NIP-09 deletion evidence; verify merchant author, market tag, visibility, valid product terms, current roster row, and active authorization tip. A newer untagged or deleted revision supersedes an older tagged product. Retain stronger known signed market, authorization, and product evidence when relays return stale or partial data. Relay silence, EOSE, and `OK` cannot prove complete history; no kind `3840` checkpoint or relay quorum is required. Surface incomplete evidence instead of treating it as proof of admission or removal.
+
+An unpaid cart resolves current open market, calendar, merchant row, active validated authorization tip, product, and payment terms again before payment. Its participation identity is market coordinate plus merchant pubkey. Compatible products from that merchant at the same market form one purchase; a roster revision or booth rename alone does not split it. A material mode, assignment, calendar date, product, price, or payee change requires buyer review before payment. There is no separate buyer event-pickup fee; event costs belong in merchant prices, and the merchant remains payee.
+
+Created and paid orders retain the exact market revision, merchant row, observed authorization tip, required signed ancestry and relevant deletion evidence, calendar and product revisions, payee, and accepted terms. A later roster edit does not reinterpret an order. Material handoff changes to an existing order require an explicit authorized per-order update or transfer and buyer notice. Organizer handoff grants physical release duties only under the merchant's private order-specific authority. Private ready receipts, release, delivery, and recovery remain content-minimal and encrypted; the organizer does not gain the full merchant order or merchant payment authority.
+
+### Compatibility and validation
+
+New kind `30409` records do not reinterpret old kind `30405` product collections or per-product kind `30406` event pickups. Retain named legacy readers for the live event and historical orders. Do not derive future participation from previous products, republish all products for a roster edit, or change the live event as a prerequisite.
+
+Future-event validation covers unapproved product spam, automatic admission for approved merchants, product revision/untag/deletion, organizer mode and assignment edits, revocation and reapproval, stale and divergent relays, stale organizer edits, direct links, compatible cart grouping, buyer review, historical order continuity, and composed Market/Merchant browser journeys. Local tests do not establish live-relay convergence or physical handoff.
+
+## Legacy collection and pickup contract
+
+The following contract remains the compatibility path for existing event catalogs and orders. Its `30405` product acceptance and `30406` event pickup records do not grant authority to the future kind `30409` path.
+
+## Legacy Public sources
 
 - NIP-01 addressable events and deterministic replacement
 - NIP-09 author-scoped deletion requests
@@ -24,13 +71,12 @@ proposal for shipped orders. Event pickup does not emit or interpret its
 `destination_schema` or `destination` tags. A pickup has a fixed public handoff
 location; it is not selected by matching a buyer delivery address.
 
-The event-backed collection semantics below are a backwards-compatible
-extension proposed upstream in
-`docs/knowledge/open-markets-event-commerce-proposal.md`. Until accepted, Core
-must keep them behind explicit event-market parsing/building helpers and must
-not claim that unrelated clients implement the extension.
+The event-backed collection semantics below are retained for existing Conduit
+events and orders. They predate the experimental kind `30409` proposal in Open
+Markets PR #15. Core keeps them behind explicit legacy parsing and building
+helpers and does not claim that unrelated clients implement the extension.
 
-## Goals
+## Legacy Goals
 
 - Let an organizer publish and update an event catalog with an external signer.
 - Preserve organizer, event, collection, pickup, merchant, and product identity.
@@ -47,7 +93,7 @@ not claim that unrelated clients implement the extension.
 - Represent partial, unavailable, stale, malformed, conflicting, and deleted
   relay evidence honestly.
 
-## Non-goals
+## Legacy Non-goals
 
 - Global event search or a centralized event registry
 - Reputation inferred only from cryptographic authorship
@@ -62,7 +108,7 @@ not claim that unrelated clients implement the extension.
 Core parsing must nevertheless preserve repeated collection and
 `shipping_option` references.
 
-## Presentation and operational state
+## Legacy Presentation and operational state
 
 Requirements to resolve, retain, validate, or expose event-market state do not
 by themselves require a dedicated shopper-facing warning, card, or disclosure.
@@ -80,7 +126,7 @@ This presentation boundary does not relax signed authority, exact revision and
 fulfillment validation, fail-closed payment or handoff gates, durable retry,
 receipt privacy, or merchant and organizer operational observability.
 
-## Identity and coordinates
+## Legacy Identity and coordinates
 
 Every record is identified by its full addressable coordinate:
 
@@ -114,7 +160,7 @@ This is derived signed evidence, not a Conduit-owned booth record. A booth is a
 UI projection of the event collection, merchant identity, accepted products,
 and their selected handoff mode.
 
-## Wire contract
+## Legacy Wire contract
 
 ### Calendar event (`31922` or `31923`)
 
@@ -283,7 +329,7 @@ events. Sending or delivering a revocation is likewise not proof that the
 organizer observed it before physical handoff, so merchant takeover still
 requires direct coordination.
 
-## Evidence and resolution
+## Legacy Evidence and resolution
 
 All consequential resolution validates event id, signature, kind, full
 coordinate, required tags, and author relationships before using data.
@@ -324,7 +370,7 @@ conflicting, unsupported, unavailable, or stale required evidence blocks direct
 payment. Order-first is available only when the remaining order can be
 represented safely.
 
-## Publishing and updates
+## Legacy Publishing and updates
 
 Organizer publishing uses the connected external signer. Core signs and
 publishes each immutable revision through shared relay planning and returns
@@ -364,7 +410,7 @@ absence. Process-local continuation and retry improve discovery. Restart-
 durable, convergent deep pagination remains separate follow-up work and is not
 an organizer-authority requirement.
 
-## Product workflows
+## Legacy Product workflows
 
 The initial product fulfillment selector has three intents: Digital, Ship, and
 Local pickup. Local pickup can import a collection `naddr`, select bounded
@@ -391,7 +437,7 @@ when both sides reference the exact coordinates and organizer authorship
 validates. Closed and legacy ended events are not offered as presets. Explicitly
 open events remain selectable beyond their advertised end time.
 
-## Catalog and discovery
+## Legacy Catalog and discovery
 
 The canonical catalog URL encodes the organizer collection `naddr`. Friendly
 aliases may redirect to it but are not metadata or membership authority.
@@ -412,7 +458,7 @@ Discovery is bounded to imported coordinates and organizer pubkeys already
 known through an explicit user, follow, or deployment-curated decision. Core
 does not globally ingest self-described events as trusted catalogs.
 
-## Checkout and order lifecycle
+## Legacy Checkout and order lifecycle
 
 Pickup checkout:
 
@@ -455,7 +501,7 @@ fresh payment retries remain new-purchase actions; a local order id does not
 grant permission to bypass closure. Existing merchant invoice authority and
 ambiguous-payment reconciliation retain their independent safeguards.
 
-## Required validation
+## Legacy Required validation
 
 - An organizer can publish an empty event collection with or without an
   organizer pickup offer, using an external signer and durable exact retry.
@@ -494,7 +540,7 @@ ambiguous-payment reconciliation retain their independent safeguards.
 - Ordinary shipping, digital products, legacy single-recipient orders, and
   non-event Gamma collections keep their prior behavior.
 
-## Privacy and diagnostics
+## Legacy Privacy and diagnostics
 
 Public events may contain only intentional public event and handoff details.
 Buyer contact remains inside the encrypted buyer-to-merchant order path and is

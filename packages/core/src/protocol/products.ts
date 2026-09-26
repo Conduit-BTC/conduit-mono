@@ -322,6 +322,17 @@ export function buildProductListingEventDraft({
     }
     tags.push(["a", coordinate.coordinate])
   }
+  for (const marketRef of uniqueNonEmptyStrings(
+    product.eventMarketRefs ?? []
+  )) {
+    const coordinate = parseAddressableCoordinate(marketRef, [
+      EVENT_KINDS.EVENT_MARKET,
+    ])
+    if (!coordinate) {
+      throw new Error("Event Market coordinate is invalid")
+    }
+    tags.push(["a", coordinate.coordinate])
+  }
   tags.push(...buildShippingOptionTags(product, priceCurrency))
   for (const image of getProductProtocolImages(product)) {
     tags.push(["image", image.url])
@@ -633,6 +644,14 @@ function parseProductCollectionRefs(tags: string[][] | undefined): string[] {
   )
 }
 
+function parseProductEventMarketRefs(tags: string[][] | undefined): string[] {
+  return uniqueNonEmptyStrings(
+    (tags ?? [])
+      .filter((tag) => tag[0] === "a" && tag[1]?.startsWith("30409:"))
+      .map((tag) => tag[1]!)
+  )
+}
+
 function parseProductShippingTags(
   tags: string[][] | undefined,
   productCurrency: string | undefined
@@ -659,6 +678,7 @@ function parseProductShippingTags(
       : {}),
     canonicalShippingResolved: false,
     collectionRefs: parseProductCollectionRefs(tags),
+    eventMarketRefs: parseProductEventMarketRefs(tags),
   }
 }
 
