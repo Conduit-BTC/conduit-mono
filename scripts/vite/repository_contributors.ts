@@ -23,7 +23,7 @@ export interface RepositoryContributor {
 }
 
 export interface RepositoryContributorSnapshot {
-  status: "available" | "unavailable"
+  status: "available" | "stale" | "unavailable"
   methodology: typeof REPOSITORY_ACTIVITY_METHODOLOGY
   generatedAt: string | null
   sourceRevision: string | null
@@ -492,18 +492,16 @@ function normalizeGeneratedSnapshot(
   }
 }
 
-function isFreshSnapshot(
+function snapshotFreshness(
   snapshot: RepositoryContributorSnapshot,
   now: Date
-): boolean {
-  if (!snapshot.generatedAt) return false
+): "available" | "stale" | null {
+  if (!snapshot.generatedAt) return null
   const generatedAt = new Date(snapshot.generatedAt).getTime()
-  if (!Number.isFinite(generatedAt)) return false
+  if (!Number.isFinite(generatedAt)) return null
   const age = now.getTime() - generatedAt
-  return (
-    age >= -GENERATED_SNAPSHOT_FUTURE_TOLERANCE_MS &&
-    age <= GENERATED_SNAPSHOT_MAX_AGE_MS
-  )
+  if (age < -GENERATED_SNAPSHOT_FUTURE_TOLERANCE_MS) return null
+  return age <= GENERATED_SNAPSHOT_MAX_AGE_MS ? "available" : "stale"
 }
 
 function unavailableSnapshot(): RepositoryContributorSnapshot {
@@ -538,8 +536,9 @@ export async function loadRepositoryContributorSnapshot({
   }
 
   const fallback = normalizeGeneratedSnapshot(fallbackSnapshot)
-  return fallback && isFreshSnapshot(fallback, now)
-    ? fallback
+  const freshness = fallback && snapshotFreshness(fallback, now)
+  return fallback && freshness
+    ? { ...fallback, status: freshness }
     : unavailableSnapshot()
 }
 
@@ -559,7 +558,11 @@ export function createRepositoryContributorsPlugin(): Plugin {
       const snapshot = await snapshotPromise
       if (snapshot.status === "unavailable") {
         this.warn(
-          "Repository contributor activity could not be refreshed and the generated fallback is stale or invalid; the About page will show an unavailable state."
+          "Repository contributor activity could not be refreshed and the generated fallback is invalid; the About page will show an unavailable state."
+        )
+      } else if (snapshot.status === "stale") {
+        this.warn(
+          "Repository contributor activity could not be refreshed; the About page will show a dated snapshot."
         )
       }
 

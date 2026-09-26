@@ -104,6 +104,17 @@ describe("AboutPagePanel", () => {
     expect(markup).not.toContain("42 commits in those PRs")
   })
 
+  it("shows the last dated snapshot when contributor refresh is stale", () => {
+    const markup = renderAbout({ ...availableContributors, status: "stale" })
+
+    expect(markup).toContain("This contributor snapshot is out of date.")
+    expect(markup).toContain("alice")
+    expect(markup).toContain("42 commits in those PRs")
+    expect(markup).not.toContain(
+      "Contributor details could not be refreshed for this build."
+    )
+  })
+
   it("only shows a release badge for non-production builds", () => {
     expect(renderAbout(availableContributors, "preview")).toContain(
       "preview build"
