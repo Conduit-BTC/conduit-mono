@@ -284,6 +284,43 @@ afterEach(() => {
 })
 
 describe("merchant product event delivery", () => {
+  it("retains signed listing-area tags through the cache and edit read", async () => {
+    const dTag = "cached-listing-area"
+    const draft = buildProductListingEventDraft({
+      product: {
+        ...makeProduct(dTag),
+        format: "digital",
+        location: "Oakland, Alameda County, California, United States",
+        geohash: "9q9p",
+      },
+      dTag,
+    })
+    const event = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: draft.kind,
+          created_at: Math.floor(NOW / 1000),
+          content: draft.content,
+          tags: draft.tags,
+        },
+        MERCHANT_SECRET
+      )
+    )
+    await cacheSignedProductListingEvent(event)
+    expect(cachedProducts[0]).toMatchObject({
+      location: "Oakland, Alameda County, California, United States",
+      geohash: "9q9p",
+    })
+    const reloaded = await readProductAfterCacheReload(
+      structuredClone(cachedProducts),
+      dTag
+    )
+    expect(reloaded?.location).toBe(
+      "Oakland, Alameda County, California, United States"
+    )
+    expect(reloaded?.geohash).toBe("9q9p")
+  })
   it("routes product and shipping events through the commerce author intent", async () => {
     const relayUrl = "wss://relay.example"
     const intents: string[] = []

@@ -1,5 +1,9 @@
 import type { MerchantProductFormValues } from "./productForm"
 import {
+  isAcceptedListingAreaCountry,
+  isAcceptedUSListingAreaState,
+} from "./listingArea"
+import {
   formatProductAmountInput,
   isPlainDecimalInput,
 } from "./productPriceForm"
@@ -12,7 +16,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 7
+const PRODUCT_DRAFT_VERSION = 10
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -132,6 +136,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 4 &&
         candidate.version !== 5 &&
         candidate.version !== 6 &&
+        candidate.version !== 7 &&
+        candidate.version !== 8 &&
+        candidate.version !== 9 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -276,6 +283,68 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         : createEmptyProductVariationForm()
     if (!variations) return null
 
+    const listingAreaCountry =
+      candidate.version >= 8 && typeof form.listingAreaCountry === "string"
+        ? form.listingAreaCountry
+        : ""
+    const listingAreaState =
+      candidate.version >= 9 && typeof form.listingAreaState === "string"
+        ? form.listingAreaState
+        : ""
+    const listingAreaPlaceId =
+      candidate.version >= 8 && form.listingAreaPlaceId !== undefined
+        ? form.listingAreaPlaceId
+        : null
+    const originalListingAreaMode =
+      candidate.version >= 8
+        ? form.listingAreaMode
+        : candidate.baseEventId
+          ? "unchanged"
+          : "clear"
+    // Version 8 predates US state partitioning. Its US place ID cannot be
+    // trusted without a state, so keep the country but clear that selection.
+    const legacyUSSelection =
+      candidate.version === 8 &&
+      listingAreaCountry === "US" &&
+      originalListingAreaMode === "selected"
+    const listingAreaMode = legacyUSSelection
+      ? "clear"
+      : originalListingAreaMode
+    const listingAreaDefault =
+      candidate.version >= 10 &&
+      form.listingAreaDefault &&
+      typeof form.listingAreaDefault === "object"
+        ? (form.listingAreaDefault as Record<string, unknown>)
+        : null
+    const validListingAreaDefault =
+      !!listingAreaDefault &&
+      typeof listingAreaDefault.location === "string" &&
+      !!listingAreaDefault.location.trim() &&
+      typeof listingAreaDefault.geohash === "string" &&
+      /^[0123456789bcdefghjkmnpqrstuvwxyz]{4}$/.test(listingAreaDefault.geohash)
+    const effectivePlaceId = legacyUSSelection ? null : listingAreaPlaceId
+    if (
+      (listingAreaCountry !== "" &&
+        !isAcceptedListingAreaCountry(listingAreaCountry)) ||
+      (listingAreaCountry === "US"
+        ? listingAreaState !== "" &&
+          !isAcceptedUSListingAreaState(listingAreaState)
+        : listingAreaState !== "") ||
+      (effectivePlaceId !== null &&
+        (!Number.isSafeInteger(effectivePlaceId) ||
+          Number(effectivePlaceId) <= 0)) ||
+      (listingAreaMode !== "unchanged" &&
+        listingAreaMode !== "default" &&
+        listingAreaMode !== "selected" &&
+        listingAreaMode !== "clear") ||
+      (listingAreaMode === "default" && !validListingAreaDefault) ||
+      (listingAreaMode === "selected" &&
+        (!listingAreaCountry ||
+          effectivePlaceId === null ||
+          (listingAreaCountry === "US" && !listingAreaState)))
+    )
+      return null
+
     return {
       version: PRODUCT_DRAFT_VERSION,
       baseEventId: candidate.baseEventId,
@@ -283,6 +352,18 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       form: {
         title: form.title as string,
         summary: form.summary as string,
+        listingAreaCountry,
+        listingAreaState,
+        listingAreaPlaceId: effectivePlaceId as number | null,
+        listingAreaMode,
+        ...(validListingAreaDefault
+          ? {
+              listingAreaDefault: {
+                location: listingAreaDefault!.location as string,
+                geohash: listingAreaDefault!.geohash as string,
+              },
+            }
+          : {}),
         price,
         stock,
         variations,

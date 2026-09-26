@@ -76,6 +76,8 @@ export interface Product {
   zapMessagePolicy: ProductZapMessagePolicy
   publicZapPolicyKnown: boolean
   location?: string
+  /** Signed listing-area geohash. Four characters for newly authored areas. */
+  geohash?: string
   createdAt: number
   updatedAt: number
 }

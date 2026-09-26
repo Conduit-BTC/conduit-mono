@@ -54,6 +54,61 @@ function expectTag(tags: string[][], expected: string[]): void {
 }
 
 describe("product listing event drafts", () => {
+  it("round-trips signed listing-area tags for digital and physical products", () => {
+    for (const format of ["digital", "physical"] as const) {
+      const product = baseProduct({
+        format,
+        location: "Oakland, Alameda County, California, United States",
+        geohash: "9q9p",
+      })
+      const draft = buildProductListingEventDraft({
+        product,
+        dTag: `area-${format}`,
+      })
+      expect(
+        draft.tags.filter(([name]) => name === "location" || name === "g")
+      ).toEqual([
+        ["location", product.location],
+        ["g", "9q9p"],
+      ])
+      const parsed = parseProductEvent({
+        id: `${format}-event`,
+        pubkey: "merchant",
+        created_at: 1_779_762_725,
+        content: draft.content,
+        tags: draft.tags,
+      })
+      expect(parsed.location).toBe(product.location)
+      expect(parsed.geohash).toBe("9q9p")
+    }
+  })
+
+  it("does not add area tags to a listing without a selected area and retains signed legacy location", () => {
+    const blank = buildProductListingEventDraft({
+      product: baseProduct(),
+      dTag: "blank-area",
+    })
+    expect(
+      blank.tags.some(([name]) => name === "location" || name === "g")
+    ).toBe(false)
+    const parsed = parseProductEvent({
+      id: "legacy-area",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify(baseProduct({ location: "Unsigned JSON value" })),
+      tags: [
+        ["d", "legacy-area"],
+        ["price", "10", "USD"],
+        ["location", "Signed nearby town"],
+      ],
+    })
+    expect(parsed.location).toBe("Signed nearby town")
+    expect(parsed.geohash).toBeUndefined()
+    expect(
+      buildProductListingEventDraft({ product: parsed, dTag: "legacy-area" })
+        .tags
+    ).toContainEqual(["location", "Signed nearby town"])
+  })
   it("retains signed image evidence while capping public request candidates", () => {
     const publicImageUrls = Array.from(
       { length: MAX_PRODUCT_IMAGE_CANDIDATES + 5 },

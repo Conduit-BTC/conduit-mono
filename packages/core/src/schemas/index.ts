@@ -131,6 +131,10 @@ export const productSchema = z.object({
   zapMessagePolicy: productZapMessagePolicySchema.default("generic_only"),
   publicZapPolicyKnown: z.boolean().default(false),
   location: z.string().optional(),
+  geohash: z
+    .string()
+    .regex(/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,12}$/)
+    .optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 })

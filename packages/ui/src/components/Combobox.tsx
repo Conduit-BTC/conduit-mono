@@ -30,6 +30,8 @@ export interface ComboboxProps {
   value?: string
   options: ComboboxOption[]
   onValueChange: (value: string) => void
+  onSearchChange?: (search: string) => void
+  filterOptions?: boolean
   placeholder?: string
   searchPlaceholder?: string
   emptyText?: string
@@ -100,6 +102,8 @@ export function Combobox({
   value,
   options,
   onValueChange,
+  onSearchChange,
+  filterOptions = true,
   placeholder = "Select option...",
   searchPlaceholder = "Search...",
   emptyText = "No options found.",
@@ -120,8 +124,9 @@ export function Combobox({
   const selectedOption = options.find((option) => option.value === value)
   const label = selectedLabel ?? selectedOption?.label
   const filteredOptions = useMemo(
-    () => getFilteredComboboxOptions(options, search),
-    [options, search]
+    () =>
+      filterOptions ? getFilteredComboboxOptions(options, search) : options,
+    [filterOptions, options, search]
   )
 
   useEffect(() => {
@@ -244,6 +249,7 @@ export function Combobox({
                 value={search}
                 onValueChange={(next) => {
                   setSearch(next)
+                  onSearchChange?.(next)
                   if (!open) setOpen(true)
                 }}
                 onFocus={() => setOpen(true)}
@@ -323,7 +329,10 @@ export function Combobox({
         >
           <CommandInput
             value={search}
-            onValueChange={setSearch}
+            onValueChange={(next) => {
+              setSearch(next)
+              onSearchChange?.(next)
+            }}
             placeholder={searchPlaceholder}
           />
           {optionList}
