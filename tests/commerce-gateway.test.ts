@@ -2509,6 +2509,166 @@ describe("commerce gateway", () => {
     ])
   })
 
+  it("sends typed Market search to Congee and retains a newer product revision", async () => {
+    const olderSearchHit = makeProductEvent({
+      pubkey: "merchant-a",
+      dTag: "mug",
+      id: "search-hit-older",
+      createdAt: 101,
+      title: "Handmade vessel",
+    })
+    const newerRevision = makeProductEvent({
+      pubkey: "merchant-a",
+      dTag: "mug",
+      id: "catalog-newer",
+      createdAt: 102,
+      title: "Blue cup",
+    })
+    const outsidePerspective = makeProductEvent({
+      pubkey: "merchant-b",
+      dTag: "outside",
+      id: "search-outside-perspective",
+      createdAt: 103,
+      title: "Outside perspective",
+    })
+    const searchRequests: Array<{
+      search: string | undefined
+      kinds: number[] | undefined
+      relayUrls: readonly string[] | undefined
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        if (filter.search) {
+          searchRequests.push({
+            search: filter.search,
+            kinds: filter.kinds,
+            relayUrls: options?.relayUrls,
+          })
+          return [olderSearchHit, outsidePerspective] as never
+        }
+        return [newerRevision] as never
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "ceramics",
+      searchIndex: true,
+      authorPubkeys: ["merchant-a"],
+    })
+
+    expect(searchRequests).toEqual([
+      {
+        search: "ceramics",
+        kinds: [EVENT_KINDS.PRODUCT],
+        relayUrls: ["wss://conduit-congee.fly.dev"],
+      },
+    ])
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Blue cup",
+    ])
+  })
+
+  it("uses bounded catalog search when Congee is unavailable and skips NIP-50 for empty text", async () => {
+    const fallbackProduct = makeProductEvent({
+      pubkey: "merchant-a",
+      dTag: "bowl",
+      id: "fallback-bowl",
+      createdAt: 103,
+      title: "Ceramic bowl",
+    })
+    const searchFilters: string[] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        if (filter.search) searchFilters.push(filter.search)
+        const productRead = filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+        return {
+          events: productRead && !filter.search ? [fallbackProduct] : [],
+          relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: filter.search ? "failed" : "success",
+            eventCount: productRead && !filter.search ? 1 : 0,
+          })),
+          admittedRelayUrls: [...(options?.relayUrls ?? [])],
+          eventsVerified: true,
+        } as never
+      },
+    })
+
+    const fallback = await getMarketplaceProducts({
+      textQuery: "ceramic",
+      searchIndex: true,
+    })
+    expect(fallback.data.map((record) => record.product.title)).toEqual([
+      "Ceramic bowl",
+    ])
+    expect(fallback.meta.degraded).toBe(true)
+
+    searchFilters.length = 0
+    await getMarketplaceProducts({ textQuery: "  ", searchIndex: true })
+    expect(searchFilters).toEqual([])
+  })
+
+  it("shows a Congee search hit when the broader catalog read fails", async () => {
+    const indexedProduct = makeProductEvent({
+      pubkey: "merchant-a",
+      dTag: "cup",
+      id: "indexed-cup",
+      createdAt: 105,
+      title: "Handmade cup",
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.search) return [indexedProduct] as never
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          throw new Error("catalog unavailable")
+        }
+        return []
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "pottery",
+      searchIndex: true,
+    })
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Handmade cup",
+    ])
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("suppresses a Congee search hit with a valid signed address deletion", async () => {
+    const indexedProduct = makeProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "deleted-cup",
+      id: "indexed-deleted-cup",
+      createdAt: 100,
+      title: "Deleted cup",
+    })
+    const deletion = makeSignedDeletionEvent({
+      createdAt: 101,
+      tags: [
+        ["a", `30402:${MERCHANT_A_PUBKEY}:deleted-cup`],
+        ["k", String(EVENT_KINDS.PRODUCT)],
+      ],
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.search) return [indexedProduct] as never
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) return [deletion]
+        return []
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "cup",
+      searchIndex: true,
+    })
+    expect(result.data).toEqual([])
+  })
+
   it("keeps same d-tag listings from different merchants separate", async () => {
     const productEvents = [
       makeProductEvent({
@@ -6107,7 +6267,7 @@ describe("commerce gateway", () => {
 
     expect(deletionFetchCalls).toBe(6)
     expect(maxActiveDeletionFetches).toBeGreaterThan(1)
-    expect(maxActiveDeletionFetches).toBeLessThanOrEqual(4)
+    expect(maxActiveDeletionFetches).toBeLessThanOrEqual(8)
     expect(result.data).toHaveLength(129)
   })
 

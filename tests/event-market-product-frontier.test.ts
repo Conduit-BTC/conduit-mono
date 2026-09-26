@@ -33,8 +33,8 @@ const COLLECTION = `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER}:catalog`
 const CALENDAR = `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER}:calendar`
 const PICKUP = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER}:pickup`
 const PRODUCT = `${EVENT_KINDS.PRODUCT}:${MERCHANT}:coffee`
-const RELAY_A = "wss://relay.conduit.market"
-const RELAY_B = "wss://relay.ditto.pub"
+const RELAY_A = "wss://conduit-congee.fly.dev"
+const RELAY_B = "wss://relay.plebeian.market"
 const MERCHANT_RELAY = "wss://merchant-write.relay.dev"
 const NOW_MS = 1_800_000_100_000
 
@@ -1016,7 +1016,7 @@ describe("event-market exact product request frontiers", () => {
     expect(exactRelayPlans).toHaveLength(2)
     for (const plan of exactRelayPlans) {
       expect(plan.relayUrls.length).toBeLessThanOrEqual(8)
-      expect(plan.relayUrls).toContain(RELAY_A)
+      expect(plan.relayUrls).toContain("wss://conduit-congee.fly.dev")
       for (const dTag of plan.dTags) {
         const relayHint = relayHintByDTag.get(dTag)!
         expect(plan.relayUrls).toContain(relayHint)
@@ -1532,8 +1532,8 @@ describe("event-market exact product request frontiers", () => {
 
     expect(result.state).toBe("partial")
     expect(result.coverage).toMatchObject({
-      attemptedRelayCount: 3,
-      completeRelayCount: 2,
+      attemptedRelayCount: 2,
+      completeRelayCount: 1,
       partialRelayCount: 1,
       failedRelayCount: 0,
     })

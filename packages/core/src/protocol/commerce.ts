@@ -302,6 +302,8 @@ export interface MarketplaceProductsQuery {
   /** Live account session authority for relay admission after policy awaits. */
   shouldContinue?: () => boolean
   textQuery?: string
+  /** Query the configured NIP-50 product index in addition to bounded catalog reads. */
+  searchIndex?: boolean
   tags?: string[]
   sort?: CommerceSortMode
   limit?: number
@@ -4072,6 +4074,7 @@ async function fetchPublicProductRecords(query: {
   accountPubkey?: string | null
   shouldContinue?: () => boolean
   extraRelayUrls?: readonly string[]
+  searchText?: string
   limit?: number
   readPolicy?: CommerceReadPolicy
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
@@ -4085,24 +4088,35 @@ async function fetchPublicProductRecords(query: {
   if (query.ids) filter.ids = query.ids
   if (query.dTags) filter["#d"] = query.dTags
   if (query.parentAddresses) filter["#a"] = query.parentAddresses
+  if (query.searchText) filter.search = query.searchText
 
-  const relayPlan = await planCommerceReadRelayPlan({
-    intent:
-      query.authors && query.authors.length > 0
-        ? "author_products"
-        : "commerce_products",
-    authors: query.authors,
-    authenticatedPubkey: query.authenticatedPubkey,
-    accountPubkey: query.accountPubkey,
-    maxRelays: query.extraRelayUrls?.length
-      ? Math.min(
-          query.readPolicy?.maxRelays ?? DEFAULT_READ_FANOUT,
-          DEFAULT_READ_FANOUT
-        )
-      : query.readPolicy?.maxRelays,
-    shouldContinue: query.shouldContinue,
-    extraRelayUrls: query.extraRelayUrls,
-  })
+  const productSearchRelayUrls = config.searchIndexRelayUrls.slice(0, 1)
+  const relayPlan = query.searchText
+    ? {
+        candidateRelayUrls: productSearchRelayUrls,
+        maxRelayAttempts: productSearchRelayUrls.length,
+        ownerSelectedRelayUrls: [],
+        appRelayUrls: productSearchRelayUrls,
+        personalRelayUrls: [],
+        independentRelayUrls: [],
+      }
+    : await planCommerceReadRelayPlan({
+        intent:
+          query.authors && query.authors.length > 0
+            ? "author_products"
+            : "commerce_products",
+        authors: query.authors,
+        authenticatedPubkey: query.authenticatedPubkey,
+        accountPubkey: query.accountPubkey,
+        maxRelays: query.extraRelayUrls?.length
+          ? Math.min(
+              query.readPolicy?.maxRelays ?? DEFAULT_READ_FANOUT,
+              DEFAULT_READ_FANOUT
+            )
+          : query.readPolicy?.maxRelays,
+        shouldContinue: query.shouldContinue,
+        extraRelayUrls: query.extraRelayUrls,
+      })
 
   const result = await runFetchEventsFanoutDetailed(filter, {
     relayUrls: relayPlan.candidateRelayUrls,
@@ -4397,7 +4411,32 @@ export async function getMarketplaceProducts(
     const rawEventLimit = getProductRawEventLimit(query.limit)
     let transportDegraded = false
     let readCapped = false
-    const fetchedRecords = await fetchPublicProductRecords({
+    let searchDegraded = false
+    let searchCapped = false
+    const searchText = query.searchIndex ? query.textQuery?.trim() : undefined
+    const searchRecordsPromise = searchText
+      ? fetchPublicProductRecords({
+          searchText,
+          authenticatedPubkey: query.authenticatedPubkey,
+          accountPubkey: query.accountPubkey,
+          shouldContinue: query.shouldContinue,
+          limit: 100,
+          readPolicy: {
+            maxRelays: 1,
+            connectTimeoutMs: 2_000,
+            fetchTimeoutMs: 3_000,
+          },
+          onTransportStatus: (degraded, capped) => {
+            searchDegraded ||= degraded
+            searchCapped ||= capped
+          },
+        }).catch((error: unknown) => {
+          if (query.shouldContinue?.() === false) throw error
+          searchDegraded = true
+          return [] as CommerceProductRecord[]
+        })
+      : Promise.resolve([] as CommerceProductRecord[])
+    const fetchedRecordsPromise = fetchPublicProductRecords({
       authors:
         authorPubkeys && authorPubkeys.length > 0
           ? uniqueStrings(authorPubkeys)
@@ -4412,22 +4451,42 @@ export async function getMarketplaceProducts(
         transportDegraded ||= degraded
         readCapped ||= capped
       },
+    }).catch((error: unknown) => {
+      if (!searchText || query.shouldContinue?.() === false) throw error
+      transportDegraded = true
+      return [] as CommerceProductRecord[]
     })
+    const [fetchedRecords, rawSearchRecords] = await Promise.all([
+      fetchedRecordsPromise,
+      searchRecordsPromise,
+    ])
+    const allowedAuthors = authorPubkeys ? new Set(authorPubkeys) : null
+    const searchRecords = allowedAuthors
+      ? rawSearchRecords.filter((record) =>
+          allowedAuthors.has(record.product.pubkey)
+        )
+      : rawSearchRecords
+    const searchAddresses = new Set(
+      searchRecords.map((record) => record.addressId)
+    )
     const deletionTimestamps = await getLocalProductDeletionTimestamps(
       query.merchantPubkey,
       query.authorPubkeys
     )
     const records = mergeCachedAndLiveProductRecords({
       cached,
-      live: fetchedRecords,
+      live: [...fetchedRecords, ...searchRecords],
       deletionTimestamps,
     })
     await cacheProductRecords(records)
 
     const filtered = applyProductLimit(
       sortProducts(
-        filterProductRecordsForRead(records).filter((record) =>
-          productMatchesQuery(record, query)
+        filterProductRecordsForRead(records).filter(
+          (record) =>
+            productMatchesQuery(record, query) ||
+            (searchAddresses.has(record.addressId) &&
+              productMatchesQuery(record, { ...query, textQuery: undefined }))
         ),
         query.sort
       ),
@@ -4439,10 +4498,13 @@ export async function getMarketplaceProducts(
       "public",
       PRODUCT_CAPABILITIES,
       {
-        capped: readCapped || fetchedRecords.length >= rawEventLimit,
+        capped:
+          readCapped || searchCapped || fetchedRecords.length >= rawEventLimit,
         degraded:
           transportDegraded ||
           readCapped ||
+          searchDegraded ||
+          searchCapped ||
           fetchedRecords.length >= rawEventLimit,
       }
     )

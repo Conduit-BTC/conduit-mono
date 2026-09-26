@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -6,6 +6,7 @@ import {
 } from "nostr-tools/pure"
 import {
   beginOrderRelayDeliveryAttempt,
+  config,
   OrderRelayDeliveryStageConflictError,
   recordOrderRelayDeliveryOutcomes,
   resumePendingOrderRelayDeliveries,
@@ -22,6 +23,12 @@ const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
 const RUMOR_ID = "c".repeat(64)
 const RELAY = "wss://orders.conduit.market"
+const originalCompatibilityRelays = config.dmCompatibilityOrderRelayUrls
+const originalInboxFallbacks = config.commerceDmFallbackRelayUrls
+afterEach(() => {
+  config.dmCompatibilityOrderRelayUrls = originalCompatibilityRelays
+  config.commerceDmFallbackRelayUrls = originalInboxFallbacks
+})
 const DECLARATION = finalizeEvent(
   {
     created_at: 1_700_000_000,
@@ -199,7 +206,12 @@ describe("durable order delivery staging", () => {
   })
 
   it("stages only the approved bounded compatibility plan", async () => {
-    const relayUrls = ["wss://relay.conduit.market", "wss://relay.ditto.pub"]
+    const relayUrls = [
+      ...config.dmCompatibilityOrderRelayUrls,
+      "wss://relay.dreamith.to",
+    ]
+    config.dmCompatibilityOrderRelayUrls = relayUrls
+    config.commerceDmFallbackRelayUrls = relayUrls
     const compatibility = prepared({
       route: "compatibility_order",
       routingAuthority: undefined,

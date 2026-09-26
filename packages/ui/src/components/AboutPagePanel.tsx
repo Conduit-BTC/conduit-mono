@@ -362,8 +362,8 @@ function HowConduitWorks() {
           <p className="mt-2 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Conduit reads from and publishes to multiple Nostr relays based on
             the task, user choices, and published relay preferences.
-            relay.conduit.market is one Conduit-operated default, not a central
-            authority.
+            conduit-congee.fly.dev is one Conduit-operated default, not a
+            central authority.
           </p>
         </Card>
 
