@@ -2,6 +2,7 @@ import { Store, Users } from "lucide-react"
 import type { ReactNode } from "react"
 import { Badge } from "@conduit/ui"
 import type { MerchantTrustContext } from "../hooks/useMerchantTrustContext"
+import { BrainstormGlobalScoreLink } from "./BrainstormGlobalScoreLink"
 
 type MerchantTrustSummaryProps = {
   trust: MerchantTrustContext
@@ -71,6 +72,7 @@ export function MerchantTrustSummary({
         </TrustChip>
       )}
       <SocialChips trust={trust} />
+      <BrainstormGlobalScoreLink pubkey={trust.merchantPubkey} />
     </div>
   )
 }
