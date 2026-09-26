@@ -17,6 +17,35 @@ body {
   background-color: var(--background);
 }
 
+.brainstorm-score-link {
+  --brainstorm-score-bg: #241a3d;
+  --brainstorm-score-icon-bg: #140e2d;
+  --brainstorm-score-label: #f7f3ff;
+  --brainstorm-score-muted: #b6acd1;
+  --brainstorm-score-value: #65e4ef;
+  --brainstorm-score-tail: #c7beda;
+
+  border: 1.5px solid transparent;
+  background:
+    linear-gradient(var(--brainstorm-score-bg), var(--brainstorm-score-bg))
+      padding-box,
+    linear-gradient(90deg, #8e61ff, #46c9db) border-box;
+}
+
+:root[data-theme="day-market"] .brainstorm-score-link {
+  --brainstorm-score-bg: #f5f0ff;
+  --brainstorm-score-icon-bg: #eae0ff;
+  --brainstorm-score-label: #1e1730;
+  --brainstorm-score-muted: #66577b;
+  --brainstorm-score-value: #5b2dbd;
+  --brainstorm-score-tail: #625674;
+}
+
+.brainstorm-score-link:hover .brainstorm-score-name {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 @keyframes market-cart-hud-item-in {
   from {
     opacity: 0;

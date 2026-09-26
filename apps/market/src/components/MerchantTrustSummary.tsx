@@ -72,10 +72,7 @@ export function MerchantTrustSummary({
         </TrustChip>
       )}
       <SocialChips trust={trust} />
-      <BrainstormGlobalScoreLink
-        pubkey={trust.merchantPubkey}
-        className="py-1 text-[11px] font-medium"
-      />
+      <BrainstormGlobalScoreLink pubkey={trust.merchantPubkey} />
     </div>
   )
 }
