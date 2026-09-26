@@ -181,12 +181,12 @@ jobs:
 
       - name: Run Sudden Agent hardening with CODEX_AUTH_JSON
         if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
-        uses: sudden-network/agent@v1.15.0
+        uses: sudden-network/agent@370553dd1ac28fdb04024a3287e47adc87506f74 # v1.15.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/high
+          model: gpt-6-sol/high/fast
           resume: true
           sudo: true
           prompt: |
@@ -216,12 +216,12 @@ jobs:
 
       - name: Run Sudden Agent hardening with auth file
         if: steps.sudden_auth.outputs.has_codex_auth_json != 'true' && steps.sudden_auth.outputs.has_auth_file == 'true'
-        uses: sudden-network/agent@v1.15.0
+        uses: sudden-network/agent@370553dd1ac28fdb04024a3287e47adc87506f74 # v1.15.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/high
+          model: gpt-6-sol/high/fast
           resume: true
           sudo: true
           prompt: |
@@ -251,12 +251,12 @@ jobs:
 
       - name: Run Sudden Agent hardening with API key
         if: steps.sudden_auth.outputs.has_codex_auth_json != 'true' && steps.sudden_auth.outputs.has_auth_file != 'true' && steps.sudden_auth.outputs.has_api_key == 'true'
-        uses: sudden-network/agent@v1.15.0
+        uses: sudden-network/agent@370553dd1ac28fdb04024a3287e47adc87506f74 # v1.15.1
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/high
+          model: gpt-6-sol/high/fast
           resume: true
           sudo: true
           prompt: |
