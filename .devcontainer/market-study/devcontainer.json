@@ -1,0 +1,10 @@
+{
+  "name": "Market design study",
+  "build": { "dockerfile": "Dockerfile" },
+  "remoteUser": "node",
+  "postCreateCommand": "bun install --frozen-lockfile",
+  "forwardPorts": [7000],
+  "portsAttributes": {
+    "7000": { "label": "Market design study", "onAutoForward": "openBrowser" }
+  }
+}
