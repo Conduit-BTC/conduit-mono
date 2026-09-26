@@ -141,11 +141,13 @@ export function RemoteSignerConnect({
           nostrConnectUri={nostrConnectUri}
           selectedApp={selectedApp}
           onSelectApp={setSelectedApp}
-          startButton={startButton}
+          connectPending={connectPending}
+          connectDisabled={connectDisabled}
+          onStart={onConnectNostrConnect}
         />
       )}
 
-      {connectPending && (
+      {connectPending && (selectedApp || !hasAppChoices) && (
         <div
           role="status"
           className="rounded-xl border border-primary-500/25 bg-primary-500/10 p-3 text-sm leading-6 text-[var(--text-secondary)]"
@@ -153,9 +155,7 @@ export function RemoteSignerConnect({
           {selectedApp
             ? `Approve in ${appNames[selectedApp]}, then return to Conduit.`
             : nostrConnectUri
-              ? hasAppChoices
-                ? "Ready. Open your app to approve sign-in."
-                : "Scan or copy the connection link, then approve in your app."
+              ? "Scan or copy the connection link, then approve in your app."
               : activeTab === "bunker"
                 ? "Approve the connection in your app, then return here."
                 : "Preparing your connection…"}

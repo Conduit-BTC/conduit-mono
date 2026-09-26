@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Button } from "./Button"
 import { ClaveConnectButton } from "./ClaveConnectButton"
 import {
@@ -15,27 +15,52 @@ export function SignerAppChoices({
   nostrConnectUri,
   selectedApp,
   onSelectApp,
-  startButton,
+  connectPending,
+  connectDisabled,
+  onStart,
 }: {
   platform: "ios" | "android"
   nostrConnectUri?: string | null
   selectedApp: SignerApp | null
   onSelectApp: (app: SignerApp) => void
-  startButton: ReactNode
+  connectPending: boolean
+  connectDisabled: boolean
+  onStart: () => Promise<void> | void
 }) {
   const app = platform === "ios" ? "clave" : "amber"
+  const appName = app === "clave" ? "Clave" : "Amber"
+  const [manualStart, setManualStart] = useState(false)
+  const handoffContainerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (manualStart && nostrConnectUri && !selectedApp) {
+      handoffContainerRef.current
+        ?.querySelector<HTMLAnchorElement>("a[href]")
+        ?.focus()
+    }
+  }, [manualStart, nostrConnectUri, selectedApp])
 
   function appButton() {
     const label =
       selectedApp === app
-        ? `Open ${app === "clave" ? "Clave" : "Amber"} again`
-        : app === "clave"
-          ? "Connect with Clave"
-          : "Use Amber"
+        ? `Open ${appName} again`
+        : manualStart && nostrConnectUri
+          ? `Open ${appName}`
+          : app === "clave"
+            ? "Connect with Clave"
+            : "Use Amber"
     if (!nostrConnectUri) {
       return (
-        <Button disabled className={primaryClassName}>
-          {label}
+        <Button
+          type="button"
+          disabled={connectDisabled}
+          onClick={() => {
+            setManualStart(true)
+            void Promise.resolve(onStart()).catch(() => undefined)
+          }}
+          className={primaryClassName}
+        >
+          {connectPending ? `Preparing ${appName}…` : label}
         </Button>
       )
     }
@@ -64,12 +89,12 @@ export function SignerAppChoices({
 
   return (
     <div className="space-y-3">
-      <p className="text-center text-sm leading-6 text-[var(--text-secondary)]">
-        {platform === "ios"
-          ? "Sign in with Clave. Your account keys stay in the app."
-          : "Sign in with Amber. Your account keys stay in the app."}
+      <div ref={handoffContainerRef}>{appButton()}</div>
+      <p role="status" className="sr-only">
+        {nostrConnectUri && !selectedApp
+          ? `Ready. Open ${appName} to approve sign-in.`
+          : ""}
       </p>
-      {appButton()}
       <p className="text-center text-sm leading-6 text-[var(--text-secondary)]">
         <a
           className="inline-flex min-h-11 items-center rounded-sm text-primary-400 underline underline-offset-4 focus-visible:outline focus-visible:outline-2"
@@ -82,7 +107,6 @@ export function SignerAppChoices({
             : "Get Amber on F-Droid"}
         </a>
       </p>
-      {!nostrConnectUri && startButton}
     </div>
   )
 }

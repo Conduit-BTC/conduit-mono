@@ -1,7 +1,8 @@
 # Mobile signer connection UI
 
-Market and Merchant share the sign-in panel in `@conduit/ui`. It presents app
-choices before protocol terminology while preserving standard NIP-46 connections.
+Market and Merchant share the sign-in panel in `@conduit/ui`. It presents browser
+signers and app choices before protocol terminology while preserving standard
+NIP-07 and NIP-46 connections.
 
 ## Platform choices
 
@@ -13,6 +14,15 @@ choices before protocol terminology while preserving standard NIP-46 connections
   extend Safari's background WebSocket lifetime, so a signer-issued `bunker://`
   connection remains the explicit same-device fallback when the direct handoff
   misses its acknowledgement. QR and copy remain cross-device fallbacks.
+- NIP-07 is the first visible mobile action. A detected signer appears as
+  "Continue with browser signer"; Clave or Amber is the second visible action.
+  On iOS, browser signers include Safari extensions such as Nostash;
+  Conduit checks `window.nostr` capabilities rather than identifying a brand.
+  If passive detection misses a late or newly enabled extension, "Use a Safari
+  extension" remains available and checks again when tapped. Choosing it cancels
+  an owned NIP-46 pairing before starting NIP-07. A remembered NIP-07 session
+  uses its reconnect action as the first choice, without a duplicate browser
+  signer button. Clave or Amber stays visible as the other choice.
 - Android: Amber uses a Chrome-compatible NIP-46 intent with the explicit package
   `com.greenart7c3.nostrsigner`. The request query is preserved byte-for-byte and
   the install link goes to F-Droid. No connection data is placed in an install
@@ -23,8 +33,14 @@ choices before protocol terminology while preserving standard NIP-46 connections
 - A remembered remote session offers only reconnect or forget. Starting a fresh
   pair requires intentionally forgetting the remembered session first.
 
-"Other ways to connect" exposes QR, copy, and bunker entry. QR and copied links
-carry the same client-initiated request; a bunker link starts from the signer.
+"Other ways to connect" keeps QR, copy, and bunker entry collapsed on mobile.
+The app choice handles preparation until its link is ready, with no extra setup
+button or repeated key-custody text. When preparation starts from the app button,
+the ready link says "Open Clave" or "Open Amber" and receives focus; its status
+is announced to assistive technology. A pending reconnect label appears only
+while restoration is active.
+QR and copied links carry the same client-initiated request; a bunker link starts
+from the signer.
 The named Clave action uses Clave's HTTPS Universal Link rather than the shared
 `nostrconnect:` scheme. Intentional manual connections remain interoperable with
 any compatible signer; the protocol does not attest app brands.
