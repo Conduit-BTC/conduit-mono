@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "./Dialog"
 import { Input } from "./Input"
+import { LightningStrikeOverlay } from "./LightningStrikeOverlay"
 import { useTimeBoundaryNow } from "../hooks/useTimeBoundaryNow"
 
 export type ProjectTipPayResult =
@@ -69,6 +70,9 @@ export function ProjectTip({
   const [error, setError] = useState<string | null>(null)
   const [showQr, setShowQr] = useState(false)
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
+  const [completedCelebrationId, setCompletedCelebrationId] = useState<
+    string | null
+  >(null)
   const operationRef = useRef(0)
   const openRef = useRef(false)
   const customAmountId = useId()
@@ -98,6 +102,12 @@ export function ProjectTip({
     tip !== null &&
     (phase === "manual" || phase === "ambiguous") &&
     confirmedZapRequestId === tip.zapRequestId
+  const celebrationId =
+    open && tip && (phase === "thanks" || receiptConfirmed)
+      ? tip.zapRequestId
+      : null
+  const lightningPlaying =
+    celebrationId !== null && celebrationId !== completedCelebrationId
 
   function reset() {
     operationRef.current += 1
@@ -238,6 +248,7 @@ export function ProjectTip({
           openRef.current = next
           setOpen(next)
           onOpenChange?.(next)
+          if (!next && celebrationId) setCompletedCelebrationId(celebrationId)
           if (!next) onReceiptWatchChange?.(null)
           if (!next && phase === "preparing") {
             operationRef.current += 1
@@ -245,7 +256,17 @@ export function ProjectTip({
           }
         }}
       >
-        <DialogContent>
+        <DialogContent
+          className="z-[51]"
+          backgroundEffect={
+            <LightningStrikeOverlay
+              open={lightningPlaying}
+              onComplete={() => {
+                if (celebrationId) setCompletedCelebrationId(celebrationId)
+              }}
+            />
+          }
+        >
           <DialogHeader className="flex-row items-start gap-3 space-y-0 text-left">
             <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--project-tip-heart)_14%,transparent)]">
               <Heart

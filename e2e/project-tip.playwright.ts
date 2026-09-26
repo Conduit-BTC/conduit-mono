@@ -82,6 +82,11 @@ test("confirmed tip shows mission thank-you once, without a real payment @market
   await expect(dialog.getByRole("button", { name: "Send tip" })).toBeDisabled()
   await dialog.getByRole("button", { name: "Use a preset amount" }).click()
   await dialog.getByRole("button", { name: "Send 111 sats" }).click()
+  const lightning = page.getByTestId("payment-sent-lightning")
+  await expect(lightning).toBeVisible()
+  await expect(lightning).toHaveCSS("pointer-events", "none")
+  await expect(lightning).toHaveCSS("z-index", "50")
+  await expect(dialog).toHaveCSS("z-index", "51")
   await expect(dialog).toContainText(
     "Thank you for supporting our mission to build a more open market."
   )
@@ -96,6 +101,8 @@ test("confirmed tip shows mission thank-you once, without a real payment @market
         ).__projectTipTest
     )
   ).toEqual({ prepared: 1, paid: 1 })
+  await dialog.getByRole("button", { name: "Done" }).click()
+  await expect(dialog).toHaveCount(0)
 })
 
 test("narrow tip presets stay readable and stale USD estimates can recover @market", async ({
@@ -294,6 +301,7 @@ test("closing during preparation permits a new tip and ignores stale completion 
     ).__projectTipInterrupted.confirm("a".repeat(63) + "1")
   })
   await expect(dialog).not.toContainText("Thank you for supporting")
+  await expect(page.getByTestId("payment-sent-lightning")).toHaveCount(0)
   await page.evaluate(() => {
     ;(
       window as typeof window & {
@@ -302,6 +310,7 @@ test("closing during preparation permits a new tip and ignores stale completion 
     ).__projectTipInterrupted.confirm("a".repeat(63) + "2")
   })
   await expect(dialog).toContainText("Thank you for supporting")
+  await expect(page.getByTestId("payment-sent-lightning")).toBeVisible()
 })
 
 for (const mode of ["refusal", "prepublish", "timeout"] as const) {
