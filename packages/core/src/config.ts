@@ -36,7 +36,7 @@ export interface AppRelayDefinition {
 
 export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
   {
-    url: "wss://conduit-congee.fly.dev/",
+    url: "wss://conduit-congee.fly.dev",
     fallbackName: "Conduit Marketplace Relay",
     fallbackIconUrl: "/images/logo/logo-icon.svg",
     read: true,
@@ -113,7 +113,7 @@ export const CANONICAL_APP_READ_RELAYS = CANONICAL_APP_RELAY_DEFINITIONS.filter(
   (relay) => relay.read
 ).map((relay) => relay.url)
 export const CANONICAL_APP_BACKPLANE_RELAYS = [
-  "wss://conduit-congee.fly.dev/",
+  "wss://conduit-congee.fly.dev",
   "wss://relay.conduit.market",
 ]
 export const CANONICAL_APP_WRITE_RELAYS =
@@ -132,18 +132,18 @@ export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
  */
 export const CLAVE_PUSH_RELAY = "wss://relay.powr.build"
 export const CANONICAL_COMMERCE_DISCOVERY_RELAYS = [
-  "wss://conduit-congee.fly.dev/",
+  "wss://conduit-congee.fly.dev",
   "wss://relay.plebeian.market",
   "wss://relay.ditto.pub",
 ]
 // Market product NIP-50 uses the primary entry. Keep Ditto available for
 // broader profile search, which shares this search-index role.
 export const CANONICAL_SEARCH_INDEX_RELAYS = [
-  "wss://conduit-congee.fly.dev/",
+  "wss://conduit-congee.fly.dev",
   "wss://relay.ditto.pub",
 ]
 export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS = [
-  "wss://conduit-congee.fly.dev/",
+  "wss://conduit-congee.fly.dev",
   "wss://relay.conduit.market",
   "wss://relay.ditto.pub",
   "wss://nos.lol",
@@ -159,7 +159,7 @@ export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS = [
   "wss://relay.ditto.pub",
 ]
 export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
-  "wss://conduit-congee.fly.dev/",
+  "wss://conduit-congee.fly.dev",
   "wss://relay.conduit.market",
   "wss://relay.ditto.pub",
 ]

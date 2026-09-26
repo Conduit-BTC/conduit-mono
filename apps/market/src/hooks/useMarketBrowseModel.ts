@@ -19,6 +19,7 @@ import {
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
   isMarketBrowseRefreshStale,
+  mergeProductSearchResults,
   refreshMarketBrowseData,
   sortBrowseProducts,
   sortStoreFacetOptionsByRecentPublisher,
@@ -147,6 +148,16 @@ export function useMarketBrowseModel({
       productsQuery.products,
     ]
   )
+  const merchantCandidateProducts = useMemo(
+    () =>
+      globalSearchEnabled
+        ? mergeProductSearchResults(
+            productsQuery.products,
+            globalSearchProducts
+          )
+        : productsQuery.products,
+    [globalSearchEnabled, globalSearchProducts, productsQuery.products]
+  )
   const refreshCatalog = productsQuery.refetch
   const refreshGuestDiscovery = guestMarket.refetch
   const refreshGlobalSearch = globalSearchQuery.refetch
@@ -195,11 +206,11 @@ export function useMarketBrowseModel({
     refetch,
   }
   const allMerchantPubkeys = useMemo(() => {
-    if (productData.length === 0) return []
+    if (merchantCandidateProducts.length === 0) return []
     const set = new Set<string>()
-    for (const product of productData) set.add(product.pubkey)
+    for (const product of merchantCandidateProducts) set.add(product.pubkey)
     return Array.from(set).sort()
-  }, [productData])
+  }, [merchantCandidateProducts])
   const filteredProducts = useMemo(
     () =>
       filterProductsByFacets(productData, {
@@ -316,11 +327,11 @@ export function useMarketBrowseModel({
     const query = search.q?.trim() ?? ""
     if (!query) return []
     return filterSellersByName(
-      groupDiscoveredSellers(productData),
+      groupDiscoveredSellers(merchantCandidateProducts),
       getMerchantIdentity,
       query
     )
-  }, [getMerchantIdentity, productData, search.q])
+  }, [getMerchantIdentity, merchantCandidateProducts, search.q])
   const storeFacetSortProducts = useMemo(
     () =>
       filterProductsByFacets(productData, {

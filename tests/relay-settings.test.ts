@@ -203,11 +203,11 @@ describe("relay settings protocol helpers", () => {
     const normalizedRelays = (urls: readonly string[]) =>
       urls.map((url) => new URL(url).origin)
     expect(CANONICAL_APP_BACKPLANE_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev/",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.conduit.market",
     ])
     expect(CANONICAL_APP_WRITE_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev/",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
       "wss://relay.dreamith.to",
@@ -221,7 +221,7 @@ describe("relay settings protocol helpers", () => {
     ).toEqual([
       {
         fallbackName: "Conduit Marketplace Relay",
-        url: "wss://conduit-congee.fly.dev/",
+        url: "wss://conduit-congee.fly.dev",
       },
       {
         fallbackName: "Conduit Relay",
@@ -252,16 +252,16 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.primal.net",
     ])
     expect(CANONICAL_COMMERCE_DISCOVERY_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev/",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.plebeian.market",
       "wss://relay.ditto.pub",
     ])
     expect(CANONICAL_SEARCH_INDEX_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev/",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.ditto.pub",
     ])
     expect(CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev/",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
       "wss://nos.lol",
@@ -272,7 +272,7 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.ditto.pub",
     ])
     expect(CANONICAL_DM_INBOX_DEFAULT_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev/",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
     ])
@@ -287,7 +287,7 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.plebeian.market",
     ])
     expect(CANONICAL_DEFAULT_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev/",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.conduit.market",
       "wss://nos.lol",
       "wss://relay.ditto.pub",
@@ -351,7 +351,7 @@ describe("relay settings protocol helpers", () => {
       "zap_public",
     ])
     expect(config.commerceRelayUrls).toContain("wss://relay.conduit.market")
-    expect(config.nip89RelayHint).toBe("wss://conduit-congee.fly.dev/")
+    expect(config.nip89RelayHint).toBe("wss://conduit-congee.fly.dev")
     expect(config.defaultRelays).not.toContain("wss://conduitl2.fly.dev")
     expect(config.defaultRelays).not.toContain("wss://relay.plebeian.market")
     expect(config.defaultRelays).not.toContain("wss://nostr.mom")

@@ -356,6 +356,7 @@ describe("network settings view", () => {
     expect(
       view.appRelays?.rows.map((row) => [row.capability.relayName, row.url])
     ).toEqual([
+      ["Conduit Marketplace Relay", "wss://conduit-congee.fly.dev"],
       ["Conduit Relay", "wss://relay.conduit.market"],
       ["Ditto Relay", "wss://relay.ditto.pub"],
       ["Dreamith Relay", "wss://relay.dreamith.to"],
@@ -364,6 +365,16 @@ describe("network settings view", () => {
       ["Plebeian Market Relay", "wss://relay.plebeian.market"],
     ])
     expect(view.appRelays?.rows[0]).toMatchObject({
+      url: "wss://conduit-congee.fly.dev",
+      readEnabled: true,
+      publishEnabled: true,
+      privateInboxEnabled: true,
+      capability: {
+        relayName: "Conduit Marketplace Relay",
+        relayIconFallbackUrl: "/images/logo/logo-icon.svg",
+      },
+    })
+    expect(view.appRelays?.rows[1]).toMatchObject({
       url: "wss://relay.conduit.market",
       readEnabled: true,
       publishEnabled: true,
@@ -382,6 +393,7 @@ describe("network settings view", () => {
         "No signed relay setup was found on the relays checked. Review Conduit’s recommended roles before anything is signed.",
     })
     expect(view.setupRecommendation?.rows.map((row) => row.url)).toEqual([
+      "wss://conduit-congee.fly.dev",
       "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
       "wss://relay.dreamith.to",

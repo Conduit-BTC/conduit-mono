@@ -2580,6 +2580,7 @@ describe("commerce gateway", () => {
     })
     const searchFilters: string[] = []
     __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
       fetchEventsFanoutDetailed: async (filter, options) => {
         if (filter.search) searchFilters.push(filter.search)
         const productRead = filter.kinds?.includes(EVENT_KINDS.PRODUCT)

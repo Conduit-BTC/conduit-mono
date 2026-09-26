@@ -1016,7 +1016,7 @@ describe("event-market exact product request frontiers", () => {
     expect(exactRelayPlans).toHaveLength(2)
     for (const plan of exactRelayPlans) {
       expect(plan.relayUrls.length).toBeLessThanOrEqual(8)
-      expect(plan.relayUrls).toContain(RELAY_A)
+      expect(plan.relayUrls).toContain("wss://conduit-congee.fly.dev")
       for (const dTag of plan.dTags) {
         const relayHint = relayHintByDTag.get(dTag)!
         expect(plan.relayUrls).toContain(relayHint)
@@ -1532,8 +1532,8 @@ describe("event-market exact product request frontiers", () => {
 
     expect(result.state).toBe("partial")
     expect(result.coverage).toMatchObject({
-      attemptedRelayCount: 3,
-      completeRelayCount: 2,
+      attemptedRelayCount: 4,
+      completeRelayCount: 3,
       partialRelayCount: 1,
       failedRelayCount: 0,
     })
