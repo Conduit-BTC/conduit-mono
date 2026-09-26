@@ -1,7 +1,8 @@
 # Mobile signer connection UI
 
-Market and Merchant share the sign-in panel in `@conduit/ui`. It presents app
-choices before protocol terminology while preserving standard NIP-46 connections.
+Market and Merchant share the sign-in panel in `@conduit/ui`. It presents browser
+signers and app choices before protocol terminology while preserving standard
+NIP-07 and NIP-46 connections.
 
 ## Platform choices
 
@@ -13,6 +14,13 @@ choices before protocol terminology while preserving standard NIP-46 connections
   extend Safari's background WebSocket lifetime, so a signer-issued `bunker://`
   connection remains the explicit same-device fallback when the direct handoff
   misses its acknowledgement. QR and copy remain cross-device fallbacks.
+- A detected NIP-07 browser signer appears first on mobile as "Continue with
+  browser signer". On iOS, this includes Safari extensions such as Nostash;
+  Conduit checks `window.nostr` capabilities rather than identifying a brand.
+  If passive detection misses a late or newly enabled extension, "Use a Safari
+  extension" remains available and checks again when tapped. Choosing it cancels
+  an owned NIP-46 pairing before starting NIP-07. A remembered NIP-07 session
+  retains its mobile reconnect action.
 - Android: Amber uses a Chrome-compatible NIP-46 intent with the explicit package
   `com.greenart7c3.nostrsigner`. The request query is preserved byte-for-byte and
   the install link goes to F-Droid. No connection data is placed in an install
@@ -23,8 +31,9 @@ choices before protocol terminology while preserving standard NIP-46 connections
 - A remembered remote session offers only reconnect or forget. Starting a fresh
   pair requires intentionally forgetting the remembered session first.
 
-"Other ways to connect" exposes QR, copy, and bunker entry. QR and copied links
-carry the same client-initiated request; a bunker link starts from the signer.
+"Other ways to connect" keeps QR, copy, and bunker entry collapsed on mobile.
+QR and copied links carry the same client-initiated request; a bunker link starts
+from the signer.
 The named Clave action uses Clave's HTTPS Universal Link rather than the shared
 `nostrconnect:` scheme. Intentional manual connections remain interoperable with
 any compatible signer; the protocol does not attest app brands.

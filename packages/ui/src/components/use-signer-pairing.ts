@@ -18,12 +18,14 @@ export function useSignerPairing(options: UseSignerPairingOptions): {
   start: () => Promise<void>
   run: (connect: () => Promise<void> | void) => Promise<void>
   cancel: () => void
+  cancelAndRun: (connect: () => Promise<void> | void) => Promise<void>
 } {
   const latest = useRef(options)
   useLayoutEffect(() => {
     latest.current = options
   }, [options])
   const ownedAttempt = useRef<object | null>(null)
+  const ownedPromise = useRef<Promise<void> | null>(null)
   const prepareOnMount = useRef(
     options.autoPrepare &&
       !options.connectPending &&
@@ -38,11 +40,14 @@ export function useSignerPairing(options: UseSignerPairingOptions): {
       if (ownedAttempt.current) return
       const attempt = {}
       ownedAttempt.current = attempt
+      const promise = (async () => connect())()
+      ownedPromise.current = promise
       try {
-        await connect()
+        await promise
       } finally {
         // A canceled promise can settle after the next attempt has started.
         if (ownedAttempt.current === attempt) ownedAttempt.current = null
+        if (ownedPromise.current === promise) ownedPromise.current = null
       }
     },
     []
@@ -67,6 +72,18 @@ export function useSignerPairing(options: UseSignerPairingOptions): {
     void Promise.resolve(latest.current.onCancel()).catch(() => undefined)
   }, [])
 
+  const cancelAndRun = useCallback(
+    async (connect: () => Promise<void> | void): Promise<void> => {
+      const previous = ownedPromise.current
+      cancel()
+      // Wait for the canceled NIP-46 operation to release its auth lock before
+      // asking a browser signer to connect.
+      if (previous) await previous.catch(() => undefined)
+      await connect()
+    },
+    [cancel]
+  )
+
   useEffect(() => {
     // The initial decision must not follow URI/pending/error updates: those
     // are results of preparation, not reasons to restart it. StrictMode can
@@ -75,5 +92,5 @@ export function useSignerPairing(options: UseSignerPairingOptions): {
     return cancel
   }, [begin, cancel])
 
-  return { start, run, cancel }
+  return { start, run, cancel, cancelAndRun }
 }

@@ -1188,6 +1188,32 @@ test.describe("CND-162 mobile browser baseline", () => {
   })
 
   test.describe("signer handoff without retained connection artifacts", () => {
+    test("market mobile browser signer connects through NIP-07 @market", async ({
+      page,
+    }) => {
+      await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+      await page.goto(`${marketUrl}/products`)
+      await page
+        .getByRole("button", { name: /^Connect$/ })
+        .first()
+        .tap()
+
+      const dialog = page.getByRole("dialog")
+      const browserSigner = dialog.getByRole("button", {
+        name: "Continue with browser signer",
+        exact: true,
+      })
+      await expectMobileTouchTarget(browserSigner)
+      await expect(browserSigner).toBeEnabled()
+      await browserSigner.tap()
+
+      await expect(
+        page.getByRole("button", { name: "Open account menu" })
+      ).toBeVisible()
+      await expect(dialog).toBeHidden()
+      await assertMobileViewport(page)
+    })
+
     test("market mobile signer starts with platform apps and preserves manual recovery @market", async ({
       page,
     }) => {
@@ -1200,9 +1226,11 @@ test.describe("CND-162 mobile browser baseline", () => {
 
       const dialog = page.getByRole("dialog")
       await expect(dialog).toBeVisible()
-      await expect(
-        dialog.getByRole("button", { name: /Connect Extension \(NIP-07\)/ })
-      ).toHaveCount(0)
+      await expectMobileTouchTarget(
+        dialog.getByRole("button", {
+          name: /Use (a Safari extension|a browser signer)/,
+        })
+      )
       const primaryApp = await expectMobileSignerChoices(page, dialog)
       await assertMobileViewport(page)
       await dialog
@@ -2339,16 +2367,41 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
   })
 
+  test("merchant mobile browser signer connects through NIP-07 @merchant", async ({
+    page,
+  }) => {
+    await installTestSigner(page, TEST_MERCHANT_PUBKEY, { rememberAuth: false })
+    await page.goto(`${merchantUrl}/`)
+
+    const gate = page.getByRole("region", { name: "Sign in to Conduit" })
+    const browserSigner = gate.getByRole("button", {
+      name: "Continue with browser signer",
+      exact: true,
+    })
+    await expectMobileTouchTarget(browserSigner)
+    await expect(browserSigner).toBeEnabled()
+    await browserSigner.tap()
+
+    await expect(gate).toBeHidden()
+    await page.goto(`${merchantUrl}/products`)
+    await expect(
+      page.getByRole("heading", { name: "Products", exact: true })
+    ).toBeVisible()
+    await assertMobileViewport(page)
+  })
+
   test("merchant mobile signer gate remains touch-safe without NIP-07 @merchant", async ({
     page,
   }) => {
     await installInertMobilePairing(page)
     await page.goto(`${merchantUrl}/`)
     await assertMobileViewport(page)
-    await expect(
-      page.getByRole("button", { name: /Connect Extension \(NIP-07\)/ })
-    ).toHaveCount(0)
     const gate = page.getByRole("region", { name: "Sign in to Conduit" })
+    await expectMobileTouchTarget(
+      gate.getByRole("button", {
+        name: /Use (a Safari extension|a browser signer)/,
+      })
+    )
     await expectMobileSignerChoices(page, gate)
 
     await gate

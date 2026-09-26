@@ -104,12 +104,45 @@ describe("remote signer UI", () => {
     expect(hasDisabledButton(markup, "Connect with Clave")).toBe(true)
     expect(markup.includes("Preparing your connection…")).toBe(true)
     expect(markup.includes("clave.casa/connect")).toBe(false)
-    expect(markup.includes("Connect Extension (NIP-07)")).toBe(false)
+    expect(markup.includes("Continue with browser signer")).toBe(true)
     expect(markup.includes("Amber")).toBe(false)
     expect(markup.includes('aria-expanded="false"')).toBe(true)
     expect(markup.includes("Other ways to connect")).toBe(true)
     expect(markup.includes('role="tablist"')).toBe(false)
     expect(markup.includes("Nostr Connect connection QR code")).toBe(false)
+  })
+
+  it("keeps a Safari extension action available when passive detection misses it", () => {
+    const markup = renderToStaticMarkup(
+      <SignerConnectPanel
+        {...commonProps}
+        platform="ios"
+        extensionAvailable={false}
+        connectPending
+        connectDisabled
+        connectingMethod="nip46"
+      />
+    )
+
+    expect(markup.includes("Use a Safari extension")).toBe(true)
+    expect(hasDisabledButton(markup, "Use a Safari extension")).toBe(false)
+    expect(markup.includes("Continue with browser signer")).toBe(false)
+    expect(markup.includes("Other ways to connect")).toBe(true)
+    expect(markup.includes('role="tablist"')).toBe(false)
+  })
+
+  it("offers mobile reconnect for a remembered browser signer", () => {
+    const markup = renderToStaticMarkup(
+      <SignerConnectPanel
+        {...commonProps}
+        platform="ios"
+        rememberedMethod="nip07"
+        onReconnect={() => undefined}
+      />
+    )
+
+    expect(markup.includes("Reconnect your account")).toBe(true)
+    expect(markup.includes("Continue with browser signer")).toBe(true)
   })
 
   it("preserves the one-tap Clave Universal Link once setup is ready", () => {
@@ -152,7 +185,7 @@ describe("remote signer UI", () => {
     expect(hasDisabledButton(markup, "Use Amber")).toBe(true)
     expect(markup.includes('href="intent:')).toBe(false)
     expect(markup.includes("Connect with Clave")).toBe(false)
-    expect(markup.includes("Connect Extension (NIP-07)")).toBe(false)
+    expect(markup.includes("Continue with browser signer")).toBe(true)
     expect(markup.includes("Other ways to connect")).toBe(true)
     expect(markup.includes('role="tablist"')).toBe(false)
   })
@@ -215,7 +248,7 @@ describe("remote signer UI", () => {
     expect(markup.includes("Scan QR")).toBe(true)
     expect(markup.includes("Copy link")).toBe(true)
     expect(markup.includes("Paste bunker")).toBe(true)
-    expect(markup.includes("Connect Extension (NIP-07)")).toBe(false)
+    expect(markup.includes("Continue with browser signer")).toBe(true)
     expect(markup.includes("Connect with Clave")).toBe(false)
     expect(markup.includes("Use Amber")).toBe(false)
   })

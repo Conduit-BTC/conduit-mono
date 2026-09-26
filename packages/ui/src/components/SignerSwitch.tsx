@@ -141,21 +141,32 @@ function SignerHeader({
 function ExtensionConnectButton({
   connectPending,
   connectDisabled,
+  label,
+  secondary = false,
   onConnect,
 }: {
   connectPending: boolean
   connectDisabled: boolean
+  label?: string
+  secondary?: boolean
   onConnect: () => Promise<void> | void
 }) {
   return (
     <Button
       type="button"
+      variant={secondary ? "outline" : "primary"}
       onClick={() => void Promise.resolve(onConnect()).catch(() => undefined)}
       disabled={connectDisabled}
-      className={signerConnectButtonClassName}
+      className={
+        secondary
+          ? "h-12 w-full justify-center gap-3 rounded-xl"
+          : signerConnectButtonClassName
+      }
     >
       <SignerGlyph />
-      {connectPending ? "Connecting..." : "Connect Extension (NIP-07)"}
+      {connectPending
+        ? "Connecting..."
+        : (label ?? "Connect Extension (NIP-07)")}
     </Button>
   )
 }
@@ -309,28 +320,34 @@ function SignerDisconnectedContent({
     onConnect: onConnectNostrConnect,
     onCancel: onCancelConnect,
   })
+  const browserSignerLabel =
+    platform === "ios" ? "Use a Safari extension" : "Use a browser signer"
+  const browserSignerDisabled =
+    connectDisabled && !(connectPending && connectingMethod === "nip46")
+  const connectBrowserSigner = () =>
+    connectPending && connectingMethod === "nip46"
+      ? pairing.cancelAndRun(onConnectExtension)
+      : onConnectExtension()
 
   return (
     <>
       <div
         className={cn("mx-auto mt-6 w-full max-w-md space-y-3", bodyClassName)}
       >
-        {rememberedMethod &&
-          onReconnect &&
-          (!isMobile || rememberedMethod === "nip46") && (
-            <Button
-              type="button"
-              variant="primary"
-              onClick={() =>
-                void Promise.resolve(onReconnect()).catch(() => undefined)
-              }
-              disabled={connectDisabled}
-              className="h-12 w-full justify-center gap-2 rounded-xl"
-            >
-              <KeyRound className="h-4 w-4" aria-hidden="true" />
-              {connectPending ? "Reconnecting..." : "Reconnect your account"}
-            </Button>
-          )}
+        {rememberedMethod && onReconnect && (
+          <Button
+            type="button"
+            variant="primary"
+            onClick={() =>
+              void Promise.resolve(onReconnect()).catch(() => undefined)
+            }
+            disabled={connectDisabled}
+            className="h-12 w-full justify-center gap-2 rounded-xl"
+          >
+            <KeyRound className="h-4 w-4" aria-hidden="true" />
+            {connectPending ? "Reconnecting..." : "Reconnect your account"}
+          </Button>
+        )}
 
         {rememberedMethod === "nip46" && onForget && (
           <Button
@@ -346,11 +363,12 @@ function SignerDisconnectedContent({
           </Button>
         )}
 
-        {!reconnectOnly && !isMobile && (
+        {!reconnectOnly && (!isMobile || extensionAvailable) && (
           <ExtensionConnectButton
             connectPending={connectPending && connectingMethod === "nip07"}
-            connectDisabled={connectDisabled || !extensionAvailable}
-            onConnect={onConnectExtension}
+            connectDisabled={browserSignerDisabled || !extensionAvailable}
+            label={isMobile ? "Continue with browser signer" : undefined}
+            onConnect={connectBrowserSigner}
           />
         )}
 
@@ -365,6 +383,16 @@ function SignerDisconnectedContent({
             onConnectNostrConnect={pairing.start}
             onConnectBunker={(uri) => pairing.run(() => onConnectRemote(uri))}
             onCancelConnect={pairing.cancel}
+          />
+        )}
+
+        {!reconnectOnly && isMobile && !extensionAvailable && (
+          <ExtensionConnectButton
+            connectPending={connectPending && connectingMethod === "nip07"}
+            connectDisabled={browserSignerDisabled}
+            label={browserSignerLabel}
+            secondary
+            onConnect={connectBrowserSigner}
           />
         )}
 
