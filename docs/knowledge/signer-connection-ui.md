@@ -14,13 +14,15 @@ NIP-07 and NIP-46 connections.
   extend Safari's background WebSocket lifetime, so a signer-issued `bunker://`
   connection remains the explicit same-device fallback when the direct handoff
   misses its acknowledgement. QR and copy remain cross-device fallbacks.
-- A detected NIP-07 browser signer appears first on mobile as "Continue with
-  browser signer". On iOS, this includes Safari extensions such as Nostash;
+- NIP-07 is the first visible mobile action. A detected signer appears as
+  "Continue with browser signer"; Clave or Amber is the second visible action.
+  On iOS, browser signers include Safari extensions such as Nostash;
   Conduit checks `window.nostr` capabilities rather than identifying a brand.
   If passive detection misses a late or newly enabled extension, "Use a Safari
   extension" remains available and checks again when tapped. Choosing it cancels
   an owned NIP-46 pairing before starting NIP-07. A remembered NIP-07 session
-  retains its mobile reconnect action.
+  uses its reconnect action as the first choice, without a duplicate browser
+  signer button. Clave or Amber stays visible as the other choice.
 - Android: Amber uses a Chrome-compatible NIP-46 intent with the explicit package
   `com.greenart7c3.nostrsigner`. The request query is preserved byte-for-byte and
   the install link goes to F-Droid. No connection data is placed in an install
@@ -32,6 +34,9 @@ NIP-07 and NIP-46 connections.
   pair requires intentionally forgetting the remembered session first.
 
 "Other ways to connect" keeps QR, copy, and bunker entry collapsed on mobile.
+The app choice handles preparation until its link is ready, with no extra setup
+button or repeated key-custody text. A pending reconnect label appears only
+while restoration is active.
 QR and copied links carry the same client-initiated request; a bunker link starts
 from the signer.
 The named Clave action uses Clave's HTTPS Universal Link rather than the shared

@@ -1318,7 +1318,7 @@ test.describe("CND-162 mobile browser baseline", () => {
           name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",
           exact: true,
         })
-      ).toBeDisabled()
+      ).toBeEnabled()
       await closeButton.tap()
       await expect(dialog).not.toBeVisible()
 

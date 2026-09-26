@@ -1,4 +1,3 @@
-import type { ReactNode } from "react"
 import { Button } from "./Button"
 import { ClaveConnectButton } from "./ClaveConnectButton"
 import {
@@ -15,13 +14,17 @@ export function SignerAppChoices({
   nostrConnectUri,
   selectedApp,
   onSelectApp,
-  startButton,
+  connectPending,
+  connectDisabled,
+  onStart,
 }: {
   platform: "ios" | "android"
   nostrConnectUri?: string | null
   selectedApp: SignerApp | null
   onSelectApp: (app: SignerApp) => void
-  startButton: ReactNode
+  connectPending: boolean
+  connectDisabled: boolean
+  onStart: () => Promise<void> | void
 }) {
   const app = platform === "ios" ? "clave" : "amber"
 
@@ -34,8 +37,15 @@ export function SignerAppChoices({
           : "Use Amber"
     if (!nostrConnectUri) {
       return (
-        <Button disabled className={primaryClassName}>
-          {label}
+        <Button
+          type="button"
+          disabled={connectDisabled}
+          onClick={() => void Promise.resolve(onStart()).catch(() => undefined)}
+          className={primaryClassName}
+        >
+          {connectPending
+            ? `Preparing ${app === "clave" ? "Clave" : "Amber"}…`
+            : label}
         </Button>
       )
     }
@@ -64,11 +74,6 @@ export function SignerAppChoices({
 
   return (
     <div className="space-y-3">
-      <p className="text-center text-sm leading-6 text-[var(--text-secondary)]">
-        {platform === "ios"
-          ? "Sign in with Clave. Your account keys stay in the app."
-          : "Sign in with Amber. Your account keys stay in the app."}
-      </p>
       {appButton()}
       <p className="text-center text-sm leading-6 text-[var(--text-secondary)]">
         <a
@@ -82,7 +87,6 @@ export function SignerAppChoices({
             : "Get Amber on F-Droid"}
         </a>
       </p>
-      {!nostrConnectUri && startButton}
     </div>
   )
 }

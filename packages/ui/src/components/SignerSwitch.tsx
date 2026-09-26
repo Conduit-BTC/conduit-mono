@@ -345,7 +345,9 @@ function SignerDisconnectedContent({
             className="h-12 w-full justify-center gap-2 rounded-xl"
           >
             <KeyRound className="h-4 w-4" aria-hidden="true" />
-            {connectPending ? "Reconnecting..." : "Reconnect your account"}
+            {connectPending && connectingMethod === null
+              ? "Reconnecting..."
+              : "Reconnect your account"}
           </Button>
         )}
 
@@ -363,14 +365,35 @@ function SignerDisconnectedContent({
           </Button>
         )}
 
-        {!reconnectOnly && (!isMobile || extensionAvailable) && (
+        {!reconnectOnly && (!isMobile || rememberedMethod !== "nip07") && (
           <ExtensionConnectButton
             connectPending={connectPending && connectingMethod === "nip07"}
-            connectDisabled={browserSignerDisabled || !extensionAvailable}
-            label={isMobile ? "Continue with browser signer" : undefined}
+            connectDisabled={
+              browserSignerDisabled || (!isMobile && !extensionAvailable)
+            }
+            label={
+              isMobile
+                ? extensionAvailable
+                  ? "Continue with browser signer"
+                  : browserSignerLabel
+                : undefined
+            }
+            secondary={isMobile && !extensionAvailable}
             onConnect={connectBrowserSigner}
           />
         )}
+
+        {error &&
+          (connectingMethod === "nip07" ||
+            (rememberedMethod === "nip07" && connectingMethod !== "nip46")) && (
+            <div
+              id={errorId}
+              role="alert"
+              className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error"
+            >
+              {error}
+            </div>
+          )}
 
         {!reconnectOnly && (
           <RemoteSignerConnect
@@ -386,25 +409,17 @@ function SignerDisconnectedContent({
           />
         )}
 
-        {!reconnectOnly && isMobile && !extensionAvailable && (
-          <ExtensionConnectButton
-            connectPending={connectPending && connectingMethod === "nip07"}
-            connectDisabled={browserSignerDisabled}
-            label={browserSignerLabel}
-            secondary
-            onConnect={connectBrowserSigner}
-          />
-        )}
-
-        {error && (
-          <div
-            id={errorId}
-            role="alert"
-            className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error"
-          >
-            {error}
-          </div>
-        )}
+        {error &&
+          connectingMethod !== "nip07" &&
+          (rememberedMethod !== "nip07" || connectingMethod === "nip46") && (
+            <div
+              id={errorId}
+              role="alert"
+              className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error"
+            >
+              {error}
+            </div>
+          )}
 
         {authUrl && (
           <div className="rounded-[1.25rem] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
@@ -429,11 +444,6 @@ function SignerDisconnectedContent({
           Your account keys stay in your signer app. Conduit cannot recover
           them.
         </p>
-        <p className="px-4 text-center text-xs leading-5 text-[var(--text-muted)]">
-          This device remembers an encrypted connection you can revoke in your
-          signer.
-        </p>
-
         {!isMobile && <NoSignerSetupGuide />}
       </div>
 
