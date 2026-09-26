@@ -24,6 +24,10 @@ const ZERO_PREIMAGE = "00".repeat(32)
 const ZERO_PREIMAGE_PAYMENT_HASH =
   "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
 const ZERO_PREIMAGE_INVOICE = makeLightningInvoice(ZERO_PREIMAGE_PAYMENT_HASH)
+const ZERO_PREIMAGE_FIXED_INVOICE = makeLightningInvoice(
+  ZERO_PREIMAGE_PAYMENT_HASH,
+  1_000
+)
 const PAYMENT_ATTEMPT_ID = "c7fb0ad2-c85c-4d93-b542-6dc9d10d8c00"
 
 describe("first-party Spark SDK adapter", () => {
@@ -1596,6 +1600,696 @@ describe("first-party Spark SDK adapter", () => {
     ])
   })
 
+  it("keeps a live Lightning status lookup failure ambiguous with a useful reason", async () => {
+    let now = 0
+    let payCalls = 0
+    let statusReads = 0
+    const wallet = createNativeWallet({
+      async getLightningSendFeeEstimate() {
+        return 2
+      },
+      async payLightningInvoice() {
+        payCalls += 1
+        return {
+          id: "lightning-pending",
+          status: "LIGHTNING_PAYMENT_INITIATED",
+          fee: { originalValue: 2, originalUnit: "SATOSHI" },
+        }
+      },
+      async getLightningSendRequest() {
+        statusReads += 1
+        throw new Error("provider unavailable")
+      },
+    })
+    const manager = new SparkWalletManager(
+      createFactory(wallet, {}, "mainnet", {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds
+        },
+        pollIntervalMs: 100,
+      }),
+      async () => ({ async release() {} })
+    )
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: MNEMONIC,
+      accountNumber: 1,
+    })
+
+    await expect(
+      manager.payInvoice("wallet-personal", {
+        invoice: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountMsats: 1_000_000,
+        idempotencyKey: PAYMENT_ATTEMPT_ID,
+        completionTimeoutSecs: 1,
+        approveFee: async () => true,
+      })
+    ).resolves.toEqual({
+      status: "ambiguous",
+      reason:
+        "Spark payment status could not be checked. Check the wallet before retrying.",
+    })
+    expect(payCalls).toBe(1)
+    expect(statusReads).toBe(1)
+  })
+
+  it("recovers a lost Lightning response by transfer ID without paying again", async () => {
+    let payCalls = 0
+    const transferReads: string[] = []
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("The original response was lost.")
+      },
+      async getTransferFromSsp(id) {
+        transferReads.push(id)
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_SUCCEEDED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: ZERO_PREIMAGE,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 0,
+      })
+    ).resolves.toMatchObject({
+      status: "resolved",
+      payment: {
+        id: "recovered-lightning-request",
+        status: "completed",
+        fees: 2n,
+        details: {
+          type: "lightning",
+          htlcDetails: {
+            paymentHash: ZERO_PREIMAGE_PAYMENT_HASH,
+            preimage: ZERO_PREIMAGE,
+          },
+        },
+      },
+    })
+    expect(transferReads).toEqual([PAYMENT_ATTEMPT_ID])
+    expect(payCalls).toBe(0)
+  })
+
+  it("recovers an uppercase persisted invoice from lowercase Spark evidence", async () => {
+    let payCalls = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: {
+            originalValue: 1_002_000,
+            originalUnit: "MILLISATOSHI",
+          },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_SUCCEEDED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: ZERO_PREIMAGE,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE.toUpperCase(),
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 0,
+      })
+    ).resolves.toMatchObject({
+      status: "resolved",
+      payment: { status: "completed" },
+    })
+    expect(payCalls).toBe(0)
+  })
+
+  it("rejects amountless recovery when the recovered amount differs", async () => {
+    let payCalls = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 2_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_SUCCEEDED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: ZERO_PREIMAGE,
+            encodedInvoice: ZERO_PREIMAGE_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 0,
+      })
+    ).resolves.toEqual({
+      status: "conflicting_evidence",
+      reason: "Spark cannot safely reconcile an amountless Lightning invoice.",
+    })
+    expect(payCalls).toBe(0)
+  })
+
+  it("rejects a fixed invoice that differs from the approved amount", async () => {
+    let transferReads = 0
+    const wallet = createNativeWallet({
+      async getTransferFromSsp() {
+        transferReads += 1
+        return undefined
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 999,
+        maxFeeSats: 5,
+      })
+    ).resolves.toEqual({
+      status: "conflicting_evidence",
+      reason:
+        "The persisted Lightning invoice does not match the approved amount.",
+    })
+    expect(transferReads).toBe(0)
+  })
+
+  it("rejects missing, malformed, or inconsistent recovered transfer totals", async () => {
+    const cases = [
+      { name: "missing", totalAmount: undefined },
+      {
+        name: "unsupported unit",
+        totalAmount: { originalValue: 1_002, originalUnit: "BITCOIN" },
+      },
+      {
+        name: "inconsistent amount",
+        totalAmount: { originalValue: 2_002, originalUnit: "SATOSHI" },
+      },
+    ] as const
+
+    for (const testCase of cases) {
+      let payCalls = 0
+      const wallet = createNativeWallet({
+        async payLightningInvoice() {
+          payCalls += 1
+          throw new Error("must not pay during reconciliation")
+        },
+        async getTransferFromSsp(id) {
+          return {
+            sparkId: id,
+            ...(testCase.totalAmount === undefined
+              ? {}
+              : { totalAmount: testCase.totalAmount }),
+            userRequest: {
+              id: "recovered-lightning-request",
+              status: "LIGHTNING_PAYMENT_SUCCEEDED",
+              fee: { originalValue: 2, originalUnit: "SATOSHI" },
+              paymentPreimage: ZERO_PREIMAGE,
+              encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+              idempotencyKey: PAYMENT_ATTEMPT_ID,
+              typename: "LightningSendRequest",
+            },
+          }
+        },
+      })
+      const client = await openClient(createFactory(wallet))
+
+      await expect(
+        client.reconcileLightningSend?.({
+          transferId: PAYMENT_ATTEMPT_ID,
+          paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+          amountSats: 1_000,
+          maxFeeSats: 5,
+          completionTimeoutSecs: 0,
+        })
+      ).resolves.toEqual({
+        status: "conflicting_evidence",
+        reason: "Spark returned a conflicting Lightning transfer total.",
+      })
+      expect(payCalls, testCase.name).toBe(0)
+    }
+  })
+
+  it("keeps a missing transfer unresolved without paying again", async () => {
+    let payCalls = 0
+    const transferReads: string[] = []
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        transferReads.push(id)
+        return undefined
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+      })
+    ).resolves.toEqual({ status: "not_found" })
+    expect(transferReads).toEqual([PAYMENT_ATTEMPT_ID])
+    expect(payCalls).toBe(0)
+  })
+
+  it("keeps an unavailable transfer lookup unresolved without paying again", async () => {
+    let payCalls = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp() {
+        throw new Error("provider unavailable")
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+      })
+    ).resolves.toEqual({ status: "lookup_unavailable" })
+    expect(payCalls).toBe(0)
+  })
+
+  it("keeps an unavailable Lightning status lookup unresolved without paying again", async () => {
+    let now = 0
+    let payCalls = 0
+    let statusReads = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_INITIATED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+      async getLightningSendRequest() {
+        statusReads += 1
+        throw new Error("provider unavailable")
+      },
+    })
+    const client = await openClient(
+      createFactory(wallet, {}, "mainnet", {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds
+        },
+        pollIntervalMs: 100,
+      })
+    )
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 1,
+      })
+    ).resolves.toEqual({ status: "lookup_unavailable" })
+    expect(statusReads).toBe(1)
+    expect(payCalls).toBe(0)
+  })
+
+  it("rejects a polled Lightning fee that conflicts with the recovered transfer total", async () => {
+    let now = 0
+    let payCalls = 0
+    let statusReads = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_INITIATED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+      async getLightningSendRequest() {
+        statusReads += 1
+        return {
+          id: "recovered-lightning-request",
+          status: "LIGHTNING_PAYMENT_SUCCEEDED",
+          fee: { originalValue: 3, originalUnit: "SATOSHI" },
+          paymentPreimage: ZERO_PREIMAGE,
+        }
+      },
+    })
+    const client = await openClient(
+      createFactory(wallet, {}, "mainnet", {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds
+        },
+        pollIntervalMs: 100,
+      })
+    )
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 1,
+      })
+    ).resolves.toEqual({
+      status: "conflicting_evidence",
+      reason: "Spark returned a conflicting Lightning transfer total.",
+    })
+    expect(statusReads).toBe(1)
+    expect(payCalls).toBe(0)
+  })
+
+  it("rejects a polled Lightning status for a different recovered request", async () => {
+    let now = 0
+    let payCalls = 0
+    let statusReads = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_INITIATED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+      async getLightningSendRequest() {
+        statusReads += 1
+        return {
+          id: "different-lightning-request",
+          status: "LIGHTNING_PAYMENT_FAILED",
+          fee: { originalValue: 2, originalUnit: "SATOSHI" },
+          paymentPreimage: null,
+        }
+      },
+    })
+    const client = await openClient(
+      createFactory(wallet, {}, "mainnet", {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds
+        },
+        pollIntervalMs: 100,
+      })
+    )
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 1,
+      })
+    ).resolves.toEqual({
+      status: "conflicting_evidence",
+      reason: "Spark returned a conflicting Lightning request identity.",
+    })
+    expect(statusReads).toBe(1)
+    expect(payCalls).toBe(0)
+  })
+
+  it("resolves an identity-consistent polled Lightning transition", async () => {
+    let now = 0
+    let payCalls = 0
+    const wallet = createNativeWallet({
+      async payLightningInvoice() {
+        payCalls += 1
+        throw new Error("must not pay during reconciliation")
+      },
+      async getTransferFromSsp(id) {
+        return {
+          sparkId: id,
+          totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+          userRequest: {
+            id: "recovered-lightning-request",
+            status: "LIGHTNING_PAYMENT_INITIATED",
+            fee: { originalValue: 2, originalUnit: "SATOSHI" },
+            paymentPreimage: null,
+            encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+            typename: "LightningSendRequest",
+          },
+        }
+      },
+      async getLightningSendRequest() {
+        return {
+          id: "recovered-lightning-request",
+          status: "LIGHTNING_PAYMENT_SUCCEEDED",
+          fee: { originalValue: 2, originalUnit: "SATOSHI" },
+          paymentPreimage: ZERO_PREIMAGE,
+        }
+      },
+    })
+    const client = await openClient(
+      createFactory(wallet, {}, "mainnet", {
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds
+        },
+        pollIntervalMs: 100,
+      })
+    )
+
+    await expect(
+      client.reconcileLightningSend?.({
+        transferId: PAYMENT_ATTEMPT_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountSats: 1_000,
+        maxFeeSats: 5,
+        completionTimeoutSecs: 1,
+      })
+    ).resolves.toMatchObject({
+      status: "resolved",
+      payment: {
+        id: "recovered-lightning-request",
+        status: "completed",
+      },
+    })
+    expect(payCalls).toBe(0)
+  })
+
+  it("fails closed on conflicting recovered Lightning evidence", async () => {
+    const cases = [
+      {
+        name: "transfer identity",
+        transferId: "different-transfer-id",
+        request: {},
+        message: "Spark returned a conflicting transfer identity.",
+      },
+      {
+        name: "request kind",
+        transferId: PAYMENT_ATTEMPT_ID,
+        request: { typename: "LightningReceiveRequest" },
+        message: "Spark returned invalid Lightning recovery evidence.",
+      },
+      {
+        name: "malformed payment preimage",
+        transferId: PAYMENT_ATTEMPT_ID,
+        request: { paymentPreimage: 123 },
+        message: "Spark returned invalid Lightning recovery evidence.",
+      },
+      {
+        name: "idempotency identity",
+        transferId: PAYMENT_ATTEMPT_ID,
+        request: { idempotencyKey: "different-attempt-id" },
+        message: "Spark returned a conflicting Lightning payment identity.",
+      },
+      {
+        name: "invoice identity",
+        transferId: PAYMENT_ATTEMPT_ID,
+        request: { encodedInvoice: "lnbc1different" },
+        message: "Spark returned a different Lightning invoice.",
+      },
+      {
+        name: "mixed-case invoice",
+        transferId: PAYMENT_ATTEMPT_ID,
+        request: {
+          encodedInvoice: `L${ZERO_PREIMAGE_FIXED_INVOICE.slice(1)}`,
+        },
+        message: "Spark returned a different Lightning invoice.",
+      },
+      {
+        name: "approved fee cap",
+        transferId: PAYMENT_ATTEMPT_ID,
+        request: {
+          fee: { originalValue: 6, originalUnit: "SATOSHI" },
+        },
+        message: "Spark returned a Lightning fee above the approved maximum.",
+      },
+    ] as const
+
+    for (const testCase of cases) {
+      let payCalls = 0
+      const wallet = createNativeWallet({
+        async payLightningInvoice() {
+          payCalls += 1
+          throw new Error("must not pay during reconciliation")
+        },
+        async getTransferFromSsp() {
+          return {
+            sparkId: testCase.transferId,
+            userRequest: {
+              id: "recovered-lightning-request",
+              status: "LIGHTNING_PAYMENT_SUCCEEDED",
+              fee: { originalValue: 2, originalUnit: "SATOSHI" },
+              paymentPreimage: ZERO_PREIMAGE,
+              encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+              idempotencyKey: PAYMENT_ATTEMPT_ID,
+              typename: "LightningSendRequest",
+              ...testCase.request,
+            },
+          }
+        },
+      })
+      const client = await openClient(createFactory(wallet))
+
+      await expect(
+        client.reconcileLightningSend?.({
+          transferId: PAYMENT_ATTEMPT_ID,
+          paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+          amountSats: 1_000,
+          maxFeeSats: 5,
+          completionTimeoutSecs: 0,
+        })
+      ).resolves.toEqual({
+        status: "conflicting_evidence",
+        reason: testCase.message,
+      })
+      expect(payCalls, testCase.name).toBe(0)
+    }
+  })
+
+  it("preserves recovered pending and failed Lightning outcomes", async () => {
+    const cases = [
+      { providerStatus: "LIGHTNING_PAYMENT_INITIATED", status: "pending" },
+      { providerStatus: "LIGHTNING_PAYMENT_FAILED", status: "failed" },
+    ] as const
+
+    for (const testCase of cases) {
+      let payCalls = 0
+      const wallet = createNativeWallet({
+        async payLightningInvoice() {
+          payCalls += 1
+          throw new Error("must not pay during reconciliation")
+        },
+        async getTransferFromSsp(id) {
+          return {
+            sparkId: id,
+            totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+            userRequest: {
+              id: "recovered-lightning-request",
+              status: testCase.providerStatus,
+              fee: { originalValue: 2, originalUnit: "SATOSHI" },
+              paymentPreimage: null,
+              encodedInvoice: ZERO_PREIMAGE_FIXED_INVOICE,
+              idempotencyKey: PAYMENT_ATTEMPT_ID,
+              typename: "LightningSendRequest",
+            },
+          }
+        },
+      })
+      const client = await openClient(createFactory(wallet))
+
+      await expect(
+        client.reconcileLightningSend?.({
+          transferId: PAYMENT_ATTEMPT_ID,
+          paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+          amountSats: 1_000,
+          maxFeeSats: 5,
+          completionTimeoutSecs: 0,
+        })
+      ).resolves.toMatchObject({
+        status: "resolved",
+        payment: { status: testCase.status },
+      })
+      expect(payCalls).toBe(0)
+    }
+  })
+
   it("subscribes to concrete native wallet events and removes every listener", async () => {
     const nativeListeners = new Map<string, (...args: unknown[]) => void>()
     const removedEvents: string[] = []
@@ -1677,7 +2371,11 @@ function createFactory(
   wallet: SparkNativeWallet,
   moduleOverrides: Partial<SparkNativeModule> = {},
   network: "mainnet" | "regtest" = "mainnet",
-  options: { now?: () => number } = {}
+  options: {
+    now?: () => number
+    wait?: (milliseconds: number) => Promise<void>
+    pollIntervalMs?: number
+  } = {}
 ) {
   const nativeNetwork = network === "mainnet" ? "MAINNET" : "REGTEST"
   return new FirstPartySparkSdkFactory({
@@ -1697,8 +2395,9 @@ function createFactory(
       },
       ...moduleOverrides,
     }),
-    wait: async () => undefined,
+    wait: options.wait ?? (async () => undefined),
     now: options.now,
+    pollIntervalMs: options.pollIntervalMs,
   })
 }
 
@@ -1738,6 +2437,9 @@ function createNativeWallet(
     async getTransfer() {
       return undefined
     },
+    async getTransferFromSsp() {
+      return undefined
+    },
     async transfer(input) {
       return {
         id: "native-transfer",
@@ -1770,13 +2472,16 @@ function createNativeWallet(
   }
 }
 
-function makeLightningInvoice(paymentHashHex: string): string {
+function makeLightningInvoice(
+  paymentHashHex: string,
+  amountSats?: number
+): string {
   const paymentHash = Uint8Array.from(
     paymentHashHex.match(/.{2}/g) ?? [],
     (byte) => Number.parseInt(byte, 16)
   )
   return makeBolt11Fixture({
-    hrp: "lnbc",
+    hrp: amountSats === undefined ? "lnbc" : `lnbc${amountSats * 10}n`,
     fields: [
       {
         tag: "p",

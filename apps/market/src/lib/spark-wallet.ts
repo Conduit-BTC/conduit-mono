@@ -22,6 +22,9 @@ import {
 
 export type SparkWalletNetwork = "mainnet" | "regtest"
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 export interface SparkPreparedPayment {
   paymentMethod: {
     type: string
@@ -100,6 +103,32 @@ export interface SparkCheckoutReceiveInput {
   expirySecs: number
 }
 
+export interface SparkLightningSendReconciliationInput {
+  transferId: string
+  paymentRequest: string
+  amountSats: number
+  maxFeeSats: number
+  completionTimeoutSecs?: number
+}
+
+export interface SparkLightningSendAttempt {
+  readonly schemaVersion: 1
+  readonly walletId: string
+  readonly network: SparkWalletNetwork
+  readonly transferId: string
+  readonly paymentRequest: string
+  readonly amountSats: number
+  readonly maxFeeSats: number
+  readonly completionTimeoutSecs?: number
+  readonly createdAt: number
+}
+
+export type SparkLightningSendReconciliation =
+  | { status: "resolved"; payment: SparkSdkPayment }
+  | { status: "not_found" }
+  | { status: "lookup_unavailable" }
+  | { status: "conflicting_evidence"; reason: string }
+
 export interface SparkSdkClient {
   addEventListener?(listener: () => void): Promise<string>
   removeEventListener?(listenerId: string): Promise<boolean>
@@ -129,6 +158,9 @@ export interface SparkSdkClient {
         }
     idempotencyKey?: string
   }): Promise<{ payment: SparkSdkPayment }>
+  reconcileLightningSend?(
+    request: SparkLightningSendReconciliationInput
+  ): Promise<SparkLightningSendReconciliation>
   receivePayment(request: {
     paymentMethod:
       | {
@@ -168,6 +200,7 @@ export interface SparkPayInvoiceInput {
   idempotencyKey: string
   completionTimeoutSecs?: number
   approveFee?: WalletPaymentFeeApproval
+  persistAttempt?: (attempt: SparkLightningSendAttempt) => Promise<void>
   beforeSend?: () => Promise<void>
 }
 
@@ -954,6 +987,45 @@ export class SparkWalletManager {
     return attempt
   }
 
+  async reconcileInvoiceAttempt(
+    walletId: string,
+    attempt: SparkLightningSendAttempt
+  ): Promise<SparkLightningSendReconciliation> {
+    const conflictReason = getSparkLightningSendAttemptConflict(
+      walletId,
+      this.#factory.network,
+      attempt
+    )
+    if (conflictReason) {
+      return { status: "conflicting_evidence", reason: conflictReason }
+    }
+    const client = this.#clients.get(walletId)
+    if (
+      !client ||
+      this.#quarantinedWallets.has(walletId) ||
+      !client.reconcileLightningSend
+    ) {
+      return { status: "lookup_unavailable" }
+    }
+    try {
+      return await client.reconcileLightningSend({
+        transferId: attempt.transferId,
+        paymentRequest: attempt.paymentRequest,
+        amountSats: attempt.amountSats,
+        maxFeeSats: attempt.maxFeeSats,
+        ...(attempt.completionTimeoutSecs === undefined
+          ? {}
+          : { completionTimeoutSecs: attempt.completionTimeoutSecs }),
+      })
+    } catch {
+      return {
+        status: "conflicting_evidence",
+        reason:
+          "Spark payment recovery did not return classified provider evidence.",
+      }
+    }
+  }
+
   async #payInvoice(
     walletId: string,
     input: SparkPayInvoiceInput
@@ -970,6 +1042,13 @@ export class SparkWalletManager {
       return {
         status: "pre_publish_failed",
         reason: "Spark payment amount must be a positive whole number of sats.",
+      }
+    }
+    if (input.persistAttempt && isAmountlessLightningInvoice(input.invoice)) {
+      return {
+        status: "pre_publish_failed",
+        reason:
+          "Amountless Lightning invoices cannot use durable Spark payment recovery.",
       }
     }
 
@@ -1014,6 +1093,44 @@ export class SparkWalletManager {
       return {
         status: "approval_declined",
         reason: "Spark payment was not approved.",
+      }
+    }
+
+    const attempt: SparkLightningSendAttempt = Object.freeze({
+      schemaVersion: 1,
+      walletId,
+      network: this.#factory.network,
+      transferId: input.idempotencyKey,
+      paymentRequest: input.invoice,
+      amountSats,
+      maxFeeSats: feeSats,
+      ...(input.completionTimeoutSecs === undefined
+        ? {}
+        : { completionTimeoutSecs: input.completionTimeoutSecs }),
+      createdAt: this.#now(),
+    })
+    if (
+      input.persistAttempt &&
+      getSparkLightningSendAttemptConflict(
+        walletId,
+        this.#factory.network,
+        attempt
+      )
+    ) {
+      return {
+        status: "pre_publish_failed",
+        reason: "Spark payment attempt is not recoverable.",
+      }
+    }
+    try {
+      await input.persistAttempt?.(attempt)
+    } catch (error) {
+      return {
+        status: "pre_publish_failed",
+        reason: getErrorMessage(
+          error,
+          "Spark payment attempt could not be saved."
+        ),
       }
     }
 
@@ -1235,6 +1352,54 @@ export class SparkWalletManager {
       }
     }
   }
+}
+
+function getSparkLightningSendAttemptConflict(
+  walletId: string,
+  network: SparkWalletNetwork,
+  attempt: SparkLightningSendAttempt
+): string | null {
+  if (!attempt || typeof attempt !== "object") {
+    return "The persisted Spark payment attempt is invalid."
+  }
+  if (attempt.walletId !== walletId) {
+    return "The persisted Spark payment attempt belongs to another wallet."
+  }
+  if (attempt.network !== network) {
+    return "The persisted Spark payment attempt belongs to another network."
+  }
+  if (
+    attempt.schemaVersion !== 1 ||
+    typeof attempt.transferId !== "string" ||
+    !UUID_PATTERN.test(attempt.transferId) ||
+    typeof attempt.paymentRequest !== "string" ||
+    !attempt.paymentRequest.trim() ||
+    !Number.isSafeInteger(attempt.amountSats) ||
+    attempt.amountSats <= 0 ||
+    !Number.isSafeInteger(attempt.maxFeeSats) ||
+    attempt.maxFeeSats < 0 ||
+    !Number.isSafeInteger(attempt.createdAt) ||
+    attempt.createdAt < 0 ||
+    (attempt.completionTimeoutSecs !== undefined &&
+      (typeof attempt.completionTimeoutSecs !== "number" ||
+        !Number.isFinite(attempt.completionTimeoutSecs) ||
+        attempt.completionTimeoutSecs < 0))
+  ) {
+    return "The persisted Spark payment attempt is invalid."
+  }
+  const approvedAmountMsats = attempt.amountSats * 1_000
+  const invoice = normalizeLightningInvoice(attempt.paymentRequest)
+  const metadata = decodeLightningInvoiceMetadata(invoice)
+  if (
+    !Number.isSafeInteger(approvedAmountMsats) ||
+    metadata.createdAt === null ||
+    !decodeLightningInvoicePaymentHash(invoice) ||
+    getLightningInvoiceNetwork(invoice) !== network ||
+    metadata.msats !== approvedAmountMsats
+  ) {
+    return "The persisted Spark payment attempt contains an invalid Lightning invoice."
+  }
+  return null
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
