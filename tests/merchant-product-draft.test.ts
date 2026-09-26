@@ -133,6 +133,20 @@ function legacyForm(
 }
 
 describe("merchant product drafts", () => {
+  it("keeps the ships from default as a draft snapshot", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const selected = form({
+      listingAreaMode: "default",
+      listingAreaDefault: {
+        location: "Oakland, Alameda County, California, United States",
+        geohash: "9q9p",
+      },
+    })
+    expect(saveProductDraft(draftTarget, selected, storage)).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft).toEqual(selected)
+  })
+
   it("retains a selected listing-area ID and rejects unsupported country drafts", () => {
     const storage = new MemoryStorage()
     const draftTarget = target()

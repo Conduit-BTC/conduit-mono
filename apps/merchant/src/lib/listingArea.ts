@@ -186,7 +186,8 @@ export async function resolveListingArea(
 
 export async function getListingAreaForPublication(
   form: {
-    listingAreaMode: "unchanged" | "selected" | "clear"
+    listingAreaMode: "unchanged" | "default" | "selected" | "clear"
+    listingAreaDefault?: { location: string; geohash: string } | null
     listingAreaCountry: string
     listingAreaState: string
     listingAreaPlaceId: number | null
@@ -196,6 +197,9 @@ export async function getListingAreaForPublication(
 ): Promise<{ location?: string; geohash?: string }> {
   if (form.listingAreaMode === "unchanged") {
     return { location: existing?.location, geohash: existing?.geohash }
+  }
+  if (form.listingAreaMode === "default") {
+    return form.listingAreaDefault ?? {}
   }
   if (form.listingAreaMode === "clear") return {}
   if (form.listingAreaPlaceId === null) throw new Error("Select a listed place")

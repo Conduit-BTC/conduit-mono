@@ -1,0 +1,9 @@
+# Merchant shipping settings
+
+Merchant saves one signed, addressable NIP-78 application-data event (`kind:30078`, `d:conduit/merchant-shipping-settings`). This address is separate from the encrypted shopper presets document. Its versioned JSON content contains the accepted destination country rules and an optional `shipsFrom` pair: a human-readable nearby place and a four-character geohash. The document includes no street address, precise coordinates, or GeoNames place ID. Relay storage and reads may be public, even when a relay requires authentication.
+
+The Merchant Shipping page reads the latest validated signed revision, then publishes replacements through the account's planned relays. Saving requires a fresh complete read and a matching previously observed revision. Local storage caches the settings for authoring; a fresh session recovers the signed document. Earlier device-only destination presets can be published from Shipping. Existing legacy `30406` shipping options are only a migration source when no signed Merchant settings are found.
+
+The `shipsFrom` value is copied into each new product draft, including digital products and variation families. Each new `30402` listing then publishes paired `location` and `g` tags. Product edits preserve their own signed tags until the merchant changes or clears the area. Changing the shipping default affects future drafts only. These tags describe an approximate public listing area, not a pickup address or exact merchant position.
+
+The place picker loads one GeoNames `cities500` country asset, or one US state asset after state selection. The generated data, attribution, version, and compressed sizes are recorded in the place index source metadata and generation instructions alongside the assets. The app does not use a runtime geocoding service.

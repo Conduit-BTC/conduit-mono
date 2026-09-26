@@ -68,7 +68,8 @@ export interface MerchantProductFormValues extends ProductPublishFormValues {
   listingAreaCountry: string
   listingAreaState: string
   listingAreaPlaceId: number | null
-  listingAreaMode: "unchanged" | "selected" | "clear"
+  listingAreaMode: "unchanged" | "default" | "selected" | "clear"
+  listingAreaDefault?: { location: string; geohash: string } | null
   variations: ProductVariationFormState
   fulfillment: ProductFulfillmentChoice
   eventMarketReference: string

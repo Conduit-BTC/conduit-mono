@@ -16,7 +16,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 9
+const PRODUCT_DRAFT_VERSION = 10
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -138,6 +138,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 6 &&
         candidate.version !== 7 &&
         candidate.version !== 8 &&
+        candidate.version !== 9 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -309,6 +310,18 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     const listingAreaMode = legacyUSSelection
       ? "clear"
       : originalListingAreaMode
+    const listingAreaDefault =
+      candidate.version >= 10 &&
+      form.listingAreaDefault &&
+      typeof form.listingAreaDefault === "object"
+        ? (form.listingAreaDefault as Record<string, unknown>)
+        : null
+    const validListingAreaDefault =
+      !!listingAreaDefault &&
+      typeof listingAreaDefault.location === "string" &&
+      !!listingAreaDefault.location.trim() &&
+      typeof listingAreaDefault.geohash === "string" &&
+      /^[0123456789bcdefghjkmnpqrstuvwxyz]{4}$/.test(listingAreaDefault.geohash)
     const effectivePlaceId = legacyUSSelection ? null : listingAreaPlaceId
     if (
       (listingAreaCountry !== "" &&
@@ -321,8 +334,10 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         (!Number.isSafeInteger(effectivePlaceId) ||
           Number(effectivePlaceId) <= 0)) ||
       (listingAreaMode !== "unchanged" &&
+        listingAreaMode !== "default" &&
         listingAreaMode !== "selected" &&
         listingAreaMode !== "clear") ||
+      (listingAreaMode === "default" && !validListingAreaDefault) ||
       (listingAreaMode === "selected" &&
         (!listingAreaCountry ||
           effectivePlaceId === null ||
@@ -341,6 +356,14 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         listingAreaState,
         listingAreaPlaceId: effectivePlaceId as number | null,
         listingAreaMode,
+        ...(validListingAreaDefault
+          ? {
+              listingAreaDefault: {
+                location: listingAreaDefault!.location as string,
+                geohash: listingAreaDefault!.geohash as string,
+              },
+            }
+          : {}),
         price,
         stock,
         variations,

@@ -83,6 +83,21 @@ describe("Merchant listing area", () => {
       geohash: "9q8y",
     })
     expect(
+      await getListingAreaForPublication({
+        listingAreaMode: "default",
+        listingAreaDefault: {
+          location: "Oakland, Alameda County, California, United States",
+          geohash: "9q9p",
+        },
+        listingAreaCountry: "",
+        listingAreaState: "",
+        listingAreaPlaceId: null,
+      })
+    ).toEqual({
+      location: "Oakland, Alameda County, California, United States",
+      geohash: "9q9p",
+    })
+    expect(
       await getListingAreaForPublication(
         {
           listingAreaMode: "clear",

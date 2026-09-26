@@ -62,6 +62,9 @@ function getSearchHint(query: string, countryName: string): string {
 }
 
 export function ListingAreaPicker({
+  label = "Listing area (optional)",
+  helpText = "Choose a nearby listed town. This public area is approximate and does not promise pickup or reveal your exact position.",
+  publicAreaPrefix = "Public listing area",
   countryCode,
   stateCode,
   placeId,
@@ -71,6 +74,9 @@ export function ListingAreaPicker({
   onPlaceChange,
   onClear,
 }: {
+  label?: string
+  helpText?: string
+  publicAreaPrefix?: string
   countryCode: string
   stateCode: string
   placeId: number | null
@@ -100,11 +106,8 @@ export function ListingAreaPicker({
 
   return (
     <div className="grid gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-      <Label htmlFor="listing-area-country">Listing area (optional)</Label>
-      <p className="text-xs leading-5 text-[var(--text-muted)]">
-        Choose a nearby listed town. This public area is approximate and does
-        not promise pickup or reveal your exact position.
-      </p>
+      <Label htmlFor="listing-area-country">{label}</Label>
+      <p className="text-xs leading-5 text-[var(--text-muted)]">{helpText}</p>
       <Combobox
         id="listing-area-country"
         value={countryCode}
@@ -185,7 +188,7 @@ export function ListingAreaPicker({
       {publicArea && (
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
           <span>
-            Public listing area: <strong>{publicArea}</strong>
+            {publicAreaPrefix}: <strong>{publicArea}</strong>
           </span>
           <Button type="button" variant="ghost" size="sm" onClick={onClear}>
             Clear area

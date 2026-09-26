@@ -280,6 +280,7 @@ export interface ShippingCountryConfig {
 
 export interface ShippingConfig {
   countries: ShippingCountryConfig[]
+  shipsFrom?: { location: string; geohash: string } | null
 }
 
 export function getShippingStorageKey(
@@ -300,10 +301,27 @@ function toStringArray(value: unknown): string[] {
 
 function normalizeShippingConfig(value: unknown): ShippingConfig {
   if (!value || typeof value !== "object") return { countries: [] }
-  const maybeConfig = value as { countries?: unknown }
+  const maybeConfig = value as { countries?: unknown; shipsFrom?: unknown }
   if (!Array.isArray(maybeConfig.countries)) return { countries: [] }
 
   return {
+    ...(Object.hasOwn(maybeConfig, "shipsFrom")
+      ? {
+          shipsFrom:
+            maybeConfig.shipsFrom &&
+            typeof maybeConfig.shipsFrom === "object" &&
+            typeof (maybeConfig.shipsFrom as { location?: unknown })
+              .location === "string" &&
+            !!(maybeConfig.shipsFrom as { location: string }).location.trim() &&
+            typeof (maybeConfig.shipsFrom as { geohash?: unknown }).geohash ===
+              "string" &&
+            /^[0123456789bcdefghjkmnpqrstuvwxyz]{4}$/.test(
+              (maybeConfig.shipsFrom as { geohash: string }).geohash
+            )
+              ? (maybeConfig.shipsFrom as { location: string; geohash: string })
+              : null,
+        }
+      : {}),
     countries: maybeConfig.countries.flatMap(
       (item): ShippingCountryConfig[] => {
         if (!item || typeof item !== "object") return []
