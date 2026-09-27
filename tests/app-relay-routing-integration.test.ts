@@ -18,7 +18,7 @@ const OWNER = "a".repeat(64)
 const PERSONAL_RELAY = "wss://personal.example"
 const PERSONAL_ONLY_RELAY = "wss://personal-only.example"
 const REMOTE_PERSONAL_OVERLAP_RELAY = "wss://relay.nostr.band"
-const OVERLAP_RELAY = "wss://relay.ditto.pub"
+const OVERLAP_RELAY = "wss://conduit-congee.fly.dev"
 const DECLARED_INBOX = "wss://inbox.example"
 const REMOVED_APP_RELAY = "wss://relay.damus.io"
 
@@ -183,7 +183,7 @@ describe("app relay routing integration", () => {
     expect(personalOnly).toEqual(
       expect.arrayContaining([OVERLAP_RELAY, PERSONAL_RELAY])
     )
-    expect(personalOnly).not.toContain("wss://relay.dreamith.to")
+    expect(personalOnly).not.toContain("wss://relay.ditto.pub")
 
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "app", true)
@@ -330,7 +330,7 @@ describe("app relay routing integration", () => {
       repository,
     })
     expect(appDisabled).toContain(OVERLAP_RELAY)
-    expect(appDisabled).not.toContain("wss://relay.dreamith.to")
+    expect(appDisabled).not.toContain("wss://relay.ditto.pub")
 
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "app", true)

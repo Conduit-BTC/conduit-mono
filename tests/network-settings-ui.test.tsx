@@ -510,14 +510,14 @@ describe("RelaySettingsPanel account Network review", () => {
         relayIconUrl: "https://nostr.build/personal-relay.png",
       },
     })
-    const app = relayRow("wss://relay.conduit.market", {
+    const app = relayRow("wss://conduit-congee.fly.dev", {
       capability: {
         configuredUses: ["app_publishing"],
         observedCommerce: false,
         nip11: "unavailable",
         searchAdvertised: false,
         authEvidence: "untested",
-        relayName: "Conduit Relay",
+        relayName: "Conduit Marketplace Relay",
         relayIconUrl: "https://nostr.build/stale-conduit-relay.png",
         relayIconFallbackUrl: "/images/logo/logo-icon.svg",
       },
@@ -526,7 +526,6 @@ describe("RelaySettingsPanel account Network review", () => {
       app,
       ...[
         ["wss://relay.ditto.pub", "Ditto Relay"],
-        ["wss://relay.dreamith.to", "Dreamith Relay"],
         ["wss://relay.primal.net", "Primal Public Relay"],
         ["wss://nos.lol", "nos.lol"],
         ["wss://relay.plebeian.market", "Plebeian Market Relay"],
@@ -565,12 +564,14 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).toContain("App Relays")
     expect(markup).toContain("Your Relays")
     expect(markup).toContain(
-      "6 managed routes for reliable commerce, discovery, and messaging."
+      "5 managed routes for reliable commerce, discovery, and messaging."
     )
     expect(markup).toContain('aria-expanded="false"')
     expect(markup).toContain('hidden=""')
     expect(markup).toContain("Match Conduit defaults")
-    expect(markup.match(/\(Ditto backup\)/g)).toHaveLength(1)
+    expect(markup.match(/\(Secondary relay\)/g)).toHaveLength(1)
+    expect(markup).not.toContain("relay.dreamith.to")
+    expect(markup).not.toContain("relay.conduit.market")
     expect(markup).not.toContain("relay.damus.io")
     expect(markup).toContain(
       'class="mt-3 divide-y divide-[var(--border)] border-t border-[var(--border)]"'

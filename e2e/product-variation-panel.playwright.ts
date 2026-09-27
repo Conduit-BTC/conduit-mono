@@ -550,9 +550,12 @@ test("market product variation panel opens above the card when the page ends bel
   await chooseSize.click()
   await expect(page.getByRole("option", { name: "M" })).toBeVisible()
   await page.mouse.move(0, 0)
-  const panelWhileOpen = await geometry(panel)
+  const [panelWhileOpen, cardWhileOpen] = await Promise.all([
+    geometry(panel),
+    geometry(variableCard),
+  ])
   expect(
-    Math.abs(panelWhileOpen.y + panelWhileOpen.height - cardBox.y)
+    Math.abs(panelWhileOpen.y + panelWhileOpen.height - cardWhileOpen.y)
   ).toBeLessThanOrEqual(1)
   await page.keyboard.press("Escape")
 })
