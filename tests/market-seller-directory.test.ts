@@ -271,7 +271,7 @@ describe("merchant matches on the product search", () => {
       "utf8"
     )
     expect(model).toMatch(
-      /filterSellersByName\(\s*groupDiscoveredSellers\(productData\),\s*getMerchantIdentity,\s*query\s*\)/
+      /filterSellersByName\(\s*groupDiscoveredSellers\(merchantCandidateProducts\),\s*getMerchantIdentity,\s*query\s*\)/
     )
     expect(model).toContain("matchingSellers,")
 
