@@ -1234,6 +1234,9 @@ test.describe("CND-162 mobile browser baseline", () => {
         })
       )
       const primaryApp = await expectMobileSignerChoices(page, dialog)
+      await expect(
+        dialog.getByRole("button", { name: "Cancel pairing" })
+      ).toHaveCount(0)
       await assertMobileViewport(page)
       await dialog
         .getByRole("link", {
@@ -1249,6 +1252,9 @@ test.describe("CND-162 mobile browser baseline", () => {
           includeHidden: true,
         })
       ).toHaveCount(1)
+      await expect(
+        dialog.getByRole("button", { name: "Cancel pairing" })
+      ).toBeVisible()
       await dialog
         .getByRole("button", { name: "Copy connection link", exact: true })
         .tap()
@@ -1321,6 +1327,13 @@ test.describe("CND-162 mobile browser baseline", () => {
           exact: true,
         })
       ).toBeEnabled()
+      if (primaryApp === "Clave") {
+        await expect(
+          dialog
+            .getByRole("button", { name: "Connect with Clave" })
+            .locator("img")
+        ).toHaveCount(1)
+      }
       await dialog
         .getByRole("button", {
           name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",

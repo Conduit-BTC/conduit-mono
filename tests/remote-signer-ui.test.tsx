@@ -6,10 +6,8 @@ import {
   SignerConnectPanel,
   isMobileSignerEnvironment,
 } from "../packages/ui/src/components/SignerSwitch"
-import {
-  ClaveConnectButton,
-  claveConnectUrl,
-} from "../packages/ui/src/components/ClaveConnectButton"
+import { ClaveConnectButton } from "../packages/ui/src/components/ClaveConnectButton"
+import { claveConnectUrl } from "../packages/ui/src/components/signer-platform"
 import { SignerAuthUrlNotice } from "../packages/ui/src/components/SignerAuthUrlNotice"
 import { SignerRecoveryNotice } from "../packages/ui/src/components/SignerRecoveryNotice"
 
@@ -103,6 +101,8 @@ describe("remote signer UI", () => {
 
     expect(hasDisabledButton(markup, "Preparing Clave…")).toBe(false)
     expect(markup.includes("Preparing Clave…")).toBe(true)
+    expect(markup.includes('src="data:image/png;base64,')).toBe(true)
+    expect(markup.includes("Cancel pairing")).toBe(false)
     expect(markup.includes("clave.casa/connect")).toBe(false)
     expect(markup.includes("Continue with browser signer")).toBe(true)
     expect(markup.indexOf("Continue with browser signer")).toBeLessThan(
@@ -400,7 +400,7 @@ describe("remote signer UI", () => {
     }
   })
 
-  it("offers an explicit pairing cancellation action", () => {
+  it("keeps automatic mobile pairing cancellation out of the initial choices", () => {
     const markup = renderToStaticMarkup(
       <SignerConnectPanel
         {...commonProps}
@@ -411,10 +411,24 @@ describe("remote signer UI", () => {
       />
     )
 
-    expect(markup.includes("Cancel pairing")).toBe(true)
-    expect(hasDisabledButton(markup, "Cancel pairing")).toBe(false)
+    expect(markup.includes("Cancel pairing")).toBe(false)
     expect(markup.includes('role="status"')).toBe(true)
     expect(markup.includes("Ready. Open Clave to approve sign-in.")).toBe(true)
+  })
+
+  it("offers cancellation for a desktop pairing", () => {
+    const markup = renderToStaticMarkup(
+      <SignerConnectPanel
+        {...commonProps}
+        platform="desktop"
+        nostrConnectUri={nostrConnectUri}
+        connectPending
+        connectingMethod="nip46"
+      />
+    )
+
+    expect(markup.includes("Cancel pairing")).toBe(true)
+    expect(hasDisabledButton(markup, "Cancel pairing")).toBe(false)
   })
 
   it("uses visible remote pairing labels with decorative icons", () => {

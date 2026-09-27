@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { Button } from "./Button"
-import { ClaveConnectButton } from "./ClaveConnectButton"
+import { ClaveConnectButton, ClaveMark } from "./ClaveConnectButton"
 import {
   AMBER_INSTALL_URL,
   CLAVE_APP_STORE_URL,
@@ -60,6 +60,7 @@ export function SignerAppChoices({
           }}
           className={primaryClassName}
         >
+          {app === "clave" && <ClaveMark />}
           {connectPending ? `Preparing ${appName}…` : label}
         </Button>
       )

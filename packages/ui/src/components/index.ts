@@ -191,9 +191,9 @@ export {
 } from "./ProductImageUrlCollectionField"
 export {
   ClaveConnectButton,
-  claveConnectUrl,
   type ClaveConnectButtonProps,
 } from "./ClaveConnectButton"
+export { claveConnectUrl } from "./signer-platform"
 export {
   EventMarketCard,
   type EventMarketCardProps,

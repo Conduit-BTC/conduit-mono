@@ -52,7 +52,10 @@ Preparation is suppressed during restoration or another operation, for a remembe
 session, or while an error or existing request is present. The Clave Universal Link
 and Amber intent remain native anchors so the user's tap can open the app without
 an asynchronous redirect. Preparing a URI does not prove the signer is installed
-or the relay is ready.
+or the relay is ready. The Clave mark stays on the app action while preparing and
+after cancellation. Mobile "Cancel pairing" appears only after the user starts
+or opens a pairing; background preparation does not add a cancel action to the
+initial choices.
 
 The panel owns its generated and pasted-bunker attempts. Closing it, canceling,
 or changing to bunker entry cancels owned work.
