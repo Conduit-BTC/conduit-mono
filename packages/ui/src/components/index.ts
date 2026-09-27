@@ -18,6 +18,7 @@ export {
 } from "./ThemeToggleButton"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
+export { LightningStrikeOverlay } from "./LightningStrikeOverlay"
 export {
   ProjectTip,
   type ProjectTipPayResult,

@@ -2,7 +2,7 @@ import { Zap } from "lucide-react"
 import { useEffect, useId, useRef, useState } from "react"
 
 export interface LightningStrikeOverlayProps {
-  /** Render a decorative payment-sent effect without blocking the order. */
+  /** Render a decorative payment effect without blocking the current action. */
   open: boolean
   /**
    * Called once the entrance animation has finished playing. Use this to
@@ -135,7 +135,7 @@ function generateLightningPaths(w: number, h: number): BoltPath[] {
 }
 
 /**
- * LightningStrikeOverlay celebrates a recorded payment send. It renders a
+ * LightningStrikeOverlay celebrates a Lightning payment result. It renders a
  * decorative full-viewport storm, then dismisses via `onComplete()`.
  *
  * Token-driven (`--primary-*` scale only):

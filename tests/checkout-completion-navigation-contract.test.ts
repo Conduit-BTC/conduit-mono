@@ -53,7 +53,7 @@ describe("checkout completion navigation contracts", () => {
       "apps/market/src/routes/orders.tsx"
     ).text()
     const lightning = await Bun.file(
-      "apps/market/src/components/LightningStrikeOverlay.tsx"
+      "packages/ui/src/components/LightningStrikeOverlay.tsx"
     ).text()
 
     expect(checkoutRoute).not.toContain("LightningStrikeOverlay")
