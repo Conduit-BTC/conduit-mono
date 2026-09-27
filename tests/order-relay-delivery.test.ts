@@ -315,10 +315,7 @@ describe("order relay delivery retry", () => {
   })
 
   it("replays a partial compatibility order only to its original approved target", async () => {
-    const relayUrls = [
-      "wss://conduit-congee.fly.dev",
-      "wss://relay.dreamith.to",
-    ]
+    const relayUrls = [...config.dmCompatibilityOrderRelayUrls]
     config.dmCompatibilityOrderRelayUrls = relayUrls
     config.commerceDmFallbackRelayUrls = relayUrls
     const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })

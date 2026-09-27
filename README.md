@@ -140,6 +140,7 @@ The canonical fallback/reset relay list is code-owned in `packages/core/src/conf
 
 ```text
 wss://conduit-congee.fly.dev
+wss://relay.ditto.pub
 wss://nos.lol
 wss://relay.primal.net
 ```

@@ -183,7 +183,7 @@ describe("app relay routing integration", () => {
     expect(personalOnly).toEqual(
       expect.arrayContaining([OVERLAP_RELAY, PERSONAL_RELAY])
     )
-    expect(personalOnly).not.toContain("wss://relay.dreamith.to")
+    expect(personalOnly).not.toContain("wss://relay.ditto.pub")
 
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "app", true)
@@ -330,7 +330,7 @@ describe("app relay routing integration", () => {
       repository,
     })
     expect(appDisabled).toContain(OVERLAP_RELAY)
-    expect(appDisabled).not.toContain("wss://relay.dreamith.to")
+    expect(appDisabled).not.toContain("wss://relay.ditto.pub")
 
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "app", true)

@@ -56,7 +56,7 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
 const originalCommerceRelayUrls = [...config.commerceRelayUrls]
 const testCommerceFallbackRelays = [
-  "wss://relay.dreamith.to",
+  "wss://merchant-test-fallback.example",
   "wss://relay.primal.net",
 ]
 function addTestCommerceFallbackRelays(): void {

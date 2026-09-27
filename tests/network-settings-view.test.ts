@@ -359,7 +359,7 @@ describe("network settings view", () => {
       view.appRelays?.rows.map((row) => [row.capability.relayName, row.url])
     ).toEqual([
       ["Conduit Marketplace Relay", "wss://conduit-congee.fly.dev"],
-      ["Dreamith Relay", "wss://relay.dreamith.to"],
+      ["Ditto Relay", "wss://relay.ditto.pub"],
       ["Primal Public Relay", "wss://relay.primal.net"],
       ["nos.lol", "wss://nos.lol"],
       ["Plebeian Market Relay", "wss://relay.plebeian.market"],
@@ -384,7 +384,7 @@ describe("network settings view", () => {
     })
     expect(view.setupRecommendation?.rows.map((row) => row.url)).toEqual([
       "wss://conduit-congee.fly.dev",
-      "wss://relay.dreamith.to",
+      "wss://relay.ditto.pub",
       "wss://relay.primal.net",
     ])
     expect(

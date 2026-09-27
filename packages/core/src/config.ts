@@ -16,7 +16,7 @@ export interface RelayBucketConfig {
 }
 
 export type AppRelayNip65Mode = "read_write" | "write" | null
-export const APP_RELAY_REGISTRY_VERSION = 4
+export const APP_RELAY_REGISTRY_VERSION = 5
 
 /**
  * One transparent, code-owned Conduit app relay. These records are product
@@ -47,14 +47,14 @@ export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
     nip17Preset: true,
   },
   {
-    url: "wss://relay.dreamith.to",
-    fallbackName: "Dreamith Relay",
+    url: "wss://relay.ditto.pub",
+    fallbackName: "Ditto Relay",
     read: true,
     write: true,
-    commerce: false,
-    privateInbox: false,
+    commerce: true,
+    privateInbox: true,
     nip65Preset: "read_write",
-    nip17Preset: false,
+    nip17Preset: true,
   },
   {
     url: "wss://relay.primal.net",
@@ -97,6 +97,7 @@ export const CANONICAL_APP_WRITE_RELAYS =
     (relay) => relay.url
   )
 export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
+  "wss://relay.ditto.pub",
   "wss://nos.lol",
   "wss://relay.primal.net",
 ]
@@ -108,11 +109,18 @@ export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
 export const CLAVE_PUSH_RELAY = "wss://relay.powr.build"
 export const CANONICAL_COMMERCE_DISCOVERY_RELAYS = [
   "wss://conduit-congee.fly.dev",
+  "wss://relay.ditto.pub",
   "wss://relay.plebeian.market",
 ]
-export const CANONICAL_SEARCH_INDEX_RELAYS = ["wss://conduit-congee.fly.dev"]
+// Market product NIP-50 uses the primary entry. Ditto remains a secondary
+// search index for other discovery paths.
+export const CANONICAL_SEARCH_INDEX_RELAYS = [
+  "wss://conduit-congee.fly.dev",
+  "wss://relay.ditto.pub",
+]
 export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS = [
   "wss://conduit-congee.fly.dev",
+  "wss://relay.ditto.pub",
   "wss://nos.lol",
   "wss://relay.primal.net",
 ]
@@ -123,9 +131,11 @@ export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS = [
  */
 export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS = [
   "wss://conduit-congee.fly.dev",
+  "wss://relay.ditto.pub",
 ]
 export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
   "wss://conduit-congee.fly.dev",
+  "wss://relay.ditto.pub",
 ]
 /**
  * Validated-order compatibility routing (CND-208): explicit operator-approved
@@ -135,9 +145,11 @@ export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
  */
 export const CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS = [
   "wss://conduit-congee.fly.dev",
+  "wss://relay.ditto.pub",
 ]
 export const CANONICAL_ZAP_PUBLIC_RELAYS = [
   "wss://nos.lol",
+  "wss://relay.ditto.pub",
   "wss://relay.primal.net",
   "wss://relay.plebeian.market",
 ]

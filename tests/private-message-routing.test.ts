@@ -1494,7 +1494,10 @@ describe("planInboxReadRelays", () => {
       declaration: resolution({ state: "not_observed", relayUrls: [] }),
     })
 
-    expect(plan.relayUrls).toEqual(["wss://conduit-congee.fly.dev"])
+    expect(plan.relayUrls).toEqual([
+      "wss://conduit-congee.fly.dev",
+      "wss://relay.ditto.pub",
+    ])
   })
 
   it("unions declared and compatibility reads with sources", () => {
@@ -1707,7 +1710,10 @@ describe("selectPrivateMessageDeliveryRoute", () => {
     })
 
     expect(selection.route).toBe("compatibility_order")
-    expect(selection.relayUrls).toEqual(["wss://conduit-congee.fly.dev"])
+    expect(selection.relayUrls).toEqual([
+      "wss://conduit-congee.fly.dev",
+      "wss://relay.ditto.pub",
+    ])
   })
 
   it("always prefers a valid declaration over compatibility", () => {

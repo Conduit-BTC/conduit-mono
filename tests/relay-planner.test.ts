@@ -148,7 +148,7 @@ describe("planRelayReads", () => {
   })
 
   it("retains a general-only App URL when remote signed provenance authorizes it", () => {
-    const relayUrl = "wss://relay.dreamith.to"
+    const relayUrl = "wss://nos.lol"
     const plan = planRelayReads({
       intent: "author_products",
       authors: ["merchant"],
@@ -656,7 +656,7 @@ describe("planRelayWrites", () => {
   })
 
   it("keeps commerce App writes role-qualified without losing independent sources", () => {
-    const generalOnlyAppRelay = "wss://relay.dreamith.to"
+    const generalOnlyAppRelay = "wss://relay.primal.net"
     const personalRelay = "wss://personal-write.example"
     const plan = planRelayWrites({
       intent: "commerce_author_event",

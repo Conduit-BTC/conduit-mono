@@ -206,10 +206,7 @@ describe("durable order delivery staging", () => {
   })
 
   it("stages only the approved bounded compatibility plan", async () => {
-    const relayUrls = [
-      ...config.dmCompatibilityOrderRelayUrls,
-      "wss://relay.dreamith.to",
-    ]
+    const relayUrls = [...config.dmCompatibilityOrderRelayUrls]
     config.dmCompatibilityOrderRelayUrls = relayUrls
     config.commerceDmFallbackRelayUrls = relayUrls
     const compatibility = prepared({

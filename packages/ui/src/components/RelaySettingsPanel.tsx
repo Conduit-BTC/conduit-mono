@@ -2158,7 +2158,7 @@ function NetworkReviewSection({
   )
 }
 
-const DREAMITH_RELAY_URL = "wss://relay.dreamith.to"
+const SECONDARY_APP_RELAY_URL = "wss://relay.ditto.pub"
 
 function AppRelayRow({ row }: { row: AccountNetworkRelayRowView }) {
   const uses = [
@@ -2178,7 +2178,7 @@ function AppRelayRow({ row }: { row: AccountNetworkRelayRowView }) {
         <RelayIdentity
           row={row}
           urlAnnotation={
-            row.url === DREAMITH_RELAY_URL ? "Ditto backup" : undefined
+            row.url === SECONDARY_APP_RELAY_URL ? "Secondary relay" : undefined
           }
         />
       </div>
