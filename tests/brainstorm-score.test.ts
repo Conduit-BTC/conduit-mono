@@ -59,4 +59,86 @@ describe("Brainstorm global score", () => {
       }
     )
   })
+
+  it("retries a pending score after Retry-After without changing the request", async () => {
+    let calls = 0
+    const fetchMock = mock(async () => {
+      calls += 1
+      if (calls === 1) {
+        return new Response(null, {
+          status: 202,
+          headers: { "Retry-After": "1" },
+        })
+      }
+      return new Response(JSON.stringify({ pubkey: PUBKEY, rank: 0.734 }), {
+        status: 200,
+      })
+    })
+    globalThis.fetch = fetchMock as typeof fetch
+    const signal = new AbortController().signal
+    const started = Date.now()
+
+    expect(await fetchBrainstormGlobalScore(PUBKEY, signal)).toEqual({
+      pubkey: PUBKEY,
+      score: 73,
+    })
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1]).toEqual(fetchMock.mock.calls[0])
+  })
+
+  it("stops a pending retry when the request is cancelled", async () => {
+    let firstRequestStarted!: () => void
+    const firstRequest = new Promise<void>((resolve) => {
+      firstRequestStarted = resolve
+    })
+    const fetchMock = mock(async () => {
+      firstRequestStarted()
+      return new Response(null, {
+        status: 202,
+        headers: { "Retry-After": "30" },
+      })
+    })
+    globalThis.fetch = fetchMock as typeof fetch
+    const controller = new AbortController()
+    const scorePromise = fetchBrainstormGlobalScore(PUBKEY, controller.signal)
+
+    await firstRequest
+    controller.abort()
+
+    await expect(scorePromise).rejects.toMatchObject({ name: "AbortError" })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("bounds repeated pending responses", async () => {
+    const fetchMock = mock(
+      async () =>
+        new Response(null, {
+          status: 202,
+          headers: { "Retry-After": "0" },
+        })
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await expect(fetchBrainstormGlobalScore(PUBKEY)).rejects.toThrow(
+      "still being prepared"
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it("does not retry before a delay beyond the wait budget", async () => {
+    const fetchMock = mock(
+      async () =>
+        new Response(null, {
+          status: 202,
+          headers: { "Retry-After": "31" },
+        })
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await expect(fetchBrainstormGlobalScore(PUBKEY)).rejects.toThrow(
+      "still being prepared"
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 })
