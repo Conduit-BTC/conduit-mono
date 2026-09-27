@@ -44,8 +44,8 @@ export function BrainstormGlobalScoreLink({
       rel="noopener noreferrer"
       referrerPolicy="no-referrer"
       className={cn(
-        "brainstorm-score-link inline-flex h-11 w-[104px] shrink-0 items-center gap-1.5 rounded-full px-1.5 tabular-nums",
-        "sm:h-[46px] sm:w-[320px] sm:gap-2 sm:px-2",
+        "brainstorm-score-link inline-flex h-11 w-fit shrink-0 items-center gap-1.5 rounded-full px-1.5 tabular-nums",
+        "sm:h-[46px] sm:gap-2 sm:px-2",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
       )}
       aria-label={`${accessibleScore}. Open this profile on Brainstorm`}
@@ -67,7 +67,7 @@ export function BrainstormGlobalScoreLink({
           {statusDisplay}
         </span>
       </span>
-      <span className="ml-auto flex shrink-0 items-baseline whitespace-nowrap">
+      <span className="flex shrink-0 items-baseline whitespace-nowrap">
         <span className="text-base font-bold text-[var(--brainstorm-score-value)] sm:text-xl">
           {scoreDisplay}
         </span>
