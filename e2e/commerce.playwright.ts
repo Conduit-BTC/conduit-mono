@@ -411,11 +411,20 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       .toBe(true)
 
     const merchantNpub = nip19.npubEncode(merchant.pubkey)
-    await buyerPage.goto(`${marketUrl}/store/${merchantNpub}`)
+    await buyerPage.goto(
+      `${marketUrl}/store/${merchantNpub}?q=${encodeURIComponent(productTitle)}`
+    )
+    await expect
+      .poll(() => {
+        const url = new URL(buyerPage.url())
+        return `${url.pathname}?q=${url.searchParams.get("q")}`
+      })
+      .toBe(`/${merchantNpub}?q=${productTitle}`)
+    await buyerPage.goto(`${marketUrl}/${merchantNpub}`)
     await expect(
       buyerPage.getByRole("heading", { name: merchantName, exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    const search = buyerPage.getByPlaceholder("Search this merchant's items")
+    const search = buyerPage.getByPlaceholder("Search listings")
     await search.fill(productTitle)
     await search.press("Enter")
     const product = buyerPage

@@ -64,7 +64,7 @@ const appDefinitions: Record<ConduitAppId, ConduitNip89AppDefinition> = {
       EVENT_KINDS.PRODUCT,
     ],
     web: [
-      { url: "https://shop.conduit.market/u/<bech32>", entity: "nprofile" },
+      { url: "https://shop.conduit.market/<bech32>", entity: "nprofile" },
       {
         url: "https://shop.conduit.market/products/<bech32>",
         entity: "naddr",

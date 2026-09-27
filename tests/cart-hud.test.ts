@@ -6,6 +6,7 @@ import {
   getCartHudRouteMode,
   reconcileCartHudMerchant,
 } from "../apps/market/src/lib/cart-hud"
+import { pubkeyToNpub } from "@conduit/core"
 
 describe("Market cart HUD policy", () => {
   it("matches the Merchant navigation selected and hover palette", () => {
@@ -139,6 +140,9 @@ describe("Market cart HUD policy", () => {
   it("expands on browse surfaces, compacts product detail, and suppresses workflows", () => {
     expect(getCartHudRouteMode("/products")).toBe("expanded")
     expect(getCartHudRouteMode("/store/merchant")).toBe("expanded")
+    expect(getCartHudRouteMode(`/${pubkeyToNpub("a".repeat(64))}`)).toBe(
+      "expanded"
+    )
     expect(getCartHudRouteMode("/events")).toBe("expanded")
     expect(getCartHudRouteMode("/events/")).toBe("expanded")
     expect(getCartHudRouteMode("/events/naddr1example")).toBe("expanded")

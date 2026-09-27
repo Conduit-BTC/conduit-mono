@@ -20,7 +20,7 @@ describe("authenticated account profile and storefront read propagation", () => 
       source("apps/market/src/hooks/useMarketBrowseModel.ts"),
       source("apps/market/src/routes/events/$collectionRef.tsx"),
       source("apps/market/src/routes/products/$productId.tsx"),
-      source("apps/market/src/routes/u/$profileRef.tsx"),
+      source("apps/market/src/routes/$identityRef.tsx"),
       source("apps/market/src/lib/storeProducts.ts"),
     ])
 
@@ -38,10 +38,9 @@ describe("authenticated account profile and storefront read propagation", () => 
     expect(eventCatalog).toContain("authenticatedPubkey,")
     expect(productDetail).toContain("const accountPubkey = authenticatedPubkey")
     expect(productDetail).toContain("authenticatedPubkey,")
-    expect(publicProfile).toContain(
-      "fetchStoreProducts(\n        pubkey!,\n        accountPubkey,\n        authenticatedPubkey,\n        () => !signal.aborted && shouldContinueAccountRead()\n      )"
-    )
-    expect(publicProfile).toContain('authenticatedPubkey ?? "anonymous"')
+    expect(publicProfile).toContain("useProgressiveProducts({")
+    expect(publicProfile).toContain("authenticatedPubkey: activeViewerPubkey,")
+    expect(publicProfile).toContain("useMerchantTrustContext({")
     expect(storeProducts).toContain("authenticatedPubkey?: string | null")
     expect(storeProducts).toContain("accountPubkey,\n    authenticatedPubkey,")
   })

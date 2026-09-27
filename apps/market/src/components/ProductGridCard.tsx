@@ -269,8 +269,8 @@ export function ProductGridCard({
         onMerchantActivate ??
         (() =>
           navigate({
-            to: "/store/$pubkey",
-            params: { pubkey: pubkeyToNpub(product.pubkey) },
+            to: "/$identityRef",
+            params: { identityRef: pubkeyToNpub(product.pubkey) },
           }))
       }
       onInvalidImage={() => onInvalidImage?.(product.id)}

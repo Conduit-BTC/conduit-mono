@@ -508,7 +508,7 @@ describe("merchant organizer event market route", () => {
     expect(panel).not.toContain("No public profile found")
     expect(panel).toContain("getProfileName(profile)")
     expect(panel).toContain("Copy npub")
-    expect(panel).toContain("getStorefrontUrl(pubkey)")
+    expect(panel).toContain("getIdentityUrl(pubkey)")
     expect(panel).toContain("Open storefront")
     expect(panel).toContain("Profile context is informational")
     expect(panel).toContain(

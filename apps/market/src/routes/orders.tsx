@@ -1660,8 +1660,8 @@ function OrderDetail({
                 />
                 <div className="min-w-0">
                   <Link
-                    to="/store/$pubkey"
-                    params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
+                    to="/$identityRef"
+                    params={{ identityRef: pubkeyToNpub(row.merchantPubkey) }}
                     className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
                   >
                     {merchantName}
@@ -2413,8 +2413,8 @@ function OrderDetail({
               />
               <div className="min-w-0">
                 <Link
-                  to="/store/$pubkey"
-                  params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
+                  to="/$identityRef"
+                  params={{ identityRef: pubkeyToNpub(row.merchantPubkey) }}
                   className="truncate text-base font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
                 >
                   {merchantName}

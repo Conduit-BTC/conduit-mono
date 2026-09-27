@@ -62,8 +62,8 @@ function renderLine(line: string, lineIndex: number): ReactNode {
       parts.push(
         <Link
           key={`profile-${lineIndex}-${index}`}
-          to="/u/$profileRef"
-          params={{ profileRef: core }}
+          to="/$identityRef"
+          params={{ identityRef: core }}
           className={LINK_CLASS_NAME}
         >
           {core}

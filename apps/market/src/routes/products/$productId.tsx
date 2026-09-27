@@ -421,8 +421,8 @@ function ProductPage() {
           {product && (
             <>
               <Link
-                to="/store/$pubkey"
-                params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                to="/$identityRef"
+                params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                 className="transition-colors hover:text-[var(--text-primary)]"
               >
                 {merchantIdentityPending ? (
@@ -549,8 +549,8 @@ function ProductPage() {
             </Button>
             <Button asChild variant="outline" className="h-11 px-5 text-sm">
               <Link
-                to="/store/$pubkey"
-                params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                to="/$identityRef"
+                params={{ identityRef: pubkeyToNpub(product.pubkey) }}
               >
                 View merchant
               </Link>
@@ -637,8 +637,8 @@ function ProductPage() {
                 </div>
                 <div className="mt-3 flex items-start gap-3">
                   <Link
-                    to="/store/$pubkey"
-                    params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                    to="/$identityRef"
+                    params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                     className="block shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-elevated)]"
                     aria-label={`Visit ${merchantName} merchant page`}
                   >
@@ -654,8 +654,8 @@ function ProductPage() {
                   </Link>
                   <div className="min-w-0 flex-1">
                     <Link
-                      to="/store/$pubkey"
-                      params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                      to="/$identityRef"
+                      params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                       className="flex min-w-0 items-center gap-1.5 rounded-md transition-colors hover:text-secondary-300"
                     >
                       {merchantIdentityPending ? (
@@ -680,8 +680,8 @@ function ProductPage() {
                     {!merchantNip05 ? (
                       <div className="mt-1 flex min-w-0 items-center gap-2">
                         <Link
-                          to="/store/$pubkey"
-                          params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                          to="/$identityRef"
+                          params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                           className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
                         >
                           {formatNpub(product.pubkey, 10)}
@@ -1003,8 +1003,8 @@ function ProductPage() {
               </div>
               <Button asChild variant="outline" className="h-11 px-4 text-sm">
                 <Link
-                  to="/store/$pubkey"
-                  params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                  to="/$identityRef"
+                  params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                 >
                   <Store className="h-[18px] w-[18px]" />
                   Browse merchant
