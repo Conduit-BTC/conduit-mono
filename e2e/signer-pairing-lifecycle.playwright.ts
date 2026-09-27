@@ -15,9 +15,11 @@ interface PairingInput {
 interface PairingHarness {
   starts: number
   bunkerStarts: number
+  browserStarts: number
   cancels: number
   start: () => void
   runBunker: () => void
+  switchToBrowser: () => void
   cancel: () => void
   settle: (attempt: number) => void
   update: (input: PairingInput) => void
@@ -47,9 +49,11 @@ async function mountPairing(
       const harness: PairingHarness = {
         starts: 0,
         bunkerStarts: 0,
+        browserStarts: 0,
         cancels: 0,
         start: () => undefined,
         runBunker: () => undefined,
+        switchToBrowser: () => undefined,
         cancel: () => undefined,
         settle: (attempt) => settlements[attempt - 1]?.(),
         update: (next) => {
@@ -79,6 +83,10 @@ async function mountPairing(
           void pairing.run(() => {
             harness.bunkerStarts += 1
             return new Promise<void>((resolve) => settlements.push(resolve))
+          })
+        harness.switchToBrowser = () =>
+          void pairing.cancelAndRun(() => {
+            harness.browserStarts += 1
           })
         harness.cancel = pairing.cancel
         return React.createElement("span", null, "Pairing harness ready")
@@ -181,6 +189,64 @@ test("an older pairing promise cannot release ownership of its replacement @mark
   expect(await page.evaluate(() => window.__signerPairingHarness.cancels)).toBe(
     2
   )
+})
+
+test("browser switch waits for the canceled pairing to settle @market", async ({
+  page,
+}) => {
+  await mountPairing(page)
+  await expect
+    .poll(() => page.evaluate(() => window.__signerPairingHarness.starts))
+    .toBe(1)
+  await page.evaluate(() => window.__signerPairingHarness.switchToBrowser())
+  expect(await page.evaluate(() => window.__signerPairingHarness.cancels)).toBe(
+    1
+  )
+  expect(
+    await page.evaluate(() => window.__signerPairingHarness.browserStarts)
+  ).toBe(0)
+
+  await page.evaluate(() => window.__signerPairingHarness.settle(1))
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__signerPairingHarness.browserStarts)
+    )
+    .toBe(1)
+  await page.evaluate(() => window.__signerPairingHarness.unmount())
+})
+
+test("closing or replacing the pairing prevents a delayed browser switch @market", async ({
+  page,
+}) => {
+  await mountPairing(page)
+  await expect
+    .poll(() => page.evaluate(() => window.__signerPairingHarness.starts))
+    .toBe(1)
+  await page.evaluate(() => {
+    window.__signerPairingHarness.switchToBrowser()
+    window.__signerPairingHarness.unmount()
+    window.__signerPairingHarness.settle(1)
+  })
+  expect(
+    await page.evaluate(() => window.__signerPairingHarness.browserStarts)
+  ).toBe(0)
+
+  await mountPairing(page)
+  await expect
+    .poll(() => page.evaluate(() => window.__signerPairingHarness.starts))
+    .toBe(1)
+  await page.evaluate(() => {
+    window.__signerPairingHarness.switchToBrowser()
+    window.__signerPairingHarness.start()
+    window.__signerPairingHarness.settle(1)
+  })
+  expect(await page.evaluate(() => window.__signerPairingHarness.starts)).toBe(
+    2
+  )
+  expect(
+    await page.evaluate(() => window.__signerPairingHarness.browserStarts)
+  ).toBe(0)
+  await page.evaluate(() => window.__signerPairingHarness.unmount())
 })
 
 test("remembered sessions and existing work do not start or cancel a new pairing automatically @market", async ({
