@@ -11,6 +11,16 @@
   --cash-app-green: #00e013;
   --project-tip-heart: #d32973;
 
+  /* Brainstorm global score */
+  --brainstorm-score-bg: #241a3d;
+  --brainstorm-score-icon-bg: #140e2d;
+  --brainstorm-score-label: #f7f3ff;
+  --brainstorm-score-muted: #b6acd1;
+  --brainstorm-score-value: #65e4ef;
+  --brainstorm-score-tail: #c7beda;
+  --brainstorm-score-border-start: #8e61ff;
+  --brainstorm-score-border-end: #46c9db;
+
   /* Base hue/saturation for color calculations */
   --base-h: 0;
   --base-s: 0%;
@@ -216,6 +226,14 @@
   --background: var(--neutral-150);
   --foreground: var(--neutral-900);
   --theme-color: var(--background);
+
+  /* Brainstorm global score */
+  --brainstorm-score-bg: #f5f0ff;
+  --brainstorm-score-icon-bg: #eae0ff;
+  --brainstorm-score-label: #1e1730;
+  --brainstorm-score-muted: #66577b;
+  --brainstorm-score-value: #5b2dbd;
+  --brainstorm-score-tail: #625674;
 
   /* Tier 1 - base panels / cards */
   --card: white;
