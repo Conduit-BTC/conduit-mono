@@ -320,6 +320,25 @@ describe("durable order delivery staging", () => {
       )
     ).rejects.toThrow("validated relay plan")
 
+    const formerConduit = "wss://relay.conduit.market"
+    await expect(
+      stageOrderRelayDelivery(
+        {
+          lifecycle: lifecycleInput(),
+          prepared: {
+            ...compatibility,
+            compatibilityPlan: { relayUrls: [formerConduit, relayUrls[1]!] },
+            relayPlan: [
+              { relayUrl: formerConduit, source: "compatibility_registry" },
+              { relayUrl: relayUrls[1]!, source: "compatibility_registry" },
+            ],
+          },
+          leaseOwner: "another-document",
+        },
+        { repository: memoryRepository().repository, now: () => 100 }
+      )
+    ).rejects.toThrow("validated relay plan")
+
     await expect(
       stageOrderRelayDelivery(
         {

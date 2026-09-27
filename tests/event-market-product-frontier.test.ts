@@ -1532,8 +1532,9 @@ describe("event-market exact product request frontiers", () => {
 
     expect(result.state).toBe("partial")
     expect(result.coverage).toMatchObject({
-      attemptedRelayCount: 2,
-      completeRelayCount: 1,
+      // Congee, Ditto, and Plebeian are admitted; only Plebeian is partial.
+      attemptedRelayCount: 3,
+      completeRelayCount: 2,
       partialRelayCount: 1,
       failedRelayCount: 0,
     })
