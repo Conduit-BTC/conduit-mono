@@ -10,8 +10,10 @@ NIP-07 and NIP-46 connections.
   Universal Link setup. Conduit prepares a standard `nostrconnect://` request,
   including its client metadata and requested permissions, then percent-encodes
   that request once in `https://clave.casa/connect/?uri=...`. The Universal Link
-  gives Clave the app context needed for its connection approval UI. It does not
-  extend Safari's background WebSocket lifetime, so a signer-issued `bunker://`
+  gives Clave the app context needed for its connection approval UI. If Clave is
+  absent, its connection page offers installation and preserves the request for
+  the user's return. The link does not extend Safari's background WebSocket
+  lifetime, so a signer-issued `bunker://`
   connection remains the explicit same-device fallback when the direct handoff
   misses its acknowledgement. QR and copy remain cross-device fallbacks.
 - NIP-07 is the first visible mobile action. A detected signer appears as

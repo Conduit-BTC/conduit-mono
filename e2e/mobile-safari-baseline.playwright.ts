@@ -200,7 +200,7 @@ async function expectMobileSignerChoices(
     await expect(surface.locator('a[href^="intent://"]')).toHaveCount(0)
     await expect(
       surface.locator('a[href^="https://apps.apple.com/"]')
-    ).toBeVisible()
+    ).toHaveCount(0)
     return "Clave"
   }
 

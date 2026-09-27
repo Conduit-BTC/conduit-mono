@@ -1,11 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { Button } from "./Button"
 import { ClaveConnectButton, ClaveMark } from "./ClaveConnectButton"
-import {
-  AMBER_INSTALL_URL,
-  CLAVE_APP_STORE_URL,
-  androidSignerConnectUrl,
-} from "./signer-platform"
+import { AMBER_INSTALL_URL, androidSignerConnectUrl } from "./signer-platform"
 
 export type SignerApp = "clave" | "amber"
 const primaryClassName = "h-12 w-full rounded-xl text-base font-semibold"
@@ -96,18 +92,18 @@ export function SignerAppChoices({
           ? `Ready. Open ${appName} to approve sign-in.`
           : ""}
       </p>
-      <p className="text-center text-sm leading-6 text-[var(--text-secondary)]">
-        <a
-          className="inline-flex min-h-11 items-center rounded-sm text-primary-400 underline underline-offset-4 focus-visible:outline focus-visible:outline-2"
-          href={platform === "ios" ? CLAVE_APP_STORE_URL : AMBER_INSTALL_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {platform === "ios"
-            ? "Get Clave on the App Store"
-            : "Get Amber on F-Droid"}
-        </a>
-      </p>
+      {platform === "android" && (
+        <p className="text-center text-sm leading-6 text-[var(--text-secondary)]">
+          <a
+            className="inline-flex min-h-11 items-center rounded-sm text-primary-400 underline underline-offset-4 focus-visible:outline focus-visible:outline-2"
+            href={AMBER_INSTALL_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Get Amber on F-Droid
+          </a>
+        </p>
+      )}
     </div>
   )
 }

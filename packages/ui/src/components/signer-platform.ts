@@ -6,7 +6,6 @@ export interface SignerEnvironmentInput {
 
 export type SignerPlatform = "ios" | "android" | "desktop" | "unknown-mobile"
 
-export const CLAVE_APP_STORE_URL = "https://apps.apple.com/app/id6762104155"
 const CLAVE_CONNECT_URL = "https://clave.casa/connect/?uri="
 export const AMBER_INSTALL_URL =
   "https://f-droid.org/en/packages/com.greenart7c3.nostrsigner/"

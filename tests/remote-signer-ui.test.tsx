@@ -210,16 +210,14 @@ describe("remote signer UI", () => {
       />
     )
     const handoff = linkAttributes(markup, "Connect with Clave")
-    const install = linkAttributes(markup, "Get Clave on the App Store")
 
     expect(handoff.includes(`href="${claveConnectUrl(nostrConnectUri)}"`)).toBe(
       true
     )
     expect(handoff.includes('target="_self"')).toBe(true)
     expect(hasDisabledButton(markup, "Connect with Clave")).toBe(false)
-    expect(
-      install.includes('href="https://apps.apple.com/app/id6762104155"')
-    ).toBe(true)
+    expect(markup.includes("Get Clave on the App Store")).toBe(false)
+    expect(markup.includes("apps.apple.com")).toBe(false)
     expect(markup.includes("Ready. Open your app to approve sign-in.")).toBe(
       false
     )
