@@ -15,10 +15,10 @@ describe("Brainstorm global score", () => {
   it("converts the live ORE influence scale to Brainstorm's 0–100 display", () => {
     expect(
       parseBrainstormGlobalScore({ pubkey: PUBKEY, rank: 0.934 }, PUBKEY)
-    ).toEqual({ pubkey: PUBKEY, score: 93 })
+    ).toBe(93)
     expect(
       parseBrainstormGlobalScore({ pubkey: PUBKEY, rank: 0 }, PUBKEY)
-    ).toEqual({ pubkey: PUBKEY, score: 0 })
+    ).toBe(0)
   })
 
   it("rejects a mismatched identity or malformed score", () => {
@@ -43,10 +43,7 @@ describe("Brainstorm global score", () => {
     globalThis.fetch = fetchMock as typeof fetch
     const signal = new AbortController().signal
 
-    expect(await fetchBrainstormGlobalScore(PUBKEY, signal)).toEqual({
-      pubkey: PUBKEY,
-      score: 73,
-    })
+    expect(await fetchBrainstormGlobalScore(PUBKEY, signal)).toBe(73)
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.brainstorm.world/stats/pubkey",
       {
@@ -78,10 +75,7 @@ describe("Brainstorm global score", () => {
     const signal = new AbortController().signal
     const started = Date.now()
 
-    expect(await fetchBrainstormGlobalScore(PUBKEY, signal)).toEqual({
-      pubkey: PUBKEY,
-      score: 73,
-    })
+    expect(await fetchBrainstormGlobalScore(PUBKEY, signal)).toBe(73)
     expect(Date.now() - started).toBeGreaterThanOrEqual(900)
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock.mock.calls[1]).toEqual(fetchMock.mock.calls[0])

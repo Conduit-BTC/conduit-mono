@@ -33,15 +33,10 @@ function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-export type BrainstormGlobalScore = {
-  pubkey: string
-  score: number
-}
-
 export function parseBrainstormGlobalScore(
   value: unknown,
   expectedPubkey: string
-): BrainstormGlobalScore {
+): number {
   if (
     !value ||
     typeof value !== "object" ||
@@ -56,18 +51,15 @@ export function parseBrainstormGlobalScore(
     throw new Error("Brainstorm returned an invalid global score")
   }
 
-  return {
-    pubkey: expectedPubkey,
-    // ORE-02 currently returns raw GrapeRank influence (0–1). Brainstorm's
-    // public profile presents the corresponding rounded 0–100 score.
-    score: Math.round(value.rank * 100),
-  }
+  // ORE-02 currently returns raw GrapeRank influence (0–1). Brainstorm's
+  // public profile presents the corresponding rounded 0–100 score.
+  return Math.round(value.rank * 100)
 }
 
 export async function fetchBrainstormGlobalScore(
   pubkey: string,
   signal?: AbortSignal
-): Promise<BrainstormGlobalScore> {
+): Promise<number> {
   if (!HEX_PUBKEY.test(pubkey)) {
     throw new Error("Brainstorm score lookup requires a hex pubkey")
   }

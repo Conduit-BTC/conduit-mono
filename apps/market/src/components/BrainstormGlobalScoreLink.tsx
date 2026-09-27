@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
 import { normalizePubkey, pubkeyToNpub } from "@conduit/core"
-import { cn } from "@conduit/ui"
 import brainstormBMark from "../assets/brainstorm-b.svg"
 import { fetchBrainstormGlobalScore } from "../lib/brainstorm-score"
 
@@ -21,7 +20,7 @@ export function BrainstormGlobalScoreLink({
 
   if (!hexPubkey) return null
 
-  const score = scoreQuery.data?.score
+  const score = scoreQuery.data
   const accessibleScore =
     score !== undefined
       ? `Brainstorm global trust score: ${score} out of 100`
@@ -43,11 +42,7 @@ export function BrainstormGlobalScoreLink({
       target="_blank"
       rel="noopener noreferrer"
       referrerPolicy="no-referrer"
-      className={cn(
-        "brainstorm-score-link inline-flex h-11 w-fit shrink-0 items-center gap-1.5 rounded-full px-1.5 tabular-nums",
-        "sm:h-[46px] sm:gap-2 sm:px-2",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
-      )}
+      className="brainstorm-score-link inline-flex h-11 w-fit shrink-0 items-center gap-1.5 rounded-full px-1.5 tabular-nums sm:h-[46px] sm:gap-2 sm:px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
       aria-label={`${accessibleScore}. Open this profile on Brainstorm`}
       title="Brainstorm's global network score is not merchant verification. A zero may mean no observed score."
     >
