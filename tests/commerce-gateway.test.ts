@@ -2534,6 +2534,8 @@ describe("commerce gateway", () => {
     const searchRequests: Array<{
       search: string | undefined
       kinds: number[] | undefined
+      authors: string[] | undefined
+      limit: number | undefined
       relayUrls: readonly string[] | undefined
     }> = []
 
@@ -2544,6 +2546,8 @@ describe("commerce gateway", () => {
           searchRequests.push({
             search: filter.search,
             kinds: filter.kinds,
+            authors: filter.authors,
+            limit: filter.limit,
             relayUrls: options?.relayUrls,
           })
           return [olderSearchHit, outsidePerspective] as never
@@ -2562,11 +2566,70 @@ describe("commerce gateway", () => {
       {
         search: "ceramics",
         kinds: [EVENT_KINDS.PRODUCT],
+        authors: ["merchant-a"],
+        limit: 100,
         relayUrls: ["wss://conduit-congee.fly.dev"],
       },
     ])
     expect(result.data.map((record) => record.product.title)).toEqual([
       "Blue cup",
+    ])
+  })
+
+  it("searches each bounded author batch before the NIP-50 result limit", async () => {
+    const authorPubkeys = Array.from(
+      { length: 65 },
+      (_, index) => `merchant-${index}`
+    )
+    const outsideHits = Array.from({ length: 100 }, (_, index) =>
+      makeProductEvent({
+        pubkey: "outside-catalog",
+        dTag: `outside-${index}`,
+        id: `outside-${index}`,
+        createdAt: 200 + index,
+        title: `Outside catalog ${index}`,
+      })
+    )
+    const semanticMatch = makeProductEvent({
+      pubkey: authorPubkeys[64],
+      dTag: "blue-tee",
+      id: "in-scope-semantic-match",
+      createdAt: 100,
+      title: "Blue cotton tee",
+    })
+    const searchFilters: Array<{
+      authors: string[] | undefined
+      limit: number | undefined
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.search) return []
+        searchFilters.push({ authors: filter.authors, limit: filter.limit })
+        return [...outsideHits, semanticMatch]
+          .filter(
+            (event) => !filter.authors || filter.authors.includes(event.pubkey)
+          )
+          .slice(0, filter.limit) as never
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "bitcoin t shirt",
+      searchIndex: true,
+      authorPubkeys,
+    })
+
+    expect(searchFilters).toHaveLength(2)
+    expect(searchFilters.every((filter) => filter.limit === 100)).toBe(true)
+    expect(
+      searchFilters.every((filter) => (filter.authors?.length ?? 0) <= 64)
+    ).toBe(true)
+    expect(searchFilters.flatMap((filter) => filter.authors ?? [])).toEqual(
+      authorPubkeys
+    )
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Blue cotton tee",
     ])
   })
 

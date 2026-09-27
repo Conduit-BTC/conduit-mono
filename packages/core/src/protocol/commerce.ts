@@ -4414,28 +4414,37 @@ export async function getMarketplaceProducts(
     let searchDegraded = false
     let searchCapped = false
     const searchText = query.searchIndex ? query.textQuery?.trim() : undefined
-    const searchRecordsPromise = searchText
-      ? fetchPublicProductRecords({
-          searchText,
-          authenticatedPubkey: query.authenticatedPubkey,
-          accountPubkey: query.accountPubkey,
-          shouldContinue: query.shouldContinue,
-          limit: 100,
-          readPolicy: {
-            maxRelays: 1,
-            connectTimeoutMs: 2_000,
-            fetchTimeoutMs: 3_000,
-          },
-          onTransportStatus: (degraded, capped) => {
-            searchDegraded ||= degraded
-            searchCapped ||= capped
-          },
-        }).catch((error: unknown) => {
-          if (query.shouldContinue?.() === false) throw error
-          searchDegraded = true
-          return [] as CommerceProductRecord[]
-        })
-      : Promise.resolve([] as CommerceProductRecord[])
+    const searchAuthorChunks = authorPubkeys
+      ? chunkStrings(uniqueStrings(authorPubkeys), PRODUCT_AUTHOR_CHUNK_SIZE)
+      : [undefined]
+    const searchRecordChunksPromise = searchText
+      ? mapWithConcurrency(
+          searchAuthorChunks,
+          PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+          async (authors) =>
+            await fetchPublicProductRecords({
+              authors,
+              searchText,
+              authenticatedPubkey: query.authenticatedPubkey,
+              accountPubkey: query.accountPubkey,
+              shouldContinue: query.shouldContinue,
+              limit: 100,
+              readPolicy: {
+                maxRelays: 1,
+                connectTimeoutMs: 2_000,
+                fetchTimeoutMs: 3_000,
+              },
+              onTransportStatus: (degraded, capped) => {
+                searchDegraded ||= degraded
+                searchCapped ||= capped
+              },
+            }).catch((error: unknown) => {
+              if (query.shouldContinue?.() === false) throw error
+              searchDegraded = true
+              return [] as CommerceProductRecord[]
+            })
+        )
+      : Promise.resolve([] as CommerceProductRecord[][])
     const fetchedRecordsPromise = fetchPublicProductRecords({
       authors:
         authorPubkeys && authorPubkeys.length > 0
@@ -4456,10 +4465,11 @@ export async function getMarketplaceProducts(
       transportDegraded = true
       return [] as CommerceProductRecord[]
     })
-    const [fetchedRecords, rawSearchRecords] = await Promise.all([
+    const [fetchedRecords, searchRecordChunks] = await Promise.all([
       fetchedRecordsPromise,
-      searchRecordsPromise,
+      searchRecordChunksPromise,
     ])
+    const rawSearchRecords = searchRecordChunks.flat()
     const allowedAuthors = authorPubkeys ? new Set(authorPubkeys) : null
     const searchRecords = allowedAuthors
       ? rawSearchRecords.filter((record) =>
