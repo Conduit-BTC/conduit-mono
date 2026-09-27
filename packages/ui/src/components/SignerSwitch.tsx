@@ -328,6 +328,18 @@ function SignerDisconnectedContent({
     connectPending && connectingMethod === "nip46"
       ? pairing.cancelAndRun(onConnectExtension)
       : onConnectExtension()
+  const browserError =
+    connectingMethod === "nip07" ||
+    (rememberedMethod === "nip07" && connectingMethod !== "nip46")
+  const errorAlert = error ? (
+    <div
+      id={errorId}
+      role="alert"
+      className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error"
+    >
+      {error}
+    </div>
+  ) : null
 
   return (
     <>
@@ -383,17 +395,7 @@ function SignerDisconnectedContent({
           />
         )}
 
-        {error &&
-          (connectingMethod === "nip07" ||
-            (rememberedMethod === "nip07" && connectingMethod !== "nip46")) && (
-            <div
-              id={errorId}
-              role="alert"
-              className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error"
-            >
-              {error}
-            </div>
-          )}
+        {browserError && errorAlert}
 
         {!reconnectOnly && (
           <RemoteSignerConnect
@@ -409,17 +411,7 @@ function SignerDisconnectedContent({
           />
         )}
 
-        {error &&
-          connectingMethod !== "nip07" &&
-          (rememberedMethod !== "nip07" || connectingMethod === "nip46") && (
-            <div
-              id={errorId}
-              role="alert"
-              className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error"
-            >
-              {error}
-            </div>
-          )}
+        {!browserError && errorAlert}
 
         {authUrl && (
           <div className="rounded-[1.25rem] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
