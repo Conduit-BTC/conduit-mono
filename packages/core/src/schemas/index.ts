@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { normalizePublicMediaUrl } from "../network-target-safety"
+import { parseEventMarketCalendarEvent } from "../protocol/event-market"
 import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
 import { projectSignedProductPreviewEvidence } from "../protocol/product-event-evidence"
 import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
@@ -384,55 +385,6 @@ function signedSnapshotCoordinateMatches(
   )
 }
 
-function signedCalendarTimes(
-  event: SignedEventMarketEvidence
-): { start: number; end: number } | null {
-  const startTags = event.tags.filter((tag) => tag[0] === "start")
-  const endTags = event.tags.filter((tag) => tag[0] === "end")
-  if (
-    startTags.length !== 1 ||
-    startTags[0]?.length !== 2 ||
-    endTags.length > 1 ||
-    (endTags.length === 1 && endTags[0]?.length !== 2)
-  )
-    return null
-  const startValue = startTags[0]?.[1]
-  const endValue = endTags[0]?.[1]
-  if (event.kind === 31922) {
-    const parseDate = (value: string | undefined): number | null => {
-      if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
-      const timestamp = Date.parse(`${value}T00:00:00.000Z`)
-      return Number.isFinite(timestamp) &&
-        new Date(timestamp).toISOString().slice(0, 10) === value
-        ? timestamp
-        : null
-    }
-    const start = parseDate(startValue)
-    const end = endValue === undefined ? null : parseDate(endValue)
-    return start !== null &&
-      (endValue === undefined || (end !== null && end > start))
-      ? { start, end: end ?? start + 86_400_000 }
-      : null
-  }
-  if (event.kind !== 31923) return null
-  const parseTime = (value: string | undefined): number | null => {
-    if (!value || !/^[1-9]\d*$/.test(value)) return null
-    const seconds = Number(value)
-    const milliseconds = seconds * 1_000
-    return Number.isSafeInteger(seconds) &&
-      Number.isSafeInteger(milliseconds) &&
-      Number.isFinite(new Date(milliseconds).getTime())
-      ? milliseconds
-      : null
-  }
-  const start = parseTime(startValue)
-  const end = endValue === undefined ? null : parseTime(endValue)
-  return start !== null &&
-    (endValue === undefined || (end !== null && end > start))
-    ? { start, end: end ?? start }
-    : null
-}
-
 /** Future Event Market snapshot freezes both roster and causal grant evidence. */
 export const orderEventMarketPickupFulfillmentSchema = z
   .object({
@@ -540,7 +492,7 @@ export const orderEventMarketPickupFulfillmentSchema = z
         message: "Market terms must match the exact signed organizer roster.",
       })
     }
-    const calendarTimes = signedCalendarTimes(signedCalendar)
+    const calendar = parseEventMarketCalendarEvent(signedCalendar)
     if (
       !signedSnapshotCoordinateMatches(
         signedCalendar,
@@ -548,9 +500,9 @@ export const orderEventMarketPickupFulfillmentSchema = z
         [31922, 31923],
         organizer
       ) ||
-      !calendarTimes ||
-      calendarTimes.start !== fulfillment.calendar.start ||
-      calendarTimes.end !== fulfillment.calendar.end
+      !calendar ||
+      calendar.start !== fulfillment.calendar.start ||
+      calendar.end !== fulfillment.calendar.end
     ) {
       context.addIssue({
         code: "custom",

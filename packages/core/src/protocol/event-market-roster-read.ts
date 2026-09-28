@@ -847,6 +847,16 @@ export async function readEventMarketAuthorization(
   const relayStates = reads.flatMap((read) => read.relays)
   const liveIds = new Set(live.map((event) => event.id))
   const stale = cached.some((event) => !liveIds.has(event.id))
+  // Successful relay responses do not complete a history whose bounded walk
+  // still leaves a signed parent reference unresolved.
+  const unresolvedParent = [...known.values()].some((event) =>
+    event.tags.some(
+      (tag) =>
+        tag[0] === "auth_parent" &&
+        /^[0-9a-f]{64}$/.test(tag[1] ?? "") &&
+        !known.has(tag[1]!)
+    )
+  )
   const coverage: EventMarketRosterReadCoverage = stale
     ? "stale"
     : relayStates.length === 0 ||
@@ -857,7 +867,8 @@ export async function readEventMarketAuthorization(
           reads.some((read) => read.relays.length === 0) ||
           relayStates.some((relay) => relay.status !== "success") ||
           reads.some((read) => read.events.length >= 128) ||
-          requested.size >= 256
+          requested.size >= 256 ||
+          unresolvedParent
         ? "partial"
         : "complete"
   return {

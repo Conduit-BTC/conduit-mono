@@ -9,12 +9,14 @@ import {
   buildEventMarketAuthorizationDraft,
   getEventMarketCandidateFilters,
   parseEventMarketRosterEvent,
+  parseEventMarketAuthorizationEvent,
   parseEventMarketCalendarEvent,
   resolveEventMarketCalendar,
   resolveEventMarketProduct,
   resolveEventMarketRoster,
   resolveEventMarketAuthorization,
   readEventMarketRoster,
+  readEventMarketAuthorization,
   readEventMarketProduct,
   readEventMarketReapprovalPreview,
   readEventMarketCatalog,
@@ -532,6 +534,92 @@ describe("experimental Event Market roster", () => {
     expect(read.products[0]?.actionable).toBe(false)
     expect(read.coverage).toBe("partial")
   })
+
+  for (const transitions of [128, 130]) {
+    it(`preserves authorization coverage at ${transitions} parent transitions`, async () => {
+      const history = [grant()]
+      for (let index = 1; index <= transitions; index++) {
+        const draft = buildEventMarketAuthorizationDraft({
+          marketCoordinate,
+          merchantPubkey: merchant,
+          state: index % 2 === 0 ? "active" : "revoked",
+          parents: [parseEventMarketAuthorizationEvent(history.at(-1)!)!],
+        })
+        history.push(sign(organizerSecret, draft.kind, draft.tags, 102 + index))
+      }
+      const byId = new Map(history.map((event) => [event.id, event]))
+      const approved = roster([merchantRow])
+      const calendar = sign(
+        organizerSecret,
+        31923,
+        [
+          ["d", "fair"],
+          ["title", "Fair"],
+          ["start", "1790000000"],
+          ["D", "20717"],
+        ],
+        100
+      )
+      const tagged = product(merchantSecret, merchant, "soap", 100)
+      let parentRequests = 0
+      const dependencies: NonNullable<
+        Parameters<typeof readEventMarketAuthorization>[1]
+      > = {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => {
+          if (filter.ids) parentRequests++
+          const events = filter.kinds?.includes(30409 as never)
+            ? [approved]
+            : filter.kinds?.includes(31923 as never)
+              ? [calendar]
+              : filter.kinds?.includes(30402 as never)
+                ? [tagged]
+                : filter.kinds?.includes(3841 as never)
+                  ? filter.ids
+                    ? filter.ids.flatMap((id) =>
+                        byId.has(id) ? [byId.get(id)!] : []
+                      )
+                    : [history.at(-1)!]
+                  : []
+          return {
+            events,
+            relays: [{ relayUrl: "wss://example.com", status: "success" }],
+          }
+        },
+        load: async () => [],
+        retain: async () => undefined,
+      }
+      const authorization = await readEventMarketAuthorization(
+        { marketCoordinate, merchantPubkey: merchant },
+        dependencies
+      )
+      expect(parentRequests).toBe(128)
+      expect(authorization.resolution.state).toBe(
+        transitions === 128 ? "active" : "missing_parent"
+      )
+      expect(authorization.coverage).toBe(
+        transitions === 128 ? "complete" : "partial"
+      )
+      const catalog = await readEventMarketCatalog(
+        { reference: marketCoordinate },
+        dependencies
+      )
+      expect(catalog.coverage).toBe(
+        transitions === 128 ? "complete" : "partial"
+      )
+      expect(catalog.products).toHaveLength(transitions === 128 ? 1 : 0)
+    })
+  }
 
   it("freezes the signed roster row and product revision with the merchant as payee", () => {
     const currentMarket = parseEventMarketRosterEvent(roster([merchantRow]))!
