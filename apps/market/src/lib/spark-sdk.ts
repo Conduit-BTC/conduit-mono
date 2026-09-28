@@ -820,6 +820,10 @@ function adaptFirstPartySparkWallet(input: {
         }
       }
 
+      if (transfer.userRequest === undefined || transfer.userRequest === null) {
+        return { status: "lookup_unavailable" }
+      }
+
       let recovered: ReturnType<typeof readRecoveredLightningSendRequest>
       try {
         recovered = readRecoveredLightningSendRequest(transfer.userRequest)
