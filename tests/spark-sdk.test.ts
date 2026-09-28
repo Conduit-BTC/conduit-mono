@@ -1872,6 +1872,52 @@ describe("first-party Spark SDK adapter", () => {
     }
   })
 
+  it("keeps absent Lightning request evidence unresolved while rejecting present malformed evidence", async () => {
+    for (const userRequest of [undefined, null, {}, false]) {
+      let payCalls = 0
+      let statusReads = 0
+      const transferReads: string[] = []
+      const wallet = createNativeWallet({
+        async payLightningInvoice() {
+          payCalls += 1
+          throw new Error("must not pay during reconciliation")
+        },
+        async getTransferFromSsp(id) {
+          transferReads.push(id)
+          return {
+            sparkId: id,
+            totalAmount: { originalValue: 1_002, originalUnit: "SATOSHI" },
+            ...(userRequest === undefined ? {} : { userRequest }),
+          }
+        },
+        async getLightningSendRequest() {
+          statusReads += 1
+          throw new Error("must not poll without a recovered request")
+        },
+      })
+      const client = await openClient(createFactory(wallet))
+
+      await expect(
+        client.reconcileLightningSend?.({
+          transferId: PAYMENT_ATTEMPT_ID,
+          paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+          amountSats: 1_000,
+          maxFeeSats: 5,
+        })
+      ).resolves.toEqual(
+        userRequest === undefined || userRequest === null
+          ? { status: "lookup_unavailable" }
+          : {
+              status: "conflicting_evidence",
+              reason: "Spark returned invalid Lightning recovery evidence.",
+            }
+      )
+      expect(transferReads).toEqual([PAYMENT_ATTEMPT_ID])
+      expect(statusReads).toBe(0)
+      expect(payCalls).toBe(0)
+    }
+  })
+
   it("keeps a missing transfer unresolved without paying again", async () => {
     let payCalls = 0
     const transferReads: string[] = []
