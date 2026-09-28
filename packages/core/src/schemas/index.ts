@@ -3,6 +3,7 @@ import { normalizePublicMediaUrl } from "../network-target-safety"
 import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
 import { parseEventMarketCalendarEvent } from "../protocol/event-market"
 import { parseEventMarketSeriesEvent } from "../protocol/event-market-schedule"
+import { projectSignedProductPreviewEvidence } from "../protocol/product-event-evidence"
 import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 
 const publicMediaUrlSchema = z
@@ -847,6 +848,29 @@ export const orderItemSchema = z
             "Event Market product evidence must match the ordered product.",
         })
       }
+      const signedTerms = projectSignedProductPreviewEvidence(
+        item.fulfillment.product.signedEvent
+      )
+      if (
+        !signedTerms ||
+        signedTerms.priceStatus !== "resolved" ||
+        signedTerms.format !== "physical" ||
+        (item.title !== undefined && item.title !== signedTerms.title) ||
+        !item.sourcePrice ||
+        item.sourcePrice.amount !== signedTerms.sourcePrice?.amount ||
+        item.sourcePrice.currency !== signedTerms.sourcePrice.currency ||
+        item.sourcePrice.normalizedCurrency !==
+          signedTerms.sourcePrice.normalizedCurrency ||
+        (signedTerms.currency === "SATS" &&
+          (item.currency !== "SATS" ||
+            item.priceAtPurchase !== signedTerms.price))
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["fulfillment", "product"],
+          message: "Order terms must match the signed product revision.",
+        })
+      }
       if (
         item.shippingOptionId ||
         item.shippingOptionDTag ||
@@ -1026,6 +1050,19 @@ export const orderSchema = z
             "Signed Event Market order evidence exceeds the bounded recovery read.",
         })
       }
+    }
+    if (
+      firstFuture?.type === "event_market_pickup" &&
+      ((order.shippingCostSats ?? 0) !== 0 ||
+        (order.shippingCostStatus !== undefined &&
+          order.shippingCostStatus !== "not_required" &&
+          order.shippingCostStatus !== "included"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["shippingCostSats"],
+        message: "Event Market pickup has no separate order shipping charge.",
+      })
     }
     if (
       firstPickup?.type === "pickup" &&

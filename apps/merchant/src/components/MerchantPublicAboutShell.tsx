@@ -10,17 +10,23 @@ const SHOW_DEVTOOLS =
 
 export function MerchantPublicAboutShell({
   children,
+  pageTitle = "About",
+  fullBleed = false,
 }: {
   children: ReactNode
+  pageTitle?: string
+  fullBleed?: boolean
 }) {
   useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
 
   useEffect(() => {
-    document.title = "About | Conduit Merchant"
-  }, [])
+    document.title = `${pageTitle} | Conduit Merchant`
+  }, [pageTitle])
 
   return (
-    <div className="min-h-dvh bg-[var(--background)] text-[var(--text-primary)]">
+    <div
+      className={`min-h-dvh bg-[var(--background)] text-[var(--text-primary)] ${fullBleed ? "flex flex-col" : ""}`}
+    >
       <header className="border-b border-[var(--border)] bg-[var(--surface)]">
         <div className="mx-auto flex w-full max-w-[1280px] items-center px-4 py-4 sm:px-6 lg:px-8">
           <a
@@ -32,7 +38,13 @@ export function MerchantPublicAboutShell({
           </a>
         </div>
       </header>
-      <main className="mx-auto w-full max-w-[1280px] px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+      <main
+        className={
+          fullBleed
+            ? "flex w-full flex-1"
+            : "mx-auto w-full max-w-[1280px] px-4 py-8 sm:px-6 lg:px-8 lg:py-10"
+        }
+      >
         {children}
       </main>
       <footer className="border-t border-[var(--border)] px-4 py-6 text-sm text-[var(--text-secondary)]">
@@ -42,7 +54,7 @@ export function MerchantPublicAboutShell({
         >
           <a
             href="/about"
-            aria-current="page"
+            aria-current={pageTitle === "About" ? "page" : undefined}
             className="rounded-sm underline underline-offset-4 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             About

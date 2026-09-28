@@ -148,7 +148,7 @@ describe("planRelayReads", () => {
   })
 
   it("retains a general-only App URL when remote signed provenance authorizes it", () => {
-    const relayUrl = "wss://relay.dreamith.to"
+    const relayUrl = "wss://nos.lol"
     const plan = planRelayReads({
       intent: "author_products",
       authors: ["merchant"],
@@ -455,7 +455,7 @@ describe("planRelayReads", () => {
   })
 
   it("tracks remote signed hints independently when relay URLs overlap local sources", () => {
-    const appOverlap = "wss://relay.ditto.pub"
+    const appOverlap = "wss://conduit-congee.fly.dev"
     const personalOverlap = "wss://relay.nostr.band"
     const lists = new Map<string, RelayList>([
       [
@@ -484,7 +484,7 @@ describe("planRelayReads", () => {
   })
 
   it("tracks remote recipient hints independently across write-layer overlaps", () => {
-    const appOverlap = "wss://relay.ditto.pub"
+    const appOverlap = "wss://conduit-congee.fly.dev"
     const personalOverlap = "wss://relay.nostr.band"
     const lists = new Map<string, RelayList>([
       [
@@ -656,7 +656,7 @@ describe("planRelayWrites", () => {
   })
 
   it("keeps commerce App writes role-qualified without losing independent sources", () => {
-    const generalOnlyAppRelay = "wss://relay.dreamith.to"
+    const generalOnlyAppRelay = "wss://relay.primal.net"
     const personalRelay = "wss://personal-write.example"
     const plan = planRelayWrites({
       intent: "commerce_author_event",

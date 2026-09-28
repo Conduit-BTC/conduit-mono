@@ -230,12 +230,12 @@ jobs:
       - name: Run Codex first-shot with CODEX_AUTH_JSON
         id: run_codex_auth_json
         if: steps.agent_auth.outputs.has_codex_auth_json == 'true'
-        uses: sudden-network/agent@v1.15.0
+        uses: sudden-network/agent@370553dd1ac28fdb04024a3287e47adc87506f74 # v1.15.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/high
+          model: gpt-6-sol/high/fast
           resume: true
           sudo: ${{ env.DRY_RUN != 'true' }}
           prompt: |
@@ -260,7 +260,7 @@ jobs:
             - Run targeted validation when feasible and include results in the final message.
 
             Hard rules:
-            - Read AGENTS.md, CONTRIBUTING.md, docs/README.md, and docs/knowledge/self-healing-agent-system.md before editing.
+            - Read AGENTS.md and docs/knowledge/agent-automation-boundary.md before editing; follow their task routes and read CONTRIBUTING.md before opening a PR.
             - Do not deploy, merge, force-push, alter production secrets, run destructive commands, or touch .env files.
             - Do not commit secrets, private runbooks, telemetry exports, dashboard exports, message/order/payment contents, addresses, signer codes, Nostr secret keys, NWC URIs, wallet credentials, Linear tokens, or unbounded Linear text.
             - Treat protocol, auth, payment, privacy, security, release policy, production secret, and broad architecture work as risk C and stop with an advisory report.
@@ -269,12 +269,12 @@ jobs:
       - name: Run Codex first-shot with Sudden auth file
         id: run_sudden_auth_file
         if: steps.agent_auth.outputs.has_codex_auth_json != 'true' && steps.agent_auth.outputs.has_sudden_auth_file == 'true'
-        uses: sudden-network/agent@v1.15.0
+        uses: sudden-network/agent@370553dd1ac28fdb04024a3287e47adc87506f74 # v1.15.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/high
+          model: gpt-6-sol/high/fast
           resume: true
           sudo: ${{ env.DRY_RUN != 'true' }}
           prompt: |
@@ -299,7 +299,7 @@ jobs:
             - Run targeted validation when feasible and include results in the final message.
 
             Hard rules:
-            - Read AGENTS.md, CONTRIBUTING.md, docs/README.md, and docs/knowledge/self-healing-agent-system.md before editing.
+            - Read AGENTS.md and docs/knowledge/agent-automation-boundary.md before editing; follow their task routes and read CONTRIBUTING.md before opening a PR.
             - Do not deploy, merge, force-push, alter production secrets, run destructive commands, or touch .env files.
             - Do not commit secrets, private runbooks, telemetry exports, dashboard exports, message/order/payment contents, addresses, signer codes, Nostr secret keys, NWC URIs, wallet credentials, Linear tokens, or unbounded Linear text.
             - Treat protocol, auth, payment, privacy, security, release policy, production secret, and broad architecture work as risk C and stop with an advisory report.
@@ -308,12 +308,12 @@ jobs:
       - name: Run Codex first-shot with Sudden API key
         id: run_sudden_api_key
         if: steps.agent_auth.outputs.has_codex_auth_json != 'true' && steps.agent_auth.outputs.has_sudden_auth_file != 'true' && steps.agent_auth.outputs.has_sudden_api_key == 'true'
-        uses: sudden-network/agent@v1.15.0
+        uses: sudden-network/agent@370553dd1ac28fdb04024a3287e47adc87506f74 # v1.15.1
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/high
+          model: gpt-6-sol/high/fast
           resume: true
           sudo: ${{ env.DRY_RUN != 'true' }}
           prompt: |
@@ -338,7 +338,7 @@ jobs:
             - Run targeted validation when feasible and include results in the final message.
 
             Hard rules:
-            - Read AGENTS.md, CONTRIBUTING.md, docs/README.md, and docs/knowledge/self-healing-agent-system.md before editing.
+            - Read AGENTS.md and docs/knowledge/agent-automation-boundary.md before editing; follow their task routes and read CONTRIBUTING.md before opening a PR.
             - Do not deploy, merge, force-push, alter production secrets, run destructive commands, or touch .env files.
             - Do not commit secrets, private runbooks, telemetry exports, dashboard exports, message/order/payment contents, addresses, signer codes, Nostr secret keys, NWC URIs, wallet credentials, Linear tokens, or unbounded Linear text.
             - Treat protocol, auth, payment, privacy, security, release policy, production secret, and broad architecture work as risk C and stop with an advisory report.

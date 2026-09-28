@@ -8,6 +8,7 @@ const ENTRYPOINTS = {
   "anon-zap-authorize.ts": ["onRequest", "onRequestOptions", "onRequestPost"],
   "anon-zap-config.ts": ["onRequest", "onRequestGet"],
   "anon-zap-sign.ts": ["onRequest", "onRequestOptions", "onRequestPost"],
+  "project-tip-sign.ts": ["onRequest", "onRequestOptions", "onRequestPost"],
   "zapout-authority.ts": ["onRequest", "onRequestOptions", "onRequestPost"],
 } as const
 

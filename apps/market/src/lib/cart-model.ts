@@ -430,6 +430,22 @@ export function getMixedFulfillmentBlockingMessage(
     return "These items belong to different Event Markets. Place them as separate orders."
   }
 
+  if (
+    firstMarket?.type === "event_market_pickup" &&
+    marketItems.some((item) => {
+      const current = item.fulfillment
+      return (
+        current?.type !== "event_market_pickup" ||
+        current.market.eventId !== firstMarket.market.eventId ||
+        current.calendar.eventId !== firstMarket.calendar.eventId ||
+        current.grant.eventId !== firstMarket.grant.eventId ||
+        current.mode !== firstMarket.mode ||
+        current.assignment !== firstMarket.assignment
+      )
+    })
+  )
+    return "Review these items against the same current signed Event Market terms before checkout."
+
   return null
 }
 

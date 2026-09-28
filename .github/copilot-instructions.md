@@ -32,7 +32,7 @@ Prioritize in this order:
 ## Monorepo Boundaries
 
 - Apps may depend on `@conduit/core` and `@conduit/ui`.
-- `@conduit/ui` should not depend on `@conduit/core`; it provides reusable components, styles, and interaction primitives.
+- `@conduit/ui` may use `@conduit/core` types and pure helpers, but not relay, network, or Dexie side effects.
 - `@conduit/core` must not depend on app code.
 - Avoid circular dependencies.
 
@@ -52,7 +52,9 @@ When reviewing PRs:
 
 For Market and Merchant changes touching orders/messages:
 
-- Verify signer connected-state gates all order/message actions.
+- Verify account-owned order and private-message actions require a connected
+  signer. Preserve the bounded guest-order exception; a guest order must not
+  become a durable account or require a guest inbox, self-copy, or reply channel.
 - Verify relay lag/fallback does not produce ambiguous UI states.
 - Verify polling and manual refresh do not create UI jitter loops.
 

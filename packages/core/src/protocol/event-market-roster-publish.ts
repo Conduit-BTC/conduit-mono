@@ -885,11 +885,13 @@ export async function publishEventMarketMerchantDecision(
     marketRead.resolution.market.calendarCoordinate !==
       input.calendarCoordinate ||
     !authorizationRead.retained ||
-    authorizationRead.coverage !== "complete"
-  )
+    (authorizationRead.resolution.state === "missing" &&
+      authorizationRead.coverage !== "complete")
+  ) {
     throw new Error(
       "Current signed Event Market authority needs organizer review."
     )
+  }
   const market = marketRead.resolution.market
   const parents = authorizationTips(authorizationRead.resolution)
   const parentIds = parents.map((parent) => parent.eventId).sort()

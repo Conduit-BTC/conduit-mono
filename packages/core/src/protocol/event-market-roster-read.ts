@@ -49,6 +49,7 @@ export interface EventMarketRosterReadResult {
   retained: boolean
   observedRelayUrls: string[]
   calendar?: ParsedEventMarketCalendar | null
+  calendarSignedEvent?: SignedPublicNostrEvent
   calendarCoverage?: EventMarketRosterReadCoverage
   schedule?: EventMarketSchedule
   scheduleCoverage?: EventMarketRosterReadCoverage
@@ -996,6 +997,9 @@ export async function readEventMarketRoster(
       ]),
     ],
     calendar,
+    calendarSignedEvent: calendarEvidence.find(
+      (event) => event.id === calendar?.eventId
+    ),
     calendarCoverage,
     ...(calendar?.signedEvent
       ? {
