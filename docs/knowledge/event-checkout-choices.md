@@ -27,3 +27,34 @@ stronger positive evidence or an observed revocation/deletion.
 The reference implementation does not modify the signed product to record a
 buyer choice and introduces no new public event kind. The shared control lives
 in `@conduit/ui`; cart transactions and choice preparation live in Market.
+
+## Contact-free immediate guest handoff
+
+The signed physical product extension `conduit_event_guest` with the value
+`contact_optional` is an experimental Conduit convention. It is not part of the
+merged Open Markets specification. Absent, duplicate or malformed policy tags
+require contact details; an unsigned content field cannot grant permission.
+Merchant authoring defaults this setting off.
+
+Only an ongoing selected occurrence with `merchant_present` fulfillment and
+opt-in on every exact signed product can use this guest choice. The full signed
+market, occurrence, grant and product snapshot checks still apply. Shipping,
+organizer handoff, future dates and signed-in orders retain their existing
+contact and delivery contracts. Ordinary guest pickup requires at least one
+contact method; shipping requires both email and phone.
+
+The guest downloads and acknowledges a private JSON receipt before checkout.
+A random 32-byte bearer secret binds that receipt to the order UUID and merchant
+through a domain-separated SHA-256 commitment. Only the name or pseudonym and
+commitment are sent in the encrypted private order. The secret is not a Nostr
+identity key, payment credential or proof of payment. It is not persisted in
+application storage, published in public events or included in diagnostics.
+Changing the cart line incarnation, quantities, merchant or signed commerce
+fingerprint requires a new receipt acknowledgment.
+
+Merchant Orders verifies a presented receipt against the original private order
+and merchant. Verification does not send funds or establish payment settlement.
+Support, refunds and rebates are arranged manually with the customer in person;
+no guest reply inbox or automatic payout is introduced. Anyone holding the
+receipt file can present it, and the guest is shown that trade-off before buying.
+Protocol-bearing browser tests disable traces, video and screenshots.

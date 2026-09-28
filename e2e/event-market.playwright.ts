@@ -7,6 +7,9 @@ import {
   verifyEvent,
 } from "nostr-tools/pure"
 
+// Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
+test.use({ trace: "off", video: "off", screenshot: "off" })
+
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 }`
@@ -2004,5 +2007,170 @@ test("event product chooses ordinary shipping and changes fulfillment in checkou
   ).toHaveAttribute("aria-pressed", "true")
   await expect(
     page.getByRole("heading", { name: "Delivery details" })
+  ).toBeVisible()
+})
+
+test("guest retains a private event receipt and merchant verifies it @market @merchant @commerce", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1000)
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "choice-fair"],
+      ["title", "Choice Fair"],
+      ["start", String(createdAt - 60)],
+      ["end", String(createdAt + 7200)],
+      ["D", String(Math.floor((createdAt + 3600) / 86400))],
+    ],
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "choice-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+      ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 1"],
+    ],
+  })
+  const grant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["openmarkets", "event-market-auth", "1"],
+      ["a", eventCoordinate(market)],
+      ["p", MERCHANT_PUBKEY],
+      ["state", "active"],
+      ["seq", "0"],
+      ["alt", "Open Markets event merchant authorization"],
+    ],
+  })
+  const shipping = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "choice-shipping"],
+      ["title", "Shop shipping"],
+      ["price", "200", "SAT"],
+      ["country", "US"],
+      ["service", "shipping"],
+    ],
+  })
+  const product = signEvent(MERCHANT_SECRET, {
+    kind: 30402,
+    created_at: createdAt,
+    content: "Receipt soap",
+    tags: [
+      ["d", "choice-soap"],
+      ["title", "Receipt soap"],
+      ["summary", "Handmade soap"],
+      ["image", "https://cdn.conduit.market/conduit-test/template-product.svg"],
+      ["t", "soap"],
+      ["t", "handmade"],
+      ["t", "home"],
+      ["price", "0", "SAT"],
+      ["conduit_event_guest", "contact_optional"],
+      ["type", "simple", "physical"],
+      ["stock", "5"],
+      ["a", eventCoordinate(market)],
+      ["shipping_option", eventCoordinate(shipping)],
+    ],
+  })
+  relay.seed(
+    calendar,
+    market,
+    grant,
+    shipping,
+    product,
+    createInboxDeclaration("merchant", createdAt)
+  )
+  const marketRef = nip19.naddrEncode({
+    kind: 30409,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: "choice-fair",
+  })
+  await page.goto(`${marketUrl}/events/${marketRef}`)
+  await expect(
+    page.getByRole("heading", { name: "Receipt soap" })
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Add", exact: true }).click()
+  await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
+  await page.goto(`${marketUrl}/checkout`)
+  await page
+    .getByRole("checkbox", { name: "Use a name only for handoff" })
+    .check()
+  await expect(page.getByLabel("Phone", { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0)
+  await page.getByLabel("Name or pseudonym for handoff").fill("Soap fan")
+  const before = relay.publications.length
+  await page.getByRole("button", { name: "Send order", exact: true }).click()
+  await expect(
+    page
+      .getByText("Save your event receipt and confirm that you kept it.")
+      .first()
+  ).toBeVisible()
+  expect(
+    decryptPrivatePublications(
+      relay.publications,
+      MERCHANT_SECRET,
+      before
+    ).filter((message) => rumorType(message.rumor) === "order")
+  ).toHaveLength(0)
+  const downloadPending = page.waitForEvent("download")
+  await page
+    .getByRole("button", { name: "Save event receipt", exact: true })
+    .click()
+  const download = await downloadPending
+  const receiptPath = await download.path()
+  if (!receiptPath) throw new Error("Receipt download is missing")
+  await page
+    .getByRole("checkbox", {
+      name: "I saved my receipt and understand the trade-off",
+    })
+    .check()
+  await page.getByRole("button", { name: "Send order", exact: true }).click()
+  const orders = () =>
+    uniquePrivatePublications(
+      decryptPrivatePublications(relay.publications, MERCHANT_SECRET, before)
+    ).filter((message) => rumorType(message.rumor) === "order")
+  await expect.poll(() => orders().length).toBe(1)
+  const order = JSON.parse(orders()[0]!.rumor.content) as {
+    id: string
+    buyerIdentityKind: string
+    guestContact?: unknown
+    contactFreePickup: { label: string; receiptCommitment: string }
+  }
+  expect(order.buyerIdentityKind).toBe("guest_ephemeral")
+  expect(order.guestContact).toBeUndefined()
+  expect(order.contactFreePickup.label).toBe("Soap fan")
+  expect(order.contactFreePickup.receiptCommitment).toMatch(/^[0-9a-f]{64}$/)
+  expect(orders()[0]!.rumor.content).not.toContain("claimSecret")
+  await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
+  await expect(page.getByText("Handoff name: Soap fan")).toBeVisible()
+  await page.getByLabel("Verify customer receipt").setInputFiles(receiptPath)
+  await expect(page.getByText(/Receipt matches this order\./)).toBeVisible()
+  await page.getByLabel("Verify customer receipt").setInputFiles({
+    name: "damaged-receipt.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(
+      JSON.stringify({
+        format: "conduit-event-receipt",
+        version: 1,
+        orderId: order.id,
+        merchantPubkey: MERCHANT_PUBKEY,
+        claimSecret: "0".repeat(64),
+      })
+    ),
+  })
+  await expect(
+    page.getByText("This receipt does not match this order and merchant.")
   ).toBeVisible()
 })

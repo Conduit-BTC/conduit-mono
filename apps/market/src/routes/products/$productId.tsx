@@ -372,7 +372,9 @@ function ProductPage() {
   )
   const priceDisplay = selectedProduct
     ? shopperPricing.formatPrice(selectedProduct, {
-        allowZero: productCartResolution?.status === "pickup",
+        allowZero:
+          productCartResolution?.status === "pickup" ||
+          productCartCandidate?.fulfillment?.type === "event_market_pickup",
       })
     : null
   const updatedLabel = product

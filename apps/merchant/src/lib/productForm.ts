@@ -75,6 +75,7 @@ export interface MerchantProductFormValues extends ProductPublishFormValues {
   merchantPickupLocation: string
   merchantPickupGeohash: string
   merchantPickupCountry: string
+  eventGuestContactOptional?: boolean
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
 }

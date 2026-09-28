@@ -60,6 +60,8 @@ function activeAuthorization() {
     marketCoordinate,
     merchantPubkey: merchant,
     state: "active",
+    sequence: 0,
+    parentIds: [],
   })
   const signed = finalizeEvent({ ...draft, created_at: 101 }, organizerSecret)
   return {
@@ -121,7 +123,7 @@ describe("future Event Market product publishing", () => {
         market: market(true),
         enabled: true,
       })
-    ).toThrow("authorization")
+    ).toThrow("grant")
   })
 
   it("requires a current merchant grant before a new association", () => {

@@ -30,10 +30,10 @@ describe("event-market private-delivery authority propagation", () => {
   })
 
   it("binds every Merchant handoff action to its existing auth generation", async () => {
-    const [orders, paymentRelease, events] = await Promise.all([
+    const [orders, paymentRelease, publisher] = await Promise.all([
       source("apps/merchant/src/routes/orders.tsx"),
       source("apps/merchant/src/lib/order-payment-release.ts"),
-      source("apps/merchant/src/routes/events.tsx"),
+      source("apps/merchant/src/components/EventProductPublisherDialog.tsx"),
     ])
 
     expect(
@@ -47,11 +47,14 @@ describe("event-market private-delivery authority propagation", () => {
     expect(paymentRelease).toContain(
       "authenticatedPubkey: input.authenticatedPubkey,\n        shouldContinue: input.shouldContinue,"
     )
-    expect(events).toMatch(
-      /transport: \{\s*authenticatedPubkey: input\.ownerPubkey,\s*shouldContinue: \(\) =>\s*isCurrentFreshAuthority\(input\.ownerPubkey, input\.authGeneration\)/
-    )
-    expect(events).toContain(
-      "authenticatedPubkey: null,\n          shouldContinue: () => isCurrentOwner(input.ownerPubkey)"
+    // Future event authoring moved out of the historical events route.
+    expect(
+      publisher.match(
+        /authenticatedPubkey: authority\.ownerPubkey,\s*shouldContinue: \(\) =>\s*isCurrentFreshAuthority\(\s*authority\.ownerPubkey,\s*authority\.authGeneration/g
+      )
+    ).toHaveLength(2)
+    expect(publisher).toContain(
+      "authenticatedPubkey: null,\n        shouldContinue: () => isCurrentOwner(input.ownerPubkey)"
     )
   })
 })

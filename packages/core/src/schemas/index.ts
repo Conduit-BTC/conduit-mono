@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { isContactFreeEventHandoff } from "../protocol/event-guest-checkout"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
 import { parseEventMarketCalendarEvent } from "../protocol/event-market"
@@ -107,6 +108,8 @@ export const productSchema = z.object({
   collectionRefs: z.array(z.string()).optional(),
   /** Experimental kind-30409 Event Market associations, in signed order. */
   eventMarketRefs: z.array(z.string()).optional(),
+  /** Merchant-signed Conduit opt-in for immediate event handoff only. */
+  eventGuestContactOptional: z.boolean().optional(),
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries: z.array(z.string()).optional(),
   shippingCountryRules: z
@@ -957,6 +960,12 @@ export const orderSchema = z
       .optional(),
     shippingAddress: shippingAddressSchema.optional(),
     guestContact: orderGuestContactSchema.optional(),
+    contactFreePickup: z
+      .strictObject({
+        label: z.string().trim().min(1).max(80),
+        receiptCommitment: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .optional(),
     note: z.string().max(2000).optional(),
     createdAt: z.number(),
   })
@@ -1089,7 +1098,23 @@ export const orderSchema = z
         message: "Pickup orders must not include a delivery address.",
       })
     }
-    if (order.buyerIdentityKind === "guest_ephemeral" && !order.guestContact) {
+    if (
+      order.contactFreePickup &&
+      (order.buyerIdentityKind !== "guest_ephemeral" ||
+        !isContactFreeEventHandoff(order.items, order.createdAt))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["contactFreePickup"],
+        message:
+          "Contact-free checkout requires every merchant-signed opt-in and immediate merchant-present event handoff.",
+      })
+    }
+    if (
+      order.buyerIdentityKind === "guest_ephemeral" &&
+      !order.guestContact &&
+      !order.contactFreePickup
+    ) {
       context.addIssue({
         code: "custom",
         path: ["guestContact"],

@@ -290,6 +290,7 @@ function createEmptyProductForm(
     shippingCost: "",
     usePresetShippingZone,
     customShippingConfig: { countries: [] },
+    eventGuestContactOptional: false,
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
     images: [],
@@ -409,6 +410,7 @@ function productToForm(
       presetAvailable
     ),
     customShippingConfig: productShippingConfigFromProduct(product),
+    eventGuestContactOptional: product.eventGuestContactOptional === true,
     publicZapEnabled: product.publicZapPolicyKnown
       ? product.publicZapEnabled
       : false,
@@ -1007,6 +1009,8 @@ async function publishProduct(
     stock: parseProductStockInput(form.stock),
     images: prepareProductImages(form.images),
     tags,
+    eventGuestContactOptional:
+      !isDigital && form.eventGuestContactOptional === true,
     publicZapEnabled: form.publicZapEnabled,
     zapMessagePolicy: form.zapMessagePolicy,
     publicZapPolicyKnown: true,
@@ -3708,6 +3712,33 @@ function ProductsPage() {
                   </span>
                 </label>
 
+                {form.format === "physical" ? (
+                  <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] p-3">
+                    <input
+                      type="checkbox"
+                      checked={form.eventGuestContactOptional === true}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          eventGuestContactOptional: event.target.checked,
+                        }))
+                      }
+                      className="mt-1 h-4 w-4 accent-secondary-500"
+                    />
+                    <span>
+                      <span className="font-medium">
+                        Allow contact-free event handoff
+                      </span>
+                      <span className="mt-1 block text-xs text-[var(--text-muted)]">
+                        At your booth during an event, guests may use a name or
+                        pseudonym and retain a receipt. You cannot contact them
+                        later. Shipping and organizer pickup still require
+                        contact details. Refunds and rebates must be arranged
+                        manually with the receipt holder.
+                      </span>
+                    </span>
+                  </label>
+                ) : null}
                 <div className="grid gap-1.5">
                   <Label htmlFor="product-zap-message-policy">
                     Zap message policy

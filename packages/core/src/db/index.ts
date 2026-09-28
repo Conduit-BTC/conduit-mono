@@ -122,6 +122,7 @@ export interface CachedProduct {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
+  eventGuestContactOptional?: boolean
   location?: string
   eventId?: string
   eventCreatedAt?: number

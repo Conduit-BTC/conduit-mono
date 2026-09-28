@@ -1,5 +1,9 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  EVENT_GUEST_CONTACT_TAG,
+  hasSignedEventGuestOptIn,
+} from "./event-guest-checkout"
+import {
   canonicalizeProductPrice,
   normalizeCurrencyCode,
   type CommercePriceLike,
@@ -291,6 +295,13 @@ export function buildProductListingEventDraft({
     ],
     [PRODUCT_ZAP_MESSAGE_POLICY_TAG, emittedZapMessagePolicy],
   ]
+
+  if (
+    product.eventGuestContactOptional === true &&
+    product.format === "physical"
+  ) {
+    tags.push([EVENT_GUEST_CONTACT_TAG, "contact_optional"])
+  }
 
   if (product.visibility === "private") {
     tags.push(["visibility", "hidden"])
@@ -1051,6 +1062,7 @@ export function parseProductEvent(
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
       pubkey: event.pubkey,
       ...zapPolicy,
+      eventGuestContactOptional: hasSignedEventGuestOptIn(event.tags),
       canonicalShippingResolved: false,
       createdAt: createdAtMs,
       updatedAt: createdAtMs,
@@ -1163,6 +1175,7 @@ export function parseProductEvent(
       ...(visibilityTag ? { visibility: visibilityTag } : {}),
       ...shippingTags,
       ...zapPolicy,
+      eventGuestContactOptional: hasSignedEventGuestOptIn(event.tags),
       ...stockTag,
       images,
       tags,

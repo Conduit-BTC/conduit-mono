@@ -74,6 +74,7 @@ import {
   Label,
   MessagingReadinessNotice,
   toMessagingReadinessNoticeState,
+  EventGuestReceiptVerifier,
   OrderMessagesWidget,
   ProtectedInboxNotice,
   RefreshChip,
@@ -4458,6 +4459,13 @@ function OrdersWorkspace() {
                         </section>
                       )}
 
+                    {selectedOrderMessage?.type === "order" && pubkey ? (
+                      <EventGuestReceiptVerifier
+                        key={selectedOrderMessage.payload.id}
+                        order={selectedOrderMessage.payload}
+                        merchantPubkey={pubkey}
+                      />
+                    ) : null}
                     {orderSummary.orderNote && (
                       <section className={panelCard}>
                         <h3 className="text-sm font-semibold text-[var(--text-primary)]">

@@ -123,6 +123,9 @@ function FutureEventProductCard({
       }
       cartActionDisabled={!entry.actionable || !canPurchase}
       cartActionDisabledLabel="Refresh event evidence"
+      allowZeroPrice={
+        choice === "event_market_pickup" && entry.actionable && canPurchase
+      }
       btcUsdRate={quote}
       pricePreference={preference}
     />

@@ -498,22 +498,22 @@ describe("Market event pickup fulfillment", () => {
     }
   })
 
-  it("skips signed-in pickup contact and requires both guest contact methods", () => {
+  it("skips signed-in pickup contact and requires one guest contact method", () => {
     expect(validatePickupContactFields(contact())).toEqual([])
 
     const missing = validateGuestPickupContactFields(contact())
-    expect(missing.map((error) => error.field)).toEqual(["phone", "email"])
+    expect(missing.map((error) => error.field)).toEqual(["email"])
 
     expect(
       validateGuestPickupContactFields(
         contact({ email: "buyer@example.com" })
       ).map((error) => error.field)
-    ).toEqual(["phone"])
+    ).toEqual([])
     expect(
       validateGuestPickupContactFields(contact({ phone: "+14155552671" })).map(
         (error) => error.field
       )
-    ).toEqual(["email"])
+    ).toEqual([])
     expect(
       validateGuestPickupContactFields(
         contact({
