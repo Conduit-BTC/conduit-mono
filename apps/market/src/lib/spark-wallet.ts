@@ -111,6 +111,19 @@ export interface SparkLightningSendReconciliationInput {
   completionTimeoutSecs?: number
 }
 
+export interface SparkCheckoutLightningObligationInput extends SparkLightningSendReconciliationInput {
+  network: SparkWalletNetwork
+}
+
+export type SparkCheckoutLightningObligationSendResult =
+  | { status: "paid"; payment: SparkSdkPayment }
+  | { status: "terminal_failure"; payment: SparkSdkPayment }
+  | { status: "not_sent"; reason: "fee_over_cap" | "fee_unavailable" }
+  | { status: "ambiguous" }
+
+export type SparkCheckoutLightningObligationPreflight =
+  "ready" | "fee_over_cap" | "unavailable"
+
 export interface SparkLightningSendAttempt {
   readonly schemaVersion: 1
   readonly walletId: string
@@ -161,6 +174,12 @@ export interface SparkSdkClient {
   reconcileLightningSend?(
     request: SparkLightningSendReconciliationInput
   ): Promise<SparkLightningSendReconciliation>
+  preflightCheckoutLightningObligation?(
+    request: SparkCheckoutLightningObligationInput
+  ): Promise<SparkCheckoutLightningObligationPreflight>
+  sendCheckoutLightningObligation?(
+    request: SparkCheckoutLightningObligationInput
+  ): Promise<SparkCheckoutLightningObligationSendResult>
   receivePayment(request: {
     paymentMethod:
       | {
@@ -1024,6 +1043,65 @@ export class SparkWalletManager {
           "Spark payment recovery did not return classified provider evidence.",
       }
     }
+  }
+
+  /**
+   * Read-only fee preflight before the checkout runner persists possible-send.
+   * A ready result is not permission to skip the runner's exact-history read.
+   */
+  async preflightCheckoutLightningObligation(
+    walletId: string,
+    request: SparkCheckoutLightningObligationInput
+  ): Promise<SparkCheckoutLightningObligationPreflight> {
+    const client = this.#checkoutLightningClient(walletId, request)
+    if (!client.preflightCheckoutLightningObligation) {
+      throw new Error("This Spark adapter cannot preflight a checkout leg.")
+    }
+    return client.preflightCheckoutLightningObligation(request)
+  }
+
+  /**
+   * Execute one already-approved, frozen checkout leg. Unlike payInvoice this
+   * does not re-quote a user-facing fee approval or choose a new transfer ID.
+   * The caller persists possible-send state before entering this method.
+   */
+  async sendCheckoutLightningObligation(
+    walletId: string,
+    request: SparkCheckoutLightningObligationInput
+  ): Promise<SparkCheckoutLightningObligationSendResult> {
+    const client = this.#checkoutLightningClient(walletId, request)
+    if (!client.sendCheckoutLightningObligation) {
+      throw new Error("This Spark adapter cannot execute a checkout leg.")
+    }
+    return client.sendCheckoutLightningObligation(request)
+  }
+
+  #checkoutLightningClient(
+    walletId: string,
+    request: SparkCheckoutLightningObligationInput
+  ): SparkSdkClient {
+    if (request.network !== this.#factory.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    const conflict = getSparkLightningSendAttemptConflict(
+      walletId,
+      request.network,
+      {
+        schemaVersion: 1,
+        walletId,
+        network: request.network,
+        transferId: request.transferId,
+        paymentRequest: request.paymentRequest,
+        amountSats: request.amountSats,
+        maxFeeSats: request.maxFeeSats,
+        createdAt: this.#now(),
+        ...(request.completionTimeoutSecs === undefined
+          ? {}
+          : { completionTimeoutSecs: request.completionTimeoutSecs }),
+      }
+    )
+    if (conflict) throw new Error(conflict)
+    return this.#getClient(walletId)
   }
 
   async #payInvoice(
