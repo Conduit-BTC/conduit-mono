@@ -483,11 +483,9 @@ export async function readEventMarketRoster(
       : "eventId" in resolution
         ? resolution.eventId
         : null
-  const stale =
-    (selectedId !== null && !liveIds.has(selectedId)) ||
-    retainedEvents.some(
-      (event) => event.kind === EVENT_KINDS.DELETION && !liveIds.has(event.id)
-    )
+  // Signed tombstones remain authoritative in the reducer without live
+  // redelivery; freshness belongs to the selected current revision.
+  const stale = selectedId !== null && !liveIds.has(selectedId)
   const coverage: EventMarketRosterReadCoverage = stale
     ? "stale"
     : relayStates.length === 0 ||
@@ -608,14 +606,9 @@ export async function readEventMarketRoster(
           { createdAt: right.created_at, eventId: right.id }
         )
     )[0]
-  const calendarStale =
-    Boolean(
-      latestCalendarRevision && !liveCalendarIds.has(latestCalendarRevision.id)
-    ) ||
-    calendarRetained.some(
-      (event) =>
-        event.kind === EVENT_KINDS.DELETION && !liveCalendarIds.has(event.id)
-    )
+  const calendarStale = Boolean(
+    latestCalendarRevision && !liveCalendarIds.has(latestCalendarRevision.id)
+  )
   const calendarCoverage: EventMarketRosterReadCoverage = calendarStale
     ? "stale"
     : calendarRelayStates.length === 0 ||
@@ -846,7 +839,18 @@ export async function readEventMarketAuthorization(
   }
   const relayStates = reads.flatMap((read) => read.relays)
   const liveIds = new Set(live.map((event) => event.id))
-  const stale = cached.some((event) => !liveIds.has(event.id))
+  const resolution = resolve(all)
+  // A validated causal tip needs positive live evidence. Its immutable signed
+  // ancestry and deletion repairs may be retained after relays prune history.
+  const requiredIds =
+    "tip" in resolution
+      ? [resolution.tip.eventId]
+      : resolution.state === "conflicting"
+        ? resolution.tips.map((tip) => tip.eventId)
+        : all
+            .filter((event) => event.kind === EVENT_KINDS.EVENT_MARKET_AUTH)
+            .map((event) => event.id)
+  const stale = requiredIds.some((id) => !liveIds.has(id))
   // Successful relay responses do not complete a history whose bounded walk
   // still leaves a signed parent reference unresolved.
   const unresolvedParent = [...known.values()].some((event) =>
@@ -874,7 +878,7 @@ export async function readEventMarketAuthorization(
   return {
     marketCoordinate: market.coordinate,
     merchantPubkey,
-    resolution: resolve(all),
+    resolution,
     coverage,
     retained,
     observedRelayUrls: [...new Set(relayStates.map((relay) => relay.relayUrl))],
@@ -1060,11 +1064,7 @@ async function readEventMarketProductImpl(
     deletions: all.filter((event) => event.kind === EVENT_KINDS.DELETION),
   })
   const liveIds = new Set(live.map((event) => event.id))
-  const stale =
-    (knownRevisions[0] && !liveIds.has(knownRevisions[0].id)) ||
-    cached.some(
-      (event) => event.kind === EVENT_KINDS.DELETION && !liveIds.has(event.id)
-    )
+  const stale = knownRevisions[0] && !liveIds.has(knownRevisions[0].id)
   const relayStates = reads.flatMap((read) => read.relays)
   const coverage: EventMarketRosterReadCoverage = stale
     ? "stale"

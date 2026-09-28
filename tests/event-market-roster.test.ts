@@ -786,6 +786,239 @@ describe("retained future Event Market evidence", () => {
     return { live, retained, dependencies }
   }
 
+  function historyFixture(
+    scope: "authorization" | "roster" | "calendar" | "product"
+  ) {
+    const state = fixture()
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    state.live.push(tagged)
+    const kind = {
+      authorization: 3841,
+      roster: 30409,
+      calendar: 31923,
+      product: 30402,
+    }[scope]
+    const initial = state.live.find((event) => event.kind === kind)!
+    let previous = initial
+    if (scope === "authorization") {
+      const draft = buildEventMarketAuthorizationDraft({
+        marketCoordinate,
+        merchantPubkey: merchant,
+        state: "revoked",
+        parents: [parseEventMarketAuthorizationEvent(initial)!],
+      })
+      previous = sign(organizerSecret, draft.kind, draft.tags, 105)
+      state.retained.set(initial.id, initial)
+    }
+    // An authorization deletion targets the regular transition by ID. An
+    // addressable deletion covers old revisions only, through its timestamp.
+    const coordinate = {
+      authorization: marketCoordinate,
+      roster: marketCoordinate,
+      calendar: calendarCoordinate,
+      product: productCoordinate,
+    }[scope]
+    const secret = scope === "product" ? merchantSecret : organizerSecret
+    const erased = sign(
+      secret,
+      5,
+      [
+        ["e", previous.id],
+        ["k", String(kind)],
+        ...(scope === "authorization" ? [] : [["a", coordinate]]),
+      ],
+      110
+    )
+    let current: SignedPublicNostrEvent
+    if (scope === "authorization") {
+      const draft = buildEventMarketAuthorizationDraft({
+        marketCoordinate,
+        merchantPubkey: merchant,
+        state: "active",
+        parents: [parseEventMarketAuthorizationEvent(previous)!],
+        repairs: [{ deletionId: erased.id, targetEventId: previous.id }],
+      })
+      current = sign(organizerSecret, draft.kind, draft.tags, 112)
+    } else if (scope === "roster") {
+      current = roster([merchantRow], 112, previous.id)
+    } else {
+      current = sign(secret, kind, previous.tags, 112, previous.content)
+    }
+    for (const event of [previous, erased]) state.retained.set(event.id, event)
+    state.live.splice(state.live.indexOf(initial), 1, current)
+    return { ...state, initial, current, previous, erased, secret }
+  }
+
+  async function exactProduct(state: ReturnType<typeof fixture>) {
+    const marketRead = await readEventMarketRoster(
+      { reference: marketCoordinate },
+      state.dependencies
+    )
+    const exact = await readEventMarketProduct(
+      { marketRead, productCoordinate },
+      state.dependencies
+    )
+    return { marketRead, exact }
+  }
+
+  for (const scope of [
+    "authorization",
+    "roster",
+    "calendar",
+    "product",
+  ] as const) {
+    it(`accepts a live current ${scope} with retained deleted history, whether the tombstone is redelivered or omitted`, async () => {
+      for (const liveDeletion of [true, false]) {
+        const state = historyFixture(scope)
+        if (liveDeletion) state.live.push(state.erased)
+        const catalog = await readEventMarketCatalog(
+          { reference: marketCoordinate },
+          state.dependencies
+        )
+        expect(catalog.coverage).toBe("complete")
+        expect(catalog.marketRead.coverage).toBe("complete")
+        expect(catalog.marketRead.calendarCoverage).toBe("complete")
+        expect(catalog.products).toHaveLength(1)
+        expect(catalog.products[0]).toMatchObject({
+          coverage: "complete",
+          authorization: {
+            resolution: { state: "active" },
+            coverage: "complete",
+          },
+          actionable: true,
+        })
+        expect(state.retained.has(state.erased.id)).toBe(true)
+        expect(state.retained.has(state.previous.id)).toBe(true)
+      }
+    })
+
+    it(`keeps an absent current ${scope} stale despite retained valid history`, async () => {
+      const state = historyFixture(scope)
+      state.retained.set(state.current.id, state.current)
+      state.live.splice(state.live.indexOf(state.current), 1)
+      const { marketRead, exact } = await exactProduct(state)
+      const coverage =
+        scope === "roster"
+          ? marketRead.coverage
+          : scope === "calendar"
+            ? marketRead.calendarCoverage
+            : scope === "authorization"
+              ? exact.authorization?.coverage
+              : exact.coverage
+      expect(coverage).toBe("stale")
+      expect(exact.resolution.state).toBe("eligible")
+      expect(exact.actionable).toBe(false)
+    })
+
+    it(`keeps a retained deletion of the current ${scope} authoritative when live relays omit that tombstone`, async () => {
+      const state = historyFixture(scope)
+      const deletion = sign(
+        state.secret,
+        5,
+        [
+          ["e", state.current.id],
+          ["k", String(state.current.kind)],
+        ],
+        113
+      )
+      state.retained.set(state.current.id, state.current)
+      state.retained.set(deletion.id, deletion)
+      const { marketRead, exact } = await exactProduct(state)
+      if (scope === "roster")
+        expect(marketRead.resolution.state).toBe("deleted")
+      else if (scope === "calendar") expect(marketRead.calendar).toBeNull()
+      else if (scope === "authorization")
+        expect(exact.authorization?.resolution.state).toBe("deleted")
+      else expect(exact.resolution.state).toBe("deleted")
+      expect(exact.actionable).toBe(false)
+      const catalog = await readEventMarketCatalog(
+        { reference: marketCoordinate },
+        state.dependencies
+      )
+      expect(catalog.products).toHaveLength(0)
+    })
+  }
+
+  for (const defect of [
+    "missing_parent",
+    "unrepaired",
+    "wrong_repair",
+    "conflicting",
+    "malformed",
+  ] as const) {
+    it(`denies a repaired authorization with ${defect} evidence at the product action gate`, async () => {
+      const state = historyFixture("authorization")
+      if (defect === "missing_parent") state.retained.delete(state.previous.id)
+      else if (defect === "unrepaired" || defect === "wrong_repair") {
+        const draft = buildEventMarketAuthorizationDraft({
+          marketCoordinate,
+          merchantPubkey: merchant,
+          state: "active",
+          parents: [parseEventMarketAuthorizationEvent(state.previous)!],
+          repairs:
+            defect === "unrepaired"
+              ? []
+              : [
+                  {
+                    deletionId: state.erased.id,
+                    targetEventId: state.initial.id,
+                  },
+                ],
+        })
+        state.live.splice(
+          state.live.indexOf(state.current),
+          1,
+          sign(organizerSecret, draft.kind, draft.tags, 112)
+        )
+      } else if (defect === "conflicting") {
+        const sibling = grant(114)
+        state.retained.set(sibling.id, sibling)
+      } else {
+        const malformed = sign(
+          organizerSecret,
+          3841,
+          [...state.current.tags, ["state", "revoked"]],
+          114
+        )
+        state.retained.set(malformed.id, malformed)
+      }
+      const { exact } = await exactProduct(state)
+      expect(exact.authorization?.resolution.state).toBe(
+        defect === "unrepaired" || defect === "wrong_repair"
+          ? "deleted"
+          : defect
+      )
+      expect(exact.resolution.state).toBe("authorization_unavailable")
+      expect(exact.actionable).toBe(false)
+    })
+  }
+
+  for (const failure of ["timeout", "failed", "retention"] as const) {
+    it(`keeps ${failure} evidence from making retained repaired history actionable`, async () => {
+      const state = historyFixture("authorization")
+      if (failure === "retention") {
+        state.dependencies.retain = async () => {
+          throw new Error("unavailable")
+        }
+      } else {
+        const fetch = state.dependencies.fetch
+        state.dependencies.fetch = async (filter, options) => {
+          const result = await fetch(filter, options)
+          return {
+            ...result,
+            relays: [{ relayUrl: "wss://example.com", status: failure }],
+          }
+        }
+      }
+      const { exact } = await exactProduct(state)
+      expect(exact.authorization?.resolution.state).toBe("active")
+      expect(exact.authorization?.coverage).toBe(
+        failure === "failed" ? "unavailable" : "partial"
+      )
+      expect(exact.actionable).toBe(false)
+    })
+  }
+
   it("keeps another merchant's retained authorization deletion out of an active merchant read", async () => {
     const state = fixture([
       merchantRow,
