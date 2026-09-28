@@ -370,13 +370,14 @@ export function OrganizerHandoffReceiptQueue({
                 </p>
               )}
 
-              {claim.state === "ready_for_pickup" && (
+              {(claim.state === "ready_for_pickup" ||
+                (ackDelivery && ackNeedsRetry)) && (
                 <div className="mt-3 flex justify-end">
                   <Button
                     type="button"
                     size="sm"
                     disabled={
-                      ackReadiness?.state !== "ready" ||
+                      (!ackDelivery && ackReadiness?.state !== "ready") ||
                       (ackDelivery
                         ? retryActionsDisabled
                         : freshActionsDisabled) ||

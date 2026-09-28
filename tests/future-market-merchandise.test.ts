@@ -19,7 +19,15 @@ import {
   futureMarketReadyReceiptSchema,
   type FutureMarketReadyReceiptSchema,
 } from "@conduit/core/schemas"
-import { publishFutureMarketHandoffAck } from "@conduit/core/protocol/future-market-handoff"
+import {
+  buildFutureMarketPrivateRumor,
+  publishFutureMarketHandoffAck,
+  readFutureMarketReadyReceipts,
+} from "@conduit/core/protocol/future-market-handoff"
+import {
+  __resetCommerceTestOverrides,
+  __setCommerceTestOverrides,
+} from "@conduit/core/protocol/commerce"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 
 const MERCHANT_SECRET = generateSecretKey()
@@ -58,7 +66,8 @@ function productEvent(
 }
 
 function receiptFor(
-  products: readonly SignedPublicNostrEvent[]
+  products: readonly SignedPublicNostrEvent[],
+  embedded = false
 ): FutureMarketReadyReceiptSchema {
   return futureMarketReadyReceiptSchema.parse({
     version: 2,
@@ -83,6 +92,7 @@ function receiptFor(
         coordinate: `30402:${MERCHANT}:${product.tags.find((tag) => tag[0] === "d")![1]}`,
         eventId: product.id,
         createdAt: product.created_at * 1_000,
+        ...(embedded ? { signedEvent: product } : {}),
       },
       quantity: index + 2,
       selectedSpecifications: [{ key: "Scent", value: "Citrus" }],
@@ -91,9 +101,241 @@ function receiptFor(
   })
 }
 
-afterEach(__resetEventMarketMerchandiseTestOverrides)
+afterEach(() => {
+  __resetEventMarketMerchandiseTestOverrides()
+  __resetCommerceTestOverrides()
+})
+
+function forbidPublicMerchandiseReads(): () => number {
+  let reads = 0
+  const unexpectedRead = async () => {
+    reads += 1
+    throw new Error("Embedded merchandise must not request relay retention")
+  }
+  __setEventMarketMerchandiseTestOverrides({
+    getRelayLists: unexpectedRead,
+    fetchEventsFanoutDetailed: unexpectedRead,
+  })
+  return () => reads
+}
 
 describe("future organizer exact merchandise", () => {
+  it("verifies carried original bytes after relays prune the old revision without any public reads", async () => {
+    const original = productEvent("soap", "Original citrus soap")
+    const newer = productEvent("soap", "Edited soap", CREATED_AT + 100)
+    const receipt = receiptFor([original], true)
+    const publicReads = forbidPublicMerchandiseReads()
+    const local = resolveFutureMarketReceiptMerchandiseEvidence({
+      receipt,
+      events: [newer],
+      coverage: COVERAGE,
+    })
+    const fetched = await getFutureMarketReceiptMerchandise({ receipt })
+    for (const resolution of [local, fetched]) {
+      expect(
+        isVerifiedEventMarketReceiptMerchandiseResolution(resolution)
+      ).toBe(true)
+      expect(resolution.items[0]!.title).toBe("Original citrus soap")
+      expect(resolution.items[0]!.product.eventId).toBe(original.id)
+      expect(resolution.items[0]!.quantity).toBe(2)
+      expect(resolution.items[0]!.selectedSpecifications).toEqual([
+        { key: "Scent", value: "Citrus" },
+      ])
+    }
+    expect(publicReads()).toBe(0)
+    expect(fetched.coverage.attemptedRelayCount).toBe(0)
+  })
+
+  it("rejects forged or mismatched carried bytes without relay fallback or signing", async () => {
+    const original = productEvent("soap", "Original soap")
+    const newer = productEvent("soap", "Edited soap", CREATED_AT + 100)
+    const receipts = [
+      receiptFor([original], true),
+      receiptFor([original], true),
+      receiptFor([original], true),
+      receiptFor([original], true),
+    ]
+    receipts[0]!.items[0]!.product.signedEvent!.sig = "0".repeat(128)
+    receipts[1]!.items[0]!.product.signedEvent = newer
+    receipts[2]!.items[0]!.product.coordinate = `30402:${MERCHANT}:other`
+    receipts[3]!.items[0]!.product.createdAt += 1_000
+    for (const payload of receipts) {
+      const publicReads = forbidPublicMerchandiseReads()
+      let signatures = 0
+      let persisted = 0
+      const signer = {
+        sign: async () => {
+          signatures += 1
+          return ""
+        },
+      } as unknown as NDKSigner
+      expect(futureMarketReadyReceiptSchema.safeParse(payload).success).toBe(
+        false
+      )
+      await expect(
+        getFutureMarketReceiptMerchandise({ receipt: payload })
+      ).rejects.toThrow()
+      await expect(
+        publishFutureMarketHandoffAck({
+          organizerPubkey: ORGANIZER,
+          authenticatedPubkey: ORGANIZER,
+          physicalReleaseConfirmed: true,
+          signer,
+          claim: {
+            state: "ready_for_pickup",
+            receipt: {
+              id: "d".repeat(64),
+              orderId: "",
+              createdAt: CREATED_AT * 1_000,
+              rawContent: "",
+              senderPubkey: MERCHANT,
+              recipientPubkey: ORGANIZER,
+              type: "future_market_ready",
+              payload,
+            },
+          },
+          persistExactWraps: () => {
+            persisted += 1
+          },
+        })
+      ).rejects.toThrow()
+      expect(publicReads()).toBe(0)
+      expect(signatures).toBe(0)
+      expect(persisted).toBe(0)
+    }
+  })
+
+  it("rejects carried nonphysical or nonpublic signed revisions without fallback", async () => {
+    for (const [format, visibility] of [
+      ["digital", "public"],
+      ["physical", "hidden"],
+      ["physical", "private"],
+    ]) {
+      const product = finalizeEvent(
+        {
+          kind: 30402,
+          created_at: CREATED_AT,
+          tags: [
+            ["d", "soap"],
+            ["title", "Soap"],
+            ["price", "1000", "SAT"],
+            ["type", "simple", format!],
+            ["visibility", visibility!],
+          ],
+          content: "Soap",
+        },
+        MERCHANT_SECRET
+      )
+      const publicReads = forbidPublicMerchandiseReads()
+      const resolution = await getFutureMarketReceiptMerchandise({
+        receipt: receiptFor([product], true),
+      })
+      expect(resolution.state).toBe("malformed")
+      expect(
+        isVerifiedEventMarketReceiptMerchandiseResolution(resolution)
+      ).toBe(false)
+      expect(publicReads()).toBe(0)
+    }
+  })
+
+  it("looks up only absent bytes in a mixed compatibility receipt", async () => {
+    const soap = productEvent("soap", "Retained soap")
+    const candle = productEvent("candle", "Legacy candle")
+    const receipt = receiptFor([soap, candle], true)
+    delete receipt.items[1]!.product.signedEvent
+    const filters: NDKFilter[] = []
+    __setEventMarketMerchandiseTestOverrides({
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: (async (filter, options) => {
+        filters.push(filter)
+        const events = filter.kinds?.includes(30402) ? [candle] : []
+        return {
+          events: events.map((event) => new NDKEvent(undefined, event)),
+          relays: options.relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success",
+            eventCount: events.length,
+          })),
+          eventsVerified: true,
+        }
+      }) as never,
+    })
+    const resolution = await getFutureMarketReceiptMerchandise({ receipt })
+    expect(isVerifiedEventMarketReceiptMerchandiseResolution(resolution)).toBe(
+      true
+    )
+    expect(resolution.items.map((item) => item.title)).toEqual([
+      "Retained soap",
+      "Legacy candle",
+    ])
+    expect(
+      filters.find((filter) => filter.kinds?.includes(30402))?.ids
+    ).toEqual([candle.id])
+    expect(
+      filters.some(
+        (filter) =>
+          filter.ids?.includes(soap.id) || filter["#e"]?.includes(soap.id)
+      )
+    ).toBe(false)
+  })
+
+  it("passes the ACK evidence boundary with carried bytes and the exact private claim despite product pruning", async () => {
+    const product = productEvent("soap", "Retained soap")
+    const payload = receiptFor([product], true)
+    const publicReads = forbidPublicMerchandiseReads()
+    const rumor = buildFutureMarketPrivateRumor(payload)
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () =>
+        ({ signer: { user: async () => ({ pubkey: ORGANIZER }) } }) as never,
+      resolveInboxRelayUrls: async () => ["wss://future.embedded.inbox.test"],
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+        events: [
+          new NDKEvent(
+            undefined,
+            finalizeEvent(
+              {
+                kind: 1059,
+                created_at: rumor.created_at!,
+                tags: [["p", ORGANIZER]],
+                content: rumor.id!,
+              },
+              MERCHANT_SECRET
+            )
+          ),
+        ],
+        attemptedRelayUrls: [...(options?.relayUrls ?? [])],
+        successfulRelayUrls: [...(options?.relayUrls ?? [])],
+        failedRelayUrls: [],
+        cappedRelayUrls: [],
+      }),
+      giftUnwrap: async () => rumor,
+    })
+    const read = await readFutureMarketReadyReceipts({
+      organizerPubkey: ORGANIZER,
+    })
+    expect(read.claims).toHaveLength(1)
+    let deliveryOwnershipChecks = 0
+    const signer = {
+      user: async () => {
+        deliveryOwnershipChecks += 1
+        throw new Error("Reached ACK delivery ownership check")
+      },
+    } as unknown as NDKSigner
+    await expect(
+      publishFutureMarketHandoffAck({
+        organizerPubkey: ORGANIZER,
+        authenticatedPubkey: ORGANIZER,
+        claim: read.claims[0]!,
+        physicalReleaseConfirmed: true,
+        signer,
+        persistExactWraps: () => {},
+      })
+    ).rejects.toThrow("Reached ACK delivery ownership check")
+    expect(deliveryOwnershipChecks).toBe(1)
+    expect(publicReads()).toBe(0)
+  })
+
   it("authenticates every exact revision and preserves quantities and selected specifications", () => {
     const soap = productEvent("soap", "Signed citrus soap")
     const candle = productEvent("candle", "Signed citrus candle")

@@ -1116,9 +1116,31 @@ export const eventMarketReceiptItemSchema = z
   })
   .strict()
 
+const futureMarketReceiptProductSchema = pickupEvidenceCoordinateSchema
+  .extend({
+    /** New receipts carry the exact public listing; older v2 receipts may omit it. */
+    signedEvent: signedEventMarketEvidenceSchema.strict().optional(),
+  })
+  .superRefine((product, context) => {
+    if (
+      product.signedEvent &&
+      !signedEvidenceMatchesCoordinate({
+        ...product,
+        signedEvent: product.signedEvent,
+      })
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["signedEvent"],
+        message:
+          "Receipt product evidence must match the exact signed revision.",
+      })
+    }
+  })
+
 const futureMarketReceiptItemSchema = z
   .object({
-    product: pickupEvidenceCoordinateSchema,
+    product: futureMarketReceiptProductSchema,
     quantity: z.number().int().min(1).max(10_000),
     selectedSpecifications: z
       .array(

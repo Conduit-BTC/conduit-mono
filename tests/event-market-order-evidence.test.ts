@@ -511,13 +511,38 @@ describe("future Event Market private physical handoff", () => {
     })
     expect(receipt.items).toHaveLength(1)
     expect(receipt.items[0]?.quantity).toBe(1)
+    const exactProduct = handoffOrder.items[0]!.fulfillment
+    if (exactProduct?.type !== "event_market_pickup")
+      throw new Error("Expected future pickup")
+    expect(receipt.items[0]?.product.signedEvent).toEqual(
+      exactProduct.product.signedEvent
+    )
+    expect(receipt.items[0]?.product.signedEvent?.id).toBe(
+      exactProduct.product.eventId
+    )
     expect(receipt.items[0]?.selectedSpecifications).toEqual([
       { key: "Scent", value: "Lavender" },
     ])
     expect(JSON.stringify(receipt)).not.toContain(handoffOrder.buyerPubkey)
     expect(JSON.stringify(receipt)).not.toContain(handoffOrder.id)
     expect(JSON.stringify(receipt)).not.toContain("paymentConfirmed")
-    expect(JSON.stringify(receipt)).not.toContain("1200")
+    for (const privateField of [
+      "orderId",
+      "buyerPubkey",
+      "subtotal",
+      "shippingCostSats",
+      "invoice",
+      "preimage",
+      "shippingAddress",
+    ]) {
+      expect(receipt).not.toHaveProperty(privateField)
+    }
+    expect(Object.keys(receipt.items[0]!.product).sort()).toEqual([
+      "coordinate",
+      "createdAt",
+      "eventId",
+      "signedEvent",
+    ])
     expect(receipt.claimRef).toBe(
       getFutureMarketClaimRef({
         orderId: handoffOrder.id,

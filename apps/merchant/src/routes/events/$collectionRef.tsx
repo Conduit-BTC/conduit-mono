@@ -20,6 +20,7 @@ import {
   CardTitle,
 } from "@conduit/ui"
 import { FutureEventMarketManager } from "../../components/FutureEventMarketManager"
+import { LegacyOrganizerHandoffQueue } from "../../components/LegacyOrganizerHandoffQueue"
 
 export const Route = createFileRoute("/events/$collectionRef")({
   component: EventDetailPage,
@@ -146,6 +147,13 @@ function LegacyEventReadOnly({ reference }: { reference: string }) {
           ) : null}
         </CardContent>
       </Card>
+      {decoded && authenticatedPubkey === decoded.authorPubkey ? (
+        <LegacyOrganizerHandoffQueue
+          key={`${decoded.coordinate}:${authGeneration}`}
+          organizerPubkey={decoded.authorPubkey}
+          collectionCoordinate={decoded.coordinate}
+        />
+      ) : null}
     </div>
   )
 }

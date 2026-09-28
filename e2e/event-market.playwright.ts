@@ -1126,6 +1126,7 @@ test("future Event Market catalog follows signed merchant approval and current p
     pubkey: ORGANIZER_PUBKEY,
     identifier: "future-fair",
   })
+  const beforeCatalog = relay.requests.length
   await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
   await expect(
     page.getByRole("heading", { name: "Future Fair", exact: true })
@@ -1134,6 +1135,22 @@ test("future Event Market catalog follows signed merchant approval and current p
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toBeVisible()
   await expect(page.getByText(/Merchant booth: Booth 12/)).toBeVisible()
+  const discoveryRequests = relay.requests.slice(beforeCatalog)
+  expect(
+    discoveryRequests.some((request) =>
+      request.filters.some((filter) => filter.kinds?.includes(3841))
+    )
+  ).toBe(false)
+  expect(
+    discoveryRequests.some((request) =>
+      request.filters.some(
+        (filter) =>
+          filter.kinds?.includes(30402) &&
+          filter["#a"]?.includes(eventCoordinate(approval)) &&
+          !filter.authors
+      )
+    )
+  ).toBe(true)
   await gotoAs(
     page,
     marketUrl,
@@ -1228,9 +1245,19 @@ test("future Event Market catalog follows signed merchant approval and current p
     })
   )
   await page.getByRole("button", { name: "Refresh event records" }).click()
+  // A discovery hint may retain the old tagged revision. The selected action
+  // must check the current signed revision before it can mutate the cart.
+  await expect(
+    page.getByRole("heading", { name: "Future Fair soap" })
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Add", exact: true }).click()
   await expect(
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toHaveCount(0)
+  await page.goto(`${marketUrl}/cart`)
+  await expect(
+    page.getByText("Your cart is empty", { exact: true })
+  ).toBeVisible()
   await page.goto(directProductUrl)
   await expect(
     page.getByRole("heading", { name: "Listing not available" })
@@ -1640,7 +1667,10 @@ test("two future market products form one order and one private organizer releas
   await expect.poll(() => readyMessages().length).toBe(1)
   const readyPayload = JSON.parse(readyMessages()[0]!.rumor.content) as {
     claimRef: string
-    items: Array<{ product: { coordinate: string }; quantity: number }>
+    items: Array<{
+      product: { coordinate: string; signedEvent?: SignedEvent }
+      quantity: number
+    }>
   }
   expect(readyPayload.items).toHaveLength(2)
   const serializedReady = JSON.stringify(readyPayload)
@@ -1655,7 +1685,23 @@ test("two future market products form one order and one private organizer releas
   }
   const pickupCode = formatPickupClaimCode(readyPayload.claimRef)
 
+  expect(
+    readyPayload.items.find(
+      (item) => item.product.coordinate === eventCoordinate(soap)
+    )?.product.signedEvent?.id
+  ).toBe(soap.id)
   relay.remove(soap)
+  relay.seed(
+    signEvent(MERCHANT_SECRET, {
+      kind: 30402,
+      created_at: soap.created_at + 1,
+      content: "Updated listing after the paid order",
+      tags: soap.tags.map((tag) =>
+        tag[0] === "title" ? ["title", "Updated soap listing"] : tag
+      ),
+    })
+  )
+  const beforeOrganizer = relay.requests.length
   await gotoAs(page, merchantUrl, `/events/${marketNaddr}`, "organizer")
   await expect(
     page.getByRole("heading", { name: "Pickup handoffs" })
@@ -1671,14 +1717,8 @@ test("two future market products form one order and one private organizer releas
   await expect(page.getByText(`Pickup code ${pickupCode}`)).toBeVisible()
   const claimInput = page.getByLabel("Confirm buyer pickup code")
   await claimInput.fill(pickupCode)
-  await expect(
-    page.getByText(/Exact signed product details could not be verified/)
-  ).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: "Mark handed out" })
-  ).toBeDisabled()
-  relay.seed(soap)
-  await page.getByRole("button", { name: "Refresh product details" }).click()
+  // The receipt carries the original signed revision, so a relay can prune it
+  // after an ordinary listing edit without blocking the already-paid pickup.
   const claimItems = page.getByRole("list", {
     name: "Items for this pickup claim",
   })
@@ -1689,6 +1729,16 @@ test("two future market products form one order and one private organizer releas
     claimItems.getByText("Future handoff candle", { exact: true })
   ).toBeVisible()
   await expect(claimItems.getByText("Qty 2", { exact: true })).toBeVisible()
+  await expect(
+    claimItems.getByText("Updated soap listing", { exact: true })
+  ).toHaveCount(0)
+  expect(
+    relay.requests
+      .slice(beforeOrganizer)
+      .some((request) =>
+        request.filters.some((filter) => filter.ids?.includes(soap.id))
+      )
+  ).toBe(false)
   await expect(claimItems.getByText("Qty 1", { exact: true })).toBeVisible()
   await expect(
     page.getByRole("button", { name: "Mark handed out" })
@@ -1739,4 +1789,226 @@ test("organizer creates and closes one future Event Market without legacy event 
   await expect(page.getByText(/Closed · Town Hall/)).toBeVisible()
   await page.getByRole("button", { name: "Reopen Event Market" }).click()
   await expect(page.getByText(/Open · Town Hall/)).toBeVisible()
+})
+
+test("historical paid organizer claim remains reachable and retries the exact ACK after reload @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const { getEventHash } = await import("nostr-tools/pure")
+  const createdAt = Math.floor(Date.now() / 1_000) - 100
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: createdAt,
+    content: "Historical paid pickup schedule",
+    tags: [
+      ["d", "legacy-paid-fair"],
+      ["title", "Historical Paid Fair"],
+      ["start", "1790000000"],
+      ["end", "1790003600"],
+      ["D", "20717"],
+      ["location", "Original paid pickup hall"],
+    ],
+  })
+  const pickup = signEvent(ORGANIZER_SECRET, {
+    kind: 30406,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "legacy-paid-pickup"],
+      ["title", "Original paid pickup desk"],
+      ["price", "0", "SAT"],
+      ["country", "US"],
+      ["service", "pickup"],
+      ["location", "Original paid pickup hall"],
+    ],
+  })
+  const collectionCoordinate = `30405:${ORGANIZER_PUBKEY}:legacy-paid-fair`
+  const product = signEvent(MERCHANT_SECRET, {
+    kind: 30402,
+    created_at: createdAt,
+    content: "Original paid mug",
+    tags: [
+      ["d", "legacy-paid-mug"],
+      ["title", "Original paid mug"],
+      ["price", "2500", "SAT"],
+      ["type", "simple", "physical"],
+      ["stock", "5"],
+      ["image", "https://cdn.conduit.market/conduit-test/template-product.svg"],
+      ["a", collectionCoordinate],
+      ["shipping_option", eventCoordinate(pickup)],
+    ],
+  })
+  const collection = signEvent(ORGANIZER_SECRET, {
+    kind: 30405,
+    created_at: createdAt,
+    content: "Historical paid pickup catalog",
+    tags: [
+      ["d", "legacy-paid-fair"],
+      ["title", "Historical Paid Fair"],
+      ["a", eventCoordinate(calendar)],
+      ["a", eventCoordinate(product)],
+      ["shipping_option", eventCoordinate(pickup)],
+      ["conduit_event_market", "1", "closed"],
+    ],
+  })
+  const evidence = (event: SignedEvent) => ({
+    coordinate: eventCoordinate(event),
+    eventId: event.id,
+    createdAt: event.created_at * 1_000,
+  })
+  const payload = {
+    version: 1,
+    type: "organizer_fulfillment_receipt",
+    state: "ready_for_pickup",
+    paymentConfirmed: true,
+    orderReady: true,
+    releaseAuthorized: true,
+    claimRef: "1234567890ab".repeat(4) + "1234567890abcdef",
+    merchantPubkey: MERCHANT_PUBKEY,
+    organizerPubkey: ORGANIZER_PUBKEY,
+    calendar: evidence(calendar),
+    collection: evidence(collection),
+    option: evidence(pickup),
+    items: [{ product: evidence(product), quantity: 2, variants: [] }],
+    issuedAt: createdAt + 10,
+  }
+  const unsigned = {
+    kind: 16,
+    pubkey: MERCHANT_PUBKEY,
+    created_at: createdAt + 10,
+    tags: [
+      ["p", ORGANIZER_PUBKEY],
+      ["type", payload.type],
+      ["claim", payload.claimRef],
+    ],
+    content: JSON.stringify(payload),
+  }
+  const rumor = { ...unsigned, id: getEventHash(unsigned) }
+  const seal = signEvent(MERCHANT_SECRET, {
+    kind: 13,
+    created_at: createdAt + 10,
+    tags: [],
+    content: nip44.v2.encrypt(
+      JSON.stringify(rumor),
+      nip44.v2.utils.getConversationKey(MERCHANT_SECRET, ORGANIZER_PUBKEY)
+    ),
+  })
+  const wrapperSecret = generateSecretKey()
+  const wrap = signEvent(wrapperSecret, {
+    kind: 1059,
+    created_at: createdAt + 10,
+    tags: [["p", ORGANIZER_PUBKEY]],
+    content: nip44.v2.encrypt(
+      JSON.stringify(seal),
+      nip44.v2.utils.getConversationKey(wrapperSecret, ORGANIZER_PUBKEY)
+    ),
+  })
+  // A later collection title must not replace the paid receipt's exact graph.
+  const renamed = signEvent(ORGANIZER_SECRET, {
+    ...collection,
+    created_at: collection.created_at + 1,
+    tags: collection.tags.map((tag) =>
+      tag[0] === "title" ? ["title", "Renamed historical fair"] : tag
+    ),
+  })
+  relay.seed(
+    calendar,
+    pickup,
+    product,
+    collection,
+    renamed,
+    wrap,
+    createInboxDeclaration("organizer", createdAt),
+    createInboxDeclaration("merchant", createdAt)
+  )
+  await page.addInitScript(() => {
+    const signer = (
+      window as typeof window & {
+        nostr: { signEvent: (event: unknown) => Promise<unknown> }
+      }
+    ).nostr
+    const sign = signer.signEvent.bind(signer)
+    signer.signEvent = async (event) => {
+      localStorage.setItem(
+        "conduit:e2e:legacy-sign-count",
+        String(
+          Number(localStorage.getItem("conduit:e2e:legacy-sign-count") ?? 0) + 1
+        )
+      )
+      return sign(event)
+    }
+  })
+  const reference = nip19.naddrEncode({
+    kind: 30405,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: "legacy-paid-fair",
+    relays: [FIXTURE_RELAY],
+  })
+  await gotoAs(page, merchantUrl, `/events/${reference}`, "organizer")
+  const queue = page.getByTestId("organizer-handoff-receipt-queue")
+  await expect(queue).toBeVisible()
+  await expect(
+    queue.getByText("Original paid mug", { exact: true })
+  ).toBeVisible()
+  await expect(
+    queue.getByRole("button", { name: "Mark handed out" })
+  ).toBeEnabled()
+  relay.rejectKind(1059, true)
+  const ackStart = relay.publications.length
+  await queue.getByRole("button", { name: "Mark handed out" }).click()
+  await expect(
+    queue.getByRole("button", { name: "Retry exact update" })
+  ).toBeEnabled()
+  const savedAck = uniquePrivatePublications(
+    decryptPrivatePublications(relay.publications, MERCHANT_SECRET, ackStart)
+  ).find((message) => rumorType(message.rumor) === "organizer_handoff_ack")!
+  expect(savedAck).toBeDefined()
+  const initialAckAttempts = relay.publications.filter(
+    (publication) => publication.event.id === savedAck.wrap.id
+  ).length
+  const ackPayload = JSON.parse(savedAck.rumor.content) as {
+    collection: { eventId: string }
+    calendar: { eventId: string }
+    option: { eventId: string }
+    readyReceiptId: string
+  }
+  expect(ackPayload.collection.eventId).toBe(collection.id)
+  expect(ackPayload.calendar.eventId).toBe(calendar.id)
+  expect(ackPayload.option.eventId).toBe(pickup.id)
+  expect(ackPayload.readyReceiptId).toBe(rumor.id)
+  const signCount = await page.evaluate(() =>
+    Number(localStorage.getItem("conduit:e2e:legacy-sign-count"))
+  )
+  expect(signCount).toBeGreaterThan(0)
+  relay.rejectKind(1059, false)
+  await page.reload()
+  await expect(
+    queue.getByRole("button", { name: "Retry exact update" })
+  ).toBeEnabled()
+  await queue.getByRole("button", { name: "Retry exact update" }).click()
+  await expect(queue.getByText("Handed out", { exact: true })).toBeVisible()
+  expect(
+    await page.evaluate(() =>
+      Number(localStorage.getItem("conduit:e2e:legacy-sign-count"))
+    )
+  ).toBe(signCount)
+  const acknowledgments = uniquePrivatePublications(
+    decryptPrivatePublications(relay.publications, MERCHANT_SECRET, ackStart)
+  ).filter((message) => rumorType(message.rumor) === "organizer_handoff_ack")
+  expect(acknowledgments).toHaveLength(1)
+  expect(acknowledgments[0]!.wrap.id).toBe(savedAck.wrap.id)
+  expect(
+    relay.publications.filter(
+      (publication) => publication.event.id === savedAck.wrap.id
+    )
+  ).toHaveLength(initialAckAttempts + 1)
+  expect(
+    relay.publications.every((publication) => publication.event.kind === 1059)
+  ).toBe(true)
+  await gotoAs(page, merchantUrl, `/events/${reference}`, "merchant")
+  await expect(queue).toHaveCount(0)
 })

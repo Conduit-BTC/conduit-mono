@@ -1,7 +1,7 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ExternalLink, RefreshCw } from "lucide-react"
 import { useNavigate } from "@tanstack/react-router"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   buildMarketEventCatalogUrl,
   buildMerchantEventParticipationUrl,
@@ -9,10 +9,12 @@ import {
   encodeEventMarketNaddr,
   inferConduitAppOrigin,
   readEventMarketCatalog,
+  readEventMarketProduct,
+  readEventMarketRoster,
   useAuth,
   useConduitSession,
   useProfile,
-  type EventMarketProductReadResult,
+  type EventMarketCatalogCandidate,
   type Product,
 } from "@conduit/core"
 import {
@@ -49,18 +51,23 @@ function FutureEventProductCard({
   onAdd,
   onMerchantChange,
 }: {
-  entry: EventMarketProductReadResult
+  entry: EventMarketCatalogCandidate
   merchantName: string
   marketCoordinate: string
   canPurchase: boolean
   quote: ReturnType<typeof useShopperPricing>["quote"]
   preference: ReturnType<typeof useShopperPricing>["preference"]
-  onAdd: (entry: EventMarketProductReadResult, selected: Product) => void
+  onAdd: (
+    entry: EventMarketCatalogCandidate,
+    selected: Product
+  ) => Promise<void>
   onMerchantChange: (pubkey: string) => void
 }) {
   const navigate = useNavigate()
   const [selectedProductId, setSelectedProductId] = useState("")
-  if (entry.resolution.state !== "eligible") return null
+  const [checking, setChecking] = useState(false)
+  const [error, setError] = useState("")
+  if (entry.resolution.state !== "candidate") return null
   const { product, merchant } = entry.resolution
   const activeProductId = selectedProductId || product.id
   return (
@@ -75,6 +82,11 @@ function FutureEventProductCard({
             ? "Merchant booth"
             : "Organizer pickup"}
           : {merchant.assignment}
+          {error ? (
+            <span role="alert" className="block text-[var(--destructive)]">
+              {error}
+            </span>
+          ) : null}
         </span>
       }
       onMerchantActivate={() => onMerchantChange(merchant.pubkey)}
@@ -86,19 +98,36 @@ function FutureEventProductCard({
         })
       }
       onAddToCart={
-        entry.actionable && canPurchase
-          ? (selected) => onAdd(entry, selected)
+        canPurchase
+          ? async (selected) => {
+              if (checking) return
+              setChecking(true)
+              setError("")
+              try {
+                await onAdd(entry, selected)
+              } catch (cause) {
+                setError(
+                  cause instanceof Error
+                    ? cause.message
+                    : "This product could not be checked. Try again."
+                )
+              } finally {
+                setChecking(false)
+              }
+            }
           : undefined
       }
-      cartActionDisabled={!entry.actionable || !canPurchase}
-      cartActionDisabledLabel="Refresh event evidence"
+      cartActionDisabled={checking || !canPurchase}
+      cartActionDisabledLabel={
+        checking ? "Checking product…" : "Event pickup unavailable"
+      }
       btcUsdRate={quote}
       pricePreference={preference}
     />
   )
 }
 
-/** Future commerce is derived only from the current signed roster and product reads. */
+/** Browse candidates first; verify exact signed authority only for the selected purchase. */
 export function FutureEventMarketPage({
   reference,
   selectedMerchant,
@@ -111,26 +140,48 @@ export function FutureEventMarketPage({
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
+    return () => {
+      authGenerationRef.current = -1
+    }
   }, [authGeneration])
   const shouldContinue = () => authGenerationRef.current === authGeneration
   const [search, setSearch] = useState("")
+  const [catalogSearch, setCatalogSearch] = useState("")
+  const [limit, setLimit] = useState(48)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setCatalogSearch(search.trim())
+      setLimit(48)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [search])
+  const queryClient = useQueryClient()
   const cart = useCart()
   const navigate = useNavigate()
   const pricing = useShopperPricing()
+  const catalogQueryKey = [
+    "future-event-market",
+    reference,
+    session.relayScope,
+    authenticatedPubkey,
+    authGeneration,
+    limit,
+    catalogSearch,
+  ] as const
   const query = useQuery({
-    queryKey: [
-      "future-event-market",
-      reference,
-      session.relayScope,
-      authenticatedPubkey,
-      authGeneration,
-    ],
+    queryKey: catalogQueryKey,
     queryFn: ({ signal }) =>
       readEventMarketCatalog({
         reference,
         authenticatedPubkey,
+        limit,
+        search: catalogSearch || undefined,
         signal,
         shouldContinue: () => !signal.aborted && shouldContinue(),
+        onProgress: (result) => {
+          if (!signal.aborted && shouldContinue())
+            queryClient.setQueryData(catalogQueryKey, result)
+        },
       }),
     enabled: session.relaySettingsReady,
     retry: false,
@@ -159,10 +210,10 @@ export function FutureEventMarketPage({
     visibleMerchantPubkeys: merchantPubkeys,
     relayHintsByPubkey: {},
   })
-  const eligible = useMemo(
+  const candidates = useMemo(
     () =>
       catalog?.products.filter(
-        (entry) => entry.resolution.state === "eligible"
+        (entry) => entry.resolution.state === "candidate"
       ) ?? [],
     [catalog?.products]
   )
@@ -171,28 +222,23 @@ export function FutureEventMarketPage({
       merchantPubkeys.map((pubkey) => ({
         pubkey,
         name: identities.getIdentity(pubkey).displayName,
-        count: eligible.filter(
+        count: candidates.filter(
           (entry) =>
-            entry.resolution.state === "eligible" &&
+            entry.resolution.state === "candidate" &&
             entry.resolution.merchant.pubkey === pubkey
         ).length,
       })),
-    [eligible, identities, merchantPubkeys]
+    [candidates, identities, merchantPubkeys]
   )
-  const shown = useMemo(() => {
-    const needle = search.trim().toLocaleLowerCase()
-    return eligible.filter((entry) => {
-      if (entry.resolution.state !== "eligible") return false
-      const merchant = entry.resolution.merchant.pubkey
-      return (
-        (!selectedMerchant || merchant === selectedMerchant) &&
-        (!needle ||
-          `${entry.resolution.product.title} ${identities.getIdentity(merchant).displayName}`
-            .toLocaleLowerCase()
-            .includes(needle))
-      )
-    })
-  }, [eligible, identities, search, selectedMerchant])
+  const shown = useMemo(
+    () =>
+      candidates.filter(
+        (entry) =>
+          !selectedMerchant ||
+          entry.resolution.merchant.pubkey === selectedMerchant
+      ),
+    [candidates, selectedMerchant]
+  )
   const naddr = market
     ? encodeEventMarketNaddr(
         market.coordinate,
@@ -217,46 +263,58 @@ export function FutureEventMarketPage({
             selectedMerchant ? { merchantPubkey: selectedMerchant } : undefined
           )
         : undefined
-  const canPurchase =
-    !!market &&
-    market.state === "open" &&
-    catalog?.coverage === "complete" &&
-    catalog.marketRead.coverage === "complete" &&
-    catalog.marketRead.calendarCoverage === "complete" &&
-    !!calendar
+  const canPurchase = !!market && market.state === "open" && !!calendar
 
   async function addProduct(
-    entry: (typeof eligible)[number],
+    entry: EventMarketCatalogCandidate,
     selected: Product
   ): Promise<void> {
-    if (
-      !canPurchase ||
-      !catalog ||
-      entry.resolution.state !== "eligible" ||
-      !entry.actionable
-    )
-      return
-    // A variable child needs its own exact signed read before entering the cart.
+    if (!canPurchase || !market || !shouldContinue()) return
+    // A variable child has its own detail route and exact revision check.
     if (selected.id !== entry.productCoordinate) {
-      void navigateToProduct(selected.id)
+      navigateToProduct(selected.id)
       return
     }
-    try {
-      const fulfillment = createEventMarketPickupSnapshot({
-        marketRead: catalog.marketRead,
-        productRead: entry,
-      })
-      await cart.addItem(
-        cartItemInputFromProductSelection(
-          entry.resolution.product,
-          entry.resolution.product,
-          fulfillment
-        ),
-        1
-      )
-    } catch {
+    const marketRead = await readEventMarketRoster({
+      reference: market.coordinate,
+      authenticatedPubkey,
+      shouldContinue,
+    })
+    if (!shouldContinue()) return
+    const productRead = await readEventMarketProduct({
+      marketRead,
+      productCoordinate: entry.productCoordinate,
+      authenticatedPubkey,
+      shouldContinue,
+    })
+    if (!shouldContinue()) return
+    if (
+      productRead.resolution.state !== "eligible" ||
+      !productRead.actionable
+    ) {
       void query.refetch()
+      throw new Error(
+        "This product is not currently available for event pickup."
+      )
     }
+    if (productRead.resolution.revision.id !== entry.resolution.revision.id) {
+      void query.refetch()
+      throw new Error(
+        "Product details changed. Review the refreshed item before adding it."
+      )
+    }
+    const fulfillment = createEventMarketPickupSnapshot({
+      marketRead,
+      productRead,
+    })
+    await cart.addItem(
+      cartItemInputFromProductSelection(
+        productRead.resolution.product,
+        productRead.resolution.product,
+        fulfillment
+      ),
+      1
+    )
   }
 
   function navigateToProduct(productId: string): void {
@@ -337,9 +395,7 @@ export function FutureEventMarketPage({
       ) : (
         <h1 className="text-3xl font-semibold">Event Market</h1>
       )}
-      {query.isPending ? (
-        <p role="status">Checking signed event and merchant records…</p>
-      ) : null}
+      {query.isPending ? <p role="status">Loading event products…</p> : null}
       {query.isError ? (
         <p role="alert">Event records could not be checked. Try again.</p>
       ) : null}
@@ -347,8 +403,8 @@ export function FutureEventMarketPage({
       (catalog.coverage !== "complete" ||
         catalog.marketRead.coverage !== "complete") ? (
         <p role="status" className="rounded-lg border border-amber-500/50 p-4">
-          Relay evidence is incomplete. Refresh before purchasing; more current
-          products or participation changes may exist.
+          More products may be available. Item availability is checked when you
+          add it to your cart.
         </p>
       ) : null}
       {marketResolution && marketResolution.state !== "current" ? (
@@ -359,10 +415,10 @@ export function FutureEventMarketPage({
       {market?.state === "closed" ? (
         <p>This Event Market is closed to new purchases.</p>
       ) : null}
-      {market && eligible.length === 0 && !query.isPending ? (
-        <p>No eligible products were found in the checked relay evidence.</p>
+      {market && candidates.length === 0 && !query.isPending ? (
+        <p>No products found yet.</p>
       ) : null}
-      {market && eligible.length > 0 ? (
+      {market && candidates.length > 0 ? (
         <section className="space-y-5" aria-label="Event products">
           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_15rem]">
             <Input
@@ -388,7 +444,7 @@ export function FutureEventMarketPage({
                 {
                   value: "all",
                   label: "All merchants",
-                  meta: String(eligible.length),
+                  meta: String(candidates.length),
                 },
                 ...merchants.map((entry) => ({
                   value: entry.pubkey,
@@ -416,7 +472,7 @@ export function FutureEventMarketPage({
           ) : (
             <ul className={PRODUCT_GRID_CLASS_NAME}>
               {shown.map((entry) => {
-                if (entry.resolution.state !== "eligible") return null
+                if (entry.resolution.state !== "candidate") return null
                 return (
                   <li key={entry.productCoordinate}>
                     <FutureEventProductCard
@@ -429,9 +485,7 @@ export function FutureEventMarketPage({
                       canPurchase={canPurchase}
                       quote={pricing.quote}
                       preference={pricing.preference}
-                      onAdd={(item, selected) =>
-                        void addProduct(item, selected)
-                      }
+                      onAdd={addProduct}
                       onMerchantChange={(pubkey) => onMerchantChange(pubkey)}
                     />
                   </li>
@@ -440,6 +494,16 @@ export function FutureEventMarketPage({
             </ul>
           )}
         </section>
+      ) : null}
+      {market && catalog?.hasMore && limit < 256 ? (
+        <Button
+          type="button"
+          variant="outline"
+          disabled={query.isFetching}
+          onClick={() => setLimit((current) => Math.min(current + 48, 256))}
+        >
+          {query.isFetching ? "Loading products…" : "Load more products"}
+        </Button>
       ) : null}
       {shareUrl && qrUrl && calendar ? (
         <div className="space-y-2 rounded-xl border border-[var(--border)] p-4">

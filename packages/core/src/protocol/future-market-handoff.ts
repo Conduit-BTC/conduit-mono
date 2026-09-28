@@ -301,7 +301,12 @@ export function buildFutureMarketReadyReceipt(input: {
           "Organizer release requires one exact future pickup order."
         )
       return {
-        product: item.fulfillment.product,
+        product: {
+          coordinate: item.fulfillment.product.coordinate,
+          eventId: item.fulfillment.product.eventId,
+          createdAt: item.fulfillment.product.createdAt,
+          signedEvent: item.fulfillment.product.signedEvent,
+        },
         quantity: item.quantity,
         ...(item.selectedSpecifications?.length
           ? { selectedSpecifications: item.selectedSpecifications }

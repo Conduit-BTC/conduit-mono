@@ -49,10 +49,19 @@ export function resolveFutureMarketReceiptMerchandiseEvidence(
   }
 ): FutureMarketReceiptMerchandiseResolution {
   const receipt = futureMarketReadyReceiptSchema.parse(input.receipt)
+  const embedded = receipt.items.flatMap((item) =>
+    item.product.signedEvent ? [item.product.signedEvent] : []
+  )
+  const embeddedIds = new Set(embedded.map((event) => event.id))
   return includeReceiptSpecifications(
     resolveEventMarketReceiptMerchandiseEvidence({
       ...input,
       receipt,
+      // The authenticated receipt's pinned bytes take priority over relay copies.
+      events: [
+        ...embedded,
+        ...input.events.filter((event) => !embeddedIds.has(event.id)),
+      ],
       receiptRevisionPolicy: "historical_physical_receipt",
     }),
     receipt
@@ -66,7 +75,7 @@ export interface GetFutureMarketReceiptMerchandiseInput extends Omit<
   receipt: FutureMarketReadyReceiptSchema
 }
 
-/** The shared reader owns bounded product and NIP-09 reads and relay planning. */
+/** Embedded public revisions need no relay retention; legacy refs use the shared reader. */
 export async function getFutureMarketReceiptMerchandise(
   input: GetFutureMarketReceiptMerchandiseInput
 ): Promise<FutureMarketReceiptMerchandiseResolution> {
@@ -80,11 +89,43 @@ export async function getFutureMarketReceiptMerchandise(
   }
   assertCurrent()
   const receipt = futureMarketReadyReceiptSchema.parse(input.receipt)
+  const local = resolveFutureMarketReceiptMerchandiseEvidence({
+    receipt,
+    events: [],
+    coverage: {
+      attemptedRelayCount: 0,
+      completeRelayCount: 0,
+      partialRelayCount: 0,
+      failedRelayCount: 0,
+    },
+  })
+  const missingItems = receipt.items.filter((item) => !item.product.signedEvent)
+  if (
+    missingItems.length === 0 ||
+    local.items.some(
+      (item, index) =>
+        receipt.items[index]!.product.signedEvent && item.state !== "verified"
+    )
+  ) {
+    // Invalid supplied evidence never falls back to a different relay revision.
+    assertCurrent()
+    return local
+  }
   const resolution = await getEventMarketReceiptMerchandise({
     ...input,
-    receipt,
+    receipt: { ...receipt, items: missingItems },
     receiptRevisionPolicy: "historical_physical_receipt",
   })
   assertCurrent()
+  const fetchedById = new Map(
+    resolution.items.map((item) => [item.product.eventId, item])
+  )
+  // Preserve the shared reader's certificate: every added embedded item was
+  // independently authenticated above; the fallback covers only absent bytes.
+  resolution.items = receipt.items.map((item, index) =>
+    item.product.signedEvent
+      ? local.items[index]!
+      : fetchedById.get(item.product.eventId)!
+  )
   return includeReceiptSpecifications(resolution, receipt)
 }
