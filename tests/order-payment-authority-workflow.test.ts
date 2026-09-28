@@ -56,12 +56,18 @@ let afterMetadata: (() => Promise<void>) | undefined
 let afterInvoice: (() => Promise<void>) | undefined
 let exerciseShopperSigning: boolean
 let buyerSigner: NDKPrivateKeySigner
+let invoiceCreatedAt: number
 
-function invoice(): string {
+function invoice(kind: "preclaim" | "acquired"): string {
   return makeBolt11Fixture({
     hrp: "lnbc10n",
-    createdAt: Math.floor(Date.now() / 1_000),
-    fields: [bolt11PaymentHashField(), bolt11PlainDescriptionField()],
+    createdAt: invoiceCreatedAt,
+    fields: [
+      bolt11PaymentHashField(
+        new Uint8Array(32).fill(kind === "preclaim" ? 7 : 8)
+      ),
+      bolt11PlainDescriptionField(),
+    ],
   })
 }
 
@@ -160,7 +166,7 @@ function dependencies(): Partial<OrderPaymentDependencies> {
       counts.invoice += 1
       await afterInvoice?.()
       return {
-        invoice: invoice(),
+        invoice: invoice("acquired"),
         zapRelayUrls: [],
         shouldWaitForZapReceipt: false,
       }
@@ -179,6 +185,7 @@ beforeEach(() => {
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   __resetNdkTestState()
+  invoiceCreatedAt = Math.floor(Date.now() / 1_000)
   profile = undefined
   profileEvents = []
   profileTimestamp = Math.floor(Date.now() / 1_000)
@@ -210,7 +217,7 @@ beforeEach(() => {
     orderDeliveryStatus: "sent",
     invoiceStatus: "failed",
     paymentStatus: "failed",
-    invoice: invoice(),
+    invoice: invoice("preclaim"),
     proofDeliveryStatus: "not_started",
     zapReceiptStatus: "not_applicable",
     phase: "in_progress",
@@ -272,6 +279,7 @@ describe("executor profile authority workflow", () => {
   for (const change of ["removal", "session", "expiry", "none"] as const) {
     it(`rechecks ${change} after real WebLN enable before submitting`, async () => {
       await observeProfile(JSON.stringify({ lud16: SAVED_ADDRESS }))
+      const preclaimLifecycle = structuredClone(stored)
       let signalEnabled!: () => void
       let releaseEnable!: () => void
       const enabled = new Promise<void>((resolve) => {
@@ -308,6 +316,7 @@ describe("executor profile authority workflow", () => {
       await enabled
       const acquiredInvoice = stored.invoice
       expect(acquiredInvoice).toBeTruthy()
+      expect(acquiredInvoice).not.toBe(preclaimLifecycle.invoice)
       expect(submittedInvoices).toEqual([])
       if (change === "removal") {
         await observeProfile("{}")
@@ -324,10 +333,15 @@ describe("executor profile authority workflow", () => {
         expect(result.error).toContain(
           "Synthetic provider received the invoice."
         )
+        expect(stored.invoice).toBe(acquiredInvoice)
       } else {
         expect(result.error).toMatch(/address|account changed|expired/i)
+        expect(stored.invoice).toBe(preclaimLifecycle.invoice)
+        expect(result.lifecycle?.invoice).toBe(preclaimLifecycle.invoice)
+        expect(stored.invoiceStatus).toBe(preclaimLifecycle.invoiceStatus)
+        expect(stored.paymentStatus).toBe(preclaimLifecycle.paymentStatus)
       }
-      expect(stored.invoice).toBe(acquiredInvoice)
+      expect(stored.paymentClaimId).toBeUndefined()
     })
   }
 
