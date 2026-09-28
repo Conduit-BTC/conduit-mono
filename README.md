@@ -6,6 +6,12 @@ Decentralized commerce platform built on [Nostr](https://nostr.com). Merchants a
 
 Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved. See [LICENSE](./LICENSE), [TRADEMARKS.md](./TRADEMARKS.md), and [OPEN_SOURCE.md](./OPEN_SOURCE.md).
 
+## Built on open protocols
+
+Conduit Shop reads signed merchant listings using [NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md) and the [Open Markets working specification](https://github.com/OpenMarketsFoundation/specification). Conduit Sell publishes those listings. Buyers and merchants use external [NIP-07](https://github.com/nostr-protocol/nips/blob/master/07.md) or [NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md) account signers, exchange private orders and messages with [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md), and can pay through non-custodial Lightning paths including [NIP-47](https://github.com/nostr-protocol/nips/blob/master/47.md) where a compatible wallet is connected.
+
+**[See the protocol inventory](docs/PROTOCOLS.md)** for the NIPs each app reads or publishes, implementation links, and current limits. NIP-89 app handler metadata on the About pages is a separate event-kind discovery record, not that inventory.
+
 ---
 
 ## Apps
@@ -311,10 +317,12 @@ See [OPEN_SOURCE.md](./OPEN_SOURCE.md) for reproducible-build notes and [TRADEMA
 - **Profiles**: Kind 0 metadata events (NIP-01)
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol details.
+See [Open protocols in Conduit](docs/PROTOCOLS.md) for the feature-by-feature support inventory.
 
 ## Docs
 
 - [Documentation Index](docs/README.md)
+- [Protocol Inventory](docs/PROTOCOLS.md)
 - [Design Guidance](docs/DESIGN.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Specs](docs/specs/)

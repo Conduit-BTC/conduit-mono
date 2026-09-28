@@ -6,7 +6,6 @@ import {
   type EventMarketReadPlan,
 } from "./event-market"
 import {
-  parseEventMarketAuthorizationEvent,
   resolveEventMarketAuthorization,
   type EventMarketAuthorizationResolution,
 } from "./event-market-authorization"
@@ -175,7 +174,11 @@ export async function readEventMarketAuthorization(
             ))))
   const cachedIds = new Set(
     cached
-      .filter((event) => event.kind === EVENT_KINDS.EVENT_MARKET_AUTH)
+      .filter(
+        (event) =>
+          event.kind === EVENT_KINDS.EVENT_MARKET_AUTH &&
+          relevant(event, new Set())
+      )
       .map((event) => event.id)
   )
   cached = cached.filter((event) => relevant(event, cachedIds))
@@ -219,7 +222,7 @@ export async function readEventMarketAuthorization(
       authors: [market.authorPubkey],
       "#a": [coordinate],
       "#p": [input.merchantPubkey],
-      limit: 256,
+      limit: 128,
     }),
     fetch({
       kinds: [EVENT_KINDS.DELETION],
@@ -232,29 +235,43 @@ export async function readEventMarketAuthorization(
   const candidate = [
     ...new Map(
       [...cached, ...transitions.events]
-        .filter((event) => relevant(event, cachedIds))
+        .filter(
+          (event) =>
+            event.kind === EVENT_KINDS.EVENT_MARKET_AUTH &&
+            relevant(event, cachedIds)
+        )
         .map((event) => [event.id, event])
     ).values(),
   ]
   const transitionMap = new Map(candidate.map((event) => [event.id, event]))
   const parentReads: Fanout[] = []
   const attempted = new Set<string>()
-  for (let depth = 0; depth < 128; depth++) {
+  for (let depth = 0; depth < 128 && attempted.size < 256; depth++) {
     const missingParents = new Set(
       [...transitionMap.values()]
-        .flatMap(
-          (event) => parseEventMarketAuthorizationEvent(event)?.parentIds ?? []
+        .flatMap((event) =>
+          event.tags
+            .filter((tag) => tag[0] === "auth_parent")
+            .map((tag) => tag[1] ?? "")
         )
-        .filter((id) => !transitionMap.has(id) && !attempted.has(id))
+        .filter(
+          (id) =>
+            /^[0-9a-f]{64}$/.test(id) &&
+            !transitionMap.has(id) &&
+            !attempted.has(id)
+        )
     )
     if (missingParents.size === 0) break
-    const idsToRead = [...missingParents].slice(0, 64)
+    const idsToRead = [...missingParents].slice(
+      0,
+      Math.min(32, 256 - attempted.size)
+    )
     idsToRead.forEach((id) => attempted.add(id))
     const read = await fetch({
       kinds: [EVENT_KINDS.EVENT_MARKET_AUTH as NDKKind],
       authors: [market.authorPubkey],
       ids: idsToRead,
-      limit: 64,
+      limit: 32,
     })
     parentReads.push(read)
     for (const event of read.events) {
@@ -307,22 +324,33 @@ export async function readEventMarketAuthorization(
     deletions: all.filter((event) => event.kind === EVENT_KINDS.DELETION),
   })
   const liveIds = new Set(live.map((event) => event.id))
+  // Immutable ancestry and repaired deletions remain authoritative after pruning.
+  // Positive live freshness is required for the selected tip or conflicting tips.
   const requiredIds =
-    resolution.state === "active" || resolution.state === "revoked"
-      ? resolution.ancestry.map((event) => event.eventId)
-      : []
-  const stale =
-    requiredIds.some((id) => !liveIds.has(id)) ||
-    cached.some(
-      (event) => event.kind === EVENT_KINDS.DELETION && !liveIds.has(event.id)
+    "tip" in resolution
+      ? [resolution.tip.eventId]
+      : resolution.state === "conflicting"
+        ? resolution.tips.map((tip) => tip.eventId)
+        : all
+            .filter((event) => event.kind === EVENT_KINDS.EVENT_MARKET_AUTH)
+            .map((event) => event.id)
+  const stale = requiredIds.some((id) => !liveIds.has(id))
+  const unresolvedParent = allTransitions.some((event) =>
+    event.tags.some(
+      (tag) =>
+        tag[0] === "auth_parent" &&
+        /^[0-9a-f]{64}$/.test(tag[1] ?? "") &&
+        !transitionMap.has(tag[1]!)
     )
+  )
   const relayStates = reads.flatMap((read) => read.relays)
   const incomplete =
     !retained ||
     plan.relayHintTruncated ||
-    attempted.size > 128 ||
+    attempted.size >= 256 ||
+    unresolvedParent ||
     ids.size > 256 ||
-    transitions.events.length >= 256 ||
+    transitions.events.length >= 128 ||
     scopedDeletions.events.length >= 128 ||
     exactDeletionReads.some((read) => read.events.length >= 128) ||
     reads.some((read) => read.relays.length === 0) ||
