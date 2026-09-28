@@ -108,10 +108,7 @@ import {
   getProductSelectionImages,
   type MarketProductFamily,
 } from "../lib/productVariations"
-import {
-  getPickupHandoffPrivacyCopy,
-  getPickupHandoffSummary,
-} from "../lib/pickup-handoff"
+import { getPickupHandoffSummary } from "../lib/pickup-handoff"
 
 type PriceFormatter = (
   price: CommercePriceLike,
@@ -333,18 +330,18 @@ function MerchantIdentity({
         <Link
           to="/store/$pubkey"
           params={{ pubkey: pubkeyToNpub(merchantPubkey) }}
-          className="block truncate text-lg font-semibold leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300 sm:text-xl"
+          className="flex min-w-0 items-center gap-1.5 text-lg font-semibold leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300 sm:text-xl"
         >
-          {merchantName}
+          <span className="truncate">{merchantName}</span>
+          {nip05 ? (
+            <Nip05TrustIndicator
+              pubkey={merchantPubkey}
+              nip05={nip05}
+              display="icon"
+            />
+          ) : null}
         </Link>
-        {nip05 ? (
-          <div
-            className="mt-1 truncate text-xs font-medium text-[var(--text-muted)]"
-            title={nip05}
-          >
-            <Nip05TrustIndicator pubkey={merchantPubkey} nip05={nip05} />
-          </div>
-        ) : (
+        {!nip05 ? (
           <button
             type="button"
             className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md text-left font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
@@ -363,7 +360,7 @@ function MerchantIdentity({
               <Copy className="h-3.5 w-3.5 shrink-0" />
             )}
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   )
@@ -716,11 +713,6 @@ function CartLineItem({
                   ? ` · ${pickup.option.location ?? pickup.option.geohash}`
                   : " · public location pending"}
               </div>
-              {pickupHandoff ? (
-                <p className="mt-1">
-                  {getPickupHandoffPrivacyCopy(pickupHandoff)}
-                </p>
-              ) : null}
             </div>
           </div>
         ) : null}
@@ -938,31 +930,37 @@ function MerchantCartCard({
   return (
     <section className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
       <div className="p-5 sm:p-6">
-        <div className="flex items-start justify-between gap-4">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3">
           <MerchantIdentity
             merchantPubkey={group.merchantPubkey}
             accountPubkey={accountPubkey}
             authenticatedPubkey={authenticatedPubkey}
             shouldContinue={shouldContinue}
-            className="flex-1"
+            className="min-w-0"
           />
-          <div className="flex min-w-0 max-w-64 shrink-0 flex-col items-end gap-1 text-right">
-            <Badge variant="outline">{purchaseLabel}</Badge>
-            <span className="max-w-full truncate text-xs text-[var(--text-muted)]">
-              {group.items[0]?.title ?? "Cart purchase"} · Ref{" "}
-              {purchaseReference}
-            </span>
-          </div>
           <Button
             variant="outline"
-            className="h-10 shrink-0 px-3 text-sm"
+            className="size-10 shrink-0 px-0 text-sm sm:w-auto sm:px-3"
             aria-label={`Clear ${purchaseLabel} purchase, reference ${purchaseReference}`}
             onClick={onClear}
           >
             <TrashIcon className="h-4 w-4" />
             <span className="hidden sm:inline">Clear purchase</span>
-            <span className="sm:hidden">Clear</span>
           </Button>
+          <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <Badge
+              variant="outline"
+              className="max-w-full whitespace-normal text-left"
+            >
+              {purchaseLabel}
+            </Badge>
+            <span className="min-w-0 text-xs text-[var(--text-muted)]">
+              <span className="line-clamp-1">
+                {group.items[0]?.title ?? "Cart purchase"}
+              </span>
+              <span className="font-mono">Ref {purchaseReference}</span>
+            </span>
+          </div>
         </div>
 
         <div className="mt-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -1351,8 +1349,7 @@ function CartPage() {
                 Cart
               </h1>
               <p className="mt-2 text-pretty text-sm text-[var(--text-secondary)]">
-                Review each compatible delivery or pickup purchase, then order
-                or zap out one at a time.
+                Review and order each purchase separately.
               </p>
             </div>
             <div className="text-sm tabular-nums text-[var(--text-secondary)]">
@@ -1369,21 +1366,14 @@ function CartPage() {
           </div>
 
           {merchantCount < purchaseGroups.length ? (
-            <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+            <div className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-secondary)]">
               <AlertTriangle
-                className="mt-0.5 h-5 w-5 shrink-0 text-warning"
+                className="h-4 w-4 shrink-0 text-warning"
                 aria-hidden="true"
               />
-              <div>
-                <div className="font-medium text-[var(--text-primary)]">
-                  Conflicting fulfillment was separated
-                </div>
-                <p className="mt-1 text-pretty leading-6">
-                  Shipping and each exact event pickup appear as separate
-                  purchases. Complete any compatible purchase now, or remove an
-                  affected line without changing its signed fulfillment terms.
-                </p>
-              </div>
+              <span className="font-medium text-[var(--text-primary)]">
+                Conflicting fulfillment was separated
+              </span>
             </div>
           ) : null}
 

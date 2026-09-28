@@ -6,6 +6,12 @@ Decentralized commerce platform built on [Nostr](https://nostr.com). Merchants a
 
 Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved. See [LICENSE](./LICENSE), [TRADEMARKS.md](./TRADEMARKS.md), and [OPEN_SOURCE.md](./OPEN_SOURCE.md).
 
+## Built on open protocols
+
+Conduit Shop reads signed merchant listings using [NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md) and the [Open Markets working specification](https://github.com/OpenMarketsFoundation/specification). Conduit Sell publishes those listings. Buyers and merchants use external [NIP-07](https://github.com/nostr-protocol/nips/blob/master/07.md) or [NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md) account signers, exchange private orders and messages with [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md), and can pay through non-custodial Lightning paths including [NIP-47](https://github.com/nostr-protocol/nips/blob/master/47.md) where a compatible wallet is connected.
+
+**[See the protocol inventory](docs/PROTOCOLS.md)** for the NIPs each app reads or publishes, implementation links, and current limits. NIP-89 app handler metadata on the About pages is a separate event-kind discovery record, not that inventory. For commerce support, compatibility differences, and experimental proposal dependencies, see [Open Markets in Conduit](docs/OPEN_MARKETS.md).
+
 ---
 
 ## Apps
@@ -139,9 +145,9 @@ only when the runtime app and hostname are the exact official pair:
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 
 ```text
-wss://relay.conduit.market
-wss://nos.lol
+wss://conduit-congee.fly.dev
 wss://relay.ditto.pub
+wss://nos.lol
 wss://relay.primal.net
 ```
 
@@ -209,8 +215,8 @@ Actions variables are used when explicit `VITE_BUILD_*` overrides are absent.
 Dry-run first:
 
 ```bash
-NIP89_APP=market NIP89_NSEC=<market-nsec> NIP89_RELAY_URLS=wss://relay.conduit.market bun run nip89:publish-handler -- --dry-run
-NIP89_APP=merchant NIP89_NSEC=<merchant-nsec> NIP89_RELAY_URLS=wss://relay.conduit.market bun run nip89:publish-handler -- --dry-run
+NIP89_APP=market NIP89_NSEC=<market-nsec> NIP89_RELAY_URLS=wss://conduit-congee.fly.dev bun run nip89:publish-handler -- --dry-run
+NIP89_APP=merchant NIP89_NSEC=<merchant-nsec> NIP89_RELAY_URLS=wss://conduit-congee.fly.dev bun run nip89:publish-handler -- --dry-run
 ```
 
 Then publish without `--dry-run` and verify the resulting `31990` events on the
@@ -311,10 +317,12 @@ See [OPEN_SOURCE.md](./OPEN_SOURCE.md) for reproducible-build notes and [TRADEMA
 - **Profiles**: Kind 0 metadata events (NIP-01)
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol details.
+See [Open protocols in Conduit](docs/PROTOCOLS.md) for the feature-by-feature support inventory.
 
 ## Docs
 
 - [Documentation Index](docs/README.md)
+- [Protocol Inventory](docs/PROTOCOLS.md)
 - [Design Guidance](docs/DESIGN.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Specs](docs/specs/)

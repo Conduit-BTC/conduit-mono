@@ -57,10 +57,10 @@ let afterInvoice: (() => Promise<void>) | undefined
 let exerciseShopperSigning: boolean
 let buyerSigner: NDKPrivateKeySigner
 
-function invoice(): string {
+function invoice(createdAt = Math.floor(Date.now() / 1_000)): string {
   return makeBolt11Fixture({
     hrp: "lnbc10n",
-    createdAt: Math.floor(Date.now() / 1_000),
+    createdAt,
     fields: [bolt11PaymentHashField(), bolt11PlainDescriptionField()],
   })
 }
@@ -271,6 +271,8 @@ afterEach(() => {
 describe("executor profile authority workflow", () => {
   for (const change of ["removal", "session", "expiry", "none"] as const) {
     it(`rechecks ${change} after real WebLN enable before submitting`, async () => {
+      stored.invoice = invoice(Math.floor(Date.now() / 1_000) - 60)
+      const priorInvoice = stored.invoice
       await observeProfile(JSON.stringify({ lud16: SAVED_ADDRESS }))
       let signalEnabled!: () => void
       let releaseEnable!: () => void
@@ -308,6 +310,7 @@ describe("executor profile authority workflow", () => {
       await enabled
       const acquiredInvoice = stored.invoice
       expect(acquiredInvoice).toBeTruthy()
+      expect(acquiredInvoice).not.toBe(priorInvoice)
       expect(submittedInvoices).toEqual([])
       if (change === "removal") {
         await observeProfile("{}")
@@ -327,7 +330,9 @@ describe("executor profile authority workflow", () => {
       } else {
         expect(result.error).toMatch(/address|account changed|expired/i)
       }
-      expect(stored.invoice).toBe(acquiredInvoice)
+      expect(stored.invoice).toBe(
+        change === "none" ? acquiredInvoice : priorInvoice
+      )
     })
   }
 

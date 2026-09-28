@@ -436,26 +436,8 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     })
     await expect(checkout).toBeVisible()
     await checkout.click()
-    const continueToOrder = buyerPage.getByRole("button", {
-      name: "Continue to Send Order",
-      exact: true,
-    })
-    await expect
-      .poll(async () => {
-        if (await continueToOrder.isVisible()) return "continue"
-        if (
-          await buyerPage
-            .getByRole("heading", { name: "Send Order", exact: true })
-            .isVisible()
-        ) {
-          return "ready"
-        }
-        return "pending"
-      })
-      .not.toBe("pending")
-    if (await continueToOrder.isVisible()) await continueToOrder.click()
     await expect(
-      buyerPage.getByRole("heading", { name: "Send Order", exact: true })
+      buyerPage.getByRole("heading", { name: "Checkout", exact: true })
     ).toBeVisible({ timeout: 30_000 })
     const sendOrder = buyerPage.getByRole("button", {
       name: "Send order",

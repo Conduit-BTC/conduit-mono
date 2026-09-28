@@ -393,7 +393,10 @@ describe("Market event pickup fulfillment", () => {
         currency: "SATS",
         shippingCostSats: intent.shippingCost.totalSats,
         shippingCostStatus: intent.shippingCost.status,
-        guestContact: { email: "buyer@example.com" },
+        guestContact: {
+          email: "buyer@example.com",
+          phone: "+18005551234",
+        },
         createdAt: 1_700_000_000_000,
       }).subtotal
     ).toBe(0)
@@ -495,23 +498,27 @@ describe("Market event pickup fulfillment", () => {
     }
   })
 
-  it("skips signed-in pickup contact and requires only one guest recovery method", () => {
+  it("skips signed-in pickup contact and requires both guest contact methods", () => {
     expect(validatePickupContactFields(contact())).toEqual([])
 
     const missing = validateGuestPickupContactFields(contact())
-    expect(missing.map((error) => error.field)).toEqual(["email"])
+    expect(missing.map((error) => error.field)).toEqual(["phone", "email"])
 
     expect(
       validateGuestPickupContactFields(
-        contact({
-          email: "buyer@example.com",
-        })
+        contact({ email: "buyer@example.com" })
+      ).map((error) => error.field)
+    ).toEqual(["phone"])
+    expect(
+      validateGuestPickupContactFields(contact({ phone: "+14155552671" })).map(
+        (error) => error.field
       )
-    ).toEqual([])
+    ).toEqual(["email"])
     expect(
       validateGuestPickupContactFields(
         contact({
           phone: "+14155552671",
+          email: "buyer@example.com",
         })
       )
     ).toEqual([])

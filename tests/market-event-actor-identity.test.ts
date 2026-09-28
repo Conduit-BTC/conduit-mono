@@ -103,15 +103,11 @@ describe("Market event actor identity", () => {
     expect(organizer).toBe(organizerPubkey.toUpperCase())
 
     const orders = await Bun.file("apps/market/src/routes/orders.tsx").text()
-    expect(orders).toContain(
-      "normalizeEventActorPubkey(pickup.organizerPubkey)"
-    )
+    expect(orders).toContain("getPickupHandoffSummary(pickup).handlerPubkey")
     expect(orders).toContain(
       "profile: eventActorProfiles.data[normalizeEventActorPubkey(pubkey)]"
     )
-    expect(orders).toMatch(
-      /<EventActorProvenance\s+pubkey=\{pickup.organizerPubkey\}/
-    )
+    expect(orders).not.toContain("<EventActorProvenance")
   })
 
   it("prefers a hydrated profile name without changing the signed pubkey", () => {
@@ -202,7 +198,12 @@ describe("Market event actor identity", () => {
 
     for (const source of surfaces) {
       expect(source).toContain("EventActorName")
+    }
+    for (const source of surfaces.slice(0, 4)) {
       expect(source).toContain("EventActorProvenance")
+    }
+    for (const source of surfaces.slice(4)) {
+      expect(source).not.toContain("EventActorProvenance")
     }
 
     const identityComponent = await Bun.file(

@@ -91,6 +91,25 @@ describe("LNURL encoding and authority metadata", () => {
     ).rejects.toThrow(/unsafe callback/)
   })
 
+  it("does not follow an LNURL metadata redirect", async () => {
+    const fetchImpl = mock(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.redirect).toBe("manual")
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://127.0.0.1/private" },
+        })
+      }
+    )
+
+    await expect(
+      fetchLnurlPayMetadataFromUrl(PAY_REQUEST_URL, {
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toThrow(/LNURL endpoint returned 302/)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
   it("rejects oversized metadata before or after reading the response body", async () => {
     const declaredOversized = new Response("{}", {
       status: 200,

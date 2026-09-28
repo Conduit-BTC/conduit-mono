@@ -116,6 +116,7 @@ export interface CachedProduct {
   shippingOptionLaunchUnsupported?: boolean
   shippingOptionRefs?: ProductShippingOptionReference[]
   collectionRefs?: string[]
+  eventMarketRefs?: string[]
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string
@@ -180,6 +181,27 @@ export interface CachedEventMarketEvidence {
   signedEvent: SignedPublicNostrEvent
   sourceRelayUrls: string[]
   cachedAt: number
+}
+
+/** Retained public revisions for the experimental merchant-roster contract. */
+export interface CachedEventMarketRosterEvidence {
+  id: string
+  marketCoordinate: string
+  signedEvent: SignedPublicNostrEvent
+  cachedAt: number
+}
+
+/** Exact, paired organizer signatures kept outside admitted relay evidence. */
+export interface EventMarketMerchantDecisionJob {
+  id: string
+  marketCoordinate: string
+  merchantPubkey: string
+  action: "approve" | "revoke"
+  roster: SignedPublicNostrEvent
+  authorization: SignedPublicNostrEvent
+  status: "pending" | "acknowledged"
+  createdAt: number
+  updatedAt: number
 }
 
 export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
@@ -955,6 +977,12 @@ export interface OrderLifecycle {
 
   invoice?: string
   paymentHash?: string
+  /** Ordered local-only history of superseded manual invoices. */
+  priorExpiredManualInvoices?: Array<{
+    invoice: string
+    paymentHash: string
+    expiresAt: number
+  }>
   preimage?: string
   feeMsats?: number
   zapRequestId?: string
@@ -1018,6 +1046,11 @@ export class ConduitDB extends Dexie {
   >
   ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
   eventMarketEvidence!: EntityTable<CachedEventMarketEvidence, "id">
+  eventMarketRosterEvidence!: EntityTable<CachedEventMarketRosterEvidence, "id">
+  eventMarketMerchantDecisionJobs!: EntityTable<
+    EventMarketMerchantDecisionJob,
+    "id"
+  >
   wallets!: EntityTable<WalletDescriptor, "id">
   walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
   shoppingCarts!: EntityTable<StoredShoppingCart, "id">
@@ -1224,8 +1257,25 @@ export class ConduitDB extends Dexie {
     })
 
     this.version(20).stores({
+      // Version 20 shipped independently with Spark checkout recovery and
+      // event-market roster evidence. Keep both stores in the historical
+      // schema so neither lineage is removed when upgrading through v21.
       // Payment recovery state is device-local, never relay-synced or pruned
       // as a cache. The binding survives retirement to reject plan replay.
+      checkoutSparkPlanBindings: "checkoutId",
+      checkoutSparkReconciliations: "checkoutId",
+      checkoutSparkRetirements: "checkoutId",
+      eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
+    })
+
+    this.version(21).stores({
+      eventMarketMerchantDecisionJobs:
+        "id, [marketCoordinate+merchantPubkey], status, createdAt",
+    })
+
+    this.version(22).stores({
+      // A browser that already opened the roster/jobs v21 schema never runs
+      // the amended v20 declaration; add Spark stores at a new version too.
       checkoutSparkPlanBindings: "checkoutId",
       checkoutSparkReconciliations: "checkoutId",
       checkoutSparkRetirements: "checkoutId",

@@ -19,7 +19,10 @@ import type {
   TestResult,
 } from "@playwright/test/reporter"
 
-import { PrivacySafeSmokeReporter } from "../scripts/ci/playwright_smoke_reporter"
+import {
+  PrivacySafeSmokeReporter,
+  safePlaywrightSmokeId,
+} from "../scripts/ci/playwright_smoke_reporter"
 
 describe("privacy-safe Playwright smoke reporter", () => {
   it("persists only the smoke verifier's content-free status fields", () => {
@@ -41,7 +44,11 @@ describe("privacy-safe Playwright smoke reporter", () => {
           "test(`buyer ${dynamicTitle} @commerce`, async () => {})",
         ].join("\n")
       )
-      const reporter = new PrivacySafeSmokeReporter({ outputFile })
+      const progressFile = join(directory, "progress.log")
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        progressFile,
+      })
       reporter.onBegin?.(
         {
           metadata: {
@@ -54,7 +61,7 @@ describe("privacy-safe Playwright smoke reporter", () => {
             unsafeMetadata: privateSentinel,
           },
         } as FullConfig,
-        {} as Suite
+        { allTests: () => [1, 2] } as unknown as Suite
       )
 
       const safeTestCase = {
@@ -77,6 +84,9 @@ describe("privacy-safe Playwright smoke reporter", () => {
         tags: ["@commerce", `@${privateSentinel}`],
         title: unsafeTitle,
       } as TestCase
+      reporter.onTestBegin?.(safeTestCase, {
+        retry: 0,
+      } as TestResult)
       reporter.onTestEnd?.(safeTestCase, {
         attachments: [],
         duration: 11,
@@ -86,6 +96,9 @@ describe("privacy-safe Playwright smoke reporter", () => {
         stdout: [],
         steps: [],
       } as unknown as TestResult)
+      reporter.onTestBegin?.(unsafeTestCase, {
+        retry: 0,
+      } as TestResult)
       reporter.onTestEnd?.(unsafeTestCase, {
         attachments: [{ name: privateSentinel }],
         duration: 17,
@@ -104,8 +117,13 @@ describe("privacy-safe Playwright smoke reporter", () => {
       reporter.onEnd?.({ status: "passed" } as FullResult)
 
       const serialized = readFileSync(outputFile, "utf8")
+      const progress = readFileSync(progressFile, "utf8")
       const report = JSON.parse(serialized) as Record<string, unknown>
       expect(serialized.includes(privateSentinel)).toBe(false)
+      expect(progress.includes(privateSentinel)).toBe(false)
+      expect(progress).toContain("[smoke] selected=2")
+      expect(progress).toContain("redacted smoke test")
+      expect(progress).toContain("duration=17ms retry=0 status=passed")
       expect(Object.keys(report).sort()).toEqual([
         "config",
         "errors",
@@ -128,6 +146,8 @@ describe("privacy-safe Playwright smoke reporter", () => {
               file: "e2e/commerce.playwright.ts",
               line: 1,
               ok: true,
+              project: "unknown",
+              smokeId: safePlaywrightSmokeId("safe-smoke-test"),
               tags: ["@commerce"],
               tests: [
                 {
@@ -148,6 +168,8 @@ describe("privacy-safe Playwright smoke reporter", () => {
               file: "e2e/commerce.playwright.ts",
               line: 3,
               ok: true,
+              project: "unknown",
+              smokeId: safePlaywrightSmokeId("unsafe-smoke-test"),
               tags: ["@commerce"],
               tests: [
                 {
@@ -176,6 +198,7 @@ describe("privacy-safe Playwright smoke reporter", () => {
       ])
       if (process.platform !== "win32") {
         expect(statSync(outputFile).mode & 0o777).toBe(0o600)
+        expect(statSync(progressFile).mode & 0o777).toBe(0o600)
       }
     } finally {
       rmSync(directory, { force: true, recursive: true })
@@ -196,12 +219,18 @@ describe("privacy-safe Playwright smoke reporter", () => {
         `test(${JSON.stringify(title)}, async () => {})\n`
       )
       const reporter = new PrivacySafeSmokeReporter({ outputFile })
-      reporter.onBegin?.({ metadata: {} } as FullConfig, {} as Suite)
+      reporter.onBegin?.(
+        { metadata: {} } as FullConfig,
+        { allTests: () => [1, 2] } as unknown as Suite
+      )
 
       for (const id of ["mobile-chromium-test", "mobile-webkit-test"]) {
         const testCase = {
           expectedStatus: "passed",
           id,
+          parent: {
+            project: () => ({ name: id.replace("-test", "") }),
+          },
           location: { column: 1, file: sourceFile, line: 1 },
           ok: () => true,
           outcome: () => "expected",
@@ -266,7 +295,7 @@ describe("privacy-safe Playwright smoke reporter", () => {
               smokeEvidence,
             },
           } as FullConfig,
-          {} as Suite
+          { allTests: () => [] } as unknown as Suite
         )
         reporter.onEnd?.({ status: "passed" } as FullResult)
 

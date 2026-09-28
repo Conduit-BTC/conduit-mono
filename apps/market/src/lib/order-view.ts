@@ -155,6 +155,9 @@ export interface OrderViewModel {
   // Technical details (collapsed by default in the UI).
   invoice?: string
   paymentHash?: string
+  priorExpiredManualInvoices: NonNullable<
+    OrderLifecycle["priorExpiredManualInvoices"]
+  >
   preimage?: string
   feeMsats?: number
   zapRequestId?: string
@@ -775,6 +778,17 @@ export function buildOrderViewModel(
       merchantInvoiceAction?.invoice ??
       lifecycle?.invoice ??
       paymentAttempt?.invoice,
+    priorExpiredManualInvoices: (
+      lifecycle?.priorExpiredManualInvoices ?? []
+    ).filter(
+      (entry, index, entries) =>
+        entries.findIndex(
+          (candidate) =>
+            candidate.invoice.toLowerCase() === entry.invoice.toLowerCase() &&
+            candidate.paymentHash.toLowerCase() ===
+              entry.paymentHash.toLowerCase()
+        ) === index
+    ),
     paymentHash:
       merchantInvoiceAction?.paymentHash ??
       lifecycle?.paymentHash ??

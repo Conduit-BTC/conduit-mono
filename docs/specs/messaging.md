@@ -2,7 +2,7 @@
 
 Secure buyer/merchant marketplace messaging (CND-57). Defines the shared
 private-message boundary, the separation between general direct messages and
-order-linked conversations, and the visible degraded/retry contract that keeps
+order-linked conversations, and the degraded/retry contract that keeps
 undecryptable messages from silently disappearing.
 
 References:
@@ -243,7 +243,8 @@ the bounded legacy-read policy rather than the kind-10050 secure-message lane.
 
 Legacy conversations remain transport-qualified as NIP-04 and are never merged
 with NIP-17 threads between the same participants. Fetch, signer, and decrypt
-failures must produce a visible degraded/retry state. Diagnostics remain
+failures must retain a retryable degraded state and provide actionable feedback
+to the person accessing the affected conversation. Diagnostics remain
 content-free and must not expose plaintext, ciphertext, or participant pubkeys.
 
 ## Conversation model and cache
@@ -259,9 +260,12 @@ content-free and must not expose plaintext, ciphertext, or participant pubkeys.
   source/staleness meta.
   Buyer↔merchant is symmetric; the same list model serves both apps.
 
-## Degraded / retry UX contract
+## Degraded and retry behavior
 
-Messaging surfaces must render explicit states, never silent gaps:
+Messaging state must distinguish these outcomes. A person using an affected
+conversation must not see a falsely complete empty result or lose an available
+retry or repair path. Detailed relay and decrypt diagnostics may live in
+Network, recovery, or diagnostic surfaces:
 
 - **Loading** while the first read is in flight.
 - **Stale / degraded** when data is served from cache or a non-primary source
@@ -274,17 +278,17 @@ Messaging surfaces must render explicit states, never silent gaps:
   lookup failure (`lookup_partial` / `lookup_unavailable`, retryable), bounded
   complete-empty discovery (`not_observed`), a signed no-inbox frontier
   (`signed_empty`), and structurally unusable signed evidence (`malformed`).
-  Setup and repair are owned by the Network surface, and Messages/Orders link
-  there instead of publishing declarations. A stale retained signed state shows
-  a retry affordance; retained last-usable relays are labeled as historical
-  evidence rather than current write targets. Hidden cutover recovery never
-  appears as current membership or authorizes writes. Only complete shared-empty
+  Setup and repair are owned by the Network surface; Messages/Orders can direct
+  the affected person there instead of publishing declarations. A stale
+  retained signed state remains retryable; retained last-usable relays are
+  historical evidence rather than current write targets. Hidden cutover recovery
+  never appears as current membership or authorizes writes. Only complete shared-empty
   discovery exposes explicit redistribution of an
   unchanged declaration.
-- **Decrypt failed** when one or more gift wraps could not be unwrapped: show a
-  visible, retryable degraded affordance that reports how many messages need
-  retry. Retry re-attempts only the failed wrap ids (transient signer/timeout
-  failures should recover without a full refetch).
+- **Decrypt failed** when one or more gift wraps could not be unwrapped: retain
+  the failed wrap ids and give the affected person a retry path without implying
+  the conversation is complete. Retry re-attempts only the failed wrap ids;
+  transient signer/timeout failures should recover without a full refetch.
 - **Empty** as a distinct terminal state from loading and error.
 
 An inbox is empty only when every required relay attempt in its bounded read
@@ -308,8 +312,8 @@ follows `docs/specs/privacy-observability.md`.
 
 Protected-read diagnostics additionally exclude NIP-42 challenges, auth events,
 signatures, full filters, authenticated socket material, and stable
-account-derived session identifiers. Auth capability presentation must
-distinguish untested, NIP-11-advertised, challenge-observed, succeeded, and
+account-derived session identifiers. Auth capability claims must distinguish
+untested, NIP-11-advertised, challenge-observed, succeeded, and
 rejected/unavailable evidence. NIP-11 advertisement is not proof of successful
 authentication or recipient enforcement.
 
@@ -321,7 +325,7 @@ material, wallet credentials or recovery material, or wallet balances.
 ## Validation / testing
 
 - Classify kind-14 general vs kind-16 order-linked from unwrapped rumors.
-- Map decrypt/unwrap failure into a visible degraded state; retry targets only
+- Map decrypt/unwrap failure into a retained degraded state; retry targets only
   failed wrap ids.
 - Resolve NIP-17 writes exclusively through the recipient kind-10050
   declaration; only validated kind-16 order sends with a completed
@@ -330,8 +334,8 @@ material, wallet credentials or recovery material, or wallet balances.
   and kind-14 cases are excluded. One relay ACK is a successful partial
   delivery; zero ACKs is an explicit failure.
 - Allow an authenticated owner's explicit new or existing Network `ws://`
-  selection for eligible operations on that owner's account, with a
-  non-blocking **Unencrypted connection** notice. Filter remotely learned,
+  selection for eligible operations on that owner's account, with informed
+  owner approval of the unencrypted transport risk. Filter remotely learned,
   recipient, and other-account `ws://` URLs again at final I/O while leaving
   otherwise eligible remote `wss://` routes unchanged.
 - Declaration discovery separates `not_observed`, `lookup_partial`,

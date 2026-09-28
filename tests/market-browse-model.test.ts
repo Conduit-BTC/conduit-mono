@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+import { ProductCard } from "@conduit/ui"
 import {
   prepareProductCatalog,
   type CommerceProductRecord,
@@ -13,6 +16,7 @@ import {
 import {
   allowsGlobalProductSearch,
   getGlobalProductSearchQueryKey,
+  getMarketBrowseSearchCandidates,
   getMerchantIdentityView,
   getProductShippingPresetEligibility,
   isMarketBrowseRefreshStale,
@@ -257,6 +261,42 @@ describe("market browse model helpers", () => {
         [updatedCatalogProduct, searchProduct]
       )
     ).toEqual([updatedCatalogProduct, searchProduct])
+  })
+
+  it("keeps a semantic Congee hit through Market facets and renders its card", () => {
+    const indexedProduct = {
+      ...product("indexed-mug", "merchant-b", ["ceramic"], 200),
+      title: "Handmade mug",
+    }
+    const catalogMatch = {
+      ...product("catalog-ceramics", "merchant-a", ["ceramic"], 100),
+      title: "Ceramics from the catalog",
+    }
+    const unrelated = product("unrelated", "merchant-c", ["art"], 300)
+    const candidates = getMarketBrowseSearchCandidates(
+      [catalogMatch, unrelated],
+      [indexedProduct],
+      "ceramics"
+    )
+    const visible = filterProductsByFacets(candidates, {
+      merchants: ["merchant-b"],
+      tags: ["ceramic"],
+    })
+
+    expect(candidates.map((item) => item.id)).toEqual([
+      "catalog-ceramics",
+      "indexed-mug",
+    ])
+    expect(visible.map((item) => item.id)).toEqual(["indexed-mug"])
+    const html = renderToStaticMarkup(
+      createElement(ProductCard, {
+        title: visible[0].title,
+        merchantName: "Merchant B",
+        images: visible[0].images,
+        primaryPrice: "1 sat",
+      })
+    )
+    expect(html).toContain("Handmade mug")
   })
 
   it("sorts store options by recent publisher while preserving counts", () => {

@@ -430,7 +430,7 @@ describe("checkout Spark durable repository", () => {
     const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
     try {
       await upgraded.open()
-      expect(upgraded.verno).toBe(20)
+      expect(upgraded.verno).toBe(22)
       expect(await upgraded.wallets.get("existing-wallet")).toMatchObject({
         label: "existing",
       })
@@ -443,6 +443,149 @@ describe("checkout Spark durable repository", () => {
         status: "active",
         revision: 1,
       })
+    } finally {
+      upgraded.close()
+      await upgraded.delete()
+    }
+  })
+
+  it("preserves active and retired Spark recovery rows from the original version-20 schema", async () => {
+    const name = `conduit-checkout-spark-v20-${crypto.randomUUID()}`
+    const activePlan = makePlan("legacy-active")
+    const retiredPlan = makePlan("legacy-retired")
+    const activeState = fundingState(activePlan)
+    const retiredAt = CREATED_AT + 20
+    const legacy = new Dexie(name, fakeIndexedDBOptions)
+    legacy.version(20).stores({
+      wallets: "id",
+      shoppingCarts: "id, updatedAt",
+      checkoutSparkPlanBindings: "checkoutId",
+      checkoutSparkReconciliations: "checkoutId",
+      checkoutSparkRetirements: "checkoutId",
+    })
+    await legacy.open()
+    await legacy.table("checkoutSparkPlanBindings").bulkPut([
+      { checkoutId: activePlan.checkoutId, planDigest: activePlan.planDigest },
+      {
+        checkoutId: retiredPlan.checkoutId,
+        planDigest: retiredPlan.planDigest,
+      },
+    ])
+    await legacy.table("checkoutSparkReconciliations").put({
+      checkoutId: activePlan.checkoutId,
+      revision: 3,
+      state: activeState,
+    })
+    await legacy.table("checkoutSparkRetirements").put({
+      checkoutId: retiredPlan.checkoutId,
+      schemaVersion: 1,
+      planDigest: retiredPlan.planDigest,
+      retiredAt,
+    })
+    legacy.close()
+
+    const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
+    try {
+      await upgraded.open()
+      expect(upgraded.verno).toBe(22)
+      const repository = new DexieCheckoutSparkRepository(upgraded)
+      expect(
+        await repository.load(activePlan.checkoutId, activePlan.planDigest)
+      ).toEqual({ status: "active", revision: 3, state: activeState })
+      expect(
+        await repository.load(retiredPlan.checkoutId, retiredPlan.planDigest)
+      ).toEqual({
+        status: "retired",
+        tombstone: {
+          schemaVersion: 1,
+          planDigest: retiredPlan.planDigest,
+          retiredAt,
+        },
+      })
+      expect(await upgraded.eventMarketRosterEvidence.count()).toBe(0)
+      expect(await upgraded.eventMarketMerchantDecisionJobs.count()).toBe(0)
+    } finally {
+      upgraded.close()
+      await upgraded.delete()
+    }
+  })
+
+  it("adds Spark stores without losing roster evidence from the other version-20 schema", async () => {
+    const name = `conduit-roster-v20-${crypto.randomUUID()}`
+    const roster = {
+      id: "roster-1",
+      marketCoordinate: "31923:organizer:event",
+      cachedAt: CREATED_AT,
+    }
+    const legacy = new Dexie(name, fakeIndexedDBOptions)
+    legacy.version(20).stores({
+      wallets: "id",
+      shoppingCarts: "id, updatedAt",
+      eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
+    })
+    await legacy.open()
+    await legacy.table("eventMarketRosterEvidence").put(roster)
+    legacy.close()
+
+    const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
+    try {
+      await upgraded.open()
+      expect(upgraded.verno).toBe(22)
+      expect(await upgraded.eventMarketRosterEvidence.get(roster.id)).toEqual(
+        roster
+      )
+      expect(await upgraded.checkoutSparkPlanBindings.count()).toBe(0)
+      expect(await upgraded.checkoutSparkReconciliations.count()).toBe(0)
+      expect(await upgraded.checkoutSparkRetirements.count()).toBe(0)
+    } finally {
+      upgraded.close()
+      await upgraded.delete()
+    }
+  })
+
+  it("adds Spark stores without losing roster and jobs from an existing version-21 database", async () => {
+    const name = `conduit-roster-v21-${crypto.randomUUID()}`
+    const roster = {
+      id: "roster-1",
+      marketCoordinate: "31923:organizer:event",
+      cachedAt: CREATED_AT,
+    }
+    const job = {
+      id: "job-1",
+      marketCoordinate: roster.marketCoordinate,
+      merchantPubkey: MERCHANT_PUBKEY,
+      status: "pending",
+      createdAt: CREATED_AT,
+    }
+    const legacy = new Dexie(name, fakeIndexedDBOptions)
+    legacy.version(20).stores({
+      wallets: "id",
+      shoppingCarts: "id, updatedAt",
+      eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
+    })
+    legacy.version(21).stores({
+      eventMarketMerchantDecisionJobs:
+        "id, [marketCoordinate+merchantPubkey], status, createdAt",
+    })
+    await legacy.open()
+    await legacy.table("eventMarketRosterEvidence").put(roster)
+    await legacy.table("eventMarketMerchantDecisionJobs").put(job)
+    legacy.close()
+
+    const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
+    try {
+      await upgraded.open()
+      expect(upgraded.verno).toBe(22)
+      expect(await upgraded.eventMarketRosterEvidence.get(roster.id)).toEqual(
+        roster
+      )
+      expect(
+        await upgraded.eventMarketMerchantDecisionJobs.get(job.id)
+      ).toEqual(job)
+      const plan = makePlan("after-v21-upgrade")
+      expect(
+        await new DexieCheckoutSparkRepository(upgraded).create(plan)
+      ).toMatchObject({ status: "active", revision: 1 })
     } finally {
       upgraded.close()
       await upgraded.delete()

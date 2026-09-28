@@ -287,7 +287,7 @@ for (const scenario of scenarios) {
 
     await page.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
     await expect(
-      page.getByRole("heading", { name: "Send Order", exact: true })
+      page.getByRole("heading", { name: "Checkout", exact: true })
     ).toBeVisible()
     const paymentTarget = page.getByRole("combobox", { name: "Pay with" })
     await expect(paymentTarget).toContainText("Browser wallet (WebLN)")
@@ -321,6 +321,9 @@ for (const scenario of scenarios) {
 
     await expect(page).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
     await expect(
+      page.getByRole("heading", { name: "Orders", exact: true })
+    ).toHaveCount(0)
+    await expect(
       page.getByRole("heading", { name: "Pay with an external wallet" })
     ).toBeVisible()
     await expect(
@@ -329,6 +332,23 @@ for (const scenario of scenarios) {
     await expect(
       page.getByRole("link", { name: "Open Lightning wallet", exact: true })
     ).toHaveAttribute("href", `lightning:${generatedInvoice}`)
+    if (!scenario.stop && !scenario.legacyPublicZap) {
+      await page.setViewportSize({ width: 390, height: 844 })
+      await page.evaluate(() => window.scrollTo(0, 0))
+      const walletAction = page.getByRole("link", {
+        name: "Open Lightning wallet",
+        exact: true,
+      })
+      await expect(walletAction).toBeInViewport()
+      const recoveryAction = page.getByRole("button", {
+        name: "Finish saving this order",
+        exact: true,
+      })
+      await expect(recoveryAction).toBeVisible()
+      const walletBounds = await walletAction.boundingBox()
+      const recoveryBounds = await recoveryAction.boundingBox()
+      expect(recoveryBounds!.y).toBeGreaterThan(walletBounds!.y)
+    }
     await expect(
       page.getByRole("button", { name: "Use merchant invoice", exact: true })
     ).toHaveCount(0)
@@ -371,6 +391,9 @@ for (const scenario of scenarios) {
       await page.reload()
       await expect(
         page.getByRole("heading", { name: "Orders", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("heading", { name: "Complete payment", exact: true })
       ).toBeVisible()
       await expectRetainedCart()
     }
@@ -462,6 +485,9 @@ for (const scenario of scenarios) {
       await page.reload()
       await expect(
         page.getByRole("heading", { name: "Orders", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("heading", { name: "Complete payment", exact: true })
       ).toBeVisible()
       await expectStoppedInvoice()
       await page
@@ -527,11 +553,14 @@ for (const scenario of scenarios) {
       name: "Copy invoice",
       exact: true,
     })
+    const paymentSentLightning = page.getByTestId("payment-sent-lightning")
+    await expect(paymentSentLightning).toHaveCount(0)
     if (scenario.stop) await expect(copyInvoice).toHaveCount(0)
     else await expect(copyInvoice).toBeVisible()
 
     const exactReceipt = receipt(generatedInvoice)
     await publishTestRelayEvents([exactReceipt])
+    if (!scenario.stop) await expect(paymentSentLightning).toBeVisible()
     await expect.poll(paymentState, { timeout: 20_000 }).toEqual({
       paymentStatus: "paid",
       zapReceiptStatus: "observed",
@@ -541,6 +570,11 @@ for (const scenario of scenarios) {
     await expect(
       page.getByRole("button", { name: "Copy invoice", exact: true })
     ).toHaveCount(0)
+    if (!scenario.stop) {
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toBeVisible()
+    }
     if (scenario.stop) {
       await expect(
         page

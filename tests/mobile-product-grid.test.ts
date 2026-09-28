@@ -38,7 +38,7 @@ describe("Market product grid layout", () => {
     }
   })
 
-  it("stretches catalog cards while retaining natural event-card disclosure height", async () => {
+  it("stretches catalog cards while allowing natural event-card height", async () => {
     const content = await readFile(
       "apps/market/src/components/ProductGridCard.tsx",
       "utf8"

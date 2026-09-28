@@ -144,7 +144,7 @@ describe("buyer invoice presentation", () => {
     expect(markup).toContain("$48.00")
     expect(markup).toContain("Invoice amount: 40,000 sats")
     expect(markup).toContain("Payment details")
-    expect(markup).toContain("available for eligible accounts")
+    expect(markup).toContain("Cash App didn’t open?")
   })
 
   it("falls back to exact sats when the quote is missing or stale", () => {
@@ -171,7 +171,7 @@ describe("buyer invoice presentation", () => {
     expect(markup).not.toContain("$48.00")
   })
 
-  it("renders one shared invoice QR and branded guarded links without starting payment", () => {
+  it("keeps the invoice QR behind one compact guarded action", () => {
     const bolt11 = invoice({ createdAt: Math.floor(Date.now() / 1000) })
     let guardCalls = 0
     const markup = renderPayment({
@@ -181,7 +181,8 @@ describe("buyer invoice presentation", () => {
         return true
       },
     })
-    expect(markup.split("<title>Lightning invoice</title>").length - 1).toBe(1)
+    expect(markup).not.toContain("<title>Lightning invoice</title>")
+    expect(markup).toContain("Show QR code")
     expect(markup).toContain(
       `href="https://cash.app/launch/lightning/${bolt11}"`
     )

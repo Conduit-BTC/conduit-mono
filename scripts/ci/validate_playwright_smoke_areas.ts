@@ -3,15 +3,22 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { smokeAreaTags, type SmokeArea } from "../../e2e/helpers/smoke-areas"
-import { safePlaywrightSmokeTitle } from "./playwright_smoke_reporter"
+import {
+  safePlaywrightSmokeId,
+  safePlaywrightSmokeTitle,
+} from "./playwright_smoke_reporter"
 
 type PlaywrightJsonSpec = {
   file?: string
+  id?: string
   line?: number
   ok?: boolean
+  project?: string
+  smokeId?: string
   tags?: string[]
   tests?: Array<{
     expectedStatus?: string
+    projectName?: string
     results?: PlaywrightJsonResult[]
     status?: string
   }>
@@ -59,14 +66,16 @@ export type PlaywrightSmokeEvidenceContext = {
 }
 
 export type PlaywrightSmokeManifest = {
-  schemaVersion: 1
+  schemaVersion: 2
   evidence: PlaywrightSmokeEvidenceContext | null
   selectedTags: string[]
   selectedTestCount: number
   tests: Array<{
     file: string
+    id: string
     line: number | null
     name: string
+    project: string
     tags: string[]
   }>
 }
@@ -165,6 +174,7 @@ export function buildPlaywrightSmokeManifest(
     const line = spec.line ?? 0
     tests.push({
       file,
+      id: spec.smokeId ?? safePlaywrightSmokeId(spec.id),
       line: spec.line ?? null,
       name: safePlaywrightSmokeTitle({
         file,
@@ -172,6 +182,7 @@ export function buildPlaywrightSmokeManifest(
         sourceFile: file === "unknown" ? "" : resolve(file),
         title: spec.title ?? "untitled test",
       }),
+      project: spec.project ?? spec.tests?.[0]?.projectName ?? "unknown",
       tags: areas.map((area) => smokeAreaTags[area]),
     })
   }
@@ -179,13 +190,15 @@ export function buildPlaywrightSmokeManifest(
   tests.sort(
     (left, right) =>
       compareText(left.file, right.file) ||
+      compareText(left.id, right.id) ||
       (left.line ?? 0) - (right.line ?? 0) ||
       compareText(left.name, right.name) ||
+      compareText(left.project, right.project) ||
       compareText(left.tags.join(","), right.tags.join(","))
   )
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     evidence,
     selectedTags: canonicalSelectedAreas.map((area) => smokeAreaTags[area]),
     selectedTestCount: tests.length,
@@ -236,6 +249,35 @@ export function validatePlaywrightSmokeAreas(
 
   if (errors.length > 0) throw new Error(errors.join("\n"))
   return counts
+}
+
+export function validatePlaywrightSmokeShardPartition(
+  full: PlaywrightSmokeManifest,
+  shards: readonly PlaywrightSmokeManifest[]
+): void {
+  const counts = new Map<string, number>()
+  for (const test of full.tests) {
+    const key = JSON.stringify(test)
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  for (const shard of shards) {
+    if (
+      JSON.stringify(shard.selectedTags) !== JSON.stringify(full.selectedTags)
+    ) {
+      throw new Error(
+        "Playwright smoke shard tags differ from the full manifest."
+      )
+    }
+    for (const test of shard.tests) {
+      const key = JSON.stringify(test)
+      counts.set(key, (counts.get(key) ?? 0) - 1)
+    }
+  }
+  if ([...counts.values()].some((count) => count !== 0)) {
+    throw new Error(
+      "Playwright smoke shards overlap or omit tests from the full manifest."
+    )
+  }
 }
 
 export function validatePlaywrightSmokeExecution(
@@ -372,16 +414,25 @@ function readJsonFile<T>(path: string, label: string): T {
   }
 }
 
-function discoverPlaywrightTests(): PlaywrightJsonReport {
+function discoverPlaywrightTests(
+  area: SmokeArea | "all" = "all",
+  shard?: string
+): PlaywrightJsonReport {
   const result = spawnSync(
     "bunx",
-    ["playwright", "test", "--list", "--reporter=json"],
+    [
+      "playwright",
+      "test",
+      "--list",
+      "--reporter=json",
+      ...(shard ? [`--shard=${shard}`] : []),
+    ],
     {
       encoding: "utf8",
       env: {
         ...process.env,
         PLAYWRIGHT_SMOKE_DISCOVERY: "true",
-        PLAYWRIGHT_SMOKE_AREA: "all",
+        PLAYWRIGHT_SMOKE_AREA: area,
       },
     }
   )
@@ -399,6 +450,7 @@ function discoverPlaywrightTests(): PlaywrightJsonReport {
 
 if (import.meta.main) {
   const selectedAreas = readSelectedAreas()
+  const shard = readArgument("--shard")
   const executionReportPath = readArgument("--execution-report")
   const expectedManifestPath = readArgument("--expected-manifest")
   const manifestOutputPath = readArgument("--manifest-output")
@@ -431,7 +483,34 @@ if (import.meta.main) {
     process.exit(0)
   }
 
-  const report = discoverPlaywrightTests()
+  let report: PlaywrightJsonReport
+  if (shard) {
+    const match = shard.match(/^([1-9]\d*)\/([1-9]\d*)$/)
+    if (
+      !match ||
+      Number(match[1]) > Number(match[2]) ||
+      selectedAreas.length !== 1
+    ) {
+      throw new Error(
+        "Smoke shard must be N/M for one selected area, with 1 <= N <= M."
+      )
+    }
+    const total = Number(match[2])
+    const full = discoverPlaywrightTests()
+    validatePlaywrightSmokeAreas(full, selectedAreas)
+    const parts = Array.from({ length: total }, (_, index) =>
+      discoverPlaywrightTests(selectedAreas[0]!, `${index + 1}/${total}`)
+    )
+    validatePlaywrightSmokeShardPartition(
+      buildPlaywrightSmokeManifest(full, selectedAreas, evidence),
+      parts.map((part) =>
+        buildPlaywrightSmokeManifest(part, selectedAreas, evidence)
+      )
+    )
+    report = parts[Number(match[1]) - 1]!
+  } else {
+    report = discoverPlaywrightTests()
+  }
   const counts = validatePlaywrightSmokeAreas(report, selectedAreas)
   const manifest = buildPlaywrightSmokeManifest(report, selectedAreas, evidence)
   if (manifestOutputPath) {

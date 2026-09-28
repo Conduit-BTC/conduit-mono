@@ -1481,7 +1481,7 @@ describe("inbox declaration discovery planning", () => {
     ]
 
     expect(inboxDeclarationPublishRelayUrls(owner)).toEqual([
-      // Production shared relays remain reserved regardless of owner list size.
+      // Shared relays remain reserved; owner relays fill the remaining cap.
       ...sharedInboxDiscoveryRelayUrls(),
       ...owner,
     ])
@@ -1495,7 +1495,7 @@ describe("planInboxReadRelays", () => {
     })
 
     expect(plan.relayUrls).toEqual([
-      "wss://relay.conduit.market",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.ditto.pub",
     ])
   })
@@ -1711,7 +1711,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
 
     expect(selection.route).toBe("compatibility_order")
     expect(selection.relayUrls).toEqual([
-      "wss://relay.conduit.market",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.ditto.pub",
     ])
   })

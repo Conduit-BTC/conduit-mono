@@ -52,6 +52,12 @@ export interface AboutPageContributorSnapshot {
   contributors: readonly AboutPageContributor[]
 }
 
+export interface AboutPageProtocol {
+  name: string
+  description: string
+  href: string
+}
+
 export interface AboutPagePanelProps {
   appName: string
   appDescription: string
@@ -60,6 +66,7 @@ export interface AboutPagePanelProps {
   identity: AboutPageIdentity
   contributors: AboutPageContributorSnapshot
   supportUrl: string
+  protocols: readonly AboutPageProtocol[]
   logoSrc?: string
   repositoryLabel?: string
   className?: string
@@ -362,8 +369,8 @@ function HowConduitWorks() {
           <p className="mt-2 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Conduit reads from and publishes to multiple Nostr relays based on
             the task, user choices, and published relay preferences.
-            relay.conduit.market is one Conduit-operated default, not a central
-            authority.
+            conduit-congee.fly.dev is one Conduit-operated default, not a
+            central authority.
           </p>
         </Card>
 
@@ -391,6 +398,63 @@ function HowConduitWorks() {
           </p>
         </Card>
       </div>
+    </section>
+  )
+}
+
+function OpenStandards({
+  protocols,
+  inventoryUrl,
+}: {
+  protocols: readonly AboutPageProtocol[]
+  inventoryUrl: string
+}) {
+  return (
+    <section aria-labelledby="open-standards" className="space-y-4">
+      <div>
+        <h2
+          id="open-standards"
+          className="text-balance text-2xl font-semibold text-[var(--text-primary)]"
+        >
+          Built on open standards
+        </h2>
+        <p className="mt-2 max-w-3xl text-pretty text-sm leading-6 text-[var(--text-secondary)] sm:text-base">
+          These are the protocols behind this app’s everyday features. Some
+          features depend on a compatible signer, wallet, relay, or
+          counterparty.
+        </p>
+      </div>
+      <ul className="grid gap-3 sm:grid-cols-2">
+        {protocols.map((protocol) => (
+          <li key={protocol.name}>
+            <Card className="h-full p-5">
+              <h3 className="font-semibold text-[var(--text-primary)]">
+                <a
+                  href={protocol.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 underline-offset-4 hover:text-primary-500 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                >
+                  {protocol.name}
+                  <ExternalLink className="size-3.5" aria-hidden="true" />
+                </a>
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                {protocol.description}
+              </p>
+            </Card>
+          </li>
+        ))}
+      </ul>
+      <a
+        href={inventoryUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 text-sm font-semibold text-primary-500 underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      >
+        Explore all supported protocols and current limits
+        <ExternalLink className="size-4" aria-hidden="true" />
+      </a>
     </section>
   )
 }
@@ -648,6 +712,7 @@ export function AboutPagePanel({
   identity,
   contributors,
   supportUrl,
+  protocols,
   logoSrc = DEFAULT_LOGO_SRC,
   repositoryLabel,
   className,
@@ -666,6 +731,10 @@ export function AboutPagePanel({
         releaseChannel={buildInfo.releaseChannel}
       />
       <HowConduitWorks />
+      <OpenStandards
+        protocols={protocols}
+        inventoryUrl={`${repositoryUrl}/blob/${buildInfo.commitSha ?? "main"}/docs/PROTOCOLS.md`}
+      />
 
       <div className="grid items-start gap-5 lg:grid-cols-2">
         <SourceAndSupportCard

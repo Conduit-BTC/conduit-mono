@@ -109,6 +109,7 @@ async function mountInvoice(
         __invoicePreparationCalls: number
         __invoiceUseCalls: number
         __invoiceReportCalls: number
+        __invoiceRenewCalls: number
         __releaseInvoice: () => void
         __rerenderInvoice: () => void
         __switchInvoiceScope: () => void
@@ -118,6 +119,7 @@ async function mountInvoice(
       state.__invoicePreparationCalls = 0
       state.__invoiceUseCalls = 0
       state.__invoiceReportCalls = 0
+      state.__invoiceRenewCalls = 0
       state.__readBoundInvoice = () => db.orderLifecycles.get(order.orderId)
       const root = ReactDOM.createRoot(host)
       let lifecycle = order
@@ -163,6 +165,13 @@ async function mountInvoice(
                 throw new Error("Preparation must not report payment")
               state.__invoiceReportCalls += 1
             },
+            ...(direct?.mode === "private_checkout"
+              ? {
+                  onRenewExpiredInvoice: async () => {
+                    state.__invoiceRenewCalls += 1
+                  },
+                }
+              : {}),
             onPrepareMerchantInvoice: async () => {
               state.__invoicePreparationCalls += 1
               if (failFirst && state.__invoicePreparationCalls === 1) {
@@ -211,6 +220,8 @@ test("merchant invoice appears automatically after exact persistent binding @mar
   ).toHaveAttribute("href", `lightning:${invoice}`)
   await expect(host.getByRole("button", { name: "Copy invoice" })).toBeVisible()
   const qr = host.locator("svg:has(> title)")
+  await expect(qr).toHaveCount(0)
+  await host.getByRole("button", { name: "Show QR code" }).click()
   await expect(qr).toHaveCount(1)
   await expect(qr).toBeVisible()
   expect(await page.evaluate(() => window.__readBoundInvoice())).toMatchObject({
@@ -299,7 +310,12 @@ for (const mode of [
         await page.clock.fastForward(3_601_000)
       }
       await expect(
-        host.getByRole("heading", { name: "Invoice unavailable" })
+        host.getByRole("heading", {
+          name:
+            mode === "private_checkout"
+              ? "Invoice expired"
+              : "Invoice unavailable",
+        })
       ).toBeVisible()
       await expect(
         host.getByRole("link", { name: "Open Lightning wallet" })
@@ -312,6 +328,9 @@ for (const mode of [
         await expect(
           host.getByText(/Waiting for the matching receipt/)
         ).toBeVisible()
+      } else {
+        await host.getByRole("button", { name: "Get a new invoice" }).click()
+        expect(await page.evaluate(() => window.__invoiceRenewCalls)).toBe(1)
       }
       await host
         .getByRole("button", { name: "Report a payment already made" })
@@ -380,7 +399,7 @@ for (const action of ["copy", "open"] as const) {
     }
     expect(await page.evaluate(() => window.__invoiceUseCalls)).toBe(0)
     await expect(
-      host.getByRole("heading", { name: "Invoice unavailable" })
+      host.getByRole("heading", { name: "Invoice expired" })
     ).toBeVisible()
   })
 }

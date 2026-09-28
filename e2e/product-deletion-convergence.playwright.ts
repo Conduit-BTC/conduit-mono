@@ -679,6 +679,12 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
             "ownContactListSnapshots"
           ),
           hasEventMarketEvidence: state.stores.includes("eventMarketEvidence"),
+          hasEventMarketRosterEvidence: state.stores.includes(
+            "eventMarketRosterEvidence"
+          ),
+          hasEventMarketMerchantDecisionJobs: state.stores.includes(
+            "eventMarketMerchantDecisionJobs"
+          ),
           hasWallets: state.stores.includes("wallets"),
           hasWalletCredentials: state.stores.includes("walletCredentials"),
           hasShippingOptionFrontiers: state.stores.includes(
@@ -696,12 +702,14 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 190,
+      nativeVersion: 210,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
       hasOwnContactListSnapshots: true,
       hasEventMarketEvidence: true,
+      hasEventMarketRosterEvidence: true,
+      hasEventMarketMerchantDecisionJobs: true,
       hasWallets: true,
       hasWalletCredentials: true,
       hasShippingOptionFrontiers: true,
