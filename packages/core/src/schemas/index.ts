@@ -391,7 +391,7 @@ function signedEvidenceMatchesCoordinate(evidence: {
   )
 }
 
-/** Future Event Market snapshot. The public roster supplies handoff terms. */
+/** Future Event Market snapshot freezes roster, occurrence and causal grant evidence. */
 export const orderEventMarketPickupFulfillmentSchema = z
   .object({
     type: z.literal("event_market_pickup"),
@@ -458,13 +458,17 @@ export const orderEventMarketPickupFulfillmentSchema = z
     const rosterRows = marketEvent.tags.filter((tag) => tag[0] === "merchant")
     const matchingRows = rosterRows.filter((tag) => tag[1] === merchant)
     if (
+      marketEvent.content !== "" ||
       marketCalendarTags.length !== 1 ||
+      marketCalendarTags[0]?.length !== 2 ||
       marketCalendarTags[0]?.[1] !==
         (fulfillment.schedule?.coordinate ?? fulfillment.calendar.coordinate) ||
       marketStateTags.length !== 1 ||
+      marketStateTags[0]?.length !== 3 ||
       marketStateTags[0]?.[1] !== "2" ||
       marketStateTags[0]?.[2] !== "open" ||
       matchingRows.length !== 1 ||
+      matchingRows[0]?.length !== 4 ||
       matchingRows[0]?.[2] !== fulfillment.mode ||
       matchingRows[0]?.[3] !== fulfillment.assignment
     ) {
