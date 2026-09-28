@@ -522,7 +522,7 @@ describe("merchant organizer event market route", () => {
     )
     expect(detailRoute).toContain("<LegacyEventReadOnly")
     expect(detailRoute).not.toContain("publishMerchantOrganizerEventMarket")
-    expect(futureCreate).toContain("publishEventMarketRoster")
+    expect(futureCreate).toContain("publishFutureEventMarketCreation")
     expect(futureManager).toContain("publishEventMarketMerchantDecision")
     expect(futureManager).toContain("retryEventMarketMerchantDecisionDelivery")
     expect(futureManager).toContain("readEventMarketAuthorization")

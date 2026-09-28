@@ -1,11 +1,5 @@
-import { useState } from "react"
-import {
-  encodeEventMarketNaddr,
-  publishEventMarketRoster,
-  publishFutureEventMarketCalendar,
-  retainSignedEventMarketEvidence,
-  useAuth,
-} from "@conduit/core"
+import { useRef, useState } from "react"
+import { encodeEventMarketNaddr, useAuth } from "@conduit/core"
 import {
   Button,
   Card,
@@ -24,10 +18,14 @@ import {
 } from "@conduit/ui"
 import {
   createEmptyOrganizerEventMarketForm,
-  prepareOrganizerEventMarketForm,
-  slugifyEventMarketTitle,
   type OrganizerEventMarketFormValues,
 } from "../lib/event-market-form"
+
+import {
+  loadFutureEventMarketCreation,
+  publishFutureEventMarketCreation,
+  saveNewFutureEventMarketCreation,
+} from "../lib/event-market-creation-retry"
 
 export function FutureEventMarketCreate({
   onPublished,
@@ -41,15 +39,57 @@ export function FutureEventMarketCreate({
     authGeneration,
     isAuthGenerationCurrent,
   } = useAuth()
-  const [form, setForm] = useState<OrganizerEventMarketFormValues>(
-    createEmptyOrganizerEventMarketForm
-  )
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState("")
-  const [step, setStep] = useState("")
   const organizerPubkey = accountPubkey ?? ""
   const authenticatedPubkey =
     signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
+  return (
+    <FutureEventMarketCreateForm
+      key={organizerPubkey}
+      organizerPubkey={organizerPubkey}
+      authenticatedPubkey={authenticatedPubkey}
+      shouldContinue={() => isAuthGenerationCurrent(authGeneration)}
+      onPublished={onPublished}
+    />
+  )
+}
+
+function FutureEventMarketCreateForm({
+  organizerPubkey,
+  authenticatedPubkey,
+  shouldContinue,
+  onPublished,
+}: {
+  organizerPubkey: string
+  authenticatedPubkey: string | null
+  shouldContinue: () => boolean
+  onPublished: (reference: string) => void
+}) {
+  const [restored] = useState(() => {
+    try {
+      return {
+        creation: organizerPubkey
+          ? loadFutureEventMarketCreation(organizerPubkey)
+          : null,
+        error: "",
+      }
+    } catch (cause) {
+      return {
+        creation: null,
+        error:
+          cause instanceof Error
+            ? cause.message
+            : "Saved creation could not be loaded.",
+      }
+    }
+  })
+  const [creation, setCreation] = useState(restored.creation)
+  const [form, setForm] = useState<OrganizerEventMarketFormValues>(
+    () => restored.creation?.form ?? createEmptyOrganizerEventMarketForm()
+  )
+  const publishing = useRef(false)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState(restored.error)
+  const [step, setStep] = useState("")
 
   function update<K extends keyof OrganizerEventMarketFormValues>(
     key: K,
@@ -59,69 +99,27 @@ export function FutureEventMarketCreate({
   }
 
   async function publish(): Promise<void> {
-    if (!authenticatedPubkey || pending) return
+    if (!authenticatedPubkey || publishing.current || restored.error) return
+    publishing.current = true
     setPending(true)
     setError("")
     try {
-      const prepared = prepareOrganizerEventMarketForm(form, {
-        requireFutureStart: true,
-      })
-      const dTag = `${slugifyEventMarketTitle(form.title) || "event"}-${crypto.randomUUID().slice(0, 8)}`
-      const calendarDTag = `${dTag}-calendar`
-      const marketCoordinate = `30409:${organizerPubkey}:${dTag}`
-      const calendarCoordinate = `${prepared.calendar.kind}:${organizerPubkey}:${calendarDTag}`
-      const shouldContinue = () => isAuthGenerationCurrent(authGeneration)
-      const calendar =
-        prepared.calendar.kind === 31922
-          ? {
-              kind: 31922 as const,
-              dTag: calendarDTag,
-              title: prepared.calendar.title,
-              summary: prepared.calendar.summary,
-              image: prepared.calendar.imageUrl,
-              locations: [prepared.calendar.location],
-              geohash: prepared.calendar.geohash,
-              start: prepared.calendar.start as string,
-              end: prepared.calendar.end as string | undefined,
-            }
-          : {
-              kind: 31923 as const,
-              dTag: calendarDTag,
-              title: prepared.calendar.title,
-              summary: prepared.calendar.summary,
-              image: prepared.calendar.imageUrl,
-              locations: [prepared.calendar.location],
-              geohash: prepared.calendar.geohash,
-              start: prepared.calendar.start as number,
-              end: prepared.calendar.end as number | undefined,
-              startTzid: prepared.calendar.timezone,
-              endTzid: prepared.calendar.timezone,
-            }
-      setStep("Publishing signed calendar…")
-      await publishFutureEventMarketCalendar({
+      if (!shouldContinue()) throw new Error("Organizer session changed.")
+      const saved =
+        loadFutureEventMarketCreation(organizerPubkey) ??
+        saveNewFutureEventMarketCreation(organizerPubkey, form)
+      setCreation(saved)
+      const result = await publishFutureEventMarketCreation({
         organizerPubkey,
         authenticatedPubkey,
-        calendar,
         shouldContinue,
-        onSignedLocal: (event) =>
-          retainSignedEventMarketEvidence(marketCoordinate, event),
-      })
-      setStep("Publishing signed Event Market…")
-      const result = await publishEventMarketRoster({
-        organizerPubkey,
-        authenticatedPubkey,
-        dTag,
-        calendarCoordinate,
-        state: "open",
-        merchants: [],
-        shouldContinue,
-        onSignedLocal: (event) =>
-          retainSignedEventMarketEvidence(marketCoordinate, event),
+        onSaved: setCreation,
+        onStep: setStep,
       })
       onPublished(
         encodeEventMarketNaddr(
-          marketCoordinate,
-          result.delivery.successfulRelayUrls
+          result.marketCoordinate,
+          result.successfulRelayUrls
         )
       )
     } catch (cause) {
@@ -131,6 +129,7 @@ export function FutureEventMarketCreate({
           : "Event Market publication failed."
       )
     } finally {
+      publishing.current = false
       setPending(false)
       setStep("")
     }
@@ -146,91 +145,99 @@ export function FutureEventMarketCreate({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        <div className="space-y-1">
-          <Label htmlFor="future-title">Event title</Label>
-          <Input
-            id="future-title"
-            value={form.title}
-            onChange={(event) => update("title", event.target.value)}
-            required
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="future-summary">Description</Label>
-          <Textarea
-            id="future-summary"
-            value={form.summary}
-            onChange={(event) => update("summary", event.target.value)}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="future-image">Banner URL</Label>
-          <Input
-            id="future-image"
-            type="url"
-            value={form.imageUrl}
-            onChange={(event) => update("imageUrl", event.target.value)}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="future-location">Location</Label>
-          <Input
-            id="future-location"
-            value={form.eventLocation}
-            onChange={(event) => update("eventLocation", event.target.value)}
-            required
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="future-calendar-type">Schedule</Label>
-          <Select
-            value={form.calendarType}
-            onValueChange={(value) =>
-              update("calendarType", value as "date" | "timed")
-            }
-          >
-            <SelectTrigger id="future-calendar-type">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="timed">Timed event</SelectItem>
-              <SelectItem value="date">All-day event</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-1">
-            <Label htmlFor="future-start">Start</Label>
-            <Input
-              id="future-start"
-              type={form.calendarType === "timed" ? "datetime-local" : "date"}
-              value={form.start}
-              onChange={(event) => update("start", event.target.value)}
-              required
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="future-end">End</Label>
-            <Input
-              id="future-end"
-              type={form.calendarType === "timed" ? "datetime-local" : "date"}
-              value={form.end}
-              onChange={(event) => update("end", event.target.value)}
-              required
-            />
-          </div>
-        </div>
-        {form.calendarType === "timed" ? (
-          <div className="space-y-1">
-            <Label htmlFor="future-timezone">Time zone</Label>
-            <Input
-              id="future-timezone"
-              value={form.timezone}
-              onChange={(event) => update("timezone", event.target.value)}
-              required
-            />
-          </div>
+        {creation ? (
+          <p role="status" className="text-sm text-[var(--text-muted)]">
+            A saved creation is waiting to finish. Retry the same Event Market
+            before creating another; its signed records may already be public.
+          </p>
         ) : null}
+        <fieldset disabled={pending || !!creation} className="space-y-5">
+          <div className="space-y-1">
+            <Label htmlFor="future-title">Event title</Label>
+            <Input
+              id="future-title"
+              value={form.title}
+              onChange={(event) => update("title", event.target.value)}
+              required
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="future-summary">Description</Label>
+            <Textarea
+              id="future-summary"
+              value={form.summary}
+              onChange={(event) => update("summary", event.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="future-image">Banner URL</Label>
+            <Input
+              id="future-image"
+              type="url"
+              value={form.imageUrl}
+              onChange={(event) => update("imageUrl", event.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="future-location">Location</Label>
+            <Input
+              id="future-location"
+              value={form.eventLocation}
+              onChange={(event) => update("eventLocation", event.target.value)}
+              required
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="future-calendar-type">Schedule</Label>
+            <Select
+              value={form.calendarType}
+              onValueChange={(value) =>
+                update("calendarType", value as "date" | "timed")
+              }
+            >
+              <SelectTrigger id="future-calendar-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="timed">Timed event</SelectItem>
+                <SelectItem value="date">All-day event</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label htmlFor="future-start">Start</Label>
+              <Input
+                id="future-start"
+                type={form.calendarType === "timed" ? "datetime-local" : "date"}
+                value={form.start}
+                onChange={(event) => update("start", event.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="future-end">End</Label>
+              <Input
+                id="future-end"
+                type={form.calendarType === "timed" ? "datetime-local" : "date"}
+                value={form.end}
+                onChange={(event) => update("end", event.target.value)}
+                required
+              />
+            </div>
+          </div>
+          {form.calendarType === "timed" ? (
+            <div className="space-y-1">
+              <Label htmlFor="future-timezone">Time zone</Label>
+              <Input
+                id="future-timezone"
+                value={form.timezone}
+                onChange={(event) => update("timezone", event.target.value)}
+                required
+              />
+            </div>
+          ) : null}
+        </fieldset>
         {step ? <p role="status">{step}</p> : null}
         {error ? (
           <p role="alert" className="text-sm text-[var(--destructive)]">
@@ -239,10 +246,10 @@ export function FutureEventMarketCreate({
         ) : null}
         <Button
           type="button"
-          disabled={!authenticatedPubkey || pending}
+          disabled={!authenticatedPubkey || pending || !!restored.error}
           onClick={() => void publish()}
         >
-          Publish Event Market
+          {creation ? "Retry saved Event Market" : "Publish Event Market"}
         </Button>
         {!authenticatedPubkey ? (
           <p className="text-sm text-[var(--text-muted)]">

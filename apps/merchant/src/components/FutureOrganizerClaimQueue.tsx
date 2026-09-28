@@ -97,8 +97,8 @@ function ClaimCard({
   const codeMatches = enteredCode.trim().toUpperCase() === code.toUpperCase()
   const canRelease =
     signerReady &&
-    merchandiseVerified &&
-    !merchandiseQuery.isFetching &&
+    (Boolean(exactAck) ||
+      (merchandiseVerified && !merchandiseQuery.isFetching)) &&
     claim.state === "ready_for_pickup" &&
     codeMatches &&
     !storageError &&
