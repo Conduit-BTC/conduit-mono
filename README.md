@@ -10,7 +10,7 @@ Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved.
 
 Conduit Shop reads signed merchant listings using [NIP-99](https://github.com/nostr-protocol/nips/blob/master/99.md) and the [Open Markets working specification](https://github.com/OpenMarketsFoundation/specification). Conduit Sell publishes those listings. Buyers and merchants use external [NIP-07](https://github.com/nostr-protocol/nips/blob/master/07.md) or [NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md) account signers, exchange private orders and messages with [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md), and can pay through non-custodial Lightning paths including [NIP-47](https://github.com/nostr-protocol/nips/blob/master/47.md) where a compatible wallet is connected.
 
-**[See the protocol inventory](docs/PROTOCOLS.md)** for the NIPs each app reads or publishes, implementation links, and current limits. NIP-89 app handler metadata on the About pages is a separate event-kind discovery record, not that inventory.
+**[See the protocol inventory](docs/PROTOCOLS.md)** for the NIPs each app reads or publishes, implementation links, and current limits. NIP-89 app handler metadata on the About pages is a separate event-kind discovery record, not that inventory. For commerce support, compatibility differences, and experimental proposal dependencies, see [Open Markets in Conduit](docs/OPEN_MARKETS.md).
 
 ---
 
