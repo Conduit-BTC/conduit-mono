@@ -4,6 +4,7 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
+import type { SparkEncryptedRecovery } from "../apps/market/src/lib/spark-recovery"
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
@@ -759,69 +760,245 @@ async function seedCachedMerchantTagCatalog(
   )
 }
 
-async function seedPortableWalletDescriptor(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const randomBase64 = (byteLength: number): string => {
-      const bytes = crypto.getRandomValues(new Uint8Array(byteLength))
-      return btoa(String.fromCharCode(...bytes))
-    }
-
-    return new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open("conduit")
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => {
-        const database = request.result
-        const transaction = database.transaction(
-          ["wallets", "walletCredentials"],
-          "readwrite"
-        )
-        const timestamp = Date.now()
-        transaction.objectStore("wallets").put({
-          id: "playwright-portable-wallet",
-          kind: "portable",
-          providerId: "spark",
-          label: "QA Portable",
-          network: "mainnet",
-          capabilities: [
-            "pay_invoice",
-            "receive",
-            "balance",
-            "history",
-            "spark_transfer",
-          ],
-          status: "locked",
-          defaultIntents: ["pay_invoice"],
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        })
-        transaction.objectStore("walletCredentials").put({
-          walletId: "playwright-portable-wallet",
-          providerId: "spark",
-          credential: JSON.stringify({
-            type: "password",
-            walletId: "playwright-portable-wallet",
-            providerId: "spark",
-            network: "mainnet",
-            accountNumber: 1,
-            recovery: {
-              version: 2,
-              kdf: "PBKDF2-SHA-256",
-              cipher: "AES-GCM",
-              iterations: 100_000,
-              salt: randomBase64(16),
-              iv: randomBase64(12),
-              ciphertext: randomBase64(48),
-            },
-          }),
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        })
-        transaction.oncomplete = () => resolve()
-        transaction.onerror = () => reject(transaction.error)
-        transaction.onabort = () => reject(transaction.error)
+async function seedPortableWalletDescriptor(
+  page: Page,
+  options: {
+    includeRecovery?: boolean
+    recoveryEnvelope?: SparkEncryptedRecovery
+  } = {}
+): Promise<void> {
+  await page.evaluate(
+    ({ includeRecovery, recoveryEnvelope }) => {
+      const randomBase64 = (byteLength: number): string => {
+        const bytes = crypto.getRandomValues(new Uint8Array(byteLength))
+        return btoa(String.fromCharCode(...bytes))
       }
-    })
+
+      return new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction(
+            ["wallets", "walletCredentials"],
+            "readwrite"
+          )
+          const timestamp = Date.now()
+          transaction.objectStore("wallets").put({
+            id: "playwright-portable-wallet",
+            kind: "portable",
+            providerId: "spark",
+            label: "QA Portable",
+            network: "mainnet",
+            capabilities: [
+              "pay_invoice",
+              "receive",
+              "balance",
+              "history",
+              "spark_transfer",
+            ],
+            status: "locked",
+            defaultIntents: ["pay_invoice"],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          })
+          if (includeRecovery)
+            transaction.objectStore("walletCredentials").put({
+              walletId: "playwright-portable-wallet",
+              providerId: "spark",
+              credential: JSON.stringify({
+                type: "password",
+                walletId: "playwright-portable-wallet",
+                providerId: "spark",
+                network: "mainnet",
+                accountNumber: 1,
+                recovery: recoveryEnvelope ?? {
+                  version: 2,
+                  kdf: "PBKDF2-SHA-256",
+                  cipher: "AES-GCM",
+                  iterations: 100_000,
+                  salt: randomBase64(16),
+                  iv: randomBase64(12),
+                  ciphertext: randomBase64(48),
+                },
+              }),
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            })
+          transaction.oncomplete = () => resolve()
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      })
+    },
+    {
+      includeRecovery: options.includeRecovery ?? true,
+      recoveryEnvelope: options.recoveryEnvelope,
+    }
+  )
+}
+
+async function createPortableRecoveryEnvelope(
+  page: Page,
+  password: string
+): Promise<SparkEncryptedRecovery> {
+  return page.evaluate(async (password) => {
+    // Import through Vite so the production encryption code runs in the browser.
+    const modulePath = "/src/lib/spark-recovery.ts"
+    const { encryptSparkMnemonic, generateSparkMnemonic } = (await import(
+      modulePath
+    )) as typeof import("../apps/market/src/lib/spark-recovery")
+    return encryptSparkMnemonic(
+      generateSparkMnemonic(),
+      password,
+      {
+        walletId: "playwright-portable-wallet",
+        providerId: "spark",
+        network: "mainnet",
+        accountNumber: 1,
+      },
+      { iterations: 100_000 }
+    )
+  }, password)
+}
+
+async function installLocalSparkSdkFixture(page: Page): Promise<() => number> {
+  let moduleLoads = 0
+  await page.routeWebSocket(/.*/, (route) => {
+    const hostname = new URL(route.url()).hostname
+    if (hostname === "127.0.0.1" || hostname === "localhost") {
+      route.connectToServer()
+    } else {
+      void route.close()
+    }
   })
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith("/@buildonspark_spark-sdk.js")) {
+      moduleLoads += 1
+      await route.fulfill({
+        contentType: "text/javascript",
+        body: `
+          export const SparkWalletEvent = { All: "all" }
+          export const UUID = { parse: (value) => value }
+          export const SparkReadonlyClient = {
+            createPublic: () => ({
+              getAvailableBalance: async () => 0n,
+              getOwnedBalance: async () => 0n,
+              getTransfers: async () => ({ transfers: [], offset: 0 }),
+            }),
+          }
+          export const SparkWallet = {
+            initialize: async () => ({
+              wallet: {
+                on() {},
+                off() {},
+                cleanup: async () => {},
+                setPrivacyEnabled: async () => ({ privateEnabled: true }),
+                getWalletSettings: async () => ({ privateEnabled: true }),
+                getSparkAddress: async () => "local-test-address",
+                getBalance: async () => ({
+                  balance: 0n,
+                  satsBalance: { available: 0n, owned: 0n, incoming: 0n },
+                }),
+              },
+            }),
+          }
+          export const decodeSparkAddress = () => ({})
+          export const getNetworkFromSparkAddress = () => "MAINNET"
+          export const isValidSparkAddress = () => false
+        `,
+      })
+      return
+    }
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+      await route.continue()
+    } else {
+      await route.abort()
+    }
+  })
+  return () => moduleLoads
+}
+
+async function holdPortableRecoveryRead(
+  page: Page,
+  holdId = "default"
+): Promise<void> {
+  await page.evaluate(
+    (holdId) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction(
+            "walletCredentials",
+            "readwrite"
+          )
+          const store = transaction.objectStore("walletCredentials")
+          let holding = true
+          const hold = {
+            active: false,
+            release: () => {
+              holding = false
+            },
+          }
+          const state = window as Window & {
+            portableRecoveryReadHolds?: Record<string, typeof hold>
+          }
+          state.portableRecoveryReadHolds ??= {}
+          state.portableRecoveryReadHolds[holdId] = hold
+          const keepAlive = () => {
+            const read = store.get("playwright-portable-wallet")
+            read.onsuccess = () => {
+              hold.active = true
+              if (holding) keepAlive()
+            }
+            read.onerror = () => reject(read.error)
+          }
+          keepAlive()
+          resolve()
+          transaction.oncomplete = () => database.close()
+          transaction.onabort = () => database.close()
+        }
+      }),
+    holdId
+  )
+}
+
+async function releasePortableRecoveryRead(
+  page: Page,
+  holdId = "default"
+): Promise<void> {
+  await page.evaluate((holdId) => {
+    ;(
+      window as Window & {
+        portableRecoveryReadHolds?: Record<
+          string,
+          { active: boolean; release: () => void }
+        >
+      }
+    ).portableRecoveryReadHolds?.[holdId]?.release()
+  }, holdId)
+}
+
+async function waitForPortableRecoveryReadHold(
+  page: Page,
+  holdId: string
+): Promise<void> {
+  await expect
+    .poll(() =>
+      page.evaluate((holdId) => {
+        return (
+          (
+            window as Window & {
+              portableRecoveryReadHolds?: Record<string, { active: boolean }>
+            }
+          ).portableRecoveryReadHolds?.[holdId]?.active === true
+        )
+      }, holdId)
+    )
+    .toBe(true)
 }
 
 test("merchant shipping country combobox supports search and selection @merchant", async ({
@@ -1957,6 +2134,252 @@ test("market wallet route remains available without a Nostr signer @market", asy
   await expect(
     page.getByRole("button", { name: "Connect", exact: true })
   ).toBeVisible()
+})
+
+test("stalled local recovery lookup offers a retry instead of spinning forever @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/wallet`)
+  await expect(
+    page.getByRole("heading", { name: "Wallets", exact: true })
+  ).toBeVisible()
+  await seedPortableWalletDescriptor(page)
+  await page.reload()
+  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
+  await holdPortableRecoveryRead(page)
+
+  try {
+    await page.getByRole("button", { name: "Unlock", exact: true }).click()
+    const dialog = page.getByRole("dialog", { name: "Unlock QA Portable" })
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+    await expect(
+      dialog.getByText(/recovery method is temporarily unavailable/i)
+    ).toBeVisible({ timeout: 7_000 })
+    await dialog.getByRole("button", { name: "Retry" }).click()
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+    await releasePortableRecoveryRead(page)
+    await expect(dialog.getByLabel("Wallet password")).toBeVisible()
+  } finally {
+    await releasePortableRecoveryRead(page)
+  }
+})
+
+test("a missing local recovery method can be retried after it returns @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/wallet`)
+  await expect(
+    page.getByRole("heading", { name: "Wallets", exact: true })
+  ).toBeVisible()
+  await seedPortableWalletDescriptor(page, { includeRecovery: false })
+  await page.reload()
+  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
+
+  await page.getByRole("button", { name: "Unlock", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Unlock QA Portable" })
+  await expect(
+    dialog.getByText(/no local recovery method was found/i)
+  ).toBeVisible()
+  await seedPortableWalletDescriptor(page)
+  await dialog.getByRole("button", { name: "Retry" }).click()
+  await expect(dialog.getByLabel("Wallet password")).toBeVisible()
+})
+
+test("a valid local recovery envelope unlocks the Portable Wallet @market", async ({
+  page,
+}) => {
+  const sdkModuleLoads = await installLocalSparkSdkFixture(page)
+  const password = crypto.randomUUID()
+  await page.goto(`${marketUrl}/wallet`)
+  await expect(
+    page.getByRole("heading", { name: "Wallets", exact: true })
+  ).toBeVisible()
+  const recoveryEnvelope = await createPortableRecoveryEnvelope(page, password)
+  await seedPortableWalletDescriptor(page, { recoveryEnvelope })
+  await page.reload()
+  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
+
+  await page.getByRole("button", { name: "Unlock", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Unlock QA Portable" })
+  await dialog.getByLabel("Wallet password").fill(password)
+  await dialog.getByRole("button", { name: "Unlock", exact: true }).click()
+  await expect(dialog).not.toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Lock", exact: true })
+  ).toBeVisible()
+  expect(sdkModuleLoads()).toBe(1)
+})
+
+test("local recovery lookup resumes when its credential-store read unblocks @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/wallet`)
+  await expect(
+    page.getByRole("heading", { name: "Wallets", exact: true })
+  ).toBeVisible()
+  await seedPortableWalletDescriptor(page)
+  await page.reload()
+  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
+  await holdPortableRecoveryRead(page)
+
+  await page.getByRole("button", { name: "Unlock", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Unlock QA Portable" })
+  await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+  await releasePortableRecoveryRead(page)
+  await expect(dialog.getByLabel("Wallet password")).toBeVisible()
+})
+
+test("View recovery can retry a stalled local credential read @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/wallet`)
+  await expect(
+    page.getByRole("heading", { name: "Wallets", exact: true })
+  ).toBeVisible()
+  await seedPortableWalletDescriptor(page)
+  await page.reload()
+  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
+  await holdPortableRecoveryRead(page)
+
+  try {
+    await page.getByRole("button", { name: "View recovery" }).click()
+    const dialog = page.getByRole("dialog", {
+      name: "Recovery for QA Portable",
+    })
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+    await expect(
+      dialog.getByText(/recovery method is temporarily unavailable/i)
+    ).toBeVisible({ timeout: 7_000 })
+    await dialog.getByRole("button", { name: "Retry" }).click()
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+    await releasePortableRecoveryRead(page)
+    await expect(dialog.getByLabel("Wallet password")).toBeVisible()
+  } finally {
+    await releasePortableRecoveryRead(page)
+  }
+})
+
+test("an older recovery lookup cannot overwrite a reopened dialog @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/wallet`)
+  await expect(
+    page.getByRole("heading", { name: "Wallets", exact: true })
+  ).toBeVisible()
+  await seedPortableWalletDescriptor(page)
+  await page.reload()
+  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
+  await page.clock.install()
+  await holdPortableRecoveryRead(page)
+
+  try {
+    const unlockButton = page.getByRole("button", {
+      name: "Unlock",
+      exact: true,
+    })
+    await unlockButton.click()
+    const dialog = page.getByRole("dialog", { name: "Unlock QA Portable" })
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+    await page.clock.fastForward(3_000)
+    await dialog.getByRole("button", { name: "Cancel" }).click()
+    await unlockButton.click()
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+
+    // The first attempt times out now, but only the reopened attempt owns UI.
+    await page.clock.fastForward(2_500)
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+    await expect(
+      dialog.getByText(/recovery method is temporarily unavailable/i)
+    ).not.toBeVisible()
+    await page.clock.fastForward(3_000)
+    await expect(
+      dialog.getByText(/recovery method is temporarily unavailable/i)
+    ).toBeVisible()
+  } finally {
+    await releasePortableRecoveryRead(page)
+  }
+})
+
+test("a late recovery read cannot overwrite a reopened dialog @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/wallet`)
+  await expect(
+    page.getByRole("heading", { name: "Wallets", exact: true })
+  ).toBeVisible()
+  await seedPortableWalletDescriptor(page, { includeRecovery: false })
+  await page.reload()
+  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
+  await page.clock.install()
+  await page.evaluate(() => {
+    const state = window as Window & { portableRecoveryReadCount?: number }
+    state.portableRecoveryReadCount = 0
+    const originalGet = IDBObjectStore.prototype.get
+    IDBObjectStore.prototype.get = function (query: IDBValidKey | IDBKeyRange) {
+      if (
+        this.name === "walletCredentials" &&
+        this.transaction.mode === "readonly" &&
+        query === "playwright-portable-wallet"
+      ) {
+        state.portableRecoveryReadCount =
+          (state.portableRecoveryReadCount ?? 0) + 1
+      }
+      return originalGet.call(this, query)
+    }
+  })
+  await holdPortableRecoveryRead(page, "first")
+  await waitForPortableRecoveryReadHold(page, "first")
+
+  try {
+    const unlockButton = page.getByRole("button", {
+      name: "Unlock",
+      exact: true,
+    })
+    await unlockButton.click()
+    const dialog = page.getByRole("dialog", { name: "Unlock QA Portable" })
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { portableRecoveryReadCount?: number })
+              .portableRecoveryReadCount
+        )
+      )
+      .toBe(1)
+    // Allow for transport lag before Playwright applies the host timestamp.
+    await page.clock.pauseAt(Date.now() + 2_000)
+    await dialog.getByRole("button", { name: "Cancel" }).click()
+    await holdPortableRecoveryRead(page, "second")
+    await unlockButton.click()
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { portableRecoveryReadCount?: number })
+              .portableRecoveryReadCount
+        )
+      )
+      .toBe(2)
+
+    await releasePortableRecoveryRead(page, "first")
+    await waitForPortableRecoveryReadHold(page, "second")
+    await page.clock.runFor(100)
+    await expect(dialog.getByText("Checking recovery method")).toBeVisible()
+    await expect(
+      dialog.getByText(/no local recovery method was found/i)
+    ).not.toBeVisible()
+
+    await releasePortableRecoveryRead(page, "second")
+    await expect(
+      dialog.getByText(/no local recovery method was found/i)
+    ).toBeVisible()
+  } finally {
+    await releasePortableRecoveryRead(page, "first")
+    await releasePortableRecoveryRead(page, "second")
+  }
 })
 
 test("wallet dialog dismissal clears device-local sensitive state @market", async ({
