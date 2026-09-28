@@ -25,9 +25,11 @@ proposal for shipped orders. Event pickup does not emit or interpret its
 location; it is not selected by matching a buyer delivery address.
 
 The event-backed collection semantics below are a backwards-compatible
-extension proposed upstream in
-`docs/knowledge/open-markets-event-commerce-proposal.md`. Until accepted, Core
-must keep them behind explicit event-market parsing/building helpers and must
+Conduit extension described in
+[Open Markets in Conduit](../OPEN_MARKETS.md#collection-based-event-commerce).
+See that guide for the current upstream proposal and its implementation status.
+Until these collection semantics are accepted, Core must keep them behind
+explicit event-market parsing/building helpers and must
 not claim that unrelated clients implement the extension.
 
 ## Goals
