@@ -10,6 +10,11 @@ This directory contains public implementation context for the `conduit-mono` cli
 - `docs/nips/*`: compact Nostr implementation notes linked to canonical public NIPs
 - `docs/knowledge/*`: public-safe implementation notes, research, interoperability references, and reusable agent context
 
+## Task routes
+
+Read `AGENTS.md` at startup. This index is for finding applicable context,
+not a required second startup read.
+
 ## Working Model
 
 1. Use this repo's docs for implemented behavior, accepted implementation contracts, and agent preflight context.
@@ -77,15 +82,3 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - Add public-safe research notes, interop references, and non-authoritative supporting context under `docs/knowledge/`.
 
 Do not add product strategy, private commercial, private service, release coordination, or team operating-system notes to this repository.
-
-## Nostr Source Policy
-
-Before changing Nostr protocol, relay, signer, payment, messaging, product-event, cache, or outbox behavior, read `docs/knowledge/decentralized-network-product-posture.md`, `docs/knowledge/external-nostr-references.md`, any applicable existing repo contract, and the relevant public protocol source. Public protocol sources must be checked before implementation, not after review.
-
-## Public Repo Posture
-
-Tracked docs should remain safe for a public `conduit-mono` repo:
-
-- keep language centered on Market, Merchant, Store Builder, shared packages, and protocol/spec implementation
-- avoid private company planning language in tracked docs
-- keep non-implemented business plans and private service concepts outside this repository

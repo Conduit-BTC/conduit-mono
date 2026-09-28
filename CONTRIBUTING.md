@@ -7,16 +7,16 @@
    ```bash
    git clone https://github.com/Conduit-BTC/conduit-mono.git
    cd conduit-mono
-   bun install
+   bun install --frozen-lockfile
    ```
 
-   `bun install` also installs the pre-commit hook that formats and lints staged files.
+   The frozen install keeps the checked-in dependency graph intact and also
+   installs the pre-commit hook that formats and lints staged files.
 
 2. Read [README.md](README.md) for local dev setup (relay, env vars, seed data).
 
-3. Read [docs/README.md](docs/README.md) for the docs layout and source-of-truth rules.
-
-4. Read [ARCHITECTURE.md](docs/ARCHITECTURE.md) to understand the system.
+3. Read [AGENTS.md](AGENTS.md) for repository safeguards and task-specific
+   reading. Use [docs/README.md](docs/README.md) to find deeper guidance.
 
 ## Development Workflow
 
@@ -36,32 +36,16 @@ Examples: `feat/product-search`, `fix/invoice-qr-case`, `chore/upgrade-ndk`
 
 ### Specs and Repo Context
 
-Public `conduit-mono` docs provide implementation context for the code in this repository:
-
-- `docs/specs/*` holds durable implementation contracts where one is maintained
-- `docs/ARCHITECTURE.md` tracks system boundaries, protocol surfaces, and data flow
-- `docs/DESIGN.md` tracks shared visual and UI-system guidance
-- `docs/knowledge/*` holds public-safe implementation notes, research, interoperability references, and reusable agent context
-
-Product strategy, ticket sequencing, ownership, private commercial plans, and private operating context live outside this public repository.
-
-For non-trivial internal work, prefer Plan mode and post the concise implementation and validation plan as a comment on the Linear issue before or alongside opening the implementation PR. Keep private tracker links and planning text out of the public PR. Public contributors without Linear access may put their implementation plan in the PR description.
-
-Read existing specs when they apply, but do not create or update a spec for ordinary implementation work by default. Include public-safe `docs/knowledge/*.md` notes with the implementation when they will materially help future agents or contributors. Update a durable spec, architecture, or design contract when a maintainer requests it or the change genuinely requires one.
-
-For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
-
-For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [decentralized-network-product-posture.md](docs/knowledge/decentralized-network-product-posture.md), [external-nostr-references.md](docs/knowledge/external-nostr-references.md), and the relevant public NIP or Open Markets source before implementation. Product listings are NIP-99 plus the Open Markets working specification for `kind:30402` commerce events, derived from the earlier GammaMarkets `market-spec` work; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
-
-The protocol source defines event meaning and canonical emission. Before
-turning missing or divergent decentralized state into a product gate, classify
-the requirement, define the action's minimum positive evidence, preserve
-stronger known evidence, and test partial/unavailable network views. A finite
-relay fanout must not be described as proof of global absence.
+[AGENTS.md](AGENTS.md) sets the repository safeguards and reading routes;
+[docs/README.md](docs/README.md) indexes public implementation context.
+Read an applicable existing contract before changing its behavior. Ordinary
+work does not require a new spec. Keep internal plans in the relevant private
+tracker when one exists, and keep private links and text out of public PRs.
 
 ### Reviewer-Owned Context Check
 
-Reviewers decide whether implementation work would benefit from public context updates. This is not a mechanical documentation gate.
+Reviewers decide whether implementation work would benefit from public context
+updates. This is not a mechanical documentation gate.
 
 During review, mark one of:
 

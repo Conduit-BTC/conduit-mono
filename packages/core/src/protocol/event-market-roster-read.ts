@@ -43,6 +43,7 @@ export interface EventMarketRosterReadResult {
   retained: boolean
   observedRelayUrls: string[]
   calendar?: ParsedEventMarketCalendar | null
+  calendarSignedEvent?: SignedPublicNostrEvent
   calendarCoverage?: EventMarketRosterReadCoverage
 }
 
@@ -75,6 +76,7 @@ export function createEventMarketPickupSnapshot(input: {
     market.state !== "current" ||
     market.market.state !== "open" ||
     !calendar ||
+    !input.marketRead.calendarSignedEvent ||
     product.state !== "eligible" ||
     authorization?.state !== "active" ||
     !input.productRead.actionable ||
@@ -91,6 +93,7 @@ export function createEventMarketPickupSnapshot(input: {
       coordinate: market.market.coordinate,
       eventId: market.market.eventId,
       createdAt: market.market.createdAt * 1_000,
+      signedEvent: market.market.signedEvent,
     },
     calendar: {
       coordinate: calendar.coordinate,
@@ -98,11 +101,13 @@ export function createEventMarketPickupSnapshot(input: {
       createdAt: calendar.createdAt,
       start: calendar.start,
       end: calendar.end,
+      signedEvent: input.marketRead.calendarSignedEvent,
     },
     product: {
       coordinate: input.productRead.productCoordinate,
       eventId: product.revision.id,
       createdAt: product.revision.created_at * 1_000,
+      signedEvent: product.revision,
     },
     grant: {
       kind: EVENT_KINDS.EVENT_MARKET_AUTH,
@@ -666,6 +671,9 @@ export async function readEventMarketRoster(
       ]),
     ],
     calendar,
+    calendarSignedEvent: calendarEvidence.find(
+      (event) => event.id === calendar?.eventId
+    ),
     calendarCoverage,
   }
 }

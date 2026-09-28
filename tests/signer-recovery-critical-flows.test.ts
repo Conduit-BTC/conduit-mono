@@ -62,7 +62,7 @@ describe("critical signer recovery flows", () => {
     )
     expect(checkoutOwnerEffect).toContain('setNote("")')
     expect(checkoutOwnerEffect).toContain("setPaymentTargetSelection(null)")
-    expect(checkoutOwnerEffect).toContain("sparkFeeApproval.decline()")
+    expect(checkoutOwnerEffect).not.toContain("sparkFeeApproval")
     expect(checkoutOwnerEffect).not.toContain(
       "setShipping(DEFAULT_CHECKOUT_SHIPPING)\n    setNote"
     )
@@ -136,9 +136,10 @@ describe("critical signer recovery flows", () => {
     expect(checkout).toContain(
       "autoZapAuthorizationGenerationRef.current !== authGeneration"
     )
-    expect(checkout).toContain(
-      "if (!signerConnected && sparkFeeApproval.quote) {\n      sparkFeeApproval.decline()"
+    expect(orders).toContain(
+      "if (!actionsReady && sparkFeeApproval.quote) sparkFeeApproval.decline()"
     )
+    expect(orders).toContain("approveFee: sparkFeeApproval.requestApproval")
     expect(presets).toContain(
       "signerAuthorityRef.current.authGeneration !==\n            expectedAuthority.authGeneration"
     )
@@ -233,7 +234,7 @@ describe("critical signer recovery flows", () => {
     )
     expect(ownerEffect).toContain('setNote("")')
     expect(ownerEffect).toContain("setPaymentTargetSelection(null)")
-    expect(ownerEffect).toContain("sparkFeeApproval.decline()")
+    expect(ownerEffect).not.toContain("sparkFeeApproval")
     expect(ownerEffect).toContain(
       "if (previousOwner !== null) {\n      setShipping(DEFAULT_CHECKOUT_SHIPPING)"
     )

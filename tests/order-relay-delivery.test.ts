@@ -1,11 +1,13 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
 import {
+  config,
   emptyAccountNetworkLocalState,
+  recordOrderRelayDeliveryOutcomes,
   resumePendingOrderRelayDeliveries,
   retryOrderRelayDelivery,
   type OrderLifecycle,
@@ -15,6 +17,12 @@ import {
 import { requiresAcceptedOrderPaymentContinuation } from "../apps/market/src/lib/checkout-order-attempt"
 
 const BUYER = getPublicKey(generateSecretKey())
+const originalCompatibilityRelays = config.dmCompatibilityOrderRelayUrls
+const originalInboxFallbacks = config.commerceDmFallbackRelayUrls
+afterEach(() => {
+  config.dmCompatibilityOrderRelayUrls = originalCompatibilityRelays
+  config.commerceDmFallbackRelayUrls = originalInboxFallbacks
+})
 const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
 const WRAP_SECRET = generateSecretKey()
@@ -308,7 +316,9 @@ describe("order relay delivery retry", () => {
   })
 
   it("replays a partial compatibility order only to its original approved target", async () => {
-    const relayUrls = ["wss://relay.conduit.market", "wss://relay.ditto.pub"]
+    const relayUrls = [...config.dmCompatibilityOrderRelayUrls]
+    config.dmCompatibilityOrderRelayUrls = relayUrls
+    config.commerceDmFallbackRelayUrls = relayUrls
     const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
     candidate.orderRelayDelivery = {
       ...candidate.orderRelayDelivery!,
@@ -383,6 +393,121 @@ describe("order relay delivery retry", () => {
       },
     })
     expect(attempts).toEqual([relayUrls[1]])
+  })
+
+  it("recovers a pre-cutover plan through Ditto without retrying the retired relay", async () => {
+    const formerConduit = "wss://relay.conduit.market"
+    const ditto = "wss://relay.ditto.pub"
+    const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
+    candidate.orderRelayDelivery = {
+      ...candidate.orderRelayDelivery!,
+      route: "compatibility_order",
+      routingAuthority: undefined,
+      compatibilityPlan: { relayUrls: [formerConduit, ditto] },
+      relayDelivery: [
+        {
+          relayUrl: formerConduit,
+          source: "compatibility_registry",
+          status: "timed_out",
+          attemptCount: 1,
+          attemptGeneration: 1,
+        },
+        {
+          relayUrl: ditto,
+          source: "recipient_nip65",
+          status: "timed_out",
+          attemptCount: 1,
+          attemptGeneration: 1,
+        },
+      ],
+    }
+    const store = repository(candidate)
+    const attempts: string[] = []
+
+    await resumePendingOrderRelayDeliveries(BUYER, {
+      repository: store.repository,
+      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+      leaseOwner: "pre-cutover-worker",
+      now: () => 100,
+      publisher: async ({ relayUrl, signedEvent }) => {
+        attempts.push(relayUrl)
+        expect(signedEvent).toEqual(structuredClone(signedWrap))
+        return "acked"
+      },
+    })
+
+    expect(attempts).toEqual([ditto])
+    expect(store.read().orderRelayDelivery?.relayDelivery).toMatchObject([
+      { relayUrl: formerConduit, status: "timed_out", attemptCount: 1 },
+      { relayUrl: ditto, status: "acked", attemptCount: 2 },
+    ])
+
+    // An ACK from the original in-flight attempt remains valid evidence even
+    // though this client cannot start another write to that retired URL.
+    await recordOrderRelayDeliveryOutcomes(
+      {
+        orderId: candidate.orderId,
+        buyerPubkey: BUYER,
+        leaseOwner: "original-worker",
+        wrapId: signedWrap.id,
+        outcomes: [{ relayUrl: formerConduit, status: "acked", generation: 1 }],
+      },
+      { repository: store.repository, now: () => 101 }
+    )
+    expect(store.read().orderRelayDelivery?.relayDelivery).toMatchObject([
+      { relayUrl: formerConduit, status: "acked", attemptCount: 1 },
+      { relayUrl: ditto, status: "acked", attemptCount: 2 },
+    ])
+  })
+
+  it("rejects widened or invalid pre-cutover compatibility records", async () => {
+    const formerConduit = "wss://relay.conduit.market"
+    const ditto = "wss://relay.ditto.pub"
+    const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
+    candidate.orderRelayDelivery = {
+      ...candidate.orderRelayDelivery!,
+      route: "compatibility_order",
+      routingAuthority: undefined,
+      compatibilityPlan: {
+        relayUrls: [formerConduit, ditto, "wss://arbitrary.example"],
+      },
+      relayDelivery: [formerConduit, ditto, "wss://arbitrary.example"].map(
+        (relayUrl) => ({
+          relayUrl,
+          source: "compatibility_registry" as const,
+          status: "timed_out" as const,
+          attemptCount: 1,
+        })
+      ),
+    }
+    const attempts: string[] = []
+    const tryResume = async (record: OrderLifecycle): Promise<void> => {
+      await resumePendingOrderRelayDeliveries(BUYER, {
+        repository: repository(record).repository,
+        accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+        leaseOwner: "invalid-worker",
+        now: () => 100,
+        publisher: async ({ relayUrl }) => {
+          attempts.push(relayUrl)
+          return "acked"
+        },
+      })
+    }
+    await tryResume(candidate)
+    const wrongRecipient = structuredClone(candidate)
+    wrongRecipient.orderRelayDelivery!.compatibilityPlan!.relayUrls.pop()
+    wrongRecipient.orderRelayDelivery!.relayDelivery.pop()
+    wrongRecipient.orderRelayDelivery!.signedRecipientWrap = finalizeEvent(
+      {
+        created_at: 1_700_000_000,
+        kind: 1059,
+        tags: [["p", BUYER]],
+        content: "encrypted-gift-wrap",
+      },
+      WRAP_SECRET
+    )
+    await tryResume(wrongRecipient)
+    expect(attempts).toEqual([])
   })
 
   it("never lets a later timeout overwrite an existing ACK", async () => {

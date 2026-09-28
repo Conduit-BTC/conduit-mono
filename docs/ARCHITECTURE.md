@@ -57,57 +57,11 @@ Retired Conduit relay hosts should not appear in active docs or examples.
 
 ## App Routes
 
-### Market
-
-```
-apps/market/src/routes/
-├── __root.tsx
-├── index.tsx
-├── products/
-│   ├── index.tsx
-│   └── $productId.tsx
-├── cart.tsx
-├── checkout.tsx
-├── orders.tsx
-├── messages.tsx
-├── network.tsx
-├── wallet.tsx
-├── profile.tsx
-├── about.tsx
-├── privacy-policy.tsx
-├── terms-of-service.tsx
-├── store/
-│   └── $pubkey.tsx
-└── u/
-    └── $profileRef.tsx
-```
-
-### Merchant
-
-```
-apps/merchant/src/routes/
-├── __root.tsx
-├── index.tsx
-├── products.tsx
-├── orders.tsx
-├── profile.tsx
-├── payments.tsx
-├── shipping.tsx
-├── network.tsx
-├── about.tsx
-├── privacy-policy.tsx
-└── terms-of-service.tsx
-```
-
-### Store Builder
-
-```
-apps/store-builder/src/routes/
-├── __root.tsx
-└── index.tsx
-```
-
-Do not document Store Builder behavior beyond implemented routes and shared app infrastructure.
+TanStack Router files under each `apps/*/src/routes/` directory define the
+current route inventory. Inspect those files for a route task; this architecture
+document records cross-route boundaries rather than duplicating a changing
+file tree. Store Builder remains an app shell; do not describe unimplemented
+product behavior.
 
 ### Product Legal Boot Boundary
 
@@ -153,8 +107,9 @@ a temporary order-scoped browser key, and an NIP-46 connection may use an
 encrypted browser-local client key; neither is a Conduit-custodied user account
 key. The only approved server-side private-key exception is the Anon Conduit
 Shopper public zap signer described in `docs/specs/protocol.md`; it is limited
-to authenticated, merchant-authorized public zap request signing and does not
-authorize user key custody.
+to authenticated, merchant-authorized checkout zap requests and fixed-scope
+Conduit.Market project tip zap requests created by the trusted server boundary.
+It does not authorize user key custody or general-purpose event signing.
 
 ### Product Discovery
 

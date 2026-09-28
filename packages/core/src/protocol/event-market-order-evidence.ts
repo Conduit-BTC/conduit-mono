@@ -79,6 +79,9 @@ export function verifyEventMarketOrderEvidence(input: {
     ...future.map((item) => item.fulfillment.product.eventId),
   ])
   const embeddedGrantEvidence = [
+    first.market.signedEvent,
+    first.calendar.signedEvent,
+    ...future.map((item) => item.fulfillment.product.signedEvent),
     first.grant.signedEvidence.tip,
     ...first.grant.signedEvidence.ancestry,
     ...first.grant.signedEvidence.deletions,

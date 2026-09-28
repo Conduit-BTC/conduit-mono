@@ -149,27 +149,42 @@ The exception is constrained as follows:
 
 The Anon Conduit Shopper public zap signer is the only approved server-side
 private-key exception in this repository. It exists to sign NIP-57 zap request
-events (`kind:9734`) only for checkout flows where a merchant explicitly allows
-public anonymous zaps.
+events (`kind:9734`) for checkout flows where a merchant explicitly allows
+public anonymous zaps, and for the Conduit.Market project tip described below.
 
 This exception is constrained as follows:
 
 - The private key must live only in the Cloudflare Worker runtime secret for
   `apps/anon-zap-signer`; it must not be exposed through `VITE_*`, Pages client
   env vars, logs, telemetry, PR comments, or tracked files.
-- The Worker may sign only validated public zap request drafts that are bound to
-  an authorized checkout session and a merchant/product zap policy that
-  explicitly permits anonymous public zaps. Request tags and content must exclude
+- The Worker may sign only validated public zap request drafts. Checkout drafts
+  are bound to an authorized checkout session and a merchant/product zap policy
+  that explicitly permits anonymous public zaps. Project-tip drafts are created
+  by the trusted server boundary with recipient pubkey
+  `9d92077c5e35af76f7b1cd84738000b7bafb43d20b0a26c18fe29fa838d27146`,
+  Lightning address `conduithodlings@strike.me`, fixed nonempty public message, and a
+  server-checked whole-sat amount of at least 100 sats within the live LNURL
+  provider range. They cannot reference a merchant, product, cart, or order,
+  and the browser cannot choose their recipient, endpoint, tags, or content.
+  Request tags and content must exclude
   order identifiers, cart contents, shipping/contact data, invoices, NWC URIs,
   plaintext messages, or other private checkout data.
-- The trusted server boundary derives the anonymous zap amount from current,
+  Project tips are separate from purchases and do not change order state.
+- The Pages-to-Worker signing authorization distinguishes project tips from
+  checkout. A project-tip authorization carries a fresh request nonce and the
+  fixed tip recipient, amount, and LNURL; it cannot be represented as a
+  checkout session or merchant-policy authorization. The Worker independently
+  rejects a project-tip draft unless its kind, fixed public message, exact
+  recipient, whole-sat minimum, Lightning-address LNURL, and allowed tags
+  match this purpose. Existing checkout authorizations remain checkout-only.
+- For checkout, the trusted server boundary derives the anonymous zap amount from current,
   signed product listings and a fresh server-owned conversion quote when fiat
   pricing is present. Browser-provided totals are not authorization evidence.
-- Anonymous request content is server-owned and limited to copy such as
+- Anonymous checkout request content is server-owned and limited to copy such as
   `Zapped out 1 item at https://shop.conduit.market/` or
   `Zapped out 4 items at https://shop.conduit.market/`, using the actual summed
   item quantity. Merchant `custom` policy never makes anonymous content
-  shopper-editable.
+  shopper-editable. The project-tip message is also server-owned and nonempty.
 - Before exposing or paying a NIP-57 invoice, clients must verify that its
   BOLT11 `h` tag equals SHA-256 of the exact signed kind-9734 JSON supplied to
   the LNURL callback. Missing, duplicate, malformed, or mismatched bindings
@@ -186,13 +201,13 @@ This exception is constrained as follows:
   requires its callback, receipt pubkey, amount range, and encoded LNURL to
   agree with the server-authorized request before signing or invoice creation.
   Provider metadata is not accepted from the authorization response. Public
-  receipt presentation uses a same-origin server authority check only during a
+  checkout receipt presentation uses a same-origin server authority check only during a
   bounded payment-time window, with egress restricted to exact operator-allowed
   LNURL hosts and no persistent provider cache. Historical mutable evidence,
   profile/provider rotation, and lookup failure are authority-unavailable, not
   invalid; neither outcome is presented as paid. Feed browsers must not contact
   receipt-selected wallet domains.
-- The authorization response includes the latest signed listing's public
+- The checkout authorization response includes the latest signed listing's public
   fulfillment format, shipping option identity, and country/postal rules.
   The browser evaluates the private destination locally against that current
   snapshot before signing; shipping/contact data is never sent to the signer.

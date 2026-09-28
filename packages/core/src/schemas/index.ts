@@ -1,6 +1,8 @@
 import { z } from "zod"
 import { normalizePublicMediaUrl } from "../network-target-safety"
+import { parseEventMarketCalendarEvent } from "../protocol/event-market"
 import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
+import { projectSignedProductPreviewEvidence } from "../protocol/product-event-evidence"
 import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
 
 const publicMediaUrlSchema = z
@@ -363,6 +365,31 @@ const signedEventMarketEvidenceSchema = z
   })
   .refine(isValidSignedPublicNostrEvent, "Signed evidence must be valid.")
 
+const signedPickupEvidenceCoordinateSchema =
+  pickupEvidenceCoordinateSchema.extend({
+    /** Exact signed revision retained with the private order. */
+    signedEvent: signedEventMarketEvidenceSchema,
+  })
+
+function signedEvidenceMatchesCoordinate(evidence: {
+  coordinate: string
+  eventId: string
+  createdAt: number
+  signedEvent: z.infer<typeof signedEventMarketEvidenceSchema>
+}): boolean {
+  const [kind, author, ...dTagParts] = evidence.coordinate.split(":")
+  const dTags = evidence.signedEvent.tags.filter((tag) => tag[0] === "d")
+  return (
+    evidence.signedEvent.id === evidence.eventId &&
+    evidence.signedEvent.created_at * 1_000 === evidence.createdAt &&
+    Number(kind) === evidence.signedEvent.kind &&
+    author?.toLowerCase() === evidence.signedEvent.pubkey &&
+    dTags.length === 1 &&
+    dTags[0]?.length === 2 &&
+    dTags[0]?.[1] === dTagParts.join(":")
+  )
+}
+
 /** Future Event Market snapshot. The public roster supplies handoff terms. */
 export const orderEventMarketPickupFulfillmentSchema = z
   .object({
@@ -370,7 +397,7 @@ export const orderEventMarketPickupFulfillmentSchema = z
     organizerPubkey: hex64Schema,
     merchantPubkey: hex64Schema,
     payeePubkey: hex64Schema,
-    market: pickupEvidenceCoordinateSchema,
+    market: signedPickupEvidenceCoordinateSchema,
     /** Exact organizer-signed merchant grant accepted for this order. */
     grant: z.object({
       kind: z.literal(3841),
@@ -386,11 +413,11 @@ export const orderEventMarketPickupFulfillmentSchema = z
         deletions: z.array(signedEventMarketEvidenceSchema).max(128),
       }),
     }),
-    calendar: pickupEvidenceCoordinateSchema.extend({
+    calendar: signedPickupEvidenceCoordinateSchema.extend({
       start: z.number().int().min(0),
       end: z.number().int().min(0),
     }),
-    product: pickupEvidenceCoordinateSchema,
+    product: signedPickupEvidenceCoordinateSchema,
     mode: z.enum(["merchant_present", "organizer_handoff"]),
     assignment: z.string().min(1).max(120),
   })
@@ -400,6 +427,66 @@ export const orderEventMarketPickupFulfillmentSchema = z
       coordinate.split(":", 3)[1]?.toLowerCase()
     const organizer = fulfillment.organizerPubkey.toLowerCase()
     const merchant = fulfillment.merchantPubkey.toLowerCase()
+    for (const field of ["market", "calendar", "product"] as const) {
+      if (!signedEvidenceMatchesCoordinate(fulfillment[field])) {
+        context.addIssue({
+          code: "custom",
+          path: [field, "signedEvent"],
+          message:
+            "Signed evidence must match the exact saved revision and coordinate.",
+        })
+      }
+    }
+    const marketEvent = fulfillment.market.signedEvent
+    const marketCalendarTags = marketEvent.tags.filter((tag) => tag[0] === "a")
+    const marketStateTags = marketEvent.tags.filter(
+      (tag) => tag[0] === "event_market"
+    )
+    const rosterRows = marketEvent.tags.filter((tag) => tag[0] === "merchant")
+    const matchingRows = rosterRows.filter((tag) => tag[1] === merchant)
+    if (
+      marketCalendarTags.length !== 1 ||
+      marketCalendarTags[0]?.[1] !== fulfillment.calendar.coordinate ||
+      marketStateTags.length !== 1 ||
+      marketStateTags[0]?.[1] !== "2" ||
+      marketStateTags[0]?.[2] !== "open" ||
+      matchingRows.length !== 1 ||
+      matchingRows[0]?.[2] !== fulfillment.mode ||
+      matchingRows[0]?.[3] !== fulfillment.assignment
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["market", "signedEvent"],
+        message:
+          "Signed market roster must contain the saved date and merchant terms.",
+      })
+    }
+    const signedCalendar = parseEventMarketCalendarEvent(
+      fulfillment.calendar.signedEvent
+    )
+    if (
+      !signedCalendar ||
+      signedCalendar.coordinate !== fulfillment.calendar.coordinate ||
+      signedCalendar.start !== fulfillment.calendar.start ||
+      signedCalendar.end !== fulfillment.calendar.end
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["calendar", "signedEvent"],
+        message: "Signed calendar must contain the saved pickup time.",
+      })
+    }
+    if (
+      !fulfillment.product.signedEvent.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === fulfillment.market.coordinate
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["product", "signedEvent"],
+        message: "Signed product must associate with the saved market.",
+      })
+    }
     if (
       kind(fulfillment.market.coordinate) !== 30409 ||
       author(fulfillment.market.coordinate) !== organizer
@@ -724,6 +811,29 @@ export const orderItemSchema = z
             "Event Market product evidence must match the ordered product.",
         })
       }
+      const signedTerms = projectSignedProductPreviewEvidence(
+        item.fulfillment.product.signedEvent
+      )
+      if (
+        !signedTerms ||
+        signedTerms.priceStatus !== "resolved" ||
+        signedTerms.format !== "physical" ||
+        (item.title !== undefined && item.title !== signedTerms.title) ||
+        !item.sourcePrice ||
+        item.sourcePrice.amount !== signedTerms.sourcePrice?.amount ||
+        item.sourcePrice.currency !== signedTerms.sourcePrice.currency ||
+        item.sourcePrice.normalizedCurrency !==
+          signedTerms.sourcePrice.normalizedCurrency ||
+        (signedTerms.currency === "SATS" &&
+          (item.currency !== "SATS" ||
+            item.priceAtPurchase !== signedTerms.price))
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["fulfillment", "product"],
+          message: "Order terms must match the signed product revision.",
+        })
+      }
       if (
         item.shippingOptionId ||
         item.shippingOptionDTag ||
@@ -901,6 +1011,19 @@ export const orderSchema = z
             "Signed Event Market order evidence exceeds the bounded recovery read.",
         })
       }
+    }
+    if (
+      firstFuture?.type === "event_market_pickup" &&
+      ((order.shippingCostSats ?? 0) !== 0 ||
+        (order.shippingCostStatus !== undefined &&
+          order.shippingCostStatus !== "not_required" &&
+          order.shippingCostStatus !== "included"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["shippingCostSats"],
+        message: "Event Market pickup has no separate order shipping charge.",
+      })
     }
     if (
       firstPickup?.type === "pickup" &&

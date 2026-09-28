@@ -104,6 +104,7 @@ const order = orderSchema.parse({
           coordinate: marketCoordinate,
           eventId: market.id,
           createdAt: 100_000,
+          signedEvent: market,
         },
         calendar: {
           coordinate: calendarCoordinate,
@@ -111,6 +112,7 @@ const order = orderSchema.parse({
           createdAt: 100_000,
           start: 1_790_000_000_000,
           end: 1_790_003_600_000,
+          signedEvent: calendar,
         },
         grant: {
           kind: 3841,
@@ -125,6 +127,7 @@ const order = orderSchema.parse({
           coordinate: productCoordinate,
           eventId: product.id,
           createdAt: 101_000,
+          signedEvent: product,
         },
         mode: "merchant_present",
         assignment: "Booth 12",
@@ -139,28 +142,47 @@ const order = orderSchema.parse({
 
 describe("created future Event Market order evidence", () => {
   it("verifies exact historical signed revisions without consulting a later roster", () => {
-    expect(
-      verifyEventMarketOrderEvidence({ order, events: signed })
-    ).toMatchObject({
-      status: "verified",
-      mode: "merchant_present",
-      assignment: "Booth 12",
-    })
+    expect(verifyEventMarketOrderEvidence({ order, events: [] })).toMatchObject(
+      {
+        status: "verified",
+        mode: "merchant_present",
+        assignment: "Booth 12",
+      }
+    )
   })
 
-  it("recovers signed grant ancestry from the order and rejects missing product evidence", () => {
+  it("recovers every exact signed revision from the order and rejects coordinate-only claims", () => {
     expect(
       verifyEventMarketOrderEvidence({
         order,
-        events: signed.filter((event) => event.id !== grant.id),
+        events: [],
       })
     ).toMatchObject({ status: "verified" })
-    expect(
-      verifyEventMarketOrderEvidence({
-        order,
-        events: signed.filter((event) => event.id !== product.id),
-      })
-    ).toEqual({ status: "invalid", reason: "missing_evidence" })
+    for (const field of ["market", "calendar", "product"] as const) {
+      const coordinateOnly = {
+        ...order,
+        items: order.items.map((item) => ({
+          ...item,
+          fulfillment:
+            item.fulfillment?.type === "event_market_pickup"
+              ? {
+                  ...item.fulfillment,
+                  [field]: {
+                    ...item.fulfillment[field],
+                    signedEvent: undefined,
+                  },
+                }
+              : item.fulfillment,
+        })),
+      }
+      expect(orderSchema.safeParse(coordinateOnly).success).toBe(false)
+      expect(
+        verifyEventMarketOrderEvidence({
+          order: coordinateOnly as typeof order,
+          events: signed,
+        })
+      ).toEqual({ status: "invalid", reason: "order" })
+    }
     const tampered = {
       ...order,
       items: order.items.map((item) => ({
@@ -187,6 +209,52 @@ describe("created future Event Market order evidence", () => {
       verifyEventMarketOrderEvidence({
         order: tampered as typeof order,
         events: signed,
+      })
+    ).toEqual({ status: "invalid", reason: "order" })
+  })
+
+  it("rejects a valid signed market with different roster terms", () => {
+    const changedMarket = finalizeEvent(
+      {
+        ...buildEventMarketRosterDraft({
+          dTag: "fair",
+          organizerPubkey: organizer,
+          calendarCoordinate,
+          state: "open",
+          merchants: [
+            {
+              pubkey: merchant,
+              mode: "merchant_present",
+              assignment: "Booth 13",
+            },
+          ],
+        }),
+        created_at: 100,
+      },
+      organizerSecret
+    )
+    const forged = {
+      ...order,
+      items: order.items.map((item) => ({
+        ...item,
+        fulfillment:
+          item.fulfillment?.type === "event_market_pickup"
+            ? {
+                ...item.fulfillment,
+                market: {
+                  ...item.fulfillment.market,
+                  eventId: changedMarket.id,
+                  signedEvent: changedMarket,
+                },
+              }
+            : item.fulfillment,
+      })),
+    }
+    expect(orderSchema.safeParse(forged).success).toBe(false)
+    expect(
+      verifyEventMarketOrderEvidence({
+        order: forged as typeof order,
+        events: [],
       })
     ).toEqual({ status: "invalid", reason: "order" })
   })
@@ -222,6 +290,7 @@ describe("created future Event Market order evidence", () => {
                 product: {
                   ...item.fulfillment.product,
                   eventId: zeroProduct.id,
+                  signedEvent: zeroProduct,
                 },
               }
             : item.fulfillment,
@@ -272,7 +341,11 @@ describe("future Event Market private physical handoff", () => {
               ...item.fulfillment,
               mode: "organizer_handoff",
               assignment: "Pickup table",
-              market: { ...item.fulfillment.market, eventId: handoffMarket.id },
+              market: {
+                ...item.fulfillment.market,
+                eventId: handoffMarket.id,
+                signedEvent: handoffMarket,
+              },
             }
           : item.fulfillment,
     })),
@@ -293,19 +366,9 @@ describe("future Event Market private physical handoff", () => {
         releaseConfirmed: true,
       })
     ).toThrow()
-    expect(() =>
-      buildFutureMarketReadyReceipt({
-        order: handoffOrder,
-        signedOrderEvidence: evidence.filter(
-          (event) => event.id !== product.id
-        ),
-        paymentAuthenticated: true,
-        releaseConfirmed: true,
-      })
-    ).toThrow()
     const receipt = buildFutureMarketReadyReceipt({
       order: handoffOrder,
-      signedOrderEvidence: evidence,
+      signedOrderEvidence: [],
       paymentAuthenticated: true,
       releaseConfirmed: true,
       issuedAt: 200,
