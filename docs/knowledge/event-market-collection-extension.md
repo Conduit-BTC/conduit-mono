@@ -26,10 +26,11 @@ addressable-event tags and kinds.
 This divergence was checked against the public Gamma/Open Markets specification
 and NIP-52 on 2026-08-11. Strictly refusing the extension prevents an organizer
 from publishing a shareable event before merchant enrollment and prevents
-clients from proving which products the organizer accepted. The upstream-ready
-clarification is recorded in
-`docs/knowledge/open-markets-event-commerce-proposal.md`; it is not presented as
-accepted upstream behavior.
+clients from proving which products the organizer accepted. The six collection
+clarifications and current upstream proposal status are recorded in
+[Open Markets in Conduit](../OPEN_MARKETS.md#collection-based-event-commerce);
+the current upstream Event Market proposal uses a different model. Neither is
+presented as accepted upstream behavior.
 
 ## Requirement Classification
 
@@ -105,7 +106,8 @@ separate privacy-reviewed allowlist.
 
 ## Removal Gate
 
-Remove this exception only after the six clarifications in the upstream proposal
+Remove this exception only after the six collection clarifications summarized in the
+[implementation guide](../OPEN_MARKETS.md#collection-based-event-commerce)
 are accepted (or an equivalent normative contract exists), the canonical graph
 passes the maintained cross-client fixtures, and two supported Conduit releases
 can read the canonical records without this named writer boundary. Removal,
@@ -126,5 +128,5 @@ and collection paths remain negative controls for writer eligibility.
 - [NIP-19 shareable identifiers](https://github.com/nostr-protocol/nips/blob/master/19.md)
 - [NIP-99 product listings](https://github.com/nostr-protocol/nips/blob/master/99.md)
 - [Open Markets / Gamma specification](https://github.com/GammaMarkets/market-spec/blob/main/spec.md)
-- `docs/knowledge/open-markets-event-commerce-proposal.md`
+- [Open Markets implementation and proposal status](../OPEN_MARKETS.md)
 - `docs/specs/event-markets.md`

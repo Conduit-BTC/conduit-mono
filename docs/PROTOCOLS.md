@@ -11,6 +11,8 @@ are the authority for NIPs. Product listings use [NIP-99](https://github.com/nos
 plus the [Open Markets working specification](https://github.com/OpenMarketsFoundation/specification)
 for `kind:30402` commerce events. The working specification is distinct from
 an accepted NIP and evolved from the earlier GammaMarkets `market-spec` work.
+See [Open Markets in Conduit](OPEN_MARKETS.md) for implemented commerce surfaces,
+compatibility differences, and unmerged proposal dependencies.
 
 ## Identity, discovery, and relays
 

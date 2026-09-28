@@ -75,6 +75,8 @@ The event-backed collection semantics below are retained for existing Conduit
 events and orders. They predate the experimental kind `30409` proposal in Open
 Markets PR #15. Core keeps them behind explicit legacy parsing and building
 helpers and does not claim that unrelated clients implement the extension.
+See [Open Markets in Conduit](../OPEN_MARKETS.md#collection-based-event-commerce)
+for the collection extension and current upstream implementation status.
 
 ## Legacy Goals
 

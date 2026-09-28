@@ -5,6 +5,7 @@ This directory contains public implementation context for the `conduit-mono` cli
 ## Source of Truth
 
 - `docs/PROTOCOLS.md`: public, status-aware inventory of NIPs and other open protocols used by the clients
+- `docs/OPEN_MARKETS.md`: commerce implementation map, compatibility differences, examples, and experimental proposal status
 - `docs/ARCHITECTURE.md`: system design, protocol boundaries, and data flow
 - `docs/DESIGN.md`: shared design system and theming guidance
 - `docs/specs/*`: durable feature, protocol, and product contracts where the repository maintains one
