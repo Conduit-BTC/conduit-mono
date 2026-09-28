@@ -485,8 +485,7 @@ export async function publishEventMarketMerchantDecision(
     marketRead.resolution.market.calendarCoordinate !==
       input.calendarCoordinate ||
     !authorizationRead.retained ||
-    (authorizationRead.resolution.state === "missing" &&
-      authorizationRead.coverage !== "complete")
+    authorizationRead.coverage !== "complete"
   ) {
     throw new Error(
       "Current signed Event Market authority needs organizer review."
@@ -645,6 +644,9 @@ export async function retryEventMarketMerchantDecisionDelivery(
     decisionId: string
     authenticatedPubkey: string | null
     shouldContinue?: () => boolean
+    onSignedLocal?: (
+      decision: SignedEventMarketMerchantDecision
+    ) => Promise<void>
   },
   dependencies: MerchantDecisionDependencies = merchantDecisionDependencies
 ): Promise<{
@@ -735,6 +737,11 @@ export async function retryEventMarketMerchantDecisionDelivery(
     throw new Error(
       "A newer or invalid merchant authorization blocks this retry."
     )
+  await input.onSignedLocal?.({
+    action: job.action,
+    roster: job.roster,
+    authorization: job.authorization,
+  })
   const first = job.action === "approve" ? job.roster : job.authorization
   const second = job.action === "approve" ? job.authorization : job.roster
   const firstDelivery = await dependencies.publish(

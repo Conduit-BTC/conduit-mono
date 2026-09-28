@@ -148,15 +148,26 @@ export function reduceFutureMarketOrganizerClaims(input: {
   )
 }
 
+function assertFutureMarketReadCurrent(shouldContinue?: () => boolean): void {
+  if (shouldContinue?.() === false) {
+    throw new DOMException("Private pickup read was cancelled.", "AbortError")
+  }
+}
+
 export async function readFutureMarketReadyReceipts(input: {
   organizerPubkey: string
   marketCoordinate?: string
+  shouldContinue?: () => boolean
 }): Promise<{
   claims: FutureMarketOrganizerClaim[]
   stale: boolean
   inbox: Awaited<ReturnType<typeof getEventMarketPrivateMessageList>>["inbox"]
 }> {
+  assertFutureMarketReadCurrent(input.shouldContinue)
+  // The shared inbox reader owns the external signer lease and checks it
+  // throughout relay reads and decryption. The caller also owns view lifetime.
   const read = await getEventMarketPrivateMessageList(input.organizerPubkey)
+  assertFutureMarketReadCurrent(input.shouldContinue)
   return {
     claims: reduceFutureMarketOrganizerClaims({
       organizerPubkey: input.organizerPubkey,
@@ -172,14 +183,17 @@ export async function readFutureMarketHandoffAcks(input: {
   merchantPubkey: string
   readyReceiptId: string
   receipt: FutureMarketReadyReceiptSchema
+  shouldContinue?: () => boolean
 }): Promise<{
   exactAck: AckMessage | null
   revoked: boolean
   conflicting: boolean
   stale: boolean
 }> {
+  assertFutureMarketReadCurrent(input.shouldContinue)
   const receipt = futureMarketReadyReceiptSchema.parse(input.receipt)
   const read = await getEventMarketPrivateMessageList(input.merchantPubkey)
+  assertFutureMarketReadCurrent(input.shouldContinue)
   const terminal = read.messages
     .filter(authenticatedFutureMessage)
     .filter(
@@ -585,6 +599,7 @@ export async function publishFutureMarketHandoffAck(input: {
   const current = await readFutureMarketReadyReceipts({
     organizerPubkey: input.organizerPubkey,
     marketCoordinate: input.claim.receipt.payload.market.coordinate,
+    shouldContinue: input.shouldContinue,
   })
   const exact = current.claims.find(
     (claim) =>

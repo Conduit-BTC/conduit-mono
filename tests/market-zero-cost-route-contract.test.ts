@@ -30,7 +30,9 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(detail).toContain(
       'allowZero: productCartResolution?.status === "pickup"'
     )
-    expect(cart).toContain("allowZero: allowZeroPrice && pickup !== undefined")
+    expect(cart).toMatch(
+      /allowZero:\s*allowZeroPrice && \(pickup !== undefined \|\| futurePickup !== undefined\)/
+    )
     expect(checkout).toContain(
       'item.fulfillment?.type === "event_pickup_pending"'
     )

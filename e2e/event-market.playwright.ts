@@ -7,6 +7,8 @@ import {
   verifyEvent,
 } from "nostr-tools/pure"
 
+test.use({ trace: "off", video: "off", screenshot: "off" })
+
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 }`

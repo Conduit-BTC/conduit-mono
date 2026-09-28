@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react"
 import { ArrowLeft, ExternalLink } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
@@ -7,6 +8,7 @@ import {
   encodeEventMarketNaddr,
   getEventMarket,
   inferConduitAppOrigin,
+  useAuth,
   useConduitSession,
 } from "@conduit/core"
 import {
@@ -33,16 +35,22 @@ function EventDetailPage() {
 
 /** Historical kind-30405 links remain readable without a second active event writer. */
 function LegacyEventReadOnly({ reference }: { reference: string }) {
+  const { accountPubkey, pubkey, signerReadiness, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const session = useConduitSession()
   const decoded = decodeEventMarketReference(reference, [30405])
   const authenticatedPubkey =
-    session.mode === "signed_in" ? session.pubkey : null
+    signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
   const query = useQuery({
     queryKey: [
       "legacy-event-read-only",
       reference,
       session.relayScope,
       authenticatedPubkey,
+      authGeneration,
     ],
     queryFn: ({ signal }) =>
       getEventMarket({
@@ -50,6 +58,8 @@ function LegacyEventReadOnly({ reference }: { reference: string }) {
         authenticatedPubkey,
         signal,
         includeParticipation: false,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     enabled: !!decoded && session.relaySettingsReady,
     retry: false,

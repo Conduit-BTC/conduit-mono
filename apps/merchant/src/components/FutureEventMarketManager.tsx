@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   buildDirectMessageRumor,
@@ -42,6 +42,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@conduit/ui"
+import { retainEventMarketMerchantDecision } from "../lib/event-market-merchant-decision"
 import { buildFutureEventQrSignSheets } from "../lib/event-signage"
 import { EventQrPrintPreview } from "./EventQrPrintPreview"
 import { FutureOrganizerClaimQueue } from "./FutureOrganizerClaimQueue"
@@ -271,6 +272,7 @@ function MerchantAuthorityRow({
       coordinate,
       merchant,
       authenticatedPubkey,
+      authGeneration,
     ],
     queryFn: ({ signal }) =>
       readEventMarketAuthorization({
@@ -278,6 +280,8 @@ function MerchantAuthorityRow({
         merchantPubkey: merchant,
         authenticatedPubkey,
         signal,
+        shouldContinue: () =>
+          !signal.aborted && isAuthGenerationCurrent(authGeneration),
       }),
     enabled: !!authenticatedPubkey,
     retry: false,
@@ -306,6 +310,7 @@ function MerchantAuthorityRow({
       coordinate,
       merchant,
       authenticatedPubkey,
+      authGeneration,
     ],
     queryFn: ({ signal }) =>
       previewEventMarketMerchantProducts({
@@ -313,6 +318,8 @@ function MerchantAuthorityRow({
         merchantPubkey: merchant,
         authenticatedPubkey,
         signal,
+        shouldContinue: () =>
+          !signal.aborted && isAuthGenerationCurrent(authGeneration),
       }),
     enabled: confirmReapproval && reapproval && !!authenticatedPubkey,
     retry: false,
@@ -408,10 +415,8 @@ function MerchantAuthorityRow({
           expectedPreviousEventId: marketEventId,
           expectedAuthorizationTipIds: expectedTipIds,
           shouldContinue,
-          onSignedLocal: async (decision) => {
-            retainSignedEventMarketEvidence(coordinate, decision.roster)
-            retainSignedEventMarketEvidence(coordinate, decision.authorization)
-          },
+          onSignedLocal: (decision) =>
+            retainEventMarketMerchantDecision(coordinate, decision),
         })
       }
       setConfirmReapproval(false)
@@ -639,6 +644,10 @@ export function FutureEventMarketManager({ reference }: { reference: string }) {
     authGeneration,
     isAuthGenerationCurrent,
   } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
   const session = useConduitSession()
   const queryClient = useQueryClient()
   const authenticatedPubkey =
@@ -655,15 +664,27 @@ export function FutureEventMarketManager({ reference }: { reference: string }) {
       reference,
       session.relayScope,
       authenticatedPubkey,
+      authGeneration,
     ],
     queryFn: ({ signal }) =>
-      readEventMarketRoster({ reference, authenticatedPubkey, signal }),
+      readEventMarketRoster({
+        reference,
+        authenticatedPubkey,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+      }),
     enabled: session.relaySettingsReady,
     retry: false,
   })
   const result = query.data
   const pendingDecisions = useQuery({
-    queryKey: ["future-market-pending-decisions", coordinate],
+    queryKey: [
+      "future-market-pending-decisions",
+      coordinate,
+      authenticatedPubkey,
+      authGeneration,
+    ],
     queryFn: () => listPendingEventMarketMerchantDecisions(coordinate ?? ""),
     enabled: !!coordinate && !!authenticatedPubkey,
   })
@@ -704,6 +725,7 @@ export function FutureEventMarketManager({ reference }: { reference: string }) {
       await retryEventMarketRosterDelivery({
         signedEvent: market.signedEvent,
         authenticatedPubkey,
+        shouldContinue: () => isAuthGenerationCurrent(authGeneration),
       })
       await query.refetch()
     } catch {
@@ -720,6 +742,8 @@ export function FutureEventMarketManager({ reference }: { reference: string }) {
         decisionId,
         authenticatedPubkey,
         shouldContinue: () => isAuthGenerationCurrent(authGeneration),
+        onSignedLocal: (decision) =>
+          retainEventMarketMerchantDecision(coordinate!, decision),
       })
       await Promise.all([pendingDecisions.refetch(), query.refetch()])
     } catch (cause) {

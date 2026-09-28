@@ -137,7 +137,15 @@ describe("Market Events timeline route", () => {
     )
     expect(emptyState).toContain("getResultPresentation")
     expect(emptyState).toContain("onRetry")
-    expect(timeline).toContain("presentation.currentAndFuture.map")
+    expect(timeline).toContain(
+      "...presentation.past, ...presentation.currentAndFuture"
+    )
+    expect(timeline).toMatch(
+      /currentAndFutureEvents=\{renderMixedEntries\(\s*presentation.currentAndFuture,\s*futureUpcoming/
+    )
+    expect(timeline).toContain(
+      ".sort((left, right) => left.start - right.start)"
+    )
     expect(discovery).toContain("readEventMarketCollectionCandidates")
     expect(discovery).toContain("perspectiveOrganizerSet.has(organizerPubkey)")
     expect(discovery).not.toContain("FOLLOWED_EVENT_MARKET_ORGANIZER_LIMIT")
@@ -207,7 +215,7 @@ describe("Market Events timeline route", () => {
       hook.match(
         /!signal\.aborted\s*&&\s*authGenerationRef.current === authGeneration/g
       )
-    ).toHaveLength(2)
+    ).toHaveLength(3)
     expect(hook).toContain("discoveryScopeRef.current === discoveryScope")
   })
 

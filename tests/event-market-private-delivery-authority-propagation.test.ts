@@ -30,11 +30,14 @@ describe("event-market private-delivery authority propagation", () => {
   })
 
   it("binds every Merchant handoff action to its existing auth generation", async () => {
-    const [orders, paymentRelease, events] = await Promise.all([
-      source("apps/merchant/src/routes/orders.tsx"),
-      source("apps/merchant/src/lib/order-payment-release.ts"),
-      source("apps/merchant/src/routes/events.tsx"),
-    ])
+    const [orders, paymentRelease, queue, futureHandoff, commerce] =
+      await Promise.all([
+        source("apps/merchant/src/routes/orders.tsx"),
+        source("apps/merchant/src/lib/order-payment-release.ts"),
+        source("apps/merchant/src/components/FutureOrganizerClaimQueue.tsx"),
+        source("packages/core/src/protocol/future-market-handoff.ts"),
+        source("packages/core/src/protocol/commerce.ts"),
+      ])
 
     expect(
       orders.match(
@@ -47,11 +50,56 @@ describe("event-market private-delivery authority propagation", () => {
     expect(paymentRelease).toContain(
       "authenticatedPubkey: input.authenticatedPubkey,\n        shouldContinue: input.shouldContinue,"
     )
-    expect(events).toMatch(
-      /transport: \{\s*authenticatedPubkey: input\.ownerPubkey,\s*shouldContinue: \(\) =>\s*isCurrentFreshAuthority\(input\.ownerPubkey, input\.authGeneration\)/
+    const privateInboxRead = commerce.slice(
+      commerce.indexOf("async function fetchEventMarketPrivateMessagesStrict("),
+      commerce.indexOf("async function resolvePrincipalInboxDeclaration(")
     )
-    expect(events).toContain(
-      "authenticatedPubkey: null,\n          shouldContinue: () => isCurrentOwner(input.ownerPubkey)"
+    expect(privateInboxRead).toContain(
+      "resolveInboxSyncAuthorization(principalPubkey)"
+    )
+    expect(
+      privateInboxRead.match(/assertInboxSyncAuthority\(authorization\)/g)
+        ?.length
+    ).toBeGreaterThanOrEqual(3)
+    expect(
+      futureHandoff.match(
+        /assertFutureMarketReadCurrent\(input.shouldContinue\)/g
+      )
+    ).toHaveLength(4)
+    expect(queue).toMatch(
+      /retryFutureMarketPrivateDelivery\(\{[\s\S]{0,160}authenticatedOwnerPubkey: organizerPubkey,[\s\S]{0,100}shouldContinue: \(\) => isAuthGenerationCurrent\(authGeneration\)/
+    )
+    expect(queue).toMatch(
+      /publishFutureMarketHandoffAck\(\{[\s\S]{0,250}authenticatedPubkey: organizerPubkey,\s+shouldContinue,/
+    )
+    expect(queue).toMatch(
+      /readFutureMarketReadyReceipts\(\{[\s\S]{0,220}shouldContinue:[\s\S]{0,100}!signal\.aborted && isAuthGenerationCurrent\(authGeneration\)/
+    )
+    const futureAckQuery = orders.slice(
+      orders.indexOf("const futureAckQuery = useQuery({"),
+      orders.indexOf("const selectedReadyDelivery =")
+    )
+    expect(futureAckQuery).toContain("authGeneration,")
+    expect(futureAckQuery).toMatch(
+      /!signal\.aborted &&\s+!!pubkey &&\s+isCurrentOrderOwner\(pubkey, authGeneration\)/
+    )
+    expect(futureAckQuery).toMatch(
+      /readFutureMarketHandoffAcks\(\{[\s\S]{0,200}shouldContinue,/
+    )
+    expect(queue).toContain(
+      "const visibleRead = authenticated ? query.data : undefined"
+    )
+    expect(queue).toContain("visibleRead?.claims.map")
+    const ackRead = futureHandoff.slice(
+      futureHandoff.indexOf(
+        "export async function publishFutureMarketHandoffAck("
+      ),
+      futureHandoff.indexOf(
+        "export function parseFutureMarketPrivateDeliveryRecord("
+      )
+    )
+    expect(ackRead).toMatch(
+      /readFutureMarketReadyReceipts\(\{[\s\S]{0,240}shouldContinue: input.shouldContinue,/
     )
   })
 })

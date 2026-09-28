@@ -1248,9 +1248,20 @@ function OrdersWorkspace() {
       "future-market-handoff-ack",
       pubkey,
       futureReadyRecord?.readyReceiptId,
+      authGeneration,
     ],
-    enabled: !!pubkey && !!futureReadyRecord && selectedFutureOrganizerHandoff,
-    queryFn: async () => {
+    enabled:
+      signerConnected &&
+      !!pubkey &&
+      !!futureReadyRecord &&
+      selectedFutureOrganizerHandoff,
+    queryFn: async ({ signal }) => {
+      const shouldContinue = () =>
+        !signal.aborted &&
+        !!pubkey &&
+        isCurrentOrderOwner(pubkey, authGeneration)
+      if (!shouldContinue())
+        throw new DOMException("Order account changed.", "AbortError")
       const signer = getNdk().signer
       if (!signer || !pubkey || !futureReadyRecord)
         throw new Error("Merchant recovery signer is unavailable.")
@@ -1258,10 +1269,13 @@ function OrdersWorkspace() {
         record: futureReadyRecord,
         signer,
       })
+      if (!shouldContinue())
+        throw new DOMException("Order account changed.", "AbortError")
       return readFutureMarketHandoffAcks({
         merchantPubkey: pubkey,
         readyReceiptId: futureReadyRecord.readyReceiptId,
         receipt,
+        shouldContinue,
       })
     },
     retry: false,

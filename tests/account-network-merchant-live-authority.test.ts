@@ -18,7 +18,8 @@ describe("Merchant live account authority", () => {
       dashboard,
       orders,
       products,
-      events,
+      manager,
+      historicalEvent,
       eventTimeline,
       shipping,
       readiness,
@@ -26,7 +27,8 @@ describe("Merchant live account authority", () => {
       source("apps/merchant/src/routes/index.tsx"),
       source("apps/merchant/src/routes/orders.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
-      source("apps/merchant/src/routes/events.tsx"),
+      source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
+      source("apps/merchant/src/routes/events/$collectionRef.tsx"),
       source("apps/merchant/src/hooks/useMerchantEventTimeline.ts"),
       source("apps/merchant/src/routes/shipping.tsx"),
       source("apps/merchant/src/hooks/useMerchantReadiness.ts"),
@@ -37,16 +39,18 @@ describe("Merchant live account authority", () => {
     const orderGenerationGuard =
       /!signal\.aborted &&\s+!!pubkey &&\s+isCurrentOrderOwner\(pubkey, authGeneration\)/g
     expect(dashboard.match(generationGuard)).toHaveLength(1)
-    expect(orders.match(orderGenerationGuard)).toHaveLength(2)
+    expect(orders.match(orderGenerationGuard)).toHaveLength(3)
     expect(products.match(generationGuard)).toHaveLength(5)
-    expect(
-      events.match(/!signal\.aborted && shouldContinue\(\)/g)
-    ).toHaveLength(1)
-    expect(
-      events.match(
-        /shouldContinue\(\) && queryScopeTokenRef\.current === queryScopeToken/g
+    const eventGenerationGuard =
+      /!signal\.aborted && isAuthGenerationCurrent\(authGeneration\)/g
+    expect(manager.match(eventGenerationGuard)).toHaveLength(2)
+    expect(manager.match(generationGuard)).toHaveLength(1)
+    expect(historicalEvent.match(generationGuard)).toHaveLength(1)
+    for (const contents of [manager, historicalEvent]) {
+      expect(contents).toMatch(
+        /session.relayScope,[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,80}authGeneration/
       )
-    ).toHaveLength(4)
+    }
     expect(eventTimeline.match(generationGuard)).toHaveLength(5)
     expect(shipping.match(generationGuard)).toHaveLength(1)
     expect(readiness.match(generationGuard)).toHaveLength(1)

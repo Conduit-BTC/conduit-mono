@@ -120,6 +120,7 @@ export function MerchantEventsTimeline({
       "merchant-future-event-timeline",
       session.relayScope,
       authenticatedPubkey,
+      authGeneration,
       futureAuthors.join(","),
     ],
     queryFn: ({ signal }) =>
@@ -127,6 +128,8 @@ export function MerchantEventsTimeline({
         organizerPubkeys: futureAuthors,
         authenticatedPubkey,
         signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
       }),
     enabled: session.relaySettingsReady && !!merchantPubkey,
     retry: false,

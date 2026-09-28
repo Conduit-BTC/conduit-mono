@@ -231,9 +231,9 @@ describe("app account-network read propagation", () => {
   })
 
   it("keeps Merchant event reads bound to the live authenticated account", async () => {
-    const [handoff, events, eventDetailRoute, products] = await Promise.all([
+    const [handoff, manager, eventDetailRoute, products] = await Promise.all([
       source("apps/merchant/src/lib/event-market-handoff.ts"),
-      source("apps/merchant/src/routes/events.tsx"),
+      source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
       source("apps/merchant/src/routes/events/$collectionRef.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
     ])
@@ -244,18 +244,19 @@ describe("app account-network read propagation", () => {
     expect(eventDetailRoute).toContain(
       'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
-    expect(eventDetailRoute).toContain(
-      "authenticatedPubkey={authenticatedPubkey}"
+    expect(eventDetailRoute).toMatch(
+      /getEventMarket\(\{[\s\S]{0,200}authenticatedPubkey,[\s\S]{0,160}shouldContinue:/
     )
-    expect(events).toContain(
-      "resolveOrganizerHandoffMerchandise({\n                  organizerPubkey,\n                  authenticatedPubkey,"
+    expect(manager).toContain(
+      'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
-    expect(events).toContain(
-      "resolveOrganizerHandoffMerchandise({\n        organizerPubkey: input.ownerPubkey,\n        authenticatedPubkey: input.ownerPubkey,"
+    expect(manager).toMatch(
+      /readEventMarketRoster\(\{[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,160}shouldContinue:/
     )
-    expect(events).toMatch(
-      /"merchant-organizer-handoff-merchandise",[\s\S]{0,160}authenticatedPubkey \?\? "disconnected"/
+    expect(manager).toMatch(
+      /"future-market-manager",[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,80}authGeneration/
     )
+    expect(manager).toContain("authenticatedPubkey={authenticatedPubkey}")
 
     expect(products).toContain(
       'const authenticatedPubkey = authStatus === "connected" ? pubkey : null'
@@ -397,13 +398,13 @@ describe("app account-network read propagation", () => {
   })
 
   it("keeps organizer inbox and event-product action reads session-bound", async () => {
-    const [authorization, products, eventProduct, publisher, events] =
+    const [authorization, products, eventProduct, publisher, manager] =
       await Promise.all([
         source("apps/market/src/lib/checkout-authorization.ts"),
         source("apps/merchant/src/routes/products.tsx"),
         source("apps/merchant/src/lib/event-product-publishing.ts"),
         source("apps/merchant/src/components/EventProductPublisherDialog.tsx"),
-        source("apps/merchant/src/routes/events.tsx"),
+        source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
       ])
 
     expect(authorization).toMatch(
@@ -414,7 +415,9 @@ describe("app account-network read propagation", () => {
     )
     expect(eventProduct).toContain("input.shouldContinue")
     expect(publisher).toContain("shouldContinue,")
-    expect(events).toContain("shouldContinue={shouldContinue}")
+    expect(manager).toMatch(
+      /previewEventMarketMerchantProducts\(\{[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,160}shouldContinue:/
+    )
   })
 
   it("threads account policy through shipping and public zap receipt I/O", async () => {

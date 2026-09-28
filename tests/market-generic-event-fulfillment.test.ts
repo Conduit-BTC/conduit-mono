@@ -84,7 +84,8 @@ describe("generic Market event fulfillment", () => {
       "cart.refreshAndIncrementItem(existing, cartCandidate, 1)"
     )
     expect(resolvedCard).not.toContain("cart.incrementItem(existing")
-    expect(event).toContain("cart.addItem(candidate, 1)")
+    expect(event).toContain("onAddToCart={undefined}")
+    expect(event).toContain("cart.addItem(exactCandidate, 1)")
     expect(event).toContain(
       "cart.refreshAndIncrementItem(existing, candidate, 1)"
     )

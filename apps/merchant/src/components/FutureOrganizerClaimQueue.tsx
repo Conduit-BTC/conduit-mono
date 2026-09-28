@@ -239,7 +239,13 @@ export function FutureOrganizerClaimQueue({
   organizerPubkey: string
   marketCoordinate: string
 }) {
-  const { accountPubkey, pubkey, signerReadiness } = useAuth()
+  const {
+    accountPubkey,
+    pubkey,
+    signerReadiness,
+    authGeneration,
+    isAuthGenerationCurrent,
+  } = useAuth()
   const authenticated =
     accountPubkey === organizerPubkey &&
     pubkey === organizerPubkey &&
@@ -249,13 +255,20 @@ export function FutureOrganizerClaimQueue({
       "future-market-organizer-claims",
       organizerPubkey,
       marketCoordinate,
+      authGeneration,
     ],
-    queryFn: () =>
-      readFutureMarketReadyReceipts({ organizerPubkey, marketCoordinate }),
+    queryFn: ({ signal }) =>
+      readFutureMarketReadyReceipts({
+        organizerPubkey,
+        marketCoordinate,
+        shouldContinue: () =>
+          !signal.aborted && isAuthGenerationCurrent(authGeneration),
+      }),
     enabled: authenticated,
     retry: false,
     refetchInterval: 30_000,
   })
+  const visibleRead = authenticated ? query.data : undefined
   return (
     <Card>
       <CardHeader>
@@ -278,20 +291,20 @@ export function FutureOrganizerClaimQueue({
             an order.
           </p>
         ) : null}
-        {query.data?.stale ? (
+        {visibleRead?.stale ? (
           <p role="alert">
             Private receipt evidence is stale. Refresh before physical release.
           </p>
         ) : null}
-        {query.data && query.data.claims.length === 0 ? (
+        {visibleRead && visibleRead.claims.length === 0 ? (
           <p>No ready pickup claims are available for this market.</p>
         ) : null}
-        {query.data?.claims.map((claim) => (
+        {visibleRead?.claims.map((claim) => (
           <ClaimCard
             key={claim.receipt.id}
             claim={claim}
             organizerPubkey={organizerPubkey}
-            stale={query.data.stale}
+            stale={visibleRead.stale}
             onUpdated={() => void query.refetch()}
           />
         ))}

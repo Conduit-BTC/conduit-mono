@@ -55,7 +55,7 @@ describe("Merchant event actor identity", () => {
     )
     const reads = sources.flatMap((source) =>
       Array.from(
-        source.matchAll(/useProfiles?\([^,]+, \{([\s\S]*?)\n  \}\)/g),
+        source.matchAll(/useProfiles?\([^,]+, \{([\s\S]*?)\n {2}\}\)/g),
         (match) => match[1]!
       )
     )
@@ -68,10 +68,22 @@ describe("Merchant event actor identity", () => {
         /authenticatedPubkey:\s*(merchantPubkey|organizerPubkey|market\.)/
       )
     }
-    const events = await Bun.file("apps/merchant/src/routes/events.tsx").text()
-    expect(events).toMatch(
-      /<OrganizerHandoffReceiptQueue[\s\S]{0,240}authenticatedPubkey=\{authenticatedPubkey\}[\s\S]{0,80}shouldContinue=\{shouldContinue\}/
+    const [manager, queue] = await Promise.all([
+      Bun.file(
+        "apps/merchant/src/components/FutureEventMarketManager.tsx"
+      ).text(),
+      Bun.file(
+        "apps/merchant/src/components/FutureOrganizerClaimQueue.tsx"
+      ).text(),
+    ])
+    expect(manager).toMatch(
+      /<FutureOrganizerClaimQueue[\s\S]{0,180}organizerPubkey=\{accountPubkey\}/
     )
+    expect(queue).toMatch(
+      /accountPubkey === organizerPubkey &&\s+pubkey === organizerPubkey &&\s+signerReadiness === "ready"/
+    )
+    expect(queue).toContain("receipt.merchantPubkey.slice(0, 16)")
+    expect(queue).not.toMatch(/authenticatedPubkey:\s*receipt\.merchantPubkey/)
     expect(orders).toMatch(
       /<PickupFulfillmentCard[\s\S]{0,420}accountPubkey=\{pubkey\}[\s\S]{0,80}authenticatedPubkey=\{authenticatedPubkey\}[\s\S]{0,180}isCurrentOrderOwner\(pubkey, authGeneration\)/
     )

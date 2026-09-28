@@ -69,13 +69,13 @@ describe("authenticated account profile and storefront read propagation", () => 
       dashboard,
       eventTemplates,
       organizerPanel,
-      eventsRoute,
+      manager,
       eventDetailRoute,
     ] = await Promise.all([
       source("apps/merchant/src/routes/index.tsx"),
       source("apps/merchant/src/lib/event-product-publishing.ts"),
       source("apps/merchant/src/components/OrganizerEventMarketPanel.tsx"),
-      source("apps/merchant/src/routes/events.tsx"),
+      source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
       source("apps/merchant/src/routes/events/$collectionRef.tsx"),
     ])
 
@@ -94,9 +94,12 @@ describe("authenticated account profile and storefront read propagation", () => 
     expect(eventDetailRoute).toContain(
       'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
-    expect(eventDetailRoute).toContain(
-      "authenticatedPubkey={authenticatedPubkey}"
+    expect(eventDetailRoute).toMatch(
+      /getEventMarket\(\{[\s\S]{0,200}authenticatedPubkey,[\s\S]{0,160}shouldContinue:/
     )
-    expect(eventsRoute).toContain("authenticatedPubkey: string | null")
+    expect(manager).toContain(
+      'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
+    )
+    expect(manager).toContain("authenticatedPubkey={authenticatedPubkey}")
   })
 })

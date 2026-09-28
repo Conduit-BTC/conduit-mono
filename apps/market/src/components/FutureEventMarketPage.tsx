@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ExternalLink, RefreshCw } from "lucide-react"
 import { useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
@@ -9,6 +9,7 @@ import {
   encodeEventMarketNaddr,
   inferConduitAppOrigin,
   readEventMarketCatalog,
+  useAuth,
   useConduitSession,
   useProfile,
   type EventMarketProductReadResult,
@@ -104,8 +105,14 @@ export function FutureEventMarketPage({
   onMerchantChange,
 }: FutureEventMarketPageProps) {
   const session = useConduitSession()
+  const { accountPubkey, pubkey, signerReadiness, authGeneration } = useAuth()
   const authenticatedPubkey =
-    session.mode === "signed_in" ? session.pubkey : null
+    signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const shouldContinue = () => authGenerationRef.current === authGeneration
   const [search, setSearch] = useState("")
   const cart = useCart()
   const navigate = useNavigate()
@@ -116,9 +123,15 @@ export function FutureEventMarketPage({
       reference,
       session.relayScope,
       authenticatedPubkey,
+      authGeneration,
     ],
     queryFn: ({ signal }) =>
-      readEventMarketCatalog({ reference, authenticatedPubkey, signal }),
+      readEventMarketCatalog({
+        reference,
+        authenticatedPubkey,
+        signal,
+        shouldContinue: () => !signal.aborted && shouldContinue(),
+      }),
     enabled: session.relaySettingsReady,
     retry: false,
   })
@@ -131,6 +144,7 @@ export function FutureEventMarketPage({
   const organizerProfile = useProfile(organizerPubkey, {
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue,
     maxUnresolvedRefetches: 2,
   }).data
   const merchantPubkeys = useMemo(
@@ -140,6 +154,7 @@ export function FutureEventMarketPage({
   const identities = useMerchantIdentities({
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
+    shouldContinue,
     allMerchantPubkeys: merchantPubkeys,
     visibleMerchantPubkeys: merchantPubkeys,
     relayHintsByPubkey: {},
