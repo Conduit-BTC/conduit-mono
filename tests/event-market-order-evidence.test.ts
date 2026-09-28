@@ -357,6 +357,134 @@ describe("future Event Market private physical handoff", () => {
     product,
   ] as SignedPublicNostrEvent[]
 
+  for (const visibility of ["hidden", "private"]) {
+    it(`rejects the exact signed ${visibility} product before payment or release`, () => {
+      const hiddenProduct = finalizeEvent(
+        {
+          kind: product.kind,
+          content: product.content,
+          created_at: product.created_at,
+          tags: [...product.tags, ["visibility", visibility]],
+        },
+        merchantSecret
+      )
+      const hiddenOrder = {
+        ...handoffOrder,
+        items: handoffOrder.items.map((item) => ({
+          ...item,
+          fulfillment:
+            item.fulfillment?.type === "event_market_pickup"
+              ? {
+                  ...item.fulfillment,
+                  product: {
+                    ...item.fulfillment.product,
+                    eventId: hiddenProduct.id,
+                    signedEvent: hiddenProduct,
+                  },
+                }
+              : item.fulfillment,
+        })),
+      }
+      expect(
+        verifyEventMarketOrderEvidence({ order: hiddenOrder, events: [] })
+          .status
+      ).toBe("invalid")
+      expect(() =>
+        buildFutureMarketReadyReceipt({
+          order: hiddenOrder,
+          signedOrderEvidence: [],
+          paymentAuthenticated: true,
+          releaseConfirmed: true,
+        })
+      ).toThrow()
+    })
+  }
+
+  it("rejects a positive signed fiat price forged into a free order", () => {
+    const forged = {
+      ...handoffOrder,
+      subtotal: 0,
+      items: handoffOrder.items.map((item) => ({
+        ...item,
+        priceAtPurchase: 0,
+      })),
+    }
+    expect(orderSchema.safeParse(forged).success).toBe(false)
+    expect(
+      verifyEventMarketOrderEvidence({ order: forged, events: [] }).status
+    ).toBe("invalid")
+    expect(() =>
+      buildFutureMarketReadyReceipt({
+        order: forged,
+        signedOrderEvidence: [],
+        paymentAuthenticated: false,
+        releaseConfirmed: true,
+      })
+    ).toThrow()
+  })
+
+  it("rejects a subtotal that does not equal the quantity-adjusted line prices", () => {
+    const forged = {
+      ...handoffOrder,
+      subtotal: 1200,
+      items: handoffOrder.items.map((item) => ({ ...item, quantity: 2 })),
+    }
+    expect(orderSchema.safeParse(forged).success).toBe(false)
+    expect(
+      verifyEventMarketOrderEvidence({ order: forged, events: [] }).status
+    ).toBe("invalid")
+    expect(() =>
+      buildFutureMarketReadyReceipt({
+        order: forged,
+        signedOrderEvidence: [],
+        paymentAuthenticated: true,
+        releaseConfirmed: true,
+      })
+    ).toThrow()
+  })
+
+  it("permits an exact signed zero-price product without payment evidence", () => {
+    const zeroProduct = finalizeEvent(
+      {
+        kind: product.kind,
+        content: product.content,
+        created_at: product.created_at,
+        tags: product.tags.map((tag) =>
+          tag[0] === "price" ? ["price", "0", "SAT"] : tag
+        ),
+      },
+      merchantSecret
+    )
+    const zeroOrder = orderSchema.parse({
+      ...handoffOrder,
+      subtotal: 0,
+      items: handoffOrder.items.map((item) => ({
+        ...item,
+        priceAtPurchase: 0,
+        sourcePrice: { amount: 0, currency: "SAT", normalizedCurrency: "SAT" },
+        fulfillment:
+          item.fulfillment?.type === "event_market_pickup"
+            ? {
+                ...item.fulfillment,
+                product: {
+                  ...item.fulfillment.product,
+                  eventId: zeroProduct.id,
+                  signedEvent: zeroProduct,
+                },
+              }
+            : item.fulfillment,
+      })),
+    })
+    expect(
+      buildFutureMarketReadyReceipt({
+        order: zeroOrder,
+        signedOrderEvidence: [],
+        paymentAuthenticated: false,
+        releaseConfirmed: true,
+      }).releaseAuthorized
+    ).toBe(true)
+  })
+
   it("requires exact historical signed terms and paid merchant release, then redacts organizer payload", () => {
     expect(() =>
       buildFutureMarketReadyReceipt({

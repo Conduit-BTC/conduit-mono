@@ -164,6 +164,7 @@ export function verifyEventMarketOrderEvidence(input: {
       product.id !== item.productId ||
       product.pubkey !== order.merchantPubkey ||
       product.format !== "physical" ||
+      product.visibility !== "public" ||
       (product.sourcePrice?.amount ?? product.price) !==
         (item.sourcePrice?.amount ?? item.priceAtPurchase) ||
       normalizeCurrencyIdentity(

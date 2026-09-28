@@ -822,6 +822,10 @@ export const orderItemSchema = z
         !signedTerms ||
         signedTerms.priceStatus !== "resolved" ||
         signedTerms.format !== "physical" ||
+        item.currency !== "SATS" ||
+        !Number.isSafeInteger(item.priceAtPurchase) ||
+        ((signedTerms.sourcePrice?.amount ?? 0) > 0 &&
+          item.priceAtPurchase === 0) ||
         (item.title !== undefined && item.title !== signedTerms.title) ||
         !item.sourcePrice ||
         item.sourcePrice.amount !== signedTerms.sourcePrice?.amount ||
@@ -996,6 +1000,22 @@ export const orderSchema = z
       }
     }
     if (firstFuture?.type === "event_market_pickup") {
+      const subtotal = order.items.reduce(
+        (total, item) => total + item.priceAtPurchase * item.quantity,
+        0
+      )
+      if (
+        order.currency !== "SATS" ||
+        !Number.isSafeInteger(subtotal) ||
+        order.subtotal !== subtotal
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["subtotal"],
+          message:
+            "Event Market subtotal must equal the exact satoshi line totals.",
+        })
+      }
       const eventIds = new Set([
         firstFuture.market.eventId,
         firstFuture.calendar.eventId,

@@ -387,8 +387,8 @@ describe("future Event Market cart and order snapshots", () => {
       title: source.title,
       format: "physical",
       quantity: 1,
-      priceAtPurchase: 12,
-      currency: "USD",
+      priceAtPurchase: 1200,
+      currency: "SATS",
       sourcePrice: { amount: 12, currency: "USD", normalizedCurrency: "USD" },
       fulfillment: source.fulfillment,
     })
