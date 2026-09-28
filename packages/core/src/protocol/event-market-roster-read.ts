@@ -585,11 +585,9 @@ export async function readEventMarketRoster(
       : "eventId" in resolution
         ? resolution.eventId
         : null
-  const stale =
-    (selectedId !== null && !liveIds.has(selectedId)) ||
-    retainedEvents.some(
-      (event) => event.kind === EVENT_KINDS.DELETION && !liveIds.has(event.id)
-    )
+  // Signed tombstones remain authoritative in the reducer without live
+  // redelivery; freshness belongs to the selected current revision.
+  const stale = selectedId !== null && !liveIds.has(selectedId)
   const coverage: EventMarketRosterReadCoverage = stale
     ? "stale"
     : relayStates.length === 0 ||
@@ -962,14 +960,9 @@ export async function readEventMarketRoster(
           { createdAt: right.created_at, eventId: right.id }
         )
     )[0]
-  const calendarStale =
-    Boolean(
-      latestCalendarRevision && !liveCalendarIds.has(latestCalendarRevision.id)
-    ) ||
-    calendarRetained.some(
-      (event) =>
-        event.kind === EVENT_KINDS.DELETION && !liveCalendarIds.has(event.id)
-    )
+  const calendarStale = Boolean(
+    latestCalendarRevision && !liveCalendarIds.has(latestCalendarRevision.id)
+  )
   const calendarCoverage: EventMarketRosterReadCoverage = calendarStale
     ? "stale"
     : calendarRelayStates.length === 0 ||
@@ -1199,11 +1192,7 @@ export async function readEventMarketProduct(
     authorization: authorization.resolution,
   })
   const liveIds = new Set(live.map((event) => event.id))
-  const stale =
-    (knownRevisions[0] && !liveIds.has(knownRevisions[0].id)) ||
-    cached.some(
-      (event) => event.kind === EVENT_KINDS.DELETION && !liveIds.has(event.id)
-    )
+  const stale = knownRevisions[0] && !liveIds.has(knownRevisions[0].id)
   const relayStates = reads.flatMap((read) => read.relays)
   const coverage: EventMarketRosterReadCoverage = stale
     ? "stale"
@@ -1260,9 +1249,37 @@ export async function readEventMarketCatalog(
   const market = marketRead.resolution.market
   const approved = new Set(market.merchants.map((row) => row.pubkey))
   const candidates = new Set<string>()
+  const liveCandidates = new Set<string>()
   let incomplete =
     marketRead.coverage !== "complete" ||
     marketRead.calendarCoverage !== "complete"
+  const addCandidate = (event: SignedPublicNostrEvent, live = false) => {
+    if (
+      event.kind !== EVENT_KINDS.PRODUCT ||
+      !approved.has(event.pubkey) ||
+      !isValidSignedPublicNostrEvent(event) ||
+      !event.tags.some((tag) => tag[0] === "a" && tag[1] === market.coordinate)
+    )
+      return
+    const dTags = event.tags.filter((tag) => tag[0] === "d")
+    if (dTags.length !== 1 || !dTags[0]?.[1]) return
+    const coordinate = `${EVENT_KINDS.PRODUCT}:${event.pubkey}:${dTags[0][1]}`
+    if (candidates.size >= 256 && !candidates.has(coordinate)) {
+      incomplete = true
+      return
+    }
+    candidates.add(coordinate)
+    if (live) liveCandidates.add(coordinate)
+  }
+  // Retained tags are candidates only; exact signed heads and deletions still
+  // decide visibility, freshness, and whether commerce is actionable.
+  try {
+    for (const event of await dependencies.load(market.coordinate))
+      addCandidate(event)
+  } catch (error) {
+    if (input.signal?.aborted || input.shouldContinue?.() === false) throw error
+    incomplete = true
+  }
   const filters = getEventMarketCandidateFilters(market)
   // One author per read gives each merchant's NIP-65 outbox a chance to contribute.
   // A capped result is incomplete evidence, never proof that other products are absent.
@@ -1306,22 +1323,12 @@ export async function readEventMarketCatalog(
       )
         incomplete = true
       for (const event of result.events) {
-        if (
-          event.kind !== EVENT_KINDS.PRODUCT ||
-          event.pubkey !== author ||
-          !approved.has(author) ||
-          !isValidSignedPublicNostrEvent(event) ||
-          !event.tags.some(
-            (tag) => tag[0] === "a" && tag[1] === market.coordinate
-          )
-        )
-          continue
-        const dTags = event.tags.filter((tag) => tag[0] === "d")
-        if (dTags.length !== 1 || !dTags[0]?.[1]) continue
-        candidates.add(`${EVENT_KINDS.PRODUCT}:${author}:${dTags[0][1]}`)
+        if (event.pubkey === author) addCandidate(event, true)
       }
     }
   }
+  if ([...candidates].some((coordinate) => !liveCandidates.has(coordinate)))
+    incomplete = true
   const products: EventMarketProductReadResult[] = []
   for (const productCoordinate of candidates) {
     const read = await readEventMarketProduct(

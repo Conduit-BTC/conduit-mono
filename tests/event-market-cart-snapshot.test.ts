@@ -288,6 +288,99 @@ describe("future Event Market cart and order snapshots", () => {
     expect(fulfillment.market.eventId).not.toBe(laterMarket.market.eventId)
   })
 
+  for (const [label, tags] of [
+    ["missing title", signedCalendar.tags.filter((tag) => tag[0] !== "title")],
+    ["missing day bucket", signedCalendar.tags.filter((tag) => tag[0] !== "D")],
+    [
+      "incorrect day bucket",
+      signedCalendar.tags.map((tag) => (tag[0] === "D" ? ["D", "1"] : tag)),
+    ],
+    [
+      "invalid start timezone",
+      [...signedCalendar.tags, ["start_tzid", "Invalid/Zone"]],
+    ],
+    [
+      "invalid end timezone",
+      [...signedCalendar.tags, ["end_tzid", "Invalid/Zone"]],
+    ],
+  ] as const) {
+    it(`rejects an exact signed calendar with ${label}`, () => {
+      const source = item("soap")
+      const fulfillment = source.fulfillment
+      if (fulfillment?.type !== "event_market_pickup")
+        throw new Error("Missing Event Market pickup")
+      const invalidCalendar = finalizeEvent(
+        { ...signedCalendar, tags: tags.map((tag) => [...tag]) },
+        organizerSecret
+      )
+      fulfillment.calendar = {
+        ...fulfillment.calendar,
+        eventId: invalidCalendar.id,
+        signedEvent: invalidCalendar,
+      }
+      expect(orderSchema.safeParse(order([source])).success).toBe(false)
+    })
+  }
+
+  it("round-trips an exact signed date-based calendar", () => {
+    const source = item("soap")
+    const fulfillment = source.fulfillment
+    if (fulfillment?.type !== "event_market_pickup")
+      throw new Error("Missing Event Market pickup")
+    const coordinate = `31922:${organizer}:fair-date`
+    const calendar = finalizeEvent(
+      {
+        kind: 31922,
+        created_at: 100,
+        tags: [
+          ["d", "fair-date"],
+          ["title", "Fair"],
+          ["start", "2026-09-27"],
+          ["end", "2026-09-28"],
+        ],
+        content: "",
+      },
+      organizerSecret
+    )
+    const market = finalizeEvent(
+      {
+        ...buildEventMarketRosterDraft({
+          dTag: "fair-market",
+          organizerPubkey: organizer,
+          calendarCoordinate: coordinate,
+          state: "open",
+          merchants: [
+            {
+              pubkey: merchant,
+              mode: "merchant_present",
+              assignment: "Booth 12",
+            },
+          ],
+        }),
+        created_at: 100,
+      },
+      organizerSecret
+    )
+    fulfillment.market = {
+      ...fulfillment.market,
+      eventId: market.id,
+      signedEvent: market,
+    }
+    fulfillment.calendar = {
+      coordinate,
+      eventId: calendar.id,
+      createdAt: 100_000,
+      start: Date.parse("2026-09-27T00:00:00Z"),
+      end: Date.parse("2026-09-28T00:00:00Z"),
+      signedEvent: calendar,
+    }
+    const accepted = orderSchema.parse(order([source]))
+    expect(accepted.items[0]?.fulfillment).toEqual(
+      JSON.parse(JSON.stringify(fulfillment))
+    )
+    expect(orderSchema.parse(accepted)).toEqual(accepted)
+  })
+
   it("keeps the accepted signed authorization history in historical orders", () => {
     const created = orderSchema.parse(order())
     const fulfillment = created.items[0]?.fulfillment
