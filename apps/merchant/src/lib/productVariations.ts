@@ -1399,6 +1399,7 @@ function buildVariationProduct(
     images: buildVariationImages(row, existing, parent),
     format: row.format === "inherit" ? parent.format : row.format,
     visibility: parent.visibility,
+    eventMarketRefs: parent.eventMarketRefs,
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
   }
