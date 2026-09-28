@@ -1,11 +1,29 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  expandSmokeMatrix,
   parseChangedPaths,
   selectSmokeShards,
 } from "../scripts/ci/select_smoke_shards"
 
 describe("path-aware smoke shard selection", () => {
+  it("splits Market and Merchant into required jobs without changing area selection", () => {
+    expect(expandSmokeMatrix(["market", "merchant", "commerce"])).toEqual([
+      { id: "market-1", area: "market", shard: "1/3" },
+      { id: "market-2", area: "market", shard: "2/3" },
+      { id: "market-3", area: "market", shard: "3/3" },
+      { id: "merchant-1", area: "merchant", shard: "1/2" },
+      { id: "merchant-2", area: "merchant", shard: "2/2" },
+      { id: "commerce", area: "commerce", shard: "" },
+    ])
+    expect(expandSmokeMatrix([])).toEqual([
+      { id: "none", area: "none", shard: "" },
+    ])
+    expect(expandSmokeMatrix(["merchant"])).toEqual([
+      { id: "merchant-1", area: "merchant", shard: "1/2" },
+      { id: "merchant-2", area: "merchant", shard: "2/2" },
+    ])
+  })
   it("selects only the changed app for app-local runtime changes", () => {
     expect(selectSmokeShards(["apps/market/src/routes/profile.tsx"])).toEqual([
       "market",
@@ -53,6 +71,8 @@ describe("path-aware smoke shard selection", () => {
       "scripts/ci/select_smoke_shards.ts",
       "scripts/ci/validate_playwright_smoke_areas.ts",
       "scripts/dev/run_playwright_web_server.ts",
+      "scripts/dev/run_playwright_e2e.ts",
+      "tests/run-playwright-e2e.test.ts",
       "scripts/vite/build_info.ts",
       "tests/agent-review-handoff.test.ts",
       "tests/playwright-smoke-areas.test.ts",

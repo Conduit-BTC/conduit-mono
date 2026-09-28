@@ -55,9 +55,9 @@ Transport eligibility is authority-scoped. For an authenticated owner's own
 account activity, a relay that the owner explicitly selects in Network, whether
 newly added or already present in that account's Network configuration, may use
 `ws://` or `wss://`. A `ws://` selection remains eligible for Review and Save,
-but the shared UI labels it **Unencrypted connection** and explains that
-transport encryption is absent and the relay should be used only when the owner
-controls it or explicitly trusts the relay and network path.
+but the owner is informed before commitment that transport encryption is absent
+and the relay should be used only when the owner controls it or explicitly
+trusts the relay and network path.
 
 That permission is not transferable through discovery. Conduit must never
 automatically contact a `ws://` URL learned from NIP-11 metadata, event hints,
@@ -156,10 +156,10 @@ persistence and lifecycle.
 
 ## Presentation and Local Ordering
 
-The normative two-section presentation is defined in the
-[shared Network UI contract](../specs/relay/conduit_relay_architecture.md#shared-network-ui-contract).
-In particular, a valid owner `kind:10050`-only relay stays visible and editable
-even while personal NIP-65 routing is off.
+The account-level authority and owner-information requirements are defined in
+the [shared Network contract](../specs/relay/conduit_relay_architecture.md#shared-network-ui-contract).
+A valid owner `kind:10050`-only relay remains available for inspection and
+editing even while personal NIP-65 routing is off.
 
 Conduit first groups rows using:
 
@@ -251,15 +251,16 @@ Removing a relay from the whole setup removes it from every applicable role in
 the desired projection and durably records a causal local exclusion. Only a
 frontier whose signed semantics change produces a replacement event. The action
 stops reads and writes through that URL immediately after every required exact
-signed checkpoint is staged, before ACK or readback. Its concise proceed/cancel
-warning states that stale clients may still send there and those messages can be
-missed. Cancel or a missing required signature changes nothing and removes no
-recovery behavior.
+signed checkpoint is staged, before ACK or readback. Before the owner accepts,
+they must understand that stale clients may still send there and those messages
+can be missed. Cancel or a missing required signature changes nothing and
+removes no recovery behavior.
 
 The desired configuration must retain at least one Publish relay. One Publish
-relay is valid but receives a redundancy warning. A reviewed change may not
-eliminate the last usable Private inbox without selecting a replacement. The UI
-gives one direct replacement instruction rather than a multi-step impact review.
+relay is valid, but the owner must understand the reduced redundancy before a
+relevant change. A reviewed change may not eliminate the last usable Private
+inbox without selecting a replacement. The owner receives an actionable
+replacement path.
 An account that already has no usable Private inbox may still change Read or
 Publish roles. Removing a current Private inbox always requires selecting a
 current replacement, even when a different recovery-only read route survives.

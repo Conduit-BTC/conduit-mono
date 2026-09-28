@@ -100,6 +100,7 @@ import { normalizeEventActorPubkey } from "../lib/event-actor-identity"
 import { OrderCardScroller } from "../components/OrderCardScroller"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import { OrderItemsCard } from "../components/OrderItemsCard"
+import { MerchantProjectTip } from "../components/MerchantProjectTip"
 import { ShopperTrustCard } from "../components/ShopperTrustCard"
 import {
   getMerchantBuyerDisplayName,
@@ -3013,6 +3014,17 @@ function OrdersWorkspace() {
                       </div>
                     </section>
 
+                    {merchantOrderState.status === "complete" && (
+                      <section className={panelCard}>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-sm text-[var(--text-secondary)]">
+                            Glad you fulfilled this order? Support the project.
+                          </p>
+                          <MerchantProjectTip className="min-h-11 text-primary-500" />
+                        </div>
+                      </section>
+                    )}
+
                     <section className={panelCard}>
                       <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                         {isGuestOrder ? "Guest order" : "Actions"}
@@ -4048,17 +4060,27 @@ function OrdersWorkspace() {
                         </section>
                       )}
 
-                    {orderSummary.guestContact && (
-                      <section className={panelCard}>
-                        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                          Guest contact
-                        </h3>
-                        <div className="mt-3 space-y-1 text-sm text-[var(--text-secondary)]">
-                          <div>Phone: {orderSummary.guestContact.phone}</div>
-                          <div>Email: {orderSummary.guestContact.email}</div>
-                        </div>
-                      </section>
-                    )}
+                    {orderSummary.guestContact &&
+                      (orderSummary.guestContact.phone ||
+                        orderSummary.guestContact.email) && (
+                        <section className={panelCard}>
+                          <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                            Guest contact
+                          </h3>
+                          <div className="mt-3 space-y-1 text-sm text-[var(--text-secondary)]">
+                            {orderSummary.guestContact.phone && (
+                              <div>
+                                Phone: {orderSummary.guestContact.phone}
+                              </div>
+                            )}
+                            {orderSummary.guestContact.email && (
+                              <div>
+                                Email: {orderSummary.guestContact.email}
+                              </div>
+                            )}
+                          </div>
+                        </section>
+                      )}
 
                     {orderSummary.orderNote && (
                       <section className={panelCard}>

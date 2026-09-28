@@ -98,13 +98,13 @@ jobs:
 
       - name: Refresh CODEX_AUTH_JSON
         if: env.AUTH_SECRET_NAME == 'CODEX_AUTH_JSON'
-        uses: sudden-network/agent@v1.15.0
+        uses: sudden-network/agent@370553dd1ac28fdb04024a3287e47adc87506f74 # v1.15.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           agent_auth_file_secret_name: CODEX_AUTH_JSON
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/medium
+          model: gpt-6-sol/high/fast
           resume: false
           prompt: |
             Refresh the injected Codex auth file if the CLI requires a token
@@ -115,13 +115,13 @@ jobs:
 
       - name: Refresh SUDDEN_AGENT_AUTH_FILE
         if: env.AUTH_SECRET_NAME == 'SUDDEN_AGENT_AUTH_FILE'
-        uses: sudden-network/agent@v1.15.0
+        uses: sudden-network/agent@370553dd1ac28fdb04024a3287e47adc87506f74 # v1.15.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           agent_auth_file_secret_name: SUDDEN_AGENT_AUTH_FILE
           github_token: ${{ steps.app_token.outputs.token }}
           github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
-          model: gpt-5.6-sol/medium
+          model: gpt-6-sol/high/fast
           resume: false
           prompt: |
             Refresh the injected Codex auth file if the CLI requires a token

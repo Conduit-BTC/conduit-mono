@@ -1,5 +1,5 @@
 import { useId, useState } from "react"
-import { Copy, ExternalLink } from "lucide-react"
+import { Copy, ExternalLink, QrCode } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
 import {
   DEFAULT_PRICING_RATE_MAX_AGE_MS,
@@ -83,15 +83,9 @@ export function InvoicePayment({
           </p>
         </div>
       )}
-      {cashAppUrl && (
-        <p className="text-pretty text-xs leading-5 text-[var(--text-secondary)]">
-          Cash App shows your final dollar amount before you pay. Cash balance
-          available for eligible accounts.
-        </p>
-      )}
-      <div className="grid min-w-0 gap-4 sm:grid-cols-[180px_minmax(0,1fr)]">
-        <div className="min-w-0 space-y-3">
-          {cashAppUrl && (
+      <div className="min-w-0 space-y-3">
+        {cashAppUrl && (
+          <>
             <Button
               asChild
               className="h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90"
@@ -114,78 +108,58 @@ export function InvoicePayment({
                 <ExternalLink className="h-4 w-4" />
               </a>
             </Button>
-          )}
-          <Button asChild variant="outline" className="h-12 w-full">
-            <a
-              href={`lightning:${bolt11}`}
-              onClick={(event) => {
-                if (!onBeforeInvoiceUse()) event.preventDefault()
-              }}
-            >
-              <ExternalLink className="h-4 w-4" />
-              Open Lightning wallet
-            </a>
-          </Button>
+            <details className="text-xs leading-5 text-[var(--text-secondary)]">
+              <summary className="cursor-pointer py-1">
+                Cash App didn’t open?
+              </summary>
+              <p>
+                Try Open Lightning wallet or copy the invoice. Cash App must be
+                installed and Lightning payments available for your account.
+              </p>
+            </details>
+          </>
+        )}
+        <Button asChild variant="outline" className="h-12 w-full">
+          <a
+            href={`lightning:${bolt11}`}
+            onClick={(event) => {
+              if (!onBeforeInvoiceUse()) event.preventDefault()
+            }}
+          >
+            <ExternalLink className="h-4 w-4" />
+            Open Lightning wallet
+          </a>
+        </Button>
+        <div className="grid grid-cols-2 gap-2">
           <Button
-            variant="ghost"
-            className="h-11 w-full"
+            variant="outline"
+            className="h-11 min-w-0 px-3"
             onClick={() => void copyInvoice()}
           >
             <Copy className="h-4 w-4" />
             Copy invoice
           </Button>
-          {copyStatus && (
-            <p
-              role="status"
-              className="text-pretty text-xs text-[var(--text-secondary)]"
-            >
-              {copyStatus}
-            </p>
-          )}
-          {cashAppUrl && (
-            <details className="text-xs leading-5 text-[var(--text-secondary)]">
-              <summary className="cursor-pointer py-2">
-                Cash App didn’t open?
-              </summary>
-              <p>
-                Return to this tab and try Open Lightning wallet or Copy
-                invoice. Cash App must be installed and payments available for
-                your account.
-              </p>
-            </details>
-          )}
-        </div>
-        <div className="min-w-0 text-center sm:order-first">
-          <div className="mb-3 hidden sm:block">
-            {cashAppUrl && (
-              <div className="mb-2 flex items-center justify-center gap-2 font-semibold">
-                <img
-                  src={cashAppLogo}
-                  alt=""
-                  className="h-8 w-8 rounded-lg bg-[var(--cash-app-green)] p-1"
-                />
-                Cash App
-              </div>
-            )}
-            <p className="text-pretty text-sm text-[var(--text-secondary)]">
-              {cashAppUrl
-                ? "Scan invoice to pay with Cash App or your preferred Lightning wallet."
-                : "Scan invoice with your Lightning wallet."}
-            </p>
-          </div>
           <Button
-            variant="ghost"
-            className="h-11 sm:hidden"
+            variant="outline"
+            className="h-11 min-w-0 px-3"
             aria-expanded={showQr}
             aria-controls={qrId}
             onClick={() => setShowQr(!showQr)}
           >
+            <QrCode className="h-4 w-4" />
             {showQr ? "Hide QR code" : "Show QR code"}
           </Button>
-          <div
-            id={qrId}
-            className={`${showQr ? "block" : "hidden"} mx-auto w-fit rounded-xl bg-white p-3 sm:block`}
+        </div>
+        {copyStatus && (
+          <p
+            role="status"
+            className="text-pretty text-xs text-[var(--text-secondary)]"
           >
+            {copyStatus}
+          </p>
+        )}
+        {showQr && (
+          <div id={qrId} className="mx-auto w-fit rounded-xl bg-white p-3">
             <QRCodeSVG
               value={bolt11}
               size={156}
@@ -193,7 +167,7 @@ export function InvoicePayment({
               title="Lightning invoice"
             />
           </div>
-        </div>
+        )}
       </div>
       <details className="border-t border-[var(--border)] pt-2 text-sm text-[var(--text-secondary)]">
         <summary className="cursor-pointer py-2">Payment details</summary>

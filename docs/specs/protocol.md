@@ -133,9 +133,10 @@ The exception is constrained as follows:
   durable order history.
 - Merchant clients must treat `buyerIdentityKind: "guest_ephemeral"` as
   outbound-only and use the structured recovery channel required by the exact
-  checkout flow for invoices, fulfillment updates, and other follow-up. Pickup
-  requires at least one of email or phone; shipping retains its stricter
-  address/contact contract.
+  checkout flow for invoices, fulfillment updates, and other follow-up. New
+  guest orders require both email and phone; shipping additionally requires its
+  address contract. Historical pickup orders with one contact method remain
+  readable but do not define the new-order requirement.
 - Same-session recovery means local invoice/payment-report continuity only. It
   does not promise merchant status recovery, a private conversation, or durable
   order history.
@@ -148,27 +149,42 @@ The exception is constrained as follows:
 
 The Anon Conduit Shopper public zap signer is the only approved server-side
 private-key exception in this repository. It exists to sign NIP-57 zap request
-events (`kind:9734`) only for checkout flows where a merchant explicitly allows
-public anonymous zaps.
+events (`kind:9734`) for checkout flows where a merchant explicitly allows
+public anonymous zaps, and for the Conduit.Market project tip described below.
 
 This exception is constrained as follows:
 
 - The private key must live only in the Cloudflare Worker runtime secret for
   `apps/anon-zap-signer`; it must not be exposed through `VITE_*`, Pages client
   env vars, logs, telemetry, PR comments, or tracked files.
-- The Worker may sign only validated public zap request drafts that are bound to
-  an authorized checkout session and a merchant/product zap policy that
-  explicitly permits anonymous public zaps. Request tags and content must exclude
+- The Worker may sign only validated public zap request drafts. Checkout drafts
+  are bound to an authorized checkout session and a merchant/product zap policy
+  that explicitly permits anonymous public zaps. Project-tip drafts are created
+  by the trusted server boundary with recipient pubkey
+  `9d92077c5e35af76f7b1cd84738000b7bafb43d20b0a26c18fe29fa838d27146`,
+  Lightning address `conduithodlings@strike.me`, fixed nonempty public message, and a
+  server-checked whole-sat amount of at least 100 sats within the live LNURL
+  provider range. They cannot reference a merchant, product, cart, or order,
+  and the browser cannot choose their recipient, endpoint, tags, or content.
+  Request tags and content must exclude
   order identifiers, cart contents, shipping/contact data, invoices, NWC URIs,
   plaintext messages, or other private checkout data.
-- The trusted server boundary derives the anonymous zap amount from current,
+  Project tips are separate from purchases and do not change order state.
+- The Pages-to-Worker signing authorization distinguishes project tips from
+  checkout. A project-tip authorization carries a fresh request nonce and the
+  fixed tip recipient, amount, and LNURL; it cannot be represented as a
+  checkout session or merchant-policy authorization. The Worker independently
+  rejects a project-tip draft unless its kind, fixed public message, exact
+  recipient, whole-sat minimum, Lightning-address LNURL, and allowed tags
+  match this purpose. Existing checkout authorizations remain checkout-only.
+- For checkout, the trusted server boundary derives the anonymous zap amount from current,
   signed product listings and a fresh server-owned conversion quote when fiat
   pricing is present. Browser-provided totals are not authorization evidence.
-- Anonymous request content is server-owned and limited to copy such as
+- Anonymous checkout request content is server-owned and limited to copy such as
   `Zapped out 1 item at https://shop.conduit.market/` or
   `Zapped out 4 items at https://shop.conduit.market/`, using the actual summed
   item quantity. Merchant `custom` policy never makes anonymous content
-  shopper-editable.
+  shopper-editable. The project-tip message is also server-owned and nonempty.
 - Before exposing or paying a NIP-57 invoice, clients must verify that its
   BOLT11 `h` tag equals SHA-256 of the exact signed kind-9734 JSON supplied to
   the LNURL callback. Missing, duplicate, malformed, or mismatched bindings
@@ -185,13 +201,13 @@ This exception is constrained as follows:
   requires its callback, receipt pubkey, amount range, and encoded LNURL to
   agree with the server-authorized request before signing or invoice creation.
   Provider metadata is not accepted from the authorization response. Public
-  receipt presentation uses a same-origin server authority check only during a
+  checkout receipt presentation uses a same-origin server authority check only during a
   bounded payment-time window, with egress restricted to exact operator-allowed
   LNURL hosts and no persistent provider cache. Historical mutable evidence,
   profile/provider rotation, and lookup failure are authority-unavailable, not
   invalid; neither outcome is presented as paid. Feed browsers must not contact
   receipt-selected wallet domains.
-- The authorization response includes the latest signed listing's public
+- The checkout authorization response includes the latest signed listing's public
   fulfillment format, shipping option identity, and country/postal rules.
   The browser evaluates the private destination locally against that current
   snapshot before signing; shipping/contact data is never sent to the signer.
@@ -323,19 +339,18 @@ Source relay URLs and encoded reference relay hints are client-side fetch hints:
 
 These hints may bias fanout for related reads such as merchant profile hydration, product detail refreshes, and order/message trust context. They do not replace the relay planner, NIP-65 handling, default relay policy, or user relay settings.
 
-Page-level ownership:
+Read ownership:
 
-- Market browse owns visible/background merchant profile hydration for product cards and store facets.
+- Market browse owns merchant profile hydration for discovered products and store facets.
 - Storefront and product detail routes can force a bounded profile retry because the user explicitly navigated to that merchant or listing.
 - Orders, messages, checkout, and merchant order surfaces should batch profile lookups and avoid per-row retry loops.
 - Deletion checks should not hide already available products while profile/social metadata is still hydrating.
 
-UX contract:
+Product availability contract:
 
-- show cached or progressively fetched products as soon as they are usable
-- show stable skeleton/pending states for merchant names and avatars while lookup is active
-- after bounded lookup attempts settle empty, show a final fallback such as `Store npub...` without pending animation
-- do not shift product grid layout when profile names, avatars, tag counts, or trust metadata hydrate
+- cached or progressively fetched products become usable without waiting for optional profile or trust hydration;
+- unresolved merchant identity remains distinguishable from confirmed identity, without implying a missing profile is still loading after bounded attempts settle;
+- optional hydration must not invalidate an already usable product or destabilize an in-progress buyer action.
 
 Implementation notes live in `docs/nips/` for compact agent preflight context. Canonical protocol behavior still comes from the public NIPs and GammaMarkets `market-spec`.
 
@@ -519,7 +534,7 @@ Current private-message code may continue to interoperate with NIP-44 v2, which 
 New secure messaging work should route sends and unwraps through a shared `@conduit/core` boundary that:
 
 - preserves NIP-44 v2 as the default for existing signers and peers
-- keeps NIP-44 v3 readiness visible without making it the default send path before source and capability gates are satisfied
+- retains NIP-44 v3 readiness in implementation planning without making it the default send path before source and capability gates are satisfied
 - keeps kind `10050` authoritative and applies the separately gated, bounded
   validated-kind-16 compatibility lane only under the rules above
 - rejects authenticated-context mismatches instead of returning plaintext when versioned encryption support adds that requirement
@@ -533,7 +548,8 @@ Conduit supports kind-4 NIP-04 only as a separate, bounded, read-only recovery
 lane. It never publishes kind `4`, never uses NIP-04 as a NIP-17 fallback, and
 never merges a legacy thread with a NIP-17 thread between the same participants.
 Conversation identity is transport-qualified. Legacy fetch, signer, and decrypt
-failures must remain visible and retryable, while logs and diagnostics remain
+failures must remain retryable and cannot silently produce a complete empty
+conversation for the affected person; logs and diagnostics remain
 content-free.
 
 ## Legacy Conduit Order Message Payload (CND-128)

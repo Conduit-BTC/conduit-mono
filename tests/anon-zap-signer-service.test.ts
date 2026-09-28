@@ -653,7 +653,11 @@ describe("Anon zap signer service", () => {
   })
 
   it("serves authenticated opaque rate-limit batches for the Pages service binding", async () => {
-    const keys = [`authorization:source:${"a".repeat(64)}`]
+    const keys = [
+      `authorization:source:${"a".repeat(64)}`,
+      "authorization:project-tip:global",
+      `authorization:project-tip:source:${"b".repeat(64)}`,
+    ]
     const bodyText = JSON.stringify({ scope: "authorization", keys })
     const auth = await signRequestBody(bodyText)
     const consumed: string[] = []
@@ -719,6 +723,10 @@ describe("Anon zap signer service", () => {
       {
         scope: "authorization",
         key: `authorization:source-recipient:${"a".repeat(64)}`,
+      },
+      {
+        scope: "authorization",
+        key: `authorization:project-tip:merchant:${"a".repeat(64)}`,
       },
       { scope: "authority", key: `authority:merchant:${"a".repeat(64)}` },
     ]) {

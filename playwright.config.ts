@@ -18,6 +18,7 @@ const configuredRelayPort =
 const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
 const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
 const smokeResultFile = process.env.PLAYWRIGHT_SMOKE_RESULT_FILE
+const smokeProgressFile = process.env.PLAYWRIGHT_SMOKE_PROGRESS_FILE
 const smokeEvidenceValues = {
   baseSha: process.env.PLAYWRIGHT_SMOKE_BASE_SHA ?? "",
   sourceHeadSha: process.env.PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA ?? "",
@@ -41,7 +42,7 @@ const ciReporters: ReporterDescription[] = smokeResultFile
   ? [
       [
         "./scripts/ci/playwright_smoke_reporter.ts",
-        { outputFile: smokeResultFile },
+        { outputFile: smokeResultFile, progressFile: smokeProgressFile },
       ],
     ]
   : [["null"]]
@@ -49,12 +50,22 @@ const mobileTestFiles = [
   "**/mobile-safari-baseline.playwright.ts",
   "**/event-sign-preview-mobile.playwright.ts",
 ]
-const productImageUploadCoverageFiles = [
+const responsiveCoverageFiles = [
+  "**/not-found.playwright.ts",
   "**/merchant-product-image-preview.playwright.ts",
 ]
 
 if (!new Set(["all", "market", "merchant", "commerce"]).has(smokeArea)) {
   throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
+}
+if (
+  smokeArea === "all" &&
+  !smokeDiscovery &&
+  !process.argv.includes("--list")
+) {
+  throw new Error(
+    "All-area Playwright execution needs separate network settings. Use bun run test:e2e, test:e2e:mobile, or test:e2e:webkit."
+  )
 }
 
 const relayWebServer = configuredRelayPort
@@ -117,12 +128,12 @@ export default defineConfig({
     },
     {
       name: "mobile-chromium",
-      testMatch: [...mobileTestFiles, ...productImageUploadCoverageFiles],
+      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles],
       use: { ...devices["Pixel 7"] },
     },
     {
       name: "mobile-webkit",
-      testMatch: [...mobileTestFiles, ...productImageUploadCoverageFiles],
+      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles],
       use: { ...devices["iPhone 13"] },
     },
   ],

@@ -34,6 +34,7 @@ export function RemoteSignerConnect({
   const [showOtherWays, setShowOtherWays] = useState(!hasAppChoices)
   const [activeTab, setActiveTab] = useState("qr")
   const [selectedApp, setSelectedApp] = useState<SignerApp | null>(null)
+  const [userStartedPairing, setUserStartedPairing] = useState(false)
   const [bunkerUri, setBunkerUri] = useState("")
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState(false)
@@ -55,6 +56,12 @@ export function RemoteSignerConnect({
   function cancel(): void {
     onCancelConnect()
     setSelectedApp(null)
+    setUserStartedPairing(false)
+  }
+
+  function startPairing(): Promise<void> | void {
+    setUserStartedPairing(true)
+    return onConnectNostrConnect()
   }
 
   function changeTab(tab: string): void {
@@ -108,7 +115,7 @@ export function RemoteSignerConnect({
     <Button
       type="button"
       onClick={() =>
-        void Promise.resolve(onConnectNostrConnect()).catch(() => undefined)
+        void Promise.resolve(startPairing()).catch(() => undefined)
       }
       disabled={connectDisabled}
       className={primaryClassName}
@@ -141,11 +148,13 @@ export function RemoteSignerConnect({
           nostrConnectUri={nostrConnectUri}
           selectedApp={selectedApp}
           onSelectApp={setSelectedApp}
-          startButton={startButton}
+          connectPending={connectPending}
+          connectDisabled={connectDisabled}
+          onStart={startPairing}
         />
       )}
 
-      {connectPending && (
+      {connectPending && (selectedApp || !hasAppChoices) && (
         <div
           role="status"
           className="rounded-xl border border-primary-500/25 bg-primary-500/10 p-3 text-sm leading-6 text-[var(--text-secondary)]"
@@ -153,9 +162,7 @@ export function RemoteSignerConnect({
           {selectedApp
             ? `Approve in ${appNames[selectedApp]}, then return to Conduit.`
             : nostrConnectUri
-              ? hasAppChoices
-                ? "Ready. Open your app to approve sign-in."
-                : "Scan or copy the connection link, then approve in your app."
+              ? "Scan or copy the connection link, then approve in your app."
               : activeTab === "bunker"
                 ? "Approve the connection in your app, then return here."
                 : "Preparing your connection…"}
@@ -219,16 +226,17 @@ export function RemoteSignerConnect({
       <p aria-live="polite" className="sr-only">
         {copied ? "Connection link copied to clipboard." : ""}
       </p>
-      {connectPending && (
-        <Button
-          type="button"
-          variant="ghost"
-          className="h-11 w-full"
-          onClick={cancel}
-        >
-          Cancel pairing
-        </Button>
-      )}
+      {connectPending &&
+        (selectedApp || userStartedPairing || !hasAppChoices) && (
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-11 w-full"
+            onClick={cancel}
+          >
+            Cancel pairing
+          </Button>
+        )}
     </div>
   )
 }

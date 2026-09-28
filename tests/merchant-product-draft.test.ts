@@ -87,6 +87,7 @@ function form(
     format: "physical",
     fulfillment: "ship",
     eventMarketReference: "",
+    futureEventMarketReference: "",
     eventHandoffMode: "merchant_handoff",
     merchantPickupTitle: "Merchant booth pickup",
     merchantPickupLocation: "",
@@ -257,6 +258,28 @@ describe("merchant product drafts", () => {
       fulfillment: "local_pickup",
       eventMarketReference: reference,
       eventHandoffMode: "merchant_handoff",
+    })
+  })
+
+  it("retains a future Event Market association independently of legacy pickup", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const reference = `30409:${"b".repeat(64)}:future-market`
+    expect(
+      saveProductDraft(
+        draftTarget,
+        form({
+          fulfillment: "ship",
+          eventMarketReference: "",
+          futureEventMarketReference: reference,
+        }),
+        storage
+      )
+    ).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      fulfillment: "ship",
+      eventMarketReference: "",
+      futureEventMarketReference: reference,
     })
   })
 

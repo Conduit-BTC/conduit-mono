@@ -54,6 +54,17 @@ const MERCHANT_SECRET = new Uint8Array(32).fill(4)
 const OTHER_MERCHANT_SECRET = new Uint8Array(32).fill(5)
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
+const originalCommerceRelayUrls = [...config.commerceRelayUrls]
+const testCommerceFallbackRelays = [
+  "wss://merchant-test-fallback.example",
+  "wss://relay.primal.net",
+]
+function addTestCommerceFallbackRelays(): void {
+  config.commerceRelayUrls = [
+    ...originalCommerceRelayUrls,
+    ...testCommerceFallbackRelays,
+  ]
+}
 const allowAllAccountNetworkLocalStateRepository = {
   get: async () => undefined,
 }
@@ -278,6 +289,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  config.commerceRelayUrls = [...originalCommerceRelayUrls]
   __resetCommerceTestOverrides()
   __resetRelayPublishTestOverrides()
   __resetNdkTestState()
@@ -472,6 +484,37 @@ describe("merchant product event delivery", () => {
     expect(product?.shippingOptionLaunchUnsupported).toBe(false)
   })
 
+  it("preserves signed Event Market references through the product cache", async () => {
+    const dTag = "cached-event-market-reference"
+    const marketReference = `30409:${"b".repeat(64)}:future-fair`
+    const draft = buildProductListingEventDraft({
+      product: {
+        ...makeProduct(dTag),
+        eventMarketRefs: [marketReference],
+      },
+      dTag,
+    })
+    const event = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: draft.kind,
+          created_at: Math.floor(NOW / 1000),
+          content: draft.content,
+          tags: draft.tags,
+        },
+        MERCHANT_SECRET
+      )
+    )
+    await cacheSignedProductListingEvent(event)
+    expect(cachedProducts[0]?.eventMarketRefs).toEqual([marketReference])
+    const product = await readProductAfterCacheReload(
+      structuredClone(cachedProducts),
+      dTag
+    )
+    expect(product?.eventMarketRefs).toEqual([marketReference])
+  })
+
   it("fails legacy or malformed referenced cache rows closed", async () => {
     const dTag = "cached-ambiguous-shipping-reference"
     const event = makeSignedProductEventWithShippingTags({
@@ -551,6 +594,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("does not infer owner relay authority from a signed product author", async () => {
+    addTestCommerceFallbackRelays()
     const authenticatedPubkeys: Array<string | null | undefined> = []
     const relayUrl = config.commerceRelayUrls[1]!
     __setRelayPublishTestOverrides({
@@ -593,6 +637,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("retains a fallback-only listing ACK for an immediate deletion", async () => {
+    addTestCommerceFallbackRelays()
     const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-single",
@@ -620,6 +665,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("preserves fallback provenance when its post-ACK cache write fails", async () => {
+    addTestCommerceFallbackRelays()
     const fallbackRelayUrl = config.commerceRelayUrls[1]!
     const event = makeSignedProductEvent({
       dTag: "fallback-volatile",
@@ -680,6 +726,7 @@ describe("merchant product event delivery", () => {
   })
 
   it("retains per-listing fallback ACKs outside the bundle intersection", async () => {
+    addTestCommerceFallbackRelays()
     const [firstFallbackRelayUrl, secondFallbackRelayUrl] =
       config.commerceRelayUrls
     const first = makeSignedProductEvent({

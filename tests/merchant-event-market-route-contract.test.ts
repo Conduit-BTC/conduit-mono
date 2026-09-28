@@ -165,7 +165,7 @@ describe("merchant organizer event market route", () => {
 
     expect(route).toContain("buildMerchantEventParticipationUrl")
     expect(route).toMatch(/inferConduitAppOrigin\(\s*"merchant"/)
-    expect(route).toContain("Sell at this event")
+    expect(route).toContain("Sell here")
   })
 
   it("keeps protocol behavior behind the Merchant adapter", async () => {
