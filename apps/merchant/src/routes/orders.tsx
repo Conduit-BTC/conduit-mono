@@ -4086,6 +4086,13 @@ function OrdersWorkspace() {
                                   ? "Release authorized"
                                   : "Not shared"}
                         </p>
+                        {futureAckQuery.data?.coverageDegraded && (
+                          <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">
+                            Private inbox coverage is incomplete. Verified
+                            handoff evidence is retained; other updates may
+                            still arrive.
+                          </p>
+                        )}
                         <div className="mt-3 flex flex-wrap gap-2">
                           {!futureReadyRecord &&
                             (merchantPaid || selectedOrderIsZeroCost) && (

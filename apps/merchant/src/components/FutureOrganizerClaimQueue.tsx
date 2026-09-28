@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query"
 import {
   formatEventMarketPickupClaimCode,
   getNdk,
+  getFutureMarketReceiptMerchandise,
+  isVerifiedEventMarketReceiptMerchandiseResolution,
   loadFutureMarketPrivateDeliveries,
   publishFutureMarketHandoffAck,
   readFutureMarketReadyReceipts,
@@ -68,10 +70,35 @@ function ClaimCard({
     accountPubkey === organizerPubkey &&
     pubkey === organizerPubkey &&
     signerReadiness === "ready"
+  const merchandiseQuery = useQuery({
+    queryKey: [
+      "future-market-claim-merchandise",
+      claim.receipt.id,
+      authGeneration,
+    ],
+    queryFn: ({ signal }) =>
+      getFutureMarketReceiptMerchandise({
+        receipt,
+        authenticatedPubkey: organizerPubkey,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && isAuthGenerationCurrent(authGeneration),
+      }),
+    enabled: signerReady,
+    // Verification belongs to the reader's object identity, including refreshes.
+    structuralSharing: false,
+    retry: false,
+    refetchInterval: 30_000,
+  })
+  const merchandise = signerReady ? merchandiseQuery.data : undefined
+  const merchandiseVerified =
+    merchandise !== undefined &&
+    isVerifiedEventMarketReceiptMerchandiseResolution(merchandise)
   const codeMatches = enteredCode.trim().toUpperCase() === code.toUpperCase()
   const canRelease =
     signerReady &&
-    !stale &&
+    merchandiseVerified &&
+    !merchandiseQuery.isFetching &&
     claim.state === "ready_for_pickup" &&
     codeMatches &&
     !storageError &&
@@ -81,7 +108,6 @@ function ClaimCard({
     if (
       !exactAck ||
       !signerReady ||
-      stale ||
       pending ||
       claim.state === "revoked" ||
       claim.state === "conflicting"
@@ -172,6 +198,53 @@ function ClaimCard({
         {receipt.items.length === 1 ? "item" : "items"} for this release. This
         claim carries physical handoff authority only.
       </p>
+      <ul aria-label="Items for this pickup claim" className="space-y-2">
+        {receipt.items.map((item, index) => {
+          const resolved = merchandise?.items[index]
+          return (
+            <li
+              key={item.product.eventId}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm"
+            >
+              <div className="flex flex-wrap justify-between gap-2">
+                <span className="font-medium">
+                  {resolved?.state === "verified"
+                    ? resolved.title
+                    : "Product details unavailable"}
+                </span>
+                <span>Qty {item.quantity}</span>
+              </div>
+              {item.selectedSpecifications?.length ? (
+                <p className="mt-1 text-[var(--text-secondary)]">
+                  {item.selectedSpecifications
+                    .map((entry) => `${entry.key}: ${entry.value}`)
+                    .join(" · ")}
+                </p>
+              ) : null}
+            </li>
+          )
+        })}
+      </ul>
+      {merchandiseQuery.isFetching ? (
+        <p role="status" className="text-sm">
+          Checking exact signed product details…
+        </p>
+      ) : !merchandiseVerified ? (
+        <p role="alert" className="text-sm text-[var(--warning)]">
+          Exact signed product details could not be verified. Physical handoff
+          is blocked. Refresh product details before releasing these items.
+        </p>
+      ) : null}
+      {!merchandiseVerified && !merchandiseQuery.isFetching ? (
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!signerReady}
+          onClick={() => void merchandiseQuery.refetch()}
+        >
+          Refresh product details
+        </Button>
+      ) : null}
       {claim.state === "ready_for_pickup" ? (
         <div className="space-y-2">
           <Label htmlFor={`claim-code-${claim.receipt.id}`}>
@@ -197,7 +270,7 @@ function ClaimCard({
         <Button
           type="button"
           variant="outline"
-          disabled={pending || stale || !signerReady}
+          disabled={pending || !signerReady}
           onClick={() => void retryExactAck()}
         >
           Retry exact delivery
@@ -210,7 +283,8 @@ function ClaimCard({
       ) : null}
       {stale ? (
         <p role="alert" className="text-sm text-[var(--warning)]">
-          Private receipt evidence is stale. Refresh before physical release.
+          Private receipt updates may be incomplete. Refresh to check for other
+          updates.
         </p>
       ) : null}
       {claim.state === "conflicting" ? (
@@ -293,7 +367,14 @@ export function FutureOrganizerClaimQueue({
         ) : null}
         {visibleRead?.stale ? (
           <p role="alert">
-            Private receipt evidence is stale. Refresh before physical release.
+            Private receipt updates may be incomplete. Refresh to check for
+            other updates.
+          </p>
+        ) : null}
+        {visibleRead?.coverageDegraded ? (
+          <p role="status" className="text-sm text-[var(--warning)]">
+            Some private inbox relays could not be checked. Valid received
+            claims remain available; other claims or updates may be missing.
           </p>
         ) : null}
         {visibleRead && visibleRead.claims.length === 0 ? (

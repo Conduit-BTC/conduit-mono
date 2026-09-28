@@ -1,10 +1,16 @@
-import { describe, expect, it } from "bun:test"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { afterEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
 import {
+  __resetCommerceTestOverrides,
+  __setCommerceTestOverrides,
+  buildFutureMarketPrivateRumor,
+  readFutureMarketReadyReceipts,
+  readFutureMarketHandoffAcks,
   buildEventMarketAuthorizationDraft,
   buildEventMarketRosterDraft,
   buildFutureMarketReadyReceipt,
@@ -20,6 +26,8 @@ import {
   verifyEventMarketOrderEvidence,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+
+afterEach(() => __resetCommerceTestOverrides())
 
 const organizerSecret = generateSecretKey()
 const merchantSecret = generateSecretKey()
@@ -522,6 +530,120 @@ describe("future Event Market private physical handoff", () => {
       /^[A-Z0-9-]+$/
     )
   })
+
+  for (const coverage of ["partial", "capped"] as const) {
+    it(`retains exact ready and ACK authority with ${coverage} inbox coverage`, async () => {
+      const receipt = buildFutureMarketReadyReceipt({
+        order: handoffOrder,
+        signedOrderEvidence: [],
+        paymentAuthenticated: true,
+        releaseConfirmed: true,
+        issuedAt: 200,
+      })
+      const ready = buildFutureMarketPrivateRumor(receipt)
+      const ack = buildFutureMarketPrivateRumor(
+        buildFutureMarketHandoffAck({
+          receipt,
+          readyReceiptId: ready.id!,
+          handedOutAt: 201,
+        })
+      )
+      let principal = organizer
+      let rumors = [ready]
+      const setRead = () =>
+        __setCommerceTestOverrides({
+          allowMissingProtectedReadAuthorization: true,
+          getNdk: async () =>
+            ({
+              signer: { user: async () => ({ pubkey: principal }) },
+            }) as never,
+          resolveInboxRelayUrls: async () => ["wss://future.inbox.test"],
+          fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+            events: rumors.map(
+              (rumor) =>
+                new NDKEvent(
+                  undefined,
+                  finalizeEvent(
+                    {
+                      kind: 1059,
+                      created_at: rumor.created_at!,
+                      tags: [["p", principal]],
+                      content: rumor.id!,
+                    },
+                    merchantSecret
+                  )
+                )
+            ),
+            attemptedRelayUrls: [...(options?.relayUrls ?? [])],
+            successfulRelayUrls: [...(options?.relayUrls ?? [])],
+            failedRelayUrls:
+              coverage === "partial" ? [...(options?.relayUrls ?? [])] : [],
+            cappedRelayUrls:
+              coverage === "capped" ? [...(options?.relayUrls ?? [])] : [],
+          }),
+          giftUnwrap: async (event) =>
+            rumors.find((rumor) => rumor.id === event.content)!,
+        })
+      setRead()
+      const organizerRead = await readFutureMarketReadyReceipts({
+        organizerPubkey: organizer,
+      })
+      expect(organizerRead.inbox?.coverage).toBe("partial")
+      expect(organizerRead.stale).toBe(false)
+      expect(organizerRead.coverageDegraded).toBe(true)
+      expect(organizerRead.claims[0]?.state).toBe("ready_for_pickup")
+      __setCommerceTestOverrides({
+        fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+          events: [],
+          attemptedRelayUrls: [...(options?.relayUrls ?? [])],
+          successfulRelayUrls: [],
+          failedRelayUrls: [...(options?.relayUrls ?? [])],
+          cappedRelayUrls: [],
+        }),
+      })
+      const retained = await readFutureMarketReadyReceipts({
+        organizerPubkey: organizer,
+      })
+      expect(retained.stale).toBe(true)
+      expect(retained.claims[0]?.state).toBe("ready_for_pickup")
+      principal = merchant
+      rumors = [ack]
+      setRead()
+      const merchantRead = await readFutureMarketHandoffAcks({
+        merchantPubkey: merchant,
+        readyReceiptId: ready.id!,
+        receipt,
+      })
+      expect(merchantRead.exactAck?.id).toBe(ack.id)
+      expect(merchantRead.coverageDegraded).toBe(true)
+      rumors = [
+        ack,
+        buildFutureMarketPrivateRumor(
+          buildFutureMarketRevocation({
+            receipt,
+            readyReceiptId: ready.id!,
+            issuedAt: 202,
+          })
+        ),
+      ]
+      setRead()
+      const revoked = await readFutureMarketHandoffAcks({
+        merchantPubkey: merchant,
+        readyReceiptId: ready.id!,
+        receipt,
+      })
+      expect(revoked.exactAck).toBeNull()
+      expect(revoked.revoked).toBe(true)
+      expect(revoked.conflicting).toBe(true)
+      principal = organizer
+      rumors = [ready, ...rumors]
+      setRead()
+      const organizerRevoked = await readFutureMarketReadyReceipts({
+        organizerPubkey: organizer,
+      })
+      expect(organizerRevoked.claims[0]?.state).toBe("conflicting")
+    })
+  }
 
   it("binds ACK and revocation to one exact receipt and detects conflict", () => {
     const receipt = buildFutureMarketReadyReceipt({

@@ -65,7 +65,7 @@ describe("event-market private-delivery authority propagation", () => {
       futureHandoff.match(
         /assertFutureMarketReadCurrent\(input.shouldContinue\)/g
       )
-    ).toHaveLength(4)
+    ).toHaveLength(5)
     expect(queue).toMatch(
       /retryFutureMarketPrivateDelivery\(\{[\s\S]{0,160}authenticatedOwnerPubkey: organizerPubkey,[\s\S]{0,100}shouldContinue: \(\) => isAuthGenerationCurrent\(authGeneration\)/
     )

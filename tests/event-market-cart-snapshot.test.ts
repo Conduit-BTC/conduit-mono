@@ -161,13 +161,16 @@ function order(items: CartItem[] = [item("soap")]) {
       title: source.title,
       format: source.format,
       quantity: source.quantity,
-      priceAtPurchase: source.price,
-      currency: source.currency,
+      priceAtPurchase: source.price * 100,
+      currency: "SATS",
       sourcePrice: source.sourcePrice,
       fulfillment: source.fulfillment,
     })),
-    subtotal: items.reduce((sum, source) => sum + source.price, 0),
-    currency: "USD",
+    subtotal: items.reduce(
+      (sum, source) => sum + source.price * 100 * source.quantity,
+      0
+    ),
+    currency: "SATS",
     shippingCostStatus: "not_required" as const,
     createdAt: 100,
   }
@@ -197,8 +200,8 @@ describe("future Event Market cart and order snapshots", () => {
       title: source.title,
       format: "physical",
       quantity: 1,
-      priceAtPurchase: 12,
-      currency: "USD",
+      priceAtPurchase: 1200,
+      currency: "SATS",
       sourcePrice: source.sourcePrice,
       fulfillment: source.fulfillment,
     })

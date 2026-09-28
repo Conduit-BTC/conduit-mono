@@ -73,8 +73,21 @@ export function isVerifiedEventMarketReceiptMerchandiseResolution(
   )
 }
 
+/** Only receipt identity and exact item snapshots are needed for this read. */
+export type EventMarketReceiptMerchandiseEvidence = Pick<
+  EventMarketReadyReceiptSchema,
+  "claimRef" | "merchantPubkey" | "organizerPubkey"
+> & {
+  items: readonly Pick<
+    EventMarketReadyReceiptSchema["items"][number],
+    "product" | "quantity"
+  >[]
+}
+
 export interface ResolveEventMarketReceiptMerchandiseEvidenceInput {
-  receipt: EventMarketReadyReceiptSchema
+  receipt: EventMarketReceiptMerchandiseEvidence
+  /** Future physical release terms remain pinned despite later listing deletion. */
+  receiptRevisionPolicy?: "current_product" | "historical_physical_receipt"
   events: readonly SignedPublicNostrEvent[]
   coverage: EventMarketReceiptMerchandiseCoverage
   sourceRelayUrlsById?: ReadonlyMap<string, readonly string[]>
@@ -169,6 +182,7 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
       } satisfies EventMarketReceiptMerchandiseItem
     }
     if (
+      input.receiptRevisionPolicy !== "historical_physical_receipt" &&
       isProductDeletedByNip09(
         {
           authorPubkey: event.pubkey,
@@ -193,7 +207,9 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
         parsed.id !== expectedAddress.addressId ||
         parsed.pubkey.toLowerCase() !== receipt.merchantPubkey.toLowerCase() ||
         parsed.createdAt !== receiptItem.product.createdAt ||
-        parsed.priceEvidenceMalformed
+        parsed.priceEvidenceMalformed ||
+        (input.receiptRevisionPolicy === "historical_physical_receipt" &&
+          (parsed.format !== "physical" || parsed.visibility !== "public"))
       ) {
         throw new Error("Exact receipt product metadata is invalid.")
       }
@@ -295,7 +311,9 @@ function rawEvents(result: FetchEventsFanoutResult): {
 }
 
 export interface GetEventMarketReceiptMerchandiseInput {
-  receipt: EventMarketReadyReceiptSchema
+  receipt: EventMarketReceiptMerchandiseEvidence
+  /** Future physical release terms remain pinned despite later listing deletion. */
+  receiptRevisionPolicy?: "current_product" | "historical_physical_receipt"
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
@@ -474,6 +492,7 @@ export async function getEventMarketReceiptMerchandise(
   }
   return resolveEventMarketReceiptMerchandiseEvidence({
     receipt: input.receipt,
+    receiptRevisionPolicy: input.receiptRevisionPolicy,
     events: Array.from(events.values()),
     sourceRelayUrlsById,
     coverage: combineCoverage(relayUrls, results),

@@ -1530,12 +1530,14 @@ test("two future market products form one order and one private organizer releas
         ["a", eventCoordinate(market)],
       ],
     })
+  const soap = product("Future handoff soap", "future-handoff-soap")
+  const candle = product("Future handoff candle", "future-handoff-candle")
   relay.seed(
     calendar,
     market,
     grant,
-    product("Future handoff soap", "future-handoff-soap"),
-    product("Future handoff candle", "future-handoff-candle"),
+    soap,
+    candle,
     createInboxDeclaration("organizer", createdAt),
     createInboxDeclaration("merchant", createdAt),
     createInboxDeclaration("buyer", createdAt)
@@ -1562,7 +1564,10 @@ test("two future market products form one order and one private organizer releas
     ).toBeVisible()
   }
   await gotoAs(page, marketUrl, "/cart", "buyer")
-  await expect(page.getByText("1 purchase/1 merchant/2 items")).toBeVisible()
+  await page
+    .getByRole("button", { name: "Increase quantity for Future handoff soap" })
+    .click()
+  await expect(page.getByText("1 purchase/1 merchant/3 items")).toBeVisible()
   await expect(
     page.getByRole("button", { name: /^Clear Event pickup/ })
   ).toHaveCount(1)
@@ -1650,6 +1655,7 @@ test("two future market products form one order and one private organizer releas
   }
   const pickupCode = formatPickupClaimCode(readyPayload.claimRef)
 
+  relay.remove(soap)
   await gotoAs(page, merchantUrl, `/events/${marketNaddr}`, "organizer")
   await expect(
     page.getByRole("heading", { name: "Pickup handoffs" })
@@ -1665,6 +1671,28 @@ test("two future market products form one order and one private organizer releas
   await expect(page.getByText(`Pickup code ${pickupCode}`)).toBeVisible()
   const claimInput = page.getByLabel("Confirm buyer pickup code")
   await claimInput.fill(pickupCode)
+  await expect(
+    page.getByText(/Exact signed product details could not be verified/)
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Mark handed out" })
+  ).toBeDisabled()
+  relay.seed(soap)
+  await page.getByRole("button", { name: "Refresh product details" }).click()
+  const claimItems = page.getByRole("list", {
+    name: "Items for this pickup claim",
+  })
+  await expect(
+    claimItems.getByText("Future handoff soap", { exact: true })
+  ).toBeVisible()
+  await expect(
+    claimItems.getByText("Future handoff candle", { exact: true })
+  ).toBeVisible()
+  await expect(claimItems.getByText("Qty 2", { exact: true })).toBeVisible()
+  await expect(claimItems.getByText("Qty 1", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Mark handed out" })
+  ).toBeEnabled()
   const ackStart = relay.publications.length
   await page.getByRole("button", { name: "Mark handed out" }).click()
   const ackMessages = () =>

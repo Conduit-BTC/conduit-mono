@@ -22,6 +22,8 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import { getFutureMarketReceiptMerchandise } from "./future-market-merchandise"
+import { isVerifiedEventMarketReceiptMerchandiseResolution } from "./event-market-merchandise"
 import { verifyEventMarketOrderEvidence } from "./event-market-order-evidence"
 import { getEventMarketPrivateMessageList } from "./commerce"
 import type { ParsedEventMarketPrivateMessage } from "./orders"
@@ -161,6 +163,7 @@ export async function readFutureMarketReadyReceipts(input: {
 }): Promise<{
   claims: FutureMarketOrganizerClaim[]
   stale: boolean
+  coverageDegraded: boolean
   inbox: Awaited<ReturnType<typeof getEventMarketPrivateMessageList>>["inbox"]
 }> {
   assertFutureMarketReadCurrent(input.shouldContinue)
@@ -174,7 +177,8 @@ export async function readFutureMarketReadyReceipts(input: {
       messages: read.messages,
       marketCoordinate: input.marketCoordinate,
     }),
-    stale: read.stale || read.inbox?.coverage !== "complete",
+    stale: read.stale,
+    coverageDegraded: read.inbox?.coverage !== "complete",
     inbox: read.inbox,
   }
 }
@@ -189,6 +193,7 @@ export async function readFutureMarketHandoffAcks(input: {
   revoked: boolean
   conflicting: boolean
   stale: boolean
+  coverageDegraded: boolean
 }> {
   assertFutureMarketReadCurrent(input.shouldContinue)
   const receipt = futureMarketReadyReceiptSchema.parse(input.receipt)
@@ -213,13 +218,13 @@ export async function readFutureMarketHandoffAcks(input: {
       message.senderPubkey === receipt.organizerPubkey &&
       message.recipientPubkey === receipt.merchantPubkey
   )
-  const stale = read.stale || read.inbox?.coverage !== "complete"
+  const stale = read.stale
   return {
-    exactAck:
-      !conflicting && !revoked && !stale && acks.length === 1 ? acks[0]! : null,
+    exactAck: !conflicting && !revoked && acks.length === 1 ? acks[0]! : null,
     revoked,
     conflicting: conflicting || acks.length > 1 || (revoked && acks.length > 0),
     stale,
+    coverageDegraded: read.inbox?.coverage !== "complete",
   }
 }
 
@@ -596,6 +601,14 @@ export async function publishFutureMarketHandoffAck(input: {
     throw new Error(
       "Exact organizer physical release confirmation is required."
     )
+  const merchandise = await getFutureMarketReceiptMerchandise({
+    receipt: input.claim.receipt.payload,
+    authenticatedPubkey: input.organizerPubkey,
+    shouldContinue: input.shouldContinue,
+  })
+  if (!isVerifiedEventMarketReceiptMerchandiseResolution(merchandise))
+    throw new Error("Exact signed merchandise must be verified before handoff.")
+  assertFutureMarketReadCurrent(input.shouldContinue)
   const current = await readFutureMarketReadyReceipts({
     organizerPubkey: input.organizerPubkey,
     marketCoordinate: input.claim.receipt.payload.market.coordinate,
@@ -606,7 +619,12 @@ export async function publishFutureMarketHandoffAck(input: {
       claim.receipt.id === input.claim.receipt.id &&
       claim.receipt.payload.claimRef === input.claim.receipt.payload.claimRef
   )
-  if (current.stale || !exact || exact.state !== "ready_for_pickup")
+  if (
+    !exact ||
+    exact.state !== "ready_for_pickup" ||
+    JSON.stringify(exact.receipt.payload) !==
+      JSON.stringify(input.claim.receipt.payload)
+  )
     throw new Error(
       "Current exact ready receipt must be verified before handoff."
     )
