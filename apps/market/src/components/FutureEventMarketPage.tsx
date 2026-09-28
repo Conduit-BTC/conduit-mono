@@ -1,3 +1,8 @@
+import {
+  EventFulfillmentChoice,
+  type EventFulfillmentSelection,
+} from "@conduit/ui"
+import { hasEventShippingChoice } from "../lib/event-fulfillment-choice"
 import { useMemo, useState } from "react"
 import { ExternalLink, RefreshCw } from "lucide-react"
 import { useNavigate } from "@tanstack/react-router"
@@ -64,11 +69,18 @@ function FutureEventProductCard({
   canPurchase: boolean
   quote: ReturnType<typeof useShopperPricing>["quote"]
   preference: ReturnType<typeof useShopperPricing>["preference"]
-  onAdd: (entry: EventMarketProductReadResult, selected: Product) => void
+  onAdd: (
+    entry: EventMarketProductReadResult,
+    selected: Product,
+    choice: EventFulfillmentSelection
+  ) => void
   onMerchantChange: (pubkey: string) => void
 }) {
   const navigate = useNavigate()
   const [selectedProductId, setSelectedProductId] = useState("")
+  const [choice, setChoice] = useState<EventFulfillmentSelection>(
+    "event_market_pickup"
+  )
   if (entry.resolution.state !== "eligible") return null
   const { product, merchant } = entry.resolution
   const activeProductId = selectedProductId || product.id
@@ -79,12 +91,19 @@ function FutureEventProductCard({
       selectedProductId={activeProductId}
       onSelectedProductChange={(selected) => setSelectedProductId(selected.id)}
       notice={
-        <span>
-          {merchant.mode === "merchant_present"
-            ? "Merchant booth"
-            : "Organizer pickup"}
-          : {merchant.assignment}
-        </span>
+        <div className="space-y-2">
+          <span>
+            {merchant.mode === "merchant_present"
+              ? "Merchant booth"
+              : "Organizer pickup"}
+            : {merchant.assignment}
+          </span>
+          <EventFulfillmentChoice
+            value={choice}
+            onChange={setChoice}
+            shippingAvailable={hasEventShippingChoice(product)}
+          />
+        </div>
       }
       onMerchantActivate={() => onMerchantChange(merchant.pubkey)}
       onProductActivate={() =>
@@ -99,7 +118,7 @@ function FutureEventProductCard({
       }
       onAddToCart={
         entry.actionable && canPurchase
-          ? (selected) => onAdd(entry, selected)
+          ? (selected) => onAdd(entry, selected, choice)
           : undefined
       }
       cartActionDisabled={!entry.actionable || !canPurchase}
@@ -236,7 +255,8 @@ export function FutureEventMarketPage({
 
   async function addProduct(
     entry: (typeof eligible)[number],
-    selected: Product
+    selected: Product,
+    choice: EventFulfillmentSelection
   ): Promise<void> {
     if (
       !canPurchase ||
@@ -257,11 +277,20 @@ export function FutureEventMarketPage({
         selectedOccurrenceCoordinate: selectedOccurrence,
       })
       await cart.addItem(
-        cartItemInputFromProductSelection(
-          entry.resolution.product,
-          entry.resolution.product,
-          fulfillment
-        ),
+        {
+          ...cartItemInputFromProductSelection(
+            entry.resolution.product,
+            entry.resolution.product,
+            choice === "shipping" &&
+              hasEventShippingChoice(entry.resolution.product)
+              ? { type: "shipping" }
+              : fulfillment
+          ),
+          eventMarketContext: {
+            marketCoordinate: fulfillment.market.coordinate,
+            calendarCoordinate: fulfillment.calendar.coordinate,
+          },
+        },
         1
       )
     } catch {
@@ -478,8 +507,8 @@ export function FutureEventMarketPage({
                       canPurchase={canPurchase}
                       quote={pricing.quote}
                       preference={pricing.preference}
-                      onAdd={(item, selected) =>
-                        void addProduct(item, selected)
+                      onAdd={(item, selected, choice) =>
+                        void addProduct(item, selected, choice)
                       }
                       onMerchantChange={(pubkey) => onMerchantChange(pubkey)}
                     />

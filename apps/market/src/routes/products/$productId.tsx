@@ -1,3 +1,8 @@
+import {
+  EventFulfillmentChoice,
+  type EventFulfillmentSelection,
+} from "@conduit/ui"
+import { hasEventShippingChoice } from "../../lib/event-fulfillment-choice"
 import { ChevronDown, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
@@ -208,6 +213,8 @@ function ProductPage() {
       !!eventMarketReference && !!selectedProduct && session.relaySettingsReady,
     retry: false,
   })
+  const [eventFulfillmentChoice, setEventFulfillmentChoice] =
+    useState<EventFulfillmentSelection>("event_market_pickup")
   const eventMarketFulfillment = (() => {
     if (!eventMarketReference || !eventMarketQuery.data) return null
     try {
@@ -304,20 +311,36 @@ function ProductPage() {
     : null
   const productCartCandidate =
     eventMarketReference && selectedProduct
-      ? eventMarketFulfillment
-        ? cartItemInputFromProductSelection(
-            product!,
-            selectedProduct,
-            eventMarketFulfillment
-          )
-        : null
+      ? eventFulfillmentChoice === "shipping" &&
+        hasEventShippingChoice(selectedProduct)
+        ? {
+            ...cartItemInputFromProductSelection(product!, selectedProduct, {
+              type: "shipping",
+            }),
+            eventMarketContext: eventMarketFulfillment
+              ? {
+                  marketCoordinate: eventMarketFulfillment.market.coordinate,
+                  calendarCoordinate:
+                    eventMarketFulfillment.calendar.coordinate,
+                }
+              : undefined,
+          }
+        : eventMarketFulfillment
+          ? cartItemInputFromProductSelection(
+              product!,
+              selectedProduct,
+              eventMarketFulfillment
+            )
+          : null
       : ordinaryProductCartCandidate
   const cartItem = productCartCandidate
     ? selectCartLine(cart.items, productCartCandidate)
     : undefined
   const productCartBlocked =
     (eventMarketReference
-      ? eventMarketQuery.isFetching || !eventMarketFulfillment
+      ? eventFulfillmentChoice === "shipping"
+        ? !selectedProduct || !hasEventShippingChoice(selectedProduct)
+        : eventMarketQuery.isFetching || !eventMarketFulfillment
       : productCartFulfillment.isChecking ||
         productCartResolution?.status === "blocked") || !productCartCandidate
   const productEventNaddr = eventMarketReference
@@ -842,6 +865,14 @@ function ProductPage() {
                   ) : null}
                 </div>
 
+                {eventMarketReference &&
+                selectedProduct?.format === "physical" ? (
+                  <EventFulfillmentChoice
+                    value={eventFulfillmentChoice}
+                    onChange={setEventFulfillmentChoice}
+                    shippingAvailable={hasEventShippingChoice(selectedProduct)}
+                  />
+                ) : null}
                 <LivePresenceIndicator
                   count={productPresenceCount}
                   pageType="product"

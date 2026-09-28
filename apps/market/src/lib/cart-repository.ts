@@ -684,6 +684,87 @@ function removeAllocatedBatches(
   return changed
 }
 
+function productQuantity(
+  record: CanonicalCartRecord,
+  item: CartItemIdentity
+): number {
+  return record.lines
+    .filter(
+      (line) =>
+        line.item.productId === item.productId &&
+        line.item.merchantPubkey === item.merchantPubkey
+    )
+    .reduce(
+      (sum, line) =>
+        sum + line.batches.reduce((n, batch) => n + batch.quantity, 0),
+      0
+    )
+}
+
+/** A changed lane gets a new incarnation so a captured purchase cannot consume it. */
+export function changeCartRepositoryFulfillment(
+  identity: CartItemIdentity,
+  input: CartItemInput,
+  expectedRevision: number
+): Promise<CartMutationResult> {
+  return mutateCart((record) => {
+    if (record.revision !== expectedRevision || !identity.cartLineId)
+      return false
+    const index = findLineIndex(record, identity)
+    if (index < 0) return false
+    const line = record.lines[index]!
+    if (
+      input.productId !== line.item.productId ||
+      input.merchantPubkey !== line.item.merchantPubkey ||
+      input.format !== "physical" ||
+      hasStrictlyOlderProductRevision(line.item, input) ||
+      !input.eventMarketContext
+    )
+      return false
+    const parsed = orderItemFulfillmentSchema.safeParse(input.fulfillment)
+    if (
+      !parsed.success ||
+      (parsed.data.type !== "shipping" &&
+        parsed.data.type !== "event_market_pickup")
+    )
+      return false
+    if (
+      parsed.data.type === "event_market_pickup" &&
+      (parsed.data.product.coordinate !== input.productId ||
+        parsed.data.product.eventId !== input.productEventId ||
+        parsed.data.market.coordinate !==
+          input.eventMarketContext.marketCoordinate ||
+        parsed.data.calendar.coordinate !==
+          input.eventMarketContext.calendarCoordinate)
+    )
+      return false
+    if (
+      parsed.data.type === "shipping" &&
+      (!input.shippingOptionId || input.shippingOptionLaunchUnsupported)
+    )
+      return false
+    if (
+      typeof input.stock === "number" &&
+      productQuantity(record, input) > input.stock
+    )
+      return false
+    if (isSameCartLineFulfillment(line.item, input)) return false
+    const quantity = line.batches.reduce(
+      (sum, batch) => sum + batch.quantity,
+      0
+    )
+    line.id = takeId(record, "line")
+    line.item = sanitizeCartItemImage({
+      ...input,
+      fulfillment: parsed.data,
+      quantity,
+      merchantAddedAt: line.item.merchantAddedAt,
+    })
+    line.batches = [{ id: takeId(record, "batch"), quantity }]
+    return true
+  })
+}
+
 export function addCartRepositoryItem(
   input: CartItemInput & { merchantAddedAt?: number },
   quantity = 1
@@ -705,15 +786,11 @@ export function addCartRepositoryItem(
     )
     if (index >= 0) {
       const line = record.lines[index]!
-      const current = line.batches.reduce(
-        (sum, batch) => sum + batch.quantity,
-        0
-      )
       const nextItem = selectCartItemSnapshot(line.item, sanitized)
       if (
         nextItem.stock === 0 ||
         (typeof nextItem.stock === "number" &&
-          current + requested > nextItem.stock)
+          productQuantity(record, input) + requested > nextItem.stock)
       ) {
         return false
       }
@@ -724,7 +801,8 @@ export function addCartRepositoryItem(
 
     if (
       sanitized.stock === 0 ||
-      (typeof sanitized.stock === "number" && requested > sanitized.stock)
+      (typeof sanitized.stock === "number" &&
+        productQuantity(record, input) + requested > sanitized.stock)
     ) {
       return false
     }
@@ -753,7 +831,6 @@ export function incrementCartRepositoryItem(
     const index = findLineIndex(record, identity)
     if (index < 0) return false
     const line = record.lines[index]!
-    const current = line.batches.reduce((sum, batch) => sum + batch.quantity, 0)
     const requested = Math.max(1, Math.floor(quantity))
     const stock =
       currentStockEvidence === undefined
@@ -764,7 +841,10 @@ export function incrementCartRepositoryItem(
           : currentStockEvidence.stock === undefined
             ? line.item.stock
             : Math.min(line.item.stock, currentStockEvidence.stock)
-    if (typeof stock === "number" && current + requested > stock) {
+    if (
+      typeof stock === "number" &&
+      productQuantity(record, identity) + requested > stock
+    ) {
       return false
     }
     appendBatch(record, line, requested)
@@ -806,7 +886,7 @@ export function refreshAndIncrementCartRepositoryItem(
     if (
       nextItem.stock === 0 ||
       (typeof nextItem.stock === "number" &&
-        current + requested > nextItem.stock)
+        productQuantity(record, input) + requested > nextItem.stock)
     ) {
       return false
     }

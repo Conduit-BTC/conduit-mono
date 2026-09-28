@@ -173,26 +173,21 @@ describe("pending event pickup cart repository", () => {
     expect(result.after[0]?.fulfillment).toEqual(pending)
   })
 
-  it("keeps concurrent quantities pending when the exact snapshot cannot cover them", async () => {
+  it("rejects a second lane when the product stock is already in the pending cart", async () => {
     await clearCartRepository()
     const pending = createPendingEventPickupFulfillment(COLLECTION)!
     const pendingInput = { ...cartInput(pending), stock: 2 }
-    const exactInput = {
-      ...cartInput(exactPickupFulfillment()),
-      stock: 2,
-    }
+    const exactInput = { ...cartInput(exactPickupFulfillment()), stock: 2 }
     await addCartRepositoryItem(pendingInput, 2)
     const pendingLine = getCartRepositorySnapshot().items[0]!
-    await addCartRepositoryItem(exactInput)
-
+    expect((await addCartRepositoryItem(exactInput)).changed).toBe(false)
     const result = await upgradePendingEventPickupCartRepositoryItem(
       pendingLine,
       exactInput
     )
-
-    expect(result.changed).toBe(false)
-    expect(result.after).toHaveLength(2)
-    expect(result.after.reduce((sum, item) => sum + item.quantity, 0)).toBe(3)
-    expect(groupCartPurchases(result.after)[0]?.totalItems).toBe(1)
+    expect(result.changed).toBe(true)
+    expect(result.after).toHaveLength(1)
+    expect(result.after[0]?.quantity).toBe(2)
+    expect(groupCartPurchases(result.after)[0]?.totalItems).toBe(2)
   })
 })

@@ -1,3 +1,7 @@
+export {
+  EventFulfillmentChoice,
+  type EventFulfillmentSelection,
+} from "./EventFulfillmentChoice"
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
 export {
   SearchSuggestions,

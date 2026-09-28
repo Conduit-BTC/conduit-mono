@@ -1898,3 +1898,111 @@ test("organizer generates weekly dates and publishes one signed series @merchant
     )
   ).toHaveLength(1)
 })
+
+test("event product chooses ordinary shipping and changes fulfillment in checkout @market @commerce", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1000)
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "choice-fair"],
+      ["title", "Choice Fair"],
+      ["start", String(createdAt + 3600)],
+      ["end", String(createdAt + 7200)],
+      ["D", String(Math.floor((createdAt + 3600) / 86400))],
+    ],
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "choice-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+      ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 1"],
+    ],
+  })
+  const grant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["openmarkets", "event-market-auth", "1"],
+      ["a", eventCoordinate(market)],
+      ["p", MERCHANT_PUBKEY],
+      ["state", "active"],
+      ["seq", "0"],
+      ["alt", "Open Markets event merchant authorization"],
+    ],
+  })
+  const shipping = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "choice-shipping"],
+      ["title", "Shop shipping"],
+      ["price", "200", "SAT"],
+      ["country", "US"],
+      ["service", "shipping"],
+    ],
+  })
+  const product = signEvent(MERCHANT_SECRET, {
+    kind: 30402,
+    created_at: createdAt,
+    content: "Choice soap",
+    tags: [
+      ["d", "choice-soap"],
+      ["title", "Choice soap"],
+      ["summary", "Handmade soap"],
+      ["image", "https://cdn.conduit.market/conduit-test/template-product.svg"],
+      ["t", "soap"],
+      ["t", "handmade"],
+      ["t", "home"],
+      ["price", "1000", "SAT"],
+      ["type", "simple", "physical"],
+      ["stock", "5"],
+      ["a", eventCoordinate(market)],
+      ["shipping_option", eventCoordinate(shipping)],
+    ],
+  })
+  relay.seed(calendar, market, grant, shipping, product)
+  const marketRef = nip19.naddrEncode({
+    kind: 30409,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: "choice-fair",
+  })
+  await gotoAs(page, marketUrl, `/events/${marketRef}`, "buyer")
+  await expect(page.getByRole("heading", { name: "Choice soap" })).toBeVisible()
+  await page.getByRole("button", { name: "Ship it", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: "Ship it", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+  await page.getByRole("button", { name: "Add", exact: true }).click()
+  await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
+  await page.goto(`${marketUrl}/checkout`)
+  const take = page.getByRole("button", {
+    name: "Take it at the event",
+    exact: true,
+  })
+  await expect(take).toBeVisible()
+  await take.click()
+  await expect(take).toHaveAttribute("aria-pressed", "true")
+  await page.reload()
+  await expect(
+    page.getByRole("button", { name: "Take it at the event", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+  await page.getByRole("button", { name: "Ship it", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: "Ship it", exact: true })
+  ).toHaveAttribute("aria-pressed", "true")
+  await expect(
+    page.getByRole("heading", { name: "Delivery details" })
+  ).toBeVisible()
+})

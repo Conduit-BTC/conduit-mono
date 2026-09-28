@@ -53,6 +53,8 @@ export type CartItem = {
    * carts omit this field and continue to resolve from `format` as shipment or
    * digital delivery.
    */
+  /** Cart-only navigation context; never serialized into an order. */
+  eventMarketContext?: { marketCoordinate: string; calendarCoordinate: string }
   fulfillment?: CartItemFulfillment
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats?: number
@@ -277,6 +279,14 @@ export function createCartItemFromProduct(
     tags: product.tags,
     format: product.format,
     fulfillment: resolvedFulfillment,
+    ...(resolvedFulfillment.type === "event_market_pickup"
+      ? {
+          eventMarketContext: {
+            marketCoordinate: resolvedFulfillment.market.coordinate,
+            calendarCoordinate: resolvedFulfillment.calendar.coordinate,
+          },
+        }
+      : {}),
     shippingCostSats: eventMarketPickup
       ? 0
       : pickupPending
@@ -307,8 +317,14 @@ export function createCartItemFromProduct(
       pickup || pickupPending || eventMarketPickup
         ? []
         : product.shippingCountryRules,
-    productUpdatedAt: product.updatedAt,
-    productEventId: product.sourceEventId,
+    productUpdatedAt:
+      resolvedFulfillment.type === "event_market_pickup"
+        ? resolvedFulfillment.product.createdAt
+        : product.updatedAt,
+    productEventId:
+      resolvedFulfillment.type === "event_market_pickup"
+        ? resolvedFulfillment.product.eventId
+        : product.sourceEventId,
     canonicalShippingResolved:
       pickup || pickupPending || eventMarketPickup
         ? false
@@ -887,6 +903,21 @@ function parseCartItem(value: unknown): CartItem | null {
       fulfillment = fulfillmentResult.data
     }
   }
+  const marketContext = isRecord(value.eventMarketContext)
+    ? value.eventMarketContext
+    : null
+  const marketCoordinate =
+    marketContext && typeof marketContext.marketCoordinate === "string"
+      ? parseAddressableCoordinate(marketContext.marketCoordinate, [30409])
+          ?.coordinate
+      : undefined
+  const calendarCoordinate =
+    marketContext && typeof marketContext.calendarCoordinate === "string"
+      ? parseAddressableCoordinate(
+          marketContext.calendarCoordinate,
+          [31922, 31923]
+        )?.coordinate
+      : undefined
   const pickupPending = fulfillment?.type === "event_pickup_pending"
   const zapMessagePolicy = normalizeCartZapMessagePolicy(value.zapMessagePolicy)
 
@@ -908,6 +939,9 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(tags ? { tags } : {}),
     ...(format ? { format } : {}),
     ...(fulfillment ? { fulfillment } : {}),
+    ...(marketCoordinate && calendarCoordinate
+      ? { eventMarketContext: { marketCoordinate, calendarCoordinate } }
+      : {}),
     ...(!pickupPending && shippingCostSats !== undefined
       ? { shippingCostSats }
       : {}),
@@ -1091,6 +1125,7 @@ export function rebuildCurrentCartItems(
               ...specification,
             }))
           : undefined,
+      eventMarketContext: item.eventMarketContext,
       quantity: item.quantity,
     })
   }

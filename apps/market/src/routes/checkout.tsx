@@ -86,6 +86,7 @@ import {
   SignerRecoveryNotice,
   Textarea,
 } from "@conduit/ui"
+import { CartEventFulfillmentChoice } from "../components/CartEventFulfillmentChoice"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -743,7 +744,9 @@ function OrderSummary({
   pickupHandlerIdentity,
   formatPrice,
   className = "",
+  fulfillmentChangesDisabled = false,
 }: {
+  fulfillmentChangesDisabled?: boolean
   items: CartItem[]
   merchantPubkey: string
   accountPubkey: string | null
@@ -911,6 +914,12 @@ function OrderSummary({
                 <div className="line-clamp-2 text-sm font-medium leading-5 text-[var(--text-primary)] sm:text-base">
                   {item.title}
                 </div>
+                <CartEventFulfillmentChoice
+                  disabled={fulfillmentChangesDisabled}
+                  shouldContinue={shouldContinue}
+                  item={item}
+                  authenticatedPubkey={authenticatedPubkey}
+                />
                 {soldOut || insufficientStock ? (
                   <Badge variant="warning" className="mt-1.5">
                     {soldOut
@@ -3837,6 +3846,7 @@ function CheckoutPage() {
         className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]"
       >
         <OrderSummary
+          fulfillmentChangesDisabled={step !== "shipping"}
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
           accountPubkey={draftOwnerIdentity}
