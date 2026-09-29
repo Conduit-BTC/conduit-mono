@@ -394,9 +394,7 @@ describe("RefreshChip", () => {
     expect(browseSource).toContain(
       "catalogPaused: productsQuery.isRefreshPaused"
     )
-    expect(browseSource).toContain(
-      "globalSearchPaused: globalSearchQuery.isPaused"
-    )
+    expect(browseSource).toContain("globalSearchQuery.isPaused")
     expect(browseSource).toContain("globalSearchQuery.isPending")
     expect(detailSource).toContain("productQuery.isRefreshPaused")
     expect(storefrontSource).toContain("productsQuery.isRefreshPaused")

@@ -72,6 +72,8 @@ export interface FetchEventsFanoutOptions {
   skipHealthFilter?: boolean
   reuseRelayConnections?: boolean
   signal?: AbortSignal
+  /** Preserve one search relay's response order through verification and limiting. */
+  preserveEventOrder?: boolean
   /** Cumulative verified observations after each relay finishes; not final coverage. */
   onProgress?: (result: FetchEventsFanoutResult) => void
 }
@@ -1071,6 +1073,7 @@ async function fetchEventsFromRelay(
     | "accountNetworkLocalStateRepository"
     | "shouldContinue"
     | "signal"
+    | "preserveEventOrder"
   >
 ): Promise<FetchEventsFromRelayResult | null> {
   let acquiredRelayReadSlot = false
@@ -1112,12 +1115,14 @@ async function fetchEventsFromRelay(
       options.signal
     )
     throwIfAborted(options.signal)
-    const orderedEvents = [...events].sort((left, right) => {
-      if (left.created_at !== right.created_at) {
-        return right.created_at - left.created_at
-      }
-      return left.id.localeCompare(right.id)
-    })
+    const orderedEvents = options.preserveEventOrder
+      ? events
+      : [...events].sort((left, right) => {
+          if (left.created_at !== right.created_at) {
+            return right.created_at - left.created_at
+          }
+          return left.id.localeCompare(right.id)
+        })
     // Main thread: cheap sha256 id-check + verified-id cache. Anything not
     // already cache-verified is batched to the worker for schnorr.
     const accepted = new Array<boolean>(orderedEvents.length).fill(false)
