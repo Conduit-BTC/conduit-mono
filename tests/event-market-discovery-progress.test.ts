@@ -285,7 +285,9 @@ describe("progressive current Event Market discovery", () => {
     expect(exact.size).toBe(128)
     expect(result.markets).toHaveLength(128)
     expect(result.coverage).toBe("partial")
-  })
+    // This capacity check signs and verifies 129 real event records. Its
+    // contract is the exact-read bound above, not a five-second CPU budget.
+  }, 20_000)
   it("stops queued work and progress after caller cancellation", async () => {
     const state = fixture(7),
       held = deferred<void>(),
