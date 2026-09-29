@@ -1,6 +1,9 @@
 export type LivePresencePageType = "product" | "store"
 
 export const PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL =
+  "wss://conduit-presence-preview.conduitholdings.workers.dev"
+// Keep active preview builds connected while the account subdomain changes.
+const PREVIOUS_PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL =
   "wss://conduit-presence-preview.eric-furletti.workers.dev"
 export const PRODUCTION_LIVE_PRESENCE_WEBSOCKET_URL =
   "wss://presence.conduit.market"
@@ -189,6 +192,18 @@ export function isLivePresencePermitted(input: {
 export function startLivePresenceSession(
   options: LivePresenceSessionOptions
 ): () => void {
+  const previousPreviewEndpoint =
+    options.endpoint === PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL
+      ? PREVIOUS_PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL
+      : null
+  let activeEndpoint = options.endpoint
+  const tryOtherPreviewEndpoint = () => {
+    if (!previousPreviewEndpoint) return
+    activeEndpoint =
+      activeEndpoint === options.endpoint
+        ? previousPreviewEndpoint
+        : options.endpoint
+  }
   let disposed = false
   let socket: LivePresenceSocket | null = null
   let retryHandle: number | null = null
@@ -196,6 +211,7 @@ export function startLivePresenceSession(
   let heartbeatHandle: number | null = null
   let staleHandle: number | null = null
   let reconnectAttempts = 0
+  let socketHasTrustedCount = false
   let wasActive = options.runtime.isVisible() && options.runtime.isOnline()
 
   const clearRetry = () => {
@@ -259,6 +275,7 @@ export function startLivePresenceSession(
     if (disposed || socket !== disconnectedSocket) return
     clearLivenessTimers()
     socket = null
+    if (!socketHasTrustedCount) tryOtherPreviewEndpoint()
     options.onCount(null)
     try {
       disconnectedSocket.close()
@@ -288,12 +305,14 @@ export function startLivePresenceSession(
   const connect = () => {
     if (!isActive() || socket || retryHandle !== null) return
 
+    socketHasTrustedCount = false
     let nextSocket: LivePresenceSocket
     try {
       nextSocket = options.runtime.createSocket(
-        buildLivePresenceWebSocketUrl(options.endpoint, options.scopeHash)
+        buildLivePresenceWebSocketUrl(activeEndpoint, options.scopeHash)
       )
     } catch {
+      tryOtherPreviewEndpoint()
       options.onCount(null)
       scheduleReconnect()
       return
@@ -321,6 +340,7 @@ export function startLivePresenceSession(
         return
       }
       hasTrustedCount = true
+      socketHasTrustedCount = true
       reconnectAttempts = 0
       refreshLiveness(nextSocket)
       options.onCount(count)
