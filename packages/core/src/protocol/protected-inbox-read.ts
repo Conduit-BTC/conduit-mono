@@ -31,6 +31,8 @@ export interface ProtectedInboxReadResult {
 export interface ReadProtectedInboxOptions {
   principalPubkey: string
   relayUrls: string[]
+  /** Optional full signed event ID; only narrows the protected kind-1059/#p read. */
+  eventId?: string
   /**
    * Exact relay subset backed by this authenticated owner's own inbox or
    * Network selection. Compatibility and remote evidence must not populate it.
@@ -133,6 +135,10 @@ export async function readProtectedInbox(
   options: ReadProtectedInboxOptions
 ): Promise<ProtectedInboxReadResult> {
   const principalPubkey = options.principalPubkey.trim().toLowerCase()
+  const eventId = options.eventId?.trim().toLowerCase()
+  if (eventId !== undefined && !/^[0-9a-f]{64}$/.test(eventId)) {
+    throw new Error("Protected inbox event ID is invalid.")
+  }
   if (!/^[0-9a-f]{64}$/.test(principalPubkey)) {
     return emptyUnavailableResult(options.relayUrls.length, "authority_changed")
   }
@@ -170,6 +176,7 @@ export async function readProtectedInbox(
         {
           kinds: [1_059],
           "#p": [principalPubkey],
+          ...(eventId ? { ids: [eventId] } : {}),
           limit: options.limit,
         },
       ],

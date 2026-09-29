@@ -1,7 +1,17 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
 
 import { expect, test } from "@playwright/test"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+
+import {
+  createCheckoutSparkReconciliation,
+  freezeCheckoutSparkPlan,
+} from "../packages/core/src/protocol/checkout-spark-reconciliation"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const databaseModuleUrl = `/@fs/${path
@@ -390,3 +400,272 @@ test("checkout Spark local recovery stays single-tab and retired across browser 
       .catch(() => undefined)
   }
 })
+
+for (const store of ["preparation", "recovery"] as const) {
+  test(`checkout Spark ${store} saves retain concurrent-tab records @market`, async ({
+    context,
+  }) => {
+    const fixtureUrl = `${marketUrl}/__checkout-spark-storage-runtime`
+    await context.route(fixtureUrl, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: `<!doctype html><title>Checkout Spark storage fixture</title>
+<script type="module">
+  import RefreshRuntime from "/@react-refresh"
+  RefreshRuntime.injectIntoGlobalHook(window)
+  window.$RefreshReg$ = () => {}
+  window.$RefreshSig$ = () => (type) => type
+</script>`,
+      })
+    )
+    const firstPage = await context.newPage()
+    const secondPage = await context.newPage()
+    const storageKey =
+      store === "preparation"
+        ? "conduit:checkout-spark-router-preparations:v1"
+        : "conduit:checkout-spark-recovery-outbox:v1"
+    const moduleUrl =
+      store === "preparation"
+        ? "/src/lib/checkout-spark-router-preparation.ts"
+        : "/src/lib/checkout-spark-recovery-handoff.ts"
+    const createdAt = Date.now()
+    const fixtures = Array.from({ length: 2 }, () => {
+      const checkoutId = randomUUID()
+      const merchantPubkey = getPublicKey(generateSecretKey())
+      const plan = freezeCheckoutSparkPlan({
+        checkoutId,
+        orderId: `order-${checkoutId}`,
+        merchantPubkey,
+        walletId: `wallet-${checkoutId}`,
+        network: "mainnet",
+        createdAt,
+        takeoverAt: createdAt + 120_000,
+        funding: {
+          requestId: `funding-${checkoutId}`,
+          paymentRequest: "synthetic-funding-request",
+          paymentHash: createHash("sha256").update(randomUUID()).digest("hex"),
+          requiredNetSats: 171,
+          grossFundingSats: 180,
+          createdAt,
+          expiresAt: createdAt + 60_000,
+        },
+        obligations: [
+          {
+            kind: "merchant",
+            recipientId: merchantPubkey,
+            paymentRequest: "synthetic-merchant-request",
+            amountSats: 50,
+            maxFeeSats: 5,
+          },
+          {
+            kind: "conduit",
+            recipientId: "fixture@pay.invalid",
+            paymentRequest: "synthetic-conduit-request",
+            amountSats: 111,
+            maxFeeSats: 5,
+          },
+        ],
+      })
+      const signedRecipientWrap = finalizeEvent(
+        {
+          kind: 1059,
+          created_at: Math.floor(createdAt / 1_000),
+          tags: [["p", merchantPubkey]],
+          content: "synthetic-recovery-ciphertext",
+        },
+        generateSecretKey()
+      )
+      const record = {
+        schemaVersion: 1,
+        handoffId: createHash("sha256").update(randomUUID()).digest("hex"),
+        rumorId: createHash("sha256").update(randomUUID()).digest("hex"),
+        checkoutId,
+        orderId: plan.orderId,
+        planDigest: plan.planDigest,
+        walletId: plan.walletId,
+        network: plan.network,
+        senderPubkey: getPublicKey(generateSecretKey()),
+        merchantPubkey,
+        signedRecipientWrap,
+        createdAt,
+      }
+      return {
+        preparation: {
+          schemaVersion: 1,
+          reconciliation: createCheckoutSparkReconciliation(plan),
+          recoveryHandoffId: null,
+          fundingInvoiceExposedAt: null,
+          fundingSubmissionState: "not_started",
+          savedAt: createdAt,
+        },
+        recovery: {
+          record,
+          deliveryProgress: {
+            schemaVersion: 1,
+            recipientWrapId: signedRecipientWrap.id,
+            acknowledgedRelayRefs: [],
+          },
+          savedAt: createdAt,
+        },
+      }
+    })
+    type StorageFixtureWindow = typeof window & {
+      releaseStorageWrite?: () => void
+      storageWriteDone?: Promise<void>
+      storageWriteFinished?: boolean
+    }
+
+    try {
+      await Promise.all([
+        firstPage.goto(fixtureUrl),
+        secondPage.goto(fixtureUrl),
+      ])
+      await Promise.all(
+        [firstPage, secondPage].map((page) =>
+          page.waitForFunction(() => "$RefreshReg$" in window)
+        )
+      )
+      // Pause one same-origin writer after reading the shared array. The
+      // second tab must wait before reading, writing, and checking durability.
+      await firstPage.evaluate(
+        async ({ storageKey, first }) => {
+          localStorage.removeItem(storageKey)
+          const fixtureWindow = window as StorageFixtureWindow
+          await new Promise<void>((started) => {
+            fixtureWindow.storageWriteDone = navigator.locks.request(
+              `conduit:checkout-spark-storage:${storageKey}`,
+              async () => {
+                const raw = localStorage.getItem(storageKey)
+                const previous = raw ? JSON.parse(raw) : []
+                const gate = new Promise<void>((release) => {
+                  fixtureWindow.releaseStorageWrite = release
+                })
+                started()
+                await gate
+                localStorage.setItem(
+                  storageKey,
+                  JSON.stringify([...previous, first])
+                )
+              }
+            )
+          })
+        },
+        {
+          storageKey,
+          first:
+            store === "preparation"
+              ? fixtures[0]!.preparation
+              : fixtures[0]!.recovery,
+        }
+      )
+      await secondPage.evaluate(
+        async ({ moduleUrl, store, second }) => {
+          const module = await import(moduleUrl)
+          const fixtureWindow = window as StorageFixtureWindow
+          fixtureWindow.storageWriteFinished = false
+          const saved =
+            store === "preparation"
+              ? module.saveCheckoutSparkRouterPreparation(second.preparation)
+              : module.saveCheckoutSparkRecoveryDelivery(
+                  second.recovery.record,
+                  second.recovery.deliveryProgress,
+                  undefined,
+                  second.recovery.savedAt
+                )
+          fixtureWindow.storageWriteDone = Promise.resolve(saved).then(() => {
+            fixtureWindow.storageWriteFinished = true
+          })
+        },
+        { moduleUrl, store, second: fixtures[1]! }
+      )
+      const finishedWhileLocked = await secondPage.evaluate(
+        () => (window as StorageFixtureWindow).storageWriteFinished
+      )
+      await firstPage.evaluate(async () => {
+        const fixtureWindow = window as StorageFixtureWindow
+        fixtureWindow.releaseStorageWrite?.()
+        await fixtureWindow.storageWriteDone
+      })
+      await secondPage.evaluate(
+        async () => await (window as StorageFixtureWindow).storageWriteDone
+      )
+      const retained = await secondPage.evaluate(
+        async ({ moduleUrl, store }) => {
+          const module = await import(moduleUrl)
+          return store === "preparation"
+            ? module
+                .listCheckoutSparkRouterPreparations()
+                .map(
+                  (entry: {
+                    reconciliation: { plan: { checkoutId: string } }
+                  }) => entry.reconciliation.plan.checkoutId
+                )
+            : module
+                .listCheckoutSparkRecoveryDeliveries()
+                .map(
+                  (entry: {
+                    record: { signedRecipientWrap: { id: string } }
+                  }) => entry.record.signedRecipientWrap.id
+                )
+        },
+        { moduleUrl, store }
+      )
+      expect(retained).toHaveLength(2)
+      expect(finishedWhileLocked).toBe(false)
+      if (store === "recovery") {
+        expect(retained).toEqual(
+          fixtures.map((entry) => entry.recovery.record.signedRecipientWrap.id)
+        )
+      }
+      const unsupported = await secondPage.evaluate(
+        async ({ moduleUrl, store, second }) => {
+          const module = await import(moduleUrl)
+          let writes = 0
+          const storage = {
+            getItem: (key: string) => localStorage.getItem(key),
+            setItem: () => {
+              writes += 1
+            },
+            removeItem: () => {
+              writes += 1
+            },
+          }
+          Object.defineProperty(navigator, "locks", {
+            value: undefined,
+            configurable: true,
+          })
+          try {
+            if (store === "preparation") {
+              await module.saveCheckoutSparkRouterPreparation(
+                second.preparation,
+                storage
+              )
+            } else {
+              await module.saveCheckoutSparkRecoveryDelivery(
+                second.recovery.record,
+                second.recovery.deliveryProgress,
+                storage,
+                second.recovery.savedAt
+              )
+            }
+            return { blocked: false, writes }
+          } catch (error) {
+            return {
+              blocked: (error as Error).message.includes(
+                "cannot safely coordinate"
+              ),
+              writes,
+            }
+          } finally {
+            Reflect.deleteProperty(navigator, "locks")
+          }
+        },
+        { moduleUrl, store, second: fixtures[1]! }
+      )
+      expect(unsupported).toEqual({ blocked: true, writes: 0 })
+    } finally {
+      await firstPage.close()
+      await secondPage.close()
+    }
+  })
+}

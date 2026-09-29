@@ -111,6 +111,48 @@ describe("guest order signing identity", () => {
     ).rejects.toThrow("Guest order signer cannot decrypt inbound messages.")
   })
 
+  it("rejects recovery rumors while preserving same-order payment reports", async () => {
+    const merchantPubkey = "a".repeat(64)
+    const identity = createGuestOrderSigningIdentity(
+      "recovery-order",
+      merchantPubkey
+    )
+    const recovery = new NDKEvent()
+    recovery.kind = 16
+    recovery.tags = [
+      ["p", merchantPubkey],
+      ["type", "checkout_spark_recovery"],
+      ["order", "recovery-order"],
+    ]
+    recovery.content = "encrypted later by the NIP-59 wrapper"
+
+    await expect(recovery.sign(identity.signer)).rejects.toThrow(
+      "Guest signer cannot sign outside its order scope."
+    )
+
+    const payment = new NDKEvent()
+    payment.kind = 16
+    payment.tags = [
+      ["p", merchantPubkey],
+      ["type", "payment_proof"],
+      ["order", "recovery-order"],
+    ]
+    await payment.sign(identity.signer)
+    expect(payment.pubkey).toBe(identity.pubkey)
+    expect(payment.sig).toMatch(/^[0-9a-f]{128}$/)
+
+    const otherMerchant = new NDKEvent()
+    otherMerchant.kind = 16
+    otherMerchant.tags = [
+      ["p", "b".repeat(64)],
+      ["type", "checkout_spark_recovery"],
+      ["order", "recovery-order"],
+    ]
+    await expect(otherMerchant.sign(identity.signer)).rejects.toThrow(
+      "Guest signer cannot sign outside its order scope."
+    )
+  })
+
   it("restores an order-scoped signer from session storage", async () => {
     const storage = fakeStorage()
     const merchantPubkey = "a".repeat(64)
