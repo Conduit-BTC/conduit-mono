@@ -8,7 +8,6 @@ import {
   isAcceptedListingAreaCountry,
   isAcceptedUSListingAreaState,
   loadListingPlaces,
-  resolveListingArea,
   searchListingPlaces,
   type PlaceRow,
 } from "../apps/merchant/src/lib/listingArea"
@@ -124,8 +123,7 @@ describe("Merchant listing area", () => {
             listingAreaState: "CA",
             listingAreaPlaceId: oakland[0],
           },
-          untouched,
-          resolveListingArea
+          untouched
         )
       ).toEqual({
         location: "Oakland, Alameda County, California, United States",

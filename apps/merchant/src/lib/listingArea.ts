@@ -192,8 +192,7 @@ export async function getListingAreaForPublication(
     listingAreaState: string
     listingAreaPlaceId: number | null
   },
-  existing?: { location?: string; geohash?: string },
-  resolve = resolveListingArea
+  existing?: { location?: string; geohash?: string }
 ): Promise<{ location?: string; geohash?: string }> {
   if (form.listingAreaMode === "unchanged") {
     return { location: existing?.location, geohash: existing?.geohash }
@@ -203,7 +202,7 @@ export async function getListingAreaForPublication(
   }
   if (form.listingAreaMode === "clear") return {}
   if (form.listingAreaPlaceId === null) throw new Error("Select a listed place")
-  return resolve(
+  return resolveListingArea(
     form.listingAreaCountry,
     form.listingAreaState,
     form.listingAreaPlaceId
