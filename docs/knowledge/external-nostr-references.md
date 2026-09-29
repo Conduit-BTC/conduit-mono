@@ -43,19 +43,12 @@ Guidance:
 
 ## Open Markets Specification (Commerce)
 
-- Repository and active working/governance venue:
-  - https://github.com/OpenMarketsFoundation/specification
-- Current default-branch working specification:
-  - https://github.com/OpenMarketsFoundation/specification/blob/main/README.md
-- Maintained Conduit implementation note:
-  - [open-markets-specification-notes.md](./open-markets-specification-notes.md)
+- [Current working specification](https://github.com/OpenMarketsFoundation/specification/blob/main/README.md)
+- [Conduit implementation guide](../OPEN_MARKETS.md): support, source baseline,
+  compatibility, historical provenance, and unmerged proposal dependencies
 
-Source boundary:
-
-- The Open Markets repository is the active public working and governance venue for the commerce specification. Its current default-branch material is Conduit's working reference; this does not make branch-only proposals normative.
-- [Open Markets PR #1](https://github.com/OpenMarketsFoundation/specification/pull/1) proposes stable `SPEC.md` and pillar navigation but remains open and unmerged as of this review. Its branch-only paths are non-normative and must not be cited as canonical links.
-- [Open Markets PR #13](https://github.com/OpenMarketsFoundation/specification/pull/13) is an open draft stacked on PR #1. Its versioned destination constraints are experimental, branch-only, and non-normative.
-- After PR #1 merges, reverify the repository root and any new default-branch paths before updating stable links or protocol behavior.
+The working source defines commerce meaning. Conduit implementation and proposal
+status are maintained in the guide rather than duplicated here.
 
 ## Current Conduit Protocol Map
 
@@ -123,27 +116,8 @@ Source boundary:
 - Nostr WS Inspector (Chrome extension, debugging relays)
   - https://chromewebstore.google.com/detail/nostr-ws-inspector/pchfingijipdcdimblhpahbolijmblmn
 
-## Historical Interop: GammaMarkets Market Spec
-
-- Earlier market spec repository:
-  - https://github.com/GammaMarkets/market-spec
-- Historical specification text:
-  - https://github.com/GammaMarkets/market-spec/blob/main/spec.md
-- Compatibility note:
-  - [gamma-market-spec-notes.md](./gamma-market-spec-notes.md)
-
-Notes:
-
-- GammaMarkets is the origin of the commerce work now maintained through the Open Markets venue. It is not the active governance source.
-- Keep Gamma links where they substantiate historical provenance or deployed legacy/interoperability behavior.
-- External implementations such as Plebeian remain compatibility targets, not authorities.
-- Prefer backwards-compatible evolution. Treat breaking changes as exceptional and require explicit protocol review and migration planning.
-
 ## External Markets (Compatibility Targets)
 
-### Plebeian Market (Primary reference for now)
-
-- Repo: https://github.com/PlebeianApp/market
-- Notes:
-  - Reported to interoperate via NIP-99 listings. Use it to catch real-world parsing/compat footguns.
-  - Do not copy non-spec behavior into core logic; isolate quirks behind explicit compat adapters.
+See [peer verification](../OPEN_MARKETS.md#examples-and-peer-verification) for
+compatibility targets and checks. External clients inform compatibility; they
+are not protocol authorities.

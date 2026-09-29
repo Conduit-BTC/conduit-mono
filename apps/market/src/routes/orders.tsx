@@ -54,6 +54,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  LightningStrikeOverlay,
   OrderMessagesWidget,
   ProtectedInboxNotice,
   SearchInput,
@@ -84,7 +85,6 @@ import {
 } from "lucide-react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { MarketProjectTip } from "../components/MarketProjectTip"
-import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import { useCart } from "../hooks/useCart"
 import { groupCartPurchases } from "../lib/cart-model"
 import { CopyButton } from "../components/CopyButton"

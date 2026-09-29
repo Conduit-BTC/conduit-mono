@@ -152,6 +152,27 @@ function toFamily(
 }
 
 describe("merchant product variation planning", () => {
+  it("applies a future Event Market association to current variation products", () => {
+    const marketCoordinate = `30409:${ORGANIZER_PUBKEY}:future-market`
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({ eventMarketRefs: [marketCoordinate] }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    expect(plan.desired).toHaveLength(3)
+    for (const target of plan.desired) {
+      expect(target.product.eventMarketRefs).toEqual([marketCoordinate])
+      expect(
+        buildProductListingEventDraft({
+          product: target.product,
+          dTag: target.dTag,
+        }).tags
+      ).toContainEqual(["a", marketCoordinate])
+    }
+  })
+
   it("publishes a custom variation image URL containing a comma unchanged", () => {
     const imageUrl =
       "https://images.example.com/resize,w_1200/product.png?fit=crop,center"

@@ -78,6 +78,17 @@ for (const { app, appName, url } of appCases) {
       page.getByRole("heading", { name: "You stay in control", level: 3 })
     ).toBeVisible()
     await expect(
+      page.getByRole("heading", { name: "Built on open standards", level: 2 })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("link", {
+        name: /Explore all supported protocols and current limits/,
+      })
+    ).toHaveAttribute("href", /\/docs\/PROTOCOLS\.md$/)
+    await expect(
+      page.getByRole("heading", { name: /Signed product listings · NIP-99/ })
+    ).toBeVisible()
+    await expect(
       page.getByRole("link", { name: "Network settings" })
     ).toHaveCount(0)
 
