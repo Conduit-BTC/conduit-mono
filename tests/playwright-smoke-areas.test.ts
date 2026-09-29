@@ -264,8 +264,16 @@ describe("Playwright smoke area validation", () => {
     )
     expect(previewLinksJob).not.toContain("\n    name: preview-links\n")
     expect(previewLinksJob).toContain("if: github.event_name == 'pull_request'")
-    expect(previewLinksJob).not.toContain(
-      "github.event.pull_request.user.login"
+    expect(previewLinksJob).toContain(
+      "github.event.pull_request.user.login == 'conduit-sudden-agent[bot]'"
+    )
+    expect(previewLinksJob).toContain("Verify contributor refresh scope")
+    expect(previewLinksJob).toContain("assertContributorRefreshPullRequest")
+    expect(previewLinksJob).toContain(
+      "ref: context.payload.pull_request.base.sha"
+    )
+    expect(previewLinksJob).toContain(
+      "pr.head.sha !== context.payload.pull_request.head.sha"
     )
     expect(previewLinksJob).toContain("issues: read")
     expect(previewLinksJob).toContain("pull-requests: read")
