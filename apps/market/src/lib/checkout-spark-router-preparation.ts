@@ -37,6 +37,8 @@ import {
   type CheckoutSparkPayoutInvoiceWitness,
 } from "./checkout-spark-recipient-invoice-witness"
 
+import { withCheckoutSparkStorageLock } from "./checkout-spark-storage"
+
 const STORAGE_KEY = "conduit:checkout-spark-router-preparations:v1"
 const MAX_STORED_PREPARATIONS = 64
 const MAX_HANDOFF_ID_LENGTH = 256
@@ -408,14 +410,16 @@ function saveCheckoutSparkRouterPreparationInternal(
   return readback
 }
 
-export function saveCheckoutSparkRouterPreparation(
+export async function saveCheckoutSparkRouterPreparation(
   input: Omit<StoredCheckoutSparkRouterPreparation, "schemaVersion">,
   storage: CheckoutSparkRouterStorage | null = browserStorage()
-): StoredCheckoutSparkRouterPreparation {
-  return saveCheckoutSparkRouterPreparationInternal(input, storage, false)
+): Promise<StoredCheckoutSparkRouterPreparation> {
+  return withCheckoutSparkStorageLock(STORAGE_KEY, () => {
+    return saveCheckoutSparkRouterPreparationInternal(input, storage, false)
+  })
 }
 
-export function saveCheckoutSparkRouterFundingProgress(
+export async function saveCheckoutSparkRouterFundingProgress(
   input: {
     checkoutId: string
     planDigest: string
@@ -426,39 +430,47 @@ export function saveCheckoutSparkRouterFundingProgress(
     allowSubmissionReset?: boolean
   },
   storage: CheckoutSparkRouterStorage | null = browserStorage()
-): StoredCheckoutSparkRouterPreparation {
-  const existing = getCheckoutSparkRouterPreparation(input.checkoutId, storage)
-  if (
-    !existing ||
-    existing.reconciliation.plan.planDigest !== input.planDigest ||
-    input.reconciliation.plan.planDigest !== input.planDigest
-  ) {
-    throw new Error(
-      "Checkout Spark router funding progress does not match its frozen plan."
+): Promise<StoredCheckoutSparkRouterPreparation> {
+  return withCheckoutSparkStorageLock(STORAGE_KEY, () => {
+    const existing = getCheckoutSparkRouterPreparation(
+      input.checkoutId,
+      storage
     )
-  }
-  return saveCheckoutSparkRouterPreparationInternal(
-    {
-      ...existing,
-      reconciliation: input.reconciliation,
-      fundingSubmissionState: input.fundingSubmissionState,
-      savedAt: input.savedAt,
-    },
-    storage,
-    input.allowSubmissionReset === true
-  )
+    if (
+      !existing ||
+      existing.reconciliation.plan.planDigest !== input.planDigest ||
+      input.reconciliation.plan.planDigest !== input.planDigest
+    ) {
+      throw new Error(
+        "Checkout Spark router funding progress does not match its frozen plan."
+      )
+    }
+    return saveCheckoutSparkRouterPreparationInternal(
+      {
+        ...existing,
+        reconciliation: input.reconciliation,
+        fundingSubmissionState: input.fundingSubmissionState,
+        savedAt: input.savedAt,
+      },
+      storage,
+      input.allowSubmissionReset === true
+    )
+  })
 }
 
-export function deleteCheckoutSparkRouterPreparation(
+export async function deleteCheckoutSparkRouterPreparation(
   checkoutId: string,
   storage: CheckoutSparkRouterStorage | null = browserStorage()
-): void {
-  writePreparations(
-    readPreparations(storage).filter(
-      (preparation) => preparation.reconciliation.plan.checkoutId !== checkoutId
-    ),
-    storage
-  )
+): Promise<void> {
+  return withCheckoutSparkStorageLock(STORAGE_KEY, () => {
+    writePreparations(
+      readPreparations(storage).filter(
+        (preparation) =>
+          preparation.reconciliation.plan.checkoutId !== checkoutId
+      ),
+      storage
+    )
+  })
 }
 
 function defaultCreateWalletMaterial(
@@ -605,7 +617,7 @@ export async function prepareCheckoutSparkRouterFunding(
       commerceQuote,
     })
     const reconciliation = createCheckoutSparkReconciliation(plan)
-    preparation = saveCheckoutSparkRouterPreparation(
+    preparation = await saveCheckoutSparkRouterPreparation(
       {
         reconciliation,
         fundingReceive: funding,
@@ -622,9 +634,9 @@ export async function prepareCheckoutSparkRouterFunding(
       recovery: wallet,
       identity: input.identity,
       preparedAt: now(),
-      onPersisted: (handoffId) => {
+      onPersisted: async (handoffId) => {
         recoveryPersisted = true
-        preparation = saveCheckoutSparkRouterPreparation(
+        preparation = await saveCheckoutSparkRouterPreparation(
           {
             ...preparation!,
             recoveryHandoffId: handoffId,
@@ -657,7 +669,7 @@ export async function prepareCheckoutSparkRouterFunding(
       takeoverAt: plan.takeoverAt,
     })
 
-    preparation = saveCheckoutSparkRouterPreparation(
+    preparation = await saveCheckoutSparkRouterPreparation(
       {
         ...preparation,
         fundingInvoiceExposedAt: exposureTime,
@@ -665,6 +677,13 @@ export async function prepareCheckoutSparkRouterFunding(
       },
       storage
     )
+    if (
+      preparation.fundingSubmissionState !== "not_started" ||
+      now() >= plan.funding.expiresAt ||
+      now() >= plan.takeoverAt
+    ) {
+      throw new Error("Checkout Spark funding is no longer safe to expose.")
+    }
     return {
       plan,
       reconciliation: preparation.reconciliation,
@@ -676,7 +695,7 @@ export async function prepareCheckoutSparkRouterFunding(
   } catch (error) {
     if (!recoveryPersisted) {
       if (preparation) {
-        deleteCheckoutSparkRouterPreparation(input.checkoutId, storage)
+        await deleteCheckoutSparkRouterPreparation(input.checkoutId, storage)
       }
       try {
         await closeWallet(wallet.walletId)
@@ -779,7 +798,7 @@ export async function retryCheckoutSparkRouterRecoveryAndResumeFunding(input: {
     fundingExpiresAt: plan.funding.expiresAt,
     takeoverAt: plan.takeoverAt,
   })
-  const exposed = saveCheckoutSparkRouterPreparation(
+  const exposed = await saveCheckoutSparkRouterPreparation(
     {
       ...current,
       fundingInvoiceExposedAt: current.fundingInvoiceExposedAt ?? exposureTime,
@@ -787,6 +806,13 @@ export async function retryCheckoutSparkRouterRecoveryAndResumeFunding(input: {
     },
     storage
   )
+  if (
+    exposed.fundingSubmissionState !== "not_started" ||
+    now() >= plan.funding.expiresAt ||
+    now() >= plan.takeoverAt
+  ) {
+    throw new Error("Checkout Spark funding is no longer safe to expose.")
+  }
   return {
     plan,
     reconciliation: exposed.reconciliation,

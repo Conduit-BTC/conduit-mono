@@ -228,6 +228,16 @@ export function createCheckoutSparkRouterFundingBridge(
     ((walletId: string, request: SparkCheckoutReceiveRequest) =>
       requireSparkManager().reconcileCheckoutReceive(walletId, request))
   const now = dependencies.now ?? Date.now
+  const assertFundingWindow = () => {
+    const currentTime = now()
+    if (
+      !Number.isSafeInteger(currentTime) ||
+      currentTime >= prepared.plan.funding.expiresAt ||
+      currentTime >= prepared.plan.takeoverAt
+    ) {
+      throw new Error("Checkout Spark funding window has closed.")
+    }
+  }
   const lockManager =
     dependencies.lockManager === undefined
       ? browserFundingLockManager()
@@ -407,6 +417,7 @@ export function createCheckoutSparkRouterFundingBridge(
           throw new Error("Checkout Spark funding requires a quote-bound plan.")
         }
 
+        assertFundingWindow()
         if (input.paymentTarget.type === "manual") {
           const manual = await payInvoice({
             invoice: prepared.fundingInvoice,
@@ -452,7 +463,10 @@ export function createCheckoutSparkRouterFundingBridge(
           paymentTarget: input.paymentTarget,
           walletPaymentAttemptId: input.walletPaymentAttemptId,
           approveFee: input.approveFee,
-          beforeSend: input.beforeSend,
+          beforeSend: async () => {
+            await input.beforeSend?.()
+            assertFundingWindow()
+          },
           timeoutMs: input.timeoutMs,
           appId: input.appId,
           metadata: input.metadata,

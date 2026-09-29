@@ -17,6 +17,8 @@ import {
   type PreparedCheckoutSparkRouterFunding,
 } from "../apps/market/src/lib/checkout-spark-router-preparation"
 
+import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
+
 const CREATED_AT = 1_800_000_000_000
 const FUNDING_INVOICE = "lnbc-router-funding"
 
@@ -38,7 +40,8 @@ class MemoryStorage {
 
 function preparedFunding(
   grossFundingSats = 1_240,
-  quoteBound = true
+  quoteBound = true,
+  takeoverAt = CREATED_AT + 120_000
 ): PreparedCheckoutSparkRouterFunding {
   const plan = freezeCheckoutSparkPlan({
     checkoutId: "checkout-router-funding-1",
@@ -47,7 +50,7 @@ function preparedFunding(
     walletId: "spark-router-wallet-1",
     network: "mainnet",
     createdAt: CREATED_AT,
-    takeoverAt: CREATED_AT + 120_000,
+    takeoverAt,
     funding: {
       requestId: "spark-router-receive-1",
       paymentRequest: FUNDING_INVOICE,
@@ -553,7 +556,7 @@ describe("checkout Spark router funding bridge", () => {
   it("durably marks a provisional submission before invoking the selected rail", async () => {
     const prepared = preparedFunding()
     const storage = new MemoryStorage()
-    saveCheckoutSparkRouterPreparation(
+    await saveCheckoutSparkRouterPreparation(
       {
         reconciliation: prepared.reconciliation,
         recoveryHandoffId: prepared.recoveryHandoffId,
@@ -601,10 +604,10 @@ describe("checkout Spark router funding bridge", () => {
     ).toBe("provisional")
   })
 
-  it("does not let a stale preparation write regress provisional submission state", () => {
+  it("does not let a stale preparation write regress provisional submission state", async () => {
     const prepared = preparedFunding()
     const storage = new MemoryStorage()
-    const stale = saveCheckoutSparkRouterPreparation(
+    const stale = await saveCheckoutSparkRouterPreparation(
       {
         reconciliation: prepared.reconciliation,
         recoveryHandoffId: prepared.recoveryHandoffId,
@@ -614,7 +617,7 @@ describe("checkout Spark router funding bridge", () => {
       },
       storage
     )
-    saveCheckoutSparkRouterFundingProgress(
+    await saveCheckoutSparkRouterFundingProgress(
       {
         checkoutId: prepared.plan.checkoutId,
         planDigest: prepared.plan.planDigest,
@@ -625,7 +628,7 @@ describe("checkout Spark router funding bridge", () => {
       storage
     )
 
-    saveCheckoutSparkRouterPreparation(
+    await saveCheckoutSparkRouterPreparation(
       {
         ...stale,
         fundingSubmissionState: "not_started",
@@ -640,7 +643,7 @@ describe("checkout Spark router funding bridge", () => {
     ).toBe("provisional")
   })
 
-  it("keeps newer exact funding evidence when a stale retryable result settles", () => {
+  it("keeps newer exact funding evidence when a stale retryable result settles", async () => {
     const prepared = preparedFunding()
     const storage = new MemoryStorage()
     const pending = applyCheckoutSparkEvidence(prepared.reconciliation, {
@@ -667,7 +670,7 @@ describe("checkout Spark router funding bridge", () => {
       state: "spendable",
       observedAt: CREATED_AT + 2_000,
     })
-    saveCheckoutSparkRouterPreparation(
+    await saveCheckoutSparkRouterPreparation(
       {
         reconciliation: pending,
         recoveryHandoffId: prepared.recoveryHandoffId,
@@ -677,7 +680,7 @@ describe("checkout Spark router funding bridge", () => {
       },
       storage
     )
-    saveCheckoutSparkRouterFundingProgress(
+    await saveCheckoutSparkRouterFundingProgress(
       {
         checkoutId: prepared.plan.checkoutId,
         planDigest: prepared.plan.planDigest,
@@ -688,7 +691,7 @@ describe("checkout Spark router funding bridge", () => {
       storage
     )
 
-    saveCheckoutSparkRouterFundingProgress(
+    await saveCheckoutSparkRouterFundingProgress(
       {
         checkoutId: prepared.plan.checkoutId,
         planDigest: prepared.plan.planDigest,
@@ -713,7 +716,7 @@ describe("checkout Spark router funding bridge", () => {
   it("fails closed after a crash gap instead of resending after recreation", async () => {
     const prepared = preparedFunding()
     const storage = new MemoryStorage()
-    saveCheckoutSparkRouterPreparation(
+    await saveCheckoutSparkRouterPreparation(
       {
         reconciliation: prepared.reconciliation,
         recoveryHandoffId: prepared.recoveryHandoffId,
@@ -786,7 +789,7 @@ describe("checkout Spark router funding bridge", () => {
   it("uses the durable merged submission state before deciding whether to send", async () => {
     const prepared = preparedFunding()
     const storage = new MemoryStorage()
-    saveCheckoutSparkRouterPreparation(
+    await saveCheckoutSparkRouterPreparation(
       {
         reconciliation: prepared.reconciliation,
         recoveryHandoffId: prepared.recoveryHandoffId,
@@ -806,7 +809,7 @@ describe("checkout Spark router funding bridge", () => {
       now: () => CREATED_AT + 2_000,
       payInvoice,
       reconcileCheckoutReceive: async () => {
-        saveCheckoutSparkRouterFundingProgress(
+        await saveCheckoutSparkRouterFundingProgress(
           {
             checkoutId: prepared.plan.checkoutId,
             planDigest: prepared.plan.planDigest,
@@ -979,7 +982,7 @@ describe("checkout Spark router funding bridge", () => {
   it("releases only a definite retryable submission for another attempt", async () => {
     const prepared = preparedFunding()
     const storage = new MemoryStorage()
-    saveCheckoutSparkRouterPreparation(
+    await saveCheckoutSparkRouterPreparation(
       {
         reconciliation: prepared.reconciliation,
         recoveryHandoffId: prepared.recoveryHandoffId,
@@ -1048,7 +1051,7 @@ describe("checkout Spark router funding bridge", () => {
   it("does not submit twice when another tab holds the exact funding lock", async () => {
     const prepared = preparedFunding()
     const storage = new MemoryStorage()
-    saveCheckoutSparkRouterPreparation(
+    await saveCheckoutSparkRouterPreparation(
       {
         reconciliation: prepared.reconciliation,
         recoveryHandoffId: prepared.recoveryHandoffId,
@@ -1147,3 +1150,87 @@ describe("checkout Spark router funding bridge", () => {
     ])
   })
 })
+
+for (const deadline of ["invoice expiry", "takeover"] as const) {
+  it(`does not fund after delayed fee approval crosses ${deadline}`, async () => {
+    const prepared = preparedFunding(
+      1_240,
+      true,
+      CREATED_AT + (deadline === "invoice expiry" ? 660_000 : 120_000)
+    )
+    const storage = new MemoryStorage()
+    await saveCheckoutSparkRouterPreparation(
+      {
+        reconciliation: prepared.reconciliation,
+        recoveryHandoffId: prepared.recoveryHandoffId,
+        fundingInvoiceExposedAt: CREATED_AT,
+        fundingSubmissionState: "not_started",
+        savedAt: CREATED_AT,
+      },
+      storage
+    )
+    let currentTime = CREATED_AT + 1_000
+    let payerSends = 0
+    const bridge = createCheckoutSparkRouterFundingBridge(prepared, {
+      storage,
+      requireCrossTabLock: false,
+      now: () => currentTime,
+      reconcileCheckoutReceive: async () => ({
+        state: "pending",
+        providerStatus: "PENDING",
+        failureReason: null,
+        funds: {
+          availableSats: 0,
+          ownedSats: 0,
+          incomingSats: 0,
+          observedAt: currentTime,
+        },
+      }),
+      payInvoice: (payment) =>
+        payCheckoutInvoice(payment, {
+          hasWebLN: () => false,
+          weblnSendPayment: async () => {
+            throw new Error("Unexpected WebLN payment")
+          },
+          recordPaymentAttemptResult: () => {},
+          walletPaymentCoordinator: {
+            async payInvoice(_target, input) {
+              await input.approveFee?.({
+                amountSats: 1_240,
+                feeSats: 1,
+                totalSats: 1_241,
+              })
+              try {
+                await input.beforeSend?.()
+              } catch (error) {
+                return {
+                  status: "failed",
+                  phase: "before_publish",
+                  reason: (error as Error).message,
+                }
+              }
+              payerSends += 1
+              return { status: "paid", preimage: "synthetic-payer-proof" }
+            },
+          },
+        }),
+    })
+    const result = await bridge.fund({
+      ...paymentInput(),
+      approveFee: async () => {
+        currentTime =
+          deadline === "invoice expiry"
+            ? prepared.plan.funding.expiresAt
+            : prepared.plan.takeoverAt
+        return true
+      },
+    })
+    expect(payerSends).toBe(0)
+    expect(result.status).toBe("payment_retryable")
+    expect(result.reconciliation.funding.state).not.toBe("spendable")
+    expect(
+      getCheckoutSparkRouterPreparation(prepared.plan.checkoutId, storage)
+        ?.fundingSubmissionState
+    ).toBe("not_started")
+  })
+}

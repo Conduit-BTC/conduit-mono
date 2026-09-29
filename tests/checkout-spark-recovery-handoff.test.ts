@@ -235,7 +235,7 @@ describe("checkout Spark recovery outbox", () => {
         ?.deliveryProgress.acknowledgedRelayRefs
     ).toHaveLength(1)
 
-    saveCheckoutSparkRecoveryDelivery(
+    await saveCheckoutSparkRecoveryDelivery(
       stored.record,
       stored.deliveryProgress,
       storage,
@@ -272,7 +272,7 @@ describe("checkout Spark recovery outbox", () => {
     const stored = listCheckoutSparkRecoveryDeliveries(storage)[0]!
     const replacement = signedWrap(MERCHANT, "different-ciphertext").rawEvent()
 
-    expect(() =>
+    await expect(
       saveCheckoutSparkRecoveryDelivery(
         { ...stored.record, signedRecipientWrap: replacement },
         {
@@ -283,7 +283,7 @@ describe("checkout Spark recovery outbox", () => {
         storage,
         CREATED_AT + 3_000
       )
-    ).toThrow("different exact delivery wrapper")
+    ).rejects.toThrow("different exact delivery wrapper")
   })
 
   it("fails closed when Spark recovery is outside its checkout scope", async () => {

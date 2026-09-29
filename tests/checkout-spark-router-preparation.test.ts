@@ -368,6 +368,50 @@ describe("checkout Spark router preparation", () => {
     expect(walletCreateCalls).toBe(0)
   })
 
+  it("does not expose funding after a durable write crosses the deadline", async () => {
+    const storage = new MemoryStorage()
+    let currentTime = CREATED_AT
+    const write = storage.setItem.bind(storage)
+    storage.setItem = (key, value) => {
+      write(key, value)
+      const entries = JSON.parse(value) as {
+        fundingInvoiceExposedAt?: number | null
+      }[]
+      if (
+        entries.some(
+          (entry) => typeof entry.fundingInvoiceExposedAt === "number"
+        )
+      ) {
+        currentTime = fundingReceive().expiresAt
+      }
+    }
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        { ...(await readyInput()), storage },
+        {
+          now: () => currentTime,
+          createWalletMaterial: () => walletMaterial(),
+          openWallet: async () => undefined,
+          createFundingReceive: async () => fundingReceive(),
+          publishRecoveryHandoff: async (input) => {
+            await input.onPersisted("handoff-queued-write")
+            return {
+              handoffId: "handoff-queued-write",
+              canExposeFundingInvoice: true,
+            }
+          },
+          closeWallet: async () => {
+            throw new Error("Persisted recovery must remain available")
+          },
+        }
+      )
+    ).rejects.toThrow("funding is no longer safe to expose")
+    expect(
+      getCheckoutSparkRouterPreparation(preparationInput().checkoutId, storage)
+        ?.recoveryHandoffId
+    ).toBe("handoff-queued-write")
+  })
+
   it("persists the frozen plan and exact recovery handoff before exposing funding", async () => {
     const storage = new MemoryStorage()
     const calls: string[] = []

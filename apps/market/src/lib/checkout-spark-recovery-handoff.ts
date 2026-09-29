@@ -17,6 +17,8 @@ import type { GuestOrderSigningIdentity } from "./guest-order-identity"
 import type { SparkRecoveryBundle } from "./spark-recovery-bundle"
 import { isValidSparkMnemonic, normalizeSparkMnemonic } from "./spark-recovery"
 
+import { withCheckoutSparkStorageLock } from "./checkout-spark-storage"
+
 const STORAGE_KEY = "conduit:checkout-spark-recovery-outbox:v1"
 const MAX_STORED_RECOVERY_DELIVERIES = 64
 
@@ -161,76 +163,80 @@ export function getCheckoutSparkRecoveryDelivery(
   )
 }
 
-export function saveCheckoutSparkRecoveryDelivery(
+export async function saveCheckoutSparkRecoveryDelivery(
   recordInput: CheckoutSparkRecoveryDeliveryRecord,
   progressInput: CheckoutSparkRecoveryDeliveryProgress,
   storage: RecoveryStorage | null = browserStorage(),
   now = Date.now()
-): StoredCheckoutSparkRecoveryDelivery {
-  const record = parseCheckoutSparkRecoveryDeliveryRecord(recordInput)
-  const deliveryProgress = parseCheckoutSparkRecoveryDeliveryProgress(
-    progressInput,
-    record
-  )
-  if (!Number.isSafeInteger(now) || now < record.createdAt) {
-    throw new Error("Checkout recovery persistence time is invalid.")
-  }
-  const deliveries = readOutbox(storage)
-  const existingIndex = deliveries.findIndex(
-    (delivery) => delivery.record.handoffId === record.handoffId
-  )
-  if (
-    existingIndex >= 0 &&
-    !sameExactDelivery(deliveries[existingIndex]!.record, record)
-  ) {
-    throw new Error(
-      "Checkout recovery already has a different exact delivery wrapper."
+): Promise<StoredCheckoutSparkRecoveryDelivery> {
+  return withCheckoutSparkStorageLock(STORAGE_KEY, () => {
+    const record = parseCheckoutSparkRecoveryDeliveryRecord(recordInput)
+    const deliveryProgress = parseCheckoutSparkRecoveryDeliveryProgress(
+      progressInput,
+      record
     )
-  }
-  const existing = existingIndex >= 0 ? deliveries[existingIndex]! : null
-  const mergedProgress = parseCheckoutSparkRecoveryDeliveryProgress(
-    existing
-      ? {
-          ...deliveryProgress,
-          acknowledgedRelayRefs: Array.from(
-            new Set([
-              ...existing.deliveryProgress.acknowledgedRelayRefs,
-              ...deliveryProgress.acknowledgedRelayRefs,
-            ])
-          ).sort(),
-        }
-      : deliveryProgress,
-    record
-  )
-  const stored = {
-    record,
-    deliveryProgress: mergedProgress,
-    savedAt: Math.max(existing?.savedAt ?? record.createdAt, now),
-  }
-  const next = [...deliveries]
-  if (existingIndex >= 0) next[existingIndex] = stored
-  else next.push(stored)
-  writeOutbox(next, storage)
+    if (!Number.isSafeInteger(now) || now < record.createdAt) {
+      throw new Error("Checkout recovery persistence time is invalid.")
+    }
+    const deliveries = readOutbox(storage)
+    const existingIndex = deliveries.findIndex(
+      (delivery) => delivery.record.handoffId === record.handoffId
+    )
+    if (
+      existingIndex >= 0 &&
+      !sameExactDelivery(deliveries[existingIndex]!.record, record)
+    ) {
+      throw new Error(
+        "Checkout recovery already has a different exact delivery wrapper."
+      )
+    }
+    const existing = existingIndex >= 0 ? deliveries[existingIndex]! : null
+    const mergedProgress = parseCheckoutSparkRecoveryDeliveryProgress(
+      existing
+        ? {
+            ...deliveryProgress,
+            acknowledgedRelayRefs: Array.from(
+              new Set([
+                ...existing.deliveryProgress.acknowledgedRelayRefs,
+                ...deliveryProgress.acknowledgedRelayRefs,
+              ])
+            ).sort(),
+          }
+        : deliveryProgress,
+      record
+    )
+    const stored = {
+      record,
+      deliveryProgress: mergedProgress,
+      savedAt: Math.max(existing?.savedAt ?? record.createdAt, now),
+    }
+    const next = [...deliveries]
+    if (existingIndex >= 0) next[existingIndex] = stored
+    else next.push(stored)
+    writeOutbox(next, storage)
 
-  const readback = readOutbox(storage).find(
-    (delivery) => delivery.record.handoffId === record.handoffId
-  )
-  if (!readback || !sameExactDelivery(readback.record, record)) {
-    throw new Error("Checkout recovery wrapper was not durably saved.")
-  }
-  return readback
+    const readback = readOutbox(storage).find(
+      (delivery) => delivery.record.handoffId === record.handoffId
+    )
+    if (!readback || !sameExactDelivery(readback.record, record)) {
+      throw new Error("Checkout recovery wrapper was not durably saved.")
+    }
+    return readback
+  })
 }
 
-export function deleteCheckoutSparkRecoveryDelivery(
+export async function deleteCheckoutSparkRecoveryDelivery(
   handoffId: string,
   storage: RecoveryStorage | null = browserStorage()
-): void {
-  writeOutbox(
-    readOutbox(storage).filter(
-      (delivery) => delivery.record.handoffId !== handoffId
-    ),
-    storage
-  )
+): Promise<void> {
+  return withCheckoutSparkStorageLock(STORAGE_KEY, () => {
+    writeOutbox(
+      readOutbox(storage).filter(
+        (delivery) => delivery.record.handoffId !== handoffId
+      ),
+      storage
+    )
+  })
 }
 
 /**
@@ -275,7 +281,7 @@ export async function publishCheckoutSparkRecoveryHandoff(input: {
     transport: input.transport,
     persistExactWrap: async (preparedRecord, progress) => {
       persisted.record = preparedRecord
-      saveCheckoutSparkRecoveryDelivery(
+      await saveCheckoutSparkRecoveryDelivery(
         preparedRecord,
         progress,
         storage,
@@ -288,7 +294,7 @@ export async function publishCheckoutSparkRecoveryHandoff(input: {
   if (!record) {
     throw new Error("Checkout Spark recovery wrapper was not persisted.")
   }
-  saveCheckoutSparkRecoveryDelivery(
+  await saveCheckoutSparkRecoveryDelivery(
     record,
     result.deliveryProgress,
     storage,
@@ -318,7 +324,7 @@ export async function retryStoredCheckoutSparkRecoveryHandoff(input: {
     shouldContinue: input.shouldContinue,
     publishFn: input.publishFn,
   })
-  saveCheckoutSparkRecoveryDelivery(
+  await saveCheckoutSparkRecoveryDelivery(
     stored.record,
     result.deliveryProgress,
     storage,
