@@ -220,7 +220,7 @@ describe("Market event actor identity", () => {
 
     expect(identityComponent).toContain("<CopyButton")
     expect(identityComponent).toContain(
-      "params={{ profileRef: pubkeyToNpub(pubkey) }}"
+      "params={{ identityRef: pubkeyToNpub(pubkey) }}"
     )
     expect(identityComponent).toContain("{formatNpub(pubkey, 8)}")
     expect(identityComponent).toContain("<CopyButton value={pubkey}")

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   buildProfileUpdatePayload,
   formatNpub,
@@ -404,6 +404,20 @@ function ProfilePage() {
                   </>
                 ) : (
                   <>
+                    {accountPubkey && (
+                      <Button
+                        asChild
+                        variant="outline"
+                        className="h-11 px-4 text-sm"
+                      >
+                        <Link
+                          to="/$identityRef"
+                          params={{ identityRef: pubkeyToNpub(accountPubkey) }}
+                        >
+                          View public identity
+                        </Link>
+                      </Button>
+                    )}
                     <Button
                       className="h-11 px-4 text-sm"
                       onClick={startEditing}

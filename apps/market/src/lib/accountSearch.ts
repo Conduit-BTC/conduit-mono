@@ -52,9 +52,10 @@ export function limitAccountMatches(
   return matches.slice(0, limit)
 }
 
-export type AccountSuggestionTarget =
-  | { to: "/store/$pubkey"; params: { pubkey: string } }
-  | { to: "/u/$profileRef"; params: { profileRef: string } }
+export type AccountSuggestionTarget = {
+  to: "/$identityRef"
+  params: { identityRef: string }
+}
 
 export function getAccountSuggestionLabel(match: ProfileSearchMatch): string {
   return getProfileName(match.profile) ?? formatNpub(match.pubkey, 6)
@@ -89,16 +90,13 @@ export function toAccountSuggestionItems(
 }
 
 /**
- * Merchants open their listing page directly; other accounts open the public
- * profile view, which links to a merchant once listings are discovered.
+ * Every account opens the same identity page. Listings appear when available.
  */
 export function getAccountSuggestionTarget(
   match: ProfileSearchMatch
 ): AccountSuggestionTarget {
   const npub = pubkeyToNpub(match.pubkey)
-  return match.isSeller
-    ? { to: "/store/$pubkey", params: { pubkey: npub } }
-    : { to: "/u/$profileRef", params: { profileRef: npub } }
+  return { to: "/$identityRef", params: { identityRef: npub } }
 }
 
 /**

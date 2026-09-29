@@ -19,8 +19,8 @@ export function SellerCard({
 }) {
   return (
     <Link
-      to="/store/$pubkey"
-      params={{ pubkey: pubkeyToNpub(pubkey) }}
+      to="/$identityRef"
+      params={{ identityRef: pubkeyToNpub(pubkey) }}
       className="flex h-full items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
     >
       <Avatar className="size-11 shrink-0">

@@ -35,8 +35,8 @@ export function EventActorProvenance({
       className={`inline-flex min-w-0 items-center gap-2 font-mono text-[var(--text-muted)] ${className}`}
     >
       <Link
-        to="/u/$profileRef"
-        params={{ profileRef: pubkeyToNpub(pubkey) }}
+        to="/$identityRef"
+        params={{ identityRef: pubkeyToNpub(pubkey) }}
         className="truncate underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
       >
         {formatNpub(pubkey, 8)}

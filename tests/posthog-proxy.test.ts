@@ -1276,8 +1276,10 @@ describe("PostHog reverse proxy", () => {
 
     const merchantNpub = pubkeyToNpub("f".repeat(64))
     const storefrontPath = sanitizeTelemetryPath(`/store/${merchantNpub}`)
-    expect(storefrontPath).toBe(`/store/${merchantNpub}`)
+    expect(storefrontPath).toBe("/:identity")
     expect(isSanitizedTelemetryRoutePath(storefrontPath)).toBe(true)
+    expect(isSanitizedTelemetryRoutePath(`/${merchantNpub}`)).toBe(false)
+    expect(isSanitizedTelemetryRoutePath(`/store/${merchantNpub}`)).toBe(false)
     expect(isSanitizedTelemetryRoutePath(PRODUCT_PATH)).toBe(true)
     expect(isSanitizedTelemetryRoutePath(MAX_PRODUCT_PATH)).toBe(true)
     expect(isSanitizedTelemetryRoutePath("/")).toBe(true)

@@ -564,14 +564,16 @@ describe("LivePresenceIndicator", () => {
       "utf8"
     )
     const storeRoute = await readFile(
-      "apps/market/src/routes/store/$pubkey.tsx",
+      "apps/market/src/routes/$identityRef.tsx",
       "utf8"
     )
 
     expect(productRoute).toContain("useProductLivePresenceCount")
     expect(productRoute).toContain("merchantPubkey: selectedProduct?.pubkey")
     expect(productRoute).toContain("productCanonicalId: selectedProduct?.id")
-    expect(storeRoute).toContain("canonicalId: normalizedStorePubkey")
+    expect(storeRoute).toContain(
+      "canonicalId: productCount > 0 ? pubkey : null"
+    )
     expect(storeRoute).toContain(
       "col-span-2 min-w-0 pt-2 sm:col-span-1 sm:col-start-2"
     )

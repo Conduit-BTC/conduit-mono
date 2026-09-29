@@ -704,8 +704,8 @@ function CheckoutMerchantIdentityLink({
 
   return (
     <Link
-      to="/store/$pubkey"
-      params={{ pubkey: merchantStoreRef }}
+      to="/$identityRef"
+      params={{ identityRef: merchantStoreRef }}
       className={[
         "flex min-w-0 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]",
         className,

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs"
 describe("Market follow session lifecycle", () => {
   it("discards stale follow results when the signer session changes", () => {
     const source = readFileSync(
-      new URL("../apps/market/src/routes/store/$pubkey.tsx", import.meta.url),
+      new URL("../apps/market/src/routes/$identityRef.tsx", import.meta.url),
       "utf8"
     )
 
@@ -26,7 +26,7 @@ describe("Market follow session lifecycle", () => {
 
   it("links incomplete contact-list reads to write relay settings", () => {
     const source = readFileSync(
-      new URL("../apps/market/src/routes/store/$pubkey.tsx", import.meta.url),
+      new URL("../apps/market/src/routes/$identityRef.tsx", import.meta.url),
       "utf8"
     )
 

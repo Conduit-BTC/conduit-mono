@@ -177,7 +177,7 @@ describe("browser telemetry", () => {
     }
   })
 
-  it("keeps only canonical public commerce identifiers in pageview paths", () => {
+  it("retains product event identity on pageviews and redacts every public identity route", () => {
     expect(
       sanitizeTelemetryPageViewPath(
         `/products/${encodeURIComponent(productAddress)}`
@@ -200,14 +200,14 @@ describe("browser telemetry", () => {
         "/products/30402%3Amerchant%3Atesting-digital-jxwwl7?order=abc"
       )
     ).toBe("/products/:productId")
-    expect(sanitizeTelemetryPath(`/store/${storePubkey}`)).toBe(
-      `/store/${storeNpub}`
-    )
+    expect(sanitizeTelemetryPath(`/${storeNpub}`)).toBe("/:identity")
+    expect(sanitizeTelemetryPath(`/store/${storePubkey}`)).toBe("/:identity")
     expect(sanitizeTelemetryPath(`/store/${storeNpub}?q=raw`)).toBe(
-      `/store/${storeNpub}`
+      "/:identity"
     )
-    expect(sanitizeTelemetryPath("/store/not-a-pubkey")).toBe("/store/:pubkey")
-    expect(sanitizeTelemetryPath("/u/npub1example")).toBe("/u/:profileRef")
+    expect(sanitizeTelemetryPath(`/u/${storeNpub}`)).toBe("/:identity")
+    expect(sanitizeTelemetryPath("/store/not-a-pubkey")).toBe("/:identity")
+    expect(sanitizeTelemetryPath("/u/npub1example")).toBe("/:identity")
     expect(sanitizeTelemetryPath("/orders?order=local-secret")).toBe("/orders")
     expect(sanitizeTelemetryPath("/npub1example")).toBe("/:param")
     expect(sanitizeTelemetryPath("/lnbc123")).toBe("/:param")
@@ -231,15 +231,15 @@ describe("browser telemetry", () => {
     expect(
       buildTelemetryPageViewUrl({
         origin: "https://shop.conduit.market/",
-        pathname: `/store/${storePubkey}`,
+        pathname: `/${storeNpub}`,
       })
-    ).toBe(`https://shop.conduit.market/store/${storeNpub}`)
+    ).toBe("https://shop.conduit.market/:identity")
     expect(
       buildTelemetryPageViewUrl({
         origin: "https://shop.conduit.market/",
-        pathname: `/store/${secondStorePubkey}`,
+        pathname: `/${secondStoreNpub}`,
       })
-    ).toBe(`https://shop.conduit.market/store/${secondStoreNpub}`)
+    ).toBe("https://shop.conduit.market/:identity")
     expect(
       buildTelemetryPageViewUrl({
         origin: "https://shop.conduit.market/",
@@ -261,8 +261,8 @@ describe("browser telemetry", () => {
         pathname: `/store/${storePubkey}?q=buyer-search`,
       })
     ).toEqual({
-      page_path: `/store/${storeNpub}`,
-      page_url: `https://shop.conduit.market/store/${storeNpub}`,
+      page_path: "/:identity",
+      page_url: "https://shop.conduit.market/:identity",
     })
     expect(
       buildTelemetryEventPageContext({

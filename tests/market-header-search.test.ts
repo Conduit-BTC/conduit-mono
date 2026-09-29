@@ -63,11 +63,11 @@ describe("Market header suggestion model", () => {
     })
     expect(model.targetById.get(SELLER)).toMatchObject({
       kind: "account",
-      target: { to: "/store/$pubkey" },
+      target: { to: "/$identityRef" },
     })
     expect(model.targetById.get(ACCOUNT)).toMatchObject({
       kind: "account",
-      target: { to: "/u/$profileRef" },
+      target: { to: "/$identityRef" },
     })
   })
 
