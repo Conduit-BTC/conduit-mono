@@ -15,7 +15,7 @@ import {
   useState,
   type FormEvent,
 } from "react"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, Link, notFound } from "@tanstack/react-router"
 import { useQueryClient } from "@tanstack/react-query"
 import {
   Avatar,
@@ -90,6 +90,9 @@ type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
 type StoreSearch = IdentitySearch
 
 export const Route = createFileRoute("/$identityRef")({
+  beforeLoad: ({ params }) => {
+    if (!resolveProfileReference(params.identityRef)) throw notFound()
+  },
   component: PublicIdentityPage,
   validateSearch: validateIdentitySearch,
 })
@@ -533,19 +536,6 @@ function PublicIdentityPage() {
     }
   }
 
-  if (!resolved) {
-    return (
-      <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8">
-        <h1 className="text-2xl font-semibold text-[var(--text-primary)]">
-          Identity not found
-        </h1>
-        <p className="mt-3 text-sm text-[var(--text-secondary)]">
-          This Nostr identity reference could not be resolved.
-        </p>
-      </section>
-    )
-  }
-
   const hasCommerceSurface =
     productCount > 0 ||
     productsQuery.isInitialLoading ||
@@ -661,30 +651,32 @@ function PublicIdentityPage() {
                   <MessageCircle className="h-4 w-4" />
                   Send message
                 </Button>
-                <StorefrontFollowButton
-                  isFollowing={isFollowing}
-                  merchantName={merchantName}
-                  onClick={() => void handleFollow()}
-                  retryAction={
-                    followControl.isPendingRetry
-                      ? followControl.shouldFollowOnClick
-                        ? "follow"
-                        : "unfollow"
-                      : null
-                  }
-                  saveState={followSaveState}
-                  unavailableDescriptionId={
-                    !CONTACT_LIST_WRITES_AVAILABLE
-                      ? "storefront-follow-maintenance"
-                      : accountPubkey && !signerReady
-                        ? "storefront-follow-recovery"
-                        : undefined
-                  }
-                  writesAvailable={
-                    CONTACT_LIST_WRITES_AVAILABLE &&
-                    (!accountPubkey || signerReady)
-                  }
-                />
+                {accountPubkey !== pubkey && (
+                  <StorefrontFollowButton
+                    isFollowing={isFollowing}
+                    merchantName={merchantName}
+                    onClick={() => void handleFollow()}
+                    retryAction={
+                      followControl.isPendingRetry
+                        ? followControl.shouldFollowOnClick
+                          ? "follow"
+                          : "unfollow"
+                        : null
+                    }
+                    saveState={followSaveState}
+                    unavailableDescriptionId={
+                      !CONTACT_LIST_WRITES_AVAILABLE
+                        ? "storefront-follow-maintenance"
+                        : accountPubkey && !signerReady
+                          ? "storefront-follow-recovery"
+                          : undefined
+                    }
+                    writesAvailable={
+                      CONTACT_LIST_WRITES_AVAILABLE &&
+                      (!accountPubkey || signerReady)
+                    }
+                  />
+                )}
               </div>
               {!CONTACT_LIST_WRITES_AVAILABLE && (
                 <p

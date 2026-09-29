@@ -329,6 +329,77 @@ async function publishProduct(page: Page, title: string): Promise<void> {
   await expect(dialog).toBeHidden({ timeout: 20_000 })
 }
 
+test("public identity keeps self actions and legacy links usable @commerce", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const viewer = createRuntimeSignerIdentity()
+  const other = createRuntimeSignerIdentity()
+  try {
+    await seedPublicIdentity(viewer, { name: "Identity Viewer" })
+    await seedPublicIdentity(other, { name: "Other Identity" })
+    await installRealTestSigner(page, viewer, TEST_RELAY_URL)
+    const viewerNpub = nip19.npubEncode(viewer.pubkey)
+    const otherNpub = nip19.npubEncode(other.pubkey)
+
+    await page.goto(`${marketUrl}/${viewerNpub}`)
+    await expect(
+      page.getByRole("heading", { name: "Identity Viewer", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Follow Identity Viewer", exact: true })
+    ).toHaveCount(0)
+
+    for (const reference of [
+      other.pubkey,
+      nip19.nprofileEncode({ pubkey: other.pubkey }),
+    ]) {
+      await page.goto(`${marketUrl}/u/${reference}`)
+      await expect(page).toHaveURL(`${marketUrl}/${otherNpub}`)
+      await expect(
+        page.getByRole("heading", { name: "Other Identity", exact: true })
+      ).toBeVisible()
+      await expect(
+        page.getByRole("button", { name: "Follow Other Identity", exact: true })
+      ).toBeEnabled()
+    }
+
+    await page.goto(
+      `${marketUrl}/store/${otherNpub}?q=coffee&sort=price_asc&tag=coffee`
+    )
+    await expect
+      .poll(() => {
+        const url = new URL(page.url())
+        return [
+          url.pathname,
+          url.searchParams.get("q"),
+          url.searchParams.get("sort"),
+          url.searchParams.get("tag"),
+        ]
+      })
+      .toEqual([`/${otherNpub}`, "coffee", "price_asc", '["coffee"]'])
+    await expect(
+      page.getByRole("textbox", { name: "Search listings", exact: true })
+    ).toHaveValue("coffee")
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click()
+    await expect
+      .poll(() => {
+        const url = new URL(page.url())
+        return [
+          url.pathname,
+          url.searchParams.get("tab"),
+          url.searchParams.get("merchant"),
+        ]
+      })
+      .toEqual(["/messages", "dms", other.pubkey])
+  } finally {
+    disposeRuntimeSignerIdentity(viewer)
+    disposeRuntimeSignerIdentity(other)
+  }
+})
+
 test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", async ({
   browser,
 }) => {

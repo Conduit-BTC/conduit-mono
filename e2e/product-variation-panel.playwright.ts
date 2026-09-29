@@ -836,7 +836,7 @@ test("market integrated pickup provenance keeps keyboard actions inside the noti
     )
   ).toBe("0")
   const profileLink = notice.getByRole("link")
-  await expect(profileLink).toHaveAttribute("href", /\/u\/npub1/)
+  await expect(profileLink).toHaveAttribute("href", /^\/npub1[a-z0-9]+$/)
   expect(
     await page.evaluate(
       () => document.documentElement.dataset.variationCopiedText
