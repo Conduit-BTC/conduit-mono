@@ -90,7 +90,8 @@ describe("Brainstorm global score", () => {
       firstRequestStarted()
       return new Response(null, {
         status: 202,
-        headers: { "Retry-After": "30" },
+        // Leave headroom in the 30-second budget to test cancellation.
+        headers: { "Retry-After": "1" },
       })
     })
     globalThis.fetch = fetchMock as typeof fetch
