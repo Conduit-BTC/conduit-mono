@@ -107,6 +107,9 @@ function ShippingPage() {
     staleTime: 60_000,
   })
 
+  const retainedSettings =
+    signedSettingsQuery.data?.state === "found" &&
+    signedSettingsQuery.data.retained
   const complete = isShippingComplete(config)
   const summary = buildSummary(config.countries)
   const hasUnsavedChanges = useMemo(
@@ -266,6 +269,7 @@ function ShippingPage() {
                   needsRelaySync ||
                   saveState.status === "saved" ||
                   signedSettingsQuery.isFetching ||
+                  retainedSettings ||
                   signedSettingsQuery.isError ||
                   signedSettingsQuery.data?.state === "unavailable" ||
                   remoteShippingQuery.isFetching) && (
@@ -282,6 +286,11 @@ function ShippingPage() {
                     )}
                     {signedSettingsQuery.isFetching && (
                       <Badge variant="outline">Checking signed settings</Badge>
+                    )}
+                    {retainedSettings && (
+                      <Badge variant="warning">
+                        Using previously signed settings
+                      </Badge>
                     )}
                     {(signedSettingsQuery.isError ||
                       signedSettingsQuery.data?.state === "unavailable") && (
@@ -425,7 +434,14 @@ function ShippingPage() {
                     saveState.status === "error" ? saveState.message : undefined
                   }
                 />
-                {(signedSettingsQuery.isError ||
+                {retainedSettings && (
+                  <p role="status" className="text-sm text-[var(--warning)]">
+                    Your previously signed settings are preserved. Retry the
+                    relay read before saving changes.
+                  </p>
+                )}
+                {(retainedSettings ||
+                  signedSettingsQuery.isError ||
                   signedSettingsQuery.data?.state === "unavailable") && (
                   <Button
                     type="button"

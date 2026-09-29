@@ -147,10 +147,7 @@ export function ListingAreaPicker({
         options={options}
         onValueChange={(value) => onPlaceChange(Number(value))}
         filterOptions={false}
-        onSearchChange={(text) => {
-          setQuery(text)
-          if (text && placeId !== null) onPlaceChange(null)
-        }}
+        onSearchChange={setQuery}
         disabled={
           !country || (countryCode === "US" && !stateCode) || loading || error
         }

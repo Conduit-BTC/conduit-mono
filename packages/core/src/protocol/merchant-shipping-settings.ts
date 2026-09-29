@@ -1,5 +1,6 @@
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
+import { db, type ConduitDB } from "../db"
 import { SHIPPING_COUNTRIES } from "./countries"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
@@ -10,6 +11,7 @@ import { fetchSignedEventsFanoutDetailed } from "./relay-reader"
 import { publishWithPlanner } from "./relay-publish"
 import {
   compareReplaceableEventFrontiers,
+  isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
@@ -52,9 +54,21 @@ export type MerchantShippingReadResult =
       settings: MerchantShippingSettings
       revision: MerchantShippingRevision
       coverageComplete: boolean
+      /** Stronger durable evidence was not confirmed by this relay read. */
+      retained?: true
     }
   | { state: "not_found" }
-  | { state: "unavailable"; reason: "relay_read" | "invalid_document" }
+  | {
+      state: "unavailable"
+      reason: "relay_read" | "invalid_document" | "evidence_storage"
+    }
+
+interface MerchantShippingReadDependencies {
+  fetchEvents?: typeof fetchSignedEventsFanoutDetailed
+  readRelayUrls?: string[]
+  shouldContinue?: () => boolean
+  evidenceDb?: ConduitDB
+}
 
 function ownerPubkey(pubkey: string): string {
   const owner = pubkey.trim().toLowerCase()
@@ -158,15 +172,98 @@ export function selectMerchantShippingEvent(
   )
 }
 
+class InvalidMerchantShippingEvidenceError extends Error {}
+
+function validateMerchantShippingEvidence(
+  event: SignedPublicNostrEvent,
+  owner: string
+): void {
+  try {
+    if (
+      !isValidSignedPublicNostrEvent(event) ||
+      selectMerchantShippingEvent([event], owner)?.id !== event.id
+    )
+      throw new Error("Invalid signed settings")
+    parseMerchantShippingSettings(JSON.parse(event.content) as unknown)
+  } catch {
+    throw new InvalidMerchantShippingEvidenceError(
+      "Stored shipping settings evidence is invalid."
+    )
+  }
+}
+
+async function retainMerchantShippingEvent(
+  owner: string,
+  candidate: SignedPublicNostrEvent,
+  evidenceDb: ConduitDB
+): Promise<SignedPublicNostrEvent> {
+  validateMerchantShippingEvidence(candidate, owner)
+  return evidenceDb.transaction(
+    "rw",
+    evidenceDb.merchantShippingSettingsEvidence,
+    async () => {
+      const stored =
+        await evidenceDb.merchantShippingSettingsEvidence.get(owner)
+      if (stored) {
+        validateMerchantShippingEvidence(stored.signedEvent, owner)
+        if (
+          compareReplaceableEventFrontiers(
+            { createdAt: candidate.created_at, eventId: candidate.id },
+            {
+              createdAt: stored.signedEvent.created_at,
+              eventId: stored.signedEvent.id,
+            }
+          ) <= 0
+        )
+          return stored.signedEvent
+      }
+      await evidenceDb.merchantShippingSettingsEvidence.put({
+        pubkey: owner,
+        signedEvent: candidate,
+      })
+      return candidate
+    }
+  )
+}
+
+function shippingReadFromEvent(
+  event: SignedPublicNostrEvent,
+  coverageComplete: boolean,
+  retained = false
+): MerchantShippingReadResult {
+  return {
+    state: "found",
+    settings: parseMerchantShippingSettings(
+      JSON.parse(event.content) as unknown
+    ),
+    revision: { eventId: event.id, createdAt: event.created_at },
+    coverageComplete,
+    ...(retained ? { retained: true as const } : {}),
+  }
+}
+
 export async function fetchMerchantShippingSettings(
   pubkey: string,
-  dependencies: {
-    fetchEvents?: typeof fetchSignedEventsFanoutDetailed
-    readRelayUrls?: string[]
-    shouldContinue?: () => boolean
-  } = {}
+  dependencies: MerchantShippingReadDependencies = {}
 ): Promise<MerchantShippingReadResult> {
   const owner = ownerPubkey(pubkey)
+  const evidenceDb = dependencies.evidenceDb ?? db
+  let retained: SignedPublicNostrEvent | null
+  try {
+    const stored = await evidenceDb.merchantShippingSettingsEvidence.get(owner)
+    retained = stored?.signedEvent ?? null
+    if (retained) validateMerchantShippingEvidence(retained, owner)
+  } catch (error) {
+    return {
+      state: "unavailable",
+      reason:
+        error instanceof InvalidMerchantShippingEvidenceError
+          ? "invalid_document"
+          : "evidence_storage",
+    }
+  }
+  const retainedRead = (coverageComplete: boolean) =>
+    retained ? shippingReadFromEvent(retained, coverageComplete, true) : null
   let relayUrls = dependencies.readRelayUrls
   if (!relayUrls) {
     const snapshot =
@@ -215,7 +312,7 @@ export async function fetchMerchantShippingSettings(
   }
   relayUrls = Array.from(new Set(relayUrls)).slice(0, 8)
   if (relayUrls.length === 0)
-    return { state: "unavailable", reason: "relay_read" }
+    return retainedRead(false) ?? { state: "unavailable", reason: "relay_read" }
   try {
     const result = await (
       dependencies.fetchEvents ?? fetchSignedEventsFanoutDetailed
@@ -237,31 +334,60 @@ export async function fetchMerchantShippingSettings(
       }
     )
     if (!result.eventsVerified)
-      return { state: "unavailable", reason: "relay_read" }
+      return (
+        retainedRead(false) ?? { state: "unavailable", reason: "relay_read" }
+      )
     const coverageComplete =
       result.relays.length === relayUrls.length &&
       result.relays.every((relay) => relay.status === "success")
     const latest = selectMerchantShippingEvent(result.events, owner)
-    if (!latest)
-      return coverageComplete
-        ? { state: "not_found" }
-        : { state: "unavailable", reason: "relay_read" }
-    try {
-      return {
-        state: "found",
-        settings: parseMerchantShippingSettings(
-          JSON.parse(latest.content) as unknown
-        ),
-        revision: { eventId: latest.id, createdAt: latest.created_at },
-        coverageComplete,
+    if (!latest) {
+      // Another tab may have retained a revision while this read was pending.
+      try {
+        const stored =
+          await evidenceDb.merchantShippingSettingsEvidence.get(owner)
+        retained = stored?.signedEvent ?? retained
+        if (retained) validateMerchantShippingEvidence(retained, owner)
+      } catch (error) {
+        return {
+          state: "unavailable",
+          reason:
+            error instanceof InvalidMerchantShippingEvidenceError
+              ? "invalid_document"
+              : "evidence_storage",
+        }
       }
-    } catch {
-      return { state: "unavailable", reason: "invalid_document" }
+      return (
+        retainedRead(coverageComplete) ??
+        (coverageComplete
+          ? { state: "not_found" }
+          : { state: "unavailable", reason: "relay_read" })
+      )
+    }
+    try {
+      const strongest = await retainMerchantShippingEvent(
+        owner,
+        latest,
+        evidenceDb
+      )
+      return shippingReadFromEvent(
+        strongest,
+        coverageComplete,
+        strongest.id !== latest.id
+      )
+    } catch (error) {
+      return {
+        state: "unavailable",
+        reason:
+          error instanceof InvalidMerchantShippingEvidenceError
+            ? "invalid_document"
+            : "evidence_storage",
+      }
     }
   } catch {
     if (dependencies.shouldContinue?.() === false)
       throw new Error("Merchant session changed during shipping settings read")
-    return { state: "unavailable", reason: "relay_read" }
+    return retainedRead(false) ?? { state: "unavailable", reason: "relay_read" }
   }
 }
 
@@ -269,12 +395,9 @@ export async function publishMerchantShippingSettings(input: {
   pubkey: string
   settings: MerchantShippingSettings
   acceptedRevision?: MerchantShippingRevision | null
-  dependencies?: {
+  dependencies?: MerchantShippingReadDependencies & {
     signer?: NDKSigner
-    fetchEvents?: typeof fetchSignedEventsFanoutDetailed
-    readRelayUrls?: string[]
     publishEvent?: typeof publishWithPlanner
-    shouldContinue?: () => boolean
     now?: () => number
   }
 }): Promise<MerchantShippingRevision> {
@@ -286,9 +409,17 @@ export async function publishMerchantShippingSettings(input: {
       "Connect the matching merchant signer before saving shipping settings"
     )
   const current = await fetchMerchantShippingSettings(owner, input.dependencies)
+  if (current.state === "unavailable" && current.reason === "evidence_storage")
+    throw new Error(
+      "This device could not retain signed shipping settings. Restore local storage before saving."
+    )
   if (current.state === "unavailable")
     throw new Error(
       "Shipping settings could not be read from relays. Retry before replacing them."
+    )
+  if (current.state === "found" && current.retained)
+    throw new Error(
+      "The previously published shipping settings could not be confirmed on relays. Retry the relay read before saving."
     )
   if (current.state === "found" && !current.coverageComplete)
     throw new Error(
@@ -331,5 +462,16 @@ export async function publishMerchantShippingSettings(input: {
     deliveryMode: "standard",
     shouldContinue: input.dependencies?.shouldContinue,
   })
+  try {
+    await retainMerchantShippingEvent(
+      owner,
+      event.rawEvent() as SignedPublicNostrEvent,
+      input.dependencies?.evidenceDb ?? db
+    )
+  } catch {
+    throw new Error(
+      "Shipping settings were published, but this device could not retain their signed revision. Retry the relay read before saving again."
+    )
+  }
   return { eventId: event.id, createdAt }
 }
