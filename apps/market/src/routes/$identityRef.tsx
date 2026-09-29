@@ -206,8 +206,17 @@ function PublicIdentityPage() {
   )
   const storeProducts = productsQuery.products
   const productCount = storeProducts.length
+  const [observedListingPubkey, setObservedListingPubkey] = useState<
+    string | null
+  >(null)
+  // A filtered empty result does not revoke commerce already observed here.
+  const hasObservedListings =
+    productCount > 0 || observedListingPubkey === pubkey
+  useEffect(() => {
+    if (productCount > 0) setObservedListingPubkey(pubkey)
+  }, [productCount, pubkey])
   const storePresenceCount = useLivePresenceCount({
-    canonicalId: productCount > 0 ? pubkey : null,
+    canonicalId: hasObservedListings ? pubkey : null,
     pageType: "store",
   })
   const merchantTrust = useMerchantTrustContext({
@@ -632,7 +641,7 @@ function PublicIdentityPage() {
                     </span>
                     <BrainstormGlobalScoreLink pubkey={pubkey} />
                   </div>
-                  {productCount > 0 && (
+                  {hasObservedListings && (
                     <LivePresenceIndicator
                       className="mt-3"
                       count={storePresenceCount}
