@@ -1,4 +1,9 @@
-import Dexie, { liveQuery, type EntityTable, type Table } from "dexie"
+import Dexie, {
+  liveQuery,
+  type DexieOptions,
+  type EntityTable,
+  type Table,
+} from "dexie"
 import { config } from "../config"
 import type {
   OrderItemFulfillmentSchema,
@@ -6,6 +11,10 @@ import type {
   ProductZapMessagePolicy,
 } from "../schemas"
 import type { AccountNetworkRoutingPolicy } from "../protocol/account-network-routing-policy"
+import type {
+  CheckoutSparkReconciliation,
+  CheckoutSparkRetirementTombstone,
+} from "../protocol/checkout-spark-reconciliation"
 import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
@@ -107,6 +116,7 @@ export interface CachedProduct {
   shippingOptionLaunchUnsupported?: boolean
   shippingOptionRefs?: ProductShippingOptionReference[]
   collectionRefs?: string[]
+  eventMarketRefs?: string[]
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string
@@ -172,6 +182,27 @@ export interface CachedEventMarketEvidence {
   signedEvent: SignedPublicNostrEvent
   sourceRelayUrls: string[]
   cachedAt: number
+}
+
+/** Retained public revisions for the experimental merchant-roster contract. */
+export interface CachedEventMarketRosterEvidence {
+  id: string
+  marketCoordinate: string
+  signedEvent: SignedPublicNostrEvent
+  cachedAt: number
+}
+
+/** Exact, paired organizer signatures kept outside admitted relay evidence. */
+export interface EventMarketMerchantDecisionJob {
+  id: string
+  marketCoordinate: string
+  merchantPubkey: string
+  action: "approve" | "revoke"
+  roster: SignedPublicNostrEvent
+  authorization: SignedPublicNostrEvent
+  status: "pending" | "acknowledged"
+  createdAt: number
+  updatedAt: number
 }
 
 export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
@@ -693,6 +724,13 @@ export type OrderCheckoutMode =
   | "pay_later"
   | "external_wallet"
 
+/** Exact local-only plan identity; never included in the encrypted order payload. */
+export interface OrderCheckoutSparkRouterBinding {
+  checkoutId: string
+  planDigest: string
+  walletId: string
+}
+
 export type OrderPublicZapSigner = "anon" | "shopper"
 
 export type OrderBuyerIdentityKind = "signed_in" | "guest_ephemeral"
@@ -867,6 +905,8 @@ export interface OrderLifecycle {
   buyerIdentityKind?: OrderBuyerIdentityKind
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode
+  /** When present, legacy direct-payment retries must not pay this order. */
+  checkoutSparkRouterBinding?: OrderCheckoutSparkRouterBinding
   publicZapSigner?: OrderPublicZapSigner
   /** A public anon-zap attempt failed before invoice issuance and continued privately. */
   publicZapFallback?: boolean
@@ -974,7 +1014,22 @@ export interface OrderLifecycle {
   completedAt?: number
 }
 
-class ConduitDB extends Dexie {
+export interface StoredCheckoutSparkPlanBinding {
+  checkoutId: string
+  planDigest: string
+}
+
+export interface StoredCheckoutSparkReconciliation {
+  checkoutId: string
+  revision: number
+  state: CheckoutSparkReconciliation
+}
+
+export interface StoredCheckoutSparkRetirement extends CheckoutSparkRetirementTombstone {
+  checkoutId: string
+}
+
+export class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   products!: EntityTable<CachedProduct, "id">
@@ -1001,12 +1056,29 @@ class ConduitDB extends Dexie {
   >
   ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
   eventMarketEvidence!: EntityTable<CachedEventMarketEvidence, "id">
+  eventMarketRosterEvidence!: EntityTable<CachedEventMarketRosterEvidence, "id">
+  eventMarketMerchantDecisionJobs!: EntityTable<
+    EventMarketMerchantDecisionJob,
+    "id"
+  >
   wallets!: EntityTable<WalletDescriptor, "id">
   walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
   shoppingCarts!: EntityTable<StoredShoppingCart, "id">
+  checkoutSparkPlanBindings!: EntityTable<
+    StoredCheckoutSparkPlanBinding,
+    "checkoutId"
+  >
+  checkoutSparkReconciliations!: EntityTable<
+    StoredCheckoutSparkReconciliation,
+    "checkoutId"
+  >
+  checkoutSparkRetirements!: EntityTable<
+    StoredCheckoutSparkRetirement,
+    "checkoutId"
+  >
 
-  constructor() {
-    super("conduit")
+  constructor(databaseName = "conduit", options?: DexieOptions) {
+    super(databaseName, options)
 
     this.version(1).stores({
       orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
@@ -1192,6 +1264,31 @@ class ConduitDB extends Dexie {
       // Shared, signer-independent shopper state. Market owns the opaque
       // payload while Core supplies one serialized cross-tab transaction lane.
       shoppingCarts: "id, updatedAt",
+    })
+
+    this.version(20).stores({
+      // Version 20 shipped independently with Spark checkout recovery and
+      // event-market roster evidence. Keep both stores in the historical
+      // schema so neither lineage is removed when upgrading through v21.
+      // Payment recovery state is device-local, never relay-synced or pruned
+      // as a cache. The binding survives retirement to reject plan replay.
+      checkoutSparkPlanBindings: "checkoutId",
+      checkoutSparkReconciliations: "checkoutId",
+      checkoutSparkRetirements: "checkoutId",
+      eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
+    })
+
+    this.version(21).stores({
+      eventMarketMerchantDecisionJobs:
+        "id, [marketCoordinate+merchantPubkey], status, createdAt",
+    })
+
+    this.version(22).stores({
+      // A browser that already opened the roster/jobs v21 schema never runs
+      // the amended v20 declaration; add Spark stores at a new version too.
+      checkoutSparkPlanBindings: "checkoutId",
+      checkoutSparkReconciliations: "checkoutId",
+      checkoutSparkRetirements: "checkoutId",
     })
   }
 }

@@ -413,8 +413,8 @@ function PublicProfileLink({
 
   return (
     <Link
-      to="/u/$profileRef"
-      params={{ profileRef: pubkeyToNpub(pubkey) }}
+      to="/$identityRef"
+      params={{ identityRef: pubkeyToNpub(pubkey) }}
       className="font-mono text-xs text-[var(--text-secondary)] underline-offset-2 hover:text-[var(--text-primary)] hover:underline"
     >
       {formatNpub(pubkey, 8)}

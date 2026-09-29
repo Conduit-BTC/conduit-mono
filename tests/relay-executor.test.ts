@@ -1084,6 +1084,14 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const invalidFilters: PlainNostrFilter[] = [
       { kinds: [1_059], "#p": [PUBKEY_A], authors: [PUBKEY_A], limit: 10 },
       { kinds: [1_059], "#p": [PUBKEY_A], search: "private text", limit: 10 },
+      { kinds: [1_059], "#p": [PUBKEY_A], ids: ["deadbeef"], limit: 2 },
+      { kinds: [1_059], "#p": [PUBKEY_A], ids: [], limit: 2 },
+      {
+        kinds: [1_059],
+        "#p": [PUBKEY_A],
+        ids: ["a".repeat(64), "b".repeat(64)],
+        limit: 2,
+      },
       { kinds: [1_059], "#p": [PUBKEY_A], limit: 0 },
       { kinds: [1_059], "#p": [PUBKEY_A], limit: 1_001 },
       {
@@ -1108,6 +1116,39 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       ).rejects.toThrow("recipient-scoped kind 1059")
     }
     expect(harness.sockets).toHaveLength(0)
+  })
+
+  it("permits only a full exact ID as a narrower protected inbox read", async () => {
+    const wrap = giftWrap("exact recovery envelope")
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onSend: (socket, frame) => {
+        if (frame[0] !== "REQ") return
+        expect(frame[2]).toMatchObject({
+          kinds: [1_059],
+          "#p": [PUBKEY_A],
+          ids: [wrap.id],
+          limit: 2,
+        })
+        socket.relay(["EVENT", frame[1], wrap])
+        socket.relay(["EOSE", frame[1]])
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize()
+
+    const result = await executor.query(
+      {
+        relayUrls: ["wss://protected.example"],
+        filters: [
+          { kinds: [1_059], "#p": [PUBKEY_A], ids: [wrap.id], limit: 2 },
+        ],
+        operation: "private_inbox_read",
+      },
+      { authorization }
+    )
+
+    expect(result.events.map((event) => event.id)).toEqual([wrap.id])
+    expect(result.status).toBe("success")
   })
 
   it("rejects a private read without active signer authorization before connecting", async () => {

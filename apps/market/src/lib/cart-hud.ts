@@ -1,3 +1,5 @@
+import { normalizePubkey } from "@conduit/core"
+
 export type CartHudRouteMode = "expanded" | "compact" | "suppressed"
 
 export type CartHudCheckoutBlocker =
@@ -32,6 +34,7 @@ export function getCartHudRouteMode(pathname: string): CartHudRouteMode {
   }
   if (
     pathname.startsWith("/store/") ||
+    (pathname.lastIndexOf("/") === 0 && !!normalizePubkey(pathname.slice(1))) ||
     pathname === "/events" ||
     pathname.startsWith("/events/")
   ) {

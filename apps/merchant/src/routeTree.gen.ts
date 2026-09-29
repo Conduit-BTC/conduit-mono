@@ -24,6 +24,7 @@ import { Route as TermsOfServiceRouteImport } from './routes/terms-of-service'
 import { Route as EventsIndexRouteImport } from './routes/events/index'
 import { Route as EventsCollectionRefRouteImport } from './routes/events/$collectionRef'
 import { Route as EventsNewRouteImport } from './routes/events/new'
+import { Route as EventsMarketMarketRefRouteImport } from './routes/events/market.$marketRef'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -100,6 +101,11 @@ const EventsNewRoute = EventsNewRouteImport.update({
   path: '/new',
   getParentRoute: () => EventsRoute,
 } as any)
+const EventsMarketMarketRefRoute = EventsMarketMarketRefRouteImport.update({
+  id: '/market/$marketRef',
+  path: '/market/$marketRef',
+  getParentRoute: () => EventsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -117,6 +123,7 @@ export interface FileRoutesByFullPath {
   '/events/$collectionRef': typeof EventsCollectionRefRoute
   '/events/new': typeof EventsNewRoute
   '/events/': typeof EventsIndexRoute
+  '/events/market/$marketRef': typeof EventsMarketMarketRefRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -133,6 +140,7 @@ export interface FileRoutesByTo {
   '/events/$collectionRef': typeof EventsCollectionRefRoute
   '/events/new': typeof EventsNewRoute
   '/events': typeof EventsIndexRoute
+  '/events/market/$marketRef': typeof EventsMarketMarketRefRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -151,6 +159,7 @@ export interface FileRoutesById {
   '/events/$collectionRef': typeof EventsCollectionRefRoute
   '/events/new': typeof EventsNewRoute
   '/events/': typeof EventsIndexRoute
+  '/events/market/$marketRef': typeof EventsMarketMarketRefRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -170,6 +179,7 @@ export interface FileRouteTypes {
     | '/events/$collectionRef'
     | '/events/new'
     | '/events/'
+    | '/events/market/$marketRef'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -186,6 +196,7 @@ export interface FileRouteTypes {
     | '/events/$collectionRef'
     | '/events/new'
     | '/events'
+    | '/events/market/$marketRef'
   id:
     | '__root__'
     | '/'
@@ -203,6 +214,7 @@ export interface FileRouteTypes {
     | '/events/$collectionRef'
     | '/events/new'
     | '/events/'
+    | '/events/market/$marketRef'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -327,6 +339,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EventsNewRouteImport
       parentRoute: typeof EventsRoute
     }
+    '/events/market/$marketRef': {
+      id: '/events/market/$marketRef'
+      path: '/market/$marketRef'
+      fullPath: '/events/market/$marketRef'
+      preLoaderRoute: typeof EventsMarketMarketRefRouteImport
+      parentRoute: typeof EventsRoute
+    }
   }
 }
 
@@ -334,12 +353,14 @@ interface EventsRouteChildren {
   EventsCollectionRefRoute: typeof EventsCollectionRefRoute
   EventsNewRoute: typeof EventsNewRoute
   EventsIndexRoute: typeof EventsIndexRoute
+  EventsMarketMarketRefRoute: typeof EventsMarketMarketRefRoute
 }
 
 const EventsRouteChildren: EventsRouteChildren = {
   EventsCollectionRefRoute: EventsCollectionRefRoute,
   EventsNewRoute: EventsNewRoute,
   EventsIndexRoute: EventsIndexRoute,
+  EventsMarketMarketRefRoute: EventsMarketMarketRefRoute,
 }
 
 const EventsRouteWithChildren =

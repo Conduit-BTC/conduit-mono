@@ -1403,6 +1403,7 @@ function buildVariationProduct(
     ...(listingAreaMode === "apply" || !existing
       ? { location: parent.location, geohash: parent.geohash }
       : {}),
+    eventMarketRefs: parent.eventMarketRefs,
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
   }

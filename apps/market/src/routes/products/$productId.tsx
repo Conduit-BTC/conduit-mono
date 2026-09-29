@@ -1,7 +1,9 @@
 import { ChevronDown, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
+import { useQuery } from "@tanstack/react-query"
 import {
   buildMarketProductShareUrl,
+  encodeEventMarketNaddr,
   buildProductDetailActionTelemetryProperties,
   formatNpub,
   getListingSafetyDisplay,
@@ -9,6 +11,8 @@ import {
   isCommerceReadIncomplete,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
+  readEventMarketProduct,
+  readEventMarketRoster,
   useAuth,
   useConduitSession,
   useProfile,
@@ -118,6 +122,38 @@ function ProductPage() {
 
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
+  const futureEventReference = product?.eventMarketRefs?.[0]
+  const futureEventQuery = useQuery({
+    queryKey: [
+      "product-future-event-authority",
+      futureEventReference,
+      product?.id,
+      session.relayScope,
+      authenticatedPubkey,
+    ],
+    enabled: !!futureEventReference && !!product && session.relaySettingsReady,
+    retry: false,
+    queryFn: async ({ signal }) => {
+      const marketRead = await readEventMarketRoster({
+        reference: futureEventReference!,
+        authenticatedPubkey,
+        signal,
+      })
+      if (marketRead.resolution.state !== "current" || !marketRead.calendar)
+        return null
+      const productRead = await readEventMarketProduct({
+        marketRead,
+        productCoordinate: product!.id,
+        authenticatedPubkey,
+        signal,
+      })
+      return productRead.resolution.state === "eligible" &&
+        productRead.actionable
+        ? encodeEventMarketNaddr(marketRead.coordinate)
+        : null
+    },
+  })
+  const futureEventNaddr = futureEventQuery.data
   const family = productQuery.family ?? undefined
   const routeProductSelection = useMemo(
     () => (product ? getProductSelection(product, family, productId) : null),
@@ -421,8 +457,8 @@ function ProductPage() {
           {product && (
             <>
               <Link
-                to="/store/$pubkey"
-                params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                to="/$identityRef"
+                params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                 className="transition-colors hover:text-[var(--text-primary)]"
               >
                 {merchantIdentityPending ? (
@@ -549,8 +585,8 @@ function ProductPage() {
             </Button>
             <Button asChild variant="outline" className="h-11 px-5 text-sm">
               <Link
-                to="/store/$pubkey"
-                params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                to="/$identityRef"
+                params={{ identityRef: pubkeyToNpub(product.pubkey) }}
               >
                 View merchant
               </Link>
@@ -637,8 +673,8 @@ function ProductPage() {
                 </div>
                 <div className="mt-3 flex items-start gap-3">
                   <Link
-                    to="/store/$pubkey"
-                    params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                    to="/$identityRef"
+                    params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                     className="block shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-elevated)]"
                     aria-label={`Visit ${merchantName} merchant page`}
                   >
@@ -654,8 +690,8 @@ function ProductPage() {
                   </Link>
                   <div className="min-w-0 flex-1">
                     <Link
-                      to="/store/$pubkey"
-                      params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                      to="/$identityRef"
+                      params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                       className="flex min-w-0 items-center gap-1.5 rounded-md transition-colors hover:text-secondary-300"
                     >
                       {merchantIdentityPending ? (
@@ -680,8 +716,8 @@ function ProductPage() {
                     {!merchantNip05 ? (
                       <div className="mt-1 flex min-w-0 items-center gap-2">
                         <Link
-                          to="/store/$pubkey"
-                          params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                          to="/$identityRef"
+                          params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                           className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
                         >
                           {formatNpub(product.pubkey, 10)}
@@ -860,6 +896,16 @@ function ProductPage() {
                   </div>
                 ) : null}
 
+                {futureEventNaddr ? (
+                  <Link
+                    to="/events/$collectionRef"
+                    params={{ collectionRef: futureEventNaddr }}
+                    className="text-sm font-medium text-secondary-400 hover:text-secondary-300"
+                  >
+                    View eligible Event Market listing
+                  </Link>
+                ) : null}
+
                 <Button asChild variant="outline" className="w-full">
                   <Link
                     to="/cart"
@@ -1003,8 +1049,8 @@ function ProductPage() {
               </div>
               <Button asChild variant="outline" className="h-11 px-4 text-sm">
                 <Link
-                  to="/store/$pubkey"
-                  params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                  to="/$identityRef"
+                  params={{ identityRef: pubkeyToNpub(product.pubkey) }}
                 >
                   <Store className="h-[18px] w-[18px]" />
                   Browse merchant

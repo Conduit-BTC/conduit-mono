@@ -1,10 +1,13 @@
+import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent, nip19 } from "@nostr-dev-kit/ndk"
+import { NDKEvent, NDKUser, nip19, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
+  buildCheckoutSparkRecoveryRumor,
   cacheParsedOrderMessage,
+  createCheckoutSparkRecoveryPayload,
   getBuyerConversationList,
   getCachedBuyerConversationList,
   getCachedMerchantConversationList,
@@ -22,11 +25,13 @@ import {
   getMarketplaceProductsProgressive,
   getMerchantConversationList,
   getMerchantStorefront,
+  openCheckoutSparkRecoveryWrap,
   getProductImageCandidates,
   getProductDetail,
   getProductsByIds,
   getCachedProductsByIds,
   getProfiles,
+  freezeCheckoutSparkPlan,
   __resetRelayHealth,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
@@ -2509,6 +2514,229 @@ describe("commerce gateway", () => {
     ])
   })
 
+  it("sends typed Market search to Congee and retains a newer product revision", async () => {
+    const olderSearchHit = makeProductEvent({
+      pubkey: "merchant-a",
+      dTag: "mug",
+      id: "search-hit-older",
+      createdAt: 101,
+      title: "Handmade vessel",
+    })
+    const newerRevision = makeProductEvent({
+      pubkey: "merchant-a",
+      dTag: "mug",
+      id: "catalog-newer",
+      createdAt: 102,
+      title: "Blue cup",
+    })
+    const outsidePerspective = makeProductEvent({
+      pubkey: "merchant-b",
+      dTag: "outside",
+      id: "search-outside-perspective",
+      createdAt: 103,
+      title: "Outside perspective",
+    })
+    const searchRequests: Array<{
+      search: string | undefined
+      kinds: number[] | undefined
+      authors: string[] | undefined
+      limit: number | undefined
+      relayUrls: readonly string[] | undefined
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        if (filter.search) {
+          searchRequests.push({
+            search: filter.search,
+            kinds: filter.kinds,
+            authors: filter.authors,
+            limit: filter.limit,
+            relayUrls: options?.relayUrls,
+          })
+          return [olderSearchHit, outsidePerspective] as never
+        }
+        return [newerRevision] as never
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "ceramics",
+      searchIndex: true,
+      authorPubkeys: ["merchant-a"],
+    })
+
+    expect(searchRequests).toEqual([
+      {
+        search: "ceramics",
+        kinds: [EVENT_KINDS.PRODUCT],
+        authors: ["merchant-a"],
+        limit: 100,
+        relayUrls: ["wss://conduit-congee.fly.dev"],
+      },
+    ])
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Blue cup",
+    ])
+  })
+
+  it("searches each bounded author batch before the NIP-50 result limit", async () => {
+    const authorPubkeys = Array.from(
+      { length: 65 },
+      (_, index) => `merchant-${index}`
+    )
+    const outsideHits = Array.from({ length: 100 }, (_, index) =>
+      makeProductEvent({
+        pubkey: "outside-catalog",
+        dTag: `outside-${index}`,
+        id: `outside-${index}`,
+        createdAt: 200 + index,
+        title: `Outside catalog ${index}`,
+      })
+    )
+    const semanticMatch = makeProductEvent({
+      pubkey: authorPubkeys[64],
+      dTag: "blue-tee",
+      id: "in-scope-semantic-match",
+      createdAt: 100,
+      title: "Blue cotton tee",
+    })
+    const searchFilters: Array<{
+      authors: string[] | undefined
+      limit: number | undefined
+    }> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.search) return []
+        searchFilters.push({ authors: filter.authors, limit: filter.limit })
+        return [...outsideHits, semanticMatch]
+          .filter(
+            (event) => !filter.authors || filter.authors.includes(event.pubkey)
+          )
+          .slice(0, filter.limit) as never
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "bitcoin t shirt",
+      searchIndex: true,
+      authorPubkeys,
+    })
+
+    expect(searchFilters).toHaveLength(2)
+    expect(searchFilters.every((filter) => filter.limit === 100)).toBe(true)
+    expect(
+      searchFilters.every((filter) => (filter.authors?.length ?? 0) <= 64)
+    ).toBe(true)
+    expect(searchFilters.flatMap((filter) => filter.authors ?? [])).toEqual(
+      authorPubkeys
+    )
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Blue cotton tee",
+    ])
+  })
+
+  it("uses bounded catalog search when Congee is unavailable and skips NIP-50 for empty text", async () => {
+    const fallbackProduct = makeProductEvent({
+      pubkey: "merchant-a",
+      dTag: "bowl",
+      id: "fallback-bowl",
+      createdAt: 103,
+      title: "Ceramic bowl",
+    })
+    const searchFilters: string[] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        if (filter.search) searchFilters.push(filter.search)
+        const productRead = filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+        return {
+          events: productRead && !filter.search ? [fallbackProduct] : [],
+          relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: filter.search ? "failed" : "success",
+            eventCount: productRead && !filter.search ? 1 : 0,
+          })),
+          admittedRelayUrls: [...(options?.relayUrls ?? [])],
+          eventsVerified: true,
+        } as never
+      },
+    })
+
+    const fallback = await getMarketplaceProducts({
+      textQuery: "ceramic",
+      searchIndex: true,
+    })
+    expect(fallback.data.map((record) => record.product.title)).toEqual([
+      "Ceramic bowl",
+    ])
+    expect(fallback.meta.degraded).toBe(true)
+
+    searchFilters.length = 0
+    await getMarketplaceProducts({ textQuery: "  ", searchIndex: true })
+    expect(searchFilters).toEqual([])
+  })
+
+  it("shows a Congee search hit when the broader catalog read fails", async () => {
+    const indexedProduct = makeProductEvent({
+      pubkey: "merchant-a",
+      dTag: "cup",
+      id: "indexed-cup",
+      createdAt: 105,
+      title: "Handmade cup",
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.search) return [indexedProduct] as never
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          throw new Error("catalog unavailable")
+        }
+        return []
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "pottery",
+      searchIndex: true,
+    })
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Handmade cup",
+    ])
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("suppresses a Congee search hit with a valid signed address deletion", async () => {
+    const indexedProduct = makeProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "deleted-cup",
+      id: "indexed-deleted-cup",
+      createdAt: 100,
+      title: "Deleted cup",
+    })
+    const deletion = makeSignedDeletionEvent({
+      createdAt: 101,
+      tags: [
+        ["a", `30402:${MERCHANT_A_PUBKEY}:deleted-cup`],
+        ["k", String(EVENT_KINDS.PRODUCT)],
+      ],
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.search) return [indexedProduct] as never
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) return [deletion]
+        return []
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "cup",
+      searchIndex: true,
+    })
+    expect(result.data).toEqual([])
+  })
+
   it("keeps same d-tag listings from different merchants separate", async () => {
     const productEvents = [
       makeProductEvent({
@@ -4820,6 +5048,164 @@ describe("commerce gateway", () => {
     expect(unwrapCalls).toBe(2)
   })
 
+  it("leaves checkout Spark recovery wraps for the dedicated reader without treating them as order failures", async () => {
+    const plan = freezeCheckoutSparkPlan({
+      checkoutId: "checkout-recovery-cache-isolation",
+      orderId: "order-recovery-cache-isolation",
+      merchantPubkey: MERCHANT_A_PUBKEY,
+      walletId: "spark-checkout-wallet",
+      network: "mainnet",
+      createdAt: FIXED_NOW,
+      takeoverAt: FIXED_NOW + 120_000,
+      funding: {
+        requestId: "receive-recovery-cache-isolation",
+        paymentRequest: "lnbc-router-funding",
+        paymentHash: "b".repeat(64),
+        requiredNetSats: 1_235,
+        grossFundingSats: 1_240,
+        createdAt: FIXED_NOW,
+        expiresAt: FIXED_NOW + 60_000,
+      },
+      obligations: [
+        {
+          kind: "merchant",
+          recipientId: MERCHANT_A_PUBKEY,
+          paymentRequest: "lnbc-merchant",
+          amountSats: 1_000,
+          maxFeeSats: 100,
+        },
+        {
+          kind: "conduit",
+          recipientId: "conduithodlings@strike.me",
+          paymentRequest: "lnbc-conduit",
+          amountSats: 111,
+          maxFeeSats: 24,
+        },
+      ],
+      commerceQuote: {
+        commerceTotalSats: 1_000,
+        lines: [
+          {
+            productCoordinate: `30402:${MERCHANT_A_PUBKEY}:recovery-fixture`,
+            productEventId: "d".repeat(64),
+            merchantPubkey: MERCHANT_A_PUBKEY,
+            quantity: 1,
+            unitMerchandiseSats: 1_000,
+            unitShippingSats: 0,
+          },
+        ],
+      },
+    })
+    const rumor = buildCheckoutSparkRecoveryRumor(
+      createCheckoutSparkRecoveryPayload({
+        plan,
+        senderPubkey: getPublicKey(MERCHANT_B_SECRET),
+        mnemonic: generateSparkMnemonic(),
+        accountNumber: 0,
+        preparedAt: FIXED_NOW + 1_000,
+      })
+    )
+    const wrappedEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.GIFT_WRAP,
+        created_at: Math.floor(FIXED_NOW / 1_000),
+        content: "opaque ciphertext",
+        tags: [["p", MERCHANT_A_PUBKEY]],
+      },
+      new Uint8Array(32).fill(3)
+    )
+    let unwrapCalls = 0
+    let cachedDirectCount = 0
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async () => {
+        unwrapCalls += 1
+        return rumor
+      },
+      putCachedDirectMessages: async (rows) => {
+        cachedDirectCount += rows.length
+      },
+    })
+
+    const first = await getMerchantConversationList({
+      principalPubkey: MERCHANT_A_PUBKEY,
+    })
+    const second = await getMerchantConversationList({
+      principalPubkey: MERCHANT_A_PUBKEY,
+    })
+
+    expect(first.data).toEqual([])
+    expect(second.data).toEqual([])
+    expect(first.meta.decryptFailures).toBeUndefined()
+    expect(second.meta.decryptFailures).toBeUndefined()
+    expect(cachedOrderMessages).toEqual([])
+    expect(cachedDirectCount).toBe(0)
+    // Generic reads classify the wrap once; Merchant's dedicated recovery
+    // reader must still discover the same exact relay ciphertext.
+    expect(unwrapCalls).toBe(1)
+    const recovery = await openCheckoutSparkRecoveryWrap({
+      signedRecipientWrap: wrappedEvent,
+      signer: {
+        user: async () => new NDKUser({ pubkey: MERCHANT_A_PUBKEY }),
+      } as NDKSigner,
+      giftUnwrap: async () => rumor,
+    })
+    expect(recovery.wrapId).toBe(wrappedEvent.id)
+    expect(recovery.payload.plan.orderId).toBe(plan.orderId)
+    expect(unwrapCalls).toBe(1)
+  })
+
+  it("keeps malformed recovery claims retryable in the generic inbox", async () => {
+    const wrappedEvent = {
+      id: "malformed-checkout-recovery-wrap",
+      kind: EVENT_KINDS.GIFT_WRAP,
+      pubkey: "wrapper",
+      created_at: Math.floor(FIXED_NOW / 1_000),
+      content: "opaque ciphertext",
+      tags: [["p", MERCHANT_A_PUBKEY]],
+    }
+    let unwrapCalls = 0
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getNdk: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async () => {
+        unwrapCalls += 1
+        return {
+          kind: EVENT_KINDS.ORDER,
+          tags: [
+            ["p", MERCHANT_A_PUBKEY],
+            ["type", "checkout_spark_recovery"],
+          ],
+          content: "{}",
+        } as never
+      },
+    })
+
+    const first = await getMerchantConversationList({
+      principalPubkey: MERCHANT_A_PUBKEY,
+    })
+    const second = await getMerchantConversationList({
+      principalPubkey: MERCHANT_A_PUBKEY,
+    })
+
+    expect(first.data).toEqual([])
+    expect(second.data).toEqual([])
+    expect(first.meta.decryptFailures).toEqual([
+      { wrapId: wrappedEvent.id, reason: "malformed" },
+    ])
+    expect(second.meta.decryptFailures).toEqual(first.meta.decryptFailures)
+    expect(unwrapCalls).toBe(2)
+  })
+
   it("keeps payment-proof-only merchant conversations visible without marking them paid", async () => {
     const merchantPubkey = "merchant"
     const buyerPubkey = "buyer"
@@ -6107,7 +6493,7 @@ describe("commerce gateway", () => {
 
     expect(deletionFetchCalls).toBe(6)
     expect(maxActiveDeletionFetches).toBeGreaterThan(1)
-    expect(maxActiveDeletionFetches).toBeLessThanOrEqual(4)
+    expect(maxActiveDeletionFetches).toBeLessThanOrEqual(8)
     expect(result.data).toHaveLength(129)
   })
 

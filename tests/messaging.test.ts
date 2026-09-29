@@ -15,6 +15,7 @@ import {
   applyAccountNetworkRelayExclusion,
   buildDirectMessageRumor,
   classifyPrivateMessageKind,
+  config,
   createInMemoryInboxDeclarationEvidenceRepository,
   createInMemoryAccountNetworkLocalStateRepository,
   createValidatedGuestOrderCompanion,
@@ -355,6 +356,76 @@ describe("unwrapGiftWrap", () => {
       wrapId: "w-nip18",
       kind: EVENT_KINDS.ORDER,
     })
+  })
+
+  it("defers a machine-only checkout recovery wrap without exposing its rumor", async () => {
+    const recoveryMaterial = crypto.randomUUID()
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      rumor(EVENT_KINDS.ORDER, {
+        tags: [
+          ["p", "recipient"],
+          ["type", "checkout_spark_recovery"],
+          ["order", "order-1"],
+          ["checkout", "checkout-1"],
+          ["handoff", "a".repeat(64)],
+        ],
+        content: JSON.stringify({ mnemonic: recoveryMaterial }),
+      })
+    const outcome = await unwrapGiftWrap(wrap("w-recovery"), signer, {
+      giftUnwrap,
+    })
+
+    expect(outcome).toEqual({
+      status: "deferred_machine",
+      wrapId: "w-recovery",
+      kind: EVENT_KINDS.ORDER,
+    })
+    expect(JSON.stringify(outcome)).not.toContain(recoveryMaterial)
+  })
+
+  it("does not defer an incomplete checkout recovery envelope", async () => {
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      rumor(EVENT_KINDS.ORDER, {
+        tags: [
+          ["p", "recipient"],
+          ["type", "checkout_spark_recovery"],
+        ],
+        content: "{}",
+      })
+
+    expect(
+      await unwrapGiftWrap(wrap("w-incomplete-recovery"), signer, {
+        giftUnwrap,
+      })
+    ).toEqual({
+      status: "decrypt_failed",
+      wrapId: "w-incomplete-recovery",
+      reason: "malformed",
+    })
+  })
+
+  it("rejects a recovery marker mixed into ordinary order type tags", async () => {
+    const recoveryMaterial = crypto.randomUUID()
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      rumor(EVENT_KINDS.ORDER, {
+        tags: [
+          ["p", "recipient"],
+          ["type", "order"],
+          ["type", "checkout_spark_recovery"],
+          ["order", "order-1"],
+        ],
+        content: JSON.stringify({ mnemonic: recoveryMaterial }),
+      })
+
+    const outcome = await unwrapGiftWrap(wrap("w-mixed-recovery"), signer, {
+      giftUnwrap,
+    })
+    expect(outcome).toEqual({
+      status: "decrypt_failed",
+      wrapId: "w-mixed-recovery",
+      reason: "malformed",
+    })
+    expect(JSON.stringify(outcome)).not.toContain(recoveryMaterial)
   })
 
   it("reports a partial Conduit kind-16 envelope as content-free malformed", async () => {
@@ -2820,8 +2891,8 @@ describe("publishPrivateMessage", () => {
 
   it("retains the approved compatibility plan and non-ACK outcome for exact retry", async () => {
     const approvedRelays = [
-      "wss://relay.conduit.market",
-      "wss://relay.ditto.pub",
+      "wss://conduit-congee.fly.dev",
+      "wss://recipient-write.example",
     ] as const
     const wrapped = new NDKEvent()
     wrapped.kind = EVENT_KINDS.GIFT_WRAP
@@ -2830,47 +2901,56 @@ describe("publishPrivateMessage", () => {
     wrapped.content = "encrypted test fixture"
     await wrapped.sign(NDKPrivateKeySigner.generate())
     let preparedRelayUrls: string[] = []
+    const originalCompatibilityRelays = config.dmCompatibilityOrderRelayUrls
+    const originalInboxFallbacks = config.commerceDmFallbackRelayUrls
+    config.dmCompatibilityOrderRelayUrls = [...approvedRelays]
+    config.commerceDmFallbackRelayUrls = [...approvedRelays]
 
-    const result = await publishPrivateMessage({
-      ...validatedOrderInput(),
-      senderPubkey: "sender",
-      recipientPubkey: "recipient",
-      signer,
-      rumorKind: EVENT_KINDS.ORDER,
-      selfCopy: false,
-      recipientInboxRelays: [],
-      compatibilityOrderRoute: { enabled: true },
-      resolveCompatibilityRecipientReadRelays: async () => approvedRelays,
-      onRecipientPrepared: async (prepared) => {
-        preparedRelayUrls = prepared.relayPlan.map(({ relayUrl }) => relayUrl)
-        expect(prepared.compatibilityPlan?.relayUrls).toEqual(approvedRelays)
-        expect(prepared.routingAuthority).toBeUndefined()
-      },
-      giftWrapFn: (async () => wrapped) as never,
-      publishFn: (async () => ({
-        successfulRelayUrls: [approvedRelays[0]],
-        failedRelayUrls: [approvedRelays[1]],
-        relayFailureMessages: {
-          [approvedRelays[1]]: "No acknowledgement before timeout",
+    try {
+      const result = await publishPrivateMessage({
+        ...validatedOrderInput(),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.ORDER,
+        selfCopy: false,
+        recipientInboxRelays: [],
+        compatibilityOrderRoute: { enabled: true },
+        resolveCompatibilityRecipientReadRelays: async () => approvedRelays,
+        onRecipientPrepared: async (prepared) => {
+          preparedRelayUrls = prepared.relayPlan.map(({ relayUrl }) => relayUrl)
+          expect(prepared.compatibilityPlan?.relayUrls).toEqual(approvedRelays)
+          expect(prepared.routingAuthority).toBeUndefined()
         },
-      })) as never,
-    })
+        giftWrapFn: (async () => wrapped) as never,
+        publishFn: (async () => ({
+          successfulRelayUrls: [approvedRelays[0]],
+          failedRelayUrls: [approvedRelays[1]],
+          relayFailureMessages: {
+            [approvedRelays[1]]: "No acknowledgement before timeout",
+          },
+        })) as never,
+      })
 
-    expect(preparedRelayUrls).toEqual(approvedRelays)
-    expect(result.deliveryStatus).toBe("partial_success")
-    expect(result.orderRelayDelivery).toMatchObject({
-      route: "compatibility_order",
-      compatibilityPlan: { relayUrls: approvedRelays },
-      relayDelivery: [
-        { relayUrl: approvedRelays[0], status: "acked" },
-        {
-          relayUrl: approvedRelays[1],
-          source: "recipient_nip65",
-          status: "timed_out",
-        },
-      ],
-    })
-    expect(result.orderRelayDelivery?.routingAuthority).toBeUndefined()
+      expect(preparedRelayUrls).toEqual(approvedRelays)
+      expect(result.deliveryStatus).toBe("partial_success")
+      expect(result.orderRelayDelivery).toMatchObject({
+        route: "compatibility_order",
+        compatibilityPlan: { relayUrls: approvedRelays },
+        relayDelivery: [
+          { relayUrl: approvedRelays[0], status: "acked" },
+          {
+            relayUrl: approvedRelays[1],
+            source: "recipient_nip65",
+            status: "timed_out",
+          },
+        ],
+      })
+      expect(result.orderRelayDelivery?.routingAuthority).toBeUndefined()
+    } finally {
+      config.dmCompatibilityOrderRelayUrls = originalCompatibilityRelays
+      config.commerceDmFallbackRelayUrls = originalInboxFallbacks
+    }
   })
 
   it("does not stage caller-supplied compatibility relays outside the registry", async () => {

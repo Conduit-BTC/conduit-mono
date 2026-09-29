@@ -84,7 +84,7 @@ describe("nip89 helpers", () => {
     ).toBe(true)
     expect(tags).toContainEqual([
       "web",
-      "https://shop.conduit.market/u/<bech32>",
+      "https://shop.conduit.market/<bech32>",
       "nprofile",
     ])
     expect(tags).toContainEqual([

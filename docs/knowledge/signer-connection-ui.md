@@ -1,7 +1,8 @@
 # Mobile signer connection UI
 
-Market and Merchant share the sign-in panel in `@conduit/ui`. It presents app
-choices before protocol terminology while preserving standard NIP-46 connections.
+Market and Merchant share the sign-in panel in `@conduit/ui`. It presents browser
+signers and app choices before protocol terminology while preserving standard
+NIP-07 and NIP-46 connections.
 
 ## Platform choices
 
@@ -9,10 +10,21 @@ choices before protocol terminology while preserving standard NIP-46 connections
   Universal Link setup. Conduit prepares a standard `nostrconnect://` request,
   including its client metadata and requested permissions, then percent-encodes
   that request once in `https://clave.casa/connect/?uri=...`. The Universal Link
-  gives Clave the app context needed for its connection approval UI. It does not
-  extend Safari's background WebSocket lifetime, so a signer-issued `bunker://`
+  gives Clave the app context needed for its connection approval UI. If Clave is
+  absent, its connection page offers installation and preserves the request for
+  the user's return. The link does not extend Safari's background WebSocket
+  lifetime, so a signer-issued `bunker://`
   connection remains the explicit same-device fallback when the direct handoff
   misses its acknowledgement. QR and copy remain cross-device fallbacks.
+- NIP-07 is the first visible mobile action. A detected signer appears as
+  "Continue with browser signer"; Clave or Amber is the second visible action.
+  On iOS, browser signers include Safari extensions such as Nostash;
+  Conduit checks `window.nostr` capabilities rather than identifying a brand.
+  If passive detection misses a late or newly enabled extension, "Use a Safari
+  extension" remains available and checks again when tapped. Choosing it cancels
+  an owned NIP-46 pairing before starting NIP-07. A remembered NIP-07 session
+  uses its reconnect action as the first choice, without a duplicate browser
+  signer button. Clave or Amber stays visible as the other choice.
 - Android: Amber uses a Chrome-compatible NIP-46 intent with the explicit package
   `com.greenart7c3.nostrsigner`. The request query is preserved byte-for-byte and
   the install link goes to F-Droid. No connection data is placed in an install
@@ -23,8 +35,14 @@ choices before protocol terminology while preserving standard NIP-46 connections
 - A remembered remote session offers only reconnect or forget. Starting a fresh
   pair requires intentionally forgetting the remembered session first.
 
-"Other ways to connect" exposes QR, copy, and bunker entry. QR and copied links
-carry the same client-initiated request; a bunker link starts from the signer.
+"Other ways to connect" keeps QR, copy, and bunker entry collapsed on mobile.
+The app choice handles preparation until its link is ready, with no extra setup
+button or repeated key-custody text. When preparation starts from the app button,
+the ready link says "Open Clave" or "Open Amber" and receives focus; its status
+is announced to assistive technology. A pending reconnect label appears only
+while restoration is active.
+QR and copied links carry the same client-initiated request; a bunker link starts
+from the signer.
 The named Clave action uses Clave's HTTPS Universal Link rather than the shared
 `nostrconnect:` scheme. Intentional manual connections remain interoperable with
 any compatible signer; the protocol does not attest app brands.
@@ -36,7 +54,10 @@ Preparation is suppressed during restoration or another operation, for a remembe
 session, or while an error or existing request is present. The Clave Universal Link
 and Amber intent remain native anchors so the user's tap can open the app without
 an asynchronous redirect. Preparing a URI does not prove the signer is installed
-or the relay is ready.
+or the relay is ready. The Clave mark stays on the app action while preparing and
+after cancellation. Mobile "Cancel pairing" appears only after the user starts
+or opens a pairing; background preparation does not add a cancel action to the
+initial choices.
 
 The panel owns its generated and pasted-bunker attempts. Closing it, canceling,
 or changing to bunker entry cancels owned work.

@@ -2,10 +2,12 @@ import { Store, Users } from "lucide-react"
 import type { ReactNode } from "react"
 import { Badge } from "@conduit/ui"
 import type { MerchantTrustContext } from "../hooks/useMerchantTrustContext"
+import { BrainstormGlobalScoreLink } from "./BrainstormGlobalScoreLink"
 
 type MerchantTrustSummaryProps = {
   trust: MerchantTrustContext
   className?: string
+  showBrainstorm?: boolean
 }
 
 function TrustChip({
@@ -55,6 +57,7 @@ function SocialChips({ trust }: { trust: MerchantTrustContext }) {
 export function MerchantTrustSummary({
   trust,
   className = "",
+  showBrainstorm = true,
 }: MerchantTrustSummaryProps) {
   return (
     <div className={["flex flex-wrap gap-2", className].join(" ")}>
@@ -71,6 +74,9 @@ export function MerchantTrustSummary({
         </TrustChip>
       )}
       <SocialChips trust={trust} />
+      {showBrainstorm && (
+        <BrainstormGlobalScoreLink pubkey={trust.merchantPubkey} />
+      )}
     </div>
   )
 }

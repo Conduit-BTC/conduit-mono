@@ -454,6 +454,7 @@ function assertRequest(
   }
   assertProtectedReadAuthorization(authorization, authorization.expectedPubkey)
   const allowedPrivateFilterKeys = new Set([
+    "ids",
     "kinds",
     "#p",
     "limit",
@@ -467,6 +468,9 @@ function assertRequest(
     const until = filter.until
     if (
       keys.some((key) => !allowedPrivateFilterKeys.has(key)) ||
+      (filter.ids !== undefined &&
+        (filter.ids.length !== 1 ||
+          !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||
       filter.kinds?.length !== 1 ||
       filter.kinds[0] !== 1_059 ||
       filter["#p"]?.length !== 1 ||

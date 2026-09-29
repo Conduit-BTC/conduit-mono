@@ -10,7 +10,7 @@ import {
 import { Button, StatusPill, type StatusPillProps } from "@conduit/ui"
 import { useId } from "react"
 import { BuyerAvatar } from "./OrderListItem"
-import { getProfileUrl } from "../lib/market-links"
+import { getIdentityUrl } from "../lib/market-links"
 
 type StatusTone = NonNullable<StatusPillProps["variant"]>
 
@@ -249,7 +249,7 @@ export function ShopperTrustCard({
         />
         <div className="min-w-0 flex-1">
           <a
-            href={getProfileUrl(shopperPubkey)}
+            href={getIdentityUrl(shopperPubkey)}
             target="_blank"
             rel="noopener noreferrer"
             className="block truncate text-sm font-medium text-[var(--text-primary)] underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"

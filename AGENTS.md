@@ -40,6 +40,9 @@ Do not assume contributors have personal or machine-level agent rules.
 | Dependencies, CI, PR, preview, or release                                                                                                  | [`CONTRIBUTING.md`](CONTRIBUTING.md), affected workflow/configuration, and release guidance there; inspect current gates before claiming status                                                                                                                                                   |
 | Agent intake, dispatch, review, or hardening                                                                                               | [`docs/knowledge/agent-automation-boundary.md`](docs/knowledge/agent-automation-boundary.md), affected workflows, and `CONTRIBUTING.md` for PR evidence                                                                                                                                           |
 
+For commerce interoperability, start with [Open Markets in Conduit](docs/OPEN_MARKETS.md)
+for the implementation map, compatibility differences, and proposal dependencies.
+
 Read only the rows the change actually touches. A route can cross several rows.
 `docs/README.md` is a navigation aid, not another mandatory startup read.
 

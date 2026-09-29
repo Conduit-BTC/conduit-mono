@@ -11,6 +11,8 @@ import {
   buildBugReportUrl,
   getClientErrorMessage,
   installBrowserClientErrorTelemetry,
+  normalizePubkey,
+  pubkeyToNpub,
   recordBrowserClientError,
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
@@ -310,6 +312,25 @@ function MarketProductRoot({ pathname }: { pathname: string }) {
   }, [pathname])
 
   useEffect(() => {
+    const identityPubkey = getRouteIdentityPubkey(pathname)
+    if (!identityPubkey) return
+    const canonicalUrl = `https://shop.conduit.market/${pubkeyToNpub(identityPubkey)}`
+    const canonical = document.querySelector<HTMLLinkElement>(
+      'link[rel="canonical"]'
+    )
+    const openGraphUrl = document.querySelector<HTMLMetaElement>(
+      'meta[property="og:url"]'
+    )
+    canonical?.setAttribute("href", canonicalUrl)
+    openGraphUrl?.setAttribute("content", canonicalUrl)
+    return () => {
+      canonical?.setAttribute("href", "https://shop.conduit.market/")
+      openGraphUrl?.setAttribute("content", "https://shop.conduit.market/")
+    }
+  }, [pathname])
+
+  useEffect(() => {
+    if (pathname.startsWith("/u/") || pathname.startsWith("/store/")) return
     recordBrowserTelemetryPageView({ app: "market", pathname })
   }, [pathname])
 
@@ -363,6 +384,7 @@ function throwSyntheticClientErrorForTelemetryTest(): void {
 }
 
 function getPageTitle(pathname: string): string {
+  if (getRouteIdentityPubkey(pathname)) return "Identity"
   if (
     pathname === "/" ||
     pathname === "/products" ||
@@ -400,9 +422,6 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/zapouts") {
     return "Zapouts"
   }
-  if (pathname.startsWith("/u/")) {
-    return "User Profile"
-  }
   if (pathname.startsWith("/products/")) {
     return "Product"
   }
@@ -415,10 +434,19 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/merchants" || pathname === "/sellers") {
     return "Merchants"
   }
-  if (pathname.startsWith("/store/")) {
-    return "Merchant"
-  }
   return "Not Found"
+}
+
+function getRouteIdentityPubkey(pathname: string): string | null {
+  const segments = pathname.split("/").filter(Boolean)
+  const reference =
+    segments.length === 1
+      ? segments[0]
+      : segments.length === 2 &&
+          (segments[0] === "u" || segments[0] === "store")
+        ? segments[1]
+        : null
+  return reference ? normalizePubkey(reference) : null
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {

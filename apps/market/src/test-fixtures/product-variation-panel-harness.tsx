@@ -234,7 +234,7 @@ export function mountProductVariationPanelHarness(
   })
   const profileRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: "/u/$profileRef",
+    path: "/$identityRef",
     component: () => (
       <div data-testid="fixture-profile-page">Profile route</div>
     ),

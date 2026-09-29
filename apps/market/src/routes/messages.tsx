@@ -1557,9 +1557,9 @@ function MessagesWorkspace() {
                         </div>
                         <div className="min-w-0 flex-1">
                           <Link
-                            to="/store/$pubkey"
+                            to="/$identityRef"
                             params={{
-                              pubkey: pubkeyToNpub(
+                              identityRef: pubkeyToNpub(
                                 selectedConversation.merchantPubkey
                               ),
                             }}

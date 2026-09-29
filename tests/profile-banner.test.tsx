@@ -54,18 +54,14 @@ describe("ProfileBanner", () => {
     expect(html).not.toContain("<img")
   })
 
-  it("keeps both public profile routes wired to the shared banner", async () => {
-    const routePaths = [
-      "apps/market/src/routes/store/$pubkey.tsx",
-      "apps/market/src/routes/u/$profileRef.tsx",
-    ]
-
-    for (const routePath of routePaths) {
-      const route = await readFile(routePath, "utf8")
-      expect(route).toContain(
-        'import { ProfileBanner } from "../../components/ProfileBanner"'
-      )
-      expect(route).toContain("<ProfileBanner src={profile?.banner} />")
-    }
+  it("keeps the public identity route wired to the shared banner", async () => {
+    const route = await readFile(
+      "apps/market/src/routes/$identityRef.tsx",
+      "utf8"
+    )
+    expect(route).toContain(
+      'import { ProfileBanner } from "../components/ProfileBanner"'
+    )
+    expect(route).toContain("<ProfileBanner src={profile?.banner} />")
   })
 })
