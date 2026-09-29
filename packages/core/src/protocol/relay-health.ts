@@ -28,6 +28,8 @@ export interface RelayHealthRecord {
   lastFailureAt: number | null
   /** Timestamp (ms) until which the relay is parked (skipped by planner). */
   cooldownUntil: number | null
+  /** Explicit relay throttling cannot be bypassed by last-resort reads. */
+  rateLimitUntil?: number
 }
 
 export interface RelayHealthSnapshot {
@@ -91,6 +93,22 @@ export function recordRelayFailure(url: string, now: number = nowMs()): void {
   }
 }
 
+/** NIP-01 has no retry delay; wait one request-budget minute after throttling. */
+export function recordRelayRateLimit(url: string, now: number = nowMs()): void {
+  const normalized = tryNormalize(url)
+  if (!normalized) return
+  recordRelayFailure(normalized, now)
+  const record = ensureRecord(normalized)
+  record.rateLimitUntil = now + 60_000
+}
+
+export function isRelayRateLimited(
+  url: string,
+  now: number = nowMs()
+): boolean {
+  return (getRelayHealth(url)?.rateLimitUntil ?? 0) > now
+}
+
 export function getRelayHealth(url: string): RelayHealthRecord | undefined {
   const normalized = tryNormalize(url)
   if (!normalized) return undefined
@@ -104,8 +122,8 @@ export function getRelayHealth(url: string): RelayHealthRecord | undefined {
  */
 export function isRelayInCooldown(url: string, now: number = nowMs()): boolean {
   const record = getRelayHealth(url)
-  if (!record || record.cooldownUntil === null) return false
-  return record.cooldownUntil > now
+  if (!record) return false
+  return (record.cooldownUntil ?? 0) > now || (record.rateLimitUntil ?? 0) > now
 }
 
 export function partitionByHealth(
@@ -133,11 +151,10 @@ export function partitionByHealthSnapshot(
   for (const url of urls) {
     const normalized = tryNormalize(url)
     if (!normalized) continue
-    const cooldownUntil = snapshot.records.get(normalized)?.cooldownUntil
+    const record = snapshot.records.get(normalized)
     if (
-      cooldownUntil !== null &&
-      cooldownUntil !== undefined &&
-      cooldownUntil > snapshot.capturedAt
+      (record?.cooldownUntil ?? 0) > snapshot.capturedAt ||
+      (record?.rateLimitUntil ?? 0) > snapshot.capturedAt
     ) {
       parked.push(normalized)
     } else {

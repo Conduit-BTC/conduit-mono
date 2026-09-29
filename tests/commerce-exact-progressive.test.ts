@@ -10,6 +10,7 @@ import {
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
   getCachedProductsByIds,
+  getMarketplaceProductsProgressive,
   getProductsByIds,
   hasExactLiveProductAvailabilityEvidence,
   type CachedProduct,
@@ -113,6 +114,77 @@ afterEach(() => {
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   __resetRelayHealth()
+})
+
+it("aborts a progressive catalog read before it emits or starts later reads", async () => {
+  const controller = new AbortController()
+  const started = gate()
+  let reads = 0
+  let snapshots = 0
+  __setCommerceTestOverrides({
+    fetchEventsFanoutProgressive: async (_filter, options) => {
+      reads += 1
+      expect(options?.signal).toBe(controller.signal)
+      started.release()
+      return await new Promise<NDKEvent[]>((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true }
+        )
+      })
+    },
+  })
+  const result = getMarketplaceProductsProgressive(
+    { signal: controller.signal },
+    () => {
+      snapshots += 1
+    }
+  )
+  await started.promise
+  controller.abort()
+  await expect(result).rejects.toThrow("Aborted")
+  expect(reads).toBe(1)
+  expect(snapshots).toBe(0)
+})
+
+it("cancels relay-list discovery before catalog deletion reads start", async () => {
+  const controller = new AbortController()
+  const discoveryStarted = gate()
+  const candidate = listing(fastSecret, "cancel-deletion-planning")
+  let deletionReads = 0
+  __setCommerceTestOverrides({
+    fetchEventsFanoutProgressive: async () => [candidate],
+    getRelayLists: async (_pubkeys, options) => {
+      expect(options?.signal).toBe(controller.signal)
+      discoveryStarted.release()
+      return await new Promise<Map<string, never>>((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true }
+        )
+      })
+    },
+    fetchEventsFanoutWithDiagnostics: async () => {
+      deletionReads += 1
+      return {
+        events: [],
+        attemptedRelayUrls: [],
+        successfulRelayUrls: [],
+        failedRelayUrls: [],
+        cappedRelayUrls: [],
+      }
+    },
+  })
+  const result = getMarketplaceProductsProgressive(
+    { signal: controller.signal },
+    () => {}
+  )
+  await discoveryStarted.promise
+  controller.abort()
+  await expect(result).rejects.toThrow("Aborted")
+  expect(deletionReads).toBe(0)
 })
 
 function installHeldRead(
@@ -955,6 +1027,40 @@ describe("progressive exact product reads", () => {
     await expect(read).rejects.toThrow()
     expect(starts).toBe(2)
     expect(snapshots).toHaveLength(0)
+  })
+
+  it("aborts in-flight exact hydration and suppresses queued authors and progress", async () => {
+    const records = Array.from({ length: 5 }, (_, index) =>
+      listing(generateSecretKey(), `aborted-${index}`)
+    )
+    const controller = new AbortController()
+    const started = gate()
+    let starts = 0
+    const snapshots: ProductsByIdsResult[] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.kinds?.includes(30402)) return []
+        expect(options?.signal).toBe(controller.signal)
+        starts++
+        if (starts === 2) started.release()
+        return await new Promise<NDKEvent[]>((_, reject) => {
+          options!.signal!.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true }
+          )
+        })
+      },
+    })
+    const read = getProductsByIds(records.map(address), {
+      signal: controller.signal,
+      onProgress: (snapshot) => snapshots.push(snapshot),
+    })
+    await started.promise
+    controller.abort()
+    await expect(read).rejects.toThrow()
+    expect(starts).toBe(2)
+    expect(snapshots).toEqual([])
   })
 
   it("keeps the newest cached revision and the existing merchant-hidden safety exception", async () => {

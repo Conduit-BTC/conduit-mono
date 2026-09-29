@@ -608,7 +608,8 @@ function ProductsPage() {
         </div>
         {browseModel.isSearching ? (
           <span className="text-sm text-[var(--text-secondary)]">
-            {browseModel.isShowingCachedSearch
+            {browseModel.isShowingCachedSearch ||
+            !browseModel.isRemoteSearchEligible
               ? "Cached matches"
               : "Best match"}
           </span>
@@ -650,6 +651,12 @@ function ProductsPage() {
           </DropdownMenu>
         )}
       </div>
+
+      {browseModel.isSearching && !browseModel.isRemoteSearchEligible && (
+        <p role="status" className="text-sm text-[var(--text-secondary)]">
+          Enter at least two characters for live search.
+        </p>
+      )}
 
       {browseModel.isSearching &&
         !productsQuery.isInitialLoading &&
@@ -697,7 +704,9 @@ function ProductsPage() {
         resultPresentation.kind === "complete_empty" && (
           <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
             {browseModel.isSearching
-              ? "No matching products found in this Market view."
+              ? browseModel.isRemoteSearchEligible
+                ? "No matching products found in this Market view."
+                : "No cached products match this search."
               : "No product listings found yet."}
           </div>
         )}

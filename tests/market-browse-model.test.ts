@@ -15,7 +15,6 @@ import {
 } from "../apps/market/src/lib/facets"
 import {
   getGlobalProductSearchQueryKey,
-  getProductSearchAuthors,
   getMerchantIdentityView,
   getProductShippingPresetEligibility,
   isMarketBrowseRefreshStale,
@@ -227,7 +226,7 @@ describe("market browse model helpers", () => {
       "utf8"
     )
     expect(hook).toContain("catalogAuthorPubkeys !== undefined")
-    expect(hook).toContain("authorPubkeys: searchAuthorPubkeys")
+    expect(hook).toContain("authorPubkeys: catalogAuthorPubkeys")
   })
 
   it("merges relay search results into the perspective catalog by product id", () => {
@@ -270,11 +269,20 @@ describe("market browse model helpers", () => {
     expect(html).toContain("Handmade mug")
   })
 
-  it("intersects selected merchants before search and never broadens catalog scope", () => {
-    expect(getProductSearchAuthors(undefined, ["outside"])).toBeUndefined()
-    expect(getProductSearchAuthors(["a", "b"], ["b", "outside"])).toEqual(["b"])
-    expect(getProductSearchAuthors(["a"], ["outside"])).toEqual([])
-    expect(getProductSearchAuthors(["a", "b"], [])).toEqual(["a", "b"])
+  it("keeps merchant and category selections within already searched products", () => {
+    const ranked = [
+      product("rank-1", "a", ["books"], 100),
+      product("rank-2", "b", ["books"], 200),
+      product("rank-3", "b", ["clothing"], 300),
+    ]
+    expect(
+      filterProductsByFacets(ranked, { merchants: ["b"], tags: ["books"] }).map(
+        (item) => item.id
+      )
+    ).toEqual(["rank-2"])
+    expect(filterProductsByFacets(ranked, { merchants: ["outside"] })).toEqual(
+      []
+    )
   })
 
   it("sorts store options by recent publisher while preserving counts", () => {

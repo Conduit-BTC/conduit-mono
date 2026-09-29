@@ -17,6 +17,7 @@ import {
   getCategoryBrowseSearch,
 } from "../lib/marketHeaderSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import { MARKET_SEARCH_SETTLE_MS } from "../lib/searchPolicy"
 import { useSellerDirectory } from "./useSellerDirectory"
 
 export function useMarketHeaderSuggestions(input: {
@@ -41,6 +42,8 @@ export function useMarketHeaderSuggestions(input: {
   const sellerDirectory = useSellerDirectory({
     catalogSource,
     enabled,
+    networkEnabled: false,
+    accountSearchSettleMs: MARKET_SEARCH_SETTLE_MS,
     query,
   })
   const accountSearch = sellerDirectory.accountSearch

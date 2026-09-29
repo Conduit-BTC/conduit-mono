@@ -52,6 +52,7 @@ import { useCart } from "../hooks/useCart"
 import { useMarketHeaderSuggestions } from "../hooks/useMarketHeaderSuggestions"
 import { DEFAULT_MARKET_CATALOG_SOURCE } from "../lib/productCatalogRead"
 import { resolveActiveSuggestionIndex } from "../lib/accountSearch"
+import { MARKET_SEARCH_SETTLE_MS } from "../lib/searchPolicy"
 
 const SEARCH_SUGGESTIONS_LISTBOX_ID = "market-search-suggestions"
 
@@ -521,7 +522,7 @@ export function MarketHeader({
         }),
         replace: true,
       })
-    }, 260)
+    }, MARKET_SEARCH_SETTLE_MS)
 
     return () => window.clearTimeout(timeoutId)
   }, [

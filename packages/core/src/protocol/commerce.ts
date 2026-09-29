@@ -401,6 +401,8 @@ export interface ProductsByIdsOptions {
   accountPubkey?: string | null
   /** Live signer identity available for relay authentication. */
   authenticatedPubkey?: string | null
+  /** Cancels queued and in-flight exact product hydration. */
+  signal?: AbortSignal
   /** Live account session authority for relay admission after policy awaits. */
   shouldContinue?: () => boolean
 }
@@ -1435,6 +1437,7 @@ async function preloadExactProductRelayLists(
         authenticatedPubkey: options.authenticatedPubkey,
         accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
         shouldContinue: options.shouldContinue,
+        signal: options.signal,
         relayHintMode: "force",
         maxRelays: DEFAULT_READ_FANOUT,
       })
@@ -1505,6 +1508,7 @@ async function streamProductRecordChunks(input: {
   independentRelayUrls: string[]
   authenticatedPubkey?: string | null
   accountPubkey?: string | null
+  signal?: AbortSignal
   shouldContinue?: () => boolean
   readPolicy?: CommerceReadPolicy
   merged: Map<string, NDKEvent>
@@ -1512,6 +1516,7 @@ async function streamProductRecordChunks(input: {
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
 }): Promise<void> {
+  input.signal?.throwIfAborted()
   if (input.relayUrls.length === 0) {
     input.onTransportStatus?.(true, false)
     return
@@ -1528,6 +1533,7 @@ async function streamProductRecordChunks(input: {
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
       while (nextChunkIndex < input.authorChunks.length) {
+        input.signal?.throwIfAborted()
         const authors = input.authorChunks[nextChunkIndex]
         nextChunkIndex += 1
 
@@ -1549,10 +1555,12 @@ async function streamProductRecordChunks(input: {
             accountNetworkLocalStateRepository:
               testOverrides.accountNetworkLocalStateRepository,
             shouldContinue: input.shouldContinue,
+            signal: input.signal,
             connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
             fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
           },
           ({ events, mergedEvents, relayUrl, status }) => {
+            input.signal?.throwIfAborted()
             if (status) {
               input.onTransportStatus?.(
                 status !== "success",
@@ -1571,6 +1579,7 @@ async function streamProductRecordChunks(input: {
             )
           }
         )
+        input.signal?.throwIfAborted()
         for (const event of events) {
           putMergedEvent(input.merged, event)
         }
@@ -3796,6 +3805,7 @@ async function fetchProductDeletionTimestamps(
         accountPubkey: options.accountPubkey,
         maxRelays: options.readPolicy?.maxRelays,
         shouldContinue: options.shouldContinue,
+        signal: options.signal,
       })
       const authenticatedOwnerSourceRelayUrls =
         normalizeUntrustedRelayHintsForContext({
@@ -4227,6 +4237,7 @@ async function fetchPublicProductRecordsProgressive(
     parentAddresses?: string[]
     authenticatedPubkey?: string | null
     accountPubkey?: string | null
+    signal?: AbortSignal
     shouldContinue?: () => boolean
     limit?: number
     readPolicy?: CommerceReadPolicy
@@ -4236,6 +4247,7 @@ async function fetchPublicProductRecordsProgressive(
 ): Promise<CommerceProductRecord[]> {
   if (testOverrides.fetchEventsFanout) {
     const records = await fetchPublicProductRecords(query)
+    query.signal?.throwIfAborted()
     onRecords(records, "test")
     return records
   }
@@ -4264,6 +4276,7 @@ async function fetchPublicProductRecordsProgressive(
     maxRelays: query.readPolicy?.maxRelays,
     relayHintMode: "skip",
     shouldContinue: query.shouldContinue,
+    signal: query.signal,
   })
   const merged = new Map<string, NDKEvent>()
   const initialDeletionTimestamps = await getLocalProductDeletionTimestamps(
@@ -4281,6 +4294,7 @@ async function fetchPublicProductRecordsProgressive(
         maxRelays: query.readPolicy?.maxRelays,
         relayHintMode: "force",
         shouldContinue: query.shouldContinue,
+        signal: query.signal,
       })
     : Promise.resolve(relayPlan)
   void expandedRelayPlanPromise.catch(() => undefined)
@@ -4297,6 +4311,7 @@ async function fetchPublicProductRecordsProgressive(
     authenticatedPubkey: query.authenticatedPubkey,
     accountPubkey: query.accountPubkey,
     shouldContinue: query.shouldContinue,
+    signal: query.signal,
     readPolicy: query.readPolicy,
     merged,
     deletionTimestamps: initialDeletionTimestamps,
@@ -4331,6 +4346,7 @@ async function fetchPublicProductRecordsProgressive(
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
       shouldContinue: query.shouldContinue,
+      signal: query.signal,
       readPolicy: query.readPolicy,
       merged,
       deletionTimestamps: initialDeletionTimestamps,
@@ -4350,6 +4366,7 @@ async function fetchPublicProductRecordsProgressive(
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
       shouldContinue: query.shouldContinue,
+      signal: query.signal,
     }
   )
   const resolved = dedupeProductEvents(mergedEvents, deletionTimestamps)
@@ -4617,6 +4634,7 @@ async function getRankedMarketplaceProducts(
       {
         accountPubkey: query.accountPubkey,
         authenticatedPubkey: query.authenticatedPubkey,
+        signal: query.signal,
         shouldContinue: () =>
           !query.signal?.aborted && query.shouldContinue?.() !== false,
         relayHintsByAddressId: Object.fromEntries(
@@ -4764,6 +4782,7 @@ export async function getMarketplaceProductsProgressive(
     relayUrl: string
   ) => void
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
+  query.signal?.throwIfAborted()
   if (
     !query.merchantPubkey &&
     query.authorPubkeys &&
@@ -4834,6 +4853,7 @@ export async function getMarketplaceProductsProgressive(
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
       shouldContinue: query.shouldContinue,
+      signal: query.signal,
       deletionCandidates: cached,
       limit: rawEventLimit,
       readPolicy: query.readPolicy,
@@ -4843,6 +4863,7 @@ export async function getMarketplaceProductsProgressive(
       },
     },
     (records, relayUrl) => {
+      query.signal?.throwIfAborted()
       // Until every planned relay settles, the progressive snapshot is
       // intentionally incomplete even if the first relay succeeded.
       onProgress(
@@ -4852,6 +4873,7 @@ export async function getMarketplaceProductsProgressive(
     }
   )
 
+  query.signal?.throwIfAborted()
   const currentDeletionTimestamps = await getLocalProductDeletionTimestamps(
     query.merchantPubkey,
     query.authorPubkeys
@@ -4866,6 +4888,7 @@ export async function getMarketplaceProductsProgressive(
       transportDegraded || readCapped || fetchedRecords.length >= rawEventLimit,
     capped: readCapped || fetchedRecords.length >= rawEventLimit,
   })
+  query.signal?.throwIfAborted()
   onProgress(result, "deletion-frontier")
   await cacheProductRecords(records)
   return result
@@ -5326,6 +5349,7 @@ async function fetchVariationGroupRecordBatch(
             authenticatedPubkey: options.authenticatedPubkey,
             accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             shouldContinue: options.shouldContinue,
+            signal: options.signal,
             extraRelayUrls: familyTargets[0]!.plannedRelayHints,
             relayHintMode: "force",
             maxRelays: DEFAULT_READ_FANOUT,
@@ -5417,6 +5441,7 @@ async function fetchVariationGroupRecordBatch(
         accountNetworkLocalStateRepository:
           testOverrides.accountNetworkLocalStateRepository,
         shouldContinue: options.shouldContinue,
+        signal: options.signal,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 8_000,
       }
@@ -6035,6 +6060,17 @@ async function readProductsByIds(
   options: ProductsByIdsOptions,
   verifiedRecords: readonly CommerceProductRecord[] = []
 ): Promise<ProductsByIdsResult> {
+  const callerShouldContinue = options.shouldContinue
+  const signal = options.signal
+  signal?.throwIfAborted()
+  if (signal) {
+    options = {
+      ...options,
+      shouldContinue: () =>
+        !signal.aborted && callerShouldContinue?.() !== false,
+    }
+  }
+
   const lookups = productIds.map((productId) => {
     const { address, addressId } = getProductLookupIds(productId)
     const valid = !!address && address.kind === EVENT_KINDS.PRODUCT
@@ -6416,6 +6452,7 @@ async function readPreparedProductTargets(
             authenticatedPubkey: options.authenticatedPubkey,
             accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             shouldContinue: options.shouldContinue,
+            signal: options.signal,
             extraRelayUrls: group.relayHints,
             relayHintMode: "force",
             maxRelays: DEFAULT_READ_FANOUT,
@@ -6556,6 +6593,7 @@ async function readPreparedProductTargets(
               accountNetworkLocalStateRepository:
                 testOverrides.accountNetworkLocalStateRepository,
               shouldContinue: options.shouldContinue,
+              signal: options.signal,
               connectTimeoutMs: 4_000,
               fetchTimeoutMs: 8_000,
             }
@@ -6711,10 +6749,10 @@ async function readPreparedProductTargets(
       filter,
       fetchOptions
     ) => {
-      const result = await runFetchEventsFanoutWithDiagnostics(
-        filter,
-        fetchOptions
-      )
+      const result = await runFetchEventsFanoutWithDiagnostics(filter, {
+        ...fetchOptions,
+        signal: options.signal,
+      })
       const nextCoverage = productAvailabilityCoverageFromFanout(
         result,
         fetchOptions?.relayUrls
@@ -6737,6 +6775,7 @@ async function readPreparedProductTargets(
           {
             accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             shouldContinue: options.shouldContinue,
+            signal: options.signal,
             fetchEvents: fetchDeletionEventsWithCoverage,
             onSkippedRelayUrls: (relayUrls) => {
               deletionPlanSkippedRelay ||= relayUrls.length > 0

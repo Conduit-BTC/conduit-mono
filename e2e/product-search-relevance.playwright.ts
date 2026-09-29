@@ -70,7 +70,7 @@ const profiles = merchantKeys.map((key, index) =>
 async function controlledSearch(page: Page) {
   const requests: Filter[] = []
   const closed: string[] = []
-  const state = { unavailable: false, holdRevisions: false }
+  const state = { unavailable: false, holdRevisions: false, throttled: false }
   const pendingRevisions: Array<() => void> = []
   await page.routeWebSocket(/.*/, (socket) => {
     socket.onMessage((payload) => {
@@ -83,6 +83,12 @@ async function controlledSearch(page: Page) {
       }
       if (type !== "REQ") return
       requests.push(filter)
+      if (filter.search && filter.kinds?.includes(30402) && state.throttled) {
+        socket.send(
+          JSON.stringify(["NOTICE", "rate limited: fixture requests"])
+        )
+        return
+      }
       if (filter.search && filter.kinds?.includes(30402) && state.unavailable) {
         socket.send(
           JSON.stringify(["CLOSED", id, "error: fixture unavailable"])
@@ -128,6 +134,62 @@ async function controlledSearch(page: Page) {
     },
   }
 }
+
+test("typing waits for a stable two-character query before remote search @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  await page.goto(`${marketUrl}/products?source=following`)
+  await expect(page.getByText("Cotton tote", { exact: true })).toBeVisible()
+  const input = page.getByRole("combobox", {
+    name: "Search products, categories, merchants, and accounts",
+  })
+  const searches = () =>
+    relay.requests.filter(
+      (filter) => filter.search && filter.kinds?.includes(30402)
+    )
+  await input.fill("p")
+  await expect(
+    page.getByText("Enter at least two characters for live search.")
+  ).toBeVisible()
+  expect(searches()).toHaveLength(0)
+  for (const term of ["po", "pot", "pottery"]) {
+    await input.fill(term)
+    await page.waitForTimeout(75)
+    expect(searches()).toHaveLength(0)
+  }
+  await expect(page.locator("main h3")).toHaveText([
+    "Handmade mug",
+    "Clay bowl",
+  ])
+  expect(searches().map((filter) => filter.search)).toEqual(["pottery"])
+})
+
+test("a throttled search pauses explicit retry and preserves prior ranked results @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  await page.goto(`${marketUrl}/products?source=following&q=pottery`)
+  const titles = page.locator("main h3")
+  await expect(titles).toHaveText(["Handmade mug", "Clay bowl"])
+  relay.state.throttled = true
+  await page.getByRole("button", { name: "Refresh", exact: true }).click()
+  await expect(
+    page.getByText(
+      "Search is unavailable. Showing previous matches for this search."
+    )
+  ).toBeVisible()
+  const requestsAfterThrottle = relay.requests.length
+  await page.getByRole("button", { name: "Refresh", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: "Refresh", exact: true })
+  ).toBeEnabled()
+  await page.waitForTimeout(1200)
+  expect(relay.requests).toHaveLength(requestsAfterThrottle)
+  await expect(titles).toHaveText(["Handmade mug", "Clay bowl"])
+})
 
 test("ranked search renders semantic matches, cancels old queries, retains exact-query results and restores browse @market", async ({
   page,

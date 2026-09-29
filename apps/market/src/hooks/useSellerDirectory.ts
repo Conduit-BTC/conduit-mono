@@ -6,6 +6,7 @@ import {
   limitAccountMatches,
 } from "../lib/accountSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import { isRemoteMarketSearchEligible } from "../lib/searchPolicy"
 import {
   excludeDiscoveredSellers,
   filterSellersByName,
@@ -21,6 +22,8 @@ import { useProgressiveProducts } from "./useProgressiveProducts"
 export function useSellerDirectory(input: {
   catalogSource: ProductCatalogSourceMode
   enabled?: boolean
+  /** Header suggestions reuse the local catalog instead of opening a stream. */
+  networkEnabled?: boolean
   query: string
   accountSearchSettleMs?: number
 }) {
@@ -41,6 +44,7 @@ export function useSellerDirectory(input: {
     scope: "marketplace",
     catalogSource: effectiveSource,
     enabled,
+    networkEnabled: input.networkEnabled,
     perspectivePubkey: connected ? pubkey : guestMarket.perspectivePubkey,
     authenticatedPubkey: connected ? pubkey : null,
     seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
@@ -109,10 +113,19 @@ export function useSellerDirectory(input: {
   const refreshGuestDiscovery = guestMarket.refetch
   const refreshAccountSearch = accountSearch.refetch
   const retry = useCallback(() => {
+    const remoteSearchEligible = isRemoteMarketSearchEligible(query)
+    if (input.networkEnabled === false && !remoteSearchEligible) return
     if (!connected) void refreshGuestDiscovery()
     refreshCatalog()
-    refreshAccountSearch()
-  }, [connected, refreshAccountSearch, refreshCatalog, refreshGuestDiscovery])
+    if (remoteSearchEligible) refreshAccountSearch()
+  }, [
+    connected,
+    input.networkEnabled,
+    query,
+    refreshAccountSearch,
+    refreshCatalog,
+    refreshGuestDiscovery,
+  ])
 
   return {
     connected,

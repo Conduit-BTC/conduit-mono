@@ -1,6 +1,6 @@
 # Market Product Search Ranking
 
-Nonempty product queries use one NIP-50 request to the first configured product
+Product queries of at least two characters use one NIP-50 request to the first configured product
 search-index relay: `{ kinds: [30402], search: term, limit: 100 }`. No authors,
 category tags, or custom ranking extensions are sent. The client filters the
 returned list against the resolved catalog whitelist and selected merchants or
@@ -28,12 +28,35 @@ Category and profile suggestions retain their separate lookup paths.
 Cancellation closes the search subscription and prevents obsolete background
 reads from publishing into a newer query or account scope. An
 unavailable refresh rejects so the query cache can retain the ranked response
-for the exact query, account, perspective, author scope, and category constraints.
+for the exact query, account, perspective, and author scope. Merchant and category
+selection filters this response locally, without another search request.
 Completed empty, partial empty, capped, and unavailable reads remain distinct.
 No full catalog sweep is required to prepare a ranked response. Search Refresh
 updates discovery, cached evidence, and ranked results without starting a broad
 catalog read. Clearing the query restores catalog refresh. Partial or capped
 empty results offer Retry instead of claiming that no matching products exist.
+
+## Request Suppression and Throttle Recovery
+
+Header search waits 350 ms after typing stops. One-character queries use cached
+text matches and show guidance to enter another character. Header suggestions
+reuse the cached catalog instead of starting a second catalog stream.
+Product and profile search disable automatic retry, focus refetch, and reconnect
+refetch. Explicit Refresh and Retry remain available for eligible queries.
+
+Cancellation reaches queued and active catalog, discovery, and exact-product
+reads. Obsolete reads cannot continue background hydration or publish snapshots.
+
+The shared reader recognizes NIP-01 `rate-limited:` rejections and the
+`rate limited:` prefix used by Congee. A throttling `NOTICE` ends active reads
+on that connection. A throttling `CLOSED` ends the named subscription.
+Both responses pause new reads to that relay for 60 seconds, including explicit
+relay plans. A successful sibling read cannot clear this pause. NIP-01 provides
+no retry delay, so this interval is a client recovery policy.
+
+Detailed read results expose only `failureReason: "rate_limited"`, without the
+relay message. Verified events received before throttling remain partial results;
+zero events remain a failed read. Neither establishes that a listing is absent.
 
 ## Bounded Search Coverage
 
