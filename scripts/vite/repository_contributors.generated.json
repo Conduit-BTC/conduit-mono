@@ -1,36 +1,36 @@
 {
   "status": "available",
   "methodology": "merged-pr-activity-v1",
-  "generatedAt": "2026-08-26T03:23:41.013Z",
-  "sourceRevision": "a512b77b921e14117628545de4c2ecfebb6dc5ff",
+  "generatedAt": "2026-09-29T00:47:16.736Z",
+  "sourceRevision": "f4f87f63c2fbad9bd82c1248a3557a307974d032",
   "contributors": [
-    {
-      "login": "dylangolow",
-      "avatarUrl": "https://avatars.githubusercontent.com/u/24441906?u=60a73cb7e433435fd867058545b1f16bea7f8942&v=4",
-      "profileUrl": "https://github.com/dylangolow",
-      "mergedPullRequests": 72,
-      "commits": 255
-    },
     {
       "login": "ericfj2140",
       "avatarUrl": "https://avatars.githubusercontent.com/u/25217030?u=f1bf95458b7164d3cab7be98a5a6bf1d3773529c&v=4",
       "profileUrl": "https://github.com/ericfj2140",
-      "mergedPullRequests": 66,
-      "commits": 204
+      "mergedPullRequests": 184,
+      "commits": 698
+    },
+    {
+      "login": "dylangolow",
+      "avatarUrl": "https://avatars.githubusercontent.com/u/24441906?u=60a73cb7e433435fd867058545b1f16bea7f8942&v=4",
+      "profileUrl": "https://github.com/dylangolow",
+      "mergedPullRequests": 77,
+      "commits": 290
     },
     {
       "login": "JamesTsetsekas",
       "avatarUrl": "https://avatars.githubusercontent.com/u/8147662?u=78fa61afccc0321136a563cc215f56063f435a3c&v=4",
       "profileUrl": "https://github.com/JamesTsetsekas",
-      "mergedPullRequests": 26,
-      "commits": 138
+      "mergedPullRequests": 66,
+      "commits": 366
     },
     {
       "login": "d3vv3",
       "avatarUrl": "https://avatars.githubusercontent.com/u/43572680?u=491824341aa61b14baa1bf740d99c5bfffcadfb3&v=4",
       "profileUrl": "https://github.com/d3vv3",
-      "mergedPullRequests": 18,
-      "commits": 331
+      "mergedPullRequests": 22,
+      "commits": 373
     },
     {
       "login": "m0wer",
