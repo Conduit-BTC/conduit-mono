@@ -4612,21 +4612,25 @@ async function getRankedMarketplaceProducts(
       snapshot.meta
     )
   try {
-    const refreshed = await getProductsByIds(wanted, {
-      accountPubkey: query.accountPubkey,
-      authenticatedPubkey: query.authenticatedPubkey,
-      shouldContinue: () =>
-        !query.signal?.aborted && query.shouldContinue?.() !== false,
-      relayHintsByAddressId: Object.fromEntries(
-        hits.map((record) => [record.addressId, record.sourceRelayUrls])
-      ),
-      onProgress: query.onProgress
-        ? (snapshot) => {
-            assertCurrent()
-            query.onProgress?.(project(snapshot))
-          }
-        : undefined,
-    })
+    const refreshed = await readProductsByIds(
+      wanted,
+      {
+        accountPubkey: query.accountPubkey,
+        authenticatedPubkey: query.authenticatedPubkey,
+        shouldContinue: () =>
+          !query.signal?.aborted && query.shouldContinue?.() !== false,
+        relayHintsByAddressId: Object.fromEntries(
+          hits.map((record) => [record.addressId, record.sourceRelayUrls])
+        ),
+        onProgress: query.onProgress
+          ? (snapshot) => {
+              assertCurrent()
+              query.onProgress?.(project(snapshot))
+            }
+          : undefined,
+      },
+      initialRecords
+    )
     assertCurrent()
     return project(refreshed)
   } catch {
@@ -6025,9 +6029,11 @@ function aggregateProductAvailabilityCoverage(
 // diagnostic so checkout can distinguish unreachable relays, partial reads,
 // cache-only confirmation, filtered listings, malformed references, and truly
 // missing listings instead of one generic failure.
-export async function getProductsByIds(
+// Ranked search may provide already verified records when persistence failed.
+async function readProductsByIds(
   productIds: string[],
-  options: ProductsByIdsOptions = {}
+  options: ProductsByIdsOptions,
+  verifiedRecords: readonly CommerceProductRecord[] = []
 ): Promise<ProductsByIdsResult> {
   const lookups = productIds.map((productId) => {
     const { address, addressId } = getProductLookupIds(productId)
@@ -6081,11 +6087,19 @@ export async function getProductsByIds(
 
   const authors = uniqueStrings(addresses.map((address) => address.pubkey))
   const wanted = new Set(lookups.flatMap((lookup) => lookup.addressId ?? []))
-  const initialCached = await getCachedExactProductRecords([...wanted])
+  const persisted = await getCachedExactProductRecords(
+    [...wanted],
+    verifiedRecords
+  )
   const initialDeletions = await getLocalProductDeletionTimestamps(
     undefined,
     authors
   )
+  const initialCached = mergeCachedAndLiveProductRecords({
+    cached: persisted,
+    live: [...verifiedRecords],
+    deletionTimestamps: initialDeletions,
+  })
   const context: ExactProductReadContext = {
     cached: initialCached,
     deletions: initialDeletions,
@@ -6254,6 +6268,13 @@ export async function getProductsByIds(
   if (options.shouldContinue?.() === false)
     throw new NostrSignerError("authority_changed")
   return latestPublished ?? aggregate()
+}
+
+export async function getProductsByIds(
+  productIds: string[],
+  options: ProductsByIdsOptions = {}
+): Promise<ProductsByIdsResult> {
+  return readProductsByIds(productIds, options)
 }
 
 /** Shared preparation and publication state for one exact read invocation. */

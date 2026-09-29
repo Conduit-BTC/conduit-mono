@@ -2810,6 +2810,114 @@ describe("commerce gateway", () => {
     ])
   })
 
+  for (const exactRead of ["unavailable", "older"] as const) {
+    it(`retains a signed ranked hit after a failed seed write and ${exactRead} exact read`, async () => {
+      const ranked = makeSignedProductEvent({
+        dTag: `unsaved-${exactRead}`,
+        title: "Current ranked cup",
+        createdAt: 200,
+      })
+      const older = makeSignedProductEvent({
+        dTag: `unsaved-${exactRead}`,
+        title: "Older cup",
+        createdAt: 100,
+      })
+      let exactReads = 0
+      __setCommerceTestOverrides({
+        putCachedProducts: async () => {
+          throw new Error("Synthetic product cache write failure")
+        },
+        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+          const relayUrls = [...(options?.relayUrls ?? [])]
+          if (filter.search) {
+            return {
+              events: [ranked] as never,
+              attemptedRelayUrls: relayUrls,
+              successfulRelayUrls: relayUrls,
+              failedRelayUrls: [],
+            }
+          }
+          if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) exactReads += 1
+          const unavailable =
+            exactRead === "unavailable" &&
+            filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          return {
+            events: (filter.kinds?.includes(EVENT_KINDS.PRODUCT) && !unavailable
+              ? [older]
+              : []) as never,
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: unavailable ? [] : relayUrls,
+            failedRelayUrls: unavailable ? relayUrls : [],
+          }
+        },
+      })
+      const progress: string[][] = []
+
+      const result = await getMarketplaceProducts({
+        textQuery: "ceramics",
+        searchIndex: true,
+        onProgress: (snapshot) => {
+          progress.push(snapshot.data.map((record) => record.product.title))
+        },
+      })
+
+      expect(cachedProducts).toEqual([])
+      expect(exactReads).toBeGreaterThan(0)
+      expect(progress.length).toBeGreaterThan(1)
+      for (const titles of progress)
+        expect(titles).toEqual(["Current ranked cup"])
+      expect(result.data.map((record) => record.product.title)).toEqual([
+        "Current ranked cup",
+      ])
+      expect(result.meta.stale).toBe(true)
+      expect(result.meta.degraded).toBe(true)
+    })
+  }
+
+  it("removes a ranked hit when an exact read finds its signed deletion after seed caching fails", async () => {
+    const ranked = makeSignedProductEvent({
+      dTag: "unsaved-deleted",
+      title: "Deleted cup",
+      createdAt: 100,
+    })
+    const addressId = `30402:${ranked.pubkey}:unsaved-deleted`
+    const deletion = makeSignedDeletionEvent({
+      createdAt: 101,
+      tags: [["a", addressId]],
+    })
+    __setCommerceTestOverrides({
+      putCachedProducts: async () => {
+        throw new Error("Synthetic product cache write failure")
+      },
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: (filter.search
+            ? [ranked]
+            : filter.kinds?.includes(EVENT_KINDS.DELETION)
+              ? [deletion]
+              : []) as never,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+    const progress: string[][] = []
+
+    const result = await getMarketplaceProducts({
+      textQuery: "ceramics",
+      searchIndex: true,
+      onProgress: (snapshot) => {
+        progress.push(snapshot.data.map((record) => record.product.title))
+      },
+    })
+
+    expect(progress[0]).toEqual(["Deleted cup"])
+    expect(progress.at(-1)).toEqual([])
+    expect(result.data).toEqual([])
+  })
+
   it("does not persist or hydrate ranked hits after the first snapshot becomes obsolete", async () => {
     const controller = new AbortController()
     const hit = makeSignedProductEvent({
