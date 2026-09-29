@@ -217,6 +217,11 @@ export function getProductPreservedFulfillmentFields(product: ProductSchema) {
     shippingOptionLaunchUnsupported: product.shippingOptionLaunchUnsupported,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
+    shippingWeightGrams: product.shippingWeightGrams,
+    shippingDimensionsCm: product.shippingDimensionsCm,
+    shippingWeightAllowanceGrams: product.shippingWeightAllowanceGrams,
+    shippingHandling: product.shippingHandling,
+    shippingAdjustmentsMalformed: product.shippingAdjustmentsMalformed,
     canonicalShippingResolved: product.canonicalShippingResolved,
     shippingOptionCreatedAt: product.shippingOptionCreatedAt,
   }
@@ -522,14 +527,6 @@ export async function prepareProductPublicationListings(
         : listing.product
     if (product.format === "digital")
       return { ...listing, fulfillmentIntent: { kind: "digital" } }
-    if (
-      normalizeCurrencyIdentity(getProductCurrency(product)) !==
-      normalizeCurrencyIdentity(option.shippingPolicy!.currency)
-    ) {
-      throw new Error(
-        "The product currency must match the shipping table currency."
-      )
-    }
     if (
       !Number.isSafeInteger(product.shippingWeightGrams) ||
       product.shippingWeightGrams! <= 0

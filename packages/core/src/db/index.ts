@@ -103,6 +103,13 @@ export interface CachedProduct {
   specifications?: Array<{ key: string; value: string }>
   format?: "physical" | "digital"
   shippingWeightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
+  shippingAdjustmentsMalformed?: true
   shippingDimensionsCm?: { length: number; width: number; height: number }
   shippingPolicy?: ShippingPolicy
   shippingPolicyQuote?: ShippingPolicyQuote
@@ -906,6 +913,7 @@ export interface OrderLifecycle {
     fetchedAt: number
     source: string
     fiatSource?: string
+    fiatUsdRates?: Record<string, number>
   }
 
   /**

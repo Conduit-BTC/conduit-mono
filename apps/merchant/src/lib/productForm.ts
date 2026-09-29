@@ -20,6 +20,7 @@ import {
   type ProductFulfillmentFormat,
   type ProductShippingPricingMode,
 } from "./productPriceForm"
+import type { ShippingWeightUnit } from "./shippingWeightUnits"
 import { getProductShippingMeasurements } from "./shippingPolicyForm"
 import { getProductStockInputError } from "./productStock"
 import {
@@ -59,6 +60,9 @@ export interface ProductPublishFormValues {
   shippingPricingMode: ProductShippingPricingMode
   shippingCost: string
   shippingWeightGrams?: string
+  shippingWeightUnit?: ShippingWeightUnit
+  shippingWeightAllowanceGrams?: string
+  shippingHandling?: string
   shippingLengthCm?: string
   shippingWidthCm?: string
   shippingHeightCm?: string

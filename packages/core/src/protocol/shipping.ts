@@ -2352,7 +2352,10 @@ export function resolveProductFulfillment(
       product.sourcePrice?.currency ??
       product.currency
   )
-  if (option.currency !== productCurrency) {
+  if (
+    (!option.shippingPolicy || option.shippingPolicy.version === 1) &&
+    option.currency !== productCurrency
+  ) {
     return {
       intent: "fixed_standard",
       status: "order_first",

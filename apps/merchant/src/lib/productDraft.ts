@@ -1,3 +1,4 @@
+import { isShippingWeightUnit } from "./shippingWeightUnits"
 import type { MerchantProductFormValues } from "./productForm"
 import {
   isAcceptedListingAreaCountry,
@@ -16,7 +17,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 11
+const PRODUCT_DRAFT_VERSION = 12
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -140,6 +141,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 8 &&
         candidate.version !== 9 &&
         candidate.version !== 10 &&
+        candidate.version !== 11 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -400,6 +402,8 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
           ? Object.fromEntries(
               [
                 "shippingWeightGrams",
+                "shippingWeightAllowanceGrams",
+                "shippingHandling",
                 "shippingLengthCm",
                 "shippingWidthCm",
                 "shippingHeightCm",
@@ -407,6 +411,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
                 .filter((field) => typeof form[field] === "string")
                 .map((field) => [field, form[field]])
             )
+          : {}),
+        ...(isShippingWeightUnit(form.shippingWeightUnit)
+          ? { shippingWeightUnit: form.shippingWeightUnit }
           : {}),
         usePresetShippingZone: form.usePresetShippingZone,
         customShippingConfig: parseShippingConfig(

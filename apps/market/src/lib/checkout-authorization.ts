@@ -122,7 +122,8 @@ export async function authorizeCurrentCheckoutItems(input: {
   const prepared = prepareCartFulfillment(
     refreshedRawItems,
     shippingOptions,
-    input.destination
+    input.destination,
+    input.rateInput ?? null
   )
 
   if (

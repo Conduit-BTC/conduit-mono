@@ -6,10 +6,12 @@ import {
 import {
   canonicalizeProductPrice,
   normalizeCurrencyCode,
+  normalizeCurrencyIdentity,
   type CommercePriceLike,
 } from "../pricing"
 import {
   productSchema,
+  productShippingAdjustmentsSchema,
   type ProductSchema,
   type ProductShippingOptionReference,
   type ProductZapMessagePolicy,
@@ -28,6 +30,7 @@ import {
   signedProductPriceEvidenceIsMalformed,
 } from "./product-event-evidence"
 
+export const PRODUCT_SHIPPING_ADJUSTMENTS_TAG = "conduit_shipping_adjustments"
 export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
 const PRODUCT_TITLE_MAX_LENGTH = 200
@@ -354,6 +357,33 @@ export function buildProductListingEventDraft({
     )
       throw new Error("Shipping dimensions must be positive centimeters.")
     tags.push(["dim", `${length}x${width}x${height}`, "cm"])
+  }
+  if (
+    product.shippingWeightAllowanceGrams !== undefined ||
+    product.shippingHandling !== undefined
+  ) {
+    const adjustments = productShippingAdjustmentsSchema.parse({
+      ...(product.shippingWeightAllowanceGrams !== undefined
+        ? { weightAllowanceGrams: product.shippingWeightAllowanceGrams }
+        : {}),
+      ...(product.shippingHandling
+        ? { handling: product.shippingHandling }
+        : {}),
+    })
+    if (
+      product.format !== "physical" ||
+      (adjustments.handling &&
+        adjustments.handling.normalizedCurrency !==
+          normalizeCurrencyIdentity(priceCurrency))
+    )
+      throw new Error(
+        "Shipping handling must use the physical product currency."
+      )
+    tags.push([
+      PRODUCT_SHIPPING_ADJUSTMENTS_TAG,
+      "1",
+      JSON.stringify(adjustments),
+    ])
   }
   tags.push(...buildShippingOptionTags(product, priceCurrency))
   for (const image of getProductProtocolImages(product)) {
@@ -714,6 +744,45 @@ function parseProductPhysicalProperties(
   return { shippingWeightGrams, shippingDimensionsCm }
 }
 
+function parseProductShippingAdjustments(
+  tags: string[][] | undefined,
+  productCurrency: string | undefined
+): Partial<ProductSchema> {
+  const markers = (tags ?? []).filter(
+    (tag) => tag[0] === PRODUCT_SHIPPING_ADJUSTMENTS_TAG
+  )
+  const empty = {
+    shippingWeightAllowanceGrams: undefined,
+    shippingHandling: undefined,
+    shippingAdjustmentsMalformed: undefined,
+  }
+  if (!markers.length) return empty
+  try {
+    if (
+      markers.length !== 1 ||
+      markers[0]!.length !== 3 ||
+      markers[0]![1] !== "1"
+    )
+      throw new Error("Unsupported adjustments")
+    const adjustments = productShippingAdjustmentsSchema.parse(
+      JSON.parse(markers[0]![2]!)
+    )
+    if (
+      adjustments.handling &&
+      adjustments.handling.normalizedCurrency !==
+        normalizeCurrencyIdentity(productCurrency ?? "")
+    )
+      throw new Error("Currency mismatch")
+    return {
+      ...empty,
+      shippingWeightAllowanceGrams: adjustments.weightAllowanceGrams,
+      shippingHandling: adjustments.handling,
+    }
+  } catch {
+    return { ...empty, shippingAdjustmentsMalformed: true }
+  }
+}
+
 function parseProductShippingTags(
   tags: string[][] | undefined,
   productCurrency: string | undefined
@@ -731,6 +800,7 @@ function parseProductShippingTags(
   return {
     ...legacyInline,
     ...parseProductPhysicalProperties(tags),
+    ...parseProductShippingAdjustments(tags, productCurrency),
     ...(legacyInline.sourceShippingCost ||
     typeof legacyInline.shippingCostSats === "number"
       ? {}

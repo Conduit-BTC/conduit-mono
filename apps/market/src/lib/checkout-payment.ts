@@ -90,6 +90,7 @@ export type CheckoutPricingIntent =
         fetchedAt: number
         source: BtcUsdRateQuote["source"]
         fiatSource?: BtcUsdRateQuote["fiatSource"]
+        fiatUsdRates?: BtcUsdRateQuote["fiatUsdRates"]
       }
       approximate: boolean
       /** False only for an authenticated zero-cost pickup order. */
@@ -189,6 +190,10 @@ export function bindCartItemsToFreshProductPricing(
       priceSats: product.priceSats,
       sourcePrice: product.sourcePrice ? { ...product.sourcePrice } : undefined,
       shippingWeightGrams: product.shippingWeightGrams,
+      shippingWeightAllowanceGrams: product.shippingWeightAllowanceGrams,
+      shippingHandling: product.shippingHandling
+        ? { ...product.shippingHandling }
+        : undefined,
       productEventId: product.sourceEventId,
       signedProductEvent: product.signedProductEvent,
       productUpdatedAt: product.updatedAt,
@@ -482,6 +487,9 @@ export function buildCheckoutPricingIntent(
           fetchedAt: rateInput.fetchedAt,
           source: rateInput.source,
           fiatSource: rateInput.fiatSource,
+          fiatUsdRates: rateInput.fiatUsdRates
+            ? { ...rateInput.fiatUsdRates }
+            : undefined,
         }
       : undefined,
   }

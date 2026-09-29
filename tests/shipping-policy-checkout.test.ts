@@ -17,6 +17,8 @@ import {
   parseOrderRumorEvent,
   serializeOrderRumorContent,
   type OrderLifecycle,
+  type BtcUsdRateQuote,
+  type PricingRateInput,
   type ShippingPolicy,
 } from "@conduit/core"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
@@ -112,8 +114,8 @@ function raw(
 ): CartItem {
   return { ...createCartItemFromProduct(product(name, weight)), quantity }
 }
-function priced(items: CartItem[]) {
-  const result = buildCheckoutPricingIntent(items, null)
+function priced(items: CartItem[], rateInput: PricingRateInput = null) {
+  const result = buildCheckoutPricingIntent(items, rateInput)
   if (result.status !== "ok") throw new Error(result.reason)
   return result
 }
@@ -504,5 +506,319 @@ describe("signed shipping policy composed checkout", () => {
     }
     expect(orderSchema.safeParse(altered).success).toBe(false)
     expect(orderSchema.safeParse(order).success).toBe(true)
+  })
+})
+
+const mixedPolicy: ShippingPolicy = {
+  version: 2,
+  title: "Mixed currency parcels",
+  originCountry: "US",
+  currency: "GBP",
+  domestic: {
+    rules: [
+      {
+        country: "US",
+        bands: [
+          { maxWeightGrams: 1000, priceMinor: 250 },
+          { maxWeightGrams: 2000, priceMinor: 500 },
+        ],
+      },
+    ],
+    freeShippingThresholdMinor: 4000,
+  },
+  international: null,
+}
+function mixedOption(changes: Partial<ShippingPolicy> = {}) {
+  const event = finalizeEvent(
+    {
+      ...buildShippingPolicyEventDraft({
+        policy: { ...mixedPolicy, ...changes },
+      }),
+      created_at: 1,
+    },
+    secret
+  )
+  return parseShippingOptionEvent(new NDKEvent(undefined, event))!
+}
+function mixedProduct(
+  name: string,
+  changes: {
+    currency?: string
+    price?: number
+    weight?: number
+    padding?: number
+    handling?: number
+    createdAt?: number
+  } = {}
+) {
+  const currency = changes.currency ?? "USD"
+  const event = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: changes.createdAt ?? 2,
+      content: "Synthetic mixed currency listing",
+      tags: [
+        ["d", name],
+        ["title", name],
+        ["price", String(changes.price ?? 12.5), currency],
+        ["type", "simple", "physical"],
+        ["shipping_option", getMerchantShippingPolicyCoordinate(merchant)],
+        ["weight", String(changes.weight ?? 300), "g"],
+        [
+          "conduit_shipping_adjustments",
+          "1",
+          JSON.stringify({
+            weightAllowanceGrams: changes.padding ?? 50,
+            handling: {
+              amount: changes.handling ?? 1.25,
+              currency,
+              normalizedCurrency: currency,
+            },
+          }),
+        ],
+      ],
+    },
+    secret
+  )
+  const parsed = parseProductEvent(new NDKEvent(undefined, event))
+  if (!parsed) throw new Error("Signed mixed currency product did not parse")
+  return parsed
+}
+function mixedProducts() {
+  return [
+    mixedProduct("mixed-a"),
+    mixedProduct("mixed-b", {
+      currency: "EUR",
+      price: 10,
+      weight: 200,
+      padding: 100,
+      handling: 1,
+    }),
+  ]
+}
+function mixedItems(products = mixedProducts()) {
+  return products.map((current, index) => ({
+    ...createCartItemFromProduct(current),
+    quantity: index === 0 ? 2 : 1,
+  }))
+}
+function mixedRate(changes: Partial<BtcUsdRateQuote> = {}): BtcUsdRateQuote {
+  return {
+    rate: 100000,
+    fetchedAt: Date.now(),
+    source: "env",
+    fiatSource: "env",
+    fiatUsdRates: { EUR: 1.25, GBP: 1.25 },
+    ...changes,
+  }
+}
+
+describe("per-product shipping adjustments with saved currency conversions", () => {
+  it("combines USD and EUR products with quantities, padding and fees in one GBP table and preserves exact replay", () => {
+    const rate = mixedRate()
+    const prepared = prepareCartFulfillment(
+      mixedItems(),
+      [mixedOption()],
+      destination,
+      rate
+    )
+    const checkout = priced(prepared.items, rate)
+    const quote = prepared.items[0]!.shippingPolicyQuote!
+    expect(quote).toMatchObject({
+      version: 2,
+      currency: "GBP",
+      combinedWeightGrams: 1000,
+      shippedSubtotalMinor: 3000,
+      handlingMinor: 300,
+      amountMinor: 550,
+      amountSats: 6875,
+      pricingRate: rate,
+    })
+    expect(checkout.shippingCost).toMatchObject({
+      status: "priced",
+      totalSats: 6875,
+    })
+    expect(checkout.itemSubtotalSats).toBe(37500)
+    expect(checkout.totalSats).toBe(44375)
+    expect(
+      checkout.items.map((item) => item.shippingAllocatedCostSats)
+    ).toEqual([4584, 2291])
+    expect(checkout.quote?.fiatUsdRates).toEqual(rate.fiatUsdRates)
+    const received = parseOrderRumorEvent({
+      content: serializeOrderRumorContent(
+        orderSchema.parse(payload(checkout.items, 6875))
+      ),
+    })
+    expect(received.items[0]!.shippingPolicyQuote).toEqual(quote)
+    const restarted = parsePersistedCart(
+      JSON.parse(JSON.stringify({ version: 2, items: prepared.items }))
+    ).state.items
+    expect(restarted[0]!.shippingWeightAllowanceGrams).toBe(50)
+    expect(restarted[1]!.shippingHandling).toEqual({
+      amount: 1,
+      currency: "EUR",
+      normalizedCurrency: "EUR",
+    })
+    expect(
+      priced(restarted, mixedRate({ fiatUsdRates: { EUR: 1.25, GBP: 1 } }))
+        .shippingCost.totalSats
+    ).toBe(6875)
+    expect(shippingPolicyQuoteSchema.safeParse(quote).success).toBe(true)
+    expect(
+      shippingPolicyQuoteSchema.safeParse({ ...quote, amountSats: 6876 })
+        .success
+    ).toBe(false)
+  })
+
+  it("requires changed-term review for signed product adjustments and currency rates before authorization", async () => {
+    const products = mixedProducts()
+    const items = mixedItems(products)
+    const rate = mixedRate()
+    const table = mixedOption()
+    const reviewed = prepareCartFulfillment(
+      items,
+      [table],
+      destination,
+      rate
+    ).items
+    const nextRate = mixedRate({ fiatUsdRates: { EUR: 1.25, GBP: 1 } })
+    const afterRate = prepareCartFulfillment(
+      items,
+      [table],
+      destination,
+      nextRate
+    ).items
+    const authorize = (
+      current: CartItem[],
+      freshProducts = products,
+      freshRate = rate,
+      rawItems = items
+    ) =>
+      authorizeCurrentCheckoutItems({
+        mode: "direct_payment",
+        rawItems,
+        reviewedItems: current,
+        refreshedProducts: freshProducts,
+        readShippingOptions: async () => [table],
+        destination,
+        rateInput: freshRate,
+        resolveProductFulfillment: async (product) => ({
+          status: "standard",
+          type: "shipping",
+          product,
+        }),
+        authorizePickupHandlers: async () => {},
+      })
+    expect(await authorize(reviewed, products, nextRate)).toEqual({
+      status: "changed",
+    })
+    expect(priced(afterRate, nextRate).shippingCost.totalSats).toBe(6250)
+    expect(await authorize(afterRate, products, nextRate)).toMatchObject({
+      status: "ok",
+    })
+    const nextProducts = [
+      mixedProduct("mixed-a", { padding: 70, handling: 2.5, createdAt: 3 }),
+      products[1]!,
+    ]
+    expect(await authorize(reviewed, nextProducts)).toEqual({
+      status: "changed",
+    })
+    const afterProduct = prepareCartFulfillment(
+      mixedItems(nextProducts),
+      [table],
+      destination,
+      rate
+    ).items
+    expect(afterProduct[0]!.shippingPolicyQuote).toMatchObject({
+      combinedWeightGrams: 1040,
+      handlingMinor: 500,
+      amountSats: 12500,
+    })
+    expect(
+      await authorize(
+        afterProduct,
+        nextProducts,
+        rate,
+        mixedItems(nextProducts)
+      )
+    ).toMatchObject({
+      status: "ok",
+    })
+    expect(reviewed[0]!.shippingPolicyQuote).toMatchObject({
+      amountMinor: 550,
+      amountSats: 6875,
+      pricingRate: rate,
+    })
+  })
+
+  it("converts the physical merchandise threshold before a full eligible shipping and handling waiver", () => {
+    const items = mixedItems()
+    const rate = mixedRate()
+    const table = mixedOption({
+      domestic: { ...mixedPolicy.domestic!, freeShippingThresholdMinor: 3500 },
+    })
+    const below = prepareCartFulfillment(
+      items,
+      [table],
+      destination,
+      rate
+    ).items
+    expect(priced(below, rate).shippingCost.totalSats).toBe(6875)
+    const nextRate = mixedRate({ fiatUsdRates: { EUR: 1.25, GBP: 1 } })
+    const waived = prepareCartFulfillment(
+      items,
+      [table],
+      destination,
+      nextRate
+    ).items
+    expect(waived[0]!.shippingPolicyQuote).toMatchObject({
+      shippedSubtotalMinor: 3750,
+      handlingMinor: 375,
+      freeShippingApplied: true,
+      amountMinor: 0,
+      amountSats: 0,
+    })
+    expect(priced(waived, nextRate).shippingCost).toMatchObject({
+      status: "included",
+      totalSats: 0,
+    })
+    expect(
+      orderSchema.safeParse(payload(priced(waived, nextRate).items, 0)).success
+    ).toBe(true)
+    const unsupported = prepareCartFulfillment(
+      items,
+      [table],
+      { ...destination, country: "MX" },
+      nextRate
+    ).items
+    expect(priced(unsupported, nextRate).shippingCost.status).toBe("manual")
+  })
+
+  it("keeps a missing policy-currency rate in coordination while merchandise can still be priced", () => {
+    const rate = mixedRate({ fiatUsdRates: { EUR: 1.25 } })
+    const prepared = prepareCartFulfillment(
+      mixedItems(),
+      [mixedOption()],
+      destination,
+      rate
+    )
+    const checkout = priced(prepared.items, rate)
+    expect(checkout.shippingCost.status).toBe("manual")
+    expect(checkout.itemSubtotalSats).toBe(37500)
+    expect(getCartShippingOptionsAvailable(prepared.items)).toBe(false)
+    expect(
+      checkout.items.every(
+        (item) =>
+          !item.shippingPolicyQuote &&
+          item.shippingAllocatedCostSats === undefined
+      )
+    ).toBe(true)
+    expect(
+      orderSchema.safeParse({
+        ...payload(checkout.items, 0),
+        shippingCostSats: undefined,
+        shippingCostStatus: "manual",
+      }).success
+    ).toBe(true)
   })
 })

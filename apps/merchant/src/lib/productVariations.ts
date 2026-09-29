@@ -1016,7 +1016,7 @@ function getShippingProjection(product: ProductSchema) {
 }
 
 // This recognizes an authoring reference only. Publication separately verifies
-// the current signed policy, currency and each product's positive weight.
+// the current signed policy and each product's positive weight.
 function hasMerchantShippingTableReference(product: ProductSchema): boolean {
   return (
     product.format === "physical" &&
@@ -1458,6 +1458,8 @@ function buildVariationProduct(
     product = copyShippingProjection(product, getShippingProjection(parent))
     product.shippingWeightGrams = parent.shippingWeightGrams
     product.shippingDimensionsCm = parent.shippingDimensionsCm
+    product.shippingWeightAllowanceGrams = parent.shippingWeightAllowanceGrams
+    product.shippingHandling = parent.shippingHandling
   } else if (row.shippingCost.trim()) {
     const amount = parsePlainDecimalAmount(
       row.shippingCost,

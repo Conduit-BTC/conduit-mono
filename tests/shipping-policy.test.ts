@@ -19,6 +19,9 @@ import {
   quoteShippingPolicy,
   shippingAmountToMinor,
   shippingMinorToAmount,
+  convertShippingMinor,
+  type ShippingPolicyV2,
+  type BtcUsdRateQuote,
   shippingPolicyQuoteSchema,
   publishMerchantShippingPolicy,
   withdrawMerchantShippingPolicy,
@@ -1009,5 +1012,422 @@ describe("shipping policy publication", () => {
       getMerchantShippingPolicyCoordinate(pubkey),
     ])
     expect(deletion?.tags).toContainEqual(["e", event.id])
+  })
+})
+
+describe("shipping policy v2 signed adjustments and currency snapshots", () => {
+  const v2: ShippingPolicyV2 = {
+    version: 2,
+    title: "Shipping",
+    originCountry: "US",
+    currency: "USD",
+    domestic: {
+      rules: [
+        { country: "US", bands: [{ maxWeightGrams: 1000, priceMinor: 500 }] },
+      ],
+    },
+    international: null,
+  }
+  const rates: BtcUsdRateQuote = {
+    rate: 50_000,
+    fetchedAt: 1,
+    source: "env",
+    fiatUsdRates: { EUR: 0.5, JPY: 0.01 },
+    fiatSource: "env",
+  }
+  function adjustedItem(
+    d: string,
+    currency: string,
+    amount: number,
+    quantity: number,
+    allowance: number,
+    handlingAmount: number
+  ) {
+    const handling = {
+      amount: handlingAmount,
+      currency,
+      normalizedCurrency: currency,
+    }
+    const draft = buildProductListingEventDraft({
+      product: {
+        title: d,
+        price: amount,
+        currency,
+        type: "simple",
+        format: "physical",
+        specifications: [],
+        images: [],
+        tags: [],
+        shippingOptionId: coordinate,
+        shippingWeightGrams: 200,
+        shippingWeightAllowanceGrams: allowance,
+        shippingHandling: handling,
+      } as ProductSchema,
+      dTag: d,
+    })
+    const event = finalizeEvent({ ...draft, created_at: 2 }, secret)
+    return {
+      productId: `30402:${merchant}:${d}`,
+      productEventId: event.id,
+      productCreatedAt: 2,
+      productEvent: event,
+      quantity,
+      weightGrams: 200,
+      currency,
+      subtotalMinor: shippingAmountToMinor(amount, currency) * quantity,
+      shippingWeightAllowanceGrams: allowance,
+      shippingHandling: handling,
+    }
+  }
+  function v2Quote(
+    value = v2,
+    rateInput: BtcUsdRateQuote | number | null = rates,
+    items = [
+      adjustedItem("eu", "EUR", 10, 3, 50, 0.01),
+      adjustedItem("sat", "SATS", 1000, 2, 0, 1),
+    ]
+  ) {
+    const event = signedPolicy(value)
+    return quoteShippingPolicy({
+      policy: value,
+      policyCoordinate: coordinate,
+      policyEventId: event.id,
+      policyCreatedAt: event.created_at,
+      merchantPubkey: merchant,
+      policyEvent: event,
+      items,
+      destination: { country: "US", postalCode: "10001" },
+      rateInput,
+    })
+  }
+  it("emits v2 detection and rejects legacy buffers on v2", () => {
+    const draft = buildShippingPolicyEventDraft({ policy: v2 })
+    expect(
+      draft.tags.find((tag) => tag[0] === "conduit_shipping_table")?.[1]
+    ).toBe("2")
+    expect(
+      parseShippingOptionEvent({ ...signedPolicy(v2) } as never)?.shippingPolicy
+        ?.version
+    ).toBe(2)
+    expect(() => parseShippingPolicy({ ...v2, handlingMinor: 0 })).toThrow()
+    const unsupported = structuredClone(draft)
+    unsupported.tags.find((tag) => tag[0] === "conduit_shipping_table")![1] =
+      "3"
+    expect(
+      parseShippingOptionEvent({
+        ...unsupported,
+        id: "f".repeat(64),
+        pubkey: merchant,
+        created_at: 10,
+      } as never)
+    ).toBeNull()
+  })
+  it("round-trips explicit per-product adjustment metadata and refuses malformed or foreign-currency terms", () => {
+    const item = adjustedItem("one", "EUR", 10, 1, 50, 0.01)
+    const parsed = parseProductEvent(
+      new NDKEvent(undefined, item.productEvent)
+    )!
+    expect(parsed).toMatchObject({
+      shippingWeightAllowanceGrams: 50,
+      shippingHandling: {
+        amount: 0.01,
+        currency: "EUR",
+        normalizedCurrency: "EUR",
+      },
+    })
+    for (const tag of [
+      ["conduit_shipping_adjustments", "2", "{}"],
+      [
+        "conduit_shipping_adjustments",
+        "1",
+        JSON.stringify({
+          handling: { amount: 1, currency: "USD", normalizedCurrency: "USD" },
+        }),
+      ],
+    ]) {
+      const body = structuredClone(item.productEvent)
+      body.tags = body.tags.filter(
+        (tag) => tag[0] !== "conduit_shipping_adjustments"
+      )
+      body.tags.push(tag)
+      const event = finalizeEvent(body, secret)
+      expect(
+        parseProductEvent(new NDKEvent(undefined, event))
+          ?.shippingAdjustmentsMalformed
+      ).toBe(true)
+      expect(
+        v2Quote(v2, rates, [
+          { ...item, productEvent: event, productEventId: event.id },
+        ])
+      ).toEqual({ status: "invalid_items" })
+    }
+    const duplicate = finalizeEvent(
+      {
+        ...item.productEvent,
+        tags: [
+          ...item.productEvent.tags,
+          item.productEvent.tags.find(
+            (tag) => tag[0] === "conduit_shipping_adjustments"
+          )!,
+        ],
+      },
+      secret
+    )
+    expect(
+      parseProductEvent(new NDKEvent(undefined, duplicate))
+        ?.shippingAdjustmentsMalformed
+    ).toBe(true)
+    expect(() =>
+      buildProductListingEventDraft({
+        product: {
+          ...parsed,
+          shippingHandling: {
+            amount: 1,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        },
+        dTag: "one",
+      })
+    ).toThrow()
+  })
+  it("multiplies per-product weight and handling by quantity then converts each line once", () => {
+    // 3 × (200+50) + 2 × 200 = 1150; use a matching bound.
+    const value = {
+      ...v2,
+      domestic: {
+        rules: [
+          { country: "US", bands: [{ maxWeightGrams: 1150, priceMinor: 500 }] },
+        ],
+      },
+    }
+    const result = v2Quote(value)
+    expect(result.status).toBe("quoted")
+    if (result.status !== "quoted" || result.quote.version !== 2)
+      throw new Error(result.status)
+    expect(result.quote).toMatchObject({
+      version: 2,
+      combinedWeightGrams: 1150,
+      shippedSubtotalMinor: 1600,
+      handlingMinor: 2,
+      amountMinor: 502,
+      amountSats: 10040,
+      pricingRate: rates,
+      items: [
+        {
+          currency: "EUR",
+          subtotalMinor: 3000,
+          convertedSubtotalMinor: 1500,
+          convertedHandlingMinor: 2,
+        },
+        {
+          currency: "SATS",
+          subtotalMinor: 2000,
+          convertedSubtotalMinor: 100,
+          convertedHandlingMinor: 0,
+        },
+      ],
+    })
+    expect(shippingPolicyQuoteSchema.safeParse(result.quote).success).toBe(true)
+    for (const forged of [
+      { ...result.quote, amountSats: 10041 },
+      { ...result.quote, pricingRate: { ...rates, rate: 25_000 } },
+      {
+        ...result.quote,
+        items: result.quote.items.map((line, index) =>
+          index ? line : { ...line, subtotalMinor: 3001 }
+        ),
+      },
+    ])
+      expect(shippingPolicyQuoteSchema.safeParse(forged).success).toBe(false)
+  })
+  it("uses converted shipped subtotal at inclusive free threshold and waives all handling", () => {
+    const value = {
+      ...v2,
+      domestic: {
+        freeShippingThresholdMinor: 1600,
+        rules: [
+          { country: "US", bands: [{ maxWeightGrams: 1150, priceMinor: 500 }] },
+        ],
+      },
+    }
+    expect(v2Quote(value)).toMatchObject({
+      status: "quoted",
+      quote: {
+        freeShippingApplied: true,
+        shippedSubtotalMinor: 1600,
+        handlingMinor: 2,
+        amountMinor: 0,
+        amountSats: 0,
+      },
+    })
+    expect(
+      v2Quote({
+        ...value,
+        domestic: { ...value.domestic, freeShippingThresholdMinor: 1601 },
+      })
+    ).toMatchObject({
+      status: "quoted",
+      quote: { freeShippingApplied: false, amountMinor: 502 },
+    })
+    expect(
+      v2Quote({
+        ...value,
+        domestic: {
+          ...value.domestic,
+          rules: [
+            {
+              country: "US",
+              bands: [{ maxWeightGrams: 1149, priceMinor: 500 }],
+            },
+          ],
+        },
+      })
+    ).toEqual({ status: "overweight" })
+  })
+  it("requires captured exchange rates, preserves old snapshots and fails unavailable conversions", () => {
+    const one = [adjustedItem("eu", "EUR", 10, 1, 50, 0.01)]
+    expect(v2Quote(v2, null, one)).toEqual({ status: "rate_required" })
+    expect(
+      previewShippingPolicy({
+        policy: v2,
+        items: [
+          {
+            quantity: 1,
+            weightGrams: 200,
+            currency: "USD",
+            subtotalMinor: 2000,
+          },
+        ],
+        destination: { country: "US" },
+      })
+    ).toMatchObject({
+      status: "quoted",
+      amountMinor: 500,
+      amountSats: undefined,
+    })
+    expect(
+      v2Quote(v2, null, [adjustedItem("usd", "USD", 20, 1, 0, 1)])
+    ).toEqual({ status: "rate_required" })
+    expect(v2Quote(v2, 50_000, one)).toEqual({ status: "rate_required" })
+    expect(v2Quote(v2, { ...rates, fiatUsdRates: {} }, one)).toEqual({
+      status: "rate_required",
+    })
+    expect(
+      v2Quote(v2, rates, [{ ...one[0]!, shippingWeightAllowanceGrams: 51 }])
+    ).toEqual({ status: "invalid_items" })
+    const original = v2Quote(v2, rates, one)
+    if (original.status !== "quoted") throw new Error(original.status)
+    expect(shippingPolicyQuoteSchema.parse(original.quote)).toEqual(
+      original.quote
+    )
+    expect(v2Quote(v2, { ...rates, rate: 100_000 }, one)).toMatchObject({
+      status: "quoted",
+      quote: { amountSats: 5010 },
+    })
+    expect(quote()).toMatchObject({
+      version: 1,
+      combinedWeightGrams: 500,
+      amountMinor: 550,
+    })
+    expect(preview({ items: one })).toEqual({ status: "currency_mismatch" })
+    expect(
+      preview({
+        items: [
+          {
+            quantity: 1,
+            weightGrams: 200,
+            currency: "USD",
+            subtotalMinor: 2000,
+            shippingWeightAllowanceGrams: 0,
+          },
+        ],
+      })
+    ).toEqual({ status: "invalid_items" })
+  })
+  it("rounds decimal rates half up without intermediate sats rounding and omits unnecessary rate snapshots", () => {
+    expect(convertShippingMinor(1, "EUR", "USD", rates)).toBe(1)
+    expect(convertShippingMinor(3, "EUR", "USD", rates)).toBe(2)
+    expect(convertShippingMinor(500, "MSATS", "SATS")).toBe(1)
+    expect(convertShippingMinor(1, "BTC", "SATS")).toBe(1)
+    expect(convertShippingMinor(1, "SATS", "USD", 500_000)).toBe(1)
+    expect(convertShippingMinor(1, "USD", "JPY", rates)).toBe(1)
+    const native = { ...v2, currency: "SATS" }
+    const result = v2Quote(native, rates, [
+      adjustedItem("sat", "SATS", 1000, 1, 0, 7),
+    ])
+    expect(result).toMatchObject({
+      status: "quoted",
+      quote: { amountMinor: 507, amountSats: 507, pricingRate: null },
+    })
+  })
+  it("binds mixed-currency order source terms and the exact converted group allocation", () => {
+    const result = v2Quote(v2, rates, [
+      adjustedItem("eu", "EUR", 10, 1, 50, 0.01),
+    ])
+    if (result.status !== "quoted" || result.quote.version !== 2)
+      throw new Error(result.status)
+    const line = result.quote.items[0]!
+    const payload = {
+      id: "mixed",
+      merchantPubkey: merchant,
+      buyerPubkey: "b".repeat(64),
+      items: [
+        {
+          productId: line.productId,
+          quantity: 1,
+          priceAtPurchase: 10000,
+          currency: "SATS",
+          sourcePrice: {
+            amount: 10,
+            currency: "EUR",
+            normalizedCurrency: "EUR",
+          },
+          format: "physical",
+          shippingOptionId: coordinate,
+          shippingPolicyQuote: result.quote,
+          shippingAllocatedCostSats: result.quote.amountSats,
+        },
+      ],
+      subtotal: 10000,
+      currency: "SATS",
+      shippingCostSats: result.quote.amountSats,
+      shippingAddress: {
+        name: "Buyer",
+        street: "1 Test",
+        city: "City",
+        country: "US",
+        postalCode: "10001",
+      },
+      createdAt: 1,
+    }
+    expect(orderSchema.safeParse(payload).success).toBe(true)
+    expect(
+      orderSchema.safeParse({
+        ...payload,
+        shippingCostSats: result.quote.amountSats + 1,
+        items: [
+          {
+            ...payload.items[0],
+            shippingAllocatedCostSats: result.quote.amountSats + 1,
+          },
+        ],
+      }).success
+    ).toBe(false)
+    expect(
+      orderSchema.safeParse({
+        ...payload,
+        items: [
+          {
+            ...payload.items[0],
+            sourcePrice: {
+              amount: 10,
+              currency: "USD",
+              normalizedCurrency: "USD",
+            },
+          },
+        ],
+      }).success
+    ).toBe(false)
   })
 })

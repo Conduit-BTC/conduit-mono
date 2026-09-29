@@ -260,10 +260,6 @@ function ShippingPage() {
                 <h1 className="text-balance font-display text-4xl font-semibold text-[var(--text-primary)] sm:text-5xl">
                   Shipping
                 </h1>
-                <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
-                  Set rates once, then use them on your physical products.
-                  Buyers calculate combined shipping privately at checkout.
-                </p>
               </div>
             </div>
 

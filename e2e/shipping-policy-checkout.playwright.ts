@@ -77,7 +77,7 @@ async function readShippingOrder(page: Page, merchant: string) {
   )
 }
 
-test("combined shipping keeps cart, encrypted order and recovered lifecycle terms aligned @commerce", async ({
+test("mixed currency product adjustments keep cart, encrypted order and recovered lifecycle terms aligned @commerce", async ({
   page,
 }, testInfo) => {
   test.setTimeout(90000)
@@ -88,19 +88,17 @@ test("combined shipping keeps cart, encrypted order and recovered lifecycle term
     const createdAt = Math.floor(Date.now() / 1000)
     const policyCoordinate = `30406:${merchant}:conduit-shipping-policy`
     const policy = {
-      version: 1,
-      title: "Synthetic parcel table",
+      version: 2,
+      title: "Synthetic mixed currency parcel table",
       originCountry: "US",
-      currency: "SATS",
-      weightAllowanceGrams: 100,
-      handlingMinor: 1,
+      currency: "GBP",
       domestic: {
         rules: [
           {
             country: "US",
             bands: [
-              { maxWeightGrams: 1000, priceMinor: 6 },
-              { maxWeightGrams: 3000, priceMinor: 10 },
+              { maxWeightGrams: 1000, priceMinor: 250 },
+              { maxWeightGrams: 3000, priceMinor: 500 },
             ],
           },
         ],
@@ -114,13 +112,13 @@ test("combined shipping keeps cart, encrypted order and recovered lifecycle term
       tags: [
         ["d", "conduit-shipping-policy"],
         ["title", policy.title],
-        ["price", "6", "SATS"],
+        ["price", "2.50", "GBP"],
         ["country", "US"],
         ["service", "standard"],
-        ["conduit_shipping_table", "1", JSON.stringify(policy)],
+        ["conduit_shipping_table", "2", JSON.stringify(policy)],
       ],
     })
-    const products = ["parcel-a", "parcel-b"].map((name) =>
+    const products = ["parcel-a", "parcel-b"].map((name, index) =>
       signRuntimeTestEvent(merchantIdentity, {
         kind: 30402,
         created_at: createdAt + 1,
@@ -128,16 +126,41 @@ test("combined shipping keeps cart, encrypted order and recovered lifecycle term
         tags: [
           ["d", name],
           ["title", `Synthetic ${name}`],
-          ["price", "100", "SATS"],
+          [
+            "price",
+            index === 0 ? "12.50" : "10.00",
+            index === 0 ? "USD" : "EUR",
+          ],
           ["type", "simple", "physical"],
           ["stock", "5"],
           ["image", "https://shipping-fixture.dev/product.png"],
-          ["weight", "300", "g"],
+          ["weight", index === 0 ? "300" : "200", "g"],
+          [
+            "conduit_shipping_adjustments",
+            "1",
+            JSON.stringify({
+              weightAllowanceGrams: index === 0 ? 50 : 100,
+              handling: {
+                amount: index === 0 ? 1.25 : 1,
+                currency: index === 0 ? "USD" : "EUR",
+                normalizedCurrency: index === 0 ? "USD" : "EUR",
+              },
+            }),
+          ],
           ["shipping_option", policyCoordinate],
           ["checkout_public_zaps", "true"],
           ["checkout_zap_message_policy", "generic_only"],
         ],
       })
+    )
+    let gbpPerUsd = 0.8
+    await page.route("https://mempool.space/api/v1/prices", (route) =>
+      route.fulfill({ json: { USD: 100000 } })
+    )
+    await page.route(
+      "https://api.frankfurter.dev/v1/latest?base=USD",
+      (route) =>
+        route.fulfill({ json: { rates: { EUR: 0.8, GBP: gbpPerUsd } } })
     )
     await page.route("https://shipping-fixture.dev/product.png", (route) =>
       route.fulfill({ status: 204 })
@@ -194,7 +217,7 @@ test("combined shipping keeps cart, encrypted order and recovered lifecycle term
     await page.getByLabel("State / region", { exact: true }).fill("WA")
     await page.getByLabel("Postal / ZIP code", { exact: true }).fill("98101")
     await expect(
-      page.getByText(/Shipping estimate: (?:₿7|7 sats)/)
+      page.getByText(/Shipping estimate: (?:₿6,875|6,875 sats)/)
     ).toBeVisible({
       timeout: 30000,
     })
@@ -215,7 +238,7 @@ test("combined shipping keeps cart, encrypted order and recovered lifecycle term
     const summary = page.locator("aside").filter({
       has: page.getByRole("heading", { name: "Order summary", exact: true }),
     })
-    await expect(summary.getByText(/^(?:₿7|7 sats)$/)).toBeVisible({
+    await expect(summary.getByText(/^(?:₿6,875|6,875 sats)$/)).toBeVisible({
       timeout: 30000,
     })
     await expect(page.getByText("Zap visibility", { exact: true })).toHaveCount(
@@ -227,14 +250,18 @@ test("combined shipping keeps cart, encrypted order and recovered lifecycle term
     await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30000 })
     const saved = await readShippingOrder(page, merchant)
     expect(saved).toMatchObject({
-      shippingCostSats: 7,
-      totalSats: 307,
+      shippingCostSats: 6875,
+      totalSats: 44375,
       orderDeliveryStatus: "sent",
     })
     expect(saved!.quotes[0]).toMatchObject({
       policyEventId: policyEvent.id,
-      amountMinor: 7,
+      version: 2,
+      amountMinor: 550,
+      amountSats: 6875,
+      handlingMinor: 300,
       combinedWeightGrams: 1000,
+      pricingRate: { rate: 100000, fiatUsdRates: { EUR: 1.25, GBP: 1.25 } },
     })
     const wraps = await readAuthenticatedGiftWraps(
       merchantIdentity,
@@ -264,7 +291,7 @@ test("combined shipping keeps cart, encrypted order and recovered lifecycle term
       },
       { content: rumor.content, modulePath: coreOrderModuleUrl }
     )
-    expect(delivered.shippingCostSats).toBe(7)
+    expect(delivered.shippingCostSats).toBe(6875)
     expect(delivered.items[0].shippingPolicyQuote).toEqual(saved!.quotes[0])
     expect(
       wraps.every(
@@ -279,12 +306,42 @@ test("combined shipping keeps cart, encrypted order and recovered lifecycle term
         created_at: createdAt + 2,
         tags: policyEvent.tags.map((tag) =>
           tag[0] === "conduit_shipping_table"
-            ? [tag[0], "1", JSON.stringify({ ...policy, handlingMinor: 100 })]
-            : tag
+            ? [
+                tag[0],
+                "2",
+                JSON.stringify({
+                  ...policy,
+                  domestic: {
+                    rules: [
+                      {
+                        country: "US",
+                        bands: [
+                          { maxWeightGrams: 1000, priceMinor: 1000 },
+                          { maxWeightGrams: 3000, priceMinor: 1500 },
+                        ],
+                      },
+                    ],
+                  },
+                }),
+              ]
+            : tag[0] === "price"
+              ? ["price", "10.00", "GBP"]
+              : tag
         ),
       }),
     ])
+    gbpPerUsd = 1
+    await page.evaluate(() => localStorage.removeItem("conduit:btc-usd-rate"))
     await page.reload()
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            JSON.parse(localStorage.getItem("conduit:btc-usd-rate") ?? "{}")
+              .fiatUsdRates?.GBP
+        )
+      )
+      .toBe(1)
     expect(await readShippingOrder(page, merchant)).toEqual(saved)
   } finally {
     disposeRuntimeSignerIdentity(merchantIdentity)

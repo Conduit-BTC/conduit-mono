@@ -1,14 +1,34 @@
-import { getShippingDimensionWarnings } from "@conduit/core"
-import { Input, Label } from "@conduit/ui"
+import { getShippingDimensionWarnings, useAuth } from "@conduit/core"
+import {
+  InputWithSuffix,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@conduit/ui"
 import type { ProductPublishFormValues } from "../lib/productForm"
 import { getProductShippingMeasurements } from "../lib/shippingPolicyForm"
+import {
+  getShippingWeightUnitPreference,
+  saveShippingWeightUnitPreference,
+  SHIPPING_WEIGHT_UNITS,
+  type ShippingWeightUnit,
+} from "../lib/shippingWeightUnits"
+import { ShippingWeightInput } from "./ShippingWeightInput"
 
 type Measurements = Pick<
   ProductPublishFormValues,
   | "shippingWeightGrams"
+  | "shippingWeightUnit"
+  | "shippingWeightAllowanceGrams"
+  | "shippingHandling"
   | "shippingLengthCm"
   | "shippingWidthCm"
   | "shippingHeightCm"
+  | "currency"
+  | "shippingPricingMode"
 >
 
 export function ProductShippingMeasurements({
@@ -20,6 +40,9 @@ export function ProductShippingMeasurements({
   onChange: (value: Partial<Measurements>) => void
   error?: string
 }) {
+  const { pubkey } = useAuth()
+  const unit =
+    form.shippingWeightUnit ?? getShippingWeightUnitPreference(pubkey)
   let warnings: string[] = []
   try {
     const parsed = getProductShippingMeasurements(form)
@@ -28,40 +51,87 @@ export function ProductShippingMeasurements({
       parsed.shippingDimensionsCm
     )
   } catch {
-    // Incomplete draft values remain editable; publish validation reports them.
+    // Publication validates incomplete drafts while every field remains editable.
   }
   return (
     <section
       aria-label="Product shipping measurements"
       className="space-y-3 rounded-xl border border-[var(--border)] p-3"
     >
-      <div className="space-y-1.5">
-        <Label htmlFor="product-shipping-weight">Shipping weight (g)</Label>
-        <Input
-          id="product-shipping-weight"
-          inputMode="numeric"
-          value={form.shippingWeightGrams ?? ""}
-          placeholder="Weight of one item"
-          className="tabular-nums"
-          aria-invalid={!!error}
-          aria-describedby="product-shipping-weight-help"
-          onChange={(event) =>
-            onChange({ shippingWeightGrams: event.target.value })
-          }
-        />
-        <p
-          id="product-shipping-weight-help"
-          className="text-pretty text-xs text-[var(--text-muted)]"
-        >
-          Required for table shipping. Include the weight shipped with one item;
-          1 kg = 1,000 g. Variations using the table share this weight.
-        </p>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="min-w-0 space-y-1.5">
+          <Label htmlFor="product-shipping-weight">Shipping weight</Label>
+          <ShippingWeightInput
+            id="product-shipping-weight"
+            unit={unit}
+            value={form.shippingWeightGrams ?? ""}
+            placeholder="0"
+            aria-invalid={!!error}
+            aria-describedby={
+              error ? "product-shipping-weight-error" : undefined
+            }
+            onValueChange={(value) => onChange({ shippingWeightGrams: value })}
+          />
+        </div>
+        <div className="min-w-0 space-y-1.5">
+          <Label htmlFor="product-weight-unit">Weight unit</Label>
+          <Select
+            value={unit}
+            onValueChange={(value) => {
+              const weightUnit = value as ShippingWeightUnit
+              onChange({ shippingWeightUnit: weightUnit })
+              saveShippingWeightUnitPreference(pubkey, weightUnit)
+            }}
+          >
+            <SelectTrigger id="product-weight-unit">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SHIPPING_WEIGHT_UNITS.map((entry) => (
+                <SelectItem key={entry.value} value={entry.value}>
+                  {entry.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
       <details>
         <summary className="cursor-pointer py-2 text-sm text-[var(--text-secondary)]">
-          Dimensions and special packing (optional)
+          Packing and dimensions
         </summary>
-        <div className="mt-2 grid grid-cols-3 gap-2">
+        {form.shippingPricingMode === "weight_table" && (
+          <div className="mt-2 grid grid-cols-2 gap-3">
+            <div className="min-w-0 space-y-1.5">
+              <Label htmlFor="product-packing-weight">
+                Extra packing weight
+              </Label>
+              <ShippingWeightInput
+                id="product-packing-weight"
+                unit={unit}
+                value={form.shippingWeightAllowanceGrams ?? ""}
+                placeholder="0"
+                onValueChange={(value) =>
+                  onChange({ shippingWeightAllowanceGrams: value })
+                }
+              />
+            </div>
+            <div className="min-w-0 space-y-1.5">
+              <Label htmlFor="product-handling-charge">Handling per item</Label>
+              <InputWithSuffix
+                id="product-handling-charge"
+                suffix={form.currency === "SATS" ? "sats" : form.currency}
+                inputMode="decimal"
+                value={form.shippingHandling ?? ""}
+                placeholder="0"
+                onChange={(event) =>
+                  onChange({ shippingHandling: event.target.value })
+                }
+              />
+            </div>
+          </div>
+        )}
+        <div className="mt-3 grid grid-cols-3 gap-2">
           {(
             [
               ["shippingLengthCm", "Length"],
@@ -70,22 +140,17 @@ export function ProductShippingMeasurements({
             ] as const
           ).map(([field, label]) => (
             <div key={field} className="min-w-0 space-y-1.5">
-              <Label htmlFor={`product-${field}`}>{label} (cm)</Label>
-              <Input
+              <Label htmlFor={`product-${field}`}>{label}</Label>
+              <InputWithSuffix
                 id={`product-${field}`}
+                suffix="cm"
                 inputMode="decimal"
                 value={form[field] ?? ""}
-                className="tabular-nums"
                 onChange={(event) => onChange({ [field]: event.target.value })}
               />
             </div>
           ))}
         </div>
-        <p className="mt-2 text-pretty text-xs text-[var(--text-muted)]">
-          Dimensions only flag items that may need extra care. They do not
-          change checkout shipping. Use your judgment for fragile or special
-          packing and consider covering it in the product price.
-        </p>
       </details>
       {warnings.map((warning) => (
         <p key={warning} className="text-pretty text-sm text-warning">
@@ -93,7 +158,11 @@ export function ProductShippingMeasurements({
         </p>
       ))}
       {error && (
-        <p role="alert" className="text-pretty text-sm text-error">
+        <p
+          id="product-shipping-weight-error"
+          role="alert"
+          className="text-pretty text-sm text-error"
+        >
           {error}
         </p>
       )}

@@ -6,6 +6,7 @@ import {
   getShippingDestinationEligibility,
   resolveProductFulfillment,
   type ParsedShippingOption,
+  type PricingRateInput,
   type PreparedProductFulfillment,
   type ShippingDestinationEligibility,
 } from "@conduit/core"
@@ -52,7 +53,8 @@ export type PreparedCartFulfillment = {
 export function prepareCartFulfillment(
   items: CartItem[],
   shippingOptions: readonly ParsedShippingOption[],
-  destination?: { country: string; subdivision?: string; postalCode?: string }
+  destination?: { country: string; subdivision?: string; postalCode?: string },
+  rateInput: PricingRateInput = null
 ): PreparedCartFulfillment {
   const resolutions = new Map<string, PreparedProductFulfillment>()
   const policyGroups = new Map<
@@ -148,6 +150,8 @@ export function prepareCartFulfillment(
           productCreatedAt: Math.floor((item.productUpdatedAt ?? 0) / 1000),
           quantity: item.quantity,
           weightGrams: item.shippingWeightGrams,
+          shippingWeightAllowanceGrams: item.shippingWeightAllowanceGrams,
+          shippingHandling: item.shippingHandling,
           currency,
           subtotalMinor,
         }
@@ -161,6 +165,7 @@ export function prepareCartFulfillment(
         merchantPubkey: option.pubkey,
         items: inputs,
         destination,
+        rateInput,
       })
       if (result.status !== "quoted") continue
       for (const item of preparedItems) {

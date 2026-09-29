@@ -14,6 +14,42 @@ import {
 export { shippingPolicyQuoteSchema } from "../protocol/shipping-policy"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 
+/** Conduit product extension; not an Open Markets physical-property tag. */
+export const productShippingAdjustmentsSchema = z
+  .object({
+    weightAllowanceGrams: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional(),
+    handling: z
+      .object({
+        amount: z.number().finite().nonnegative(),
+        currency: z.string(),
+        normalizedCurrency: z.string(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.handling) return
+    try {
+      if (
+        value.handling.normalizedCurrency !==
+        normalizeCurrencyIdentity(value.handling.currency)
+      )
+        throw new Error("Currency mismatch")
+      shippingAmountToMinor(value.handling.amount, value.handling.currency)
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "Invalid product shipping handling amount.",
+      })
+    }
+  })
+
 const publicMediaUrlSchema = z
   .string()
   .refine(
@@ -111,6 +147,20 @@ export const productSchema = z.object({
     .positive()
     .max(Number.MAX_SAFE_INTEGER)
     .optional(),
+  shippingWeightAllowanceGrams: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  shippingHandling: z
+    .object({
+      amount: z.number().finite().nonnegative(),
+      currency: z.string(),
+      normalizedCurrency: z.string(),
+    })
+    .optional(),
+  shippingAdjustmentsMalformed: z.literal(true).optional(),
   shippingDimensionsCm: z
     .object({
       length: z.number().positive().max(Number.MAX_SAFE_INTEGER),
@@ -600,7 +650,7 @@ export const orderItemSchema = z
           item.sourcePrice?.normalizedCurrency ??
             item.sourcePrice?.currency ??
             item.currency
-        ) !== quote.currency ||
+        ) !== quotedItem?.currency ||
         item.shippingAllocatedCostSats === undefined
       ) {
         context.addIssue({
@@ -745,14 +795,15 @@ export const orderSchema = z
           invalid = true
         }
       }
-      if (isSatsLikeCurrency(quote.currency)) {
+      if (quote.version === 2 || isSatsLikeCurrency(quote.currency)) {
         const groupAllocation = group.reduce(
           (sum, item) => sum + (item.shippingAllocatedCostSats ?? 0),
           0
         )
         if (
           !Number.isSafeInteger(groupAllocation) ||
-          groupAllocation !== quote.amountMinor
+          groupAllocation !==
+            (quote.version === 2 ? quote.amountSats : quote.amountMinor)
         )
           invalid = true
       }

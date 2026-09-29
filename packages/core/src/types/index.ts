@@ -48,6 +48,13 @@ export interface Product {
   format: "physical" | "digital"
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingWeightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
+  shippingAdjustmentsMalformed?: true
   shippingDimensionsCm?: { length: number; width: number; height: number }
   shippingPolicy?: ShippingPolicy
   shippingPolicyQuote?: ShippingPolicyQuote

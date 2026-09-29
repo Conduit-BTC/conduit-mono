@@ -25,24 +25,23 @@ import { orderSchema } from "../packages/core/src/schemas"
 const utf8Bytes = (value: string): number =>
   new TextEncoder().encode(value).length
 
-function shippingOrder(productCount: number) {
+function shippingOrder(productCount: number, version: 1 | 2 = 1) {
   const merchantSecret = generateSecretKey()
   const merchantPubkey = getPublicKey(merchantSecret)
   const buyer = NDKPrivateKeySigner.generate()
   const policy: ShippingPolicy = {
-    version: 1,
+    version,
     title: "Shipping",
     originCountry: "US",
-    currency: "SATS",
-    weightAllowanceGrams: 100,
-    handlingMinor: 7,
+    currency: version === 1 ? "SATS" : "GBP",
+    ...(version === 1 ? { weightAllowanceGrams: 100, handlingMinor: 7 } : {}),
     domestic: {
       rules: [
         { country: "US", bands: [{ maxWeightGrams: 50_000, priceMinor: 300 }] },
       ],
     },
     international: null,
-  }
+  } as ShippingPolicy
   const policyCoordinate = getMerchantShippingPolicyCoordinate(merchantPubkey)
   const policyEvent = finalizeEvent(
     {
@@ -63,9 +62,29 @@ function shippingOrder(productCount: number) {
           ["title", `Product ${index}`],
           ["summary", summary],
           ["type", "simple", "physical"],
-          ["price", "1000", "SATS"],
+          [
+            "price",
+            version === 1 ? "1000" : "10",
+            version === 1 ? "SATS" : "EUR",
+          ],
           ["weight", "200", "g"],
           ["shipping_option", policyCoordinate],
+          ...(version === 2
+            ? [
+                [
+                  "conduit_shipping_adjustments",
+                  "1",
+                  JSON.stringify({
+                    weightAllowanceGrams: 20,
+                    handling: {
+                      amount: 1,
+                      currency: "EUR",
+                      normalizedCurrency: "EUR",
+                    },
+                  }),
+                ],
+              ]
+            : []),
         ],
       },
       merchantSecret
@@ -77,8 +96,18 @@ function shippingOrder(productCount: number) {
       productEvent,
       quantity: 1,
       weightGrams: 200,
-      currency: "SATS",
+      currency: version === 1 ? "SATS" : "EUR",
       subtotalMinor: 1000,
+      ...(version === 2
+        ? {
+            shippingWeightAllowanceGrams: 20,
+            shippingHandling: {
+              amount: 1,
+              currency: "EUR",
+              normalizedCurrency: "EUR",
+            },
+          }
+        : {}),
     }
   })
   const result = quoteShippingPolicy({
@@ -90,6 +119,17 @@ function shippingOrder(productCount: number) {
     policyEvent,
     items: quoteItems,
     destination: { country: "US", subdivision: "NY", postalCode: "10001" },
+    ...(version === 2
+      ? {
+          rateInput: {
+            rate: 50_000,
+            fetchedAt: 1,
+            source: "env" as const,
+            fiatUsdRates: { EUR: 1.25, GBP: 1.25 },
+            fiatSource: "env" as const,
+          },
+        }
+      : {}),
   })
   if (result.status !== "quoted") throw new Error(result.status)
   return {
@@ -102,10 +142,18 @@ function shippingOrder(productCount: number) {
   }
 }
 
-async function encryptedOrder(productCount: number, compact = false) {
-  const fixture = shippingOrder(productCount)
+async function encryptedOrder(
+  productCount: number,
+  compact = false,
+  version: 1 | 2 = 1
+) {
+  const fixture = shippingOrder(productCount, version)
   const merchant = fixture.merchantSigner
   const buyerUser = await fixture.buyer.user()
+  const shippingTotal =
+    fixture.quote.version === 2
+      ? fixture.quote.amountSats
+      : fixture.quote.amountMinor
   const order = orderSchema.parse({
     id: "order",
     merchantPubkey: fixture.merchantPubkey,
@@ -113,17 +161,27 @@ async function encryptedOrder(productCount: number, compact = false) {
     items: fixture.quoteItems.map((item, index) => ({
       productId: item.productId,
       quantity: 1,
-      priceAtPurchase: 1000,
+      priceAtPurchase: version === 1 ? 1000 : 25000,
+      ...(version === 2
+        ? {
+            sourcePrice: {
+              amount: 10,
+              currency: "EUR",
+              normalizedCurrency: "EUR",
+            },
+          }
+        : {}),
       currency: "SATS",
       format: "physical",
       shippingOptionId: fixture.policyCoordinate,
       shippingPolicyQuote: fixture.quote,
       shippingAllocatedCostSats:
-        Math.floor(307 / productCount) + (index < 307 % productCount ? 1 : 0),
+        Math.floor(shippingTotal / productCount) +
+        (index < shippingTotal % productCount ? 1 : 0),
     })),
-    subtotal: 1000 * productCount,
+    subtotal: (version === 1 ? 1000 : 25000) * productCount,
     currency: "SATS",
-    shippingCostSats: 307,
+    shippingCostSats: shippingTotal,
     shippingAddress: {
       name: "Buyer",
       street: "1 Test",
@@ -214,6 +272,37 @@ describe("shipping order transport", () => {
       )
     ).toBe(true)
     expect(parseOrderRumorEvent(compact.unwrapped)).toEqual(compact.order)
+  })
+
+  it("restores mixed-currency v2 rates and signed per-product adjustments through real NIP-44/NIP-59", async () => {
+    const fixture = await encryptedOrder(6, true, 2)
+    expect(fixture.metrics.relayMessageBytes).toBeLessThan(512 * 1024)
+    const parsed = parseOrderRumorEvent(fixture.unwrapped)
+    expect(parsed).toEqual(fixture.order)
+    const quote = parsed.items[0]!.shippingPolicyQuote!
+    expect(quote).toMatchObject({
+      version: 2,
+      currency: "GBP",
+      combinedWeightGrams: 1320,
+      handlingMinor: 600,
+      amountMinor: 900,
+      amountSats: 22500,
+      pricingRate: {
+        rate: 50000,
+        fetchedAt: 1,
+        fiatUsdRates: { EUR: 1.25, GBP: 1.25 },
+      },
+    })
+    expect(
+      quote.items.every(
+        (item) =>
+          item.currency === "EUR" &&
+          "shippingWeightAllowanceGrams" in item &&
+          item.shippingWeightAllowanceGrams === 20 &&
+          "shippingHandling" in item &&
+          item.shippingHandling?.amount === 1
+      )
+    ).toBe(true)
   })
 
   it("preserves messages without policy quotes and rejects unsafe or conflicting group references", async () => {

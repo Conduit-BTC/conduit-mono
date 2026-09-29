@@ -36,52 +36,68 @@ for (const [viewportName, width, height] of [
       page.getByRole("heading", { name: "Shipping", exact: true })
     ).toBeVisible()
     await chooseCountry(page, "Origin country", "United States")
-    await page.getByLabel("Rate currency", { exact: true }).click()
+    await page.getByLabel("Shipping currency", { exact: true }).click()
     await page.getByRole("option", { name: "SATS", exact: true }).click()
+    await page.getByLabel("Weight unit", { exact: true }).click()
+    await page.getByRole("option", { name: "Pounds", exact: true }).click()
     const domestic = page.getByRole("region", { name: "Domestic rates" })
-    await domestic.getByLabel("Up to weight (g)").fill("500")
-    await domestic.getByLabel("Total price (SATS)").fill("200")
+    await domestic.getByLabel("Up to weight").fill("1")
+    await domestic.getByLabel("Shipping price").fill("200")
     await domestic.getByRole("button", { name: "Add weight band" }).click()
-    await domestic.getByLabel("Up to weight (g)").nth(1).fill("1000")
-    await domestic.getByLabel("Total price (SATS)").nth(1).fill("500")
+    await domestic.getByLabel("Up to weight").nth(1).fill("2")
+    await domestic.getByLabel("Shipping price").nth(1).fill("500")
+    await page.getByLabel("Weight unit", { exact: true }).click()
+    await page.getByRole("option", { name: "Grams", exact: true }).click()
+    await expect(domestic.getByLabel("Up to weight").first()).toHaveValue("454")
+    await expect(domestic.getByLabel("Up to weight").nth(1)).toHaveValue("908")
     await domestic
-      .getByLabel("Free shipping from (SATS, optional)")
-      .fill("10000")
+      .getByRole("button", { name: "Customize by state or postal area" })
+      .click()
+    await domestic.getByLabel("State", { exact: true }).click()
+    await page.getByRole("option", { name: "California", exact: true }).click()
+    await domestic.getByLabel("Postal prefix", { exact: true }).fill("94")
+    const custom = domestic.getByRole("group", {
+      name: "United States custom area",
+      exact: true,
+    })
+    await custom.getByLabel("Shipping price").first().fill("300")
+    await custom.getByLabel("Shipping price").nth(1).fill("600")
+    await domestic.getByLabel("Free shipping from").fill("10000")
     await page.getByRole("checkbox", { name: "Enable international" }).check()
     const international = page.getByRole("region", {
       name: "International rates",
     })
-    await international.getByLabel("Destination 1", { exact: true }).click()
+    await international.getByLabel("Country", { exact: true }).click()
     await page
       .getByPlaceholder("Search countries", { exact: true })
       .filter({ visible: true })
       .fill("Canada")
     await page.getByRole("option", { name: "Canada", exact: true }).click()
-    await international.getByLabel("Up to weight (g)").fill("1000")
-    await international.getByLabel("Total price (SATS)").fill("800")
-    await international
-      .getByLabel("Free shipping from (SATS, optional)")
-      .fill("20000")
-    await page
-      .getByText("Weight and handling buffers (optional)", { exact: true })
-      .click()
-    await page.getByLabel("Extra shipment weight (g)").fill("100")
-    await page.getByLabel("Handling buffer (SATS)").fill("25")
+    await international.getByLabel("Up to weight").fill("1000")
+    await international.getByLabel("Shipping price").fill("800")
+    await international.getByLabel("Free shipping from").fill("20000")
     await page.getByText("Preview a basket", { exact: true }).click()
     await chooseCountry(page, "Preview destination", "United States")
     await expect(
-      page.getByText("Combined shipping: 525 SATS", { exact: true })
+      page.getByText("Combined shipping: 500 SATS", { exact: true })
     ).toBeVisible()
-    await page.getByLabel("Shipped merchandise subtotal (SATS)").fill("10000")
+    await page.getByLabel("Preview state / region").fill("CA")
+    await page.getByLabel("Preview postal code").fill("94107")
+    await expect(
+      page.getByText("Combined shipping: 600 SATS", { exact: true })
+    ).toBeVisible()
+    await page.getByLabel("Preview state / region").fill("")
+    await page.getByLabel("Preview postal code").fill("")
+    await page.getByLabel("Basket subtotal").fill("10000")
     await expect(
       page.getByText("Combined shipping: 0 SATS", { exact: true })
     ).toBeVisible()
-    await page.getByLabel("First item weight (g)").fill("1000")
+    await page.getByLabel("First item weight").fill("1000")
     await expect(
       page.getByText(/This basket needs merchant coordination/)
     ).toBeVisible()
-    await page.getByLabel("First item weight (g)").fill("250")
-    await page.getByLabel("Shipped merchandise subtotal (SATS)").fill("0")
+    await page.getByLabel("First item weight").fill("250")
+    await page.getByLabel("Basket subtotal").fill("0")
     const publish = page.getByRole("button", {
       name: "Publish shipping rates",
       exact: true,
@@ -102,15 +118,17 @@ for (const [viewportName, width, height] of [
       events[0]!.tags.find((tag) => tag[0] === "conduit_shipping_table")![2]!
     )
     expect(policy).toMatchObject({
-      version: 1,
+      version: 2,
       originCountry: "US",
       currency: "SATS",
-      weightAllowanceGrams: 100,
-      handlingMinor: 25,
     })
+    expect(policy.weightAllowanceGrams).toBeUndefined()
+    expect(policy.handlingMinor).toBeUndefined()
+    expect(policy.domestic.rules).toHaveLength(2)
+    expect(policy.domestic.rules[1].postalPrefix).toBe("94")
     expect(policy.domestic.rules[0].bands).toEqual([
-      { maxWeightGrams: 500, priceMinor: 200 },
-      { maxWeightGrams: 1000, priceMinor: 500 },
+      { maxWeightGrams: 454, priceMinor: 200 },
+      { maxWeightGrams: 908, priceMinor: 500 },
     ])
 
     await expect
@@ -123,9 +141,6 @@ for (const [viewportName, width, height] of [
         page.locator("aside").getByRole("link", { name: /Shipping/ })
       ).not.toContainText("Needs completion")
     }
-    await page
-      .getByText("Weight and handling buffers (optional)", { exact: true })
-      .click()
     await page.getByText("Preview a basket", { exact: true }).click()
     await page
       .getByRole("heading", { name: "Shipping", exact: true })
@@ -157,9 +172,30 @@ for (const [viewportName, width, height] of [
       await expect(
         dialog.getByLabel("Shipping pricing", { exact: true })
       ).toContainText("Use my shipping table")
+      if (index === 1) {
+        await dialog.getByLabel("Weight unit", { exact: true }).click()
+        await page.getByRole("option", { name: "Ounces", exact: true }).click()
+      } else {
+        await dialog.getByLabel("Weight unit", { exact: true }).click()
+        await page.getByRole("option", { name: "Grams", exact: true }).click()
+        await dialog.getByLabel("Currency", { exact: true }).click()
+        await page.getByRole("option", { name: "USD", exact: true }).click()
+        await expect(
+          dialog.getByText("Shipping uses SATS; this product uses USD.", {
+            exact: true,
+          })
+        ).toBeVisible()
+      }
       await dialog
-        .getByLabel("Shipping weight (g)", { exact: true })
-        .fill(weight)
+        .getByLabel("Shipping weight", { exact: true })
+        .fill(index === 1 ? "8" : weight)
+      await dialog.getByText("Packing and dimensions", { exact: true }).click()
+      await dialog
+        .getByLabel("Extra packing weight", { exact: true })
+        .fill(index === 1 ? "1" : "50")
+      await dialog
+        .getByLabel("Handling per item", { exact: true })
+        .fill(index === 1 ? "25" : "1.25")
       await dialog.getByRole("button", { name: "Add by URL" }).click()
       await dialog
         .getByLabel("Primary image URL")
@@ -195,6 +231,21 @@ for (const [viewportName, width, height] of [
         "shipping_option",
         `30406:${pubkey}:conduit-shipping-policy`,
       ])
+      const adjustments = JSON.parse(
+        product.tags.find(
+          (tag) => tag[0] === "conduit_shipping_adjustments"
+        )![2]!
+      )
+      expect(adjustments.weightAllowanceGrams).toBeGreaterThan(0)
+      expect(adjustments.handling.amount).toBeGreaterThan(0)
+      if (
+        product.tags.some(
+          (tag) => tag[0] === "title" && tag[1] === "Table product 1"
+        )
+      ) {
+        expect(product.tags).toContainEqual(["weight", "227", "g"])
+        expect(adjustments.weightAllowanceGrams).toBe(29)
+      }
       expect(product.tags.some((tag) => tag[0] === "weight")).toBe(true)
     }
 
@@ -208,14 +259,9 @@ for (const [viewportName, width, height] of [
     await expect(
       second.getByRole("button", { name: "Publish rate changes" })
     ).toBeVisible({ timeout: 20_000 })
-    await expect(second.getByLabel("Extra shipment weight (g)")).toHaveValue(
-      "100"
-    )
-    await second
-      .getByText("Weight and handling buffers (optional)", { exact: true })
-      .click()
-    await expect(second.getByLabel("Handling buffer (SATS)")).toHaveValue("25")
-    await second.getByLabel("Handling buffer (SATS)").fill("30")
+    await expect(second.getByLabel("Up to weight").first()).toHaveValue("454")
+    await expect(second.getByLabel("Shipping price").first()).toHaveValue("200")
+    await second.getByLabel("Shipping price").first().fill("201")
     await second.getByRole("button", { name: "Publish rate changes" }).click()
     await expect(second.getByText(/Shipping rates published\./)).toBeVisible({
       timeout: 20_000,

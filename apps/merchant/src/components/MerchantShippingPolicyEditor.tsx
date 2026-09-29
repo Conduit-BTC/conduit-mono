@@ -1,13 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Plus, Trash2 } from "lucide-react"
 import {
   fetchMerchantShippingPolicy,
   publishMerchantShippingPolicy,
-  previewShippingPolicy,
   SHIPPING_COUNTRIES,
-  shippingMinorUnitsToAmount,
-  shippingMoneyToMinorUnits,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   useAuth,
   withdrawMerchantShippingPolicy,
@@ -22,9 +18,7 @@ import {
   AlertDialogTitle,
   Badge,
   Button,
-  Checkbox,
   Combobox,
-  Input,
   Label,
   Select,
   SelectContent,
@@ -36,18 +30,23 @@ import {
 import {
   buildShippingPolicyFromDraft,
   createShippingPolicyDraft,
-  createShippingRuleDraft,
   shippingPolicyToDraft,
   type ShippingPolicyDraft,
-  type ShippingTableDraft,
 } from "../lib/shippingPolicyForm"
+
+import {
+  getShippingWeightUnitPreference,
+  saveShippingWeightUnitPreference,
+  SHIPPING_WEIGHT_UNITS,
+  type ShippingWeightUnit,
+} from "../lib/shippingWeightUnits"
+import { ShippingTableEditor } from "./ShippingTableEditor"
+import { ShippingPolicyPreview } from "./ShippingPolicyPreview"
 
 const countryOptions = SHIPPING_COUNTRIES.map((country) => ({
   value: country.code,
   label: country.name,
 }))
-const panel =
-  "space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
 
 function errorMessage(error: unknown): string {
   if (
@@ -65,434 +64,6 @@ function errorMessage(error: unknown): string {
     : "Shipping could not be published. Try again."
 }
 
-function TableEditor({
-  kind,
-  originCountry,
-  currency,
-  table,
-  onChange,
-}: {
-  kind: "domestic" | "international"
-  originCountry: string
-  currency: string
-  table: ShippingTableDraft
-  onChange: (value: ShippingTableDraft) => void
-}) {
-  const title = kind === "domestic" ? "Domestic" : "International"
-  function updateRule(
-    index: number,
-    update: Partial<ShippingTableDraft["rules"][number]>
-  ) {
-    onChange({
-      ...table,
-      rules: table.rules.map((rule, i) =>
-        i === index ? { ...rule, ...update } : rule
-      ),
-    })
-  }
-  return (
-    <section className={panel} aria-label={`${title} rates`}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-balance text-lg font-semibold">{title}</h3>
-          <p className="mt-1 text-pretty text-sm text-[var(--text-secondary)]">
-            {kind === "domestic"
-              ? "Ship within your origin country."
-              : "Choose the countries you ship to."}
-          </p>
-        </div>
-        <label className="flex min-h-11 shrink-0 items-center gap-2 text-sm">
-          <Checkbox
-            checked={table.enabled}
-            onCheckedChange={(checked) =>
-              onChange({
-                ...table,
-                enabled: checked === true,
-                rules:
-                  checked === true && table.rules.length === 0
-                    ? [
-                        createShippingRuleDraft(
-                          kind === "domestic" ? originCountry : ""
-                        ),
-                      ]
-                    : table.rules,
-              })
-            }
-          />
-          Enable {title.toLowerCase()}
-        </label>
-      </div>
-      {table.enabled && (
-        <>
-          {table.rules.map((rule, index) => (
-            <div
-              key={rule.id}
-              className="space-y-3 rounded-xl border border-[var(--border)] p-3 sm:p-4"
-            >
-              <div className="flex items-end gap-2">
-                <div className="min-w-0 flex-1 space-y-1.5">
-                  <Label htmlFor={`${rule.id}-country`}>
-                    Destination {index + 1}
-                  </Label>
-                  {kind === "domestic" ? (
-                    <p
-                      id={`${rule.id}-country`}
-                      className="flex min-h-11 items-center text-sm"
-                    >
-                      {countryOptions.find(
-                        (country) => country.value === originCountry
-                      )?.label ?? "Choose an origin country above"}
-                    </p>
-                  ) : (
-                    <Combobox
-                      id={`${rule.id}-country`}
-                      value={rule.country}
-                      options={countryOptions.filter(
-                        (country) => country.value !== originCountry
-                      )}
-                      placeholder="Choose country"
-                      searchPlaceholder="Search countries"
-                      onValueChange={(country) =>
-                        updateRule(index, {
-                          country,
-                          subdivision: "",
-                          postalPrefix: "",
-                        })
-                      }
-                    />
-                  )}
-                </div>
-                {(kind === "international" || table.rules.length > 1) && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Remove ${title.toLowerCase()} destination ${index + 1}`}
-                    onClick={() =>
-                      onChange({
-                        ...table,
-                        rules: table.rules.filter((_, i) => i !== index),
-                      })
-                    }
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                )}
-              </div>
-              <details className="text-sm">
-                <summary className="cursor-pointer py-2 text-[var(--text-secondary)]">
-                  Limit to a state or postal area (optional)
-                </summary>
-                <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`${rule.id}-subdivision`}>
-                      Subdivision code
-                    </Label>
-                    <Input
-                      id={`${rule.id}-subdivision`}
-                      value={rule.subdivision}
-                      placeholder="For example, US-CA"
-                      autoCapitalize="characters"
-                      onChange={(event) =>
-                        updateRule(index, { subdivision: event.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`${rule.id}-postal`}>Postal prefix</Label>
-                    <Input
-                      id={`${rule.id}-postal`}
-                      value={rule.postalPrefix}
-                      placeholder="For example, 94"
-                      autoCapitalize="characters"
-                      onChange={(event) =>
-                        updateRule(index, { postalPrefix: event.target.value })
-                      }
-                    />
-                  </div>
-                </div>
-                <p className="mt-2 text-pretty text-xs text-[var(--text-muted)]">
-                  Leave both blank for the whole country. More specific areas
-                  take precedence.
-                </p>
-              </details>
-              {rule.bands.map((band, bandIndex) => (
-                <div key={band.id} className="flex items-end gap-2">
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <Label htmlFor={`${band.id}-weight`}>
-                      Up to weight (g)
-                    </Label>
-                    <Input
-                      id={`${band.id}-weight`}
-                      value={band.maxWeight}
-                      inputMode="numeric"
-                      placeholder={bandIndex === 0 ? "500" : "1000"}
-                      className="tabular-nums"
-                      onChange={(event) =>
-                        updateRule(index, {
-                          bands: rule.bands.map((entry, i) =>
-                            i === bandIndex
-                              ? { ...entry, maxWeight: event.target.value }
-                              : entry
-                          ),
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <Label htmlFor={`${band.id}-price`}>
-                      Total price ({currency})
-                    </Label>
-                    <Input
-                      id={`${band.id}-price`}
-                      value={band.price}
-                      inputMode="decimal"
-                      placeholder="0.00"
-                      className="tabular-nums"
-                      onChange={(event) =>
-                        updateRule(index, {
-                          bands: rule.bands.map((entry, i) =>
-                            i === bandIndex
-                              ? { ...entry, price: event.target.value }
-                              : entry
-                          ),
-                        })
-                      }
-                    />
-                  </div>
-                  {rule.bands.length > 1 && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Remove ${title.toLowerCase()} destination ${index + 1} band ${bandIndex + 1}`}
-                      onClick={() =>
-                        updateRule(index, {
-                          bands: rule.bands.filter((_, i) => i !== bandIndex),
-                        })
-                      }
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
-                  )}
-                </div>
-              ))}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  updateRule(index, {
-                    bands: [
-                      ...rule.bands,
-                      { id: crypto.randomUUID(), maxWeight: "", price: "" },
-                    ],
-                  })
-                }
-              >
-                <Plus className="mr-2 size-4" />
-                Add weight band
-              </Button>
-              <p className="text-pretty text-xs text-[var(--text-muted)]">
-                Each price is the total for the combined shipment in that band.
-                The upper weight is included.
-              </p>
-            </div>
-          ))}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              onChange({
-                ...table,
-                rules: [
-                  ...table.rules,
-                  createShippingRuleDraft(
-                    kind === "domestic" ? originCountry : ""
-                  ),
-                ],
-              })
-            }
-          >
-            <Plus className="mr-2 size-4" />
-            {kind === "domestic" ? "Add a special area" : "Add destination"}
-          </Button>
-          <div className="space-y-1.5">
-            <Label htmlFor={`${kind}-free-threshold`}>
-              Free shipping from ({currency}, optional)
-            </Label>
-            <Input
-              id={`${kind}-free-threshold`}
-              value={table.freeShippingThreshold}
-              inputMode="decimal"
-              placeholder="No free shipping threshold"
-              className="tabular-nums"
-              onChange={(event) =>
-                onChange({
-                  ...table,
-                  freeShippingThreshold: event.target.value,
-                })
-              }
-            />
-            <p className="text-pretty text-xs text-[var(--text-muted)]">
-              Based on shipped items after discounts. The destination and weight
-              must still be supported.
-            </p>
-          </div>
-        </>
-      )}
-    </section>
-  )
-}
-
-function ShippingPreview({ policy }: { policy: ShippingPolicy | null }) {
-  const [country, setCountry] = useState("")
-  const [subdivision, setSubdivision] = useState("")
-  const [postalCode, setPostalCode] = useState("")
-  const [firstWeight, setFirstWeight] = useState("250")
-  const [secondWeight, setSecondWeight] = useState("250")
-  const [quantity, setQuantity] = useState("1")
-  const [subtotal, setSubtotal] = useState("0")
-  let result: string | null = null
-  if (
-    policy &&
-    country &&
-    firstWeight &&
-    secondWeight &&
-    quantity &&
-    subtotal
-  ) {
-    try {
-      const q = Number(quantity)
-      const first = Number(firstWeight)
-      const second = Number(secondWeight)
-      if (
-        ![q, first, second].every(
-          (value) => Number.isSafeInteger(value) && value > 0
-        )
-      )
-        throw new Error("Enter positive whole weights and quantities.")
-      const subtotalMinor = shippingMoneyToMinorUnits(
-        Number(subtotal),
-        policy.currency
-      )
-      const quote = previewShippingPolicy({
-        policy,
-        destination: { country, subdivision, postalCode },
-        items: [
-          {
-            shippingWeightGrams: first,
-            quantity: q,
-            currency: policy.currency,
-            subtotalMinor: 0,
-          },
-          {
-            shippingWeightGrams: second,
-            quantity: 1,
-            currency: policy.currency,
-            subtotalMinor,
-          },
-        ],
-      })
-      result =
-        quote.status === "quoted"
-          ? `Combined shipping: ${shippingMinorUnitsToAmount(quote.amountMinor, policy.currency)} ${policy.currency}`
-          : "This basket needs merchant coordination. Check the destination and weight limits."
-    } catch (error) {
-      result = errorMessage(error)
-    }
-  }
-  return (
-    <details className={panel}>
-      <summary className="cursor-pointer text-balance font-semibold">
-        Preview a basket
-      </summary>
-      <p className="text-pretty text-sm text-[var(--text-secondary)]">
-        Try two products together. This calculation stays on this device and
-        uses your draft rates.
-      </p>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label htmlFor="shipping-preview-country">Preview destination</Label>
-          <Combobox
-            id="shipping-preview-country"
-            searchPlaceholder="Search countries"
-            value={country}
-            options={countryOptions}
-            placeholder="Choose country"
-            onValueChange={setCountry}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="shipping-preview-region">Preview subdivision</Label>
-          <Input
-            id="shipping-preview-region"
-            value={subdivision}
-            onChange={(e) => setSubdivision(e.target.value)}
-            placeholder="Optional, for example US-CA"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="shipping-preview-postal">Preview postal code</Label>
-          <Input
-            id="shipping-preview-postal"
-            value={postalCode}
-            onChange={(e) => setPostalCode(e.target.value)}
-            placeholder="Optional"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="shipping-preview-first-weight">
-            First item weight (g)
-          </Label>
-          <Input
-            id="shipping-preview-first-weight"
-            value={firstWeight}
-            inputMode="numeric"
-            onChange={(e) => setFirstWeight(e.target.value)}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="shipping-preview-quantity">First item quantity</Label>
-          <Input
-            id="shipping-preview-quantity"
-            value={quantity}
-            inputMode="numeric"
-            onChange={(e) => setQuantity(e.target.value)}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="shipping-preview-second-weight">
-            Second item weight (g)
-          </Label>
-          <Input
-            id="shipping-preview-second-weight"
-            value={secondWeight}
-            inputMode="numeric"
-            onChange={(e) => setSecondWeight(e.target.value)}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="shipping-preview-subtotal">
-            Shipped merchandise subtotal ({policy?.currency ?? "currency"})
-          </Label>
-          <Input
-            id="shipping-preview-subtotal"
-            value={subtotal}
-            inputMode="decimal"
-            onChange={(e) => setSubtotal(e.target.value)}
-          />
-        </div>
-      </div>
-      <p role="status" className="text-pretty text-sm tabular-nums">
-        {result ??
-          "Complete valid rates above and choose a destination to see the total."}
-      </p>
-    </details>
-  )
-}
-
 export function MerchantShippingPolicyEditor() {
   const { pubkey, status: authStatus, authGeneration } = useAuth()
   const generationRef = useRef(authGeneration)
@@ -502,6 +73,9 @@ export function MerchantShippingPolicyEditor() {
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState<ShippingPolicyDraft>(
     createShippingPolicyDraft
+  )
+  const [weightUnit, setWeightUnit] = useState<ShippingWeightUnit>(() =>
+    getShippingWeightUnitPreference(pubkey)
   )
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -523,6 +97,7 @@ export function MerchantShippingPolicyEditor() {
     staleTime: 30_000,
   })
   const remote = query.data?.state === "found" ? query.data : null
+  const needsUpgrade = remote?.policy.version === 1
   const hydratedRevision = useRef<string | null>(null)
   useEffect(() => {
     if (
@@ -566,8 +141,7 @@ export function MerchantShippingPolicyEditor() {
       setDirty(false)
       setStatus({
         state: "success",
-        message:
-          "Shipping rates published. Products using this policy share a shipping charge.",
+        message: "Shipping rates published.",
       })
       await queryClient.invalidateQueries({ queryKey })
     } catch (error) {
@@ -606,7 +180,9 @@ export function MerchantShippingPolicyEditor() {
   return (
     <section aria-label="Shipping rates" className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-balance text-2xl font-semibold">Shipping rates</h2>
+        <p className="text-pretty text-sm text-[var(--text-secondary)]">
+          One shipping charge per order.
+        </p>
         <Badge variant={dirty ? "warning" : remote ? "success" : "outline"}>
           {query.isPending
             ? "Checking rates"
@@ -617,11 +193,6 @@ export function MerchantShippingPolicyEditor() {
                 : "Not published"}
         </Badge>
       </div>
-      <p className="text-pretty text-sm leading-6 text-[var(--text-secondary)]">
-        Set one total price for each combined weight band. Buyers pay one
-        shipping charge when products use the same policy. Custom tables work
-        without a carrier or preset.
-      </p>
       {(query.isError ||
         (query.data &&
           query.data.state !== "found" &&
@@ -644,8 +215,8 @@ export function MerchantShippingPolicyEditor() {
       )}
       <form onSubmit={publish} className="space-y-5">
         <fieldset disabled={busy} className="space-y-5">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="col-span-2 space-y-1.5 sm:col-span-1">
               <Label htmlFor="policy-origin">Origin country</Label>
               <Combobox
                 id="policy-origin"
@@ -657,7 +228,7 @@ export function MerchantShippingPolicyEditor() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="policy-currency">Rate currency</Label>
+              <Label htmlFor="policy-currency">Shipping currency</Label>
               <Select
                 value={draft.currency}
                 onValueChange={(currency) => update({ currency })}
@@ -674,72 +245,57 @@ export function MerchantShippingPolicyEditor() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="policy-weight-unit">Weight unit</Label>
+              <Select
+                value={weightUnit}
+                onValueChange={(value) => {
+                  const unit = value as ShippingWeightUnit
+                  setWeightUnit(unit)
+                  saveShippingWeightUnitPreference(pubkey, unit)
+                }}
+              >
+                <SelectTrigger id="policy-weight-unit">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SHIPPING_WEIGHT_UNITS.map((unit) => (
+                    <SelectItem key={unit.value} value={unit.value}>
+                      {unit.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <p className="text-pretty text-xs text-[var(--text-muted)]">
-            Use the same currency on products assigned to this policy. Grams
-            measure the weight shipped: 1 kg = 1,000 g.
-          </p>
           <div className="grid items-start gap-4 lg:grid-cols-2">
-            <TableEditor
+            <ShippingTableEditor
               kind="domestic"
               originCountry={draft.originCountry}
               currency={draft.currency}
+              weightUnit={weightUnit}
               table={draft.domestic}
               onChange={(domestic) => update({ domestic })}
             />
-            <TableEditor
+            <ShippingTableEditor
               kind="international"
               originCountry={draft.originCountry}
               currency={draft.currency}
+              weightUnit={weightUnit}
               table={draft.international}
               onChange={(international) => update({ international })}
             />
           </div>
-          <details className={panel}>
-            <summary className="cursor-pointer text-balance font-semibold">
-              Weight and handling buffers (optional)
-            </summary>
-            <div className="space-y-1.5">
-              <Label htmlFor="policy-title">Policy name</Label>
-              <Input
-                id="policy-title"
-                value={draft.title}
-                onChange={(event) => update({ title: event.target.value })}
-              />
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="policy-weight-allowance">
-                  Extra shipment weight (g)
-                </Label>
-                <Input
-                  id="policy-weight-allowance"
-                  inputMode="numeric"
-                  value={draft.weightAllowance}
-                  placeholder="0"
-                  onChange={(e) => update({ weightAllowance: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="policy-handling">
-                  Handling buffer ({draft.currency})
-                </Label>
-                <Input
-                  id="policy-handling"
-                  inputMode="decimal"
-                  value={draft.handling}
-                  placeholder="0"
-                  onChange={(e) => update({ handling: e.target.value })}
-                />
-              </div>
-            </div>
-            <p className="text-pretty text-xs text-[var(--text-muted)]">
-              Each buffer is applied once per combined shipment. These are
-              estimates for ordinary packing, not an exact carrier quote.
-            </p>
-          </details>
+          {remote?.policy.version === 1 &&
+            (remote.policy.weightAllowanceGrams > 0 ||
+              remote.policy.handlingMinor > 0) && (
+              <p className="text-pretty text-sm text-warning">
+                Move shared packing buffers to products before updating these
+                rates.
+              </p>
+            )}
         </fieldset>
-        <ShippingPreview policy={policy} />
+        <ShippingPolicyPreview policy={policy} weightUnit={weightUnit} />
         {dirty && validationError && (
           <p
             id="shipping-policy-error"
@@ -757,7 +313,7 @@ export function MerchantShippingPolicyEditor() {
               busy ||
               query.isPending ||
               authStatus !== "connected" ||
-              (!dirty && !!remote)
+              (!dirty && !!remote && !needsUpgrade)
             }
           >
             {busy
@@ -786,15 +342,11 @@ export function MerchantShippingPolicyEditor() {
                     ? "success"
                     : "idle"
             }
-            dirtyMessage="Publish to make these rates available to buyers."
+            dirtyMessage="Publish rate changes."
             successMessage={status.message}
             errorMessage={status.state === "error" ? status.message : undefined}
           />
         </div>
-        <p className="text-pretty text-xs text-[var(--text-muted)]">
-          Your rates are public and signed. Buyer destinations and basket
-          calculations remain private.
-        </p>
       </form>
       <AlertDialog open={withdrawOpen} onOpenChange={setWithdrawOpen}>
         <AlertDialogContent>

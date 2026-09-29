@@ -8,6 +8,8 @@ import { z } from "zod"
 import {
   getCurrencyFractionDigits,
   normalizeCurrencyIdentity,
+  type PricingRateInput,
+  type SourcePriceQuote,
 } from "../pricing"
 import { parseProductEvent } from "./products"
 import { EVENT_KINDS } from "./kinds"
@@ -58,18 +60,29 @@ export const shippingPolicyTableSchema = z
     freeShippingThresholdMinor: integer.optional(),
   })
   .strict()
-export const shippingPolicySchema = z
+const shippingPolicyFields = z
   .object({
-    version: z.literal(1),
     title: z.string().trim().min(1).max(200),
     originCountry: z.string().regex(/^[A-Z]{2}$/),
     currency: z.string().min(3).max(5),
-    weightAllowanceGrams: integer,
-    handlingMinor: integer,
+
     domestic: shippingPolicyTableSchema.nullable(),
     international: shippingPolicyTableSchema.nullable(),
   })
   .strict()
+export const shippingPolicyV1Schema = shippingPolicyFields.extend({
+  version: z.literal(1),
+  weightAllowanceGrams: integer,
+  handlingMinor: integer,
+})
+export const shippingPolicyV2Schema = shippingPolicyFields.extend({
+  version: z.literal(2),
+})
+export const shippingPolicySchema = z
+  .discriminatedUnion("version", [
+    shippingPolicyV1Schema,
+    shippingPolicyV2Schema,
+  ])
   .superRefine((policy, context) => {
     if (!policy.domestic && !policy.international) {
       context.addIssue({
@@ -133,6 +146,8 @@ export const shippingPolicySchema = z
       }
     }
   })
+export type ShippingPolicyV1 = z.infer<typeof shippingPolicyV1Schema>
+export type ShippingPolicyV2 = z.infer<typeof shippingPolicyV2Schema>
 export type ShippingPolicy = z.infer<typeof shippingPolicySchema>
 export type ShippingPolicyTable = z.infer<typeof shippingPolicyTableSchema>
 export type ShippingPolicyRule = z.infer<typeof shippingPolicyRuleSchema>
@@ -281,7 +296,11 @@ export function buildShippingPolicyEventDraft(input: {
       ...Array.from(new Set(rules.map((rule) => rule.country))).sort(),
     ],
     ["service", "standard"],
-    [SHIPPING_POLICY_EXTENSION_TAG, "1", JSON.stringify(policy)],
+    [
+      SHIPPING_POLICY_EXTENSION_TAG,
+      String(policy.version),
+      JSON.stringify(policy),
+    ],
   ]
   if (input.clientAppId) tags = appendConduitClientTag(tags, input.clientAppId)
   return {
@@ -296,10 +315,15 @@ export function parseShippingPolicyEventTags(
   tags: readonly string[][]
 ): ShippingPolicy | null {
   const markers = tags.filter((tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG)
-  if (markers.length !== 1 || markers[0]?.length !== 3 || markers[0][1] !== "1")
+  if (
+    markers.length !== 1 ||
+    markers[0]?.length !== 3 ||
+    !["1", "2"].includes(markers[0][1]!)
+  )
     return null
   try {
     const policy = parseShippingPolicy(JSON.parse(markers[0][2]!) as unknown)
+    if (String(policy.version) !== markers[0]![1]) return null
     const draft = buildShippingPolicyEventDraft({ policy })
     const permitted = new Set([...draft.tags.map((tag) => tag[0]), "client"])
     if (tags.some((tag) => !permitted.has(tag[0]))) return null
@@ -593,9 +617,49 @@ export function hasSameShippingPolicyQuote(
   )
 }
 
-export const shippingPolicyQuoteSchema = z
+const signedShippingEventSchema = z.custom<SignedPublicNostrEvent>((value) =>
+  Boolean(
+    value &&
+    typeof value === "object" &&
+    isValidSignedPublicNostrEvent(value as SignedPublicNostrEvent)
+  )
+)
+const shippingHandlingSchema = z
   .object({
-    version: z.literal(1),
+    amount: z.number().finite().nonnegative(),
+    currency: z.string(),
+    normalizedCurrency: z.string(),
+  })
+  .strict()
+const shippingPricingRateSchema = z.union([
+  z.number().finite().positive(),
+  z
+    .object({
+      rate: z.number().finite().positive(),
+      fetchedAt: z.number().finite().nonnegative(),
+      source: z.enum(["env", "mempool", "coinbase"]),
+      fiatUsdRates: z
+        .record(z.string(), z.number().finite().positive())
+        .optional(),
+      fiatSource: z
+        .enum(["frankfurter", "exchange-rate-api", "env", "mempool"])
+        .optional(),
+    })
+    .strict(),
+  z.null(),
+])
+const shippingQuoteItemSchema = z.object({
+  productId: z.string(),
+  productEventId: z.string().regex(HEX_64),
+  productCreatedAt: integer,
+  quantity: positiveInteger,
+  weightGrams: positiveInteger,
+  currency: z.string(),
+  subtotalMinor: integer,
+  productEvent: signedShippingEventSchema,
+})
+const shippingQuoteFields = z
+  .object({
     merchantPubkey: z.string().regex(HEX_64),
     policyCoordinate: z.string(),
     policyEventId: z.string().regex(HEX_64),
@@ -619,37 +683,36 @@ export const shippingPolicyQuoteSchema = z
       postalPrefix: z.string().optional(),
     }),
     itemProductIds: z.array(z.string()).min(1),
-    items: z
-      .array(
-        z.object({
-          productId: z.string(),
-          productEventId: z.string().regex(HEX_64),
-          productCreatedAt: integer,
-          quantity: positiveInteger,
-          weightGrams: positiveInteger,
-          currency: z.string(),
-          subtotalMinor: integer,
-          productEvent: z.custom<SignedPublicNostrEvent>((value) =>
-            Boolean(
-              value &&
-              typeof value === "object" &&
-              isValidSignedPublicNostrEvent(value as SignedPublicNostrEvent)
-            )
-          ),
-        })
-      )
-      .min(1),
-    policyEvent: z.custom<SignedPublicNostrEvent>((value) =>
-      Boolean(
-        value &&
-        typeof value === "object" &&
-        isValidSignedPublicNostrEvent(value as SignedPublicNostrEvent)
-      )
-    ),
+    policyEvent: signedShippingEventSchema,
   })
   .strict()
+const shippingPolicyQuoteV1Schema = shippingQuoteFields.extend({
+  version: z.literal(1),
+  items: z.array(shippingQuoteItemSchema).min(1),
+})
+const shippingPolicyQuoteV2Schema = shippingQuoteFields.extend({
+  version: z.literal(2),
+  amountSats: integer,
+  pricingRate: shippingPricingRateSchema,
+  items: z
+    .array(
+      shippingQuoteItemSchema.extend({
+        shippingWeightAllowanceGrams: integer.optional(),
+        shippingHandling: shippingHandlingSchema.optional(),
+        convertedSubtotalMinor: integer,
+        convertedHandlingMinor: integer,
+      })
+    )
+    .min(1),
+})
+export const shippingPolicyQuoteSchema = z
+  .discriminatedUnion("version", [
+    shippingPolicyQuoteV1Schema,
+    shippingPolicyQuoteV2Schema,
+  ])
   .superRefine((quote, context) => {
     const event = quote.policyEvent
+    const policy = parseShippingPolicyEventTags(event.tags)
     if (
       event.kind !== EVENT_KINDS.SHIPPING_OPTION ||
       event.pubkey !== quote.merchantPubkey ||
@@ -657,7 +720,8 @@ export const shippingPolicyQuoteSchema = z
       event.created_at !== quote.policyCreatedAt ||
       quote.policyCoordinate !==
         getMerchantShippingPolicyCoordinate(event.pubkey) ||
-      !parseShippingPolicyEventTags(event.tags)
+      !policy ||
+      policy.version !== quote.version
     ) {
       context.addIssue({
         code: "custom",
@@ -665,7 +729,6 @@ export const shippingPolicyQuoteSchema = z
       })
       return
     }
-    const policy = parseShippingPolicyEventTags(event.tags)!
     const result = quoteShippingPolicy({
       policy,
       policyCoordinate: quote.policyCoordinate,
@@ -675,6 +738,7 @@ export const shippingPolicyQuoteSchema = z
       policyEvent: event,
       items: quote.items,
       destination: quote.destination,
+      rateInput: quote.version === 2 ? quote.pricingRate : undefined,
     })
     if (
       result.status !== "quoted" ||
@@ -687,6 +751,8 @@ export const shippingPolicyQuoteSchema = z
       })
   })
 export type ShippingPolicyQuote = z.infer<typeof shippingPolicyQuoteSchema>
+export type ShippingPolicyQuoteV1 = z.infer<typeof shippingPolicyQuoteV1Schema>
+export type ShippingPolicyQuoteV2 = z.infer<typeof shippingPolicyQuoteV2Schema>
 export interface ShippingPolicyQuoteItem {
   productId: string
   productEventId: string
@@ -694,6 +760,8 @@ export interface ShippingPolicyQuoteItem {
   productEvent: SignedPublicNostrEvent
   quantity: number
   weightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: SourcePriceQuote
   currency: string
   subtotalMinor: number
   format?: "physical" | "digital"
@@ -715,10 +783,13 @@ export type ShippingPolicyQuoteResult =
         | "invalid_items"
         | "invalid_policy"
         | "not_required"
+        | "rate_required"
     }
 
 export interface ShippingPolicyPreviewItem {
   weightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: SourcePriceQuote
   shippingWeightGrams?: number
   quantity: number
   currency: string
@@ -740,14 +811,81 @@ export type ShippingPolicyCalculation = Pick<
   | "rule"
 >
 export type ShippingPolicyPreviewResult =
-  | ({ status: "quoted" } & ShippingPolicyCalculation)
+  | ({ status: "quoted"; amountSats?: number } & ShippingPolicyCalculation)
   | Exclude<ShippingPolicyQuoteResult, { status: "quoted" }>
+
+class ShippingRateRequired extends Error {}
+type Ratio = { n: bigint; d: bigint }
+function decimalRatio(value: number): Ratio {
+  if (!Number.isFinite(value) || value <= 0) throw new ShippingRateRequired()
+  const [coefficient, exponentText] = String(value).toLowerCase().split("e")
+  const [whole, fraction = ""] = coefficient!.split(".")
+  const exponent = Number(exponentText ?? 0) - fraction.length
+  const n = BigInt(whole! + fraction)
+  return exponent >= 0
+    ? { n: n * 10n ** BigInt(exponent), d: 1n }
+    : { n, d: 10n ** BigInt(-exponent) }
+}
+function bitcoinUnit(currency: string): Ratio | null {
+  if (currency === "BTC") return { n: 100_000_000n, d: 1n }
+  if (currency === "SATS") return { n: 1n, d: 1n }
+  if (currency === "MSATS") return { n: 1n, d: 1000n }
+  return null
+}
+function usdUnit(currency: string, rate: PricingRateInput): Ratio {
+  if (currency === "USD") return { n: 1n, d: 1n }
+  const bitcoin = bitcoinUnit(currency)
+  if (bitcoin) {
+    const btc = decimalRatio(
+      typeof rate === "number" ? rate : (rate?.rate ?? NaN)
+    )
+    return { n: bitcoin.n * btc.n, d: bitcoin.d * btc.d * 100_000_000n }
+  }
+  return decimalRatio(
+    typeof rate === "object" && rate
+      ? (rate.fiatUsdRates?.[currency] ?? NaN)
+      : NaN
+  )
+}
+/** Each quantity-total line is rounded once, half up, to policy minor units.
+ * The final combined charge is rounded once to sats. Decimal snapshot rates are
+ * used as exact rational numbers; replay never fetches rates or tests their age.
+ */
+export function convertShippingMinor(
+  minor: number,
+  fromCurrency: string,
+  toCurrency: string,
+  rateInput: PricingRateInput = null
+): number {
+  if (!Number.isSafeInteger(minor) || minor < 0)
+    throw new Error("Invalid shipping amount.")
+  const from = normalizeCurrencyIdentity(fromCurrency),
+    to = normalizeCurrencyIdentity(toCurrency)
+  if (from === to || minor === 0) return minor
+  const fromBitcoin = bitcoinUnit(from),
+    toBitcoin = bitcoinUnit(to)
+  const source =
+    fromBitcoin && toBitcoin ? fromBitcoin : usdUnit(from, rateInput)
+  const target = fromBitcoin && toBitcoin ? toBitcoin : usdUnit(to, rateInput)
+  const numerator =
+    BigInt(minor) *
+    source.n *
+    target.d *
+    10n ** BigInt(getCurrencyFractionDigits(to))
+  const denominator =
+    source.d * target.n * 10n ** BigInt(getCurrencyFractionDigits(from))
+  const result = Number((numerator * 2n + denominator) / (denominator * 2n))
+  if (!Number.isSafeInteger(result))
+    throw new Error("Shipping amount is too large.")
+  return result
+}
 
 /** Same arithmetic as checkout, with no claim that an unpublished draft is signed. */
 export function previewShippingPolicy(input: {
   policy: ShippingPolicy
   items: readonly ShippingPolicyPreviewItem[]
   destination: ShippingPolicyDestination
+  rateInput?: PricingRateInput
 }): ShippingPolicyPreviewResult {
   let policy: ShippingPolicy
   try {
@@ -755,6 +893,11 @@ export function previewShippingPolicy(input: {
   } catch {
     return { status: "invalid_policy" }
   }
+  if (
+    input.rateInput !== undefined &&
+    !shippingPricingRateSchema.safeParse(input.rateInput).success
+  )
+    return { status: "rate_required" }
   const normalizedItems = input.items.map((item) => ({
     ...item,
     weightGrams: item.weightGrams ?? item.shippingWeightGrams,
@@ -767,6 +910,7 @@ export function previewShippingPolicy(input: {
   )
   if (!items.length) return { status: "not_required" }
   if (
+    policy.version === 1 &&
     items.some(
       (item) => normalizeCurrencyIdentity(item.currency) !== policy.currency
     )
@@ -786,6 +930,18 @@ export function previewShippingPolicy(input: {
         item.quantity < 1 ||
         !Number.isSafeInteger(item.subtotalMinor) ||
         item.subtotalMinor < 0
+    )
+  )
+    return { status: "invalid_items" }
+  if (
+    items.some(
+      (item) =>
+        (item.shippingWeightAllowanceGrams !== undefined &&
+          (!Number.isSafeInteger(item.shippingWeightAllowanceGrams) ||
+            item.shippingWeightAllowanceGrams < 0)) ||
+        (policy.version === 1 &&
+          (item.shippingWeightAllowanceGrams !== undefined ||
+            item.shippingHandling !== undefined))
     )
   )
     return { status: "invalid_items" }
@@ -832,16 +988,56 @@ export function previewShippingPolicy(input: {
   const rule = rules[0]
   if (!rule) return { status: "unsupported_destination" }
   const combinedWeightGrams = items.reduce(
-    (sum, item) => sum + item.weightGrams! * item.quantity,
-    policy.weightAllowanceGrams
+    (sum, item) =>
+      sum +
+      (item.weightGrams! +
+        (policy.version === 2 ? (item.shippingWeightAllowanceGrams ?? 0) : 0)) *
+        item.quantity,
+    policy.version === 1 ? policy.weightAllowanceGrams : 0
   )
-  const shippedSubtotalMinor = items.reduce(
-    (sum, item) => sum + item.subtotalMinor,
-    0
-  )
+  let shippedSubtotalMinor = 0
+  let handlingMinor = policy.version === 1 ? policy.handlingMinor : 0
+  try {
+    for (const item of items) {
+      shippedSubtotalMinor +=
+        policy.version === 1
+          ? item.subtotalMinor
+          : convertShippingMinor(
+              item.subtotalMinor,
+              item.currency,
+              policy.currency,
+              input.rateInput ?? null
+            )
+      if (policy.version === 2 && item.shippingHandling) {
+        const handling = item.shippingHandling
+        if (
+          normalizeCurrencyIdentity(handling.currency) !==
+            normalizeCurrencyIdentity(item.currency) ||
+          handling.normalizedCurrency !==
+            normalizeCurrencyIdentity(handling.currency)
+        )
+          return { status: "invalid_items" }
+        handlingMinor += convertShippingMinor(
+          shippingAmountToMinor(handling.amount, handling.currency) *
+            item.quantity,
+          handling.currency,
+          policy.currency,
+          input.rateInput ?? null
+        )
+      }
+    }
+  } catch (error) {
+    return {
+      status:
+        error instanceof ShippingRateRequired
+          ? "rate_required"
+          : "invalid_items",
+    }
+  }
   if (
     !Number.isSafeInteger(combinedWeightGrams) ||
-    !Number.isSafeInteger(shippedSubtotalMinor)
+    !Number.isSafeInteger(shippedSubtotalMinor) ||
+    !Number.isSafeInteger(handlingMinor)
   )
     return { status: "invalid_items" }
   const band = rule.bands.find(
@@ -851,18 +1047,32 @@ export function previewShippingPolicy(input: {
   const freeShippingApplied =
     table!.freeShippingThresholdMinor !== undefined &&
     shippedSubtotalMinor >= table!.freeShippingThresholdMinor
-  const amountMinor = freeShippingApplied
-    ? 0
-    : band.priceMinor + policy.handlingMinor
+  const amountMinor = freeShippingApplied ? 0 : band.priceMinor + handlingMinor
   if (!Number.isSafeInteger(amountMinor)) return { status: "invalid_policy" }
+  let amountSats: number | undefined
+  if (policy.version === 2) {
+    try {
+      amountSats = convertShippingMinor(
+        amountMinor,
+        policy.currency,
+        "SATS",
+        input.rateInput ?? null
+      )
+    } catch (error) {
+      // An unsigned preview can show policy-currency money without a settlement rate.
+      if (!(error instanceof ShippingRateRequired))
+        return { status: "invalid_items" }
+    }
+  }
   return {
     status: "quoted",
+    ...(policy.version === 2 ? { amountSats } : {}),
     currency: policy.currency,
     combinedWeightGrams,
     shippedSubtotalMinor,
     bandMaxWeightGrams: band.maxWeightGrams,
     bandPriceMinor: band.priceMinor,
-    handlingMinor: policy.handlingMinor,
+    handlingMinor,
     freeShippingApplied,
     amountMinor,
     destination,
@@ -883,6 +1093,7 @@ export function quoteShippingPolicy(input: {
   policyEvent: SignedPublicNostrEvent
   items: readonly ShippingPolicyQuoteItem[]
   destination: ShippingPolicyDestination
+  rateInput?: PricingRateInput
 }): ShippingPolicyQuoteResult {
   let policy: ShippingPolicy
   try {
@@ -936,6 +1147,7 @@ export function quoteShippingPolicy(input: {
     if (
       !product ||
       product.priceEvidenceMalformed ||
+      product.shippingAdjustmentsMalformed ||
       product.id !== item.productId ||
       product.format !== "physical" ||
       product.shippingOptionId !== input.policyCoordinate ||
@@ -943,14 +1155,18 @@ export function quoteShippingPolicy(input: {
       product.shippingWeightGrams !== item.weightGrams ||
       normalizeCurrencyIdentity(
         product.sourcePrice?.normalizedCurrency ?? product.currency
-      ) !== policy.currency
+      ) !== normalizeCurrencyIdentity(item.currency) ||
+      product.shippingWeightAllowanceGrams !==
+        item.shippingWeightAllowanceGrams ||
+      JSON.stringify(canonicalShippingValue(product.shippingHandling)) !==
+        JSON.stringify(canonicalShippingValue(item.shippingHandling))
     )
       return { status: "invalid_items" }
     try {
       if (
         shippingAmountToMinor(
           product.sourcePrice?.amount ?? product.price,
-          policy.currency
+          item.currency
         ) *
           item.quantity !==
         item.subtotalMinor
@@ -964,13 +1180,48 @@ export function quoteShippingPolicy(input: {
     policy,
     items,
     destination: input.destination,
+    rateInput: input.rateInput,
   })
   if (calculation.status !== "quoted") return calculation
-  const { status, ...terms } = calculation
+  const { status, amountSats, ...terms } = calculation
+  if (policy.version === 2 && amountSats === undefined)
+    return { status: "rate_required" }
+  if (policy.version === 2 && terms.amountMinor > 0 && amountSats === 0)
+    return { status: "invalid_items" }
+  const usesRate = (from: string, to: string, minor: number) =>
+    minor !== 0 &&
+    normalizeCurrencyIdentity(from) !== normalizeCurrencyIdentity(to) &&
+    !(
+      bitcoinUnit(normalizeCurrencyIdentity(from)) &&
+      bitcoinUnit(normalizeCurrencyIdentity(to))
+    )
+  const capturesRate =
+    usesRate(policy.currency, "SATS", terms.amountMinor) ||
+    items.some(
+      (item) =>
+        usesRate(item.currency, policy.currency, item.subtotalMinor) ||
+        (item.shippingHandling &&
+          usesRate(
+            item.shippingHandling.currency,
+            policy.currency,
+            shippingAmountToMinor(
+              item.shippingHandling.amount,
+              item.shippingHandling.currency
+            ) * item.quantity
+          ))
+    )
   return {
     status,
     quote: {
-      version: 1,
+      version: policy.version,
+      ...(policy.version === 2
+        ? {
+            amountSats: amountSats!,
+            pricingRate: structuredClone(
+              capturesRate ? (input.rateInput ?? null) : null
+            ),
+          }
+        : {}),
       merchantPubkey: input.merchantPubkey,
       policyCoordinate: input.policyCoordinate,
       policyEventId: input.policyEventId,
@@ -985,10 +1236,40 @@ export function quoteShippingPolicy(input: {
         quantity: item.quantity,
         weightGrams: item.weightGrams!,
         subtotalMinor: item.subtotalMinor,
+        ...(policy.version === 2
+          ? {
+              ...(item.shippingWeightAllowanceGrams !== undefined
+                ? {
+                    shippingWeightAllowanceGrams:
+                      item.shippingWeightAllowanceGrams,
+                  }
+                : {}),
+              ...(item.shippingHandling
+                ? { shippingHandling: structuredClone(item.shippingHandling) }
+                : {}),
+              convertedSubtotalMinor: convertShippingMinor(
+                item.subtotalMinor,
+                item.currency,
+                policy.currency,
+                input.rateInput ?? null
+              ),
+              convertedHandlingMinor: item.shippingHandling
+                ? convertShippingMinor(
+                    shippingAmountToMinor(
+                      item.shippingHandling.amount,
+                      item.shippingHandling.currency
+                    ) * item.quantity,
+                    item.shippingHandling.currency,
+                    policy.currency,
+                    input.rateInput ?? null
+                  )
+                : 0,
+            }
+          : {}),
         productEvent: structuredClone(item.productEvent),
       })),
       policyEvent: structuredClone(input.policyEvent),
-    },
+    } as ShippingPolicyQuote,
   }
 }
 
@@ -1002,15 +1283,15 @@ export function getShippingDimensionWarnings(
   const warnings: string[] = []
   if (Math.max(dimensions.length, dimensions.width, dimensions.height) > 100)
     warnings.push(
-      "A dimension exceeds 100 cm. Check your shipping table covers this item."
+      "A dimension exceeds 100 cm. Consider extra packing weight or handling."
     )
   if (volume > 100_000)
     warnings.push(
-      "This item is bulky. Check your shipping table covers its size."
+      "This item is bulky. Consider extra packing weight or handling."
     )
   if (weightGrams && volume > 0 && weightGrams / volume < 0.1)
     warnings.push(
-      "This item is light for its size. Carrier charges may differ from your weight table."
+      "This item is light for its size. Consider extra packing weight or handling."
     )
   return warnings
 }

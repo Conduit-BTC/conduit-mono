@@ -21,6 +21,7 @@ import {
   type OrderPickupFulfillmentSchema,
   type PickupEvidenceCoordinateSchema,
   type ShippingPolicyQuote,
+  type SourcePriceQuote,
   type SignedPublicNostrEvent,
   isValidSignedPublicNostrEvent,
   shippingPolicyQuoteSchema,
@@ -60,6 +61,8 @@ export type CartItem = {
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats?: number
   shippingWeightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: SourcePriceQuote
   shippingPolicyQuote?: ShippingPolicyQuote
   /** Shipping allocated to this entire line, independent of quantity. */
   shippingAllocatedCostSats?: number
@@ -302,6 +305,10 @@ export function createCartItemFromProduct(
     shippingCountryRules:
       pickup || pickupPending ? [] : product.shippingCountryRules,
     shippingWeightGrams: product.shippingWeightGrams,
+    shippingWeightAllowanceGrams: product.shippingWeightAllowanceGrams,
+    shippingHandling: product.shippingHandling
+      ? { ...product.shippingHandling }
+      : undefined,
     productUpdatedAt: product.updatedAt,
     productEventId: product.sourceEventId,
     signedProductEvent: product.signedProductEvent,
@@ -800,6 +807,10 @@ function parseCartItem(value: unknown): CartItem | null {
   const priceSats = finiteNonnegativeNumber(value.priceSats)
   const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
   const shippingWeightGrams = finiteNonnegativeNumber(value.shippingWeightGrams)
+  const shippingWeightAllowanceGrams = finiteNonnegativeNumber(
+    value.shippingWeightAllowanceGrams
+  )
+  const shippingHandling = parseSourcePrice(value.shippingHandling)
   const parsedPolicyQuote = shippingPolicyQuoteSchema.safeParse(
     value.shippingPolicyQuote
   )
@@ -871,6 +882,11 @@ function parseCartItem(value: unknown): CartItem | null {
     shippingWeightGrams > 0
       ? { shippingWeightGrams }
       : {}),
+    ...(shippingWeightAllowanceGrams !== undefined &&
+    Number.isSafeInteger(shippingWeightAllowanceGrams)
+      ? { shippingWeightAllowanceGrams }
+      : {}),
+    ...(shippingHandling ? { shippingHandling } : {}),
     ...(parsedPolicyQuote.success
       ? { shippingPolicyQuote: parsedPolicyQuote.data }
       : {}),
@@ -1025,6 +1041,8 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
                 }
               : getCartItemFulfillmentType(item),
         shippingWeightGrams: item.shippingWeightGrams ?? null,
+        shippingWeightAllowanceGrams: item.shippingWeightAllowanceGrams ?? null,
+        shippingHandling: item.shippingHandling ?? null,
         shippingPolicyQuote: shippingQuoteTermsFingerprint(
           item.shippingPolicyQuote
         ),

@@ -303,6 +303,8 @@ function createEmptyProductForm(
     shippingPricingMode: shippingPolicy ? "weight_table" : "fixed",
     shippingCost: "",
     shippingWeightGrams: "",
+    shippingWeightAllowanceGrams: "",
+    shippingHandling: "",
     shippingLengthCm: "",
     shippingWidthCm: "",
     shippingHeightCm: "",
@@ -421,6 +423,14 @@ function productToForm(
       product.shippingWeightGrams === undefined
         ? ""
         : String(product.shippingWeightGrams),
+    shippingWeightAllowanceGrams:
+      product.shippingWeightAllowanceGrams === undefined
+        ? ""
+        : String(product.shippingWeightAllowanceGrams),
+    shippingHandling:
+      product.shippingHandling === undefined
+        ? ""
+        : String(product.shippingHandling.amount),
     shippingLengthCm: product.shippingDimensionsCm
       ? String(product.shippingDimensionsCm.length)
       : "",
@@ -941,10 +951,6 @@ async function publishProduct(
               if (read.state !== "found")
                 throw new Error(
                   "Publish your shipping table before assigning it to a product."
-                )
-              if (read.policy.currency !== currency)
-                throw new Error(
-                  "This product must use the same currency as your shipping table."
                 )
               return {
                 intent: {
@@ -2284,9 +2290,14 @@ function ProductsPage() {
     form.fulfillment === "ship" && form.shippingPricingMode === "weight_table"
       ? signedPolicyQuery.data?.state !== "found"
         ? "Publish your shipping table on the Shipping page first."
-        : signedPolicyQuery.data.policy.currency !== form.currency
-          ? "Use the shipping table currency for this product, or choose another shipping method."
-          : null
+        : null
+      : null
+  const productTableWarning =
+    form.fulfillment === "ship" &&
+    form.shippingPricingMode === "weight_table" &&
+    signedPolicyQuery.data?.state === "found" &&
+    signedPolicyQuery.data.policy.currency !== form.currency
+      ? `Shipping uses ${signedPolicyQuery.data.policy.currency}; this product uses ${form.currency}.`
       : null
   const productFulfillmentError =
     localPickupEvidenceError ?? merchantBoothPickupError ?? productTableError
@@ -3738,11 +3749,17 @@ function ProductsPage() {
                       </Select>
                       {form.shippingPricingMode === "weight_table" && (
                         <p className="text-pretty text-xs text-[var(--text-secondary)]">
-                          Products using this table share one charge based on
-                          their combined shipping weight.{" "}
                           <Link to="/shipping" className="underline">
                             Edit shipping rates
                           </Link>
+                        </p>
+                      )}
+                      {productTableWarning && (
+                        <p
+                          role="status"
+                          className="text-pretty text-xs text-warning"
+                        >
+                          {productTableWarning}
                         </p>
                       )}
                       {productTableError && (

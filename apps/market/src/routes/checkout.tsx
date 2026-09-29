@@ -1482,7 +1482,8 @@ function CheckoutPage() {
           country: shipping.country,
           subdivision: shipping.state,
           postalCode: shipping.postalCode,
-        }
+        },
+        btcUsdRate
       ),
     [
       rawCheckoutItems,
@@ -1492,6 +1493,7 @@ function CheckoutPage() {
       shipping.country,
       shipping.state,
       shipping.postalCode,
+      btcUsdRate,
     ]
   )
   const checkoutItems = preparedFulfillment.items
@@ -3232,6 +3234,9 @@ function CheckoutPage() {
               source: String(checkoutPricing.quote.source),
               fiatSource: checkoutPricing.quote.fiatSource
                 ? String(checkoutPricing.quote.fiatSource)
+                : undefined,
+              fiatUsdRates: checkoutPricing.quote.fiatUsdRates
+                ? { ...checkoutPricing.quote.fiatUsdRates }
                 : undefined,
             }
           : undefined,

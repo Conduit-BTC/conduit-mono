@@ -133,6 +133,30 @@ function legacyForm(
 }
 
 describe("merchant product drafts", () => {
+  it("recovers product packing adjustments and imperial units without changing canonical grams", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const values = form({
+      shippingPricingMode: "weight_table",
+      shippingWeightGrams: "454",
+      shippingWeightUnit: "lb",
+      shippingWeightAllowanceGrams: "29",
+      shippingHandling: "1.25",
+    })
+    expect(saveProductDraft(draftTarget, values, storage)).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject(values)
+    const key = getProductDraftStorageKey(draftTarget)!
+    const stored = JSON.parse(storage.getItem(key)!)
+    stored.version = 11
+    delete stored.form.shippingWeightUnit
+    delete stored.form.shippingWeightAllowanceGrams
+    delete stored.form.shippingHandling
+    storage.setItem(key, JSON.stringify(stored))
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      shippingWeightGrams: "454",
+      shippingPricingMode: "weight_table",
+    })
+  })
   it("keeps the ships from default as a draft snapshot", () => {
     const storage = new MemoryStorage()
     const draftTarget = target()

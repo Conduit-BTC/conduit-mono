@@ -1128,17 +1128,23 @@ function CartPage() {
   })
   const estimatedItems = useMemo(
     () =>
-      prepareCartFulfillment(cart.items, shippingOptions.data ?? [], {
-        country: estimateValue.country,
-        subdivision: estimateValue.state,
-        postalCode: estimateValue.postalCode,
-      }).items,
+      prepareCartFulfillment(
+        cart.items,
+        shippingOptions.data ?? [],
+        {
+          country: estimateValue.country,
+          subdivision: estimateValue.state,
+          postalCode: estimateValue.postalCode,
+        },
+        shopperPricing.quote
+      ).items,
     [
       cart.items,
       shippingOptions.data,
       estimateValue.country,
       estimateValue.state,
       estimateValue.postalCode,
+      shopperPricing.quote,
     ]
   )
   const estimatedGroups = groupCartPurchases(estimatedItems)

@@ -8,6 +8,7 @@ import {
 import {
   buildShippingPolicyEventDraft,
   getMerchantShippingPolicyCoordinate,
+  type ShippingPolicyV1,
   parseShippingOptionEvent,
   productSchema,
   type ShippingPolicy,
@@ -15,6 +16,7 @@ import {
 import {
   applyProductFulfillmentIntentForPublication,
   prepareProductPublicationListings,
+  getProductPreservedFulfillmentFields,
 } from "../apps/merchant/src/lib/product-publishing"
 import {
   buildProductFamilyChangePlan,
@@ -35,12 +37,10 @@ import {
 const secret = generateSecretKey()
 const pubkey = getPublicKey(secret)
 const policy: ShippingPolicy = {
-  version: 1,
+  version: 2,
   title: "Custom rates",
   originCountry: "US",
   currency: "USD",
-  weightAllowanceGrams: 100,
-  handlingMinor: 25,
   domestic: {
     rules: [
       {
@@ -70,6 +70,12 @@ const product = productSchema.parse({
   price: 20,
   currency: "USD",
   shippingWeightGrams: 250,
+  shippingWeightAllowanceGrams: 50,
+  shippingHandling: {
+    amount: 1.25,
+    currency: "USD",
+    normalizedCurrency: "USD",
+  },
   format: "physical",
   createdAt: 1,
   updatedAt: 1,
@@ -92,6 +98,56 @@ describe("merchant shipping table authoring", () => {
     const form = shippingPolicyToDraft(policy)
     form.domestic.rules[0]!.bands[0]!.price = "0.001"
     expect(() => buildShippingPolicyFromDraft(form)).toThrow()
+  })
+  test("upgrading old tables removes policy buffers while existing product terms remain preserved", () => {
+    const oldPolicy: ShippingPolicyV1 = {
+      ...policy,
+      version: 1,
+      weightAllowanceGrams: 100,
+      handlingMinor: 25,
+    }
+    const upgraded = buildShippingPolicyFromDraft(
+      shippingPolicyToDraft(oldPolicy)
+    )
+    expect(upgraded).toEqual(policy)
+    expect(getProductPreservedFulfillmentFields(product)).toMatchObject({
+      shippingWeightGrams: 250,
+      shippingWeightAllowanceGrams: 50,
+      shippingHandling: product.shippingHandling,
+    })
+  })
+  test("validates product packing weights and exact handling precision in the product currency", () => {
+    expect(
+      getProductShippingMeasurements({
+        shippingWeightGrams: "250",
+        shippingWeightAllowanceGrams: "50",
+        shippingHandling: "1.25",
+        currency: "USD",
+      })
+    ).toEqual({
+      shippingWeightGrams: 250,
+      shippingWeightAllowanceGrams: 50,
+      shippingHandling: {
+        amount: 1.25,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    })
+    expect(() =>
+      getProductShippingMeasurements({ shippingWeightAllowanceGrams: "0.5" })
+    ).toThrow()
+    expect(() =>
+      getProductShippingMeasurements({
+        shippingHandling: "0.001",
+        currency: "USD",
+      })
+    ).toThrow()
+    const custom = shippingPolicyToDraft(policy)
+    custom.domestic.rules.push({
+      ...custom.domestic.rules[0]!,
+      customArea: true,
+    })
+    expect(() => buildShippingPolicyFromDraft(custom)).toThrow("Choose a state")
   })
   test("does not infer rates from an empty draft or permit conflicting areas/band boundaries", () => {
     expect(() =>
@@ -200,7 +256,7 @@ describe("merchant shipping table authoring", () => {
       expect(result.shippingWeightGrams).toBeGreaterThan(0)
     }
   })
-  test("a changed, unavailable, foreign or wrong-currency policy blocks publication", async () => {
+  test("a changed or unavailable policy blocks publication while independent currencies remain a merchant choice", async () => {
     const listing = { product, dTag: "one", fulfillmentIntent: tableIntent }
     await expect(
       prepareProductPublicationListings(
@@ -230,7 +286,7 @@ describe("merchant shipping table authoring", () => {
         { merchantPubkey: pubkey },
         dependencies
       )
-    ).rejects.toThrow("currency")
+    ).resolves.toHaveLength(1)
   })
   test("ordinary table product edits retain the reference while allowing newer policy revisions", async () => {
     const baseline = applyProductFulfillmentIntentForPublication({
@@ -290,6 +346,8 @@ describe("merchant shipping table authoring", () => {
         intent: target.fulfillmentIntent,
       })
       expect(published.shippingWeightGrams).toBe(250)
+      expect(published.shippingWeightAllowanceGrams).toBe(50)
+      expect(published.shippingHandling).toEqual(product.shippingHandling)
       return {
         product: published,
         dTag: target.dTag,

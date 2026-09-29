@@ -1,5 +1,7 @@
 import {
   parseShippingPolicy,
+  normalizeCurrencyIdentity,
+  type SourcePriceQuote,
   shippingMoneyToMinorUnits,
   shippingMinorUnitsToAmount,
   type ShippingPolicy,
@@ -20,6 +22,7 @@ export interface ShippingRuleDraft {
   subdivision: string
   postalPrefix: string
   bands: ShippingBandDraft[]
+  customArea?: boolean
 }
 
 export interface ShippingTableDraft {
@@ -32,8 +35,6 @@ export interface ShippingPolicyDraft {
   title: string
   originCountry: string
   currency: string
-  weightAllowance: string
-  handling: string
   domestic: ShippingTableDraft
   international: ShippingTableDraft
 }
@@ -53,8 +54,6 @@ export function createShippingPolicyDraft(): ShippingPolicyDraft {
     title: "Standard shipping",
     originCountry: "",
     currency: "USD",
-    weightAllowance: "",
-    handling: "",
     domestic: {
       enabled: true,
       freeShippingThreshold: "",
@@ -90,25 +89,42 @@ export function buildShippingPolicyFromDraft(
     if (!input.enabled) return null
     if (!input.rules.length)
       throw new Error("Add at least one international destination.")
-    const rules: ShippingPolicyRule[] = input.rules.map((rule, index) => ({
-      country: domestic ? draft.originCountry : rule.country,
-      ...(rule.subdivision.trim()
-        ? { subdivision: rule.subdivision.trim() }
-        : {}),
-      ...(rule.postalPrefix.trim()
-        ? { postalPrefix: rule.postalPrefix.trim() }
-        : {}),
-      bands: rule.bands.map((band) => ({
-        maxWeightGrams: parseGrams(
-          band.maxWeight,
-          `Destination ${index + 1} maximum weight`
-        ),
-        priceMinor: money(
-          band.price,
-          `Destination ${index + 1} shipping price`
-        ),
-      })),
-    }))
+    const rules: ShippingPolicyRule[] = input.rules.map((rule, index) => {
+      if (
+        rule.customArea &&
+        !rule.subdivision.trim() &&
+        !rule.postalPrefix.trim()
+      ) {
+        throw new Error(
+          "Choose a state or enter a postal prefix for custom rates."
+        )
+      }
+      const country = domestic ? draft.originCountry : rule.country
+      const subdivision = rule.subdivision.trim().toUpperCase()
+      return {
+        country,
+        ...(rule.subdivision.trim()
+          ? {
+              subdivision: subdivision.startsWith(country)
+                ? subdivision
+                : `${country}-${subdivision}`,
+            }
+          : {}),
+        ...(rule.postalPrefix.trim()
+          ? { postalPrefix: rule.postalPrefix.trim() }
+          : {}),
+        bands: rule.bands.map((band) => ({
+          maxWeightGrams: parseGrams(
+            band.maxWeight,
+            `Destination ${index + 1} maximum weight`
+          ),
+          priceMinor: money(
+            band.price,
+            `Destination ${index + 1} shipping price`
+          ),
+        })),
+      }
+    })
     return {
       rules,
       ...(input.freeShippingThreshold.trim()
@@ -122,18 +138,10 @@ export function buildShippingPolicyFromDraft(
     }
   }
   const policy = parseShippingPolicy({
-    version: 1,
+    version: 2,
     title: draft.title.trim(),
     originCountry: draft.originCountry,
     currency: draft.currency,
-    weightAllowanceGrams: parseGrams(
-      draft.weightAllowance,
-      "Weight allowance",
-      true
-    ),
-    handlingMinor: draft.handling.trim()
-      ? money(draft.handling, "Handling buffer")
-      : 0,
     domestic: table(draft.domestic, true),
     international: table(draft.international, false),
   })
@@ -154,6 +162,7 @@ export function shippingPolicyToDraft(
     rules: (input?.rules ?? []).map((rule) => ({
       id: crypto.randomUUID(),
       country: rule.country,
+      customArea: !!rule.subdivision || !!rule.postalPrefix,
       subdivision: rule.subdivision ?? "",
       postalPrefix: rule.postalPrefix ?? "",
       bands: rule.bands.map((band) => ({
@@ -167,10 +176,6 @@ export function shippingPolicyToDraft(
     title: policy.title,
     originCountry: policy.originCountry,
     currency: policy.currency,
-    weightAllowance: policy.weightAllowanceGrams
-      ? String(policy.weightAllowanceGrams)
-      : "",
-    handling: policy.handlingMinor ? money(policy.handlingMinor) : "",
     domestic: table(policy.domestic),
     international: table(policy.international),
   }
@@ -178,11 +183,16 @@ export function shippingPolicyToDraft(
 
 export function getProductShippingMeasurements(form: {
   shippingWeightGrams?: string
+  shippingWeightAllowanceGrams?: string
+  shippingHandling?: string
+  currency?: string
   shippingLengthCm?: string
   shippingWidthCm?: string
   shippingHeightCm?: string
 }): {
   shippingWeightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: SourcePriceQuote
   shippingDimensionsCm?: { length: number; width: number; height: number }
 } {
   const weight = form.shippingWeightGrams?.trim()
@@ -194,6 +204,26 @@ export function getProductShippingMeasurements(form: {
   const anyDimension = dimensions.some((value) => !!value?.trim())
   const result: ReturnType<typeof getProductShippingMeasurements> = {}
   if (weight) result.shippingWeightGrams = parseGrams(weight, "Shipping weight")
+  if (form.shippingWeightAllowanceGrams?.trim()) {
+    result.shippingWeightAllowanceGrams = parseGrams(
+      form.shippingWeightAllowanceGrams,
+      "Extra packing weight",
+      true
+    )
+  }
+  if (form.shippingHandling?.trim()) {
+    const currency = form.currency ?? "SATS"
+    const minor = shippingMoneyToMinorUnits(
+      parsePlainDecimalAmount(form.shippingHandling, "Handling charge"),
+      currency
+    )
+    result.shippingHandling = {
+      amount: shippingMinorUnitsToAmount(minor, currency),
+      currency,
+      normalizedCurrency: normalizeCurrencyIdentity(currency),
+    }
+  }
+
   if (anyDimension) {
     const [length, width, height] = dimensions.map((value) => {
       const cm = parsePlainDecimalAmount(value ?? "", "All three dimensions")
