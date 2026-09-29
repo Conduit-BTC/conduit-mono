@@ -504,6 +504,19 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       "false"
     )
     const merchantNpub = nip19.npubEncode(merchant.pubkey)
+    const presence = buyerPage.getByRole("status").filter({
+      hasText: "2 visitors are browsing this merchant",
+    })
+    await buyerPage.goto(
+      `${marketUrl}/${merchantNpub}?q=no-match-for-presence-regression`
+    )
+    await expect(
+      buyerPage.getByText("0 listings", { exact: true })
+    ).toBeVisible()
+    await expect(presence).toBeVisible()
+    await expect(
+      buyerPage.getByText("1 listings", { exact: true })
+    ).toBeVisible()
     await buyerPage.goto(
       `${marketUrl}/store/${merchantNpub}?q=${encodeURIComponent(productTitle)}`
     )
@@ -517,9 +530,6 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       buyerPage.getByRole("heading", { name: merchantName, exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    const presence = buyerPage.getByRole("status").filter({
-      hasText: "2 visitors are browsing this merchant",
-    })
     await expect(presence).toBeVisible()
     const search = buyerPage.getByPlaceholder("Search listings")
     await search.fill("no-match-for-presence-regression")

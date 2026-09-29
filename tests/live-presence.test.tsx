@@ -572,7 +572,7 @@ describe("LivePresenceIndicator", () => {
     expect(productRoute).toContain("merchantPubkey: selectedProduct?.pubkey")
     expect(productRoute).toContain("productCanonicalId: selectedProduct?.id")
     expect(storeRoute).toContain(
-      "canonicalId: hasObservedListings ? pubkey : null"
+      "canonicalId: productCount > 0 ? pubkey : null"
     )
     expect(storeRoute).toContain(
       "col-span-2 min-w-0 pt-2 sm:col-span-1 sm:col-start-2"

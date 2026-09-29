@@ -180,11 +180,11 @@ function PublicIdentityPage() {
   const [searchDirty, setSearchDirty] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
+  // Read the bounded catalog once; visible filters must not erase store evidence.
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
     authenticatedPubkey: activeViewerPubkey,
-    textQuery: search.q,
     enabled: !!pubkey,
   })
   const productReadIncomplete =
@@ -206,17 +206,8 @@ function PublicIdentityPage() {
   )
   const storeProducts = productsQuery.products
   const productCount = storeProducts.length
-  const [observedListingPubkey, setObservedListingPubkey] = useState<
-    string | null
-  >(null)
-  // A filtered empty result does not revoke commerce already observed here.
-  const hasObservedListings =
-    productCount > 0 || observedListingPubkey === pubkey
-  useEffect(() => {
-    if (productCount > 0) setObservedListingPubkey(pubkey)
-  }, [productCount, pubkey])
   const storePresenceCount = useLivePresenceCount({
-    canonicalId: hasObservedListings ? pubkey : null,
+    canonicalId: productCount > 0 ? pubkey : null,
     pageType: "store",
   })
   const merchantTrust = useMerchantTrustContext({
@@ -641,7 +632,7 @@ function PublicIdentityPage() {
                     </span>
                     <BrainstormGlobalScoreLink pubkey={pubkey} />
                   </div>
-                  {hasObservedListings && (
+                  {productCount > 0 && (
                     <LivePresenceIndicator
                       className="mt-3"
                       count={storePresenceCount}
