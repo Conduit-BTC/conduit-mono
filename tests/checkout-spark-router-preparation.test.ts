@@ -125,6 +125,38 @@ function fundingReceive() {
 }
 
 describe("checkout Spark router preparation", () => {
+  it("rejects another merchant payout before wallet creation despite valid invoice witnesses", async () => {
+    const input = preparationInput()
+    const otherMerchant = getPublicKey(generateSecretKey())
+    const ready = await withMockRouterInvoiceWitnesses(
+      {
+        ...input,
+        routerObligationInputs: {
+          ...input.routerObligationInputs,
+          commerce: input.routerObligationInputs.commerce.map((leg) => ({
+            ...leg,
+            recipientId: otherMerchant,
+          })),
+        },
+      },
+      CREATED_AT / 1_000
+    )
+    let walletCreateCalls = 0
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        { ...ready, storage: new MemoryStorage() },
+        {
+          now: () => CREATED_AT,
+          createWalletMaterial: () => {
+            walletCreateCalls += 1
+            throw new Error("Unexpected wallet creation")
+          },
+        }
+      )
+    ).rejects.toThrow("merchant payout differs from signed quote")
+    expect(walletCreateCalls).toBe(0)
+  })
+
   it("rejects guest recovery before creating a checkout wallet", async () => {
     const storage = new MemoryStorage()
     let walletCreateCalls = 0

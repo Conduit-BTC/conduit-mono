@@ -1,5 +1,6 @@
 import {
   applyCheckoutSparkEvidence,
+  assertCheckoutSparkMerchantPayoutRecipient,
   assertCheckoutSparkOutgoingInvoiceLifetime,
   buildCheckoutSparkRouterObligations,
   createCheckoutSparkReconciliation,
@@ -557,6 +558,10 @@ export async function prepareCheckoutSparkRouterFunding(
   ) {
     throw new Error("Checkout Spark obligations differ from the signed quote.")
   }
+  assertCheckoutSparkMerchantPayoutRecipient(
+    input.merchantPubkey,
+    routerObligations.obligations
+  )
   assertCheckoutSparkRouterInvoiceWitnesses({
     checkoutId: input.checkoutId,
     network: input.network,

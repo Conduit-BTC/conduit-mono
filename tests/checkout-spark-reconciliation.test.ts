@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+
 import { describe, expect, it } from "bun:test"
 
 import {
@@ -72,6 +74,89 @@ function commerceQuote() {
 }
 
 describe("checkout Spark reconciliation", () => {
+  it("rejects a quote-bound merchant leg for a different account", () => {
+    const input = planInput()
+    expect(() =>
+      freezeCheckoutSparkPlan({
+        ...input,
+        commerceQuote: commerceQuote(),
+        obligations: input.obligations.map((leg) =>
+          leg.kind === "merchant"
+            ? { ...leg, recipientId: "f".repeat(64) }
+            : leg
+        ),
+      })
+    ).toThrow("merchant payout differs from signed quote")
+  })
+
+  it("rejects a self-consistent wrong-recipient v2 plan on restore while retaining v1 recovery", () => {
+    const input = planInput()
+    const legacy = freezeCheckoutSparkPlan({
+      ...input,
+      obligations: input.obligations.map((leg) =>
+        leg.kind === "merchant" ? { ...leg, recipientId: "f".repeat(64) } : leg
+      ),
+    })
+    const state = createCheckoutSparkReconciliation(legacy)
+    expect(restoreCheckoutSparkReconciliation(state).plan).toEqual(legacy)
+    const quote = commerceQuote()
+    // An attacker can compute this public digest. A valid checksum must not
+    // replace the merchant authority invariant on restored v2 plans.
+    const canonical = [
+      "conduit:checkout-spark-plan:v2",
+      2,
+      legacy.checkoutId,
+      legacy.orderId,
+      legacy.merchantPubkey,
+      legacy.walletId,
+      legacy.network,
+      legacy.createdAt,
+      legacy.takeoverAt,
+      [
+        legacy.funding.requestId,
+        legacy.funding.paymentRequest,
+        legacy.funding.paymentHash,
+        legacy.funding.requiredNetSats,
+        legacy.funding.grossFundingSats,
+        legacy.funding.createdAt,
+        legacy.funding.expiresAt,
+      ],
+      legacy.obligations.map((leg) => [
+        leg.position,
+        leg.obligationId,
+        leg.outgoingId,
+        leg.kind,
+        leg.recipientId,
+        leg.paymentRequest,
+        leg.amountSats,
+        leg.maxFeeSats,
+      ]),
+      [
+        quote.commerceTotalSats,
+        quote.lines.map((line) => [
+          line.productCoordinate,
+          line.productEventId,
+          line.merchantPubkey,
+          line.quantity,
+          line.unitMerchandiseSats,
+          line.unitShippingSats,
+          null,
+        ]),
+      ],
+    ]
+    const plan = {
+      ...legacy,
+      schemaVersion: 2 as const,
+      commerceQuote: quote,
+      planDigest: createHash("sha256")
+        .update(JSON.stringify(canonical))
+        .digest("hex"),
+    }
+    expect(() =>
+      restoreCheckoutSparkReconciliation({ ...state, plan })
+    ).toThrow("merchant payout differs from signed quote")
+  })
+
   it("binds signed commerce quote evidence to a versioned plan and recovery state", () => {
     const legacy = freezeCheckoutSparkPlan(planInput())
     const quoted = freezeCheckoutSparkPlan({

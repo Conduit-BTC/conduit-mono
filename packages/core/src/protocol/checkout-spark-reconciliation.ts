@@ -725,6 +725,21 @@ function mergeObservedState<T extends string>(input: {
   return { state: input.nextState, observedAt: input.nextObservedAt }
 }
 
+/** The quote-bound merchant leg must name the listing merchant's account. */
+export function assertCheckoutSparkMerchantPayoutRecipient(
+  merchantPubkey: string,
+  obligations: readonly CheckoutSparkObligationPlanInput[]
+): void {
+  const merchantLegs = obligations.filter((leg) => leg.kind === "merchant")
+  if (
+    merchantLegs.length !== 1 ||
+    merchantLegs[0]!.recipientId !==
+      normalizeHex64(merchantPubkey, "Merchant pubkey")
+  ) {
+    throw new Error("Checkout Spark merchant payout differs from signed quote.")
+  }
+}
+
 /**
  * Freeze the exact checkout router plan shared by shopper execution and later
  * Merchant recovery. The digest and stable outgoing IDs contain no wallet key
@@ -864,6 +879,7 @@ export function freezeCheckoutSparkPlan(
     ? normalizeCommerceQuote(input.commerceQuote, merchantPubkey)
     : undefined
   if (commerceQuote) {
+    assertCheckoutSparkMerchantPayoutRecipient(merchantPubkey, obligations)
     const commerceSum = obligations.reduce(
       (sum, obligation) =>
         sum +
