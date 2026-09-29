@@ -1,0 +1,143 @@
+name: Refresh Repository Contributors
+
+on:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: refresh-repository-contributors
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Refresh from the trusted default-branch revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bun scripts/vite/refresh_repository_contributors.ts
+
+      - name: Verify the existing refresh branch
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { assertContributorRefreshPullRequest, CONTRIBUTOR_REFRESH_BRANCH } = await import(
+              `${process.env.GITHUB_WORKSPACE}/scripts/ci/contributor_refresh_pr.mjs`
+            );
+            const { owner, repo } = context.repo;
+            const { data: pulls } = await github.rest.pulls.list({
+              owner, repo, head: `${owner}:${CONTRIBUTOR_REFRESH_BRANCH}`,
+              base: context.payload.repository.default_branch, state: "all", per_page: 100,
+              sort: "created", direction: "desc",
+            });
+            let branch;
+            try {
+              ({ data: branch } = await github.rest.git.getRef({
+                owner, repo, ref: `heads/${CONTRIBUTOR_REFRESH_BRANCH}`,
+              }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              if (pulls.some(pr => pr.state === "open")) throw new Error("The open refresh PR has no branch.");
+              return;
+            }
+            const pr = pulls[0];
+            const files = pr ? await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: pr.number, per_page: 100,
+            }) : [];
+            assertContributorRefreshPullRequest(pr, files, `${owner}/${repo}`);
+            if (branch.object.sha !== pr.head.sha) {
+              throw new Error("The refresh branch changed during verification.");
+            }
+
+      - name: Create repository write token
+        id: app_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create or update the snapshot-only PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ steps.app_token.outputs.token }}
+          base: ${{ github.event.repository.default_branch }}
+          branch: chore/refresh-repository-contributors
+          add-paths: scripts/vite/repository_contributors.generated.json
+          commit-message: "chore(about): refresh repository contributors"
+          title: "chore(about): refresh repository contributors"
+          body: |
+            ## Preview Settings
+
+            - [ ] Show commit-level mainnet preview links (Cloudflare creates deployments automatically)
+
+            ## Summary
+
+            Refresh the checked-in repository contributor activity snapshot used by Market and Merchant About pages.
+
+            ## Why
+
+            The build uses this snapshot when a live GitHub refresh is unavailable. Weekly updates keep its counts and timestamp current without a GitHub token in the public app.
+
+            ## Planning and Public Context
+
+            - Implementation plan prepared: Regenerate the snapshot, validate the diff, and merge after review.
+            - Existing public context checked: About page contributor source and tests.
+            - Public context delta: None.
+
+            ## Implementation
+
+            - Regenerated `repository_contributors.generated.json` from merged pull requests.
+
+            ## Acceptance Criteria and Evidence
+
+            | ID | Observable criterion | Evidence / test | Gap / owner |
+            | --- | --- | --- | --- |
+            | AC-1 | Snapshot reflects merged PR activity at its recorded source revision | Successful refresh command and JSON diff | Reviewer checks contributor changes |
+
+            ## Smoke and Playwright Coverage
+
+            - Critical flows changed: None; static build data only.
+            - Existing coverage relied on: About page contributor tests.
+            - No browser smoke changed because the rendered data contract is unchanged.
+
+            ## PR Checks
+
+            - [x] Conventional Commit title and generated snapshot only.
+
+            ## Scope
+
+            - App/Package: Market and Merchant About pages.
+            - Layer: Support.
+
+            ## Review and QA Disposition
+
+            - [x] Evidence sign-off proposed; human code review required.
+            - Reviewer focus: contributor identities and commit-count changes.
+
+            ## Validation
+
+            - The contributor generator completed with a read-only GitHub token.
+            - Review the contributor and commit-count delta before merging.
+
+            ## Risks and follow-ups
+
+            - Counts reflect GitHub data at the recorded source revision. The About page displays the snapshot timestamp and marks older data as stale.
+            - Human review and merge are required before the new snapshot reaches published builds.
