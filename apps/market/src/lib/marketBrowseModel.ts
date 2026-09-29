@@ -11,7 +11,7 @@ import {
   type Product,
   type Profile,
 } from "@conduit/core"
-import { filterProductsByFacets, type FacetOption } from "./facets"
+import type { FacetOption } from "./facets"
 import { compareCommercePrices, getComparablePriceValue } from "./pricing"
 import { diversifyMerchantProductOrder } from "./productFeedDiversity"
 import {
@@ -44,7 +44,10 @@ export function allowsGlobalProductSearch(input: {
   catalogSource: ProductCatalogSourceMode
   anonymous: boolean
 }): boolean {
-  return input.anonymous || input.catalogSource === "combined"
+  return (
+    input.anonymous ||
+    ["following", "conduit", "combined"].includes(input.catalogSource)
+  )
 }
 
 export async function refreshMarketBrowseData(input: {
@@ -110,6 +113,7 @@ export function getGlobalProductSearchQueryKey(input: {
   catalogSource: ProductCatalogSourceMode
   anonymous: boolean
   authorPubkeys: readonly string[] | undefined
+  tags?: readonly string[]
 }) {
   return [
     "market-global-product-search",
@@ -118,6 +122,7 @@ export function getGlobalProductSearchQueryKey(input: {
     input.catalogSource,
     input.anonymous ? "anonymous" : "connected",
     getCatalogAuthorKey(input.authorPubkeys),
+    [...(input.tags ?? [])].sort().join(","),
   ] as const
 }
 
@@ -193,15 +198,22 @@ export function mergeProductSearchResults(
   return Array.from(byId.values())
 }
 
+/** The ranked response is the entire search candidate set. */
 export function getMarketBrowseSearchCandidates(
-  catalogProducts: readonly Product[],
-  searchProducts: readonly Product[],
-  query: string
+  searchProducts: readonly Product[]
 ): Product[] {
-  return mergeProductSearchResults(
-    filterProductsByFacets([...catalogProducts], { q: query }),
-    searchProducts
-  )
+  return [...searchProducts]
+}
+
+export function getProductSearchAuthors(
+  catalogAuthors: readonly string[] | undefined,
+  selectedMerchants: readonly string[]
+): string[] | undefined {
+  if (!catalogAuthors) return undefined
+  const selected = new Set(selectedMerchants)
+  return selected.size
+    ? catalogAuthors.filter((author) => selected.has(author))
+    : [...catalogAuthors]
 }
 
 export function isPriceSort(sort: MarketBrowseSortOption | undefined): boolean {

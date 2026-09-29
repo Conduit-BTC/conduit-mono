@@ -17,6 +17,7 @@ import {
   allowsGlobalProductSearch,
   getGlobalProductSearchQueryKey,
   getMarketBrowseSearchCandidates,
+  getProductSearchAuthors,
   getMerchantIdentityView,
   getProductShippingPresetEligibility,
   isMarketBrowseRefreshStale,
@@ -194,16 +195,16 @@ describe("market browse model helpers", () => {
     ).toBe(true)
   })
 
-  it("keeps global search out of explicit connected catalog scopes", () => {
+  it("searches each connected perspective within its eligible author scope", () => {
     expect(
       allowsGlobalProductSearch({
         catalogSource: "following",
         anonymous: false,
       })
-    ).toBe(false)
+    ).toBe(true)
     expect(
       allowsGlobalProductSearch({ catalogSource: "conduit", anonymous: false })
-    ).toBe(false)
+    ).toBe(true)
     expect(
       allowsGlobalProductSearch({ catalogSource: "combined", anonymous: false })
     ).toBe(true)
@@ -244,7 +245,7 @@ describe("market browse model helpers", () => {
       "utf8"
     )
     expect(hook).toContain("catalogAuthorPubkeys !== undefined")
-    expect(hook).toContain("authorPubkeys: catalogAuthorPubkeys")
+    expect(hook).toContain("authorPubkeys: searchAuthorPubkeys")
   })
 
   it("merges relay search results into the perspective catalog by product id", () => {
@@ -268,25 +269,13 @@ describe("market browse model helpers", () => {
       ...product("indexed-mug", "merchant-b", ["ceramic"], 200),
       title: "Handmade mug",
     }
-    const catalogMatch = {
-      ...product("catalog-ceramics", "merchant-a", ["ceramic"], 100),
-      title: "Ceramics from the catalog",
-    }
-    const unrelated = product("unrelated", "merchant-c", ["art"], 300)
-    const candidates = getMarketBrowseSearchCandidates(
-      [catalogMatch, unrelated],
-      [indexedProduct],
-      "ceramics"
-    )
+    const candidates = getMarketBrowseSearchCandidates([indexedProduct])
     const visible = filterProductsByFacets(candidates, {
       merchants: ["merchant-b"],
       tags: ["ceramic"],
     })
 
-    expect(candidates.map((item) => item.id)).toEqual([
-      "catalog-ceramics",
-      "indexed-mug",
-    ])
+    expect(candidates.map((item) => item.id)).toEqual(["indexed-mug"])
     expect(visible.map((item) => item.id)).toEqual(["indexed-mug"])
     const html = renderToStaticMarkup(
       createElement(ProductCard, {
@@ -297,6 +286,13 @@ describe("market browse model helpers", () => {
       })
     )
     expect(html).toContain("Handmade mug")
+  })
+
+  it("intersects selected merchants before search and never broadens catalog scope", () => {
+    expect(getProductSearchAuthors(undefined, ["outside"])).toBeUndefined()
+    expect(getProductSearchAuthors(["a", "b"], ["b", "outside"])).toEqual(["b"])
+    expect(getProductSearchAuthors(["a"], ["outside"])).toEqual([])
+    expect(getProductSearchAuthors(["a", "b"], [])).toEqual(["a", "b"])
   })
 
   it("sorts store options by recent publisher while preserving counts", () => {
