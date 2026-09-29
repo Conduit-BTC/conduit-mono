@@ -236,8 +236,19 @@ The `preview-links` job verifies branch preview links for same-repository PRs
 and publishes them in the read-only job summary. It skips preview verification
 for fork PRs with an explicit log message. PR comments require separate,
 default-branch-controlled automation; candidate workflows do not receive a
-write token. Bot-authored PRs receive a noncanonical preview check and cannot
-satisfy the required `preview-links` context.
+write token. Bot-authored PRs receive a noncanonical preview check, except for
+`conduit-sudden-agent[bot]` on `chore/refresh-repository-contributors`. That
+same-repository path must change only the existing contributor snapshot and
+match the immutable PR head before it can pass the required `preview-links`
+context. It still runs the normal build and preview verification.
+
+Contributor snapshots refresh every Monday at 08:17 UTC or through the manual
+`Refresh Repository Contributors` workflow on `main`. The generator runs from
+the immutable default-branch revision with a read-only token before the App
+write token exists. One fixed branch keeps one reviewable update PR open;
+existing branches must belong to the App and have a snapshot-only diff.
+Review and merge these PRs normally. After changing the refresh workflow, run
+it once after merge to verify the App-created PR and its required checks.
 
 Privileged agent reviews run only from default-branch workflow definitions.
 They check out an immutable base SHA and fetch the candidate SHA as Git object
