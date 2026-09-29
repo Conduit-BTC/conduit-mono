@@ -109,6 +109,48 @@ describe("product listing event drafts", () => {
         .tags
     ).toContainEqual(["location", "Signed nearby town"])
   })
+  it("preserves a legacy content-only location through an ordinary edit", () => {
+    const parsed = parseProductEvent({
+      id: "legacy-content-area",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify(baseProduct({ location: "Legacy nearby town" })),
+      tags: [
+        ["d", "legacy-content-area"],
+        ["price", "10", "USD"],
+      ],
+    })
+    expect(parsed.location).toBe("Legacy nearby town")
+    expect(parsed.geohash).toBeUndefined()
+    const edited = buildProductListingEventDraft({
+      product: { ...parsed, title: "Updated title" },
+      dTag: "legacy-content-area",
+    })
+    expect(edited.tags).toContainEqual(["location", "Legacy nearby town"])
+    expect(
+      parseProductEvent({
+        ...parsed,
+        content: edited.content,
+        tags: edited.tags,
+      }).location
+    ).toBe("Legacy nearby town")
+    // An explicit empty tag cannot revive a different content location.
+    expect(
+      parseProductEvent({
+        id: "empty-tag-area",
+        pubkey: "merchant",
+        created_at: 1_779_762_725,
+        content: JSON.stringify(
+          baseProduct({ location: "Legacy nearby town" })
+        ),
+        tags: [
+          ["d", "empty-tag-area"],
+          ["price", "10", "USD"],
+          ["location", ""],
+        ],
+      }).location
+    ).toBeUndefined()
+  })
   it("retains signed image evidence while capping public request candidates", () => {
     const publicImageUrls = Array.from(
       { length: MAX_PRODUCT_IMAGE_CANDIDATES + 5 },

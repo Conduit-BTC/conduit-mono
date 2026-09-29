@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { AlertCircle } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
@@ -9,6 +16,7 @@ import {
   getShippingOptionsByCoordinates,
   useAuth,
   type MerchantShippingReadResult,
+  type MerchantShippingRevision,
   type MerchantShippingSettings,
 } from "@conduit/core"
 import { Badge, Button, SignedActionStatus } from "@conduit/ui"
@@ -87,6 +95,8 @@ function ShippingPage() {
   const [resolvingArea, setResolvingArea] = useState(false)
   const selectionGeneration = useRef(0)
   const [saving, setSaving] = useState(false)
+  const [reviewedRevision, setReviewedRevision] =
+    useState<MerchantShippingRevision | null>(null)
   const signedSettingsQuery = useQuery({
     queryKey: ["merchant-shipping-settings", pubkey ?? "none"],
     enabled: !!pubkey && authStatus === "connected",
@@ -110,6 +120,9 @@ function ShippingPage() {
   const retainedSettings =
     signedSettingsQuery.data?.state === "found" &&
     signedSettingsQuery.data.retained
+  const unreviewedSettings =
+    signedSettingsQuery.data?.state === "found" &&
+    reviewedRevision?.eventId !== signedSettingsQuery.data.revision.eventId
   const complete = isShippingComplete(config)
   const summary = buildSummary(config.countries)
   const hasUnsavedChanges = useMemo(
@@ -125,27 +138,56 @@ function ShippingPage() {
     const storedConfig = loadShippingConfig(pubkey)
     setConfig(storedConfig)
     setLastSavedConfig(storedConfig)
+    setReviewedRevision(null)
     setSaveState({ status: "idle" })
   }, [pubkey])
+
+  const loadSignedSettings = useCallback(
+    (remote: Extract<MerchantShippingReadResult, { state: "found" }>) => {
+      if (!pubkey) return
+      const next: ShippingConfig = remote.settings
+      ++selectionGeneration.current
+      setResolvingArea(false)
+      setAreaCountry("")
+      setAreaState("")
+      setAreaPlaceId(null)
+      setConfig(next)
+      setLastSavedConfig(next)
+      setReviewedRevision(remote.revision)
+      setSaveState({ status: "idle" })
+      try {
+        saveShippingConfig(next, pubkey)
+      } catch {
+        setSaveState({
+          status: "error",
+          message:
+            "Signed shipping settings loaded, but this device could not cache them.",
+        })
+      }
+    },
+    [pubkey]
+  )
 
   useEffect(() => {
     const remote = signedSettingsQuery.data
     if (!pubkey || remote?.state !== "found" || hasUnsavedChanges) return
-    const next: ShippingConfig = remote.settings
-    if (serializeShippingConfig(config) === serializeShippingConfig(next))
+    if (
+      serializeShippingConfig(config) ===
+      serializeShippingConfig(remote.settings)
+    ) {
+      if (reviewedRevision?.eventId !== remote.revision.eventId)
+        setReviewedRevision(remote.revision)
       return
-    setConfig(next)
-    setLastSavedConfig(next)
-    try {
-      saveShippingConfig(next, pubkey)
-    } catch {
-      setSaveState({
-        status: "error",
-        message:
-          "Signed shipping settings loaded, but this device could not cache them.",
-      })
     }
-  }, [pubkey, signedSettingsQuery.data, hasUnsavedChanges, config])
+    loadSignedSettings(remote)
+  }, [
+    pubkey,
+    signedSettingsQuery.data,
+    hasUnsavedChanges,
+    config,
+    reviewedRevision,
+    loadSignedSettings,
+  ])
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
@@ -154,7 +196,9 @@ function ShippingPage() {
       !pubkey ||
       authStatus !== "connected" ||
       saving ||
-      resolvingArea
+      resolvingArea ||
+      signedSettingsQuery.isLoading ||
+      unreviewedSettings
     )
       return
 
@@ -167,10 +211,7 @@ function ShippingPage() {
       const revision = await publishMerchantShippingSettings({
         pubkey,
         settings,
-        acceptedRevision:
-          signedSettingsQuery.data?.state === "found"
-            ? signedSettingsQuery.data.revision
-            : null,
+        acceptedRevision: reviewedRevision,
         dependencies: {
           shouldContinue: () => authGenerationRef.current === authGeneration,
         },
@@ -192,6 +233,7 @@ function ShippingPage() {
         localCacheSaved = false
       }
       setLastSavedConfig(config)
+      setReviewedRevision(revision)
       setSaveState({
         status: "saved",
         message: localCacheSaved
@@ -409,7 +451,8 @@ function ShippingPage() {
                     (!hasUnsavedChanges && !needsRelaySync) ||
                     saving ||
                     resolvingArea ||
-                    signedSettingsQuery.isLoading
+                    signedSettingsQuery.isLoading ||
+                    unreviewedSettings
                   }
                 >
                   Save changes
@@ -434,6 +477,25 @@ function ShippingPage() {
                     saveState.status === "error" ? saveState.message : undefined
                   }
                 />
+                {unreviewedSettings && hasUnsavedChanges && (
+                  <div className="space-y-2">
+                    <p role="status" className="text-sm text-[var(--warning)]">
+                      Signed settings arrived while you were editing. Load them
+                      before saving to preserve their destination rules and
+                      Ships from area. Loading replaces your unsaved edits.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        if (signedSettingsQuery.data?.state === "found")
+                          loadSignedSettings(signedSettingsQuery.data)
+                      }}
+                    >
+                      Load signed settings
+                    </Button>
+                  </div>
+                )}
                 {retainedSettings && (
                   <p role="status" className="text-sm text-[var(--warning)]">
                     Your previously signed settings are preserved. Retry the

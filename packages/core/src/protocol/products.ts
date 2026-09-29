@@ -1062,7 +1062,11 @@ export function parseProductEvent(
       ...(productTypeTag.format ? { format: productTypeTag.format } : {}),
       ...(visibilityTag ? { visibility: visibilityTag } : {}),
       specifications,
-      location: validLocation,
+      // Older Conduit events carried location only in their signed JSON.
+      // A present tag remains authoritative, including an explicit empty tag.
+      location: event.tags.some(([name]) => name === "location")
+        ? validLocation
+        : parsed.location,
       geohash: validGeohash,
       // Compatibility content may describe the product, but it cannot replace
       // identity or time committed to by the signed event envelope.
