@@ -638,8 +638,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             <div className="space-y-3 p-3 sm:p-4">
               <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1">
                 <Link
-                  to="/store/$pubkey"
-                  params={{ pubkey: selectedMerchant }}
+                  to="/$identityRef"
+                  params={{ identityRef: selectedMerchant }}
                   aria-label={`Open ${merchantName} merchant page`}
                   className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-lg px-2 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                 >

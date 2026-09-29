@@ -8,7 +8,7 @@ import {
 } from "@conduit/core"
 import { Button } from "@conduit/ui"
 import { getEventActorDisplayName } from "../lib/event-actor-identity"
-import { getProfileUrl } from "../lib/market-links"
+import { getIdentityUrl } from "../lib/market-links"
 
 export function EventActorName({
   pubkey,
@@ -55,7 +55,7 @@ export function EventActorProvenance({
       className={`inline-flex min-w-0 items-center gap-1 font-mono text-[var(--text-muted)] ${className}`}
     >
       <a
-        href={getProfileUrl(pubkey)}
+        href={getIdentityUrl(pubkey)}
         target="_blank"
         rel="noreferrer"
         className="inline-flex min-w-0 items-center gap-1 underline-offset-2 hover:text-[var(--text-primary)] hover:underline"

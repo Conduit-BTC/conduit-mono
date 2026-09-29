@@ -39,7 +39,7 @@ import {
   profileToFormValues,
 } from "../lib/profileForm"
 import { isProfileComplete } from "../lib/readiness"
-import { getStorefrontUrl } from "../lib/market-links"
+import { getIdentityUrl } from "../lib/market-links"
 
 export const Route = createFileRoute("/profile")({
   beforeLoad: () => {
@@ -149,7 +149,7 @@ function ProfilePage() {
   const complete = isProfileComplete(profileData)
   const displayName = profileData?.displayName || profileData?.name
   const npub = accountPubkey ? pubkeyToNpub(accountPubkey) : ""
-  const storefrontUrl = accountPubkey ? getStorefrontUrl(accountPubkey) : ""
+  const storefrontUrl = accountPubkey ? getIdentityUrl(accountPubkey) : ""
   const savedProfileForm = useMemo(
     () => (profileData ? profileToFormValues(profileData) : EMPTY_PROFILE_FORM),
     [profileData]
@@ -430,14 +430,14 @@ function ProfilePage() {
                         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
                           <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
                             <Store className="h-3.5 w-3.5" />
-                            Conduit Store
+                            Public identity
                           </div>
                           <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-start">
                             <a
                               href={storefrontUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              title="Open Conduit store in a new tab"
+                              title="Open public identity in a new tab"
                               className="min-w-0 flex-1 break-all font-mono text-xs leading-5 text-[var(--accent)] underline-offset-2 hover:underline"
                             >
                               {storefrontUrl}
@@ -447,8 +447,8 @@ function ProfilePage() {
                                 type="button"
                                 aria-label={
                                   copiedStoreLink
-                                    ? "Copied store link"
-                                    : "Copy store link"
+                                    ? "Copied identity link"
+                                    : "Copy identity link"
                                 }
                                 onClick={copyStorefrontLink}
                                 className={[
@@ -468,8 +468,8 @@ function ProfilePage() {
                                 href={storefrontUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                title="Open Conduit store in a new tab"
-                                aria-label="Open Conduit store"
+                                title="Open public identity in a new tab"
+                                aria-label="Open public identity"
                                 className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                               >
                                 <ExternalLink className="h-3.5 w-3.5" />

@@ -82,8 +82,8 @@ const markdownComponents: Components = {
     if (safeHref && profileRef) {
       return (
         <Link
-          to="/u/$profileRef"
-          params={{ profileRef: safeHref }}
+          to="/$identityRef"
+          params={{ identityRef: safeHref }}
           className={LINK_CLASS_NAME}
           title={title}
         >

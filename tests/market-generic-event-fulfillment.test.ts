@@ -6,7 +6,7 @@ describe("generic Market event fulfillment", () => {
       "apps/market/src/routes/products/index.tsx"
     ).text()
     const store = await Bun.file(
-      "apps/market/src/routes/store/$pubkey.tsx"
+      "apps/market/src/routes/$identityRef.tsx"
     ).text()
     const resolvedCard = await Bun.file(
       "apps/market/src/components/ResolvedProductGridCard.tsx"
@@ -61,7 +61,7 @@ describe("generic Market event fulfillment", () => {
     const [products, store, detail, event, resolvedCard, variations] =
       await Promise.all([
         Bun.file("apps/market/src/routes/products/index.tsx").text(),
-        Bun.file("apps/market/src/routes/store/$pubkey.tsx").text(),
+        Bun.file("apps/market/src/routes/$identityRef.tsx").text(),
         Bun.file("apps/market/src/routes/products/$productId.tsx").text(),
         Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
         Bun.file(

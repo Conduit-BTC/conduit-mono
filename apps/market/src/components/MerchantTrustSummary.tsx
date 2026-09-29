@@ -7,6 +7,7 @@ import { BrainstormGlobalScoreLink } from "./BrainstormGlobalScoreLink"
 type MerchantTrustSummaryProps = {
   trust: MerchantTrustContext
   className?: string
+  showBrainstorm?: boolean
 }
 
 function TrustChip({
@@ -56,6 +57,7 @@ function SocialChips({ trust }: { trust: MerchantTrustContext }) {
 export function MerchantTrustSummary({
   trust,
   className = "",
+  showBrainstorm = true,
 }: MerchantTrustSummaryProps) {
   return (
     <div className={["flex flex-wrap gap-2", className].join(" ")}>
@@ -72,7 +74,9 @@ export function MerchantTrustSummary({
         </TrustChip>
       )}
       <SocialChips trust={trust} />
-      <BrainstormGlobalScoreLink pubkey={trust.merchantPubkey} />
+      {showBrainstorm && (
+        <BrainstormGlobalScoreLink pubkey={trust.merchantPubkey} />
+      )}
     </div>
   )
 }

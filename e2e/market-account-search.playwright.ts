@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import { nip19 } from "nostr-tools"
 import { installTestSigner } from "./helpers/auth"
 
 const marketUrl = `http://127.0.0.1:${
@@ -139,7 +140,9 @@ test("market header preserves account search inside the eligible author scope @m
     "market-search-suggestions-option-0"
   )
   await page.keyboard.press("Enter")
-  await expect(page).toHaveURL(/\/store\/npub1/)
+  await expect(page).toHaveURL(
+    `${marketUrl}/${nip19.npubEncode(SELLER_PUBKEY)}`
+  )
   await expect(listbox).toBeHidden()
 })
 
@@ -331,7 +334,7 @@ test("product search lists matching merchants above the product results @market"
   await expect(merchants).toBeVisible()
   await expect(
     merchants.getByRole("link", { name: /Alice Storefront/ })
-  ).toHaveAttribute("href", /\/store\/npub1/)
+  ).toHaveAttribute("href", `/${nip19.npubEncode(SELLER_PUBKEY)}`)
   // The perspective travels with the link; the directory reads the same
   // source and would otherwise show a different merchant set.
   await expect(

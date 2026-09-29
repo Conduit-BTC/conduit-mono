@@ -1705,9 +1705,7 @@ test("Merchant event detail presents organizer and accepted sellers without tech
     /organizer-profile\.svg/
   )
   const organizerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
-  await expect(
-    organizer.locator(`a[href$="/u/${organizerNpub}"]`)
-  ).toBeVisible()
+  await expect(organizer.locator(`a[href$="/${organizerNpub}"]`)).toBeVisible()
   await expect(
     organizer.getByRole("button", {
       name: "Copy organizer npub",
@@ -3423,7 +3421,7 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
   ).toBeVisible()
   const organizerNpub = nip19.npubEncode(ORGANIZER_PUBKEY)
   await expect(
-    technicalDetails.locator(`a[href="/u/${organizerNpub}"]`)
+    technicalDetails.locator(`a[href="/${organizerNpub}"]`)
   ).toBeVisible()
   await expect(
     technicalDetails.getByText("Event catalog naddr", { exact: true })
@@ -4977,7 +4975,7 @@ test("organizer publishes and accepts their own product as merchant pickup @mark
   await page.setViewportSize({ width: 390, height: 844 })
   await gotoAs(page, marketUrl, "/cart", "buyer")
   await expect(
-    page.locator(`main a[href="/u/${handlerNpub}"]:visible`).first()
+    page.locator(`main a[href="/${handlerNpub}"]:visible`).first()
   ).toBeVisible({ timeout: 30_000 })
   await page
     .getByRole("button", { name: "Copy pickup handler npub" })

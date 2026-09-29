@@ -295,7 +295,7 @@ describe("app account-network read propagation", () => {
     ] = await Promise.all([
       source("apps/market/src/lib/storeProducts.ts"),
       source("apps/market/src/routes/orders.tsx"),
-      source("apps/market/src/routes/u/$profileRef.tsx"),
+      source("apps/market/src/routes/$identityRef.tsx"),
       source("apps/market/src/hooks/useProgressiveProducts.ts"),
       source("apps/market/src/routes/products/$productId.tsx"),
       source("packages/core/src/hooks/useProfiles.ts"),
@@ -317,9 +317,8 @@ describe("app account-network read propagation", () => {
     expect(marketOrders).toMatch(
       /fetchStoreProducts\(\s+row\.merchantPubkey,\s+accountPubkey,\s+authenticatedPubkey,\s+\(\) => !signal\.aborted && shouldContinueAccountRead\(\)\s+\)/
     )
-    expect(publicProfile).toMatch(
-      /fetchStoreProducts\(\s*pubkey!,\s*accountPubkey,\s*authenticatedPubkey,\s*\(\) => !signal\.aborted && shouldContinueAccountRead\(\)\s*\)/
-    )
+    expect(publicProfile).toContain('scope: "storefront"')
+    expect(publicProfile).toContain("useMerchantTrustContext({")
     expect(progressiveProducts).toContain("accountPubkey: finalIoAccountPubkey")
     expect(productDetail).toContain("accountPubkey,")
     expect(profileHook).toContain("accountPubkey?: string | null")
