@@ -5,6 +5,7 @@ import {
   type ParsedOrderMessage,
 } from "./orders"
 import type { OrderItemFulfillmentSchema } from "../schemas"
+import type { ShippingPolicyQuote } from "./shipping-policy"
 
 export type OrderSummary = {
   buyerIdentityKind: "signed_in" | "guest_ephemeral" | null
@@ -19,6 +20,8 @@ export type OrderSummary = {
     priceAtPurchase: number
     currency: string
     shippingCostSats?: number
+    shippingPolicyQuote?: ShippingPolicyQuote
+    shippingAllocatedCostSats?: number
     sourceShippingCost?: {
       amount: number
       currency: string
@@ -210,6 +213,8 @@ export function extractOrderSummary(
           priceAtPurchase: item.priceAtPurchase,
           currency: item.currency,
           shippingCostSats: item.shippingCostSats,
+          shippingPolicyQuote: item.shippingPolicyQuote,
+          shippingAllocatedCostSats: item.shippingAllocatedCostSats,
           sourceShippingCost: item.sourceShippingCost,
           shippingOptionId: item.shippingOptionId,
           shippingOptionDTag: item.shippingOptionDTag,

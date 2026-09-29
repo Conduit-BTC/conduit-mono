@@ -1,6 +1,7 @@
 import {
   canonicalizeProductPrice,
   getProductShippingOptionAddress,
+  getMerchantShippingPolicyCoordinate,
   MAX_PRODUCT_IMAGE_CANDIDATES,
   normalizePublicMediaUrl,
   type ProductImage,
@@ -1014,6 +1015,16 @@ function getShippingProjection(product: ProductSchema) {
   }
 }
 
+// This recognizes an authoring reference only. Publication separately verifies
+// the current signed policy, currency and each product's positive weight.
+function hasMerchantShippingTableReference(product: ProductSchema): boolean {
+  return (
+    product.format === "physical" &&
+    product.shippingOptionId ===
+      getMerchantShippingPolicyCoordinate(product.pubkey)
+  )
+}
+
 function imagesMatch(
   left: ProductSchema["images"],
   right: ProductSchema["images"]
@@ -1133,10 +1144,12 @@ export function getProductVariationFormState<
     const variationShippingIntent =
       resolvePublishedProductFulfillmentIntentForTarget(variation.product)
     const inheritShipping =
-      parentShippingIntent !== null &&
-      variationShippingIntent !== null &&
-      JSON.stringify(variationShippingIntent) ===
-        JSON.stringify(parentShippingIntent)
+      (hasMerchantShippingTableReference(parent.product) &&
+        hasMerchantShippingTableReference(variation.product)) ||
+      (parentShippingIntent !== null &&
+        variationShippingIntent !== null &&
+        JSON.stringify(variationShippingIntent) ===
+          JSON.stringify(parentShippingIntent))
     const shippingAmount =
       variation.product.sourceShippingCost?.amount ??
       variation.product.shippingCostSats
@@ -1166,7 +1179,8 @@ export function getProductVariationFormState<
             : formatProductAmountInput(shippingAmount),
         inheritShipping,
         ...(variation.product.shippingOptionId &&
-        variationShippingIntent === null
+        variationShippingIntent === null &&
+        !hasMerchantShippingTableReference(variation.product)
           ? { shippingResolution: "unresolved" as const }
           : {}),
       })
@@ -1442,6 +1456,8 @@ function buildVariationProduct(
     }
   } else if (row.inheritShipping) {
     product = copyShippingProjection(product, getShippingProjection(parent))
+    product.shippingWeightGrams = parent.shippingWeightGrams
+    product.shippingDimensionsCm = parent.shippingDimensionsCm
   } else if (row.shippingCost.trim()) {
     const amount = parsePlainDecimalAmount(
       row.shippingCost,
@@ -1722,7 +1738,8 @@ export function buildProductFamilyChangePlan<
       desiredDTags.has(dTag) &&
       !safeReplacementShippingDTags.has(dTag) &&
       !!product.shippingOptionId &&
-      resolvePublishedProductFulfillmentIntentForTarget(product) === null
+      resolvePublishedProductFulfillmentIntentForTarget(product) === null &&
+      !hasMerchantShippingTableReference(product)
   )
   if (unresolvedExistingShipping) {
     throw new Error(

@@ -48,6 +48,7 @@ export async function authorizeCurrentCheckoutItems(input: {
   rawItems: readonly CartItem[]
   refreshedProducts: readonly Product[]
   readShippingOptions: CheckoutShippingOptionReader
+  destination?: { country: string; subdivision?: string; postalCode?: string }
   rateInput?: PricingRateInput
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
@@ -118,7 +119,11 @@ export async function authorizeCurrentCheckoutItems(input: {
       items: prepareCartFulfillment(refreshedRawItems, []).items,
     }
   }
-  const prepared = prepareCartFulfillment(refreshedRawItems, shippingOptions)
+  const prepared = prepareCartFulfillment(
+    refreshedRawItems,
+    shippingOptions,
+    input.destination
+  )
 
   if (
     getCartCommerceFingerprint(prepared.items) !==

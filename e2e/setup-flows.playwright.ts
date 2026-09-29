@@ -830,8 +830,13 @@ test("merchant shipping country combobox supports search and selection @merchant
   await page.setViewportSize({ width: 375, height: 667 })
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
   await page.goto(`${merchantUrl}/shipping`)
+  await page
+    .getByText("Listing area and fixed-shipping defaults", { exact: true })
+    .click()
 
-  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Shipping", exact: true })
+  ).toBeVisible()
 
   const countryPicker = page.getByRole("combobox", {
     name: "Search countries to add...",
@@ -854,7 +859,7 @@ test("merchant shipping country combobox supports search and selection @merchant
   await countryPicker.fill("")
   await expect(page.getByRole("option").first()).toContainText("Åland Islands")
 
-  await page.getByRole("heading", { name: "Shipping" }).click()
+  await page.getByRole("heading", { name: "Shipping", exact: true }).click()
   const trailingTriggerSize = await countryPickerTrigger.evaluate(
     (element) => ({
       width: element.clientWidth,
@@ -892,7 +897,12 @@ test("merchant ships from settings sync and default a new listing @merchant", as
       requestedPlaces.push(new URL(request.url()).pathname)
   })
   await page.goto(`${merchantUrl}/shipping`)
-  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await page
+    .getByText("Listing area and fixed-shipping defaults", { exact: true })
+    .click()
+  await expect(
+    page.getByRole("heading", { name: "Shipping", exact: true })
+  ).toBeVisible()
 
   const country = page.getByRole("combobox", {
     name: "Search countries",
@@ -1001,6 +1011,9 @@ test("merchant ships from settings sync and default a new listing @merchant", as
     pubkey
   )
   await page.reload()
+  await page
+    .getByText("Listing area and fixed-shipping defaults", { exact: true })
+    .click()
   await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible({
     timeout: 20_000,
   })

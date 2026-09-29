@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { AlertCircle } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -11,7 +10,8 @@ import {
   type MerchantShippingReadResult,
   type MerchantShippingSettings,
 } from "@conduit/core"
-import { Badge, Button, SignedActionStatus } from "@conduit/ui"
+import { Button, SignedActionStatus } from "@conduit/ui"
+import { MerchantShippingPolicyEditor } from "../components/MerchantShippingPolicyEditor"
 import { ListingAreaPicker } from "../components/ListingAreaPicker"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { resolveListingArea } from "../lib/listingArea"
@@ -20,7 +20,6 @@ import {
   getStoredShippingConfigRaw,
   loadShippingConfig,
   saveShippingConfig,
-  isShippingComplete,
   serializeShippingConfig,
   shippingOptionToConfig,
   selectConduitShippingOption,
@@ -107,7 +106,6 @@ function ShippingPage() {
     staleTime: 60_000,
   })
 
-  const complete = isShippingComplete(config)
   const summary = buildSummary(config.countries)
   const hasUnsavedChanges = useMemo(
     () =>
@@ -254,189 +252,157 @@ function ShippingPage() {
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
       <div className="mx-auto max-w-[50rem]">
-        <section className="rounded-[2.25rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] bg-[image:radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_40%)] p-5 shadow-[var(--shadow-dialog)] sm:p-8">
+        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
           <div className="space-y-8">
             {/* Header */}
             <div className="space-y-5">
               <div>
-                <h1 className="text-balance font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+                <h1 className="text-balance font-display text-4xl font-semibold text-[var(--text-primary)] sm:text-5xl">
                   Shipping
                 </h1>
-                {(hasUnsavedChanges ||
-                  needsRelaySync ||
-                  saveState.status === "saved" ||
-                  signedSettingsQuery.isFetching ||
-                  signedSettingsQuery.isError ||
-                  signedSettingsQuery.data?.state === "unavailable" ||
-                  remoteShippingQuery.isFetching) && (
-                  <div className="mt-4 flex flex-wrap items-center gap-2">
-                    {hasUnsavedChanges || needsRelaySync ? (
-                      <Badge variant="warning">Unsaved changes</Badge>
-                    ) : saveState.status === "saved" ? (
-                      <Badge variant="success">Saved</Badge>
-                    ) : null}
-                    {remoteShippingQuery.isFetching && (
-                      <Badge variant="outline">
-                        Checking legacy published settings
-                      </Badge>
-                    )}
-                    {signedSettingsQuery.isFetching && (
-                      <Badge variant="outline">Checking signed settings</Badge>
-                    )}
-                    {(signedSettingsQuery.isError ||
-                      signedSettingsQuery.data?.state === "unavailable") && (
-                      <Badge variant="warning">
-                        Signed settings unavailable
-                      </Badge>
-                    )}
-                  </div>
-                )}
                 <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
-                  Save your ships from area and destination presets to relays.
-                  New products use these defaults; each fixed product still
-                  publishes its own priced shipping option.
+                  Set rates once, then use them on your physical products.
+                  Buyers calculate combined shipping privately at checkout.
                 </p>
               </div>
-
-              {!complete && (
-                <div className="flex items-start gap-3 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
-                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
-                  <p className="text-sm text-[var(--warning)]">
-                    <span className="font-semibold">
-                      No shipping destinations set.
-                    </span>{" "}
-                    Add at least one country to indicate where you can ship
-                    orders.
-                  </p>
-                </div>
-              )}
             </div>
 
-            {/* Form */}
-            <form onSubmit={handleSave} className="space-y-8">
-              <section className="space-y-3">
-                <ListingAreaPicker
-                  label="Ships from (optional)"
-                  helpText="Choose a nearby town as a coarse public area. This is not your exact position or a pickup promise. Future products use it by default."
-                  publicAreaPrefix="Public ships from area"
-                  countryCode={areaCountry}
-                  stateCode={areaState}
-                  placeId={areaPlaceId}
-                  preservedLocation={config.shipsFrom?.location}
-                  onCountryChange={(code) => {
-                    ++selectionGeneration.current
-                    setResolvingArea(false)
-                    setAreaCountry(code)
-                    setAreaState("")
-                    setAreaPlaceId(null)
-                    setConfig((current) => ({ ...current, shipsFrom: null }))
-                  }}
-                  onStateChange={(code) => {
-                    ++selectionGeneration.current
-                    setResolvingArea(false)
-                    setAreaState(code)
-                    setAreaPlaceId(null)
-                    setConfig((current) => ({ ...current, shipsFrom: null }))
-                  }}
-                  onPlaceChange={(id) => void selectAreaPlace(id)}
-                  onClear={() => {
-                    ++selectionGeneration.current
-                    setResolvingArea(false)
-                    setAreaPlaceId(null)
-                    setConfig((current) => ({ ...current, shipsFrom: null }))
-                  }}
-                />
-                <p className="text-xs text-[var(--text-muted)]">
-                  These settings are signed and stored on relays. The area and
-                  destination rules may be publicly readable. Do not enter an
-                  address or exact location.
-                </p>
-              </section>
-              <section className="space-y-4">
-                <div>
-                  <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
-                    DESTINATIONS
+            <MerchantShippingPolicyEditor key={pubkey ?? "none"} />
+            <details className="rounded-2xl border border-[var(--border)] p-4 sm:p-5">
+              <summary className="cursor-pointer text-balance font-semibold">
+                Listing area and fixed-shipping defaults
+              </summary>
+              <p className="my-4 text-pretty text-sm text-[var(--text-secondary)]">
+                Use these defaults for the public area on future listings and
+                the destinations of fixed-price shipping products.
+              </p>
+              <form onSubmit={handleSave} className="space-y-8">
+                <section className="space-y-3">
+                  <ListingAreaPicker
+                    label="Ships from (optional)"
+                    helpText="Choose a nearby town as a coarse public area. This is not your exact position or a pickup promise. Future products use it by default."
+                    publicAreaPrefix="Public ships from area"
+                    countryCode={areaCountry}
+                    stateCode={areaState}
+                    placeId={areaPlaceId}
+                    preservedLocation={config.shipsFrom?.location}
+                    onCountryChange={(code) => {
+                      ++selectionGeneration.current
+                      setResolvingArea(false)
+                      setAreaCountry(code)
+                      setAreaState("")
+                      setAreaPlaceId(null)
+                      setConfig((current) => ({ ...current, shipsFrom: null }))
+                    }}
+                    onStateChange={(code) => {
+                      ++selectionGeneration.current
+                      setResolvingArea(false)
+                      setAreaState(code)
+                      setAreaPlaceId(null)
+                      setConfig((current) => ({ ...current, shipsFrom: null }))
+                    }}
+                    onPlaceChange={(id) => void selectAreaPlace(id)}
+                    onClear={() => {
+                      ++selectionGeneration.current
+                      setResolvingArea(false)
+                      setAreaPlaceId(null)
+                      setConfig((current) => ({ ...current, shipsFrom: null }))
+                    }}
+                  />
+                  <p className="text-xs text-[var(--text-muted)]">
+                    These settings are signed and stored on relays. The area and
+                    destination rules may be publicly readable. Do not enter an
+                    address or exact location.
+                  </p>
+                </section>
+                <section className="space-y-4">
+                  <div>
+                    <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
+                      DESTINATIONS
+                    </div>
+                    <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
+                      Countries you ship to. Postal restrictions require
+                      order-first coordination.
+                    </div>
                   </div>
-                  <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
-                    Countries you ship to. Postal restrictions require
-                    order-first coordination.
+
+                  <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+                    <div className="space-y-4">
+                      <ShippingDestinationsEditor
+                        config={config}
+                        onChange={(updated) => {
+                          setConfig((current) => ({
+                            ...current,
+                            countries: updated.countries,
+                          }))
+                          setSaveState({ status: "idle" })
+                        }}
+                      />
+
+                      {/* Plain-language summary */}
+                      {config.countries.length > 0 && (
+                        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+                          <p className="text-xs font-medium text-[var(--text-secondary)] mb-1">
+                            Summary
+                          </p>
+                          <p className="text-sm text-[var(--text-primary)]">
+                            {summary}
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
+                </section>
 
-                <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
-                  <div className="space-y-4">
-                    <ShippingDestinationsEditor
-                      config={config}
-                      onChange={(updated) => {
-                        setConfig((current) => ({
-                          ...current,
-                          countries: updated.countries,
-                        }))
-                        setSaveState({ status: "idle" })
-                      }}
-                    />
-
-                    {/* Plain-language summary */}
-                    {config.countries.length > 0 && (
-                      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
-                        <p className="text-xs font-medium text-[var(--text-secondary)] mb-1">
-                          Summary
-                        </p>
-                        <p className="text-sm text-[var(--text-primary)]">
-                          {summary}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </section>
-
-              <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-                <Button
-                  type="submit"
-                  disabled={
-                    !pubkey ||
-                    authStatus !== "connected" ||
-                    (!hasUnsavedChanges && !needsRelaySync) ||
-                    saving ||
-                    resolvingArea ||
-                    signedSettingsQuery.isLoading
-                  }
-                >
-                  Save changes
-                </Button>
-                <SignedActionStatus
-                  state={
-                    saveState.status === "error"
-                      ? "error"
-                      : hasUnsavedChanges || needsRelaySync
-                        ? "dirty"
-                        : saveState.status === "saved"
-                          ? "success"
-                          : "idle"
-                  }
-                  dirtyMessage="Save changes to publish your shipping defaults."
-                  successMessage={
-                    saveState.status === "saved" && saveState.message
-                      ? saveState.message
-                      : "Shipping settings published to relays."
-                  }
-                  errorMessage={
-                    saveState.status === "error" ? saveState.message : undefined
-                  }
-                />
-                {(signedSettingsQuery.isError ||
-                  signedSettingsQuery.data?.state === "unavailable") && (
+                <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
                   <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => void signedSettingsQuery.refetch()}
+                    type="submit"
+                    disabled={
+                      !pubkey ||
+                      authStatus !== "connected" ||
+                      (!hasUnsavedChanges && !needsRelaySync) ||
+                      saving ||
+                      resolvingArea ||
+                      signedSettingsQuery.isLoading
+                    }
                   >
-                    Retry relay read
+                    Save changes
                   </Button>
-                )}
-              </div>
-            </form>
+                  <SignedActionStatus
+                    state={
+                      saveState.status === "error"
+                        ? "error"
+                        : hasUnsavedChanges || needsRelaySync
+                          ? "dirty"
+                          : saveState.status === "saved"
+                            ? "success"
+                            : "idle"
+                    }
+                    dirtyMessage="Save changes to publish your shipping defaults."
+                    successMessage={
+                      saveState.status === "saved" && saveState.message
+                        ? saveState.message
+                        : "Shipping settings published to relays."
+                    }
+                    errorMessage={
+                      saveState.status === "error"
+                        ? saveState.message
+                        : undefined
+                    }
+                  />
+                  {(signedSettingsQuery.isError ||
+                    signedSettingsQuery.data?.state === "unavailable") && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => void signedSettingsQuery.refetch()}
+                    >
+                      Retry relay read
+                    </Button>
+                  )}
+                </div>
+              </form>
+            </details>
           </div>
         </section>
       </div>

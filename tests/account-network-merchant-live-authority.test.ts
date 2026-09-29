@@ -38,7 +38,7 @@ describe("Merchant live account authority", () => {
       /!signal\.aborted &&\s+!!pubkey &&\s+isCurrentOrderOwner\(pubkey, authGeneration\)/g
     expect(dashboard.match(generationGuard)).toHaveLength(1)
     expect(orders.match(orderGenerationGuard)).toHaveLength(2)
-    expect(products.match(generationGuard)).toHaveLength(5)
+    expect(products.match(generationGuard)).toHaveLength(6)
     expect(
       events.match(/!signal\.aborted && shouldContinue\(\)/g)
     ).toHaveLength(1)
@@ -49,7 +49,7 @@ describe("Merchant live account authority", () => {
     ).toHaveLength(4)
     expect(eventTimeline.match(generationGuard)).toHaveLength(5)
     expect(shipping.match(generationGuard)).toHaveLength(1)
-    expect(readiness.match(generationGuard)).toHaveLength(1)
+    expect(readiness.match(generationGuard)).toHaveLength(2)
   })
 
   it("binds every authenticated Merchant profile and trust read to that generation", async () => {

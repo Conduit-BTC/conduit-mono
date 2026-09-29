@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Plus, Search } from "lucide-react"
 import {
   EVENT_KINDS,
   fetchMerchantShippingSettings,
+  fetchMerchantShippingPolicy,
+  getMerchantShippingPolicyCoordinate,
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   buildProductDeletionEventDraft,
@@ -71,6 +73,8 @@ import { ProductInboxReadinessDialog } from "../components/ProductInboxReadiness
 import { ProductPaymentSetupNotice } from "../components/ProductPaymentSetupNotice"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
+import { ProductShippingMeasurements } from "../components/ProductShippingMeasurements"
+import { getProductShippingMeasurements } from "../lib/shippingPolicyForm"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import {
   getListingAreaForPublication,
@@ -273,7 +277,8 @@ function getShareableProductUrl(
 
 function createEmptyProductForm(
   usePresetShippingZone = true,
-  shipsFrom: ShippingConfig["shipsFrom"] = null
+  shipsFrom: ShippingConfig["shipsFrom"] = null,
+  shippingPolicy: { currency: string } | null = null
 ): ProductFormState {
   return {
     title: "",
@@ -286,7 +291,7 @@ function createEmptyProductForm(
     price: "0",
     stock: "",
     variations: createEmptyProductVariationForm(),
-    currency: "USD",
+    currency: shippingPolicy?.currency ?? "USD",
     format: "physical",
     fulfillment: "ship",
     eventMarketReference: "",
@@ -295,8 +300,12 @@ function createEmptyProductForm(
     merchantPickupLocation: "",
     merchantPickupGeohash: "",
     merchantPickupCountry: "US",
-    shippingPricingMode: "fixed",
+    shippingPricingMode: shippingPolicy ? "weight_table" : "fixed",
     shippingCost: "",
+    shippingWeightGrams: "",
+    shippingLengthCm: "",
+    shippingWidthCm: "",
+    shippingHeightCm: "",
     usePresetShippingZone,
     customShippingConfig: { countries: [] },
     publicZapEnabled: true,
@@ -403,7 +412,24 @@ function productToForm(
     variations: family.variationForm.state,
     currency,
     format: product.format,
-    shippingPricingMode: getProductShippingPricingMode(product),
+    shippingPricingMode:
+      product.shippingOptionId ===
+      getMerchantShippingPolicyCoordinate(product.pubkey)
+        ? "weight_table"
+        : getProductShippingPricingMode(product),
+    shippingWeightGrams:
+      product.shippingWeightGrams === undefined
+        ? ""
+        : String(product.shippingWeightGrams),
+    shippingLengthCm: product.shippingDimensionsCm
+      ? String(product.shippingDimensionsCm.length)
+      : "",
+    shippingWidthCm: product.shippingDimensionsCm
+      ? String(product.shippingDimensionsCm.width)
+      : "",
+    shippingHeightCm: product.shippingDimensionsCm
+      ? String(product.shippingDimensionsCm.height)
+      : "",
     fulfillment: "preserve",
     eventMarketReference: product.collectionRefs?.[0] ?? "",
     eventHandoffMode: "merchant_handoff",
@@ -444,7 +470,10 @@ function buildShippingMetadata(
     : form.customShippingConfig
   const intent = compileProductFulfillmentIntent({
     format: form.format,
-    shippingPricingMode: form.shippingPricingMode,
+    shippingPricingMode:
+      form.shippingPricingMode === "weight_table"
+        ? "coordinate_after_order"
+        : form.shippingPricingMode,
     amount:
       form.format === "physical" && form.shippingPricingMode === "fixed"
         ? parsePlainDecimalAmount(form.shippingCost, "Shipping")
@@ -848,6 +877,7 @@ async function publishProduct(
       hasPresetShippingZone: isShippingComplete(presetShippingConfig),
       presetShippingConfig,
       preserveExistingFulfillment: preserveFulfillment,
+      skipShippingMeasurements: localPickup,
       allowZeroPrice:
         (preserveFulfillment &&
           !!existing &&
@@ -901,7 +931,38 @@ async function publishProduct(
             authoringCountries: [] as string[],
             metadata: {},
           }
-        : buildShippingMetadata(signerPubkey, dTag, form, presetShippingConfig)
+        : form.shippingPricingMode === "weight_table"
+          ? await (async () => {
+              const read = await fetchMerchantShippingPolicy(signerPubkey, {
+                accountPubkey: signerPubkey,
+                authenticatedPubkey,
+                shouldContinue,
+              })
+              if (read.state !== "found")
+                throw new Error(
+                  "Publish your shipping table before assigning it to a product."
+                )
+              if (read.policy.currency !== currency)
+                throw new Error(
+                  "This product must use the same currency as your shipping table."
+                )
+              return {
+                intent: {
+                  kind: "weight_table" as const,
+                  policyCoordinate:
+                    getMerchantShippingPolicyCoordinate(signerPubkey),
+                  policyEventId: read.revision.eventId,
+                },
+                authoringCountries: [],
+                metadata: {},
+              }
+            })()
+          : buildShippingMetadata(
+              signerPubkey,
+              dTag,
+              form,
+              presetShippingConfig
+            )
   let shippingMetadata: Pick<
     ProductSchema,
     | "shippingOptionId"
@@ -1010,6 +1071,7 @@ async function publishProduct(
     parentProductId: undefined,
     specifications: [],
     format: isDigital ? "digital" : "physical",
+    ...(!isDigital && !localPickup ? getProductShippingMeasurements(form) : {}),
     ...shippingCost,
     ...shippingMetadata,
     visibility: localPickup ? "private" : "public",
@@ -1487,6 +1549,19 @@ function ProductsPage() {
     staleTime: 30_000,
   })
   const shippingConfig = loadShippingConfig(accountPubkey)
+  const signedPolicyQuery = useQuery({
+    queryKey: ["merchant-shipping-policy", accountPubkey ?? "none"],
+    enabled: !!accountPubkey && authStatus === "connected",
+    queryFn: ({ signal }) =>
+      fetchMerchantShippingPolicy(accountPubkey!, {
+        accountPubkey,
+        authenticatedPubkey: accountPubkey,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+      }),
+    staleTime: 30_000,
+  })
   const signedShippingQuery = useQuery({
     queryKey: ["merchant-shipping-settings", accountPubkey ?? "none"],
     enabled: !!accountPubkey && authStatus === "connected",
@@ -1646,7 +1721,10 @@ function ProductsPage() {
     setForm(
       createEmptyProductForm(
         hasPresetShippingZone,
-        effectiveShippingConfig.shipsFrom
+        effectiveShippingConfig.shipsFrom,
+        signedPolicyQuery.data?.state === "found"
+          ? signedPolicyQuery.data.policy
+          : null
       )
     )
     setProductDialogOpen(false)
@@ -1913,7 +1991,10 @@ function ProductsPage() {
           setForm(
             createEmptyProductForm(
               hasPresetShippingZone,
-              effectiveShippingConfig.shipsFrom
+              effectiveShippingConfig.shipsFrom,
+              signedPolicyQuery.data?.state === "found"
+                ? signedPolicyQuery.data.policy
+                : null
             )
           )
           setDraftStorageAvailable(draftCleared && authoringCleared)
@@ -2063,9 +2144,17 @@ function ProductsPage() {
         ? productToForm(editing, hasPresetShippingZone)
         : createEmptyProductForm(
             hasPresetShippingZone,
-            effectiveShippingConfig.shipsFrom
+            effectiveShippingConfig.shipsFrom,
+            signedPolicyQuery.data?.state === "found"
+              ? signedPolicyQuery.data.policy
+              : null
           ),
-    [editing, hasPresetShippingZone, effectiveShippingConfig.shipsFrom]
+    [
+      editing,
+      hasPresetShippingZone,
+      effectiveShippingConfig.shipsFrom,
+      signedPolicyQuery.data,
+    ]
   )
   const hasProductChanges = useMemo(
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
@@ -2088,7 +2177,10 @@ function ProductsPage() {
     setForm(
       createEmptyProductForm(
         hasPresetShippingZone,
-        effectiveShippingConfig.shipsFrom
+        effectiveShippingConfig.shipsFrom,
+        signedPolicyQuery.data?.state === "found"
+          ? signedPolicyQuery.data.policy
+          : null
       )
     )
     setDraftContinuationError(null)
@@ -2097,7 +2189,12 @@ function ProductsPage() {
     setProductDeliveryNotice(null)
     setProductDeliveryRetry(null)
     setSignerRestoredForDraft(false)
-  }, [accountPubkey, hasPresetShippingZone, effectiveShippingConfig.shipsFrom])
+  }, [
+    accountPubkey,
+    hasPresetShippingZone,
+    effectiveShippingConfig.shipsFrom,
+    signedPolicyQuery.data,
+  ])
   useEffect(() => {
     if (!productDialogOpen || !activeProductDraftTarget) return
     if (
@@ -2183,8 +2280,16 @@ function ProductsPage() {
       : organizerInboxQuery.data?.state === "ready"
         ? ("ready" as const)
         : ("unavailable" as const)
+  const productTableError =
+    form.fulfillment === "ship" && form.shippingPricingMode === "weight_table"
+      ? signedPolicyQuery.data?.state !== "found"
+        ? "Publish your shipping table on the Shipping page first."
+        : signedPolicyQuery.data.policy.currency !== form.currency
+          ? "Use the shipping table currency for this product, or choose another shipping method."
+          : null
+      : null
   const productFulfillmentError =
-    localPickupEvidenceError ?? merchantBoothPickupError
+    localPickupEvidenceError ?? merchantBoothPickupError ?? productTableError
   const preservingFulfillment = !!editing && form.fulfillment === "preserve"
   const zeroPriceFormAuthorized =
     (preservingFulfillment &&
@@ -2207,6 +2312,7 @@ function ProductsPage() {
         presetShippingConfig: effectiveShippingConfig,
         allowZeroPrice: zeroPriceFormAuthorized,
         preserveExistingFulfillment: preservingFulfillment,
+        skipShippingMeasurements: form.fulfillment === "local_pickup",
       }
     )
     return productFulfillmentError
@@ -2498,7 +2604,10 @@ function ProductsPage() {
     setForm(
       createEmptyProductForm(
         hasPresetShippingZone,
-        effectiveShippingConfig.shipsFrom
+        effectiveShippingConfig.shipsFrom,
+        signedPolicyQuery.data?.state === "found"
+          ? signedPolicyQuery.data.policy
+          : null
       )
     )
     if (discardingCreateDraft) setHasResumableCreateDraft(false)
@@ -2532,7 +2641,12 @@ function ProductsPage() {
   }
 
   function openCreateDialog(): void {
-    if (authStatus !== "connected" || signedShippingQuery.isLoading) return
+    if (
+      authStatus !== "connected" ||
+      signedShippingQuery.isLoading ||
+      signedPolicyQuery.isLoading
+    )
+      return
     rememberProductDialogTrigger()
     if (accountPubkey) clearProductDraftReturnIntent(accountPubkey)
     focusProductTitleOnOpenRef.current = false
@@ -2557,7 +2671,10 @@ function ProductsPage() {
     }
     const emptyForm = createEmptyProductForm(
       hasPresetShippingZone,
-      effectiveShippingConfig.shipsFrom
+      effectiveShippingConfig.shipsFrom,
+      signedPolicyQuery.data?.state === "found"
+        ? signedPolicyQuery.data.policy
+        : null
     )
     const draftTarget = accountPubkey
       ? getProductDraftTarget(accountPubkey)
@@ -2741,7 +2858,8 @@ function ProductsPage() {
             disabled={
               !accountPubkey ||
               authStatus !== "connected" ||
-              signedShippingQuery.isLoading
+              signedShippingQuery.isLoading ||
+              signedPolicyQuery.isLoading
             }
           >
             <Plus className="h-4 w-4" />
@@ -2950,7 +3068,8 @@ function ProductsPage() {
                 disabled={
                   !accountPubkey ||
                   authStatus !== "connected" ||
-                  signedShippingQuery.isLoading
+                  signedShippingQuery.isLoading ||
+                  signedPolicyQuery.isLoading
                 }
               >
                 <Plus className="h-4 w-4" />
@@ -3480,50 +3599,53 @@ function ProductsPage() {
                     Keep existing fulfillment
                   </Button>
                 )}
-                {!preservingFulfillment && (
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="product-shipping">
-                      Shipping ({getProductShippingCurrencyLabel(form.currency)}
-                      )
-                    </Label>
-                    <Input
-                      id="product-shipping"
-                      type="text"
-                      inputMode={getProductAmountInputMode(form.currency)}
-                      autoComplete="off"
-                      className="tabular-nums"
-                      value={
-                        form.fulfillment === "ship" &&
-                        !productCoordinatesShipping
-                          ? form.shippingCost
-                          : ""
-                      }
-                      disabled={
-                        productIsDigital ||
-                        productIsLocalPickup ||
-                        productCoordinatesShipping
-                      }
-                      aria-invalid={!!productFormValidation.errors.shippingCost}
-                      aria-describedby="product-shipping-help"
-                      onChange={(event) => {
-                        if (!isPlainDecimalInput(event.target.value)) return
-                        setForm((prev) => ({
-                          ...prev,
-                          shippingCost: event.target.value,
-                        }))
-                      }}
-                      placeholder={
-                        productIsDigital
-                          ? "Not required"
-                          : productIsLocalPickup
-                            ? "Set by event pickup"
-                            : productCoordinatesShipping
-                              ? "Set after order"
-                              : "0 or fixed amount"
-                      }
-                    />
-                  </div>
-                )}
+                {!preservingFulfillment &&
+                  form.shippingPricingMode !== "weight_table" && (
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="product-shipping">
+                        Shipping (
+                        {getProductShippingCurrencyLabel(form.currency)})
+                      </Label>
+                      <Input
+                        id="product-shipping"
+                        type="text"
+                        inputMode={getProductAmountInputMode(form.currency)}
+                        autoComplete="off"
+                        className="tabular-nums"
+                        value={
+                          form.fulfillment === "ship" &&
+                          !productCoordinatesShipping
+                            ? form.shippingCost
+                            : ""
+                        }
+                        disabled={
+                          productIsDigital ||
+                          productIsLocalPickup ||
+                          productCoordinatesShipping
+                        }
+                        aria-invalid={
+                          !!productFormValidation.errors.shippingCost
+                        }
+                        aria-describedby="product-shipping-help"
+                        onChange={(event) => {
+                          if (!isPlainDecimalInput(event.target.value)) return
+                          setForm((prev) => ({
+                            ...prev,
+                            shippingCost: event.target.value,
+                          }))
+                        }}
+                        placeholder={
+                          productIsDigital
+                            ? "Not required"
+                            : productIsLocalPickup
+                              ? "Set by event pickup"
+                              : productCoordinatesShipping
+                                ? "Set after order"
+                                : "0 or fixed amount"
+                        }
+                      />
+                    </div>
+                  )}
                 <div className="grid gap-1.5 sm:col-span-2">
                   <Label htmlFor="product-stock">
                     {form.variations.enabled
@@ -3571,159 +3693,222 @@ function ProductsPage() {
                     {productFormValidation.errors.price}
                   </p>
                 )}
-                {!preservingFulfillment && (
-                  <>
-                    <div
-                      id="product-shipping-help"
-                      className={cn(
-                        "text-pretty text-xs leading-5 sm:col-span-4",
-                        productFormValidation.errors.shippingCost
-                          ? "text-error"
-                          : "text-[var(--text-muted)]"
-                      )}
-                    >
-                      {productFormValidation.errors.shippingCost ??
-                        (productIsLocalPickup
-                          ? "Pickup cost comes from the verified organizer option."
-                          : getProductShippingCostHelpText(
-                              form.shippingCost,
-                              form.format,
-                              form.currency,
-                              form.shippingPricingMode
-                            ))}
-                    </div>
-                    <label
-                      className={cn(
-                        "flex items-start gap-3 rounded-xl border p-3 text-sm sm:col-span-4",
-                        productIsDigital || productIsLocalPickup
-                          ? "cursor-not-allowed border-dashed border-[var(--border)] bg-[var(--surface-elevated)] opacity-60"
-                          : "cursor-pointer",
-                        productCoordinatesShipping
-                          ? "border-warning/40 bg-warning/10"
-                          : "border-[var(--border)] bg-[var(--surface-elevated)]"
-                      )}
-                      aria-disabled={productIsDigital || productIsLocalPickup}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={productCoordinatesShipping}
-                        disabled={productIsDigital || productIsLocalPickup}
-                        aria-labelledby="product-coordinate-shipping-label"
-                        aria-describedby="product-coordinate-shipping-help"
-                        onChange={(event) =>
-                          setForm((prev) => ({
-                            ...prev,
-                            shippingPricingMode: event.target.checked
-                              ? "coordinate_after_order"
-                              : "fixed",
-                          }))
-                        }
-                        className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
-                      />
-                      <span className="grid gap-1">
-                        <span
-                          id="product-coordinate-shipping-label"
-                          className="font-medium text-[var(--text-primary)]"
-                        >
-                          Coordinate shipping with the buyer after the order
-                        </span>
-                        <span
-                          id="product-coordinate-shipping-help"
-                          className={cn(
-                            "text-pretty text-xs leading-5",
-                            productCoordinatesShipping
-                              ? "text-warning"
-                              : "text-[var(--text-muted)]"
-                          )}
-                        >
-                          {productIsDigital
-                            ? "Digital products do not need shipping coordination."
-                            : productIsLocalPickup
-                              ? "Local pickup uses the organizer's signed public option."
-                              : "Only choose this if you cannot set a checkout amount. Fast checkout will be unavailable, and you’ll need to follow up on every order message before the buyer can pay."}
-                        </span>
-                      </span>
-                    </label>
-                    <label
-                      className={cn(
-                        "flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4",
-                        presetShippingZoneUnavailable
-                          ? "cursor-not-allowed border-dashed opacity-60"
-                          : "cursor-pointer"
-                      )}
-                      aria-disabled={presetShippingZoneUnavailable}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={
-                          !productIsDigital &&
-                          !productIsLocalPickup &&
-                          !productCoordinatesShipping &&
-                          hasPresetShippingZone &&
-                          form.usePresetShippingZone
-                        }
-                        disabled={presetShippingZoneUnavailable}
-                        aria-describedby="product-preset-shipping-help"
-                        onChange={(event) =>
-                          setForm((prev) => ({
-                            ...prev,
-                            usePresetShippingZone: event.target.checked,
-                          }))
-                        }
-                        className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
-                      />
-                      <span className="grid gap-1">
-                        <span className="font-medium text-[var(--text-primary)]">
-                          Use my preset shipping zone for this product
-                        </span>
-                        <span
-                          id="product-preset-shipping-help"
-                          className="text-xs leading-5 text-[var(--text-muted)]"
-                        >
-                          {productIsDigital
-                            ? "Digital products do not need shipping zones."
-                            : productIsLocalPickup
-                              ? "Local pickup does not evaluate buyer shipping destinations."
-                              : productCoordinatesShipping
-                                ? "Shipping destinations will be agreed with the buyer after the order."
-                                : hasPresetShippingZone
-                                  ? form.usePresetShippingZone
-                                    ? "Direct checkout will use your published shipping countries and postal rules."
-                                    : "Use custom destinations for this product instead of the published preset."
-                                  : "No preset shipping zone is available. Add custom destinations for this product below."}
-                        </span>
-                      </span>
-                    </label>
-
-                    {customShippingZoneActive && (
-                      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
-                        <div className="space-y-1">
-                          <div className="text-sm font-medium text-[var(--text-primary)]">
-                            Custom shipping destinations
-                          </div>
-                          <p className="text-xs leading-5 text-[var(--text-muted)]">
-                            These destinations are emitted on this product
-                            listing only and do not change your preset Shipping
-                            tab settings.
-                          </p>
-                        </div>
-                        <div className="mt-3 max-h-[22rem] overflow-y-auto p-1">
-                          <ShippingDestinationsEditor
-                            compact
-                            config={form.customShippingConfig}
-                            emptyText="No custom destinations added yet."
-                            onChange={(customShippingConfig) =>
-                              setForm((prev) => ({
-                                ...prev,
-                                customShippingConfig,
-                              }))
-                            }
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </>
+                {form.format === "physical" && !productIsLocalPickup && (
+                  <div className="sm:col-span-4">
+                    <ProductShippingMeasurements
+                      form={form}
+                      onChange={(update) =>
+                        setForm((current) => ({ ...current, ...update }))
+                      }
+                      error={productFormValidation.errors.shippingWeight}
+                    />
+                  </div>
                 )}
+                {!preservingFulfillment &&
+                  !productIsDigital &&
+                  !productIsLocalPickup && (
+                    <div className="space-y-1.5 sm:col-span-4">
+                      <Label htmlFor="product-shipping-method">
+                        Shipping pricing
+                      </Label>
+                      <Select
+                        value={form.shippingPricingMode}
+                        onValueChange={(value) =>
+                          setForm((current) => ({
+                            ...current,
+                            shippingPricingMode:
+                              value as ProductFormState["shippingPricingMode"],
+                          }))
+                        }
+                      >
+                        <SelectTrigger id="product-shipping-method">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="weight_table">
+                            Use my shipping table
+                          </SelectItem>
+                          <SelectItem value="fixed">
+                            Fixed price per item
+                          </SelectItem>
+                          <SelectItem value="coordinate_after_order">
+                            Coordinate after the order
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {form.shippingPricingMode === "weight_table" && (
+                        <p className="text-pretty text-xs text-[var(--text-secondary)]">
+                          Products using this table share one charge based on
+                          their combined shipping weight.{" "}
+                          <Link to="/shipping" className="underline">
+                            Edit shipping rates
+                          </Link>
+                        </p>
+                      )}
+                      {productTableError && (
+                        <p
+                          role="alert"
+                          className="text-pretty text-sm text-error"
+                        >
+                          {productTableError}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                {!preservingFulfillment &&
+                  form.shippingPricingMode !== "weight_table" && (
+                    <>
+                      <div
+                        id="product-shipping-help"
+                        className={cn(
+                          "text-pretty text-xs leading-5 sm:col-span-4",
+                          productFormValidation.errors.shippingCost
+                            ? "text-error"
+                            : "text-[var(--text-muted)]"
+                        )}
+                      >
+                        {productFormValidation.errors.shippingCost ??
+                          (productIsLocalPickup
+                            ? "Pickup cost comes from the verified organizer option."
+                            : getProductShippingCostHelpText(
+                                form.shippingCost,
+                                form.format,
+                                form.currency,
+                                form.shippingPricingMode
+                              ))}
+                      </div>
+                      <label
+                        className={cn(
+                          "flex items-start gap-3 rounded-xl border p-3 text-sm sm:col-span-4",
+                          productIsDigital || productIsLocalPickup
+                            ? "cursor-not-allowed border-dashed border-[var(--border)] bg-[var(--surface-elevated)] opacity-60"
+                            : "cursor-pointer",
+                          productCoordinatesShipping
+                            ? "border-warning/40 bg-warning/10"
+                            : "border-[var(--border)] bg-[var(--surface-elevated)]"
+                        )}
+                        aria-disabled={productIsDigital || productIsLocalPickup}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={productCoordinatesShipping}
+                          disabled={productIsDigital || productIsLocalPickup}
+                          aria-labelledby="product-coordinate-shipping-label"
+                          aria-describedby="product-coordinate-shipping-help"
+                          onChange={(event) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              shippingPricingMode: event.target.checked
+                                ? "coordinate_after_order"
+                                : "fixed",
+                            }))
+                          }
+                          className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                        <span className="grid gap-1">
+                          <span
+                            id="product-coordinate-shipping-label"
+                            className="font-medium text-[var(--text-primary)]"
+                          >
+                            Coordinate shipping with the buyer after the order
+                          </span>
+                          <span
+                            id="product-coordinate-shipping-help"
+                            className={cn(
+                              "text-pretty text-xs leading-5",
+                              productCoordinatesShipping
+                                ? "text-warning"
+                                : "text-[var(--text-muted)]"
+                            )}
+                          >
+                            {productIsDigital
+                              ? "Digital products do not need shipping coordination."
+                              : productIsLocalPickup
+                                ? "Local pickup uses the organizer's signed public option."
+                                : "Only choose this if you cannot set a checkout amount. Fast checkout will be unavailable, and you’ll need to follow up on every order message before the buyer can pay."}
+                          </span>
+                        </span>
+                      </label>
+                      <label
+                        className={cn(
+                          "flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4",
+                          presetShippingZoneUnavailable
+                            ? "cursor-not-allowed border-dashed opacity-60"
+                            : "cursor-pointer"
+                        )}
+                        aria-disabled={presetShippingZoneUnavailable}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={
+                            !productIsDigital &&
+                            !productIsLocalPickup &&
+                            !productCoordinatesShipping &&
+                            hasPresetShippingZone &&
+                            form.usePresetShippingZone
+                          }
+                          disabled={presetShippingZoneUnavailable}
+                          aria-describedby="product-preset-shipping-help"
+                          onChange={(event) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              usePresetShippingZone: event.target.checked,
+                            }))
+                          }
+                          className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                        <span className="grid gap-1">
+                          <span className="font-medium text-[var(--text-primary)]">
+                            Use my preset shipping zone for this product
+                          </span>
+                          <span
+                            id="product-preset-shipping-help"
+                            className="text-xs leading-5 text-[var(--text-muted)]"
+                          >
+                            {productIsDigital
+                              ? "Digital products do not need shipping zones."
+                              : productIsLocalPickup
+                                ? "Local pickup does not evaluate buyer shipping destinations."
+                                : productCoordinatesShipping
+                                  ? "Shipping destinations will be agreed with the buyer after the order."
+                                  : hasPresetShippingZone
+                                    ? form.usePresetShippingZone
+                                      ? "Direct checkout will use your published shipping countries and postal rules."
+                                      : "Use custom destinations for this product instead of the published preset."
+                                    : "No preset shipping zone is available. Add custom destinations for this product below."}
+                          </span>
+                        </span>
+                      </label>
+
+                      {customShippingZoneActive && (
+                        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
+                          <div className="space-y-1">
+                            <div className="text-sm font-medium text-[var(--text-primary)]">
+                              Custom shipping destinations
+                            </div>
+                            <p className="text-xs leading-5 text-[var(--text-muted)]">
+                              These destinations are emitted on this product
+                              listing only and do not change your preset
+                              Shipping tab settings.
+                            </p>
+                          </div>
+                          <div className="mt-3 max-h-[22rem] overflow-y-auto p-1">
+                            <ShippingDestinationsEditor
+                              compact
+                              config={form.customShippingConfig}
+                              emptyText="No custom destinations added yet."
+                              onChange={(customShippingConfig) =>
+                                setForm((prev) => ({
+                                  ...prev,
+                                  customShippingConfig,
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
               </div>
 
               <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">

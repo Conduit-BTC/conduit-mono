@@ -20,6 +20,7 @@ import {
   type ProductFulfillmentFormat,
   type ProductShippingPricingMode,
 } from "./productPriceForm"
+import { getProductShippingMeasurements } from "./shippingPolicyForm"
 import { getProductStockInputError } from "./productStock"
 import {
   getProductVariationFormError,
@@ -57,6 +58,10 @@ export interface ProductPublishFormValues {
   format: ProductFulfillmentFormat
   shippingPricingMode: ProductShippingPricingMode
   shippingCost: string
+  shippingWeightGrams?: string
+  shippingLengthCm?: string
+  shippingWidthCm?: string
+  shippingHeightCm?: string
   usePresetShippingZone: boolean
   customShippingConfig: ShippingConfig
   images: ProductImage[]
@@ -162,6 +167,7 @@ export type ProductPublishFormField =
   | "tags"
   | "variations"
   | "shippingCost"
+  | "shippingWeight"
   | "shippingZone"
 
 export interface ProductPublishFormValidation {
@@ -280,6 +286,7 @@ function firstError(
     errors.images ??
     errors.tags ??
     errors.variations ??
+    errors.shippingWeight ??
     errors.shippingCost ??
     errors.shippingZone ??
     null
@@ -293,6 +300,7 @@ export function validateProductPublishForm(
     presetShippingConfig?: ShippingConfig
     allowZeroPrice?: boolean
     preserveExistingFulfillment?: boolean
+    skipShippingMeasurements?: boolean
   }
 ): ProductPublishFormValidation {
   const errors: Partial<Record<ProductPublishFormField, string>> = {}
@@ -321,6 +329,33 @@ export function validateProductPublishForm(
       errors,
       "price",
       error instanceof Error ? error.message : "Price must be greater than zero"
+    )
+  }
+
+  try {
+    const measurements =
+      isDigital || options.skipShippingMeasurements
+        ? {}
+        : getProductShippingMeasurements(form)
+    if (
+      !isDigital &&
+      !options.skipShippingMeasurements &&
+      form.shippingPricingMode === "weight_table" &&
+      !measurements.shippingWeightGrams
+    ) {
+      addError(
+        errors,
+        "shippingWeight",
+        "Add the shipping weight in grams to use your shipping table."
+      )
+    }
+  } catch (error) {
+    addError(
+      errors,
+      "shippingWeight",
+      error instanceof Error
+        ? error.message
+        : "Check the shipping weight and dimensions."
     )
   }
 

@@ -8,6 +8,7 @@ import {
   compileProductFulfillmentIntent,
   EVENT_KINDS,
   getEventMarketPickupsByCoordinates,
+  getMerchantShippingPolicyCoordinate,
   getNdk,
   getProductEventMarketFulfillmentClaims,
   getProductShippingOptionAddress,
@@ -470,7 +471,96 @@ function getEventPickupPreservationError(): Error {
   )
 }
 
-async function prepareProductPublicationListings(
+export async function prepareProductPublicationListings(
+  listings: readonly ProductListingPublishTarget[],
+  input: {
+    merchantPubkey: string
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+  },
+  dependencies: Pick<
+    ProductPublicationDependencies,
+    "getEventMarketPickups" | "getShippingOptions"
+  >
+): Promise<PreparedProductListingPublishTarget[]> {
+  const coordinate = getMerchantShippingPolicyCoordinate(input.merchantPubkey)
+  const isTable = (listing: ProductListingPublishTarget) =>
+    listing.fulfillmentIntent.kind === "weight_table" ||
+    (listing.fulfillmentIntent.kind === "preserve_existing" &&
+      listing.fulfillmentIntent.baseline.shippingOptionId === coordinate)
+  const tableListings = listings.filter(isTable)
+  if (!tableListings.length)
+    return prepareFixedProductPublicationListings(listings, input, dependencies)
+  const options = await dependencies.getShippingOptions([coordinate], {
+    accountPubkey: input.merchantPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+  })
+  if (input.shouldContinue?.() === false)
+    throw new Error("Product signer session changed.")
+  const option = options.find((candidate) => candidate.id === coordinate)
+  if (
+    !option?.shippingPolicy ||
+    !option.signedEvent ||
+    option.pubkey !== input.merchantPubkey ||
+    !isValidSignedPublicNostrEvent(option.signedEvent)
+  ) {
+    throw new Error(
+      "The shipping table could not be verified. Check Shipping before publishing."
+    )
+  }
+  const prepared = listings.map((listing): ProductListingPublishTarget => {
+    if (!isTable(listing)) return listing
+    const product =
+      listing.fulfillmentIntent.kind === "preserve_existing"
+        ? applyProductFulfillmentIntentForPublication({
+            product: listing.product,
+            merchantPubkey: input.merchantPubkey,
+            productDTag: listing.dTag,
+            intent: listing.fulfillmentIntent,
+          })
+        : listing.product
+    if (product.format === "digital")
+      return { ...listing, fulfillmentIntent: { kind: "digital" } }
+    if (
+      normalizeCurrencyIdentity(getProductCurrency(product)) !==
+      normalizeCurrencyIdentity(option.shippingPolicy!.currency)
+    ) {
+      throw new Error(
+        "The product currency must match the shipping table currency."
+      )
+    }
+    if (
+      !Number.isSafeInteger(product.shippingWeightGrams) ||
+      product.shippingWeightGrams! <= 0
+    ) {
+      throw new Error(
+        "Add a positive shipping weight before publishing a product with table shipping."
+      )
+    }
+    if (
+      listing.fulfillmentIntent.kind === "weight_table" &&
+      (listing.fulfillmentIntent.policyCoordinate !== coordinate ||
+        listing.fulfillmentIntent.policyEventId !== option.eventId)
+    ) {
+      throw new Error(
+        "Shipping rates changed. Review the current rates before publishing this product."
+      )
+    }
+    return {
+      ...listing,
+      product,
+      fulfillmentIntent: {
+        kind: "weight_table",
+        policyCoordinate: coordinate,
+        policyEventId: option.eventId,
+      },
+    }
+  })
+  return prepareFixedProductPublicationListings(prepared, input, dependencies)
+}
+
+async function prepareFixedProductPublicationListings(
   listings: readonly ProductListingPublishTarget[],
   input: {
     merchantPubkey: string
@@ -647,6 +737,7 @@ export function resolveProductFulfillmentIntentForTarget(input: {
     return { kind: "coordinate_after_order" }
   }
 
+  if (input.fallbackIntent.kind === "weight_table") return input.fallbackIntent
   const amount =
     input.product.sourceShippingCost?.amount ?? input.product.shippingCostSats
   if (typeof amount !== "number") return input.fallbackIntent
@@ -821,6 +912,32 @@ export function applyProductFulfillmentIntentForPublication(input: {
       }
     }
     return { ...input.product }
+  }
+  if (input.intent.kind === "weight_table") {
+    if (
+      input.intent.policyCoordinate !==
+      getMerchantShippingPolicyCoordinate(input.merchantPubkey)
+    ) {
+      throw new Error("Shipping policy must belong to this merchant.")
+    }
+    return {
+      ...input.product,
+      shippingCostSats: undefined,
+      sourceShippingCost: undefined,
+      shippingOptionId: input.intent.policyCoordinate,
+      shippingOptionDTag: "conduit-shipping-policy",
+      shippingOptionRefs: [
+        {
+          coordinate: input.intent.policyCoordinate,
+          dTag: "conduit-shipping-policy",
+        },
+      ],
+      shippingOptionLaunchUnsupported: false,
+      shippingCountries: undefined,
+      shippingCountryRules: undefined,
+      canonicalShippingResolved: false,
+      shippingOptionCreatedAt: undefined,
+    }
   }
   if (input.intent.kind !== "fixed_standard") {
     const preserveEventPickup =
