@@ -97,8 +97,10 @@ export function recordRelayFailure(url: string, now: number = nowMs()): void {
 export function recordRelayRateLimit(url: string, now: number = nowMs()): void {
   const normalized = tryNormalize(url)
   if (!normalized) return
-  recordRelayFailure(normalized, now)
   const record = ensureRecord(normalized)
+  // Concurrent subscriptions can each receive CLOSED for one throttle burst.
+  // Track that burst separately from repeated connection failures.
+  record.lastFailureAt = now
   record.rateLimitUntil = now + 60_000
 }
 

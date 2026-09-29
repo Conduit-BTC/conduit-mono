@@ -428,6 +428,10 @@ export function MarketHeader({
     catalogSource: routeCatalogSource,
     enabled: searchSuggestionsEnabled,
     isBrowseRoute,
+    pageSuppliesCatalog:
+      isBrowseRoute ||
+      pathname === "/merchants" ||
+      (pathname === "/cart" && cart.items.length > 0),
     listboxId: SEARCH_SUGGESTIONS_LISTBOX_ID,
     merchantFilter: search.merchant,
     onSelect: handleSuggestionSelected,

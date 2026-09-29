@@ -6,7 +6,9 @@ import {
 } from "../packages/core/src/protocol/ndk"
 import {
   __resetRelayHealth,
+  getRelayHealth,
   isRelayRateLimited,
+  partitionByHealth,
   recordRelayRateLimit,
   recordRelaySuccess,
 } from "../packages/core/src/protocol/relay-health"
@@ -152,6 +154,30 @@ it("resumes reads after the throttle window expires", async () => {
   onRequest = (socket, id) => queueMicrotask(() => socket.emit(["EOSE", id]))
   expect((await read()).relays[0]?.status).toBe("success")
   expect(requests).toHaveLength(1)
+})
+
+it("does not extend generic cooldown when every active subscription receives throttle CLOSED", async () => {
+  onRequest = (socket) => {
+    if (requests.length === 8)
+      queueMicrotask(() => {
+        for (const id of requests)
+          socket.emit(["CLOSED", id, "rate-limited: subscription budget"])
+      })
+  }
+  const results = await Promise.all(Array.from({ length: 8 }, read))
+  expect(requests).toHaveLength(8)
+  expect(
+    results.every(
+      (result) => result.relays[0]?.failureReason === "rate_limited"
+    )
+  ).toBe(true)
+  const health = getRelayHealth(relay)!
+  expect(health.consecutiveFailures).toBe(0)
+  expect(health.cooldownUntil).toBeNull()
+  expect(partitionByHealth([relay], health.rateLimitUntil!)).toEqual({
+    healthy: [relay],
+    parked: [],
+  })
 })
 
 it("ignores informational NOTICE frames and unrelated subscription CLOSED frames", async () => {

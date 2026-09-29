@@ -208,12 +208,12 @@ export function useMarketBrowseModel({
   ])
   const preparedProductsQuery = {
     ...productsQuery,
-    isInitialLoading: isSearching
-      ? isRemoteSearchEligible &&
-        !isShowingCachedSearch &&
-        (!globalSearchEnabled ||
-          (productData.length === 0 && globalSearchQuery.isPending))
-      : productsQuery.isInitialLoading,
+    isInitialLoading:
+      isSearching && isRemoteSearchEligible
+        ? !isShowingCachedSearch &&
+          (!globalSearchEnabled ||
+            (productData.length === 0 && globalSearchQuery.isPending))
+        : productsQuery.isInitialLoading,
     isHydrating: isSearching
       ? globalSearchEnabled && globalSearchQuery.isFetching
       : productsQuery.isHydrating ||

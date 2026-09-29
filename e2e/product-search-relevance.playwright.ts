@@ -70,8 +70,15 @@ const profiles = merchantKeys.map((key, index) =>
 async function controlledSearch(page: Page) {
   const requests: Filter[] = []
   const closed: string[] = []
-  const state = { unavailable: false, holdRevisions: false, throttled: false }
+  const catalogIds: string[] = []
+  const state = {
+    unavailable: false,
+    holdRevisions: false,
+    holdFollows: false,
+    throttled: false,
+  }
   const pendingRevisions: Array<() => void> = []
+  const pendingFollows: Array<() => void> = []
   await page.routeWebSocket(/.*/, (socket) => {
     socket.onMessage((payload) => {
       const frame = JSON.parse(String(payload))
@@ -83,6 +90,7 @@ async function controlledSearch(page: Page) {
       }
       if (type !== "REQ") return
       requests.push(filter)
+      if (filter.kinds?.includes(30402)) catalogIds.push(id)
       if (filter.search && filter.kinds?.includes(30402) && state.throttled) {
         socket.send(
           JSON.stringify(["NOTICE", "rate limited: fixture requests"])
@@ -120,20 +128,191 @@ async function controlledSearch(page: Page) {
         state.holdRevisions
       )
         pendingRevisions.push(emit)
+      else if (filter.kinds?.includes(3) && state.holdFollows)
+        pendingFollows.push(emit)
       else emit()
     })
   })
   return {
     requests,
     closed,
+    catalogIds,
     state,
     pendingRevisions,
+    pendingFollows,
+    releaseFollows() {
+      state.holdFollows = false
+      pendingFollows.splice(0).forEach((emit) => emit())
+    },
     releaseRevisions() {
       state.holdRevisions = false
       pendingRevisions.splice(0).forEach((emit) => emit())
     },
   }
 }
+
+test("one-character local search waits for its initial catalog scope @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  relay.state.holdFollows = true
+  await page.goto(`${marketUrl}/products?source=following&q=p`)
+  await expect.poll(() => relay.pendingFollows.length).toBeGreaterThan(0)
+  const empty = page.getByText("No cached products match this search.")
+  await expect(empty).toBeHidden()
+  relay.releaseFollows()
+  await expect(empty).toBeVisible()
+  expect(
+    relay.requests.filter((filter) => filter.kinds?.includes(30402))
+  ).toHaveLength(0)
+})
+
+test("a cold cart header discovers categories once after a settled eligible query @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  await page.goto(`${marketUrl}/cart`)
+  const catalogs = () =>
+    relay.requests.filter((filter) => filter.kinds?.includes(30402))
+  const input = page.getByRole("combobox", {
+    name: "Search products, categories, merchants, and accounts",
+  })
+  await input.fill("a")
+  await page.waitForTimeout(400)
+  expect(catalogs()).toHaveLength(0)
+  await input.fill("ar")
+  await page.waitForTimeout(100)
+  expect(catalogs()).toHaveLength(0)
+  await expect(
+    page.getByRole("option", { name: /^# art Browse category$/i })
+  ).toBeVisible()
+  const firstCatalogs = catalogs().length
+  expect(firstCatalogs).toBeGreaterThan(0)
+  // The core caps signed-event overfetch at six times the visible limit.
+  expect(catalogs().every((filter) => filter.limit <= 600)).toBe(true)
+  await input.fill("art")
+  await page.waitForTimeout(500)
+  expect(catalogs()).toHaveLength(firstCatalogs)
+})
+
+test("a pending header fallback survives text edits and cancels when suggestions close @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  relay.state.holdRevisions = true
+  await page.goto(`${marketUrl}/cart`)
+  const input = page.getByRole("combobox", {
+    name: "Search products, categories, merchants, and accounts",
+  })
+  await input.fill("ar")
+  await expect.poll(() => relay.pendingRevisions.length).toBeGreaterThan(0)
+  const initialCatalogs = relay.catalogIds.length
+  await input.fill("art")
+  await page.waitForTimeout(500)
+  expect(relay.catalogIds).toHaveLength(initialCatalogs)
+  await page.getByRole("heading", { name: "Your cart is empty" }).click()
+  await expect
+    .poll(() => relay.catalogIds.every((id) => relay.closed.includes(id)))
+    .toBe(true)
+  relay.releaseRevisions()
+})
+
+test("header retry waits for its author scope before catalog discovery @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  relay.state.holdFollows = true
+  await page.goto(`${marketUrl}/cart?source=following`)
+  await page
+    .getByRole("combobox", {
+      name: "Search products, categories, merchants, and accounts",
+    })
+    .fill("ar")
+  await expect.poll(() => relay.pendingFollows.length).toBeGreaterThan(0)
+  await page.waitForTimeout(400)
+  await page.getByRole("button", { name: "Try again", exact: true }).click()
+  await page.waitForTimeout(100)
+  expect(
+    relay.requests.filter((filter) => filter.kinds?.includes(30402))
+  ).toHaveLength(0)
+  relay.releaseFollows()
+  await expect(
+    page.getByRole("option", { name: /^# art Browse category$/i })
+  ).toBeVisible()
+})
+
+test("header category discovery does not duplicate a pending browse catalog @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  relay.state.holdRevisions = true
+  await page.goto(`${marketUrl}/products?source=following`)
+  await expect.poll(() => relay.pendingRevisions.length).toBeGreaterThan(0)
+  const catalogs = () =>
+    relay.requests.filter(
+      (filter) => !filter.search && filter.kinds?.includes(30402)
+    )
+  const initialCatalogs = catalogs().length
+  await page
+    .getByRole("combobox", {
+      name: "Search products, categories, merchants, and accounts",
+    })
+    .fill("ar")
+  await page.waitForTimeout(500)
+  expect(catalogs()).toHaveLength(initialCatalogs)
+  relay.releaseRevisions()
+})
+
+test("header category discovery reuses a populated cart's catalog read @market", async ({
+  page,
+}) => {
+  await page.addInitScript(
+    (seed) => localStorage.setItem("conduit:cart", JSON.stringify(seed)),
+    {
+      version: 2,
+      items: [
+        {
+          productId: `30402:${best.pubkey}:best`,
+          productEventId: best.id,
+          merchantPubkey: best.pubkey,
+          merchantAddedAt: now,
+          title: "Handmade mug",
+          price: 1,
+          currency: "SATS",
+          priceSats: 1,
+          format: "digital",
+          quantity: 1,
+        },
+      ],
+    }
+  )
+  const relay = await controlledSearch(page)
+  relay.state.holdRevisions = true
+  await page.goto(`${marketUrl}/cart`)
+  const catalogs = () =>
+    relay.requests.filter(
+      (filter) =>
+        !filter.search &&
+        filter.kinds?.includes(30402) &&
+        !filter["#d"] &&
+        !filter.ids
+    )
+  await expect.poll(() => catalogs().length).toBeGreaterThan(0)
+  const initialCatalogs = catalogs().length
+  await page
+    .getByRole("combobox", {
+      name: "Search products, categories, merchants, and accounts",
+    })
+    .fill("ar")
+  await page.waitForTimeout(500)
+  expect(catalogs()).toHaveLength(initialCatalogs)
+  relay.releaseRevisions()
+})
 
 test("typing waits for a stable two-character query before remote search @market", async ({
   page,

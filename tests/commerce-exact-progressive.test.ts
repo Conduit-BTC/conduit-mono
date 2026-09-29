@@ -10,6 +10,7 @@ import {
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
   getCachedProductsByIds,
+  getMarketplaceProducts,
   getMarketplaceProductsProgressive,
   getProductsByIds,
   hasExactLiveProductAvailabilityEvidence,
@@ -114,6 +115,33 @@ afterEach(() => {
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   __resetRelayHealth()
+})
+
+it("cancels a bounded catalog fallback before persisting an obsolete response", async () => {
+  const controller = new AbortController()
+  const started = gate()
+  const held = gate()
+  const candidate = listing(fastSecret, "obsolete-header-fallback")
+  let reads = 0
+  __setCommerceTestOverrides({
+    fetchEventsFanout: async (_filter, options) => {
+      reads += 1
+      expect(options?.signal).toBe(controller.signal)
+      started.release()
+      await held.promise
+      return [candidate]
+    },
+  })
+  const result = getMarketplaceProducts({
+    signal: controller.signal,
+    limit: 100,
+  })
+  await started.promise
+  controller.abort()
+  held.release()
+  await expect(result).rejects.toThrow()
+  expect(reads).toBe(1)
+  expect(products).toEqual([])
 })
 
 it("aborts a progressive catalog read before it emits or starts later reads", async () => {

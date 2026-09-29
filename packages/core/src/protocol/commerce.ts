@@ -4687,6 +4687,7 @@ export async function getMarketplaceProducts(
   }
 
   try {
+    query.signal?.throwIfAborted()
     const authorPubkeys = query.merchantPubkey
       ? [query.merchantPubkey]
       : query.authorPubkeys
@@ -4702,6 +4703,7 @@ export async function getMarketplaceProducts(
       authors: authorPubkeys ? uniqueStrings(authorPubkeys) : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
+      signal: query.signal,
       shouldContinue: query.shouldContinue,
       deletionCandidates: cached,
       limit: rawEventLimit,
@@ -4711,16 +4713,25 @@ export async function getMarketplaceProducts(
         readCapped ||= capped
       },
     })
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
     const deletionTimestamps = await getLocalProductDeletionTimestamps(
       query.merchantPubkey,
       query.authorPubkeys
     )
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
     const records = mergeCachedAndLiveProductRecords({
       cached,
       live: fetchedRecords,
       deletionTimestamps,
     })
     await cacheProductRecords(records)
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
 
     const filtered = applyProductLimit(
       sortProducts(
@@ -4746,7 +4757,7 @@ export async function getMarketplaceProducts(
     )
     return { data: withProductFamilyReadEvidence(filtered, meta), meta }
   } catch (error) {
-    if (query.shouldContinue?.() === false) throw error
+    if (query.signal?.aborted || query.shouldContinue?.() === false) throw error
     const cached = applyProductLimit(
       sortProducts(
         filterProductRecordsForRead(

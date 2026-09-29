@@ -293,8 +293,11 @@ describe("merchant matches on the product search", () => {
       "apps/market/src/components/MarketHeader.tsx",
       "utf8"
     )
-    expect(header).not.toContain('"/merchants"')
+    expect(header).not.toContain('to: "/merchants"')
     expect(header).toContain('const isBrowseRoute = pathname === "/products"')
+    expect(header).toMatch(
+      /pageSuppliesCatalog:\s+isBrowseRoute \|\|\s+pathname === "\/merchants" \|\|\s+\(pathname === "\/cart" && cart\.items\.length > 0\)/
+    )
     expect(header).toContain("useMarketHeaderSuggestions({")
     expect(header).toContain("catalogSource: routeCatalogSource")
 
