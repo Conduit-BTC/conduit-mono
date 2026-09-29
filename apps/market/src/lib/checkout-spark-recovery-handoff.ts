@@ -233,23 +233,6 @@ export function deleteCheckoutSparkRecoveryDelivery(
   )
 }
 
-function assertScopedRecoveryInput(input: {
-  plan: CheckoutSparkPlan
-  recovery: SparkRecoveryBundle
-  identity: CheckoutSparkRecoverySigningIdentity
-  preparedAt: number
-}): string {
-  assertCheckoutSparkRecoverySigningIdentity(input.identity)
-  const mnemonic = normalizeSparkMnemonic(input.recovery.mnemonic)
-  if (
-    !isValidSparkMnemonic(mnemonic) ||
-    input.recovery.network !== input.plan.network
-  ) {
-    throw new Error("Checkout Spark recovery is outside its checkout scope.")
-  }
-  return mnemonic
-}
-
 /**
  * Prepare, persist, and publish one merchant recovery wrap. The funding invoice
  * remains unusable to the caller until this resolves with an acknowledged wrap.
@@ -266,12 +249,14 @@ export async function publishCheckoutSparkRecoveryHandoff(input: {
 }): Promise<PublishCheckoutSparkRecoveryHandoffResult> {
   const now = input.now ?? Date.now
   const preparedAt = input.preparedAt ?? now()
-  const mnemonic = assertScopedRecoveryInput({
-    plan: input.plan,
-    recovery: input.recovery,
-    identity: input.identity,
-    preparedAt,
-  })
+  assertCheckoutSparkRecoverySigningIdentity(input.identity)
+  const mnemonic = normalizeSparkMnemonic(input.recovery.mnemonic)
+  if (
+    !isValidSparkMnemonic(mnemonic) ||
+    input.recovery.network !== input.plan.network
+  ) {
+    throw new Error("Checkout Spark recovery is outside its checkout scope.")
+  }
   const payload = createCheckoutSparkRecoveryPayload({
     plan: input.plan,
     senderPubkey: input.identity.pubkey,
