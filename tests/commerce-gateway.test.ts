@@ -2623,12 +2623,8 @@ describe("commerce gateway", () => {
       ).toBe(true)
       const { filterProductsByFacets } =
         await import("../apps/market/src/lib/facets")
-      const { getMarketBrowseSearchCandidates } =
-        await import("../apps/market/src/lib/marketBrowseModel")
       const survivors = filterProductsByFacets(
-        getMarketBrowseSearchCandidates(
-          result.data.map((record) => record.product)
-        ),
+        result.data.map((record) => record.product),
         { tags: ["test"] }
       )
       expect(survivors.map((product) => product.title)).toEqual([

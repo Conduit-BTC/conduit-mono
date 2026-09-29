@@ -706,12 +706,15 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
           hasCheckoutSparkRetirements: state.stores.includes(
             "checkoutSparkRetirements"
           ),
+          hasMerchantShippingSettingsEvidence: state.stores.includes(
+            "merchantShippingSettingsEvidence"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 220,
+      nativeVersion: 230,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
@@ -728,6 +731,7 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
       hasCheckoutSparkPlanBindings: true,
       hasCheckoutSparkReconciliations: true,
       hasCheckoutSparkRetirements: true,
+      hasMerchantShippingSettingsEvidence: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)

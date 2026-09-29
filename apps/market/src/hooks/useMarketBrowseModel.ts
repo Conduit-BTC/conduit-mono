@@ -12,10 +12,8 @@ import {
   getStoreFacetOptions,
 } from "../lib/facets"
 import {
-  allowsGlobalProductSearch,
   getBrowseSearchKey,
   getGlobalProductSearchQueryKey,
-  getMarketBrowseSearchCandidates,
   getProductSearchAuthors,
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
@@ -94,12 +92,7 @@ export function useMarketBrowseModel({
   })
   const catalogAuthorPubkeys = productsQuery.catalogAuthorPubkeys
   const globalSearchEnabled =
-    normalizedSearchQuery.length > 0 &&
-    catalogAuthorPubkeys !== undefined &&
-    allowsGlobalProductSearch({
-      catalogSource: effectiveCatalogSource,
-      anonymous: usesAnonymousPerspective,
-    })
+    normalizedSearchQuery.length > 0 && catalogAuthorPubkeys !== undefined
   const searchAuthorPubkeys = useMemo(
     () => getProductSearchAuthors(catalogAuthorPubkeys, selectedMerchants),
     [catalogAuthorPubkeys, selectedMerchants]
@@ -168,7 +161,7 @@ export function useMarketBrowseModel({
       isSearching
         ? isShowingCachedSearch
           ? cachedSearchProducts
-          : getMarketBrowseSearchCandidates(globalSearchProducts)
+          : globalSearchProducts
         : productsQuery.products,
     [
       isSearching,
@@ -416,7 +409,6 @@ export function useMarketBrowseModel({
     auth: { pubkey, status },
     isSearching,
     isShowingCachedSearch,
-    searchCoverage: globalSearchQuery.data?.meta.productSearch?.coverage,
     searchTagScopeVerified:
       globalSearchQuery.data?.meta.productSearch?.tagScopeVerified,
     catalogSource: effectiveCatalogSource,

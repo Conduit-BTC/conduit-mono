@@ -878,6 +878,396 @@ test("merchant shipping country combobox supports search and selection @merchant
   await expect(countryPicker).toHaveValue("")
 })
 
+test("merchant ships from settings sync and default a new listing @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  await installTestSigner(page, pubkey, { secretKey })
+  const requestedPlaces: string[] = []
+  page.on("request", (request) => {
+    if (request.url().includes("/places/"))
+      requestedPlaces.push(new URL(request.url()).pathname)
+  })
+  await page.goto(`${merchantUrl}/shipping`)
+  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+
+  const country = page.getByRole("combobox", {
+    name: "Search countries",
+    exact: true,
+  })
+  await country.click()
+  await country.fill("United States")
+  await page
+    .getByRole("option", { name: /United States/ })
+    .first()
+    .click()
+  await expect(
+    page.getByRole("combobox", { name: "Search a place, county, or region" })
+  ).toBeDisabled()
+  const state = page.getByRole("combobox", { name: "Search states" })
+  await state.click()
+  await state.fill("California")
+  await page
+    .getByRole("option", { name: /California/ })
+    .first()
+    .click()
+  const place = page.getByRole("combobox", {
+    name: "Search a place, county, or region",
+  })
+  await expect(place).toBeEnabled()
+  await place.click()
+  await place.fill("Alameda County")
+  await page
+    .getByRole("option", { name: /Oakland.*Alameda County/ })
+    .first()
+    .click()
+  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible()
+  expect(requestedPlaces).toContain("/places/US/CA.json")
+  expect(requestedPlaces).not.toContain("/places/US.json")
+
+  await state.click()
+  await state.fill("Nevada")
+  await page
+    .getByRole("option", { name: /Nevada/ })
+    .first()
+    .click()
+  await expect(page.getByText(/Public ships from area:/)).toHaveCount(0)
+  await country.click()
+  await country.fill("Canada")
+  await page
+    .getByRole("option", { name: /Canada/ })
+    .first()
+    .click()
+  await expect(
+    page.getByRole("combobox", { name: "Search states" })
+  ).toHaveCount(0)
+  await expect(page.getByText(/Public ships from area:/)).toHaveCount(0)
+  await country.click()
+  await country.fill("United States")
+  await page
+    .getByRole("option", { name: /United States/ })
+    .first()
+    .click()
+  await state.click()
+  await state.fill("California")
+  await page
+    .getByRole("option", { name: /California/ })
+    .first()
+    .click()
+  await place.click()
+  await place.fill("Oakland")
+  await page
+    .getByRole("option", { name: /Oakland.*Alameda County/ })
+    .first()
+    .click()
+
+  await place.click()
+  await place.fill("Berkeley")
+  await place.press("Escape")
+  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible()
+
+  const destinationCountry = page.getByRole("combobox", {
+    name: "Search countries to add...",
+  })
+  await destinationCountry.click()
+  await destinationCountry.fill("Canada")
+  await page
+    .getByRole("option", { name: /CA Canada/ })
+    .first()
+    .click()
+
+  await page.getByRole("button", { name: "Save changes" }).click()
+  await expect(
+    page.getByText("Shipping settings published to relays.")
+  ).toBeVisible({ timeout: 20_000 })
+  const events = await readTestRelayEvents({
+    kinds: [30_078],
+    authors: [pubkey],
+    "#d": ["conduit/merchant-shipping-settings"],
+  })
+  expect(events).toHaveLength(1)
+  const content = JSON.parse(events[0]!.content) as {
+    countries: Array<{ code: string }>
+    shipsFrom: { location: string; geohash: string }
+  }
+  expect(content.countries.map(({ code }) => code)).toEqual(["CA"])
+  expect(content.shipsFrom.location).toContain(
+    "Oakland, Alameda County, California"
+  )
+  expect(content.shipsFrom.geohash).toMatch(
+    /^[0123456789bcdefghjkmnpqrstuvwxyz]{4}$/
+  )
+
+  await page.evaluate(
+    (key) => localStorage.removeItem(`conduit:merchant:shipping_config:${key}`),
+    pubkey
+  )
+  await page.reload()
+  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible({
+    timeout: 20_000,
+  })
+  await expect(
+    page.locator("span").filter({ hasText: /^Canada$/ })
+  ).toBeVisible()
+  await page.goto(`${merchantUrl}/products`)
+  const addProduct = page.getByRole("button", { name: "Add product" }).first()
+  await expect(addProduct).toBeEnabled({ timeout: 20_000 })
+  await addProduct.click()
+  await expect(page.getByText(/Ships from default: Oakland/)).toBeVisible()
+  await page.getByRole("button", { name: "Change", exact: true }).click()
+  const productDialog = page.getByRole("dialog", { name: "Add product" })
+  const productCountry = productDialog.getByRole("combobox", {
+    name: "Search countries",
+    exact: true,
+  })
+  await productCountry.click()
+  await productCountry.fill("Canada")
+  await page
+    .getByRole("option", { name: /Canada/ })
+    .first()
+    .click()
+  await expect(
+    productDialog.getByText(/Ships from default: Oakland/)
+  ).toBeVisible()
+  const productPlace = productDialog.getByRole("combobox", {
+    name: "Search a place, county, or region",
+  })
+  await productPlace.click()
+  await productPlace.fill("Toronto")
+  await page
+    .getByRole("option", { name: /Toronto/ })
+    .first()
+    .click()
+  await expect(
+    productDialog
+      .getByRole("paragraph")
+      .filter({ hasText: /Public listing area: Toronto/ })
+  ).toBeVisible()
+  await productPlace.click()
+  await productPlace.fill("Ottawa")
+  await productPlace.press("Escape")
+  await expect(
+    productDialog
+      .getByRole("paragraph")
+      .filter({ hasText: /Public listing area: Toronto/ })
+  ).toBeVisible()
+  await productDialog.getByRole("button", { name: "No area" }).click()
+  await expect(
+    productDialog.getByText("No public area for this listing")
+  ).toBeVisible()
+})
+
+test("merchant shipping requires loading signed settings discovered after local edits @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  const settings = {
+    format: "conduit-merchant-shipping-settings",
+    version: 1,
+    countries: [
+      { code: "US", name: "United States", restrictTo: [], exclude: ["AK"] },
+    ],
+    shipsFrom: {
+      location: "Oakland, Alameda County, California, United States",
+      geohash: "9q9p",
+    },
+  }
+  const signed = finalizeEvent(
+    {
+      kind: 30_078,
+      created_at: Math.floor(Date.now() / 1000) - 60,
+      tags: [["d", "conduit/merchant-shipping-settings"]],
+      content: JSON.stringify(settings),
+    },
+    secretKey
+  )
+  await publishTestRelayEvents([signed])
+  await installTestSigner(page, pubkey, { secretKey })
+  const heldReads: Array<() => void> = []
+  let holdReads = true
+  await page.routeWebSocket(TEST_RELAY_URL, (socket) => {
+    const server = socket.connectToServer()
+    socket.onMessage((message) => {
+      const frame: unknown =
+        typeof message === "string" ? JSON.parse(message) : null
+      const isSettingsRead =
+        Array.isArray(frame) &&
+        frame[0] === "REQ" &&
+        frame
+          .slice(2)
+          .some(
+            (filter) =>
+              isRecord(filter) &&
+              Array.isArray(filter.kinds) &&
+              filter.kinds.includes(30_078)
+          )
+      if (holdReads && isSettingsRead)
+        heldReads.push(() => server.send(message))
+      else server.send(message)
+    })
+  })
+  await page.goto(`${merchantUrl}/shipping`)
+  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await expect.poll(() => heldReads.length).toBeGreaterThan(0)
+  const destination = page.getByRole("combobox", {
+    name: "Search countries to add...",
+  })
+  await destination.fill("Canada")
+  await page.getByRole("option", { name: /CA Canada/ }).click()
+  holdReads = false
+  for (const release of heldReads) release()
+  await expect(
+    page.getByRole("button", { name: "Load signed settings", exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Save changes" })
+  ).toBeDisabled()
+  // Also exercise the submit handler, rather than relying on a disabled button.
+  await page
+    .locator("form")
+    .evaluate((form) => (form as HTMLFormElement).requestSubmit())
+  expect(
+    (await readTestRelayEvents({ kinds: [30_078], authors: [pubkey] })).map(
+      ({ id }) => id
+    )
+  ).toEqual([signed.id])
+  await page
+    .getByRole("button", { name: "Load signed settings", exact: true })
+    .click()
+  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Remove United States" })
+  ).toBeVisible()
+  await expect(page.getByRole("button", { name: "Remove Canada" })).toHaveCount(
+    0
+  )
+  await destination.fill("Canada")
+  await page.getByRole("option", { name: /CA Canada/ }).click()
+  await page.getByRole("button", { name: "Save changes" }).click()
+  await expect(
+    page.getByText("Shipping settings published to relays.")
+  ).toBeVisible({ timeout: 20_000 })
+  const [updated] = await readTestRelayEvents({
+    kinds: [30_078],
+    authors: [pubkey],
+  })
+  const saved = JSON.parse(updated!.content) as typeof settings
+  expect(saved.countries.map(({ code }) => code)).toEqual(["US", "CA"])
+  expect(saved.countries[0]!.exclude).toEqual(["AK"])
+  expect(saved.shipsFrom).toEqual(settings.shipsFrom)
+})
+
+test("merchant product editing preserves signed area after cancelled place search @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  const dTag = "area-search-edit"
+  const location = "Oakland, Alameda County, California, United States"
+  const geohash = "9q9p"
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 30_402,
+        created_at: Math.floor(Date.now() / 1000) - 10,
+        content: "Public listing area regression",
+        tags: [
+          ["d", dTag],
+          ["title", "Listing area search regression"],
+          ["price", "25", "SATS"],
+          ["type", "simple", "digital"],
+          ["visibility", "on-sale"],
+          ["stock", "1"],
+          ["image", "https://media.conduit.market/area-search.png"],
+          ["t", "area"],
+          ["t", "search"],
+          ["t", "regression"],
+          ["location", location],
+          ["g", geohash],
+        ],
+      },
+      secretKey
+    ),
+  ])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${merchantUrl}/products`)
+  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+  const dialog = page.getByRole("dialog", { name: "Edit listing" })
+  await expect(dialog.getByText(`Existing area: ${location}`)).toBeVisible()
+  await dialog.getByRole("button", { name: "Change", exact: true }).click()
+  const country = dialog.getByRole("combobox", {
+    name: "Search countries",
+    exact: true,
+  })
+  await country.click()
+  await country.fill("United States")
+  await page
+    .getByRole("option", { name: /United States/ })
+    .first()
+    .click()
+  const state = dialog.getByRole("combobox", { name: "Search states" })
+  await state.click()
+  await state.fill("California")
+  await page
+    .getByRole("option", { name: /California/ })
+    .first()
+    .click()
+  const place = dialog.getByRole("combobox", {
+    name: "Search a place, county, or region",
+  })
+  await expect(place).toBeEnabled()
+  await place.click()
+  await place.fill("Oakland")
+  await page
+    .getByRole("option", { name: /Oakland.*Alameda County/ })
+    .first()
+    .click()
+  const areaSummary = dialog
+    .getByRole("paragraph")
+    .filter({ hasText: /Public listing area: Oakland/ })
+  await expect(areaSummary).toBeVisible()
+  await place.click()
+  await place.fill("Berkeley")
+  await place.press("Escape")
+  await expect(areaSummary).toBeVisible()
+  await dialog
+    .getByLabel("Title", { exact: true })
+    .fill("Updated listing area search regression")
+  await dialog
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click()
+  await expect(dialog).not.toBeVisible({ timeout: 20_000 })
+  const readUpdated = async () => {
+    const events = await readTestRelayEvents({
+      kinds: [30_402],
+      authors: [pubkey],
+      "#d": [dTag],
+    })
+    return events.find((event) =>
+      event.tags.some(
+        (tag) =>
+          tag[0] === "title" &&
+          tag[1] === "Updated listing area search regression"
+      )
+    )
+  }
+  await expect
+    .poll(async () => !!(await readUpdated()), { timeout: 20_000 })
+    .toBe(true)
+  const updated = await readUpdated()
+  expect(updated).toBeDefined()
+  expect(updated!.tags).toContainEqual(["location", location])
+  expect(updated!.tags).toContainEqual(["g", geohash])
+})
+
 test("Market Network publishes a private inbox through the isolated relay @market", async ({
   page,
 }) => {

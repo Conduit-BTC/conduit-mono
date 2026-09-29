@@ -14,9 +14,7 @@ import {
   getStoreFacetOptions,
 } from "../apps/market/src/lib/facets"
 import {
-  allowsGlobalProductSearch,
   getGlobalProductSearchQueryKey,
-  getMarketBrowseSearchCandidates,
   getProductSearchAuthors,
   getMerchantIdentityView,
   getProductShippingPresetEligibility,
@@ -196,22 +194,6 @@ describe("market browse model helpers", () => {
   })
 
   it("searches each connected perspective within its eligible author scope", () => {
-    expect(
-      allowsGlobalProductSearch({
-        catalogSource: "following",
-        anonymous: false,
-      })
-    ).toBe(true)
-    expect(
-      allowsGlobalProductSearch({ catalogSource: "conduit", anonymous: false })
-    ).toBe(true)
-    expect(
-      allowsGlobalProductSearch({ catalogSource: "combined", anonymous: false })
-    ).toBe(true)
-    expect(
-      allowsGlobalProductSearch({ catalogSource: "conduit", anonymous: true })
-    ).toBe(true)
-
     const followingKey = getGlobalProductSearchQueryKey({
       query: "soap",
       pubkey: "viewer",
@@ -269,7 +251,7 @@ describe("market browse model helpers", () => {
       ...product("indexed-mug", "merchant-b", ["ceramic"], 200),
       title: "Handmade mug",
     }
-    const candidates = getMarketBrowseSearchCandidates([indexedProduct])
+    const candidates = [indexedProduct]
     const visible = filterProductsByFacets(candidates, {
       merchants: ["merchant-b"],
       tags: ["ceramic"],

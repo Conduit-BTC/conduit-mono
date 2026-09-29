@@ -40,16 +40,6 @@ export interface MerchantIdentityView {
   relayHints: string[]
 }
 
-export function allowsGlobalProductSearch(input: {
-  catalogSource: ProductCatalogSourceMode
-  anonymous: boolean
-}): boolean {
-  return (
-    input.anonymous ||
-    ["following", "conduit", "combined"].includes(input.catalogSource)
-  )
-}
-
 export async function refreshMarketBrowseData(input: {
   globalSearchEnabled: boolean
   refreshDiscovery?: () => Promise<boolean>
@@ -196,13 +186,6 @@ export function mergeProductSearchResults(
   for (const product of catalogProducts) byId.set(product.id, product)
   for (const product of searchProducts) byId.set(product.id, product)
   return Array.from(byId.values())
-}
-
-/** The ranked response is the entire search candidate set. */
-export function getMarketBrowseSearchCandidates(
-  searchProducts: readonly Product[]
-): Product[] {
-  return [...searchProducts]
 }
 
 export function getProductSearchAuthors(

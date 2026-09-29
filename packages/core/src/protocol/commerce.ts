@@ -2089,6 +2089,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
     location: product.location,
+    geohash: product.geohash,
     eventId: record.eventId,
     eventCreatedAt: record.eventCreatedAt,
     dTag: record.dTag ?? undefined,
@@ -2152,6 +2153,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     zapMessagePolicy,
     publicZapPolicyKnown: row.publicZapPolicyKnown ?? false,
     location: row.location,
+    geohash: row.geohash,
     createdAt: row.createdAt ?? row.cachedAt,
     updatedAt: row.updatedAt ?? row.cachedAt,
   }
@@ -4127,7 +4129,6 @@ async function fetchPublicProductRecords(query: {
   signal?: AbortSignal
   shouldContinue?: () => boolean
   extraRelayUrls?: readonly string[]
-  tags?: string[]
   searchText?: string
   limit?: number
   readPolicy?: CommerceReadPolicy
@@ -4146,7 +4147,6 @@ async function fetchPublicProductRecords(query: {
   if (query.dTags) filter["#d"] = query.dTags
   if (query.parentAddresses) filter["#a"] = query.parentAddresses
   if (query.searchText) filter.search = query.searchText
-  if (query.tags?.length) filter["#t"] = query.tags
 
   const productSearchRelayUrls = config.searchIndexRelayUrls.slice(0, 1)
   const relayPlan = query.searchText

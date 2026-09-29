@@ -130,9 +130,16 @@ async function openProductDialogWithSigner(
     ])
   }
   await page.goto(`${merchantUrl}/products`)
-  await page.getByRole("button", { name: "Add product" }).first().click()
+  // Each fixture owns a fresh empty catalog. Let its initial reads settle
+  // before opening the dialog so mobile layout changes cannot race the click.
+  await expect(page.getByText("No listings yet", { exact: true })).toBeVisible({
+    timeout: 20_000,
+  })
+  const addProduct = page.getByRole("button", { name: "Add product" }).first()
+  await expect(addProduct).toBeEnabled({ timeout: 20_000 })
+  await addProduct.click()
   const dialog = page.getByRole("dialog", { name: "Add product" })
-  await expect(dialog).toBeVisible()
+  await expect(dialog).toBeVisible({ timeout: 20_000 })
   await page.evaluate(() => {
     const browserWindow = window as unknown as {
       nostr: {
