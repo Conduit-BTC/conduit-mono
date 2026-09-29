@@ -152,7 +152,8 @@ function toFamily(
 }
 
 describe("merchant product variation planning", () => {
-  it("applies a selected listing area to every new physical or digital listing", () => {
+  it("applies a selected listing area alongside Event Market associations to every new physical or digital listing", () => {
+    const marketCoordinate = `30409:${ORGANIZER_PUBKEY}:future-market`
     for (const format of ["physical", "digital"] as const) {
       const plan = buildProductFamilyChangePlan({
         parentDTag: `area-${format}`,
@@ -160,6 +161,7 @@ describe("merchant product variation planning", () => {
           format,
           location: "Oakland, Alameda County, California, United States",
           geohash: "9q9p",
+          eventMarketRefs: [marketCoordinate],
         }),
         listingAreaMode: "apply",
         variations: sizeVariationForm("S, M"),
@@ -177,6 +179,7 @@ describe("merchant product variation planning", () => {
           "Oakland, Alameda County, California, United States",
         ])
         expect(tags).toContainEqual(["g", "9q9p"])
+        expect(tags).toContainEqual(["a", marketCoordinate])
       }
     }
   })
@@ -306,6 +309,28 @@ describe("merchant product variation planning", () => {
       )
     ).toBe(true)
   })
+
+  it("applies a future Event Market association to current variation products", () => {
+    const marketCoordinate = `30409:${ORGANIZER_PUBKEY}:future-market`
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "conduit-tee",
+      baseProduct: baseProduct({ eventMarketRefs: [marketCoordinate] }),
+      variations: sizeVariationForm("S, M"),
+      currency: "USD",
+      now: NOW,
+    })
+    expect(plan.desired).toHaveLength(3)
+    for (const target of plan.desired) {
+      expect(target.product.eventMarketRefs).toEqual([marketCoordinate])
+      expect(
+        buildProductListingEventDraft({
+          product: target.product,
+          dTag: target.dTag,
+        }).tags
+      ).toContainEqual(["a", marketCoordinate])
+    }
+  })
+
   it("publishes a custom variation image URL containing a comma unchanged", () => {
     const imageUrl =
       "https://images.example.com/resize,w_1200/product.png?fit=crop,center"

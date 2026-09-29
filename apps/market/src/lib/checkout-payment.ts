@@ -246,6 +246,7 @@ function isCheckoutShippingCostResolvable(item: CartItem): boolean {
   return (
     item.format === "digital" ||
     item.fulfillment?.type === "pickup" ||
+    item.fulfillment?.type === "event_market_pickup" ||
     (item.canonicalShippingResolved === true &&
       !!item.shippingOptionId &&
       (!!item.shippingPolicyQuote ||
@@ -254,6 +255,19 @@ function isCheckoutShippingCostResolvable(item: CartItem): boolean {
 }
 
 function getCheckoutShippingResolvableItem(item: CartItem): CartItem {
+  if (item.fulfillment?.type === "event_market_pickup") {
+    return {
+      ...item,
+      shippingCostSats: 0,
+      sourceShippingCost: undefined,
+      shippingPolicyQuote: undefined,
+      shippingAllocatedCostSats: undefined,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingCountries: undefined,
+      shippingCountryRules: undefined,
+    }
+  }
   return isCheckoutShippingCostResolvable(item)
     ? item
     : {
@@ -290,7 +304,9 @@ export function buildCheckoutPricingIntent(
   let needsFreshQuote = false
 
   for (const item of items) {
-    const pickupAllowsZero = item.fulfillment?.type === "pickup"
+    const pickupAllowsZero =
+      item.fulfillment?.type === "pickup" ||
+      item.fulfillment?.type === "event_market_pickup"
     const priced = getPriceSats(item, rateInput, {
       allowZero: pickupAllowsZero,
     })
@@ -416,10 +432,10 @@ export function buildCheckoutPricingIntent(
       shippingPolicyQuote: shippingItem.shippingPolicyQuote,
       shippingAllocatedCostSats: shippingItem.shippingAllocatedCostSats,
       sourceShippingCost: shippingItem.sourceShippingCost,
-      shippingOptionId: item.shippingOptionId,
-      shippingOptionDTag: item.shippingOptionDTag,
-      shippingCountries: item.shippingCountries,
-      shippingCountryRules: item.shippingCountryRules,
+      shippingOptionId: shippingItem.shippingOptionId,
+      shippingOptionDTag: shippingItem.shippingOptionDTag,
+      shippingCountries: shippingItem.shippingCountries,
+      shippingCountryRules: shippingItem.shippingCountryRules,
       sourcePrice: item.sourcePrice,
       fulfillment:
         item.fulfillment?.type === "pickup"
@@ -455,7 +471,8 @@ export function buildCheckoutPricingIntent(
     pricedItems.length > 0 &&
     pricedItems.every(
       (item) =>
-        item.fulfillment?.type === "pickup" &&
+        (item.fulfillment?.type === "pickup" ||
+          item.fulfillment?.type === "event_market_pickup") &&
         item.priceAtPurchase === 0 &&
         item.shippingCostSats === 0
     )

@@ -328,8 +328,8 @@ function MerchantIdentity({
   return (
     <div className={`flex min-w-0 items-center gap-3 ${className}`}>
       <Link
-        to="/store/$pubkey"
-        params={{ pubkey: pubkeyToNpub(merchantPubkey) }}
+        to="/$identityRef"
+        params={{ identityRef: pubkeyToNpub(merchantPubkey) }}
         className="block shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
         aria-label={`Visit ${merchantName} merchant page`}
       >
@@ -342,8 +342,8 @@ function MerchantIdentity({
       </Link>
       <div className="min-w-0">
         <Link
-          to="/store/$pubkey"
-          params={{ pubkey: pubkeyToNpub(merchantPubkey) }}
+          to="/$identityRef"
+          params={{ identityRef: pubkeyToNpub(merchantPubkey) }}
           className="flex min-w-0 items-center gap-1.5 text-lg font-semibold leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300 sm:text-xl"
         >
           <span className="truncate">{merchantName}</span>
@@ -507,8 +507,8 @@ function RelatedProductRow({
           </Badge>
         ) : null}
         <Link
-          to="/store/$pubkey"
-          params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+          to="/$identityRef"
+          params={{ identityRef: pubkeyToNpub(product.pubkey) }}
           className={`mt-1 block truncate text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] ${
             merchantName ? "" : "font-mono"
           }`}
@@ -1463,7 +1463,9 @@ function CartPage() {
 
           {cart.items.some(
             (item) =>
-              item.format !== "digital" && item.fulfillment?.type !== "pickup"
+              item.format !== "digital" &&
+              item.fulfillment?.type !== "pickup" &&
+              item.fulfillment?.type !== "event_market_pickup"
           ) && (
             <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
               <Button

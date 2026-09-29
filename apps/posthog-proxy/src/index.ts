@@ -113,7 +113,7 @@ const eventUuidPattern =
 /**
  * Route classes `sanitizeTelemetryPath` in `packages/core/src/telemetry.ts`
  * can emit. Sections that sanitize to a dedicated class (`/products`,
- * `/store`, `/u`, `/orders`) are matched explicitly below, so this set holds
+ * identity paths, `/orders`) are matched explicitly below, so this set holds
  * only the static sections that keep a generic `/:param` suffix class.
  */
 const sanitizedStaticRouteSegments = new Set([
@@ -127,8 +127,6 @@ const sanitizedStaticRouteSegments = new Set([
   "shipping",
   "wallet",
 ])
-const storeNpubPathPattern =
-  /^\/store\/npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$/
 const productNaddrPathPattern =
   /^\/products\/naddr1q[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{74,481}$/
 const MAX_SANITIZED_ROUTE_PATH_LENGTH = 512
@@ -647,14 +645,12 @@ export function isSanitizedTelemetryRoutePath(value: unknown): value is string {
     value === "/:param" ||
     value === "/products" ||
     value === "/products/:productId" ||
-    value === "/store/:pubkey" ||
-    value === "/u/:profileRef" ||
+    value === "/:identity" ||
     value === "/orders"
   ) {
     return true
   }
   if (isCanonicalProductNaddrPath(value)) return true
-  if (storeNpubPathPattern.test(value)) return true
   const match = /^\/([a-z]+)(\/:param)?$/.exec(value)
   return match !== null && sanitizedStaticRouteSegments.has(match[1] ?? "")
 }

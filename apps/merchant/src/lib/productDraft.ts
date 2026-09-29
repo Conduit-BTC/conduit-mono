@@ -376,6 +376,10 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         format: form.format,
         fulfillment,
         eventMarketReference,
+        futureEventMarketReference:
+          typeof form.futureEventMarketReference === "string"
+            ? form.futureEventMarketReference
+            : "",
         eventHandoffMode,
         merchantPickupTitle:
           candidate.version >= 5 && typeof form.merchantPickupTitle === "string"

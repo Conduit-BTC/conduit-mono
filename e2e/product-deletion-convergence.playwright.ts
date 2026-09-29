@@ -648,7 +648,7 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   )
 }
 
-test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", async ({
+test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery stores @merchant", async ({
   page,
 }) => {
   await page.route(
@@ -679,6 +679,12 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
             "ownContactListSnapshots"
           ),
           hasEventMarketEvidence: state.stores.includes("eventMarketEvidence"),
+          hasEventMarketRosterEvidence: state.stores.includes(
+            "eventMarketRosterEvidence"
+          ),
+          hasEventMarketMerchantDecisionJobs: state.stores.includes(
+            "eventMarketMerchantDecisionJobs"
+          ),
           hasWallets: state.stores.includes("wallets"),
           hasWalletCredentials: state.stores.includes("walletCredentials"),
           hasShippingOptionFrontiers: state.stores.includes(
@@ -691,23 +697,37 @@ test("Merchant upgrades v16 data to the v17 owner-evidence store @merchant", asy
             "ownerRelayListEvidence"
           ),
           hasShoppingCarts: state.stores.includes("shoppingCarts"),
+          hasCheckoutSparkPlanBindings: state.stores.includes(
+            "checkoutSparkPlanBindings"
+          ),
+          hasCheckoutSparkReconciliations: state.stores.includes(
+            "checkoutSparkReconciliations"
+          ),
+          hasCheckoutSparkRetirements: state.stores.includes(
+            "checkoutSparkRetirements"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 190,
+      nativeVersion: 220,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
       hasOwnContactListSnapshots: true,
       hasEventMarketEvidence: true,
+      hasEventMarketRosterEvidence: true,
+      hasEventMarketMerchantDecisionJobs: true,
       hasWallets: true,
       hasWalletCredentials: true,
       hasShippingOptionFrontiers: true,
       hasMerchantPendingInvoices: true,
       hasOwnerRelayListEvidence: true,
       hasShoppingCarts: true,
+      hasCheckoutSparkPlanBindings: true,
+      hasCheckoutSparkReconciliations: true,
+      hasCheckoutSparkRetirements: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)

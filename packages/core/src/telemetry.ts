@@ -2,7 +2,7 @@ import {
   decodeProductReference,
   encodeProductNaddr,
 } from "./protocol/product-reference"
-import { normalizePubkey, pubkeyToNpub } from "./utils"
+import { normalizePubkey } from "./utils"
 
 export type ConduitTelemetryApp = "market" | "merchant"
 
@@ -360,9 +360,9 @@ function sanitizeTelemetryPathInternal(
     }
     return "/products/:productId"
   }
-  if (section === "store") return getStoreTelemetryPath(segments[1])
-  if (section === "u") return "/u/:profileRef"
+  if (section === "store" || section === "u") return "/:identity"
   if (section === "orders") return "/orders"
+  if (segments.length === 1 && normalizePubkey(section)) return "/:identity"
 
   if (!staticTelemetryRouteSegments.has(section)) return "/:param"
   if (segments.length === 1) return `/${section}`
@@ -387,12 +387,6 @@ function getProductTelemetryPath(productRef: string | undefined): string {
   } catch {
     return "/products/:productId"
   }
-}
-
-function getStoreTelemetryPath(storeRef: string | undefined): string {
-  const pubkey = normalizePubkey(storeRef)
-  if (!pubkey) return "/store/:pubkey"
-  return `/store/${pubkeyToNpub(pubkey)}`
 }
 
 export function buildTelemetryPageUrl(input: {

@@ -1,0 +1,1051 @@
+import {
+  Check,
+  Link as LinkIcon,
+  LoaderCircle,
+  MessageCircle,
+  Search,
+} from "lucide-react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react"
+import { createFileRoute, Link, notFound } from "@tanstack/react-router"
+import { useQueryClient } from "@tanstack/react-query"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Button,
+  getResultPresentation,
+  RefreshChip,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  SignerRecoveryNotice,
+} from "@conduit/ui"
+import {
+  CONTACT_LIST_WRITES_AVAILABLE,
+  formatNpub,
+  getCommerceReadRelayUrls,
+  getProfileName,
+  getTelemetryCountBucket,
+  isCommerceReadIncomplete,
+  publishContactListUpdate,
+  pubkeyToNpub,
+  recordBrowserTelemetryEvent,
+  useAuth,
+} from "@conduit/core"
+import { SignerSwitch } from "../components/SignerSwitch"
+import {
+  resolveProfileReference,
+  getIdentityPath,
+  rememberProfileRelayHints,
+  getRememberedProfileRelayHints,
+} from "../lib/profileRefs"
+import {
+  validateIdentitySearch,
+  type IdentitySearch,
+} from "../lib/identitySearch"
+import { RichProfileText } from "../components/RichProfileText"
+import { BrainstormGlobalScoreLink } from "../components/BrainstormGlobalScoreLink"
+import { ProductGridCardSkeleton } from "../components/ProductGridCard"
+import { ResolvedProductGridCard } from "../components/ResolvedProductGridCard"
+import { CopyButton } from "../components/CopyButton"
+import { LivePresenceIndicator } from "../components/LivePresenceIndicator"
+import {
+  MerchantAvatarFallback,
+  Nip05TrustIndicator,
+  getProfileNip05,
+} from "../components/MerchantIdentity"
+import { MerchantTrustSummary } from "../components/MerchantTrustSummary"
+import { ProfileBanner } from "../components/ProfileBanner"
+import { StorefrontFollowButton } from "../components/StorefrontFollowButton"
+import { useShopperPricing } from "../hooks/useShopperPricing"
+import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
+import { useLivePresenceCount } from "../hooks/useLivePresenceCount"
+import { useProgressiveProducts } from "../hooks/useProgressiveProducts"
+import { filterProductsByFacets, getCategoryFacetOptions } from "../lib/facets"
+import {
+  createStorefrontFollowState,
+  deriveStorefrontFollowControl,
+  isStorefrontFollowScopeEqual,
+  storefrontFollowReducer,
+} from "../lib/storefront-follow-state"
+import {
+  hasUnavailablePriceForBrowseSort,
+  sortBrowseProducts,
+} from "../lib/marketBrowseModel"
+
+type SortOption = "newest" | "price_asc" | "price_desc"
+type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
+
+type StoreSearch = IdentitySearch
+
+export const Route = createFileRoute("/$identityRef")({
+  beforeLoad: ({ params }) => {
+    if (!resolveProfileReference(params.identityRef)) throw notFound()
+  },
+  component: PublicIdentityPage,
+  validateSearch: validateIdentitySearch,
+})
+
+function CategoryFacetButton({
+  option,
+  onToggle,
+  className = "",
+}: {
+  option: CategoryFacetOption
+  onToggle: () => void
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={option.selected}
+      className={[
+        "inline-flex min-w-0 max-w-full items-center rounded-full border px-3 py-2 text-left text-sm font-medium transition-colors",
+        option.selected
+          ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
+          : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+        className,
+      ].join(" ")}
+    >
+      <span className="min-w-0 truncate">{option.label}</span>
+      <span
+        className={[
+          "ml-1.5 shrink-0 self-center text-[0.82em] font-medium leading-none tabular-nums",
+          option.selected ? "text-white/80" : "text-[var(--text-muted)]",
+        ].join(" ")}
+      >
+        [{option.count}]
+      </span>
+    </button>
+  )
+}
+
+function PublicIdentityPage() {
+  const { identityRef } = Route.useParams()
+  const resolved = useMemo(
+    () => resolveProfileReference(identityRef),
+    [identityRef]
+  )
+  const pubkey = resolved?.pubkey ?? ""
+  const search = Route.useSearch()
+  const navigate = Route.useNavigate()
+  useEffect(() => {
+    if (!resolved) return
+    const canonicalRef = pubkeyToNpub(resolved.pubkey)
+    if (identityRef === canonicalRef) return
+    rememberProfileRelayHints(resolved.pubkey, resolved.relayHints)
+    void navigate({
+      to: "/$identityRef",
+      params: { identityRef: canonicalRef },
+      search,
+      replace: true,
+    })
+  }, [identityRef, navigate, resolved, search])
+  const queryClient = useQueryClient()
+  const {
+    accountPubkey,
+    pubkey: viewerPubkey,
+    status,
+    authGeneration,
+    remoteSignerRecovery,
+    signerReadiness,
+    connect,
+  } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  const accountPubkeyRef = useRef(accountPubkey)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+    accountPubkeyRef.current = accountPubkey
+  }, [accountPubkey, authGeneration])
+  const signerReady =
+    signerReadiness === "ready" &&
+    !!accountPubkey &&
+    viewerPubkey === accountPubkey
+  const activeViewerPubkey = signerReady ? viewerPubkey : null
+  const shopperPricing = useShopperPricing()
+  const btcUsdRate = shopperPricing.quote
+  const [localSearch, setLocalSearch] = useState(search.q ?? "")
+  const [searchDirty, setSearchDirty] = useState(false)
+  const [connectOpen, setConnectOpen] = useState(false)
+  const [shareCopied, setShareCopied] = useState(false)
+  // Read the bounded catalog once; visible filters must not erase store evidence.
+  const productsQuery = useProgressiveProducts({
+    scope: "storefront",
+    merchantPubkey: pubkey,
+    authenticatedPubkey: activeViewerPubkey,
+    enabled: !!pubkey,
+  })
+  const productReadIncomplete =
+    isCommerceReadIncomplete(productsQuery.meta) ||
+    !!productsQuery.error ||
+    productsQuery.isRefreshPaused
+  const profileRelayHints = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...getCommerceReadRelayUrls(),
+          ...(resolved?.relayHints.length
+            ? resolved.relayHints
+            : getRememberedProfileRelayHints(pubkey)),
+          ...(productsQuery.profileRelayHintsByPubkey[pubkey] ?? []),
+        ])
+      ),
+    [productsQuery.profileRelayHintsByPubkey, pubkey, resolved]
+  )
+  const storeProducts = productsQuery.products
+  const productCount = storeProducts.length
+  const storePresenceCount = useLivePresenceCount({
+    canonicalId: productCount > 0 ? pubkey : null,
+    pageType: "store",
+  })
+  const merchantTrust = useMerchantTrustContext({
+    merchantPubkey: pubkey || null,
+    listingCount: productCount > 0 ? productCount : undefined,
+    profileRelayHints,
+  })
+  const profile = merchantTrust.profile
+  const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
+  const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
+  const followScope = useMemo(
+    () => ({ merchantPubkey: pubkey, viewerPubkey: accountPubkey }),
+    [accountPubkey, pubkey]
+  )
+  const [followState, dispatchFollow] = useReducer(
+    storefrontFollowReducer,
+    followScope,
+    createStorefrontFollowState
+  )
+  const followOperationIdRef = useRef(0)
+  const followStateMatchesScope = isStorefrontFollowScopeEqual(
+    followState.scope,
+    followScope
+  )
+  const followOverride = followStateMatchesScope ? followState.override : null
+  const followError = followStateMatchesScope ? followState.error : null
+
+  const merchantIdentityPending = merchantTrust.merchantNamePending
+  const merchantName =
+    getProfileName(profile) ?? (pubkey ? formatNpub(pubkey, 8) : "Identity")
+  const merchantAbout = profile?.about?.trim()
+  const profileNip05 = getProfileNip05(profile)
+  const categoryFacetOptions = useMemo(
+    () =>
+      getCategoryFacetOptions(storeProducts, {
+        q: search.q,
+        tags: selectedTags,
+      }),
+    [search.q, selectedTags, storeProducts]
+  )
+
+  const updateSearch = useCallback(
+    (updates: Partial<StoreSearch>) => {
+      navigate({
+        search: (prev) => {
+          const next = { ...prev, ...updates }
+          for (const key of Object.keys(next) as (keyof StoreSearch)[]) {
+            const value = next[key]
+            if (
+              value === undefined ||
+              value === "" ||
+              (Array.isArray(value) && value.length === 0)
+            ) {
+              delete next[key]
+            }
+          }
+          return next
+        },
+        replace: true,
+      })
+    },
+    [navigate]
+  )
+
+  const recordStorefrontSearch = useCallback(
+    (query: string, tags: string[] = selectedTags) => {
+      const nextQuery = query || undefined
+      const resultCount = filterProductsByFacets(storeProducts, {
+        q: nextQuery,
+        tags,
+      }).length
+
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "market_browse_action",
+        properties: {
+          action: nextQuery ? "storefront_search" : "storefront_search_clear",
+          result_count_bucket: getTelemetryCountBucket(resultCount),
+          status: "success",
+          surface: "storefront",
+        },
+      })
+    },
+    [selectedTags, storeProducts]
+  )
+
+  const followControl = deriveStorefrontFollowControl({
+    override: followOverride,
+    observedFollowing: merchantTrust.viewerFollowsMerchant === true,
+    pendingFollowing: merchantTrust.pendingViewerFollowsMerchant,
+    retryFollowing: followStateMatchesScope ? followState.retryFollowing : null,
+  })
+  const { isFollowing } = followControl
+  const followSaveState = followStateMatchesScope
+    ? followState.saveState
+    : "idle"
+  const isFollowBusy = followSaveState !== "idle"
+
+  const toggleTag = (tag: string) => {
+    if (selectedTagSet.has(tag)) {
+      updateSearch({
+        tag: selectedTags.filter((selectedTag) => selectedTag !== tag),
+      })
+      return
+    }
+
+    updateSearch({ tag: [...selectedTags, tag] })
+  }
+
+  const matchingProducts = useMemo(() => {
+    return filterProductsByFacets(storeProducts, {
+      q: search.q,
+      tags: selectedTags,
+    })
+  }, [search.q, selectedTags, storeProducts])
+
+  const hasUnavailablePriceForSort = useMemo(() => {
+    return hasUnavailablePriceForBrowseSort(
+      matchingProducts,
+      search.sort,
+      btcUsdRate,
+      productsQuery.familiesByProductId
+    )
+  }, [
+    btcUsdRate,
+    matchingProducts,
+    productsQuery.familiesByProductId,
+    search.sort,
+  ])
+
+  const filteredProducts = useMemo(
+    () =>
+      sortBrowseProducts(
+        matchingProducts,
+        search.sort,
+        btcUsdRate,
+        productsQuery.familiesByProductId
+      ),
+    [
+      btcUsdRate,
+      matchingProducts,
+      productsQuery.familiesByProductId,
+      search.sort,
+    ]
+  )
+  const resultPresentation = getResultPresentation({
+    resultCount: storeProducts.length,
+    visibleResultCount: filteredProducts.length,
+    reliability: productReadIncomplete ? "degraded" : "complete",
+  })
+
+  useEffect(() => {
+    setLocalSearch(search.q ?? "")
+    setSearchDirty(false)
+  }, [search.q])
+
+  useLayoutEffect(() => {
+    dispatchFollow({ type: "scope_changed", scope: followScope })
+  }, [followScope])
+
+  useLayoutEffect(() => {
+    followOperationIdRef.current += 1
+    dispatchFollow({
+      type: "authority_changed",
+      scope: followScope,
+      message:
+        "The signer connection changed before this follow update finished. Reconnect, review the current state, and retry explicitly.",
+    })
+  }, [authGeneration, followScope, signerReadiness])
+
+  const normalizedSearch = localSearch.trim()
+  const pendingSearch =
+    searchDirty &&
+    normalizedSearch.length >= 3 &&
+    normalizedSearch !== (search.q ?? "")
+
+  useEffect(() => {
+    if (!searchDirty) return
+    if (normalizedSearch.length > 0 && normalizedSearch.length < 3) return
+
+    const timeoutId = window.setTimeout(() => {
+      if ((normalizedSearch || undefined) !== search.q) {
+        recordStorefrontSearch(normalizedSearch)
+      }
+      updateSearch({ q: normalizedSearch || undefined })
+    }, 260)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [
+    normalizedSearch,
+    recordStorefrontSearch,
+    search.q,
+    searchDirty,
+    updateSearch,
+  ])
+
+  function submitSearch(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    if ((normalizedSearch || undefined) !== search.q) {
+      recordStorefrontSearch(normalizedSearch)
+    }
+    updateSearch({ q: normalizedSearch || undefined })
+    setSearchDirty(false)
+  }
+
+  function handleSendMessage(): void {
+    if (!accountPubkey) {
+      setConnectOpen(true)
+      return
+    }
+
+    navigate({
+      to: "/messages",
+      search: {
+        tab: "dms",
+        merchant: pubkey,
+      },
+    })
+  }
+
+  async function handleFollow(): Promise<void> {
+    if (!signerReady || !viewerPubkey || viewerPubkey === pubkey) {
+      if (!accountPubkey) setConnectOpen(true)
+      return
+    }
+    if (isFollowBusy) return
+
+    const nextShouldFollow = followControl.shouldFollowOnClick
+    const operationId = ++followOperationIdRef.current
+    const followAuthGeneration = authGeneration
+    dispatchFollow({
+      type: "operation_started",
+      scope: followScope,
+      operationId,
+      shouldFollow: nextShouldFollow,
+    })
+    try {
+      await publishContactListUpdate({
+        ownerPubkey: viewerPubkey,
+        targetPubkey: pubkey,
+        shouldFollow: nextShouldFollow,
+        appId: "market",
+        isSessionCurrent: () =>
+          authGenerationRef.current === followAuthGeneration &&
+          accountPubkeyRef.current === viewerPubkey,
+      })
+      if (
+        authGenerationRef.current !== followAuthGeneration ||
+        accountPubkeyRef.current !== viewerPubkey
+      ) {
+        return
+      }
+
+      dispatchFollow({
+        type: "publish_succeeded",
+        scope: followScope,
+        operationId,
+        shouldFollow: nextShouldFollow,
+      })
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-trust-social"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["market-perspective-follows"],
+        }),
+      ])
+      dispatchFollow({
+        type: "operation_settled",
+        scope: followScope,
+        operationId,
+      })
+    } catch (error) {
+      if (
+        authGenerationRef.current !== followAuthGeneration ||
+        accountPubkeyRef.current !== viewerPubkey
+      ) {
+        return
+      }
+      dispatchFollow({
+        type: "operation_failed",
+        scope: followScope,
+        operationId,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not update this follow list.",
+      })
+    }
+  }
+
+  async function handleShareStore(): Promise<void> {
+    const canonicalStorePath = getIdentityPath(pubkey)
+    const shareUrl =
+      typeof window !== "undefined"
+        ? new URL(
+            `${canonicalStorePath}${window.location.search}`,
+            window.location.origin
+          ).toString()
+        : `https://shop.conduit.market${canonicalStorePath}`
+    const canUseNativeShare =
+      typeof navigator !== "undefined" &&
+      typeof navigator.share === "function" &&
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 767px)").matches
+
+    if (canUseNativeShare) {
+      try {
+        await navigator.share({
+          title: merchantName,
+          text: `View ${merchantName} on Conduit`,
+          url: shareUrl,
+        })
+        return
+      } catch {
+        return
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      setShareCopied(true)
+      window.setTimeout(() => setShareCopied(false), 1600)
+    } catch {
+      setShareCopied(false)
+    }
+  }
+
+  const hasCommerceSurface =
+    productCount > 0 ||
+    productsQuery.isInitialLoading ||
+    productReadIncomplete ||
+    !!search.q ||
+    selectedTags.length > 0
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+        <Link
+          to="/products"
+          className="transition-colors hover:text-[var(--text-primary)]"
+        >
+          Shop
+        </Link>
+        <span>/</span>
+        <span className="block min-w-0 max-w-full truncate text-[var(--text-primary)]">
+          {merchantIdentityPending ? (
+            <span className="inline-block max-w-full animate-pulse truncate align-middle">
+              {merchantName}
+            </span>
+          ) : (
+            merchantName
+          )}
+        </span>
+      </div>
+
+      <section className="max-w-full overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
+        <ProfileBanner src={profile?.banner} />
+        <div className="relative px-5 pb-6 sm:px-6 sm:pb-7">
+          <div className="relative -mt-10 space-y-5 sm:-mt-14">
+            <div className="flex min-w-0 flex-wrap items-start gap-x-6 gap-y-5">
+              <div className="grid min-w-0 flex-1 basis-full grid-cols-[5rem_minmax(0,1fr)] items-start gap-x-3 sm:basis-[28rem] sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-x-4 lg:basis-[34rem]">
+                <Avatar className="h-20 w-20 shrink-0 self-start border-4 border-[var(--surface)] bg-[var(--surface)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
+                  <AvatarImage
+                    src={profile?.picture}
+                    alt={merchantName}
+                    className="object-cover"
+                  />
+                  <AvatarFallback>
+                    <MerchantAvatarFallback iconClassName="h-8 w-8 sm:h-10 sm:w-10" />
+                  </AvatarFallback>
+                </Avatar>
+
+                <div className="min-w-0 pt-11 sm:pt-16">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {merchantIdentityPending ? (
+                      <h1 className="min-w-0 max-w-full truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                        <span className="inline-block max-w-full animate-pulse truncate pb-1 leading-[1.16]">
+                          {merchantName}
+                        </span>
+                      </h1>
+                    ) : (
+                      <h1 className="min-w-0 max-w-full truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                        {merchantName}
+                      </h1>
+                    )}
+                    <button
+                      type="button"
+                      className="inline-flex size-10 shrink-0 items-center justify-center text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+                      onClick={handleShareStore}
+                      aria-label={
+                        shareCopied
+                          ? "Identity link copied"
+                          : "Copy identity link"
+                      }
+                      title={shareCopied ? "Copied" : "Copy identity link"}
+                    >
+                      {shareCopied ? (
+                        <Check className="h-[18px] w-[18px] text-success" />
+                      ) : (
+                        <LinkIcon className="h-[18px] w-[18px]" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+                <div className="col-span-2 min-w-0 pt-2 sm:col-span-1 sm:col-start-2">
+                  <div className="mt-2 flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
+                    <span className="inline-flex min-w-0 max-w-[18rem] items-center gap-1 font-medium text-[var(--text-primary)] sm:max-w-[22rem]">
+                      <span className="block min-w-0 truncate">
+                        {profileNip05 ? (
+                          <Nip05TrustIndicator
+                            pubkey={pubkey}
+                            nip05={profileNip05}
+                          />
+                        ) : (
+                          formatNpub(pubkey, 8)
+                        )}
+                      </span>
+                      <span className="shrink-0">
+                        <CopyButton value={pubkey} label="Copy pubkey" />
+                      </span>
+                    </span>
+                    <BrainstormGlobalScoreLink pubkey={pubkey} />
+                  </div>
+                  {productCount > 0 && (
+                    <LivePresenceIndicator
+                      className="mt-3"
+                      count={storePresenceCount}
+                      pageType="store"
+                    />
+                  )}
+                </div>
+              </div>
+
+              <div className="flex w-full min-w-0 max-w-full flex-wrap items-center justify-start gap-3 sm:ml-auto sm:w-auto sm:justify-end lg:pt-16">
+                <Button
+                  variant="outline"
+                  className="h-11 max-w-full shrink-0 border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"
+                  onClick={handleSendMessage}
+                >
+                  <MessageCircle className="h-4 w-4" />
+                  Send message
+                </Button>
+                {accountPubkey !== pubkey && (
+                  <StorefrontFollowButton
+                    isFollowing={isFollowing}
+                    merchantName={merchantName}
+                    onClick={() => void handleFollow()}
+                    retryAction={
+                      followControl.isPendingRetry
+                        ? followControl.shouldFollowOnClick
+                          ? "follow"
+                          : "unfollow"
+                        : null
+                    }
+                    saveState={followSaveState}
+                    unavailableDescriptionId={
+                      !CONTACT_LIST_WRITES_AVAILABLE
+                        ? "storefront-follow-maintenance"
+                        : accountPubkey && !signerReady
+                          ? "storefront-follow-recovery"
+                          : undefined
+                    }
+                    writesAvailable={
+                      CONTACT_LIST_WRITES_AVAILABLE &&
+                      (!accountPubkey || signerReady)
+                    }
+                  />
+                )}
+              </div>
+              {!CONTACT_LIST_WRITES_AVAILABLE && (
+                <p
+                  id="storefront-follow-maintenance"
+                  role="status"
+                  className="max-w-sm text-left text-xs leading-5 text-[var(--text-secondary)] sm:ml-auto sm:text-right"
+                >
+                  Follow updates are temporarily paused.
+                </p>
+              )}
+              {followError && (
+                <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
+                  {followError}{" "}
+                  {followError.startsWith(
+                    "Refusing to publish a follow-list replacement"
+                  ) ? (
+                    <Link
+                      to="/network"
+                      className="font-semibold underline underline-offset-2 hover:text-[var(--text-primary)]"
+                    >
+                      Open Network settings
+                    </Link>
+                  ) : null}
+                </p>
+              )}
+              {remoteSignerRecovery ? (
+                <div
+                  id="storefront-follow-recovery"
+                  className="w-full sm:ml-auto sm:max-w-sm"
+                >
+                  <SignerRecoveryNotice
+                    description="Reconnect the same signer, review the follow state, then choose Follow or Unfollow again. Conduit will not replay the interrupted update."
+                    reconnecting={status === "restoring"}
+                    restoreFailed={!!remoteSignerRecovery.restoreError}
+                    restoreFailureDescription="That saved signer connection could not be restored. The interrupted follow update was not replayed."
+                    onReconnect={() => connect({ mode: "restore" })}
+                  />
+                </div>
+              ) : null}
+            </div>
+
+            {productCount > 0 && (
+              <MerchantTrustSummary
+                trust={merchantTrust}
+                showBrainstorm={false}
+              />
+            )}
+
+            <div className="border-t border-[var(--border)] pt-5">
+              <RichProfileText
+                text={
+                  merchantAbout || "No public profile note has been added yet."
+                }
+                className="max-w-4xl text-sm leading-7 text-[var(--text-secondary)]"
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            Npub
+          </div>
+          <div className="mt-2 break-all font-mono text-xs leading-6 text-[var(--text-secondary)]">
+            {pubkeyToNpub(pubkey)}
+          </div>
+        </div>
+        {profile?.lud16?.trim() && (
+          <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+            <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+              Lightning
+            </div>
+            <RichProfileText
+              text={profile.lud16.trim()}
+              className="mt-2 text-sm text-[var(--text-secondary)]"
+            />
+          </div>
+        )}
+        {profile?.website?.trim() && (
+          <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+            <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+              Website
+            </div>
+            <RichProfileText
+              text={profile.website.trim()}
+              className="mt-2 text-sm text-[var(--text-secondary)]"
+            />
+          </div>
+        )}
+      </div>
+      {hasCommerceSurface && (
+        <div className="grid min-w-0 max-w-full items-start gap-5 md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-6">
+          <aside className="hidden md:sticky md:top-24 md:block md:self-start">
+            <div className="space-y-5 md:max-h-[calc(100vh-7rem)] md:overflow-y-auto md:pr-1">
+              <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">
+                    Categories
+                  </div>
+                  {(selectedTags.length > 0 || search.q || search.sort) && (
+                    <button
+                      type="button"
+                      className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                      onClick={() => {
+                        setLocalSearch("")
+                        updateSearch({
+                          q: undefined,
+                          tag: undefined,
+                          sort: undefined,
+                        })
+                      }}
+                    >
+                      Clear all
+                    </button>
+                  )}
+                </div>
+
+                <div className="mt-4">
+                  <div className="relative">
+                    <div className="max-h-96 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+                      <div className="flex flex-col items-stretch gap-1.5 pt-0.5">
+                        {categoryFacetOptions.map((option) => (
+                          <CategoryFacetButton
+                            key={option.value}
+                            option={option}
+                            onToggle={() => toggleTag(option.value)}
+                            className="w-full rounded-xl"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </aside>
+
+          <section className="min-w-0 max-w-full self-start overflow-hidden [@media(min-width:768px)_and_(hover:hover)]:overflow-visible">
+            {categoryFacetOptions.length > 0 && (
+              <div className="mb-4 min-w-0 max-w-full overflow-hidden rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)] p-4 md:hidden">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">
+                    Categories
+                  </div>
+                  {selectedTags.length > 0 && (
+                    <button
+                      type="button"
+                      className="shrink-0 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                      onClick={() => updateSearch({ tag: undefined })}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-[4.75rem] max-w-full overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+                  <div className="flex max-w-full flex-wrap items-center gap-1.5 pt-0.5">
+                    {categoryFacetOptions.map((option) => (
+                      <CategoryFacetButton
+                        key={option.value}
+                        option={option}
+                        onToggle={() => toggleTag(option.value)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="grid min-w-0 max-w-full gap-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
+              <form
+                className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3"
+                onSubmit={submitSearch}
+              >
+                <label htmlFor="identity-listing-search" className="sr-only">
+                  Search listings
+                </label>
+                <Search className="h-4 w-4 text-[var(--text-muted)]" />
+                <input
+                  id="identity-listing-search"
+                  value={localSearch}
+                  onChange={(event) => {
+                    setLocalSearch(event.target.value)
+                    setSearchDirty(true)
+                  }}
+                  placeholder="Search listings"
+                  className="h-11 w-full bg-transparent text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]"
+                />
+                <div className="text-[var(--text-muted)]">
+                  {pendingSearch ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : null}
+                </div>
+              </form>
+
+              <div className="flex min-w-0 w-full items-center gap-2">
+                <span className="min-w-[2.5rem] text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                  Sort
+                </span>
+                <Select
+                  value={search.sort ?? "newest"}
+                  onValueChange={(value) =>
+                    updateSearch({
+                      sort:
+                        value === "newest" ? undefined : (value as SortOption),
+                    })
+                  }
+                >
+                  <SelectTrigger className="min-w-0 flex-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="newest">Newest</SelectItem>
+                    <SelectItem value="price_asc">
+                      Price: Low to High
+                    </SelectItem>
+                    <SelectItem value="price_desc">
+                      Price: High to Low
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="relative mt-4 min-h-8 pr-40 sm:pr-44">
+              <div className="flex min-h-8 flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+                <span>
+                  {filteredProducts.length} listing
+                  {filteredProducts.length === 1 ? "" : "s"}
+                </span>
+                {selectedTags.length > 0 && (
+                  <span className="text-[var(--text-muted)]">
+                    in {selectedTags.join(", ")}
+                  </span>
+                )}
+              </div>
+              <RefreshChip
+                refreshing={productsQuery.isHydrating}
+                onRefresh={productsQuery.refetch}
+                stale={productReadIncomplete}
+                refreshingLabel="Checking listings..."
+                className="absolute right-0 top-0"
+              />
+              {hasUnavailablePriceForSort && (
+                <div className="mt-2 text-xs text-[var(--text-muted)]">
+                  Listings without a rate-backed sats price are shown last.
+                </div>
+              )}
+            </div>
+
+            {productsQuery.isInitialLoading && (
+              <ul className="mt-4 grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+                {Array.from({ length: 6 }).map((_, index) => (
+                  <li key={index} className="h-full">
+                    <ProductGridCardSkeleton />
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {!productsQuery.isInitialLoading &&
+              resultPresentation.kind === "degraded_empty" && (
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]">
+                  <span>
+                    Listings couldn&apos;t be loaded. Retry to check again.
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={productsQuery.isHydrating}
+                    onClick={() => productsQuery.refetch()}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              )}
+
+            {!productsQuery.isInitialLoading &&
+              resultPresentation.kind === "complete_empty" && (
+                <div className="mt-4 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
+                  <div className="text-lg font-semibold text-[var(--text-primary)]">
+                    No listings yet
+                  </div>
+                  <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
+                    No current listings were found for this identity.
+                  </p>
+                </div>
+              )}
+
+            {!productsQuery.isInitialLoading &&
+              resultPresentation.kind === "filter_empty" && (
+                <div
+                  className={
+                    resultPresentation.visibility === "compact"
+                      ? "mt-4 rounded-[1.5rem] border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-6"
+                      : "mt-4 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6"
+                  }
+                  role={
+                    resultPresentation.visibility === "compact"
+                      ? "alert"
+                      : undefined
+                  }
+                >
+                  <div className="text-lg font-semibold text-[var(--text-primary)]">
+                    No loaded listings match these filters
+                  </div>
+                  <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
+                    {resultPresentation.visibility === "compact"
+                      ? "Discovery is incomplete, so other matching listings may still be available. Retry or clear the current filters."
+                      : "Try clearing the search or category filter to see other listings."}
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        recordStorefrontSearch("", [])
+                        setLocalSearch("")
+                        setSearchDirty(false)
+                        updateSearch({
+                          q: undefined,
+                          tag: undefined,
+                          sort: undefined,
+                        })
+                      }}
+                    >
+                      Clear filters
+                    </Button>
+                    {resultPresentation.visibility === "compact" && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={productsQuery.isHydrating}
+                        onClick={() => void productsQuery.refetch()}
+                      >
+                        Retry
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+            {filteredProducts.length > 0 && (
+              <ul className="mt-4 grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+                {filteredProducts.map((product, index) => (
+                  <li key={product.id} className="h-full">
+                    <ResolvedProductGridCard
+                      product={product}
+                      family={productsQuery.familiesByProductId[product.id]}
+                      familyHydrating={productsQuery.isHydrating}
+                      merchantName={merchantName}
+                      merchantNamePending={merchantIdentityPending}
+                      imageLoading={index < 4 ? "eager" : "lazy"}
+                      btcUsdRate={btcUsdRate}
+                      pricePreference={shopperPricing.preference}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      )}
+
+      <SignerSwitch
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+        hideTrigger
+      />
+    </div>
+  )
+}

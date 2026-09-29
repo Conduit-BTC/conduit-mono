@@ -9,7 +9,7 @@ describe("Market product grid layout", () => {
         "grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4",
       ],
       [
-        "apps/market/src/routes/store/$pubkey.tsx",
+        "apps/market/src/routes/$identityRef.tsx",
         "grid min-w-0 max-w-full list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4",
       ],
       [
@@ -68,7 +68,7 @@ describe("Market product grid layout", () => {
   it("keeps product grid cards out of paint containment and storefront clipping", async () => {
     const [products, storefront] = await Promise.all([
       readFile("apps/market/src/routes/products/index.tsx", "utf8"),
-      readFile("apps/market/src/routes/store/$pubkey.tsx", "utf8"),
+      readFile("apps/market/src/routes/$identityRef.tsx", "utf8"),
     ])
     const desktopHoverMedia = "[@media(min-width:768px)_and_(hover:hover)]"
 

@@ -407,6 +407,11 @@ export type UnwrapOutcome =
       category: PrivateMessageCategory
     }
   | { status: "ignored"; wrapId: string; kind: number | undefined }
+  | {
+      status: "deferred_machine"
+      wrapId: string
+      kind: typeof EVENT_KINDS.ORDER
+    }
   | { status: "decrypt_failed"; wrapId: string; reason: DecryptFailureReason }
 
 /** Injectable unwrap implementation (tests / capability overrides). */
@@ -443,12 +448,28 @@ const EVENT_MARKET_PRIVATE_MESSAGE_TYPES = new Set([
 
 function classifyLegacyOrderRumor(
   rumor: NDKEvent
-): "ok" | "ignored" | "malformed" {
+): "ok" | "ignored" | "malformed" | "deferred_machine" {
   const tags = rumor.tags ?? []
-  const type = tags.find((tag) => tag[0] === "type")?.[1]
-  const orderId = tags.find((tag) => tag[0] === "order")?.[1]
+  const typeTags = tags.filter((tag) => tag[0] === "type")
+  const orderTags = tags.filter((tag) => tag[0] === "order")
+  const recipientTags = tags.filter((tag) => tag[0] === "p")
+  const type = typeTags[0]?.[1]
+  const orderId = orderTags[0]?.[1]
   const claimRef = tags.find((tag) => tag[0] === "claim")?.[1]
-  const recipient = tags.find((tag) => tag[0] === "p")?.[1]
+  const recipient = recipientTags[0]?.[1]
+
+  // A checkout recovery rumor contains wallet authority, not a conversation
+  // message. Leave its ciphertext for the dedicated strict recovery reader;
+  // the generic inbox must neither cache its content nor consume its wrap.
+  if (typeTags.some((tag) => tag[1] === "checkout_spark_recovery")) {
+    return typeTags.length === 1 &&
+      orderTags.length === 1 &&
+      recipientTags.length === 1 &&
+      orderId &&
+      recipient
+      ? "deferred_machine"
+      : "malformed"
+  }
 
   // Kind 16 is also NIP-18 generic repost. Only a positively identified
   // Conduit legacy commerce envelope enters the order parser.
@@ -551,6 +572,9 @@ export async function unwrapGiftWrap(
   }
   if (category === "order") {
     const classification = classifyLegacyOrderRumor(rumor)
+    if (classification === "deferred_machine") {
+      return { status: "deferred_machine", wrapId, kind: EVENT_KINDS.ORDER }
+    }
     if (classification === "ignored") {
       return { status: "ignored", wrapId, kind: rumor.kind }
     }

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs"
 const routePaths = [
   "../apps/market/src/routes/products/index.tsx",
   "../apps/market/src/routes/products/$productId.tsx",
-  "../apps/market/src/routes/store/$pubkey.tsx",
+  "../apps/market/src/routes/$identityRef.tsx",
   "../apps/market/src/routes/cart.tsx",
 ]
 

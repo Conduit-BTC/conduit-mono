@@ -205,6 +205,14 @@ for (const [viewportName, width, height] of [
         await tags.fill(tag)
         await tags.press("Enter")
       }
+      if (index === 2 && viewportName === "mobile") {
+        await dialog
+          .getByLabel("Shipping weight", { exact: true })
+          .scrollIntoViewIfNeeded()
+        await page.screenshot({
+          path: "/private/tmp/shipping-product-mobile.png",
+        })
+      }
       await expect(
         dialog.getByRole("button", { name: "Publish product", exact: true })
       ).toBeEnabled()

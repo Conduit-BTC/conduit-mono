@@ -12,6 +12,13 @@ import {
 } from "@conduit/core"
 import type { CartItem } from "./cart-model"
 
+function isPickupItem(item: CartItem): boolean {
+  return (
+    item.fulfillment?.type === "pickup" ||
+    item.fulfillment?.type === "event_market_pickup"
+  )
+}
+
 function isPhysicalItem(item: CartItem): boolean {
   return item.format !== "digital"
 }
@@ -21,7 +28,7 @@ export function getCartShippingOptionCoordinates(items: CartItem[]): string[] {
     new Set(
       items
         .filter(isPhysicalItem)
-        .filter((item) => item.fulfillment?.type !== "pickup")
+        .filter((item) => !isPickupItem(item))
         .flatMap((item) =>
           item.shippingOptionId ? [item.shippingOptionId] : []
         )
@@ -63,6 +70,9 @@ export function prepareCartFulfillment(
   >()
   const preparedItems = items.map((item) => {
     if (item.fulfillment?.type === "pickup") return item
+    if (item.fulfillment?.type === "event_market_pickup") {
+      return clearPreparedShipping(item)
+    }
     const policyOption =
       item.format !== "digital"
         ? shippingOptions.find(
@@ -197,6 +207,7 @@ export function getCartShippingOptionSnapshots(
 ): ParsedShippingOption[] {
   return items
     .filter(isPhysicalItem)
+    .filter((item) => !isPickupItem(item))
     .filter(hasCartItemShippingSnapshot)
     .map((item) => ({
       eventId: item.shippingOptionId!,
@@ -222,7 +233,7 @@ export function hasPhysicalItemsMissingShippingZone(
 ): boolean {
   return items
     .filter(isPhysicalItem)
-    .filter((item) => item.fulfillment?.type !== "pickup")
+    .filter((item) => !isPickupItem(item))
     .some((item) => {
       return !hasCartItemShippingSnapshot(item)
     })
@@ -237,10 +248,7 @@ export function hasPhysicalItemsMissingShippingSnapshot(
 export function getCartShippingOptionsAvailable(items: CartItem[]): boolean {
   return items
     .filter(isPhysicalItem)
-    .every(
-      (item) =>
-        item.fulfillment?.type === "pickup" || hasCartItemShippingSnapshot(item)
-    )
+    .every((item) => isPickupItem(item) || hasCartItemShippingSnapshot(item))
 }
 
 export function getCartShippingDestinationEligibility(
@@ -249,7 +257,7 @@ export function getCartShippingDestinationEligibility(
 ): ShippingDestinationEligibility {
   const results = items
     .filter(isPhysicalItem)
-    .filter((item) => item.fulfillment?.type !== "pickup")
+    .filter((item) => !isPickupItem(item))
     .map((item) => {
       if (item.shippingPolicyQuote) {
         const quoted = item.shippingPolicyQuote.destination

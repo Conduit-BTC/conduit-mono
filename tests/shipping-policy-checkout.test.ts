@@ -7,6 +7,7 @@ import {
 } from "nostr-tools/pure"
 import {
   buildShippingPolicyEventDraft,
+  buildEventMarketRosterDraft,
   extractOrderSummary,
   getMerchantShippingPolicyCoordinate,
   orderSchema,
@@ -22,14 +23,17 @@ import {
   type ShippingPolicy,
 } from "@conduit/core"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
+import { buildCheckoutSparkQuoteAuthority } from "../apps/market/src/lib/checkout-spark-quote-authority"
 import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
 import {
   createCartItemFromProduct,
+  getMixedFulfillmentBlockingMessage,
   parsePersistedCart,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
 import {
   getCartShippingDestinationEligibility,
+  getCartShippingOptionCoordinates,
   getCartShippingOptionsAvailable,
   prepareCartFulfillment,
 } from "../apps/market/src/lib/cart-shipping-options"
@@ -257,6 +261,192 @@ describe("signed shipping policy composed checkout", () => {
     expect(prepared.items[0]!.shippingPolicyQuote).toBeUndefined()
     expect(priced(prepared.items).shippingCost.totalSats).toBe(3)
     expect(priced(prepared.items).totalSats).toBe(103)
+  })
+
+  it("excludes signed Event Market pickup from table shipping and keeps its payment authority gated", async () => {
+    const marketCoordinate = `30409:${merchant}:shipping-fair`
+    const calendarCoordinate = `31922:${merchant}:shipping-fair`
+    const calendar = finalizeEvent(
+      {
+        kind: 31922,
+        created_at: 2,
+        content: "",
+        tags: [
+          ["d", "shipping-fair"],
+          ["title", "Shipping fair"],
+          ["start", "2026-09-27"],
+          ["end", "2026-09-28"],
+        ],
+      },
+      secret
+    )
+    const market = finalizeEvent(
+      {
+        ...buildEventMarketRosterDraft({
+          dTag: "shipping-fair",
+          organizerPubkey: merchant,
+          calendarCoordinate,
+          state: "open",
+          merchants: [
+            {
+              pubkey: merchant,
+              mode: "merchant_present",
+              assignment: "Booth 1",
+            },
+          ],
+        }),
+        created_at: 2,
+      },
+      secret
+    )
+    const base = product("event-market")
+    const event = finalizeEvent(
+      {
+        ...base.signedProductEvent!,
+        tags: [...base.signedProductEvent!.tags, ["a", marketCoordinate]],
+      },
+      secret
+    )
+    const listing = parseProductEvent(new NDKEvent(undefined, event))!
+    const input = { ...createCartItemFromProduct(listing), quantity: 1 }
+    const tableItem = prepareCartFulfillment([input], [option()], destination)
+      .items[0]!
+    expect(tableItem.shippingPolicyQuote?.amountMinor).toBe(7)
+    const grant = finalizeEvent(
+      {
+        kind: 3841,
+        created_at: 2,
+        content: "",
+        tags: [
+          ["openmarkets", "event-market-auth", "1"],
+          ["a", marketCoordinate],
+          ["p", merchant],
+          ["state", "active"],
+          ["seq", "0"],
+          ["alt", "Open Markets event merchant authorization"],
+        ],
+      },
+      secret
+    )
+    const pickup: CartItem = {
+      ...tableItem,
+      fulfillment: {
+        type: "event_market_pickup",
+        organizerPubkey: merchant,
+        merchantPubkey: merchant,
+        payeePubkey: merchant,
+        market: {
+          coordinate: marketCoordinate,
+          eventId: market.id,
+          createdAt: 2000,
+          signedEvent: market,
+        },
+        calendar: {
+          coordinate: calendarCoordinate,
+          eventId: calendar.id,
+          createdAt: 2000,
+          start: Date.parse("2026-09-27T00:00:00Z"),
+          end: Date.parse("2026-09-28T00:00:00Z"),
+          signedEvent: calendar,
+        },
+        product: {
+          coordinate: input.productId,
+          eventId: event.id,
+          createdAt: 2000,
+          signedEvent: event,
+        },
+        authorization: { tip: grant, ancestry: [grant], deletions: [] },
+        mode: "merchant_present",
+        assignment: "Booth 1",
+      },
+    }
+    expect(getCartShippingOptionCoordinates([pickup])).toEqual([])
+    const prepared = prepareCartFulfillment(
+      [pickup],
+      [option()],
+      destination
+    ).items
+    expect(prepared[0]!.shippingPolicyQuote).toBeUndefined()
+    expect(getCartShippingOptionsAvailable(prepared)).toBe(true)
+    expect(
+      getCartShippingDestinationEligibility(destination, prepared)
+    ).toEqual({ eligible: true })
+    // A stale table snapshot cannot become a pickup charge even without preparation.
+    for (const items of [[pickup], prepared]) {
+      const checkout = priced(items)
+      expect(checkout.totalSats).toBe(100)
+      expect(checkout.shippingCost).toMatchObject({
+        status: "included",
+        totalSats: 0,
+      })
+      expect(checkout.items[0]!.shippingPolicyQuote).toBeUndefined()
+      expect(checkout.items[0]!.shippingAllocatedCostSats).toBeUndefined()
+      const accepted = orderSchema.parse({
+        ...payload(checkout.items, 0),
+        shippingAddress: undefined,
+        shippingCostStatus: "not_required",
+      })
+      expect(accepted.items[0]!.fulfillment).toEqual(
+        JSON.parse(JSON.stringify(pickup.fulfillment))
+      )
+    }
+    expect(getMixedFulfillmentBlockingMessage(prepared)).toContain(
+      "current signed"
+    )
+    let authorityReads = 0
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      rawItems: [pickup],
+      reviewedItems: prepared,
+      refreshedProducts: [listing],
+      readShippingOptions: async () => {
+        authorityReads++
+        return [option()]
+      },
+      resolveProductFulfillment: async (current) => {
+        authorityReads++
+        return { status: "standard", type: "shipping", product: current }
+      },
+    })
+    expect(result).toEqual({ status: "changed" })
+    expect(authorityReads).toBe(0)
+  })
+
+  it("preserves rich authorization evidence while safely rejecting table charges at the Spark router boundary", async () => {
+    const input = raw("router-table")
+    const shipping = option()
+    const reviewed = prepareCartFulfillment(
+      [input],
+      [shipping],
+      destination
+    ).items
+    const listing = product("router-table")
+    const authorization = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      rawItems: [input],
+      reviewedItems: reviewed,
+      refreshedProducts: [listing],
+      destination,
+      readShippingOptions: async () => [shipping],
+      resolveProductFulfillment: async (current) => ({
+        status: "standard",
+        type: "shipping",
+        product: current,
+      }),
+      authorizePickupHandlers: async () => {},
+    })
+    if (authorization.status !== "ok")
+      throw new Error("Private table authorization failed")
+    expect(authorization.listingReadProducts).toEqual([listing])
+    expect(authorization.fulfillmentResolvedProducts).toEqual([listing])
+    expect(authorization.shippingOptionEvidence).toEqual({
+      status: "verified",
+      options: [shipping],
+    })
+    expect(priced(authorization.items).totalSats).toBe(107)
+    expect(() =>
+      buildCheckoutSparkQuoteAuthority({ authorization, rateInput: null })
+    ).toThrow("Current signed checkout evidence changed")
   })
 
   it("sends a mixed table and unresolved physical order for coordination without agreeing to a partial charge", () => {

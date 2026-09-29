@@ -14,6 +14,33 @@ export const Route = createFileRoute("/about")({
   component: AboutPage,
 })
 
+const protocols = [
+  {
+    name: "Signed product listings · NIP-99 + Open Markets",
+    description:
+      "Browse public merchant listings with signed provenance and current revision evidence.",
+    href: "https://github.com/OpenMarketsFoundation/specification",
+  },
+  {
+    name: "External signers · NIP-07 and NIP-46",
+    description:
+      "Connect a browser or remote signer while keeping your durable Nostr account key outside Conduit.",
+    href: "https://github.com/nostr-protocol/nips/blob/master/07.md",
+  },
+  {
+    name: "Private orders and messages · NIP-17",
+    description:
+      "Send encrypted orders and conversations directly to merchants through Nostr relays.",
+    href: "https://github.com/nostr-protocol/nips/blob/master/17.md",
+  },
+  {
+    name: "Lightning wallets · NIP-47 when connected",
+    description:
+      "Use a compatible connected wallet for optional Nostr Wallet Connect payment flows.",
+    href: "https://github.com/nostr-protocol/nips/blob/master/47.md",
+  },
+] as const
+
 function getSafeNpub(pubkey: string | null): string | null {
   if (!pubkey) return null
   const npub = pubkeyToNpub(pubkey)
@@ -31,6 +58,7 @@ function AboutPage() {
       commitUrl={getCommitUrl(conduitBuildInfo)}
       contributors={repositoryContributorSnapshot}
       supportUrl={buildBugReportUrl({ app: "market", route: "/about" })}
+      protocols={protocols}
       identity={{
         sourceName: app.name,
         handlerAddress: getConduitNip89HandlerAddress("market"),

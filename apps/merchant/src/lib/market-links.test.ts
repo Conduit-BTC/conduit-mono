@@ -6,9 +6,8 @@ import {
 import {
   getEventMarketMerchantFilterUrl,
   getEventMarketUrl,
-  getProfileUrl,
+  getIdentityUrl,
   getProductUrl,
-  getStorefrontUrl,
   inferMarketOrigin,
 } from "./market-links"
 
@@ -26,11 +25,8 @@ test("uses the Market app as the canonical production origin", () => {
   expect(inferMarketOrigin()).toBe("https://shop.conduit.market")
 })
 
-test("builds storefront and profile links on the Market app", () => {
-  expect(getStorefrontUrl(pubkey)).toBe(
-    `https://shop.conduit.market/store/${npub}`
-  )
-  expect(getProfileUrl(pubkey)).toBe(`https://shop.conduit.market/u/${npub}`)
+test("builds one public identity link on the Market app", () => {
+  expect(getIdentityUrl(pubkey)).toBe(`https://shop.conduit.market/${npub}`)
 })
 
 test("builds canonical event catalog links on the Market app", () => {
