@@ -15,6 +15,7 @@ import {
   allowsGlobalProductSearch,
   getBrowseSearchKey,
   getGlobalProductSearchQueryKey,
+  getMarketBrowseSearchCandidates,
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
   isMarketBrowseRefreshStale,
@@ -108,6 +109,7 @@ export function useMarketBrowseModel({
         authenticatedPubkey: status === "connected" ? pubkey : null,
         shouldContinue: () => !signal.aborted && shouldContinueAccountRead(),
         textQuery: normalizedSearchQuery,
+        searchIndex: true,
         authorPubkeys: catalogAuthorPubkeys,
         sort: "newest",
         readPolicy: {
@@ -131,6 +133,22 @@ export function useMarketBrowseModel({
     return families
   }, [globalSearchQuery.data, productsQuery.familiesByProductId])
   const productData = useMemo(
+    () =>
+      globalSearchEnabled
+        ? getMarketBrowseSearchCandidates(
+            productsQuery.products,
+            globalSearchProducts,
+            normalizedSearchQuery
+          )
+        : productsQuery.products,
+    [
+      globalSearchEnabled,
+      globalSearchProducts,
+      normalizedSearchQuery,
+      productsQuery.products,
+    ]
+  )
+  const merchantCandidateProducts = useMemo(
     () =>
       globalSearchEnabled
         ? mergeProductSearchResults(
@@ -188,19 +206,25 @@ export function useMarketBrowseModel({
     refetch,
   }
   const allMerchantPubkeys = useMemo(() => {
-    if (productData.length === 0) return []
+    if (merchantCandidateProducts.length === 0) return []
     const set = new Set<string>()
-    for (const product of productData) set.add(product.pubkey)
+    for (const product of merchantCandidateProducts) set.add(product.pubkey)
     return Array.from(set).sort()
-  }, [productData])
+  }, [merchantCandidateProducts])
   const filteredProducts = useMemo(
     () =>
       filterProductsByFacets(productData, {
-        q: search.q,
+        q: globalSearchEnabled ? undefined : search.q,
         merchants: selectedMerchants,
         tags: selectedTags,
       }),
-    [productData, search.q, selectedMerchants, selectedTags]
+    [
+      globalSearchEnabled,
+      productData,
+      search.q,
+      selectedMerchants,
+      selectedTags,
+    ]
   )
   const hasUnavailablePriceForSort = useMemo(
     () =>
@@ -254,26 +278,32 @@ export function useMarketBrowseModel({
   const categoryFacetProducts = useMemo(
     () =>
       filterProductsByFacets(productData, {
-        q: search.q,
+        q: globalSearchEnabled ? undefined : search.q,
         merchants: selectedMerchants,
       }),
-    [productData, search.q, selectedMerchants]
+    [globalSearchEnabled, productData, search.q, selectedMerchants]
   )
   const categoryFacetOptions = useMemo(
     () =>
       getCategoryFacetOptions(productData, {
-        q: search.q,
+        q: globalSearchEnabled ? undefined : search.q,
         merchants: selectedMerchants,
         tags: selectedTags,
       }),
-    [productData, search.q, selectedMerchants, selectedTags]
+    [
+      globalSearchEnabled,
+      productData,
+      search.q,
+      selectedMerchants,
+      selectedTags,
+    ]
   )
   const storeFacetOptions = useMemo(
     () =>
       getStoreFacetOptions(
         productData,
         {
-          q: search.q,
+          q: globalSearchEnabled ? undefined : search.q,
           merchants: selectedMerchants,
           tags: selectedTags,
         },
@@ -281,6 +311,7 @@ export function useMarketBrowseModel({
       ),
     [
       getMerchantIdentity,
+      globalSearchEnabled,
       productData,
       search.q,
       selectedMerchants,
@@ -296,18 +327,18 @@ export function useMarketBrowseModel({
     const query = search.q?.trim() ?? ""
     if (!query) return []
     return filterSellersByName(
-      groupDiscoveredSellers(productData),
+      groupDiscoveredSellers(merchantCandidateProducts),
       getMerchantIdentity,
       query
     )
-  }, [getMerchantIdentity, productData, search.q])
+  }, [getMerchantIdentity, merchantCandidateProducts, search.q])
   const storeFacetSortProducts = useMemo(
     () =>
       filterProductsByFacets(productData, {
-        q: search.q,
+        q: globalSearchEnabled ? undefined : search.q,
         tags: selectedTags,
       }),
-    [productData, search.q, selectedTags]
+    [globalSearchEnabled, productData, search.q, selectedTags]
   )
   const visibleStoreFacetOptions = useMemo(
     () =>

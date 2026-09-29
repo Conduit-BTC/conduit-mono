@@ -11,7 +11,7 @@ import {
   type Product,
   type Profile,
 } from "@conduit/core"
-import type { FacetOption } from "./facets"
+import { filterProductsByFacets, type FacetOption } from "./facets"
 import { compareCommercePrices, getComparablePriceValue } from "./pricing"
 import { diversifyMerchantProductOrder } from "./productFeedDiversity"
 import {
@@ -191,6 +191,17 @@ export function mergeProductSearchResults(
   for (const product of catalogProducts) byId.set(product.id, product)
   for (const product of searchProducts) byId.set(product.id, product)
   return Array.from(byId.values())
+}
+
+export function getMarketBrowseSearchCandidates(
+  catalogProducts: readonly Product[],
+  searchProducts: readonly Product[],
+  query: string
+): Product[] {
+  return mergeProductSearchResults(
+    filterProductsByFacets([...catalogProducts], { q: query }),
+    searchProducts
+  )
 }
 
 export function isPriceSort(sort: MarketBrowseSortOption | undefined): boolean {

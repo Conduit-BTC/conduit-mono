@@ -162,8 +162,8 @@ function createCache(
 }
 
 describe("shopper trust evidence", () => {
-  it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, and invoice stores", () => {
-    expect(db.verno).toBe(19)
+  it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, invoice, and Spark recovery stores", () => {
+    expect(db.verno).toBe(22)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
@@ -173,11 +173,16 @@ describe("shopper trust evidence", () => {
         "accountNetworkLocalState",
         "ownContactListSnapshots",
         "eventMarketEvidence",
+        "eventMarketRosterEvidence",
+        "eventMarketMerchantDecisionJobs",
         "wallets",
         "walletCredentials",
         "shippingOptionFrontiers",
         "merchantPendingInvoices",
         "shoppingCarts",
+        "checkoutSparkPlanBindings",
+        "checkoutSparkReconciliations",
+        "checkoutSparkRetirements",
       ])
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
@@ -185,6 +190,8 @@ describe("shopper trust evidence", () => {
     expect(db.accountNetworkLocalState.schema.primKey.name).toBe("pubkey")
     expect(db.ownContactListSnapshots.schema.primKey.name).toBe("pubkey")
     expect(db.eventMarketEvidence.schema.primKey.name).toBe("id")
+    expect(db.eventMarketRosterEvidence.schema.primKey.name).toBe("id")
+    expect(db.eventMarketMerchantDecisionJobs.schema.primKey.name).toBe("id")
     expect(db.wallets.schema.primKey.name).toBe("id")
     expect(db.wallets.schema.indexes).toHaveLength(0)
     expect(db.walletCredentials.schema.primKey.name).toBe("walletId")
