@@ -1,18 +1,25 @@
+import {
+  EventFulfillmentChoice,
+  type EventFulfillmentSelection,
+} from "@conduit/ui"
+import { hasEventShippingChoice } from "../../lib/event-fulfillment-choice"
 import { ChevronDown, SearchX, ShoppingCart, Store } from "lucide-react"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   buildMarketProductShareUrl,
   encodeEventMarketNaddr,
   buildProductDetailActionTelemetryProperties,
+  createEventMarketPickupSnapshot,
   formatNpub,
   getListingSafetyDisplay,
   getProfileName,
   isCommerceReadIncomplete,
-  pubkeyToNpub,
-  recordBrowserTelemetryEvent,
+  parseAddressableCoordinate,
   readEventMarketProduct,
   readEventMarketRoster,
+  pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   useAuth,
   useConduitSession,
   useProfile,
@@ -25,6 +32,12 @@ import {
   AvatarImage,
   Badge,
   Button,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   getResultPresentation,
   RefreshChip,
   ShareLinkButton,
@@ -56,7 +69,7 @@ import {
 } from "../../hooks/useProgressiveProducts"
 import { getProductAddAvailability, selectCartLine } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
-import { getPickupHandoffSummary } from "../../lib/pickup-handoff"
+import { getFuturePickupHandoffSummary } from "../../lib/pickup-handoff"
 import {
   cartItemInputFromProductSelection,
   getProductSelection,
@@ -64,6 +77,15 @@ import {
 } from "../../lib/productVariations"
 
 export const Route = createFileRoute("/products/$productId")({
+  validateSearch: (
+    raw: Record<string, unknown>
+  ): { event?: string; occurrence?: string } => ({
+    ...(typeof raw.event === "string" ? { event: raw.event } : {}),
+    ...(typeof raw.occurrence === "string" &&
+    parseAddressableCoordinate(raw.occurrence, [31922, 31923])
+      ? { occurrence: raw.occurrence }
+      : {}),
+  }),
   component: ProductPage,
 })
 
@@ -95,6 +117,7 @@ function getMarketProductShareUrl(
 }
 
 function ProductPage() {
+  const navigate = useNavigate({ from: Route.fullPath })
   const { authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
@@ -106,6 +129,8 @@ function ProductPage() {
   const accountPubkey = authenticatedPubkey
   const cart = useCart()
   const { productId } = Route.useParams()
+  const { event: eventMarketReference, occurrence: selectedOccurrence } =
+    Route.useSearch()
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
   const [selectedProductId, setSelectedProductId] = useState("")
   const [quantity, setQuantity] = useState(1)
@@ -162,6 +187,45 @@ function ProductPage() {
   const selectedProduct = product
     ? getProductSelection(product, family, selectedProductId)
     : null
+  const eventMarketQuery = useQuery({
+    queryKey: [
+      "product-event-market",
+      eventMarketReference,
+      selectedProduct?.id,
+      session.relayScope,
+      authenticatedPubkey,
+    ],
+    queryFn: async ({ signal }) => {
+      const marketRead = await readEventMarketRoster({
+        reference: eventMarketReference!,
+        authenticatedPubkey,
+        signal,
+      })
+      const productRead = await readEventMarketProduct({
+        marketRead,
+        productCoordinate: selectedProduct!.id,
+        authenticatedPubkey,
+        signal,
+      })
+      return { marketRead, productRead }
+    },
+    enabled:
+      !!eventMarketReference && !!selectedProduct && session.relaySettingsReady,
+    retry: false,
+  })
+  const [eventFulfillmentChoice, setEventFulfillmentChoice] =
+    useState<EventFulfillmentSelection>("event_market_pickup")
+  const eventMarketFulfillment = (() => {
+    if (!eventMarketReference || !eventMarketQuery.data) return null
+    try {
+      return createEventMarketPickupSnapshot({
+        ...eventMarketQuery.data,
+        selectedOccurrenceCoordinate: selectedOccurrence,
+      })
+    } catch {
+      return null
+    }
+  })()
   const productCartFulfillment = useProductCartFulfillment(
     selectedProduct,
     shopperPricing.quote
@@ -171,7 +235,11 @@ function ProductPage() {
     ? getListingSafetyDisplay(listingSafety)
     : null
   const productUnavailable =
-    !!product && !!listingSafety && !productQuery.isMarketVisible
+    !!product &&
+    !!listingSafety &&
+    !productQuery.isMarketVisible &&
+    (!eventMarketReference ||
+      (!eventMarketQuery.isPending && !eventMarketFulfillment))
   const productSoldOut = selectedProduct?.stock === 0
 
   const merchantProfile = useProfile(product?.pubkey, {
@@ -219,45 +287,61 @@ function ProductPage() {
     : ""
   const merchantNip05 = getProfileNip05(merchantProfile.data)
   const productCartResolution = productCartFulfillment.resolution
-  const productPickupHandoff =
-    productCartResolution?.status === "pickup"
-      ? getPickupHandoffSummary(productCartResolution.fulfillment)
-      : null
+  const productPickupHandoff = eventMarketFulfillment
+    ? getFuturePickupHandoffSummary(eventMarketFulfillment)
+    : null
   const pickupHandlerIdentity = useEventActorIdentity(
     productPickupHandoff?.handlerPubkey
   )
-  const productCartCandidate = productCartResolution
-    ? productCartResolution.status === "pickup"
+  const ordinaryProductCartCandidate =
+    productCartResolution?.status === "standard"
       ? cartItemInputFromProductSelection(
           product!,
           productCartResolution.product,
-          productCartResolution.fulfillment
+          { type: productCartResolution.type }
         )
-      : productCartResolution.status === "standard"
-        ? cartItemInputFromProductSelection(
-            product!,
-            productCartResolution.product,
-            { type: productCartResolution.type }
-          )
-        : null
-    : null
+      : null
+  const productCartCandidate =
+    eventMarketReference && selectedProduct
+      ? eventFulfillmentChoice === "shipping" &&
+        hasEventShippingChoice(selectedProduct)
+        ? {
+            ...cartItemInputFromProductSelection(product!, selectedProduct, {
+              type: "shipping",
+            }),
+            eventMarketContext: eventMarketFulfillment
+              ? {
+                  marketCoordinate: eventMarketFulfillment.market.coordinate,
+                  calendarCoordinate:
+                    eventMarketFulfillment.calendar.coordinate,
+                }
+              : undefined,
+          }
+        : eventMarketFulfillment
+          ? cartItemInputFromProductSelection(
+              product!,
+              selectedProduct,
+              eventMarketFulfillment
+            )
+          : null
+      : ordinaryProductCartCandidate
   const cartItem = productCartCandidate
     ? selectCartLine(cart.items, productCartCandidate)
     : undefined
   const productCartBlocked =
-    productCartFulfillment.isChecking ||
-    productCartResolution?.status === "blocked" ||
-    !productCartCandidate
-  const productEventNaddr =
-    productCartResolution?.status === "pickup" ||
-    productCartResolution?.status === "blocked"
-      ? productCartResolution.canonicalNaddr
-      : productCartFulfillment.candidateNaddr
-  const productFulfillmentNotice = productCartFulfillment.isChecking
-    ? "Checking current signed event pickup evidence before this listing can be added."
-    : productCartResolution?.status === "blocked"
-      ? productCartResolution.reason
-      : null
+    (eventMarketReference
+      ? eventFulfillmentChoice === "shipping"
+        ? !selectedProduct || !hasEventShippingChoice(selectedProduct)
+        : eventMarketQuery.isFetching || !eventMarketFulfillment
+      : productCartFulfillment.isChecking) || !productCartCandidate
+  const productEventNaddr = eventMarketReference
+  const productFulfillmentNotice = eventMarketReference
+    ? eventMarketQuery.isFetching
+      ? "Checking current signed Event Market participation."
+      : eventMarketFulfillment
+        ? null
+        : "This product is not currently eligible at this Event Market. Review the event catalog or try again."
+    : null
   const showPickupIdentityNotice =
     !!productPickupHandoff &&
     !!pickupHandlerIdentity &&
@@ -270,7 +354,8 @@ function ProductPage() {
   )
   const priceDisplay = selectedProduct
     ? shopperPricing.formatPrice(selectedProduct, {
-        allowZero: productCartResolution?.status === "pickup",
+        allowZero:
+          productCartCandidate?.fulfillment?.type === "event_market_pickup",
       })
     : null
   const updatedLabel = product
@@ -290,12 +375,22 @@ function ProductPage() {
           (variation) => variation.product.id === selectedProduct.id
         )?.sourceRelayUrls ?? [])
       : productQuery.sourceRelayUrls
-  const productShareUrl = selectedProduct
+  const ordinaryProductShareUrl = selectedProduct
     ? getMarketProductShareUrl(
         selectedProduct.id,
         selectedProductSourceRelayUrls
       )
     : null
+  const productShareUrl = (() => {
+    if (!ordinaryProductShareUrl || !eventMarketReference) {
+      return ordinaryProductShareUrl
+    }
+    const url = new URL(ordinaryProductShareUrl)
+    url.searchParams.set("event", eventMarketReference)
+    if (selectedOccurrence)
+      url.searchParams.set("occurrence", selectedOccurrence)
+    return url.toString()
+  })()
   const productPresenceCount = useProductLivePresenceCount({
     merchantPubkey: selectedProduct?.pubkey,
     productCanonicalId: selectedProduct?.id,
@@ -753,6 +848,14 @@ function ProductPage() {
                   ) : null}
                 </div>
 
+                {eventMarketReference &&
+                selectedProduct?.format === "physical" ? (
+                  <EventFulfillmentChoice
+                    value={eventFulfillmentChoice}
+                    onChange={setEventFulfillmentChoice}
+                    shippingAvailable={hasEventShippingChoice(selectedProduct)}
+                  />
+                ) : null}
                 <LivePresenceIndicator
                   count={productPresenceCount}
                   pageType="product"
@@ -843,6 +946,49 @@ function ProductPage() {
                     </button>
                   </div>
 
+                  {eventMarketQuery.data?.marketRead.schedule?.kind ===
+                  "series" ? (
+                    <div className="min-w-[12rem] space-y-1">
+                      <Label htmlFor="product-event-date">Choose date</Label>
+                      <Select
+                        value={selectedOccurrence ?? ""}
+                        onValueChange={(coordinate) =>
+                          void navigate({
+                            search: {
+                              event: eventMarketReference,
+                              occurrence: coordinate,
+                            },
+                            replace: true,
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          id="product-event-date"
+                          aria-label="Choose date"
+                        >
+                          <SelectValue placeholder="Confirm pickup date" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {eventMarketQuery.data.marketRead.schedule.occurrences.map(
+                            (entry) => (
+                              <SelectItem
+                                key={entry.occurrence.coordinate}
+                                value={entry.occurrence.coordinate}
+                                disabled={
+                                  entry.coverage !== "complete" ||
+                                  entry.occurrence.end <= Date.now()
+                                }
+                              >
+                                {new Date(
+                                  entry.occurrence.start
+                                ).toLocaleString()}
+                              </SelectItem>
+                            )
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
                   <Button
                     className="min-w-[12rem] flex-1"
                     disabled={
@@ -852,15 +998,17 @@ function ProductPage() {
                   >
                     {productSoldOut
                       ? "Sold out"
-                      : productCartFulfillment.isChecking
-                        ? "Checking event pickup"
-                        : productCartResolution?.status === "blocked"
+                      : eventMarketReference && eventMarketQuery.isFetching
+                        ? "Checking Event Market"
+                        : eventMarketReference && !eventMarketFulfillment
                           ? "Review event catalog"
-                          : productAddAvailability.remainingStock === 0
-                            ? "Stock limit reached"
-                            : cartQuantity > 0
-                              ? `Add more (${cartQuantity} in cart)`
-                              : `Add ${quantity} to cart`}
+                          : productCartFulfillment.isChecking
+                            ? "Checking event pickup"
+                            : productAddAvailability.remainingStock === 0
+                              ? "Stock limit reached"
+                              : cartQuantity > 0
+                                ? `Add more (${cartQuantity} in cart)`
+                                : `Add ${quantity} to cart`}
                   </Button>
                 </div>
 
@@ -888,6 +1036,11 @@ function ProductPage() {
                       <Link
                         to="/events/$collectionRef"
                         params={{ collectionRef: productEventNaddr }}
+                        search={
+                          selectedOccurrence
+                            ? { occurrence: selectedOccurrence }
+                            : {}
+                        }
                         className="font-medium text-secondary-400 hover:text-secondary-300"
                       >
                         View event catalog

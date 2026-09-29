@@ -8,6 +8,7 @@ import { matchFilter, type Filter } from "nostr-tools"
 import {
   buildEventMarketRosterDraft,
   buildEventMarketAuthorizationDraft,
+  resolveEventMarketAuthorization,
   getEventMarketCandidateFilters,
   parseEventMarketRosterEvent,
   parseEventMarketAuthorizationEvent,
@@ -15,12 +16,12 @@ import {
   resolveEventMarketCalendar,
   resolveEventMarketProduct,
   resolveEventMarketRoster,
-  resolveEventMarketAuthorization,
   readEventMarketRoster,
   readEventMarketAuthorization,
   readEventMarketProduct,
-  readEventMarketReapprovalPreview,
   readEventMarketCatalog,
+  readEventMarketOrderEvidenceByIds,
+  previewEventMarketMerchantProducts,
   createEventMarketPickupSnapshot,
   type EventMarketMerchantRow,
 } from "@conduit/core"
@@ -67,6 +68,8 @@ function grant(createdAt = 102): SignedPublicNostrEvent {
     marketCoordinate,
     merchantPubkey: merchant,
     state: "active",
+    sequence: 0,
+    parentIds: [],
   })
   return sign(organizerSecret, draft.kind, draft.tags, createdAt)
 }
@@ -99,6 +102,30 @@ const merchantRow: EventMarketMerchantRow = {
   pubkey: merchant,
   mode: "merchant_present",
   assignment: "Booth 12",
+}
+
+const grantEvent = (() => {
+  const draft = buildEventMarketAuthorizationDraft({
+    marketCoordinate,
+    merchantPubkey: merchant,
+    state: "active",
+    sequence: 0,
+    parentIds: [],
+  })
+  return sign(organizerSecret, draft.kind, draft.tags, 99)
+})()
+const authorization = resolveEventMarketAuthorization({
+  marketCoordinate,
+  merchantPubkey: merchant,
+  transitions: [grantEvent],
+})
+const authorizationRead = {
+  marketCoordinate,
+  merchantPubkey: merchant,
+  resolution: authorization,
+  coverage: "complete" as const,
+  retained: true,
+  actionable: true,
 }
 
 describe("experimental Event Market roster", () => {
@@ -249,6 +276,7 @@ describe("experimental Event Market roster", () => {
     const first = product(merchantSecret, merchant, "soap", 100)
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate,
         revisions: [first],
@@ -257,6 +285,7 @@ describe("experimental Event Market roster", () => {
     const spam = product(spammerSecret, spammer, "spam", 100)
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate: `30402:${spammer}:spam`,
         revisions: [spam],
@@ -265,6 +294,7 @@ describe("experimental Event Market roster", () => {
     const hidden = product(merchantSecret, merchant, "soap", 101, true, true)
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate,
         revisions: [first, hidden],
@@ -273,6 +303,7 @@ describe("experimental Event Market roster", () => {
     const untagged = product(merchantSecret, merchant, "soap", 102, false)
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate,
         revisions: [first, untagged],
@@ -289,6 +320,7 @@ describe("experimental Event Market roster", () => {
     )
     expect(
       resolveEventMarketProduct({
+        authorization,
         market,
         productCoordinate,
         revisions: [first],
@@ -298,6 +330,7 @@ describe("experimental Event Market roster", () => {
     const revoked = parseEventMarketRosterEvent(roster([], 103))!
     expect(
       resolveEventMarketProduct({
+        authorization,
         market: revoked,
         productCoordinate,
         revisions: [first],
@@ -306,6 +339,7 @@ describe("experimental Event Market roster", () => {
     const reapproved = parseEventMarketRosterEvent(roster([merchantRow], 104))!
     expect(
       resolveEventMarketProduct({
+        authorization,
         market: reapproved,
         productCoordinate,
         revisions: [first],
@@ -396,6 +430,7 @@ describe("experimental Event Market roster", () => {
         }),
         load: async () => [untagged],
         retain: async () => undefined,
+        authorization: async () => authorizationRead,
       }
     )
     expect(read.resolution.state).toBe("untagged")
@@ -403,7 +438,7 @@ describe("experimental Event Market roster", () => {
     expect(read.actionable).toBe(false)
   })
 
-  it("discovers only approved candidates after the signed roster and resolves newer untagged evidence", async () => {
+  it("filters discovered candidates by the signed roster and known newer untagged evidence", async () => {
     const approved = roster([merchantRow])
     const calendar = sign(
       organizerSecret,
@@ -467,11 +502,12 @@ describe("experimental Event Market roster", () => {
       (call) =>
         call.kinds.includes(30402) && call.eventTag?.includes(marketCoordinate)
     )
-    expect(candidateCall?.authors).toEqual([merchant])
-    expect(calls[0]?.authors).toEqual([organizer])
+    expect(candidateCall?.authors).toEqual([])
+    expect(calls.filter((call) => call.kinds.includes(30402))).toHaveLength(1)
+    expect(calls.every((call) => !call.kinds.includes(3841))).toBe(true)
   })
 
-  it("keeps an eligible product visible but marks partial authorization coverage", async () => {
+  it("keeps a signed candidate visible without reading authorization", async () => {
     const approved = roster([merchantRow])
     const calendar = sign(
       organizerSecret,
@@ -530,10 +566,10 @@ describe("experimental Event Market roster", () => {
       }
     )
     expect(read.products).toHaveLength(1)
-    expect(read.products[0]?.resolution.state).toBe("eligible")
-    expect(read.products[0]?.authorization?.resolution.state).toBe("active")
+    expect(read.products[0]?.resolution.state).toBe("candidate")
+    expect(read.products[0]).not.toHaveProperty("authorization")
     expect(read.products[0]?.actionable).toBe(false)
-    expect(read.coverage).toBe("partial")
+    expect(read.coverage).toBe("complete")
   })
 
   for (const transitions of [128, 130]) {
@@ -544,7 +580,9 @@ describe("experimental Event Market roster", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: index % 2 === 0 ? "active" : "revoked",
-          parents: [parseEventMarketAuthorizationEvent(history.at(-1)!)!],
+          sequence:
+            parseEventMarketAuthorizationEvent(history.at(-1)!)!.sequence + 1,
+          parentIds: [history.at(-1)!.id],
         })
         history.push(sign(organizerSecret, draft.kind, draft.tags, 102 + index))
       }
@@ -615,10 +653,14 @@ describe("experimental Event Market roster", () => {
         { reference: marketCoordinate },
         dependencies
       )
-      expect(catalog.coverage).toBe(
-        transitions === 128 ? "complete" : "partial"
+      expect(catalog.coverage).toBe("complete")
+      expect(catalog.products).toHaveLength(1)
+      expect(catalog.products[0]?.actionable).toBe(false)
+      const exact = await readEventMarketProduct(
+        { marketRead: catalog.marketRead, productCoordinate },
+        dependencies
       )
-      expect(catalog.products).toHaveLength(transitions === 128 ? 1 : 0)
+      expect(exact.actionable).toBe(transitions === 128)
     })
   }
 
@@ -626,6 +668,7 @@ describe("experimental Event Market roster", () => {
     const currentMarket = parseEventMarketRosterEvent(roster([merchantRow]))!
     const signedProduct = product(merchantSecret, merchant, "soap", 100)
     const currentProduct = resolveEventMarketProduct({
+      authorization,
       market: currentMarket,
       productCoordinate,
       revisions: [signedProduct],
@@ -658,18 +701,7 @@ describe("experimental Event Market roster", () => {
       coverage: "complete" as const,
       retained: true,
       actionable: true,
-      authorization: {
-        marketCoordinate,
-        merchantPubkey: merchant,
-        resolution: resolveEventMarketAuthorization({
-          marketCoordinate,
-          merchantPubkey: merchant,
-          transitions: [grant()],
-        }),
-        coverage: "complete" as const,
-        retained: true,
-        observedRelayUrls: ["wss://example.com"],
-      },
+      authorization: authorizationRead,
     }
     const snapshot = createEventMarketPickupSnapshot({
       marketRead,
@@ -692,53 +724,77 @@ describe("experimental Event Market roster", () => {
     ).toThrow()
   })
 
-  it("previews a removed merchant's current tagged products without granting admission", async () => {
-    const removed = roster([], 100)
-    const calendar = sign(
-      organizerSecret,
-      31923,
-      [
-        ["d", "fair"],
-        ["title", "Fair"],
-        ["start", "1790000000"],
-        ["D", "20717"],
-      ],
-      100
+  it("retrieves the exact signed order record after a newer roster revision", async () => {
+    const original = roster([merchantRow], 100)
+    const newer = roster([], 101, original.id)
+    const read = await readEventMarketOrderEvidenceByIds(
+      {
+        marketCoordinate,
+        merchantPubkey: merchant,
+        eventIds: [original.id],
+      },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async () => ({
+          events: [newer],
+          relays: [{ relayUrl: "wss://example.com", status: "success" }],
+        }),
+        load: async () => [original],
+        retain: async () => undefined,
+      }
     )
-    const tagged = product(merchantSecret, merchant, "soap", 100)
-    const dependencies = {
-      plan: async () => ({
-        relayUrls: ["wss://example.com"],
-        candidateRelayUrls: ["wss://example.com"],
-        maxRelayAttempts: 1,
-        ownerSelectedRelayUrls: [],
-        appRelayUrls: ["wss://example.com"],
-        personalRelayUrls: [],
-        independentRelayUrls: [],
-        relayListState: "missing" as const,
-        relayHintTruncated: false,
-      }),
-      fetch: async (filter: { kinds?: number[] }) => ({
-        events: filter.kinds?.includes(30409)
-          ? [removed]
-          : filter.kinds?.includes(31923)
-            ? [calendar]
-            : filter.kinds?.includes(30402)
-              ? [tagged]
-              : [],
-        relays: [{ relayUrl: "wss://example.com", status: "success" as const }],
-      }),
-      load: async () => [] as SignedPublicNostrEvent[],
-      retain: async () => undefined,
-    }
-    const preview = await readEventMarketReapprovalPreview(
-      { marketCoordinate, merchantPubkey: merchant },
-      dependencies
+    expect(read.events.map((event) => event.id)).toEqual([original.id])
+    expect(read.coverage).toBe("stale")
+  })
+
+  it("previews current tagged products before reapproval without admitting old revisions", async () => {
+    const active = product(merchantSecret, merchant, "soap", 100)
+    const oldTagged = product(merchantSecret, merchant, "jam", 100)
+    const untagged = product(merchantSecret, merchant, "jam", 101, false)
+    const preview = await previewEventMarketMerchantProducts(
+      {
+        marketCoordinate,
+        merchantPubkey: merchant,
+      },
+      {
+        plan: async () => ({
+          relayUrls: ["wss://example.com"],
+          candidateRelayUrls: ["wss://example.com"],
+          maxRelayAttempts: 1,
+          ownerSelectedRelayUrls: [],
+          appRelayUrls: ["wss://example.com"],
+          personalRelayUrls: [],
+          independentRelayUrls: [],
+          relayListState: "missing",
+          relayHintTruncated: false,
+        }),
+        fetch: async (filter) => ({
+          events: filter.kinds?.includes(30402 as never)
+            ? "#a" in filter
+              ? [active, oldTagged]
+              : [active, oldTagged, untagged]
+            : [],
+          relays: [{ relayUrl: "wss://example.com", status: "success" }],
+        }),
+        load: async () => [],
+        retain: async () => undefined,
+      }
     )
-    expect(preview.complete).toBe(true)
-    expect(preview.products.map((entry) => entry.id)).toEqual([
+    expect(preview.products.map((item) => item.coordinate)).toEqual([
       productCoordinate,
     ])
+    expect(preview.candidateCount).toBe(2)
+    expect(preview.coverage).toBe("complete")
   })
 })
 
@@ -805,7 +861,8 @@ describe("retained future Event Market evidence", () => {
         marketCoordinate,
         merchantPubkey: merchant,
         state: "revoked",
-        parents: [parseEventMarketAuthorizationEvent(initial)!],
+        sequence: parseEventMarketAuthorizationEvent(initial)!.sequence + 1,
+        parentIds: [initial.id],
       })
       previous = sign(organizerSecret, draft.kind, draft.tags, 105)
       state.retained.set(initial.id, initial)
@@ -835,8 +892,9 @@ describe("retained future Event Market evidence", () => {
         marketCoordinate,
         merchantPubkey: merchant,
         state: "active",
-        parents: [parseEventMarketAuthorizationEvent(previous)!],
-        repairs: [{ deletionId: erased.id, targetEventId: previous.id }],
+        sequence: parseEventMarketAuthorizationEvent(previous)!.sequence + 1,
+        parentIds: [previous.id],
+        repairs: [{ deletionId: erased.id, targetId: previous.id }],
       })
       current = sign(organizerSecret, draft.kind, draft.tags, 112)
     } else if (scope === "roster") {
@@ -881,12 +939,13 @@ describe("retained future Event Market evidence", () => {
         expect(catalog.products).toHaveLength(1)
         expect(catalog.products[0]).toMatchObject({
           coverage: "complete",
-          authorization: {
-            resolution: { state: "active" },
-            coverage: "complete",
-          },
-          actionable: true,
+          resolution: { state: "candidate" },
+          actionable: false,
         })
+        const { exact } = await exactProduct(state)
+        expect(exact.authorization?.resolution.state).toBe("active")
+        expect(exact.authorization?.coverage).toBe("complete")
+        expect(exact.actionable).toBe(true)
         expect(state.retained.has(state.erased.id)).toBe(true)
         expect(state.retained.has(state.previous.id)).toBe(true)
       }
@@ -935,7 +994,10 @@ describe("retained future Event Market evidence", () => {
         { reference: marketCoordinate },
         state.dependencies
       )
-      expect(catalog.products).toHaveLength(0)
+      expect(catalog.products).toHaveLength(
+        scope === "authorization" || scope === "calendar" ? 1 : 0
+      )
+      expect(catalog.products.every((entry) => !entry.actionable)).toBe(true)
     })
   }
 
@@ -954,14 +1016,16 @@ describe("retained future Event Market evidence", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "active",
-          parents: [parseEventMarketAuthorizationEvent(state.previous)!],
+          sequence:
+            parseEventMarketAuthorizationEvent(state.previous)!.sequence + 1,
+          parentIds: [state.previous.id],
           repairs:
             defect === "unrepaired"
               ? []
               : [
                   {
                     deletionId: state.erased.id,
-                    targetEventId: state.initial.id,
+                    targetId: state.initial.id,
                   },
                 ],
         })
@@ -988,13 +1052,13 @@ describe("retained future Event Market evidence", () => {
           ? "deleted"
           : defect
       )
-      expect(exact.resolution.state).toBe("authorization_unavailable")
+      expect(exact.resolution.state).toBe("unauthorized")
       expect(exact.actionable).toBe(false)
     })
   }
 
-  for (const failure of ["timeout", "failed", "retention"] as const) {
-    it(`keeps ${failure} evidence from making retained repaired history actionable`, async () => {
+  for (const failure of ["partial", "failed", "retention"] as const) {
+    it(`separates ${failure} source coverage from retained repaired authority`, async () => {
       const state = historyFixture("authorization")
       if (failure === "retention") {
         state.dependencies.retain = async () => {
@@ -1015,7 +1079,7 @@ describe("retained future Event Market evidence", () => {
       expect(exact.authorization?.coverage).toBe(
         failure === "failed" ? "unavailable" : "partial"
       )
-      expect(exact.actionable).toBe(false)
+      expect(exact.actionable).toBe(failure === "partial")
     })
   }
 
@@ -1028,6 +1092,8 @@ describe("retained future Event Market evidence", () => {
       marketCoordinate,
       merchantPubkey: spammer,
       state: "active",
+      sequence: 0,
+      parentIds: [],
     })
     const otherGrant = sign(
       organizerSecret,
@@ -1064,11 +1130,12 @@ describe("retained future Event Market evidence", () => {
     expect(catalog.coverage).toBe("complete")
     expect(catalog.products.map((entry) => entry.productCoordinate)).toEqual([
       productCoordinate,
+      `30402:${spammer}:soap`,
     ])
-    expect(catalog.products[0]?.actionable).toBe(true)
+    expect(catalog.products.every((entry) => !entry.actionable)).toBe(true)
   })
 
-  it("keeps a retained eligible product visible but stale after live discovery and exact reads omit it", async () => {
+  it("keeps a retained candidate visible but stale when live discovery omits it", async () => {
     const state = fixture()
     const tagged = product(merchantSecret, merchant, "soap", 100)
     state.live.push(tagged)
@@ -1076,7 +1143,7 @@ describe("retained future Event Market evidence", () => {
       { reference: marketCoordinate },
       state.dependencies
     )
-    expect(initial.products[0]?.actionable).toBe(true)
+    expect(initial.products[0]?.actionable).toBe(false)
     expect(state.retained.has(tagged.id)).toBe(true)
     state.live.splice(state.live.indexOf(tagged), 1)
 
@@ -1088,13 +1155,13 @@ describe("retained future Event Market evidence", () => {
     expect(later.products).toHaveLength(1)
     expect(later.products[0]).toMatchObject({
       productCoordinate,
-      resolution: { state: "eligible", revision: { id: tagged.id } },
+      resolution: { state: "candidate", revision: { id: tagged.id } },
       coverage: "stale",
       actionable: false,
     })
   })
 
-  it("marks omitted discovery partial even when an exact retained-product refresh succeeds", async () => {
+  it("marks cache-only discovery partial without an exact product refresh", async () => {
     const state = fixture()
     const tagged = product(merchantSecret, merchant, "soap", 100)
     state.live.push(tagged)
@@ -1113,8 +1180,8 @@ describe("retained future Event Market evidence", () => {
     )
     expect(catalog.coverage).toBe("partial")
     expect(catalog.products).toHaveLength(1)
-    expect(catalog.products[0]?.coverage).toBe("complete")
-    expect(catalog.products[0]?.actionable).toBe(true)
+    expect(catalog.products[0]?.coverage).toBe("stale")
+    expect(catalog.products[0]?.actionable).toBe(false)
   })
 
   it("does not seed retained candidates from merchants outside the current roster", async () => {
@@ -1140,7 +1207,7 @@ describe("retained future Event Market evidence", () => {
         { reference: marketCoordinate },
         state.dependencies
       )
-      expect(initial.products[0]?.actionable).toBe(true)
+      expect(initial.products[0]?.actionable).toBe(false)
       state.live.splice(state.live.indexOf(tagged), 1)
       const negative =
         change === "untagged"
@@ -1163,4 +1230,258 @@ describe("retained future Event Market evidence", () => {
       expect(exact.actionable).toBe(false)
     })
   }
+  it("uses one organizer plan and one plain candidate query regardless of roster size", async () => {
+    const rows = [
+      merchantRow,
+      ...Array.from({ length: 31 }, (_, index) => ({
+        ...merchantRow,
+        pubkey: (index + 1).toString(16).padStart(64, "0"),
+      })),
+    ]
+    const state = fixture(rows)
+    state.live.push(product(merchantSecret, merchant, "soap", 100))
+    const queries: Filter[] = []
+    const authors: string[] = []
+    const plan = state.dependencies.plan
+    const fetch = state.dependencies.fetch
+    state.dependencies.plan = async (input) => {
+      authors.push(input.organizerPubkey)
+      return plan(input)
+    }
+    state.dependencies.fetch = async (filter, options) => {
+      queries.push(filter as Filter)
+      return fetch(filter, options)
+    }
+    state.dependencies.authorization = async () => {
+      throw new Error("Discovery must not authorize products")
+    }
+    const catalog = await readEventMarketCatalog(
+      { reference: marketCoordinate },
+      state.dependencies
+    )
+    expect(authors).toEqual([organizer])
+    expect(queries.filter((filter) => filter.kinds?.includes(30402))).toEqual([
+      { kinds: [30402], "#a": [marketCoordinate], limit: 48 },
+    ])
+    expect(queries.some((filter) => filter.kinds?.includes(3841))).toBe(false)
+    expect(catalog.products[0]?.resolution.state).toBe("candidate")
+    expect(catalog.products[0]?.actionable).toBe(false)
+  })
+
+  it("emits cached signed cards before relay planning finishes", async () => {
+    const state = fixture()
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    for (const event of [...state.live, tagged])
+      state.retained.set(event.id, event)
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let observed!: () => void
+    const progress = new Promise<void>((resolve) => {
+      observed = resolve
+    })
+    const plan = state.dependencies.plan
+    let completed = false
+    state.dependencies.plan = async (input) => {
+      await blocked
+      return plan(input)
+    }
+    const read = readEventMarketCatalog(
+      {
+        reference: marketCoordinate,
+        onProgress: (catalog) => {
+          if (!completed) {
+            expect(catalog.marketRead.coverage).toBe("stale")
+            expect(catalog.products[0]).toMatchObject({
+              coverage: "stale",
+              resolution: { state: "candidate" },
+              actionable: false,
+            })
+            observed()
+          }
+        },
+      },
+      state.dependencies
+    )
+    await progress
+    completed = true
+    release()
+    await read
+  })
+
+  it("preserves live result order, filters authors locally, then fills from cache", async () => {
+    const state = fixture()
+    const first = product(merchantSecret, merchant, "first", 100)
+    const second = product(merchantSecret, merchant, "second", 101)
+    const cached = product(merchantSecret, merchant, "cached", 102)
+    const spam = product(spammerSecret, spammer, "spam", 104)
+    const hidden = product(merchantSecret, merchant, "hidden", 104, true, true)
+    const malformed = product(merchantSecret, merchant, "malformed", 104)
+    const forged = { ...malformed, content: "forged content" }
+    const untagged = product(merchantSecret, merchant, "untagged", 104, false)
+    state.retained.set(cached.id, cached)
+    const fetch = state.dependencies.fetch
+    state.dependencies.fetch = async (filter, options) => {
+      const result = await fetch(filter, options)
+      return filter.kinds?.includes(30402 as never)
+        ? { ...result, events: [spam, second, hidden, forged, untagged, first] }
+        : result
+    }
+    const catalog = await readEventMarketCatalog(
+      { reference: marketCoordinate },
+      state.dependencies
+    )
+    expect(catalog.products.map((entry) => entry.productCoordinate)).toEqual([
+      `30402:${merchant}:second`,
+      `30402:${merchant}:first`,
+      `30402:${merchant}:cached`,
+    ])
+    expect(catalog.products.map((entry) => entry.coverage)).toEqual([
+      "complete",
+      "complete",
+      "stale",
+    ])
+    expect(state.retained.has(first.id)).toBe(true)
+    expect(state.retained.has(spam.id)).toBe(false)
+  })
+
+  it("preserves semantic live matches and only fills search gaps with matching cache", async () => {
+    const state = fixture()
+    const live = sign(
+      merchantSecret,
+      30402,
+      [
+        ["d", "candle"],
+        ["title", "Wax candle"],
+        ["price", "12", "USD"],
+        ["type", "simple", "physical"],
+        ["a", marketCoordinate],
+      ],
+      100,
+      "Aromatic wax"
+    )
+    const matchingCache = product(merchantSecret, merchant, "soap", 101)
+    const otherCache = sign(
+      merchantSecret,
+      30402,
+      [
+        ["d", "unrelated"],
+        ["title", "Unrelated item"],
+        ["price", "12", "USD"],
+        ["type", "simple", "physical"],
+        ["a", marketCoordinate],
+      ],
+      102,
+      "Unrelated item"
+    )
+    state.retained.set(matchingCache.id, matchingCache)
+    state.retained.set(otherCache.id, otherCache)
+    const fetch = state.dependencies.fetch
+    state.dependencies.fetch = async (filter, options) => {
+      const result = await fetch(filter, options)
+      return filter.kinds?.includes(30402 as never)
+        ? { ...result, events: [live] }
+        : result
+    }
+    const catalog = await readEventMarketCatalog(
+      { reference: marketCoordinate, search: "soap" },
+      state.dependencies
+    )
+    expect(catalog.products.map((entry) => entry.productCoordinate)).toEqual([
+      `30402:${merchant}:candle`,
+      `30402:${merchant}:soap`,
+    ])
+  })
+
+  it("bounds lazy requests and reports more raw candidates despite whitelist underfill", async () => {
+    const state = fixture()
+    const spam = product(spammerSecret, spammer, "spam", 100)
+    const filters: Filter[] = []
+    const fetch = state.dependencies.fetch
+    state.dependencies.fetch = async (filter, options) => {
+      const result = await fetch(filter, options)
+      if (!filter.kinds?.includes(30402 as never)) return result
+      filters.push(filter as Filter)
+      return { ...result, events: Array(filter.limit).fill(spam) }
+    }
+    const catalog = await readEventMarketCatalog(
+      { reference: marketCoordinate, limit: 2, search: "  soap  " },
+      state.dependencies
+    )
+    expect(filters[0]).toEqual({
+      kinds: [30402],
+      "#a": [marketCoordinate],
+      limit: 2,
+      search: "soap",
+    })
+    expect(catalog.products).toHaveLength(0)
+    expect(catalog.hasMore).toBe(true)
+    await readEventMarketCatalog(
+      { reference: marketCoordinate, limit: 999, search: "   " },
+      state.dependencies
+    )
+    expect(filters[1]?.limit).toBe(256)
+    expect(filters[1]).not.toHaveProperty("search")
+    await readEventMarketCatalog(
+      { reference: marketCoordinate, limit: 0 },
+      state.dependencies
+    )
+    expect(filters[2]?.limit).toBe(1)
+  })
+
+  for (const change of ["untagged", "hidden", "deleted"] as const) {
+    it(`rechecks a signed ${change} learned while discovery is waiting`, async () => {
+      const state = fixture()
+      const tagged = product(merchantSecret, merchant, "soap", 100)
+      const negative =
+        change === "deleted"
+          ? sign(merchantSecret, 5, [["e", tagged.id]], 101)
+          : product(
+              merchantSecret,
+              merchant,
+              "soap",
+              101,
+              change !== "untagged",
+              change === "hidden"
+            )
+      const fetch = state.dependencies.fetch
+      state.dependencies.fetch = async (filter, options) => {
+        const result = await fetch(filter, options)
+        if (!filter.kinds?.includes(30402 as never)) return result
+        state.retained.set(negative.id, negative)
+        return { ...result, events: [tagged] }
+      }
+      const catalog = await readEventMarketCatalog(
+        { reference: marketCoordinate },
+        state.dependencies
+      )
+      expect(catalog.products).toHaveLength(0)
+    })
+  }
+
+  it("does not publish late candidate progress after the session is cancelled", async () => {
+    const state = fixture()
+    let current = true
+    let progress = 0
+    const fetch = state.dependencies.fetch
+    state.dependencies.fetch = async (filter, options) => {
+      const result = await fetch(filter, options)
+      if (filter.kinds?.includes(30402 as never)) current = false
+      return result
+    }
+    await expect(
+      readEventMarketCatalog(
+        {
+          reference: marketCoordinate,
+          shouldContinue: () => current,
+          onProgress: () => {
+            progress++
+          },
+        },
+        state.dependencies
+      )
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(progress).toBe(0)
+  })
 })

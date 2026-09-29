@@ -7,6 +7,8 @@ import {
   getPublicKey,
   type Event,
 } from "nostr-tools/pure"
+import { buildEventMarketRosterDraft } from "../packages/core/src/protocol/event-market-roster"
+import { buildEventMarketAuthorizationDraft } from "../packages/core/src/protocol/event-market-authorization"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
 import type { CartPurchaseClaim } from "../apps/market/src/lib/cart-repository"
 import { publishTestRelayEvents } from "./helpers/auth"
@@ -17,7 +19,10 @@ const coreBrowserModulePath = `/@fs${fileURLToPath(
   new URL("../packages/core/src/index.ts", import.meta.url)
 )}`
 
-const MERCHANT = "a".repeat(64)
+const MERCHANT_SECRET = generateSecretKey()
+const MERCHANT = getPublicKey(MERCHANT_SECRET)
+const ORGANIZER_SECRET = generateSecretKey()
+const ORGANIZER = getPublicKey(ORGANIZER_SECRET)
 const STOCK_REFRESH_SECRET = generateSecretKey()
 const STOCK_REFRESH_MERCHANT = getPublicKey(STOCK_REFRESH_SECRET)
 
@@ -62,7 +67,7 @@ async function seedRawLegacyCart(
 async function readCanonicalLines(
   page: Page
 ): Promise<
-  Array<{ id: string; title: string; quantity: number; costSats?: number }>
+  Array<{ id: string; title: string; quantity: number; priceSats?: number }>
 > {
   return page.evaluate(
     () =>
@@ -71,7 +76,7 @@ async function readCanonicalLines(
           id: string
           title: string
           quantity: number
-          costSats?: number
+          priceSats?: number
         }>
       >((resolve, reject) => {
         const request = indexedDB.open("conduit")
@@ -90,13 +95,13 @@ async function readCanonicalLines(
                   id: string
                   item: {
                     title: string
-                    fulfillment?: { costSats?: number }
+                    priceSats?: number
                   }
                   batches: Array<{ quantity: number }>
                 }) => ({
                   id: line.id,
                   title: line.item.title,
-                  costSats: line.item.fulfillment?.costSats,
+                  priceSats: line.item.priceSats,
                   quantity: line.batches.reduce(
                     (sum, batch) => sum + batch.quantity,
                     0
@@ -177,50 +182,135 @@ function pickupItem(input: {
   product: string
   title: string
   event: "a" | "b"
+  price?: number
+  currency?: string
 }) {
-  const evidenceDigits =
-    input.event === "a" ? ["1", "2", "3", "4"] : ["5", "6", "7", "8"]
+  if (input.merchant !== MERCHANT || input.organizer !== ORGANIZER)
+    throw new Error(
+      "Signed pickup fixtures require their synthetic fixture identities."
+    )
   const createdAtOffset = input.event === "a" ? 0 : 100
   const coordinate = `30402:${input.merchant}:${input.product}`
+  const calendarCoordinate = `31923:${input.organizer}:event-${input.event}`
+  const marketCoordinate = `30409:${input.organizer}:market-${input.event}`
+  const start = 1_900_000_000 + createdAtOffset
+  const end = start + 3_600
+  const price = input.price ?? 1_000
+  const currency = input.currency ?? "SATS"
+  const market = finalizeEvent(
+    {
+      ...buildEventMarketRosterDraft({
+        dTag: `market-${input.event}`,
+        organizerPubkey: input.organizer,
+        calendarCoordinate,
+        state: "open",
+        merchants: [
+          {
+            pubkey: input.merchant,
+            mode: "organizer_handoff",
+            assignment: "Shared entrance",
+          },
+        ],
+      }),
+      created_at: 100 + createdAtOffset,
+    },
+    ORGANIZER_SECRET
+  )
+  const calendar = finalizeEvent(
+    {
+      kind: 31923,
+      created_at: 101 + createdAtOffset,
+      content: "",
+      tags: [
+        ["d", `event-${input.event}`],
+        ["title", `Event ${input.event.toUpperCase()}`],
+        ["start", String(start)],
+        ["end", String(end)],
+        ["start_tzid", "UTC"],
+        ["end_tzid", "UTC"],
+        ["location", "Fixture Hall"],
+        ["D", String(Math.floor(start / 86_400))],
+      ],
+    },
+    ORGANIZER_SECRET
+  )
+  const grant = finalizeEvent(
+    {
+      ...buildEventMarketAuthorizationDraft({
+        marketCoordinate,
+        merchantPubkey: input.merchant,
+        state: "active",
+        sequence: 0,
+        parentIds: [],
+      }),
+      created_at: 99 + createdAtOffset,
+    },
+    ORGANIZER_SECRET
+  )
+  const product = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: 102 + createdAtOffset,
+      content: input.title,
+      tags: [
+        ["d", input.product],
+        ["title", input.title],
+        ["price", String(price), currency],
+        ["type", "simple", "physical"],
+        ["a", marketCoordinate],
+      ],
+    },
+    MERCHANT_SECRET
+  )
   return {
     productId: coordinate,
     merchantPubkey: input.merchant,
     title: input.title,
-    price: 1_000,
-    currency: "SATS",
+    price,
+    currency,
+    sourcePrice: { amount: price, currency, normalizedCurrency: currency },
     priceSats: 1_000,
     format: "physical" as const,
     quantity: 1,
+    productEventId: product.id,
+    productUpdatedAt: product.created_at * 1_000,
+    eventMarketContext: { marketCoordinate, calendarCoordinate },
     fulfillment: {
-      type: "pickup" as const,
+      type: "event_market_pickup" as const,
       organizerPubkey: input.organizer,
-      product: {
-        coordinate,
-        eventId: evidenceDigits[0]!.repeat(64),
-        createdAt: 100 + createdAtOffset,
-        merchantPubkey: input.merchant,
+      merchantPubkey: input.merchant,
+      payeePubkey: input.merchant,
+      market: {
+        coordinate: marketCoordinate,
+        eventId: market.id,
+        createdAt: market.created_at * 1_000,
+        signedEvent: market,
       },
       calendar: {
-        coordinate: `31922:${input.organizer}:event-${input.event}`,
-        eventId: evidenceDigits[1]!.repeat(64),
-        createdAt: 101 + createdAtOffset,
+        coordinate: calendarCoordinate,
+        eventId: calendar.id,
+        createdAt: calendar.created_at * 1_000,
+        start: start * 1_000,
+        end: end * 1_000,
+        signedEvent: calendar,
       },
-      collection: {
-        coordinate: `30405:${input.organizer}:market-${input.event}`,
-        eventId: evidenceDigits[2]!.repeat(64),
-        createdAt: 102 + createdAtOffset,
+      grant: {
+        kind: 3841 as const,
+        pubkey: input.organizer,
+        eventId: grant.id,
+        createdAt: grant.created_at * 1_000,
+        ancestryEventIds: [grant.id],
+        observedDeletionEventIds: [],
+        signedEvidence: { tip: grant, ancestry: [grant], deletions: [] },
       },
-      option: {
-        coordinate: `30406:${input.organizer}:pickup-${input.event}`,
-        eventId: evidenceDigits[3]!.repeat(64),
-        createdAt: 103 + createdAtOffset,
-        title: "Shared entrance",
-        location: "Fixture Hall",
+      product: {
+        coordinate,
+        eventId: product.id,
+        createdAt: product.created_at * 1_000,
+        signedEvent: product,
       },
-      handoffMode: "organizer_handoff" as const,
-      handlerPubkey: input.organizer,
-      costSats: 0,
-      sourceCost: { amount: 0, currency: "SAT", normalizedCurrency: "SAT" },
+      mode: "organizer_handoff" as const,
+      assignment: "Shared entrance",
     },
   }
 }
@@ -412,17 +502,13 @@ test("delayed product quote refreshes cannot restore a line removed in another t
 }) => {
   const item = pickupItem({
     merchant: MERCHANT,
-    organizer: "b".repeat(64),
+    organizer: ORGANIZER,
     product: "quote-refresh",
     title: "Quote refresh item",
     event: "a",
-  })
-  item.fulfillment.costSats = 1_000
-  item.fulfillment.sourceCost = {
-    amount: 10,
+    price: 10,
     currency: "USD",
-    normalizedCurrency: "USD",
-  }
+  })
   await seedLegacyCart(context, { version: 2, items: [item] })
 
   const currentTab = await context.newPage()
@@ -470,10 +556,10 @@ test("delayed product quote refreshes cannot restore a line removed in another t
       quantity: _quantity,
       ...candidate
     } = renderedItem
-    candidate.fulfillment = {
-      ...candidate.fulfillment,
-      costSats: 1_250,
-    } as typeof candidate.fulfillment
+    void _cartLineId
+    void _merchantAddedAt
+    void _quantity
+    candidate.priceSats = 1_250
     const result = await repository.refreshAndIncrementCartRepositoryItem(
       renderedItem,
       candidate,
@@ -570,6 +656,9 @@ test("same-second product mutations preserve the NIP-01 cart winner @market", as
       quantity: _quantity,
       ...candidate
     } = item
+    void _cartLineId
+    void _merchantAddedAt
+    void _quantity
     const result = await repository.refreshAndIncrementCartRepositoryItem(
       item,
       {
@@ -623,6 +712,9 @@ test("same-second product mutations preserve the NIP-01 cart winner @market", as
       quantity: _quantity,
       ...candidate
     } = staleItem
+    void _cartLineId
+    void _merchantAddedAt
+    void _quantity
     const refreshed = await repository.refreshAndIncrementCartRepositoryItem(
       staleItem,
       candidate,
@@ -978,28 +1070,15 @@ test("fiat quote refreshes merge into one stock-bounded pickup line @market", as
   await page.goto(`${marketUrl}/products`)
   const base = pickupItem({
     merchant: MERCHANT,
-    organizer: "b".repeat(64),
+    organizer: ORGANIZER,
     product: "fiat-pickup",
     title: "Fiat pickup",
     event: "a",
+    price: 1,
+    currency: "USD",
   })
-  const initial = {
-    ...base,
-    stock: 2,
-    fulfillment: {
-      ...base.fulfillment,
-      costSats: 1_000,
-      sourceCost: {
-        amount: 1,
-        currency: "USD",
-        normalizedCurrency: "USD",
-      },
-    },
-  }
-  const refreshed = {
-    ...initial,
-    fulfillment: { ...initial.fulfillment, costSats: 2_000 },
-  }
+  const initial = { ...base, stock: 2, priceSats: 1_000 }
+  const refreshed = { ...initial, priceSats: 2_000 }
 
   await addCartItemThroughRepository(page, initial)
   await addCartItemThroughRepository(page, refreshed)
@@ -1009,7 +1088,7 @@ test("fiat quote refreshes merge into one stock-bounded pickup line @market", as
     expect.objectContaining({
       title: "Fiat pickup",
       quantity: 2,
-      costSats: 2_000,
+      priceSats: 2_000,
     }),
   ])
 })
@@ -1164,7 +1243,7 @@ test("mixed shipping, two events, and two merchants become separate purchasable 
   page,
 }) => {
   const merchantB = "b".repeat(64)
-  const organizer = "c".repeat(64)
+  const organizer = ORGANIZER
   await seedLegacyCart(context, {
     version: 2,
     items: [
@@ -1234,7 +1313,7 @@ test("mixed shipping, two events, and two merchants become separate purchasable 
     page.getByText("Shipping / delivery", { exact: true })
   ).toBeVisible()
   await expect(
-    page.getByText("Event pickup · Shared entrance", { exact: true })
+    page.getByText(/^Event pickup · Shared entrance · /)
   ).toHaveCount(2)
 
   await page.goto(`${marketUrl}/checkout?merchant=${MERCHANT}`)

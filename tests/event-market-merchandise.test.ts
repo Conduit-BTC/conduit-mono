@@ -10,11 +10,11 @@ import {
   __resetEventMarketMerchandiseTestOverrides,
   __setEventMarketMerchandiseTestOverrides,
   EVENT_KINDS,
-  eventMarketReadyReceiptSchema,
+  futureMarketReadyReceiptSchema,
   getEventMarketReceiptMerchandise,
-  getEventMarketPickupClaimRef,
+  getEventMarketOrderCorrelationRef,
   resolveEventMarketReceiptMerchandiseEvidence,
-  type EventMarketReadyReceiptSchema,
+  type FutureMarketReadyReceiptSchema,
 } from "@conduit/core"
 import { createInMemoryAccountNetworkLocalStateRepository } from "@conduit/core/protocol/account-network-local-state"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
@@ -23,9 +23,8 @@ const MERCHANT_SECRET = generateSecretKey()
 const ORGANIZER_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
 const ORGANIZER = getPublicKey(ORGANIZER_SECRET)
-const COLLECTION = `30405:${ORGANIZER}:market`
+const MARKET = `30409:${ORGANIZER}:market`
 const CALENDAR = `31923:${ORGANIZER}:market-day`
-const PICKUP = `30406:${ORGANIZER}:organizer-pickup`
 const CREATED_AT = 1_700_000_000
 const RELAY_URL = "wss://merchant-products.example"
 
@@ -38,8 +37,8 @@ function productEvent(dTag: string, title: string): SignedPublicNostrEvent {
         ["d", dTag],
         ["title", title],
         ["price", "1000", "SATS"],
-        ["a", COLLECTION],
-        ["shipping_option", PICKUP],
+        ["a", MARKET],
+        ["type", "simple", "physical"],
       ],
       content: title,
     },
@@ -49,20 +48,12 @@ function productEvent(dTag: string, title: string): SignedPublicNostrEvent {
 
 function receiptFor(
   products: readonly SignedPublicNostrEvent[]
-): EventMarketReadyReceiptSchema {
-  return eventMarketReadyReceiptSchema.parse({
-    version: 1,
-    type: "organizer_fulfillment_receipt",
-    state: "ready_for_pickup",
-    paymentConfirmed: true,
-    orderReady: true,
+): FutureMarketReadyReceiptSchema {
+  return futureMarketReadyReceiptSchema.parse({
+    version: 2,
+    type: "future_market_ready",
     releaseAuthorized: true,
-    claimRef: getEventMarketPickupClaimRef({
-      orderId: "private-order-id",
-      merchantPubkey: MERCHANT,
-      organizerPubkey: ORGANIZER,
-      collectionCoordinate: COLLECTION,
-    }),
+    claimRef: getEventMarketOrderCorrelationRef("private-order-id"),
     merchantPubkey: MERCHANT,
     organizerPubkey: ORGANIZER,
     calendar: {
@@ -70,16 +61,12 @@ function receiptFor(
       eventId: "a".repeat(64),
       createdAt: CREATED_AT * 1_000,
     },
-    collection: {
-      coordinate: COLLECTION,
+    market: {
+      coordinate: MARKET,
       eventId: "b".repeat(64),
       createdAt: CREATED_AT * 1_000,
     },
-    option: {
-      coordinate: PICKUP,
-      eventId: "c".repeat(64),
-      createdAt: CREATED_AT * 1_000,
-    },
+    grant: { eventId: "c".repeat(64), createdAt: CREATED_AT * 1_000 },
     items: products.map((product) => ({
       product: {
         coordinate: `${EVENT_KINDS.PRODUCT}:${MERCHANT}:${product.tags.find((tag) => tag[0] === "d")![1]}`,
@@ -87,7 +74,6 @@ function receiptFor(
         createdAt: product.created_at * 1_000,
       },
       quantity: 1,
-      variants: [],
     })),
     issuedAt: CREATED_AT + 10,
   })

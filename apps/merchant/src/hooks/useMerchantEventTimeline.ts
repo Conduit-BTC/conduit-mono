@@ -1,10 +1,8 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import {
   extractFollowPubkeys,
   getFollowPubkeys,
-  getMerchantStorefront,
-  isCommerceReadIncomplete,
   normalizePubkey,
   peekRetainedOwnFollowListSnapshot,
   readRetainedOwnFollowListSnapshot,
@@ -12,35 +10,10 @@ import {
   selectLatestFollowListEvent,
   useConduitSession,
   useAuth,
-  type EventMarketPerspectiveAuthorSource,
-  type EventMarketPerspectiveSnapshot,
   type EventMarketPerspectiveSource,
-  type FollowListCoverageState,
   type FollowListResult,
-  type PerspectiveEventMarketDiscoveryResult,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
-import {
-  listOrganizerEventMarkets,
-  parseOrganizerEventMarketReference,
-  projectMarketList,
-  resolveOrganizerEventMarketResolution,
-  retainMerchantOrganizerEventMarkets,
-  type MerchantOrganizerEventMarketsReadResult,
-} from "../lib/event-market"
-import { getMerchantProductEventContext } from "../lib/merchant-product-event-context"
-import {
-  isMerchantEventTimelineInitialLoading,
-  mergeMerchantEventTimeline,
-  qualifyMerchantEventTimelineNetwork,
-  type MerchantEventTimelineItem,
-} from "../lib/merchant-event-timeline"
-import {
-  hydrateMerchantEventRelationships,
-  prioritizeMerchantEventRelationshipReferences,
-} from "../lib/merchant-event-relationship-hydration"
-import { merchantEventTimelineQueryOptions } from "../lib/merchant-event-query"
-
 // This is the same public perspective used by Market. Merchant reads the
 // signed follow list rather than maintaining a separate organizer registry.
 export const CONDUIT_MARKET_PERSPECTIVE_PUBKEY =
@@ -49,11 +22,7 @@ export const CONDUIT_MARKET_PERSPECTIVE_PUBKEY =
 export const MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS = 60_000
 
 export interface MerchantEventTimelineDiscovery {
-  network: PerspectiveEventMarketDiscoveryResult | undefined
-  items: MerchantEventTimelineItem[]
-  sellingCollectionCoordinates: string[]
-  profileRelayHintsByPubkey: Record<string, string[]>
-  authorSource: EventMarketPerspectiveAuthorSource
+  organizerPubkeys: string[] | undefined
   isInitialLoading: boolean
   isFetching: boolean
   isRefreshStale: boolean
@@ -69,15 +38,6 @@ function retainedSupersedesLive(
   if (!live) return true
   if (live.id === retained.id) return false
   return selectLatestFollowListEvent([live, retained])?.id === retained.id
-}
-
-function combinedCoverage(
-  left: FollowListCoverageState,
-  right: FollowListCoverageState
-): FollowListCoverageState {
-  if (left === "unavailable" && right === "unavailable") return "unavailable"
-  if (left === "complete" && right === "complete") return "complete"
-  return "limited"
 }
 
 export function useMerchantEventTimeline(input: {
@@ -96,7 +56,6 @@ export function useMerchantEventTimeline(input: {
     authenticatedPubkey,
     authGeneration,
   ] as const
-  const queryClient = useQueryClient()
   const merchantPubkey = normalizePubkey(input.merchantPubkey) ?? ""
   const followingEnabled =
     session.relaySettingsReady && input.source !== "conduit" && !!merchantPubkey
@@ -240,388 +199,18 @@ export function useMerchantEventTimeline(input: {
       followingLookupSettled,
     ]
   )
-  const followingCoverage =
-    followingQuery.data?.meta.coverage ??
-    (retainedFollowing
-      ? "limited"
-      : followingQuery.isError
-        ? "unavailable"
-        : "limited")
-  const conduitCoverage =
-    conduitQuery.data?.meta.coverage ??
-    (conduitQuery.isError ? "unavailable" : "limited")
-  const followingRefreshStale =
-    followingEnabled &&
-    (isCommerceReadIncomplete(followingQuery.data?.meta) ||
-      followingQuery.isRefetchError ||
-      followingQuery.isPaused)
-  const conduitRefreshStale =
-    conduitEnabled &&
-    (isCommerceReadIncomplete(conduitQuery.data?.meta) ||
-      conduitQuery.isRefetchError ||
-      conduitQuery.isPaused)
-  const perspectiveRefreshStale =
-    input.source === "following"
-      ? followingRefreshStale
-      : input.source === "conduit"
-        ? conduitRefreshStale
-        : followingRefreshStale || conduitRefreshStale
-  const perspective = useMemo<
-    Omit<EventMarketPerspectiveSnapshot, "authorCount">
-  >(() => {
-    if (input.source === "following") {
-      return {
-        source: input.source,
-        coverage: followingCoverage,
-        eventObserved: followingQuery.data?.meta.eventObserved ?? false,
-        snapshotState:
-          followingQuery.data?.meta.snapshotState ??
-          retainedFollowing?.state ??
-          (followingQuery.isPending ? "pending" : "none"),
-        truncated: followingQuery.data?.meta.capped === true || retainedIsNewer,
-      }
-    }
-    if (input.source === "conduit") {
-      return {
-        source: input.source,
-        coverage: conduitCoverage,
-        eventObserved: conduitQuery.data?.meta.eventObserved ?? false,
-        snapshotState:
-          conduitQuery.data?.meta.eventObserved === true
-            ? "curated"
-            : conduitQuery.isPending
-              ? "pending"
-              : "none",
-        truncated: conduitQuery.data?.meta.capped === true,
-      }
-    }
-    return {
-      source: input.source,
-      coverage: combinedCoverage(followingCoverage, conduitCoverage),
-      eventObserved:
-        (followingQuery.data?.meta.eventObserved ?? false) ||
-        (conduitQuery.data?.meta.eventObserved ?? false),
-      snapshotState:
-        followingQuery.data?.meta.snapshotState ??
-        retainedFollowing?.state ??
-        (conduitQuery.data?.meta.eventObserved
-          ? "curated"
-          : followingQuery.isPending || conduitQuery.isPending
-            ? "pending"
-            : "none"),
-      truncated:
-        followingQuery.data?.meta.capped === true ||
-        conduitQuery.data?.meta.capped === true ||
-        retainedIsNewer,
-    }
-  }, [
-    conduitCoverage,
-    conduitQuery.data?.meta,
-    conduitQuery.isPending,
-    followingCoverage,
-    followingQuery.data?.meta,
-    followingQuery.isPending,
-    input.source,
-    retainedFollowing?.state,
-    retainedIsNewer,
-  ])
-
-  const authorKey = authorPubkeys?.join(",") ?? "unresolved"
-  const perspectiveQueryKey = [
-    "merchant-event-timeline-perspective",
-    ...queryScope,
-    merchantPubkey || "none",
-    input.source,
-    authorKey,
-    perspective.coverage,
-    perspective.eventObserved,
-    perspective.snapshotState,
-    perspective.truncated,
-  ] as const
-  const perspectiveQueryScope = JSON.stringify(perspectiveQueryKey)
-  const perspectiveQueryScopeRef = useRef(perspectiveQueryScope)
-  useLayoutEffect(() => {
-    perspectiveQueryScopeRef.current = perspectiveQueryScope
-  }, [perspectiveQueryScope])
-  const perspectiveQuery = useQuery({
-    ...merchantEventTimelineQueryOptions(
-      queryClient,
-      perspectiveQueryKey,
-      {
-        organizerPubkeys: authorPubkeys ?? [],
-        perspective,
-        includeEnded: true,
-        authenticatedPubkey,
-      },
-      (signal) =>
-        !signal.aborted &&
-        authGenerationRef.current === authGeneration &&
-        perspectiveQueryScopeRef.current === perspectiveQueryScope
-    ),
-    enabled:
-      session.relaySettingsReady &&
-      !!merchantPubkey &&
-      authorPubkeys !== undefined,
-    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
-  })
-
-  const ownedQueryKey = [
-    "merchant-organizer-event-markets",
-    merchantPubkey || "none",
-    ...queryScope,
-  ] as const
-  const ownedQuery = useQuery({
-    queryKey: ownedQueryKey,
-    queryFn: async ({ signal }) => {
-      const result = await listOrganizerEventMarkets(
-        merchantPubkey,
-        authenticatedPubkey,
-        signal,
-        () => !signal.aborted && authGenerationRef.current === authGeneration
-      )
-      const retained =
-        queryClient.getQueryData<MerchantOrganizerEventMarketsReadResult>(
-          ownedQueryKey
-        )?.markets ?? []
-      return {
-        ...result,
-        markets: retainMerchantOrganizerEventMarkets(retained, result),
-      }
-    },
-    enabled: session.relaySettingsReady && !!merchantPubkey,
-    retry: false,
-    staleTime: 30_000,
-    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
-  })
-
-  const productsQuery = useQuery({
-    queryKey: [
-      "merchant-event-timeline-products",
-      ...queryScope,
-      merchantPubkey || "none",
-    ],
-    queryFn: ({ signal }) =>
-      getMerchantStorefront({
-        merchantPubkey,
-        authenticatedPubkey,
-        shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
-        includeMarketHidden: true,
-        sort: "updated_at_desc",
-      }),
-    enabled: session.relaySettingsReady && !!merchantPubkey,
-    retry: false,
-    staleTime: 60_000,
-    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
-  })
-  const sellingCollectionCoordinates = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          (productsQuery.data?.data ?? []).flatMap((record) => {
-            const context = getMerchantProductEventContext(record.product)
-            return context ? [context.collectionCoordinate] : []
-          })
-        )
-      ).sort(),
-    [productsQuery.data?.data]
-  )
-
-  const exactReferences = useMemo(() => {
-    const products = sellingCollectionCoordinates.flatMap((coordinate) => {
-      try {
-        return [projectReference(coordinate)]
-      } catch {
-        return []
-      }
-    })
-    return prioritizeMerchantEventRelationshipReferences({
-      products,
-      saved: [],
-    })
-  }, [sellingCollectionCoordinates])
-  const exactReferenceKey = exactReferences.join("\u0000")
-  const exactQuery = useQuery({
-    queryKey: [
-      "merchant-event-timeline-relationships",
-      ...queryScope,
-      merchantPubkey || "none",
-      exactReferenceKey,
-    ],
-    queryFn: async ({ signal }) => {
-      const shouldContinue = () =>
-        !signal.aborted && authGenerationRef.current === authGeneration
-      const hydration = await hydrateMerchantEventRelationships({
-        references: exactReferences,
-        signal,
-        shouldContinue,
-        resolve: (reference, hydrationSignal) =>
-          resolveOrganizerEventMarketResolution(
-            reference,
-            undefined,
-            authenticatedPubkey,
-            hydrationSignal,
-            () => !hydrationSignal.aborted && shouldContinue()
-          ),
-      })
-      const resolutions = hydration.values
-      return {
-        resolutions,
-        markets: projectMarketList(resolutions),
-        failedCount:
-          hydration.failedCount +
-          resolutions.filter(
-            (resolution) =>
-              resolution.state === "unavailable" ||
-              resolution.state === "missing"
-          ).length,
-      }
-    },
-    enabled:
-      session.relaySettingsReady &&
-      !!merchantPubkey &&
-      exactReferences.length > 0,
-    retry: false,
-    staleTime: 30_000,
-    refetchInterval: MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
-  })
-
-  const perspectiveMarkets = useMemo(
-    () => projectMarketList(perspectiveQuery.data?.markets ?? []),
-    [perspectiveQuery.data?.markets]
-  )
-  const items = useMemo(
-    () =>
-      mergeMerchantEventTimeline({
-        merchantPubkey,
-        perspectiveMarkets,
-        ownedMarkets: ownedQuery.data?.markets ?? [],
-        exactRelationshipMarkets: exactQuery.data?.markets ?? [],
-        savedReferences: [],
-        sellingCollectionCoordinates,
-        resolutionObservations: [
-          ...(perspectiveQuery.data?.markets ?? []).map((resolution) => ({
-            readScope: "perspective" as const,
-            resolution,
-          })),
-          ...(ownedQuery.data?.resolutions ?? []).map((resolution) => ({
-            readScope: "owned" as const,
-            resolution,
-          })),
-          ...(exactQuery.data?.resolutions ?? []).map((resolution) => ({
-            readScope: "exact" as const,
-            resolution,
-          })),
-        ],
-      }),
-    [
-      exactQuery.data,
-      merchantPubkey,
-      ownedQuery.data,
-      perspectiveQuery.data,
-      perspectiveMarkets,
-      sellingCollectionCoordinates,
-    ]
-  )
-  const profileRelayHintsByPubkey = useMemo(() => {
-    const hints = new Map<string, Set<string>>()
-    for (const item of items) {
-      const relayUrls = [
-        ...(item.market.source.collection?.sourceRelayUrls ?? []),
-        ...(item.market.source.calendar?.sourceRelayUrls ?? []),
-      ]
-      const current =
-        hints.get(item.market.organizerPubkey) ?? new Set<string>()
-      for (const relayUrl of relayUrls) current.add(relayUrl)
-      hints.set(item.market.organizerPubkey, current)
-    }
-    return Object.fromEntries(
-      Array.from(hints, ([pubkey, relayUrls]) => [
-        pubkey,
-        Array.from(relayUrls),
-      ])
-    )
-  }, [items])
-
-  const refreshPerspective = perspectiveQuery.refetch
   const refreshFollowing = followingQuery.refetch
   const refreshConduit = conduitQuery.refetch
-  const refreshOwned = ownedQuery.refetch
-  const refreshProducts = productsQuery.refetch
-  const refreshExact = exactQuery.refetch
   const refetch = useCallback(() => {
     if (followingEnabled) void refreshFollowing()
     if (conduitEnabled) void refreshConduit()
-    if (authorPubkeys !== undefined) void refreshPerspective()
-    void refreshOwned()
-    void refreshProducts()
-    if (exactReferences.length > 0) void refreshExact()
-  }, [
-    authorPubkeys,
-    conduitEnabled,
-    exactReferences.length,
-    followingEnabled,
-    refreshConduit,
-    refreshExact,
-    refreshFollowing,
-    refreshOwned,
-    refreshPerspective,
-    refreshProducts,
-  ])
-
-  const productReadIncomplete =
-    isCommerceReadIncomplete(productsQuery.data?.meta) ||
-    productsQuery.isError ||
-    productsQuery.isPaused
-  const network = qualifyMerchantEventTimelineNetwork(
-    perspectiveQuery.data,
-    perspectiveRefreshStale
-  )
-  const isInitialLoading = isMerchantEventTimelineInitialLoading({
-    authorResolutionPending: authorPubkeys === undefined,
-    itemCount: items.length,
-    perspectiveReadPending: perspectiveQuery.isPending,
-    ownedReadPending: ownedQuery.isPending,
-    productRelationshipReadPending:
-      productsQuery.isPending && !productsQuery.isPaused,
-    exactRelationshipReadPending:
-      exactReferences.length > 0 && exactQuery.isPending,
-  })
-
+  }, [followingEnabled, conduitEnabled, refreshFollowing, refreshConduit])
   return {
-    network,
-    items,
-    sellingCollectionCoordinates,
-    profileRelayHintsByPubkey,
-    authorSource: authorResolution.source,
-    isInitialLoading,
-    isFetching:
-      followingQuery.isFetching ||
-      conduitQuery.isFetching ||
-      perspectiveQuery.isFetching ||
-      ownedQuery.isFetching ||
-      productsQuery.isFetching ||
-      exactQuery.isFetching,
-    isRefreshStale:
-      perspectiveQuery.isError ||
-      ownedQuery.isError ||
-      exactQuery.isError ||
-      perspectiveRefreshStale ||
-      productReadIncomplete ||
-      (exactQuery.data?.failedCount ?? 0) > 0,
-    error:
-      perspectiveQuery.error ??
-      ownedQuery.error ??
-      productsQuery.error ??
-      exactQuery.error,
+    organizerPubkeys: authorPubkeys,
+    isInitialLoading: authorPubkeys === undefined,
+    isFetching: followingQuery.isFetching || conduitQuery.isFetching,
+    isRefreshStale: followingQuery.isError || conduitQuery.isError,
+    error: followingQuery.error ?? conduitQuery.error,
     refetch,
   }
-}
-
-function projectReference(reference: string): {
-  coordinate: string
-  reference: string
-} {
-  const parsed = parseOrganizerEventMarketReference(reference)
-  return { coordinate: parsed.coordinate, reference: parsed.naddr }
 }

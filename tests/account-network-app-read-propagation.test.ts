@@ -6,47 +6,39 @@ async function source(path: string): Promise<string> {
 
 describe("app account-network read propagation", () => {
   it("threads the signed-in Market account through event catalog and payment refreshes", async () => {
-    const [
-      eventHook,
-      fulfillmentHook,
-      catalogQuery,
-      adapter,
-      authorization,
-      checkout,
-      orders,
-    ] = await Promise.all([
-      source("apps/market/src/hooks/useEventMarket.ts"),
-      source("apps/market/src/hooks/useProductCartFulfillment.ts"),
-      source("apps/market/src/lib/event-catalog-query.ts"),
-      source("apps/market/src/lib/event-market-adapter.ts"),
-      source("apps/market/src/lib/checkout-authorization.ts"),
-      source("apps/market/src/routes/checkout.tsx"),
-      source("apps/market/src/routes/orders.tsx"),
-    ])
+    const [eventPage, fulfillmentHook, authorization, checkout, orders] =
+      await Promise.all([
+        source("apps/market/src/components/FutureEventMarketPage.tsx"),
+        source("apps/market/src/hooks/useProductCartFulfillment.ts"),
+        source("apps/market/src/lib/checkout-authorization.ts"),
+        source("apps/market/src/routes/checkout.tsx"),
+        source("apps/market/src/routes/orders.tsx"),
+      ])
 
-    expect(eventHook).toContain("useConduitSession")
-    expect(eventHook).toContain("eventCatalogQueryOptions(")
-    expect(eventHook).toContain("authenticatedPubkey,")
-    expect(eventHook).toContain("authGeneration,")
-    expect(eventHook).toContain("currentScope.current === scopeToken")
-    expect(fulfillmentHook).toContain("useEventCatalogs(")
-    expect(catalogQuery).toContain("scope.authenticatedPubkey,")
-    expect(catalogQuery).toContain("scope.authGeneration,")
-    expect(catalogQuery).toContain("!signal.aborted && shouldContinue()")
-    expect(catalogQuery).toContain(
-      "authenticatedPubkey: scope.authenticatedPubkey"
+    expect(eventPage).toContain("useConduitSession")
+    expect(eventPage).toContain(
+      'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
-    expect(catalogQuery).toContain("shouldContinue: active")
-    expect(adapter).toContain("authenticatedPubkey?: string | null")
-    expect(adapter).toMatch(
-      /reference: canonicalNaddr,\s+selectedProductCoordinates: options.selectedProductCoordinates,\s+authenticatedPubkey: options.authenticatedPubkey,\s+shouldContinue: active/
+    expect(eventPage).toMatch(
+      /"future-event-market",\s+reference,\s+session\.relayScope,\s+authenticatedPubkey,\s+authGeneration,/
     )
-    expect(adapter).toMatch(
-      /includeMerchantHiddenProductIds:\s+resolution.acceptedProductCoordinates,\s+relayHintsByAddressId:\s+resolution.collection\?\.productRelayHintsByCoordinate,\s+authenticatedPubkey: options.authenticatedPubkey,\s+shouldContinue: active/
+    expect(eventPage).toMatch(
+      /readEventMarketCatalog\(\{[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,180}signal,\s+shouldContinue: \(\) => !signal\.aborted && shouldContinue\(\)/
     )
-    expect(adapter).toContain(
-      "includeMerchantHiddenProductIds: [item.productId],\n    relayHintsByAddressId: resolution.collection?.productRelayHintsByCoordinate,\n    authenticatedPubkey,\n    shouldContinue,"
+    expect(eventPage).toContain("authGenerationRef.current = -1")
+    expect(eventPage).toContain("authGenerationRef.current === authGeneration")
+    expect(eventPage).toMatch(
+      /onProgress: \(result\) => \{\s+if \(!signal\.aborted && shouldContinue\(\)\)/
     )
+    for (const read of ["readEventMarketRoster", "readEventMarketProduct"]) {
+      expect(eventPage).toMatch(
+        new RegExp(
+          `${read}\\(\\{[\\s\\S]{0,180}authenticatedPubkey,\\s+shouldContinue,`
+        )
+      )
+    }
+    expect(fulfillmentHook).toContain("resolveProductCartFulfillment(product)")
+    expect(fulfillmentHook).not.toContain("useEventCatalogs(")
     expect(authorization).toContain("input.authenticatedPubkey")
     expect(authorization).toContain("input.shouldContinue")
     expect(checkout).toContain("const draftOwnerIdentity = accountPubkey")
@@ -54,14 +46,15 @@ describe("app account-network read propagation", () => {
       "accountPubkey: draftOwnerIdentity,\n        authenticatedPubkey: signedBuyerPubkey,"
     )
     expect(checkout).toContain("authGenerationRef.current === authGeneration")
-    expect(
-      orders.match(/row\.merchantPubkey,\s+authenticatedPubkey/g)?.length ?? 0
-    ).toBeGreaterThanOrEqual(2)
-    expect(
-      orders.match(
-        /authGenerationRef\.current === authGeneration|isAuthGenerationCurrent\(authGeneration\)/g
-      )?.length
-    ).toBeGreaterThanOrEqual(5)
+    expect(orders).toMatch(
+      /assertCartPickupHandlerReady\(row\.lifecycle\?\.items \?\? \[\], undefined, \{\s+requestingAccountPubkey: authenticatedPubkey,\s+authenticatedPubkey,\s+shouldContinue: shouldContinueBuyerSession,/
+    )
+    expect(orders).toMatch(
+      /accountPubkey: authenticatedPubkey,\s+authenticatedPubkey,\s+shouldContinue: shouldContinueBuyerSession,\s+shouldContinuePaymentAuthority:/
+    )
+    expect(orders).toMatch(
+      /const shouldContinueAccountRead = \(\) =>\s+authGenerationRef\.current === authGeneration/
+    )
     expect(orders).toMatch(
       /const shouldContinueBuyerSession = \(\) =>\s+guestIdentity\s+\? isGuestGenerationCurrent\(authGeneration\)\s+: isAuthGenerationCurrent\(authGeneration\)/
     )
@@ -231,43 +224,57 @@ describe("app account-network read propagation", () => {
   })
 
   it("keeps Merchant event reads bound to the live authenticated account", async () => {
-    const [handoff, events, eventDetailRoute, products] = await Promise.all([
-      source("apps/merchant/src/lib/event-market-handoff.ts"),
-      source("apps/merchant/src/routes/events.tsx"),
+    const [
+      handoff,
+      manager,
+      eventDetailRoute,
+      products,
+      participation,
+      enrollment,
+    ] = await Promise.all([
+      source("apps/merchant/src/lib/order-pickup-authorization.ts"),
+      source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
       source("apps/merchant/src/routes/events/$collectionRef.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
+      source(
+        "apps/merchant/src/components/FutureEventMerchantParticipation.tsx"
+      ),
+      source("apps/merchant/src/hooks/useEventMarketEnrollment.ts"),
     ])
 
     expect(handoff).toContain("authenticatedPubkey?: string | null")
     expect(handoff).toContain("authenticatedPubkey: input.authenticatedPubkey")
     expect(handoff).not.toContain("authenticatedPubkey: organizer")
-    expect(eventDetailRoute).toContain(
+    expect(eventDetailRoute).toContain("<FutureEventMarketManager")
+    expect(eventDetailRoute).toContain("reference={collectionRef}")
+    expect(manager).toContain(
       'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
-    expect(eventDetailRoute).toContain(
-      "authenticatedPubkey={authenticatedPubkey}"
+    expect(manager).toMatch(
+      /readEventMarketRoster\(\{[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,160}shouldContinue:/
     )
-    expect(events).toContain(
-      "resolveOrganizerHandoffMerchandise({\n                  organizerPubkey,\n                  authenticatedPubkey,"
+    expect(manager).toMatch(
+      /"future-market-manager",[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,80}authGeneration/
     )
-    expect(events).toContain(
-      "resolveOrganizerHandoffMerchandise({\n        organizerPubkey: input.ownerPubkey,\n        authenticatedPubkey: input.ownerPubkey,"
-    )
-    expect(events).toMatch(
-      /"merchant-organizer-handoff-merchandise",[\s\S]{0,160}authenticatedPubkey \?\? "disconnected"/
-    )
+    expect(manager).toContain("authenticatedPubkey={authenticatedPubkey}")
 
     expect(products).toContain(
       'const authenticatedPubkey = authStatus === "connected" ? pubkey : null'
     )
     expect(products).toMatch(
-      /listOrganizerEventMarkets\(\s*accountPubkey!,\s*authenticatedPubkey,\s*signal,\s*\(\) =>\s*!signal\.aborted && authGenerationRef\.current === authGeneration\s*\)/
+      /readEventMarketRoster\(\{\s+reference: eventContextReference!,\s+authenticatedPubkey,\s+shouldContinue: \(\) => authGenerationRef\.current === authGeneration/
     )
     expect(products).toMatch(
-      /"merchant-product-event-market",[\s\S]{0,180}authenticatedPubkey \?\? "disconnected"/
+      /"merchant-products-event-context",\s+eventContextReference,\s+authenticatedPubkey,\s+authGeneration,/
     )
-    expect(products).toMatch(
-      /"merchant-product-event-context",[\s\S]{0,180}authenticatedPubkey \?\? "disconnected"/
+    expect(participation).toMatch(
+      /readEventMarketAuthorization\(\{[\s\S]{0,180}merchantPubkey: authenticatedPubkey!,\s+authenticatedPubkey,\s+signal,\s+shouldContinue: \(\) =>\s+!signal\.aborted && isAuthGenerationCurrent\(authGeneration\)/
+    )
+    expect(enrollment).toMatch(
+      /"event-enrollment",\s+marketCoordinate,\s+authenticatedPubkey,\s+authGeneration,/
+    )
+    expect(enrollment).toMatch(
+      /readEventMarketEnrollment\(\{\s+accountPubkey: authenticatedPubkey!,\s+marketCoordinate,\s+shouldContinue: \(\) => isAuthGenerationCurrent\(authGeneration\)/
     )
     expect(products).not.toContain(
       "resolveOrganizerEventMarket(reference, undefined, pubkey!)"
@@ -287,7 +294,7 @@ describe("app account-network read propagation", () => {
       merchantMessages,
       merchantDashboard,
       merchantProducts,
-      eventTemplates,
+      participation,
       marketCart,
       merchantIdentities,
       checkout,
@@ -304,7 +311,9 @@ describe("app account-network read propagation", () => {
       source("apps/merchant/src/routes/messages.tsx"),
       source("apps/merchant/src/routes/index.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
-      source("apps/merchant/src/lib/event-product-publishing.ts"),
+      source(
+        "apps/merchant/src/components/FutureEventMerchantParticipation.tsx"
+      ),
       source("apps/market/src/components/MarketCartHud.tsx"),
       source("apps/market/src/hooks/useMerchantIdentities.ts"),
       source("apps/market/src/routes/checkout.tsx"),
@@ -349,10 +358,14 @@ describe("app account-network read propagation", () => {
     )
     expect(merchantCatalogRead).not.toContain("getShippingOptionsByCoordinates")
     expect(merchantCatalogRead).not.toContain("resolveProductFulfillment")
-    expect(eventTemplates).toContain("accountPubkey: string | null")
-    expect(eventTemplates).toContain("accountPubkey,\n    authenticatedPubkey,")
-    expect(eventTemplates).toContain("authenticatedPubkey,")
-    expect(eventTemplates).not.toContain("authenticatedPubkey: merchantPubkey")
+    expect(participation).toContain("authenticatedPubkey: string | null")
+    expect(participation).toContain("accountPubkey,\n    authenticatedPubkey,")
+    expect(participation).toContain(
+      "shouldContinue: () => isAuthGenerationCurrent(authGeneration)"
+    )
+    expect(participation).not.toContain(
+      "authenticatedPubkey: market.organizerPubkey"
+    )
     expect(marketCart).toContain("accountPubkey: authenticatedPubkey,")
     expect(marketCart).toContain("authenticatedPubkey,")
     expect(
@@ -396,24 +409,35 @@ describe("app account-network read propagation", () => {
   })
 
   it("keeps organizer inbox and event-product action reads session-bound", async () => {
-    const [authorization, products, eventProduct, publisher, events] =
-      await Promise.all([
-        source("apps/market/src/lib/checkout-authorization.ts"),
-        source("apps/merchant/src/routes/products.tsx"),
-        source("apps/merchant/src/lib/event-product-publishing.ts"),
-        source("apps/merchant/src/components/EventProductPublisherDialog.tsx"),
-        source("apps/merchant/src/routes/events.tsx"),
-      ])
+    const [authorization, products, enrollment, manager] = await Promise.all([
+      source("apps/market/src/lib/checkout-authorization.ts"),
+      source("apps/merchant/src/routes/products.tsx"),
+      source("apps/merchant/src/hooks/useEventMarketEnrollment.ts"),
+      source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
+    ])
 
     expect(authorization).toMatch(
       /assertCartPickupHandlerReady\([\s\S]{0,180}authenticatedPubkey: input.authenticatedPubkey,[\s\S]{0,80}shouldContinue: input.shouldContinue/
     )
-    expect(products).toMatch(
-      /resolveEventMarketOrganizerInbox\(localPickupQuery[\s\S]{0,240}requestingAccountPubkey: accountPubkey,[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,40}signal,/
+    for (const read of [
+      "readEventMarketRoster",
+      "readEventMarketAuthorization",
+    ]) {
+      expect(products).toMatch(
+        new RegExp(
+          `${read}\\(\\{[\\s\\S]{0,180}authenticatedPubkey,\\s+shouldContinue,`
+        )
+      )
+    }
+    expect(enrollment).toMatch(
+      /publishEventMarketEnrollment\(\{[\s\S]{0,700}authenticatedPubkey,\s+signer,\s+shouldContinue: \(\) => isAuthGenerationCurrent\(authGeneration\)/
     )
-    expect(eventProduct).toContain("input.shouldContinue")
-    expect(publisher).toContain("shouldContinue,")
-    expect(events).toContain("shouldContinue={shouldContinue}")
+    expect(enrollment).toMatch(
+      /retryEventMarketEnrollmentDelivery\(\{\s+record: pending,\s+authenticatedPubkey,\s+shouldContinue: \(\) => isAuthGenerationCurrent\(authGeneration\)/
+    )
+    expect(manager).toMatch(
+      /previewEventMarketMerchantProducts\(\{[\s\S]{0,180}authenticatedPubkey,[\s\S]{0,160}shouldContinue:/
+    )
   })
 
   it("threads account policy through shipping and public zap receipt I/O", async () => {

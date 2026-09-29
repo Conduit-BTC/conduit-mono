@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { Link } from "@tanstack/react-router"
 import { useCart } from "../hooks/useCart"
-import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
 import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
 import { selectCartLine } from "../lib/cart-model"
 import {
@@ -9,8 +7,6 @@ import {
   getDefaultProductSelection,
   getProductSelection,
 } from "../lib/productVariations"
-import { getPickupHandoffSummary } from "../lib/pickup-handoff"
-import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { ProductGridCard, type ProductGridCardProps } from "./ProductGridCard"
 
 type ResolvedProductGridCardProps = Omit<
@@ -47,39 +43,18 @@ export function ResolvedProductGridCard({
   )
   const fulfillment = useProductCartFulfillment(selectedProduct, btcUsdRate)
   const resolution = fulfillment.resolution
-  const candidate =
-    resolution?.status === "pickup" || resolution?.status === "blocked"
-      ? resolution.canonicalNaddr
-      : fulfillment.candidateNaddr
-  const cartCandidate = resolution
-    ? resolution.status === "pickup"
-      ? cartItemInputFromProductSelection(
-          product,
-          resolution.product,
-          resolution.fulfillment
-        )
-      : resolution.status === "standard"
-        ? cartItemInputFromProductSelection(product, resolution.product, {
-            type: resolution.type,
-          })
-        : null
-    : null
+  const cartCandidate =
+    resolution?.status === "standard"
+      ? cartItemInputFromProductSelection(product, resolution.product, {
+          type: resolution.type,
+        })
+      : null
   const existing = cartCandidate
     ? selectCartLine(cart.items, cartCandidate)
     : undefined
-  const pickupHandoff =
-    resolution?.status === "pickup"
-      ? getPickupHandoffSummary(resolution.fulfillment)
-      : null
-  const pickupHandlerIdentity = useEventActorIdentity(
-    pickupHandoff?.handlerPubkey
-  )
   const cartQuantity = existing?.quantity ?? 0
-  const blocked =
-    fulfillment.isChecking || resolution?.status === "blocked" || !cartCandidate
-  const disabledLabel = fulfillment.isChecking
-    ? "Checking pickup"
-    : "View event"
+  const blocked = !cartCandidate
+  const disabledLabel = "Unavailable"
 
   useEffect(() => {
     setSelectedProductId(defaultSelection.id)
@@ -105,13 +80,6 @@ export function ResolvedProductGridCard({
     cart.decrementItem(existing)
   }
 
-  const notice = fulfillment.isChecking
-    ? "Checking current signed event pickup evidence before this listing can be added."
-    : resolution?.status === "blocked"
-      ? resolution.reason
-      : null
-  const showPickupNotice = !!pickupHandoff && !!pickupHandlerIdentity && !notice
-
   return (
     <ProductGridCard
       {...props}
@@ -122,44 +90,12 @@ export function ResolvedProductGridCard({
       onSelectedProductChange={(selection) =>
         setSelectedProductId(selection.id)
       }
-      allowZeroPrice={resolution?.status === "pickup"}
       cartQuantity={cartQuantity}
       onAddToCart={add}
       onIncrement={increment}
       onDecrement={decrement}
       cartActionDisabled={blocked}
       cartActionDisabledLabel={disabledLabel}
-      notice={
-        notice || showPickupNotice ? (
-          <>
-            {showPickupNotice && pickupHandoff && pickupHandlerIdentity ? (
-              <>
-                <span>
-                  {pickupHandoff.label}. Handled by{" "}
-                  <EventActorName identity={pickupHandlerIdentity} />. No
-                  delivery address is required.
-                </span>
-                <EventActorProvenance
-                  pubkey={pickupHandoff.handlerPubkey}
-                  copyLabel="Copy pickup handler npub"
-                  className="mt-1 flex"
-                />{" "}
-              </>
-            ) : (
-              <span>{notice}</span>
-            )}{" "}
-            {candidate ? (
-              <Link
-                to="/events/$collectionRef"
-                params={{ collectionRef: candidate }}
-                className="font-medium text-secondary-400 hover:text-secondary-300"
-              >
-                View event catalog
-              </Link>
-            ) : null}
-          </>
-        ) : null
-      }
     />
   )
 }

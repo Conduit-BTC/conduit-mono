@@ -621,13 +621,14 @@ type EventMarketInboxScanCycle = {
   relayUrls: string[]
   relays: Map<string, EventMarketInboxRelayScan>
   messages: Map<string, ParsedEventMarketPrivateMessage>
+  authenticatedWraps: Map<string, SignedPublicNostrEvent>
   decryptFailures: Map<string, DecryptFailure>
   evidenceCapped: boolean
 }
 // A strict handoff read may need several bounded calls to walk a large inbox.
 // Retain only cursors, bounded coarse failures, and bounded parsed handoff
-// evidence in process memory. Ciphertext, unrelated plaintext, and unrelated
-// event ids are discarded after each call and nothing is written to storage.
+// evidence and its authenticated wraps in account-scoped process memory.
+// Unrelated plaintext and wraps are discarded after each call; no storage writes.
 const eventMarketInboxScanCycles = new Map<string, EventMarketInboxScanCycle>()
 const eventMarketInboxScanPromises = new Map<
   string,
@@ -2052,6 +2053,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
+    eventGuestContactOptional: product.eventGuestContactOptional,
     location: product.location,
     eventId: record.eventId,
     eventCreatedAt: record.eventCreatedAt,
@@ -2115,6 +2117,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     publicZapEnabled: row.publicZapEnabled ?? true,
     zapMessagePolicy,
     publicZapPolicyKnown: row.publicZapPolicyKnown ?? false,
+    eventGuestContactOptional: row.eventGuestContactOptional,
     location: row.location,
     createdAt: row.createdAt ?? row.cachedAt,
     updatedAt: row.updatedAt ?? row.cachedAt,
@@ -7363,9 +7366,9 @@ function isEventMarketPrivateMessage(
   message: ParsedOrderMessage
 ): message is ParsedEventMarketPrivateMessage {
   return (
-    message.type === "organizer_fulfillment_receipt" ||
-    message.type === "organizer_fulfillment_revocation" ||
-    message.type === "organizer_handoff_ack"
+    message.type === "future_market_ready" ||
+    message.type === "future_market_revoked" ||
+    message.type === "future_market_handed_out"
   )
 }
 
@@ -7712,6 +7715,7 @@ function eventMarketInboxScanCycle(
     relayUrls: [...relayUrls],
     relays,
     messages: new Map<string, ParsedEventMarketPrivateMessage>(),
+    authenticatedWraps: new Map<string, SignedPublicNostrEvent>(),
     decryptFailures: new Map<string, DecryptFailure>(),
     evidenceCapped: false,
   }
@@ -7775,7 +7779,7 @@ async function readEventMarketInboxWraps(
 function eventMarketTerminalReadyReceiptId(
   message: ParsedEventMarketPrivateMessage
 ): string | null {
-  return message.type === "organizer_fulfillment_receipt"
+  return message.type === "future_market_ready"
     ? null
     : message.payload.readyReceiptId
 }
@@ -7832,7 +7836,7 @@ function retainBoundedEventMarketMessage(
   const candidateId =
     Array.from(messages.entries()).find(
       ([id, candidate]) =>
-        candidate.type === "organizer_fulfillment_receipt" &&
+        candidate.type === "future_market_ready" &&
         !protectedReadyIds.has(id) &&
         id !== incomingGroupReadyId
     )?.[0] ??
@@ -7896,6 +7900,8 @@ async function advanceEventMarketPrivateMessageScan(input: {
   assertInboxSyncAuthority(input.authorization)
   assertEventMarketInboxScanCurrent(result.scanKey, cycle)
   const callMessages = new Map<string, ParsedEventMarketPrivateMessage>()
+  const callWraps = new Map<string, SignedPublicNostrEvent>()
+  const wrapsById = new Map(wraps.map((wrap) => [wrap.id, wrap]))
   const callDecryptFailures = new Map<string, DecryptFailure>()
   let callEvidenceCapped = false
   for (const outcome of outcomes) {
@@ -7941,6 +7947,16 @@ async function advanceEventMarketPrivateMessageScan(input: {
           message
         )
         cycle.evidenceCapped ||= cycleRetention.capped
+        const wrap = wrapsById.get(outcome.wrapId)?.rawEvent() as
+          SignedPublicNostrEvent | undefined
+        if (wrap && isValidSignedPublicNostrEvent(wrap)) {
+          if (callMessages.has(message.id)) callWraps.set(message.id, wrap)
+          if (cycle.messages.has(message.id))
+            cycle.authenticatedWraps.set(message.id, wrap)
+        }
+        for (const id of cycle.authenticatedWraps.keys()) {
+          if (!cycle.messages.has(id)) cycle.authenticatedWraps.delete(id)
+        }
       }
     } catch {
       const failure: DecryptFailure = {
@@ -7981,6 +7997,11 @@ async function advanceEventMarketPrivateMessageScan(input: {
     ? callDecryptFailures
     : cycle.decryptFailures
   const response: EventMarketPrivateMessageListResult = {
+    authenticatedWraps: Object.fromEntries(
+      [...(result.freshComplete ? callWraps : cycle.authenticatedWraps)].filter(
+        ([id]) => messages.has(id)
+      )
+    ),
     messages: Array.from(messages.values()).sort(
       (left, right) => left.createdAt - right.createdAt
     ),
@@ -9349,6 +9370,8 @@ export async function getConversationDetail(
 }
 
 export interface EventMarketPrivateMessageListResult {
+  /** Verified principal-addressed wraps for authenticated parsed messages; never diagnostics. */
+  authenticatedWraps?: Record<string, SignedPublicNostrEvent>
   messages: ParsedEventMarketPrivateMessage[]
   stale: boolean
   decryptFailures: DecryptFailure[]

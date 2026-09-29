@@ -1,3 +1,8 @@
+export {
+  EventFulfillmentChoice,
+  type EventFulfillmentSelection,
+} from "./EventFulfillmentChoice"
+export { EventGuestReceiptVerifier } from "./EventGuestReceiptVerifier"
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
 export {
   SearchSuggestions,

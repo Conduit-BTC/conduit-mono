@@ -48,12 +48,10 @@ import type {
   CachedProduct,
   CachedProductTombstone,
   CachedProfile,
-  EventMarketResolution,
   FollowListReadResult,
   SignedPublicNostrEvent,
 } from "@conduit/core"
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
-import { projectEventCatalogProducts } from "../apps/market/src/lib/event-market-adapter"
 import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityReadDecision,
@@ -4047,102 +4045,9 @@ describe("commerce gateway", () => {
     expect(exactChildRead.data[0]?.family).toBeUndefined()
     expect(exactChildRead.diagnostics[0]?.issue).toBeNull()
 
-    const calendarCoordinate = `31923:${EVENT_TEST_ORGANIZER_PUBKEY}:variation-market`
-    const pickup = {
-      coordinate: eventPickup,
-      eventId: "9".repeat(64),
-      authorPubkey: EVENT_TEST_ORGANIZER_PUBKEY,
-      dTag: "variation-market-pickup",
-      title: "Event pickup",
-      content: "",
-      price: 0,
-      currency: "SATS",
-      countries: [],
-      location: "Main desk",
-      geohash: "dpz83",
-      createdAt: 102,
-    }
-    const resolution: EventMarketResolution = {
-      state: "active",
-      reference: eventCollection,
-      organizerPubkey: EVENT_TEST_ORGANIZER_PUBKEY,
-      collectionCoordinate: eventCollection,
-      calendarCoordinate,
-      pickupCoordinate: eventPickup,
-      collection: {
-        coordinate: eventCollection,
-        eventId: "7".repeat(64),
-        authorPubkey: EVENT_TEST_ORGANIZER_PUBKEY,
-        dTag: "variation-market",
-        title: "Variation market",
-        content: "",
-        eventCoordinates: [calendarCoordinate],
-        pickupCoordinates: [eventPickup],
-        productCoordinates: [childProductId],
-        unsupportedReferences: [],
-        createdAt: 100,
-      },
-      calendar: {
-        coordinate: calendarCoordinate,
-        eventId: "8".repeat(64),
-        authorPubkey: EVENT_TEST_ORGANIZER_PUBKEY,
-        dTag: "variation-market",
-        kind: 31923,
-        title: "Variation market",
-        content: "",
-        locations: ["Main hall"],
-        start: 1_800_000_000_000,
-        end: 1_800_003_600_000,
-        createdAt: 101,
-      },
-      pickup,
-      pickups: [pickup],
-      organizerProductCoordinates: [childProductId],
-      acceptedProductCoordinates: [childProductId],
-      acceptedProductEvidence: [
-        {
-          productCoordinate: childProductId,
-          eventId: exactChildRead.data[0]!.eventId,
-          createdAt: exactChildRead.data[0]!.eventCreatedAt * 1_000,
-          shippingOptionCoordinates: [eventPickup],
-          merchantPubkey: EVENT_TEST_MERCHANT_PUBKEY,
-        },
-      ],
-      organizerOnlyProductCoordinates: [],
-      participationRequests: [
-        {
-          productCoordinate: childProductId,
-          merchantPubkey: EVENT_TEST_MERCHANT_PUBKEY,
-        },
-      ],
-      participationBudget: {
-        state: "within_budget",
-        targetCount: 1,
-        targetLimit: 64,
-      },
-      pickupBudget: {
-        state: "within_budget",
-        targetCount: 1,
-        targetLimit: 64,
-      },
-      coverage: {
-        attemptedRelayCount: 1,
-        completeRelayCount: 1,
-        partialRelayCount: 0,
-        failedRelayCount: 0,
-      },
-    }
-    const projected = projectEventCatalogProducts({
-      requested: [childProductId],
-      records: exactChildRead.data,
-      liveCoordinates: new Set([childProductId]),
-      resolution,
-    })
-
-    expect(projected).toHaveLength(1)
-    expect(projected[0]?.product.id).toBe(childProductId)
-    expect(projected[0]?.family).toBeUndefined()
-    expect(projected[0]?.pickupFulfillment).not.toBeNull()
+    // Current signed market admission and hidden-product exclusion are covered
+    // by event-market-roster.test.ts; the retired collection/pickup projection
+    // does not participate in generic exact product-family reads.
   })
 
   it("does not let unapproved hidden family members donate images or enter exact reads", async () => {
@@ -4969,11 +4874,8 @@ describe("commerce gateway", () => {
       pubkey: merchantPubkey,
       created_at: 101,
       content: JSON.stringify({
-        version: 1,
-        type: "organizer_fulfillment_receipt",
-        state: "ready_for_pickup",
-        paymentConfirmed: true,
-        orderReady: true,
+        version: 2,
+        type: "future_market_ready",
         releaseAuthorized: true,
         claimRef,
         merchantPubkey,
@@ -4983,13 +4885,12 @@ describe("commerce gateway", () => {
           eventId: "e".repeat(64),
           createdAt: FIXED_NOW,
         },
-        collection: {
-          coordinate: `30405:${organizerPubkey}:market-catalog`,
+        market: {
+          coordinate: `30409:${organizerPubkey}:market`,
           eventId: "f".repeat(64),
           createdAt: FIXED_NOW + 1_000,
         },
-        option: {
-          coordinate: `30406:${organizerPubkey}:market-pickup`,
+        grant: {
           eventId: "1".repeat(64),
           createdAt: FIXED_NOW + 2_000,
         },
@@ -5001,14 +4902,13 @@ describe("commerce gateway", () => {
               createdAt: FIXED_NOW + 3_000,
             },
             quantity: 1,
-            variants: [],
           },
         ],
         issuedAt: Math.floor(FIXED_NOW / 1_000),
       }),
       tags: [
         ["p", organizerPubkey],
-        ["type", "organizer_fulfillment_receipt"],
+        ["type", "future_market_ready"],
         ["claim", claimRef],
       ],
     }
@@ -5043,7 +4943,7 @@ describe("commerce gateway", () => {
     const strictHandoffRead =
       await getEventMarketPrivateMessageList(merchantPubkey)
     expect(strictHandoffRead.messages.map((message) => message.type)).toEqual([
-      "organizer_fulfillment_receipt",
+      "future_market_ready",
     ])
     expect(unwrapCalls).toBe(2)
   })

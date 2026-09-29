@@ -59,6 +59,7 @@ interface StoredProductDraft {
 export interface ProductDraftLoadResult {
   draft: MerchantProductFormValues | null
   storageAvailable: boolean
+  error?: string
 }
 
 export interface ProductVariationAuthoringTarget {
@@ -213,7 +214,6 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     const fulfillment = hasEventMarketDraftFields
       ? form.fulfillment === "digital" ||
         form.fulfillment === "ship" ||
-        form.fulfillment === "local_pickup" ||
         (form.fulfillment === "preserve" &&
           typeof candidate.baseEventId === "string")
         ? form.fulfillment
@@ -221,38 +221,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       : form.format === "digital"
         ? "digital"
         : "ship"
-    const eventMarketReference = hasEventMarketDraftFields
-      ? typeof form.eventMarketReference === "string"
-        ? form.eventMarketReference
-        : null
-      : ""
-    if (!fulfillment || eventMarketReference === null) return null
-    const eventHandoffMode =
-      hasEventMarketDraftFields && candidate.version >= 5
-        ? form.eventHandoffMode === "merchant_handoff" ||
-          form.eventHandoffMode === "organizer_handoff"
-          ? form.eventHandoffMode
-          : form.eventHandoffMode === undefined
-            ? "merchant_handoff"
-            : null
-        : "merchant_handoff"
-    const merchantPickupFields = [
-      "merchantPickupTitle",
-      "merchantPickupLocation",
-      "merchantPickupGeohash",
-      "merchantPickupCountry",
-    ] as const
-    if (
-      !eventHandoffMode ||
-      (hasEventMarketDraftFields &&
-        candidate.version >= 5 &&
-        merchantPickupFields.some(
-          (field) =>
-            form[field] !== undefined && typeof form[field] !== "string"
-        ))
-    ) {
-      return null
-    }
+    if (!fulfillment) return null
 
     const price =
       candidate.version === 1
@@ -289,31 +258,10 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         currency: form.currency as string,
         format: form.format,
         fulfillment,
-        eventMarketReference,
         futureEventMarketReference:
           typeof form.futureEventMarketReference === "string"
             ? form.futureEventMarketReference
             : "",
-        eventHandoffMode,
-        merchantPickupTitle:
-          candidate.version >= 5 && typeof form.merchantPickupTitle === "string"
-            ? (form.merchantPickupTitle as string)
-            : "Merchant booth pickup",
-        merchantPickupLocation:
-          candidate.version >= 5 &&
-          typeof form.merchantPickupLocation === "string"
-            ? (form.merchantPickupLocation as string)
-            : "",
-        merchantPickupGeohash:
-          candidate.version >= 5 &&
-          typeof form.merchantPickupGeohash === "string"
-            ? (form.merchantPickupGeohash as string)
-            : "",
-        merchantPickupCountry:
-          candidate.version >= 5 &&
-          typeof form.merchantPickupCountry === "string"
-            ? (form.merchantPickupCountry as string)
-            : "US",
         shippingPricingMode,
         shippingCost,
         usePresetShippingZone: form.usePresetShippingZone,
@@ -347,6 +295,28 @@ export function loadProductDraft(
       return { draft: null, storageAvailable: true }
     }
 
+    let candidate: unknown
+    try {
+      candidate = JSON.parse(raw)
+    } catch {
+      /* The draft parser below handles malformed JSON as an invalid draft. */
+    }
+    if (
+      candidate &&
+      typeof candidate === "object" &&
+      "form" in candidate &&
+      candidate.form &&
+      typeof candidate.form === "object" &&
+      "fulfillment" in candidate.form &&
+      candidate.form.fulfillment === "local_pickup"
+    ) {
+      return {
+        draft: null,
+        storageAvailable: true,
+        error:
+          "This saved event pickup draft uses the retired event model. Create an ordinary product and choose a current Event Market instead.",
+      }
+    }
     const stored = parseStoredProductDraft(raw)
     const expectedBaseEventId = target.productAddressId?.trim()
       ? (target.baseEventId?.trim() ?? null)

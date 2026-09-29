@@ -9,7 +9,6 @@ import {
   type ProductImage,
   type ProductSchema,
   type ProductZapMessagePolicy,
-  type EventMarketHandoffMode,
 } from "@conduit/core"
 import type { ShippingConfig } from "./readiness"
 import { isShippingComplete } from "./readiness"
@@ -32,21 +31,7 @@ export const RECOMMENDED_MAX_PRODUCT_TAG_COUNT = 12
 export const MAX_PRODUCT_TAG_COUNT = 24
 export const MAX_PRODUCT_TAG_LENGTH = 40
 
-export type ProductFulfillmentChoice =
-  "digital" | "ship" | "local_pickup" | "preserve"
-
-export function canUseZeroProductPrice(input: {
-  fulfillment: unknown
-  handoffMode: unknown
-  evidenceVerified: boolean
-}): boolean {
-  return (
-    input.evidenceVerified &&
-    input.fulfillment === "local_pickup" &&
-    (input.handoffMode === "merchant_handoff" ||
-      input.handoffMode === "organizer_handoff")
-  )
-}
+export type ProductFulfillmentChoice = "digital" | "ship" | "preserve"
 
 export interface ProductPublishFormValues {
   title: string
@@ -67,14 +52,9 @@ export interface MerchantProductFormValues extends ProductPublishFormValues {
   summary: string
   variations: ProductVariationFormState
   fulfillment: ProductFulfillmentChoice
-  eventMarketReference: string
-  /** Experimental kind-30409 association; separate from legacy local pickup. */
+  /** Current Event Market association, separate from ordinary shop fulfillment. */
   futureEventMarketReference?: string
-  eventHandoffMode: EventMarketHandoffMode
-  merchantPickupTitle: string
-  merchantPickupLocation: string
-  merchantPickupGeohash: string
-  merchantPickupCountry: string
+  eventGuestContactOptional?: boolean
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
 }

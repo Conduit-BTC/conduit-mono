@@ -48,15 +48,20 @@ describe("profile signer recovery", () => {
 describe("merchant order signer recovery", () => {
   it("keeps exact delivery retries owner-bound and signer-free", async () => {
     const contents = await source("apps/merchant/src/routes/orders.tsx")
-    const exactRetryStart = contents.indexOf(
-      "const retryOrganizerReadyDeliveryMutation"
+    const exactRetryStart = contents.indexOf("const futureRetryMutation")
+    const freshRevocationStart = contents.indexOf("const futureRevokeMutation")
+    const exactRetryBlock = contents.slice(
+      exactRetryStart,
+      freshRevocationStart
     )
-    const freshPaymentStart = contents.indexOf("const confirmPaymentMutation")
-    const exactRetryBlock = contents.slice(exactRetryStart, freshPaymentStart)
 
-    expect(exactRetryBlock).toContain("retryStoredOrganizerReadyReceipt")
-    expect(exactRetryBlock).toContain("retryStoredOrganizerReadyRevocation")
-    expect(exactRetryBlock).toContain("isCurrentOrderAccount")
+    expect(exactRetryStart).toBeGreaterThan(-1)
+    expect(freshRevocationStart).toBeGreaterThan(exactRetryStart)
+    expect(exactRetryBlock).toContain("retryFutureMarketPrivateDelivery({")
+    expect(exactRetryBlock).toContain("record.senderPubkey !== pubkey")
+    expect(exactRetryBlock).toContain("authenticatedOwnerPubkey: pubkey")
+    expect(exactRetryBlock).toContain("isCurrentOrderOwner")
+    expect(exactRetryBlock).toContain("shouldContinue:")
     expect(contents).toContain("const mountedRef = useRef(true)")
     expect(contents).toContain("mountedRef.current = false")
     expect(contents).toContain(

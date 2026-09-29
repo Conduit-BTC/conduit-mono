@@ -7,6 +7,7 @@ import {
 import {
   buildEventMarketAuthorizationDraft,
   buildEventMarketRosterDraft,
+  type OrderEventMarketPickupFulfillmentSchema,
   orderItemSchema,
   orderSchema,
   parseEventMarketAuthorizationEvent,
@@ -60,6 +61,20 @@ const signedGrant = finalizeEvent(
   organizerSecret
 )
 const grant = JSON.parse(JSON.stringify(signedGrant)) as typeof signedGrant
+
+function snapshotGrant(
+  evidence: OrderEventMarketPickupFulfillmentSchema["grant"]["signedEvidence"]
+): OrderEventMarketPickupFulfillmentSchema["grant"] {
+  return {
+    kind: 3841,
+    pubkey: organizer,
+    eventId: evidence.tip.id,
+    createdAt: evidence.tip.created_at * 1000,
+    ancestryEventIds: evidence.ancestry.map((event) => event.id),
+    observedDeletionEventIds: evidence.deletions.map((event) => event.id),
+    signedEvidence: evidence,
+  }
+}
 
 function item(
   dTag: string,
@@ -129,7 +144,7 @@ function item(
         createdAt: signedProduct.created_at * 1_000,
         signedEvent: signedProduct,
       },
-      authorization: { tip: grant, ancestry: [grant], deletions: [] },
+      grant: snapshotGrant({ tip: grant, ancestry: [grant], deletions: [] }),
       mode: "merchant_present",
       assignment,
     },
@@ -146,13 +161,16 @@ function order(items: CartItem[] = [item("soap")]) {
       title: source.title,
       format: source.format,
       quantity: source.quantity,
-      priceAtPurchase: source.price,
-      currency: source.currency,
+      priceAtPurchase: source.price * 100,
+      currency: "SATS",
       sourcePrice: source.sourcePrice,
       fulfillment: source.fulfillment,
     })),
-    subtotal: items.reduce((sum, source) => sum + source.price, 0),
-    currency: "USD",
+    subtotal: items.reduce(
+      (sum, source) => sum + source.price * 100 * source.quantity,
+      0
+    ),
+    currency: "SATS",
     shippingCostStatus: "not_required" as const,
     createdAt: 100,
   }
@@ -182,8 +200,8 @@ describe("future Event Market cart and order snapshots", () => {
       title: source.title,
       format: "physical",
       quantity: 1,
-      priceAtPurchase: 12,
-      currency: "USD",
+      priceAtPurchase: 1200,
+      currency: "SATS",
       sourcePrice: source.sourcePrice,
       fulfillment: source.fulfillment,
     })
@@ -194,7 +212,7 @@ describe("future Event Market cart and order snapshots", () => {
     )
     const withoutGrant = {
       ...source.fulfillment,
-      authorization: undefined,
+      grant: undefined,
     }
     expect(
       orderItemSchema.safeParse({
@@ -371,7 +389,7 @@ describe("future Event Market cart and order snapshots", () => {
     const fulfillment = created.items[0]?.fulfillment
     if (fulfillment?.type !== "event_market_pickup")
       throw new Error("Missing Event Market pickup")
-    expect(fulfillment.authorization).toEqual({
+    expect(fulfillment.grant.signedEvidence).toEqual({
       tip: grant,
       ancestry: [grant],
       deletions: [],
@@ -381,7 +399,7 @@ describe("future Event Market cart and order snapshots", () => {
         ...created.items[0],
         fulfillment: {
           ...fulfillment,
-          authorization: { tip: grant, ancestry: [], deletions: [] },
+          grant: snapshotGrant({ tip: grant, ancestry: [], deletions: [] }),
         },
       }).success
     ).toBe(false)
@@ -405,7 +423,11 @@ describe("future Event Market cart and order snapshots", () => {
         ...created.items[0],
         fulfillment: {
           ...fulfillment,
-          authorization: { tip: revoke, ancestry: [revoke], deletions: [] },
+          grant: snapshotGrant({
+            tip: revoke,
+            ancestry: [revoke],
+            deletions: [],
+          }),
         },
       }).success
     ).toBe(false)
@@ -417,7 +439,8 @@ describe("future Event Market cart and order snapshots", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "active",
-          parents: [parsedGrant],
+          sequence: parsedGrant.sequence + 1,
+          parentIds: [parsedGrant.eventId],
         }),
         created_at: 102,
       },
@@ -428,11 +451,11 @@ describe("future Event Market cart and order snapshots", () => {
         ...created.items[0],
         fulfillment: {
           ...fulfillment,
-          authorization: {
+          grant: snapshotGrant({
             tip: descendant,
             ancestry: [descendant],
             deletions: [],
-          },
+          }),
         },
       }).success
     ).toBe(false)
@@ -444,11 +467,11 @@ describe("future Event Market cart and order snapshots", () => {
             ...created.items[0],
             fulfillment: {
               ...fulfillment,
-              authorization: {
+              grant: snapshotGrant({
                 tip: { ...grant, sig: "0".repeat(128) },
                 ancestry: [grant],
                 deletions: [],
-              },
+              }),
             },
           },
         ],
@@ -465,7 +488,8 @@ describe("future Event Market cart and order snapshots", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "revoked",
-          parents: [parsedGrant],
+          sequence: parsedGrant.sequence + 1,
+          parentIds: [parsedGrant.eventId],
         }),
         created_at: 101,
       },
@@ -488,8 +512,9 @@ describe("future Event Market cart and order snapshots", () => {
           marketCoordinate,
           merchantPubkey: merchant,
           state: "active",
-          parents: [parsedRevoke],
-          repairs: [{ deletionId: deletion.id, targetEventId: revoke.id }],
+          sequence: parsedRevoke.sequence + 1,
+          parentIds: [parsedRevoke.eventId],
+          repairs: [{ deletionId: deletion.id, targetId: revoke.id }],
         }),
         created_at: 103,
       },
@@ -507,22 +532,22 @@ describe("future Event Market cart and order snapshots", () => {
     const fulfillment = historical.items[0]?.fulfillment
     if (fulfillment?.type !== "event_market_pickup")
       throw new Error("Missing Event Market pickup")
-    fulfillment.authorization = {
+    fulfillment.grant = snapshotGrant({
       tip: resolution.tip.signedEvent,
-      ancestry: resolution.ancestry,
-      deletions: resolution.deletions,
-    }
+      ancestry: resolution.ancestry.map((event) => event.signedEvent),
+      deletions: [deletion],
+    })
     const created = orderSchema.parse(historical)
     const accepted = created.items[0]?.fulfillment
     if (accepted?.type !== "event_market_pickup")
       throw new Error("Missing saved Event Market pickup")
-    expect(accepted.authorization.tip.id).toBe(regrant.id)
-    expect(accepted.authorization.ancestry.map((event) => event.id)).toContain(
-      revoke.id
-    )
-    expect(accepted.authorization.deletions.map((event) => event.id)).toEqual([
-      deletion.id,
-    ])
+    expect(accepted.grant.signedEvidence.tip.id).toBe(regrant.id)
+    expect(
+      accepted.grant.signedEvidence.ancestry.map((event) => event.id)
+    ).toContain(revoke.id)
+    expect(
+      accepted.grant.signedEvidence.deletions.map((event) => event.id)
+    ).toEqual([deletion.id])
   })
 
   it("enforces merchant, market, pickup lane, and shipping terms across the full order", () => {
@@ -552,11 +577,11 @@ describe("future Event Market cart and order snapshots", () => {
     const second = changedAuthorization.items[1]?.fulfillment
     if (second?.type !== "event_market_pickup")
       throw new Error("Missing second Event Market pickup")
-    second.authorization = {
+    second.grant = snapshotGrant({
       tip: laterGrant,
       ancestry: [laterGrant],
       deletions: [],
-    }
+    })
     expect(orderSchema.safeParse(changedAuthorization).success).toBe(false)
     expect(
       orderSchema.safeParse({ ...base, shippingCostSats: 10 }).success

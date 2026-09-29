@@ -1,14 +1,22 @@
 import { useState } from "react"
 import { createRoot } from "react-dom/client"
+import { nip19 } from "nostr-tools"
 
 import { EventQrPrintPreview } from "../../apps/merchant/src/components/EventQrPrintPreview"
+
+const eventReference = nip19.naddrEncode({
+  kind: 30409,
+  pubkey: "01".repeat(32),
+  identifier: "mobile-event-sign",
+})
+const merchantReference = nip19.npubEncode("02".repeat(32))
+const signUrl = `https://shop.conduit.market/events/${eventReference}?merchant=${merchantReference}`
 
 const sheet = {
   id: "mobile-event-sign",
   kind: "merchant",
-  url: "https://shop.conduit.market/events/naddr1qqxnzdenx5cr2wfcxycrwwfcqgs9y6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6qpsgqqqw4rsf45khs?merchant=npub1qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqdt7a9h",
-  qrValue:
-    "https://shop.conduit.market/events/naddr1qqxnzdenx5cr2wfcxycrwwfcqgs9y6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6yzy6qpsgqqqw4rsf45khs?merchant=npub1qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqdt7a9h",
+  url: signUrl,
+  qrValue: signUrl,
   eventTitle: "A complete printable event title at the narrowest viewport",
   schedule: "Sep 17, 2026, 9:00 AM - Sep 17, 2026, 5:00 PM",
   location: "A complete public event location",

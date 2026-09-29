@@ -18,7 +18,7 @@ describe("Merchant live account authority", () => {
       dashboard,
       orders,
       products,
-      events,
+      manager,
       eventTimeline,
       shipping,
       readiness,
@@ -26,7 +26,7 @@ describe("Merchant live account authority", () => {
       source("apps/merchant/src/routes/index.tsx"),
       source("apps/merchant/src/routes/orders.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
-      source("apps/merchant/src/routes/events.tsx"),
+      source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
       source("apps/merchant/src/hooks/useMerchantEventTimeline.ts"),
       source("apps/merchant/src/routes/shipping.tsx"),
       source("apps/merchant/src/hooks/useMerchantReadiness.ts"),
@@ -37,17 +37,18 @@ describe("Merchant live account authority", () => {
     const orderGenerationGuard =
       /!signal\.aborted &&\s+!!pubkey &&\s+isCurrentOrderOwner\(pubkey, authGeneration\)/g
     expect(dashboard.match(generationGuard)).toHaveLength(1)
-    expect(orders.match(orderGenerationGuard)).toHaveLength(2)
-    expect(products.match(generationGuard)).toHaveLength(5)
-    expect(
-      events.match(/!signal\.aborted && shouldContinue\(\)/g)
-    ).toHaveLength(1)
-    expect(
-      events.match(
-        /shouldContinue\(\) && queryScopeTokenRef\.current === queryScopeToken/g
+    expect(orders.match(orderGenerationGuard)).toHaveLength(4)
+    expect(products.match(generationGuard)).toHaveLength(1)
+    const eventGenerationGuard =
+      /!signal\.aborted && isAuthGenerationCurrent\(authGeneration\)/g
+    expect(manager.match(eventGenerationGuard)).toHaveLength(2)
+    expect(manager.match(generationGuard)).toHaveLength(1)
+    for (const contents of [manager]) {
+      expect(contents).toMatch(
+        /session.relayScope,[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,80}authGeneration/
       )
-    ).toHaveLength(4)
-    expect(eventTimeline.match(generationGuard)).toHaveLength(5)
+    }
+    expect(eventTimeline.match(generationGuard)).toHaveLength(2)
     expect(shipping.match(generationGuard)).toHaveLength(1)
     expect(readiness.match(generationGuard)).toHaveLength(1)
   })
@@ -55,7 +56,7 @@ describe("Merchant live account authority", () => {
   it("binds every authenticated Merchant profile and trust read to that generation", async () => {
     const paths = [
       "apps/merchant/src/components/MerchantHeader.tsx",
-      "apps/merchant/src/components/OrganizerEventMarketPanel.tsx",
+      "apps/merchant/src/components/FutureEventMarketManager.tsx",
       "apps/merchant/src/components/ProductPaymentSetupNotice.tsx",
       "apps/merchant/src/hooks/useMerchantPaymentAutomation.tsx",
       "apps/merchant/src/hooks/useMerchantReadiness.ts",
@@ -83,9 +84,6 @@ describe("Merchant live account authority", () => {
     const hook = await source(
       "apps/merchant/src/hooks/useMerchantEventTimeline.ts"
     )
-    const hydration = await source(
-      "apps/merchant/src/lib/merchant-event-relationship-hydration.ts"
-    )
     const component = await source(
       "apps/merchant/src/components/MerchantEventsTimeline.tsx"
     )
@@ -97,15 +95,13 @@ describe("Merchant live account authority", () => {
       hook.match(
         /!signal.aborted && authGenerationRef.current === authGeneration/g
       )
-    ).toHaveLength(5)
+    ).toHaveLength(2)
     expect(hook).toMatch(
       /session.relayScope[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,30}authGeneration/
     )
-    expect(hook).toMatch(
-      /resolveOrganizerEventMarketResolution\([\s\S]{0,100}authenticatedPubkey,[\s\S]{0,80}hydrationSignal/
-    )
-    expect(hydration).toContain("input.signal?.aborted")
-    expect(hydration).toContain('stop("caller")')
+    expect(component).toContain("useProgressiveEventMarketDiscovery")
+    expect(component).toContain("authenticatedPubkey,")
+    expect(component).toContain("isAuthGenerationCurrent(authGeneration)")
     expect(component).toMatch(
       /useProfiles\([\s\S]{0,100}accountPubkey,[\s\S]{0,50}authenticatedPubkey,[\s\S]{0,100}shouldContinue: \(\) =>[\s\S]{0,80}authGenerationRef\.current === authGeneration &&[\s\S]{0,80}isAuthGenerationCurrent\(authGeneration\)/
     )
@@ -146,16 +142,20 @@ describe("Merchant live account authority", () => {
   })
 
   it("propagates live authority through followed-event discovery", async () => {
-    const [merchantAdapter, discovery] = await Promise.all([
-      source("apps/merchant/src/lib/event-market.ts"),
-      source("packages/core/src/protocol/event-market-discovery.ts"),
-    ])
-
-    expect(merchantAdapter).toContain("shouldContinue: options.shouldContinue")
+    const [merchantHook, progressive, discovery, enrollment] =
+      await Promise.all([
+        source("apps/merchant/src/hooks/useMerchantEventTimeline.ts"),
+        source("packages/core/src/hooks/useProgressiveEventMarketDiscovery.ts"),
+        source("packages/core/src/protocol/event-market-roster-read.ts"),
+        source("apps/merchant/src/hooks/useEventMarketEnrollment.ts"),
+      ])
+    expect(merchantHook).toContain("shouldContinue:")
+    expect(progressive).toContain("shouldContinue:")
     expect(discovery).toContain("shouldContinue: input.shouldContinue")
     expect(
-      discovery.match(/throwIfAborted\(input\.signal, input\.shouldContinue\)/g)
-        ?.length ?? 0
-    ).toBeGreaterThanOrEqual(4)
+      enrollment.match(
+        /shouldContinue: \(\) => isAuthGenerationCurrent\(authGeneration\)/g
+      )
+    ).toHaveLength(3)
   })
 })

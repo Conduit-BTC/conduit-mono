@@ -13,127 +13,94 @@ describe("Market event catalog route", () => {
     expect(tree).toContain("'/events/$collectionRef'")
   })
 
-  it("keeps Nostr reads in one adapter and renders organizer-neutral provenance", async () => {
+  it("uses the current shared catalog reader with session cancellation", async () => {
     const route = await Bun.file(
       "apps/market/src/routes/events/$collectionRef.tsx"
     ).text()
-    const adapter = await Bun.file(
-      "apps/market/src/lib/event-market-adapter.ts"
+    const page = await Bun.file(
+      "apps/market/src/components/FutureEventMarketPage.tsx"
     ).text()
-
-    expect(route).toContain("useEventMarket")
-    expect(route).not.toContain("getEventMarket(")
-    expect(route).not.toContain("NDKEvent")
-    expect(adapter).toContain("getEventMarket")
-    expect(adapter).toContain("getProductsByIds")
-    expect(adapter).toContain("resolveEventMarketProductParticipation")
-    expect(route).toContain("Organizer identity")
-    expect(route).toContain("operate an organizer registry")
-    expect(route.toLowerCase()).not.toContain("chicago")
+    expect(route).toContain("<FutureEventMarketPage")
+    expect(route).toContain(
+      "decodeEventMarketReference(collectionRef, [30409])"
+    )
+    expect(route).toContain("This event needs to be reposted")
+    expect(page).toContain("readEventMarketCatalog({")
+    expect(page).toContain(
+      "shouldContinue: () => !signal.aborted && shouldContinue()"
+    )
+    expect(page).toContain("queryClient.setQueryData(catalogQueryKey, result)")
+    expect(page).not.toContain("NDKEvent")
   })
 
-  it("labels the organizer and canonical catalog reference in technical details", async () => {
+  it("keeps organizer identity, share links, selected merchant, and selected date visible", async () => {
     const route = await Bun.file(
       "apps/market/src/routes/events/$collectionRef.tsx"
     ).text()
-    const technicalDetails = route.slice(
-      route.indexOf('<details className="group/technical')
+    const page = await Bun.file(
+      "apps/market/src/components/FutureEventMarketPage.tsx"
+    ).text()
+    expect(page).toContain("Organized by")
+    expect(page).toContain(
+      "getMerchantDisplayName(organizerProfile, organizerPubkey"
     )
-
-    expect(technicalDetails).toContain("<EventActorName")
-    expect(technicalDetails).toContain("identity={organizerIdentity}")
-    expect(technicalDetails).toContain("pubkey={organizerPubkey}")
-    expect(technicalDetails).toContain('copyLabel="Copy organizer npub"')
-    expect(technicalDetails).toContain('label="Event catalog naddr"')
-    expect(technicalDetails).toContain("value={catalog.canonicalNaddr}")
-    expect(technicalDetails).toContain('copyLabel="Copy event catalog naddr"')
-    expect(technicalDetails).not.toContain("Copy canonical event link")
-  })
-
-  it("shows degraded, deleted, conflict, archive, and unlinked-product states", async () => {
-    const [route, presentation] = await Promise.all([
-      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
-      Bun.file("packages/ui/src/event-market-presentation.ts").text(),
-    ])
-
-    expect(route).toContain("getEventActionabilityPresentation")
-    expect(route).toContain("formatEventRelayReadCoverage")
-    expect(presentation).toContain("Event loaded")
-    expect(presentation).toContain("Event ended")
-    expect(presentation).toContain("Event unavailable")
-    expect(presentation).toContain("Event deleted")
-    expect(presentation).toContain("Event records conflict")
-    expect(presentation).toContain("Event records unresolved")
-    expect(route).toContain("eventMarketRequiredRecordsResolved(catalog)")
+    expect(page).toContain("shareUrl={shareUrl}")
+    expect(page).toContain(
+      'shareLabel={selectedMerchant ? "Share this view" : "Share event"}'
+    )
+    expect(route).toContain("selectedOccurrence={search.occurrence}")
     expect(route).toContain(
-      "requiredEventRecordsResolved,\n    productAvailability.availableProductCount,\n    productAvailability.unresolvedProductCount"
+      "selectedMerchant={normalizePubkey(search.merchant)"
     )
-    expect(route).toContain("Organizer handoff details are unresolved")
-    expect(route).toContain("getEventCatalogPickupGate")
-    expect(route).toContain("cartActionDisabled={!cartAction.enabled}")
+    expect(route).toContain("merchant: pubkeyToNpub(merchant)")
   })
 
-  it("keeps recoverable pickup intent reversible until exact checkout authority resolves", async () => {
-    const [route, cartModel, checkout] = await Promise.all([
-      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
-      Bun.file("apps/market/src/lib/cart-model.ts").text(),
-      Bun.file("apps/market/src/routes/checkout.tsx").text(),
-    ])
-
-    expect(route).toContain("createPendingEventPickupFulfillment")
-    expect(route).toContain(
-      "const candidate = exactCandidate ?? pendingCandidate"
+  it("distinguishes provisional browsing from exact purchase checks", async () => {
+    const page = await Bun.file(
+      "apps/market/src/components/FutureEventMarketPage.tsx"
+    ).text()
+    expect(page).toContain('catalog.coverage !== "complete"')
+    expect(page).toContain("More products may be available.")
+    expect(page).toContain(
+      "The current signed Event Market record is unavailable."
     )
-    expect(route).toContain("allowPendingCart: pendingEvidenceMayRecover")
-    expect(route).not.toContain("Current pickup terms are being verified")
-    expect(cartModel).toContain('type: "event_pickup_pending"')
-    expect(cartModel).toContain(
-      "if (isPendingEventPickupCartItem(item)) continue"
+    expect(page).toContain("This Event Market is closed to new purchases.")
+    expect(page).toContain("Event records could not be checked. Try again.")
+    expect(page).toContain("readEventMarketProduct({")
+    expect(page).toContain("createEventMarketPickupSnapshot({")
+    expect(page.indexOf("readEventMarketProduct({")).toBeLessThan(
+      page.indexOf("await cart.addItem(")
     )
-    expect(checkout).toContain(
-      'item.fulfillment?.type === "event_pickup_pending"'
-    )
-    expect(checkout).toContain(
-      "Event pickup must finish verification before an order can be created."
-    )
-    expect(route).not.toContain("pickupFulfillment ?? undefined")
   })
 
-  it("keeps retained acceptance visible without claiming current purchase evidence", async () => {
-    const [route, adapter] = await Promise.all([
-      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
-      Bun.file("apps/market/src/lib/event-market-adapter.ts").text(),
-    ])
-
-    expect(adapter).toContain("resolution.acceptedProductCoordinates")
-    expect(adapter).toContain("pickupCoordinate: resolution.pickupCoordinate")
-    expect(adapter).not.toContain(
-      "const requested = resolution.organizerProductCoordinates"
+  it("preserves reversible shipping choices and exact occurrence context", async () => {
+    const page = await Bun.file(
+      "apps/market/src/components/FutureEventMarketPage.tsx"
+    ).text()
+    const cart = await Bun.file(
+      "apps/market/src/components/CartEventFulfillmentChoice.tsx"
+    ).text()
+    expect(page).toContain('choice === "shipping"')
+    expect(page).toContain(
+      "hasEventShippingChoice(productRead.resolution.product)"
     )
-    expect(adapter).toContain('evidenceState: live ? "live" : "retained"')
-    expect(adapter).toContain("const pickupFulfillment = live")
-    expect(adapter).toContain("pickupReadiness: getEventCatalogPickupReadiness")
-    expect(route).toContain("Some accepted products are unresolved")
-    expect(route).toContain("details remain visible")
-    expect(route).toContain("Accepted product details temporarily unavailable")
-    expect(route).toContain("catalog.acceptedProductCount")
-    expect(route).not.toContain("Missing products stay hidden")
+    expect(page).toContain("eventMarketContext:")
+    expect(page).toContain(
+      "calendarCoordinate: fulfillment.calendar.coordinate"
+    )
+    expect(cart).toContain("event_market_pickup")
+    expect(cart).toContain("shipping")
   })
 
-  it("keeps variable parent acceptance separate from exact child authority", async () => {
-    const [route, adapter] = await Promise.all([
-      Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
-      Bun.file("apps/market/src/lib/event-market-adapter.ts").text(),
-    ])
-
-    expect(adapter).toContain("buildEventCatalogFamilyPickupFulfillments")
-    expect(adapter).toContain("buildPickupFulfillmentSnapshot(")
-    expect(route).toContain("entry.familyPickupFulfillments?.[")
-    expect(route).toContain("const family = entry.family")
-    expect(route).not.toContain("authorizedChildren")
-    expect(route).toContain("selectedProduct.id === product.id")
-    expect(route).toContain('product.type !== "variable"')
-    expect(route).toContain("cartItemInputFromProductSelection(")
+  it("keeps product selection tied to the exact chosen listing", async () => {
+    const page = await Bun.file(
+      "apps/market/src/components/FutureEventMarketPage.tsx"
+    ).text()
+    expect(page).toContain("cartItemInputFromProductSelection(")
+    expect(page).toContain("productRead.resolution.product")
+    expect(page).toContain("navigateToProduct")
+    expect(page).toContain('to: "/products/$productId"')
+    expect(page).toContain("event: market.coordinate")
   })
 
   it("keeps automatic payment retries behind pickup freshness checks", async () => {
@@ -145,18 +112,18 @@ describe("Market event catalog route", () => {
       "apps/market/src/lib/checkout-authorization.ts"
     ).text()
 
-    expect(orders).toContain("verifyPickupCartFreshness")
+    expect(orders).toContain("verifyRetryFreshness")
     expect(orders).toContain("assertCartPickupHandlerReady")
-    expect(orders).toContain(
-      "row.lifecycle?.merchantPubkey ?? row.merchantPubkey"
-    )
+    expect(orders).toContain("assertCreatedEventMarketPickupTerms({")
     expect(orders).toContain("async function retryPayment")
     expect(orders).toContain("runOrderPrivateFallback")
-    expect(orders.indexOf("verifyPickupCartFreshness")).toBeLessThan(
+    expect(orders.indexOf("verifyRetryFreshness")).toBeLessThan(
       orders.lastIndexOf("await runOrderPrivateFallback({")
     )
     expect(checkout).toContain("sourceShippingCost: item.sourceShippingCost")
-    expect(authorization).toContain("resolveCheckoutProductFulfillments")
+    expect(authorization).toContain(
+      "resolveCurrentFutureEventMarketFulfillments"
+    )
     expect(authorization).toContain("assertCartPickupHandlerReady")
     expect(authorization).toContain("getCartCommerceFingerprint")
     const placeOrderStart = checkout.indexOf("async function placeOrder()")
@@ -167,9 +134,7 @@ describe("Market event catalog route", () => {
       const freshnessGate = checkoutAction.indexOf(
         "await assertCheckoutItemsAvailable("
       )
-      const orderIdentity = checkoutAction.indexOf(
-        "const orderId = crypto.randomUUID()"
-      )
+      const orderIdentity = checkoutAction.indexOf("const orderId =")
       expect(freshnessGate).toBeGreaterThan(-1)
       expect(freshnessGate).toBeLessThan(orderIdentity)
     }
@@ -200,7 +165,7 @@ describe("Market event catalog route", () => {
 
     expect(orders).toContain("Handled by")
     expect(orders).toContain("Pickup code")
-    expect(orders).toContain("View event catalog")
+    expect(orders).toContain("View event market")
     expect(orders).not.toContain("Resolved pickup cost")
     expect(orders).not.toContain("Calendar revision")
     expect(orders).not.toContain("Pickup revision")

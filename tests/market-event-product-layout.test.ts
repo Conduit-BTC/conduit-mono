@@ -9,8 +9,8 @@ describe("Market event product layout", () => {
     const [card, products, event, browser] = await Promise.all([
       source("apps/market/src/components/ProductGridCard.tsx"),
       source("apps/market/src/routes/products/index.tsx"),
-      source("apps/market/src/routes/events/$collectionRef.tsx"),
-      source("apps/market/src/components/EventCatalogBrowser.tsx"),
+      source("apps/market/src/components/FutureEventMarketPage.tsx"),
+      source("apps/market/src/components/FutureEventMarketPage.tsx"),
     ])
 
     expect(card).toContain("export const PRODUCT_GRID_CLASS_NAME")
@@ -20,10 +20,8 @@ describe("Market event product layout", () => {
     expect(products.match(/className={PRODUCT_GRID_CLASS_NAME}/g)?.length).toBe(
       2
     )
-    expect(event).toContain("<EventCatalogBrowser")
-    expect(browser).toContain(
-      'import { PRODUCT_GRID_CLASS_NAME } from "./ProductGridCard"'
-    )
+    expect(event).toContain("<FutureEventProductCard")
+    expect(browser).toContain("PRODUCT_GRID_CLASS_NAME,")
     expect(browser).toContain(
       "<ul className={`${PRODUCT_GRID_CLASS_NAME} items-start`}>"
     )
@@ -35,19 +33,19 @@ describe("Market event product layout", () => {
   it("keeps pickup notices and clarification boxes outside the product grid", async () => {
     const [card, event] = await Promise.all([
       source("apps/market/src/components/ProductGridCard.tsx"),
-      source("apps/market/src/routes/events/$collectionRef.tsx"),
+      source("apps/market/src/components/FutureEventMarketPage.tsx"),
     ])
 
     expect(card).toContain('className ?? "h-full"')
     expect(event).toContain('className="h-auto"')
     expect(event).not.toContain('<details className="group/pickup')
     expect(event).not.toContain("Current pickup terms are being verified")
-    expect(event).toContain("cartActionDisabled={!cartAction.enabled}")
+    expect(event).toContain("cartActionDisabled={checking || !canPurchase}")
   })
 
   it("allows floating variation panels outside the event catalog on hover-capable desktops", async () => {
     const browser = await source(
-      "apps/market/src/components/EventCatalogBrowser.tsx"
+      "apps/market/src/components/FutureEventMarketPage.tsx"
     )
 
     expect(browser).toContain(

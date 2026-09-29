@@ -1,0 +1,69 @@
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { parseEventMarketCalendarEvent } from "./event-market"
+import { getNdk } from "./ndk"
+import {
+  publishWithPlanner,
+  type PublishWithPlannerResult,
+} from "./relay-publish"
+import type { SignedPublicNostrEvent } from "./signed-event"
+
+interface CalendarRetryDependencies {
+  publish: (
+    signedEvent: SignedPublicNostrEvent,
+    organizerPubkey: string,
+    shouldContinue?: () => boolean
+  ) => Promise<PublishWithPlannerResult>
+}
+
+const defaultDependencies: CalendarRetryDependencies = {
+  publish: async (signedEvent, organizerPubkey, shouldContinue) => {
+    const ndk = await getNdk()
+    if (
+      !ndk.signer ||
+      (await ndk.signer.user()).pubkey.toLowerCase() !== organizerPubkey
+    )
+      throw new Error("Active signer does not match the organizer.")
+    if (shouldContinue?.() === false)
+      throw new Error("Organizer session changed.")
+    return publishWithPlanner(new NDKEvent(ndk, signedEvent), {
+      intent: "commerce_author_event",
+      authorPubkey: organizerPubkey,
+      authenticatedPubkey: organizerPubkey,
+      accountPubkey: organizerPubkey,
+      deliveryMode: "critical",
+      shouldContinue,
+    })
+  },
+}
+
+/** Retry an exact saved NIP-52 calendar without signing another revision. */
+export async function retryEventMarketCalendarDelivery(
+  input: {
+    organizerPubkey: string
+    authenticatedPubkey: string | null
+    signedEvent: SignedPublicNostrEvent
+    shouldContinue?: () => boolean
+  },
+  dependencies: CalendarRetryDependencies = defaultDependencies
+): Promise<PublishWithPlannerResult> {
+  const organizerPubkey = input.organizerPubkey.trim().toLowerCase()
+  const calendar = parseEventMarketCalendarEvent(input.signedEvent)
+  if (
+    !calendar ||
+    calendar.authorPubkey !== organizerPubkey ||
+    input.authenticatedPubkey?.toLowerCase() !== organizerPubkey
+  )
+    throw new Error(
+      "The exact signed organizer calendar is required for retry."
+    )
+  if (input.shouldContinue?.() === false)
+    throw new Error("Organizer session changed.")
+  const delivery = await dependencies.publish(
+    input.signedEvent,
+    organizerPubkey,
+    input.shouldContinue
+  )
+  if (input.shouldContinue?.() === false)
+    throw new Error("Organizer session changed.")
+  return delivery
+}
