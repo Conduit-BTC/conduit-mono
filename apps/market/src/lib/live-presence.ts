@@ -1,7 +1,7 @@
 export type LivePresencePageType = "product" | "store"
 
 export const PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL =
-  "wss://conduit-presence-preview.conduitholdings.workers.dev"
+  "wss://conduit-presence-preview.conduithodlings.workers.dev"
 // Keep active preview builds connected while the account subdomain changes.
 const PREVIOUS_PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL =
   "wss://conduit-presence-preview.eric-furletti.workers.dev"
