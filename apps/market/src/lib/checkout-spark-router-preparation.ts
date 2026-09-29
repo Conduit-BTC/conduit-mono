@@ -13,6 +13,7 @@ import {
 } from "@conduit/core"
 
 import {
+  assertCheckoutSparkRecoverySigningIdentity,
   getCheckoutSparkRecoveryDelivery,
   publishCheckoutSparkRecoveryHandoff,
   retryStoredCheckoutSparkRecoveryHandoff,
@@ -494,6 +495,7 @@ export async function prepareCheckoutSparkRouterFunding(
   input: PrepareCheckoutSparkRouterFundingInput,
   dependencies: PrepareCheckoutSparkRouterFundingDependencies = {}
 ): Promise<PreparedCheckoutSparkRouterFunding> {
+  assertCheckoutSparkRecoverySigningIdentity(input.identity)
   const now = dependencies.now ?? Date.now
   const storage = input.storage === undefined ? browserStorage() : input.storage
   const createWalletMaterial =

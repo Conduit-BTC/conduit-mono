@@ -125,6 +125,38 @@ function fundingReceive() {
 }
 
 describe("checkout Spark router preparation", () => {
+  it("rejects guest recovery before creating a checkout wallet", async () => {
+    const storage = new MemoryStorage()
+    let walletCreateCalls = 0
+    const input = preparationInput()
+    await expect(
+      prepareCheckoutSparkRouterFunding(
+        {
+          ...input,
+          storage,
+          identity: {
+            kind: "guest_ephemeral",
+            orderId: input.orderId,
+            merchantPubkey: MERCHANT,
+            createdAt: CREATED_AT,
+            expiresAt: CREATED_AT + 120_000,
+            pubkey: BUYER.pubkey,
+            signer: BUYER,
+          },
+        },
+        {
+          now: () => CREATED_AT,
+          createWalletMaterial: () => {
+            walletCreateCalls += 1
+            return walletMaterial()
+          },
+        }
+      )
+    ).rejects.toThrow("requires a signed-in external signer")
+    expect(walletCreateCalls).toBe(0)
+    expect(storage.values.size).toBe(0)
+  })
+
   it("rejects an outgoing invoice that expires at the anticipated deadline before wallet creation", async () => {
     let walletCreateCalls = 0
     const input = preparationInput()

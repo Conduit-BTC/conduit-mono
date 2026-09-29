@@ -1,3 +1,4 @@
+import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   createCheckoutSparkRecoveryPayload,
   parseCheckoutSparkRecoveryDeliveryProgress,
@@ -11,7 +12,6 @@ import {
   type PublishCheckoutSparkRecoveryResult as CorePublishCheckoutSparkRecoveryResult,
   type RetryCheckoutSparkRecoveryResult,
 } from "@conduit/core"
-import type { NDKSigner } from "@nostr-dev-kit/ndk"
 
 import type { GuestOrderSigningIdentity } from "./guest-order-identity"
 import type { SparkRecoveryBundle } from "./spark-recovery-bundle"
@@ -29,6 +29,20 @@ export type CheckoutSparkRecoverySigningIdentity =
       pubkey: string
       signer: NDKSigner
     }
+
+/** Guest order keys cannot authorize a separate wallet recovery rumor. */
+export function assertCheckoutSparkRecoverySigningIdentity(
+  identity: CheckoutSparkRecoverySigningIdentity
+): asserts identity is Extract<
+  CheckoutSparkRecoverySigningIdentity,
+  { kind: "signed_in" }
+> {
+  if (identity.kind !== "signed_in") {
+    throw new Error(
+      "Checkout Spark router recovery requires a signed-in external signer."
+    )
+  }
+}
 
 export interface StoredCheckoutSparkRecoveryDelivery {
   record: CheckoutSparkRecoveryDeliveryRecord
@@ -225,26 +239,13 @@ function assertScopedRecoveryInput(input: {
   identity: CheckoutSparkRecoverySigningIdentity
   preparedAt: number
 }): string {
+  assertCheckoutSparkRecoverySigningIdentity(input.identity)
   const mnemonic = normalizeSparkMnemonic(input.recovery.mnemonic)
   if (
     !isValidSparkMnemonic(mnemonic) ||
     input.recovery.network !== input.plan.network
   ) {
-    throw new Error(
-      input.identity.kind === "guest_ephemeral"
-        ? "Checkout Spark recovery is outside its guest order scope."
-        : "Checkout Spark recovery is outside its checkout scope."
-    )
-  }
-  if (
-    input.identity.kind === "guest_ephemeral" &&
-    (input.identity.orderId !== input.plan.orderId ||
-      input.identity.merchantPubkey.trim().toLowerCase() !==
-        input.plan.merchantPubkey ||
-      input.preparedAt < input.identity.createdAt ||
-      input.preparedAt >= input.identity.expiresAt)
-  ) {
-    throw new Error("Checkout Spark recovery is outside its guest order scope.")
+    throw new Error("Checkout Spark recovery is outside its checkout scope.")
   }
   return mnemonic
 }
@@ -285,10 +286,7 @@ export async function publishCheckoutSparkRecoveryHandoff(input: {
   const result = await publishCheckoutSparkRecovery({
     payload,
     signer: input.identity.signer,
-    signerInteraction:
-      input.identity.kind === "guest_ephemeral"
-        ? "application_owned"
-        : "external",
+    signerInteraction: "external",
     transport: input.transport,
     persistExactWrap: async (preparedRecord, progress) => {
       persisted.record = preparedRecord

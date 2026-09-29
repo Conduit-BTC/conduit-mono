@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent, NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -553,6 +553,75 @@ describe("Merchant checkout Spark recovery discovery", () => {
     expect(JSON.stringify(result)).not.toContain("lnbc-private")
   })
 
+  it("opens a previously selected exact wrap beyond 51 unrelated inbox wraps", async () => {
+    const wrap = signedWrap()
+    let crowded = false
+    const unrelated = Array.from({ length: 51 }, (_, index) =>
+      signedWrap(MERCHANT, CREATED_AT + (index + 1) * 1_000)
+    )
+    let consumed = 0
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [INBOX],
+      readProtectedInbox: async (options) =>
+        protectedRead(
+          options.eventId || !crowded ? [wrap] : [...unrelated, wrap]
+        ),
+      giftUnwrap: async (event) =>
+        event.id === wrap.id
+          ? recoveryRumor()
+          : new NDKEvent(undefined, {
+              kind: 14,
+              tags: [],
+              content: "ordinary message",
+            }),
+    })
+    const selected = (await getMerchantCheckoutSparkRecoveryList(MERCHANT))
+      .candidates[0]!
+    crowded = true
+    const result = await withMerchantCheckoutSparkRecovery(MERCHANT, selected, {
+      async consume(_payload, assertCurrent) {
+        assertCurrent()
+        consumed += 1
+      },
+    })
+    expect(result.status).toBe("consumed")
+    expect(result.coverage).toBe("complete")
+    expect(result.discoveryCoverage).toBe("partial")
+    expect(consumed).toBe(1)
+  })
+
+  it("blocks observed conflicting wallet authority even when the selected wrap fell outside the page", async () => {
+    const wrap = signedWrap()
+    const conflictingWrap = signedWrap(MERCHANT, CREATED_AT + 1_000)
+    let changed = false
+    let consumed = 0
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [INBOX],
+      readProtectedInbox: async (options) =>
+        protectedRead(
+          options.eventId || !changed ? [wrap] : [conflictingWrap],
+          changed && !options.eventId ? { coverage: "partial" } : {}
+        ),
+      giftUnwrap: async (event) =>
+        recoveryRumor(
+          event.id === wrap.id
+            ? "original synthetic material"
+            : "conflicting synthetic material"
+        ),
+    })
+    const selected = (await getMerchantCheckoutSparkRecoveryList(MERCHANT))
+      .candidates[0]!
+    changed = true
+    const result = await withMerchantCheckoutSparkRecovery(MERCHANT, selected, {
+      async consume() {
+        consumed += 1
+      },
+    })
+    expect(result.status).toBe("incomplete")
+    expect(result.coverage).toBe("partial")
+    expect(consumed).toBe(0)
+  })
+
   it("does not consume a stale, wrong, or missing exact wrap", async () => {
     const wrap = signedWrap()
     let readCount = 0
@@ -577,7 +646,7 @@ describe("Merchant checkout Spark recovery discovery", () => {
       adapter
     )
     expect(wrong.status).toBe("missing")
-    expect(readCount).toBe(2)
+    expect(readCount).toBe(3)
 
     const missing = await withMerchantCheckoutSparkRecovery(
       MERCHANT,

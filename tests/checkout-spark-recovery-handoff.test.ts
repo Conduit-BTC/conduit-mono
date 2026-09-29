@@ -20,7 +20,7 @@ import {
   retryStoredCheckoutSparkRecoveryHandoff,
   saveCheckoutSparkRecoveryDelivery,
 } from "../apps/market/src/lib/checkout-spark-recovery-handoff"
-import type { GuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
+import { createGuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
 
 const BUYER_SIGNER = NDKPrivateKeySigner.generate()
 const MERCHANT = getPublicKey(generateSecretKey())
@@ -81,13 +81,9 @@ function plan() {
   })
 }
 
-function identity(): GuestOrderSigningIdentity {
+function identity() {
   return {
-    kind: "guest_ephemeral",
-    orderId: plan().orderId,
-    merchantPubkey: MERCHANT,
-    createdAt: CREATED_AT,
-    expiresAt: CREATED_AT + 120_000,
+    kind: "signed_in" as const,
     pubkey: BUYER_SIGNER.pubkey,
     signer: BUYER_SIGNER,
   }
@@ -124,6 +120,35 @@ function delivery(relays: readonly string[], successful = relays) {
 }
 
 describe("checkout Spark recovery outbox", () => {
+  it("rejects guest recovery before wrapping, persisting, or publishing", async () => {
+    const storage = new MemoryStorage()
+    let wrapped = false
+    let published = false
+    const guest = createGuestOrderSigningIdentity(plan().orderId, MERCHANT)
+    await expect(
+      publishCheckoutSparkRecoveryHandoff({
+        plan: plan(),
+        recovery: { mnemonic: MNEMONIC, accountNumber: 0, network: "mainnet" },
+        identity: guest,
+        storage,
+        transport: {
+          recipientInboxRelays: ["wss://merchant.inbox.relay.dev"],
+          giftWrapFn: (async () => {
+            wrapped = true
+            return signedWrap(MERCHANT)
+          }) as never,
+          publishFn: (async () => {
+            published = true
+            return delivery([])
+          }) as never,
+        },
+      })
+    ).rejects.toThrow("requires a signed-in external signer")
+    expect(wrapped).toBe(false)
+    expect(published).toBe(false)
+    expect(storage.values.size).toBe(0)
+  })
+
   it("durably saves ciphertext before publish and never stores wallet plaintext", async () => {
     const storage = new MemoryStorage()
     const calls: string[] = []
@@ -261,7 +286,7 @@ describe("checkout Spark recovery outbox", () => {
     ).toThrow("different exact delivery wrapper")
   })
 
-  it("fails closed when the Spark recovery or guest identity is out of scope", async () => {
+  it("fails closed when Spark recovery is outside its checkout scope", async () => {
     const storage = new MemoryStorage()
     await expect(
       publishCheckoutSparkRecoveryHandoff({
@@ -275,7 +300,7 @@ describe("checkout Spark recovery outbox", () => {
         preparedAt: CREATED_AT + 1_000,
         storage,
       })
-    ).rejects.toThrow("outside its guest order scope")
+    ).rejects.toThrow("outside its checkout scope")
     expect(storage.values.size).toBe(0)
   })
 

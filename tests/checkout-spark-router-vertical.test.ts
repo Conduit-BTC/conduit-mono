@@ -68,11 +68,7 @@ function input(storage: MemoryStorage) {
     grossFundingSats: 1_240,
     fundingExpirySecs: 600,
     identity: {
-      kind: "guest_ephemeral" as const,
-      orderId: "order-router-vertical-1",
-      merchantPubkey: MERCHANT.pubkey,
-      createdAt: CREATED_AT,
-      expiresAt: CREATED_AT + 120_000,
+      kind: "signed_in" as const,
       pubkey: BUYER.pubkey,
       signer: BUYER,
     },

@@ -9393,6 +9393,25 @@ export interface MerchantCheckoutSparkRecoveryListResult {
 export async function getMerchantCheckoutSparkRecoveryList(
   principalPubkey: string
 ): Promise<MerchantCheckoutSparkRecoveryListResult> {
+  return (await inspectMerchantCheckoutSparkRecoveries(principalPubkey)).result
+}
+
+interface MerchantCheckoutSparkRecoveryAuthority {
+  candidate: MerchantCheckoutSparkRecoveryCandidate
+  handoffId: string
+  senderPubkey: string
+  mnemonic: string
+  accountNumber: number
+}
+
+/** Wallet authority remains private to this foreground call. */
+async function inspectMerchantCheckoutSparkRecoveries(
+  principalPubkey: string
+): Promise<{
+  result: MerchantCheckoutSparkRecoveryListResult
+  authorities: Map<string, MerchantCheckoutSparkRecoveryAuthority>
+  conflictingCheckouts: Set<string>
+}> {
   const authorization = resolveInboxSyncAuthorization(principalPubkey)
   assertInboxSyncAuthority(authorization)
   const signer = await resolveEnvelopeSigner()
@@ -9416,12 +9435,16 @@ export async function getMerchantCheckoutSparkRecoveryList(
   )
   if (relayUrls.length === 0) {
     return {
-      candidates: [],
-      coverage: "unavailable",
-      declarationState: declaration.state,
-      malformedCount: 0,
-      decryptFailureCount: 0,
-      conflictCount: 0,
+      result: {
+        candidates: [],
+        coverage: "unavailable",
+        declarationState: declaration.state,
+        malformedCount: 0,
+        decryptFailureCount: 0,
+        conflictCount: 0,
+      },
+      authorities: new Map(),
+      conflictingCheckouts: new Set(),
     }
   }
 
@@ -9463,16 +9486,7 @@ export async function getMerchantCheckoutSparkRecoveryList(
         right.created_at - left.created_at || left.id.localeCompare(right.id)
     )
     .slice(0, CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT)
-  const byCheckout = new Map<
-    string,
-    {
-      candidate: MerchantCheckoutSparkRecoveryCandidate
-      handoffId: string
-      senderPubkey: string
-      mnemonic: string
-      accountNumber: number
-    }
-  >()
+  const byCheckout = new Map<string, MerchantCheckoutSparkRecoveryAuthority>()
   const conflictingCheckouts = new Set<string>()
   let malformedCount = 0
   let decryptFailureCount = 0
@@ -9574,25 +9588,31 @@ export async function getMerchantCheckoutSparkRecoveryList(
         ? "complete"
         : "partial"
   return {
-    candidates: Array.from(byCheckout.entries())
-      .filter(([checkoutId]) => !conflictingCheckouts.has(checkoutId))
-      .map(([, entry]) => entry.candidate)
-      .sort(
-        (left, right) =>
-          left.takeoverAt - right.takeoverAt ||
-          left.checkoutId.localeCompare(right.checkoutId)
-      ),
-    coverage,
-    declarationState: declaration.state,
-    malformedCount,
-    decryptFailureCount,
-    conflictCount: conflictingCheckouts.size,
+    result: {
+      candidates: Array.from(byCheckout.entries())
+        .filter(([checkoutId]) => !conflictingCheckouts.has(checkoutId))
+        .map(([, entry]) => entry.candidate)
+        .sort(
+          (left, right) =>
+            left.takeoverAt - right.takeoverAt ||
+            left.checkoutId.localeCompare(right.checkoutId)
+        ),
+      coverage,
+      declarationState: declaration.state,
+      malformedCount,
+      decryptFailureCount,
+      conflictCount: conflictingCheckouts.size,
+    },
+    authorities: byCheckout,
+    conflictingCheckouts,
   }
 }
 
 export interface MerchantCheckoutSparkRecoveryHandoffResult {
   status: "consumed" | "missing" | "incomplete"
+  /** Coverage of the exact-ID read, independent of bounded discovery. */
   coverage: InboxReadCoverage
+  discoveryCoverage: InboxReadCoverage
   declarationState: InboxDeclarationState
   candidate: MerchantCheckoutSparkRecoveryCandidate | null
 }
@@ -9611,8 +9631,8 @@ export interface MerchantCheckoutSparkRecoveryPrivateAdapter {
 
 /**
  * Re-fetch one selected, signed recovery wrap by its full ID from the current
- * merchant's declared inbox relays. A complete discovery pass is repeated so
- * stale or conflicting list rows cannot authorize opening wallet material.
+ * merchant's declared inbox relays. Bounded discovery retains observed conflicts;
+ * strict exact-wrap validation authorizes opening the selected material.
  * Nothing decrypted is returned to UI/query state or ordinary order caches.
  * Consuming this package is not a merchant application ACK or a funding gate.
  */
@@ -9638,32 +9658,25 @@ export async function withMerchantCheckoutSparkRecovery(
   }
   assertInboxSyncAuthority(authorization)
 
-  const discovery = await getMerchantCheckoutSparkRecoveryList(principal)
+  const inspection = await inspectMerchantCheckoutSparkRecoveries(principal)
+  const discovery = inspection.result
   assertInboxSyncAuthority(authorization)
-  if (discovery.coverage !== "complete") {
+  if (inspection.conflictingCheckouts.has(selected.checkoutId)) {
     return {
       status: "incomplete",
-      coverage: discovery.coverage,
+      coverage: "partial",
+      discoveryCoverage: discovery.coverage,
       declarationState: discovery.declarationState,
       candidate: null,
     }
   }
-  const candidate = discovery.candidates.find(
-    (entry) =>
-      entry.wrapId === wrapId &&
-      entry.checkoutId === selected.checkoutId &&
-      entry.orderId === selected.orderId &&
-      entry.planDigest === selected.planDigest &&
-      entry.takeoverAt === selected.takeoverAt &&
-      entry.preparedAt === selected.preparedAt
-  )
-  if (!candidate) {
-    return {
-      status: "missing",
-      coverage: "complete",
-      declarationState: discovery.declarationState,
-      candidate: null,
-    }
+  const candidate: MerchantCheckoutSparkRecoveryCandidate = {
+    wrapId,
+    checkoutId: selected.checkoutId,
+    orderId: selected.orderId,
+    planDigest: selected.planDigest,
+    takeoverAt: selected.takeoverAt,
+    preparedAt: selected.preparedAt,
   }
 
   const declaration = await resolvePrincipalInboxDeclaration(
@@ -9678,6 +9691,7 @@ export async function withMerchantCheckoutSparkRecovery(
     return {
       status: "incomplete",
       coverage: "unavailable",
+      discoveryCoverage: discovery.coverage,
       declarationState: declaration.state,
       candidate: null,
     }
@@ -9714,6 +9728,7 @@ export async function withMerchantCheckoutSparkRecovery(
   ): MerchantCheckoutSparkRecoveryHandoffResult => ({
     status: "incomplete",
     coverage,
+    discoveryCoverage: discovery.coverage,
     declarationState: declaration.state,
     candidate: null,
   })
@@ -9723,6 +9738,7 @@ export async function withMerchantCheckoutSparkRecovery(
     return {
       status: "missing",
       coverage: "complete",
+      discoveryCoverage: discovery.coverage,
       declarationState: declaration.state,
       candidate: null,
     }
@@ -9781,6 +9797,17 @@ export async function withMerchantCheckoutSparkRecovery(
   ) {
     return incomplete("partial")
   }
+  const observed = inspection.authorities.get(candidate.checkoutId)
+  if (
+    observed &&
+    (observed.candidate.planDigest !== payload.plan.planDigest ||
+      observed.handoffId !== payload.handoffId ||
+      observed.senderPubkey !== payload.senderPubkey ||
+      observed.mnemonic !== payload.wallet.mnemonic ||
+      observed.accountNumber !== payload.wallet.accountNumber)
+  ) {
+    return incomplete("partial")
+  }
   const assertCurrent = () => assertInboxSyncAuthority(authorization)
   assertCurrent()
   try {
@@ -9793,6 +9820,7 @@ export async function withMerchantCheckoutSparkRecovery(
   return {
     status: "consumed",
     coverage: "complete",
+    discoveryCoverage: discovery.coverage,
     declarationState: declaration.state,
     candidate,
   }
