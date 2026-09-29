@@ -4594,8 +4594,7 @@ async function getRankedMarketplaceProducts(
   try {
     await cacheProductRecords(initialRecords)
   } catch {
-    assertCurrent()
-    return initial
+    // A failed seed write must not prevent live revision/deletion reads.
   }
   assertCurrent()
   const project = (snapshot: ProductsByIdsResult) =>

@@ -2773,6 +2773,43 @@ describe("commerce gateway", () => {
     ])
   })
 
+  it("reconciles a ranked hit with a newer live revision when seed caching fails", async () => {
+    const indexed = makeSignedProductEvent({
+      dTag: "uncached-ranked-hit",
+      title: "Old cup",
+      createdAt: 100,
+    })
+    const revised = makeSignedProductEvent({
+      dTag: "uncached-ranked-hit",
+      title: "Current blue cup",
+      createdAt: 200,
+    })
+    let exactReads = 0
+    __setCommerceTestOverrides({
+      putCachedProducts: async () => {
+        throw new Error("Synthetic product cache write failure")
+      },
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        if (filter.search) return [indexed] as never
+        exactReads += 1
+        return [revised].filter((event) =>
+          matchFilter(filter, event.rawEvent() as never)
+        ) as never
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "ceramics",
+      searchIndex: true,
+    })
+
+    expect(exactReads).toBeGreaterThan(0)
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Current blue cup",
+    ])
+  })
+
   it("does not persist or hydrate ranked hits after the first snapshot becomes obsolete", async () => {
     const controller = new AbortController()
     const hit = makeSignedProductEvent({
