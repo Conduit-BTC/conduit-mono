@@ -974,6 +974,11 @@ test("merchant ships from settings sync and default a new listing @merchant", as
     .first()
     .click()
 
+  await place.click()
+  await place.fill("Berkeley")
+  await place.press("Escape")
+  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible()
+
   const destinationCountry = page.getByRole("combobox", {
     name: "Search countries to add...",
   })
@@ -1054,10 +1059,123 @@ test("merchant ships from settings sync and default a new listing @merchant", as
       .getByRole("paragraph")
       .filter({ hasText: /Public listing area: Toronto/ })
   ).toBeVisible()
+  await productPlace.click()
+  await productPlace.fill("Ottawa")
+  await productPlace.press("Escape")
+  await expect(
+    productDialog
+      .getByRole("paragraph")
+      .filter({ hasText: /Public listing area: Toronto/ })
+  ).toBeVisible()
   await productDialog.getByRole("button", { name: "No area" }).click()
   await expect(
     productDialog.getByText("No public area for this listing")
   ).toBeVisible()
+})
+
+test("merchant product editing preserves signed area after cancelled place search @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  const dTag = "area-search-edit"
+  const location = "Oakland, Alameda County, California, United States"
+  const geohash = "9q9p"
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 30_402,
+        created_at: Math.floor(Date.now() / 1000) - 10,
+        content: "Public listing area regression",
+        tags: [
+          ["d", dTag],
+          ["title", "Listing area search regression"],
+          ["price", "25", "SATS"],
+          ["type", "simple", "digital"],
+          ["visibility", "on-sale"],
+          ["stock", "1"],
+          ["image", "https://media.conduit.market/area-search.png"],
+          ["t", "area"],
+          ["t", "search"],
+          ["t", "regression"],
+          ["location", location],
+          ["g", geohash],
+        ],
+      },
+      secretKey
+    ),
+  ])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${merchantUrl}/products`)
+  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+  const dialog = page.getByRole("dialog", { name: "Edit listing" })
+  await expect(dialog.getByText(`Existing area: ${location}`)).toBeVisible()
+  await dialog.getByRole("button", { name: "Change", exact: true }).click()
+  const country = dialog.getByRole("combobox", {
+    name: "Search countries",
+    exact: true,
+  })
+  await country.click()
+  await country.fill("United States")
+  await page
+    .getByRole("option", { name: /United States/ })
+    .first()
+    .click()
+  const state = dialog.getByRole("combobox", { name: "Search states" })
+  await state.click()
+  await state.fill("California")
+  await page
+    .getByRole("option", { name: /California/ })
+    .first()
+    .click()
+  const place = dialog.getByRole("combobox", {
+    name: "Search a place, county, or region",
+  })
+  await expect(place).toBeEnabled()
+  await place.click()
+  await place.fill("Oakland")
+  await page
+    .getByRole("option", { name: /Oakland.*Alameda County/ })
+    .first()
+    .click()
+  const areaSummary = dialog
+    .getByRole("paragraph")
+    .filter({ hasText: /Public listing area: Oakland/ })
+  await expect(areaSummary).toBeVisible()
+  await place.click()
+  await place.fill("Berkeley")
+  await place.press("Escape")
+  await expect(areaSummary).toBeVisible()
+  await dialog
+    .getByLabel("Title", { exact: true })
+    .fill("Updated listing area search regression")
+  await dialog
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click()
+  await expect(dialog).not.toBeVisible({ timeout: 20_000 })
+  const readUpdated = async () => {
+    const events = await readTestRelayEvents({
+      kinds: [30_402],
+      authors: [pubkey],
+      "#d": [dTag],
+    })
+    return events.find((event) =>
+      event.tags.some(
+        (tag) =>
+          tag[0] === "title" &&
+          tag[1] === "Updated listing area search regression"
+      )
+    )
+  }
+  await expect
+    .poll(async () => !!(await readUpdated()), { timeout: 20_000 })
+    .toBe(true)
+  const updated = await readUpdated()
+  expect(updated).toBeDefined()
+  expect(updated!.tags).toContainEqual(["location", location])
+  expect(updated!.tags).toContainEqual(["g", geohash])
 })
 
 test("Market Network publishes a private inbox through the isolated relay @market", async ({

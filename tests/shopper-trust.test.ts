@@ -163,7 +163,7 @@ function createCache(
 
 describe("shopper trust evidence", () => {
   it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, invoice, and Spark recovery stores", () => {
-    expect(db.verno).toBe(22)
+    expect(db.verno).toBe(23)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",

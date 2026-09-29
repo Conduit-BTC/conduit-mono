@@ -10,7 +10,7 @@ import {
   type MerchantShippingReadResult,
   type MerchantShippingSettings,
 } from "@conduit/core"
-import { Button, SignedActionStatus } from "@conduit/ui"
+import { Badge, Button, SignedActionStatus } from "@conduit/ui"
 import { MerchantShippingPolicyEditor } from "../components/MerchantShippingPolicyEditor"
 import { ListingAreaPicker } from "../components/ListingAreaPicker"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
@@ -106,6 +106,9 @@ function ShippingPage() {
     staleTime: 60_000,
   })
 
+  const retainedSettings =
+    signedSettingsQuery.data?.state === "found" &&
+    signedSettingsQuery.data.retained
   const summary = buildSummary(config.countries)
   const hasUnsavedChanges = useMemo(
     () =>
@@ -266,7 +269,12 @@ function ShippingPage() {
             <MerchantShippingPolicyEditor key={pubkey ?? "none"} />
             <details className="rounded-2xl border border-[var(--border)] p-4 sm:p-5">
               <summary className="cursor-pointer text-balance font-semibold">
-                Listing area and fixed-shipping defaults
+                <span>Listing area and fixed-shipping defaults</span>
+                {retainedSettings && (
+                  <Badge variant="warning" className="ml-2">
+                    Using previously signed settings
+                  </Badge>
+                )}
               </summary>
               <p className="my-4 text-pretty text-sm text-[var(--text-secondary)]">
                 Use these defaults for the public area on future listings and
@@ -386,7 +394,17 @@ function ShippingPage() {
                         : undefined
                     }
                   />
-                  {(signedSettingsQuery.isError ||
+                  {retainedSettings && (
+                    <p
+                      role="status"
+                      className="text-pretty text-sm text-warning"
+                    >
+                      Your previously signed settings are preserved. Retry the
+                      relay read before saving changes.
+                    </p>
+                  )}
+                  {(retainedSettings ||
+                    signedSettingsQuery.isError ||
                     signedSettingsQuery.data?.state === "unavailable") && (
                     <Button
                       type="button"
