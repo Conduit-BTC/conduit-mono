@@ -215,6 +215,45 @@ it("cancels relay-list discovery before catalog deletion reads start", async () 
   expect(deletionReads).toBe(0)
 })
 
+it("cancels header fallback relay-list discovery before product reads start", async () => {
+  const controller = new AbortController()
+  const discoveryStarted = gate()
+  const candidate = listing(fastSecret, "cancel-header-planning")
+  let discoverySignal: AbortSignal | undefined
+  let productReads = 0
+  __setCommerceTestOverrides({
+    getRelayLists: async (_pubkeys, options) => {
+      discoverySignal = options?.signal
+      discoveryStarted.release()
+      return await new Promise<Map<string, never>>((_resolve, reject) => {
+        discoverySignal!.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true }
+        )
+      })
+    },
+    fetchEventsFanoutWithDiagnostics: async () => {
+      productReads += 1
+      return {
+        events: [],
+        attemptedRelayUrls: [],
+        successfulRelayUrls: [],
+        failedRelayUrls: [],
+      }
+    },
+  })
+  const result = getMarketplaceProducts({
+    authorPubkeys: [candidate.pubkey],
+    signal: controller.signal,
+  })
+  await discoveryStarted.promise
+  controller.abort()
+  await expect(result).rejects.toThrow("Aborted")
+  expect(discoverySignal).toBe(controller.signal)
+  expect(productReads).toBe(0)
+})
+
 function installHeldRead(
   fast: NDKEvent[],
   slow: NDKEvent,

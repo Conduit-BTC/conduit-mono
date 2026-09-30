@@ -4183,6 +4183,7 @@ async function fetchPublicProductRecords(query: {
             )
           : query.readPolicy?.maxRelays,
         shouldContinue: query.shouldContinue,
+        signal: query.signal,
         extraRelayUrls: query.extraRelayUrls,
       })
 
