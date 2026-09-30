@@ -591,6 +591,65 @@ test("header category discovery reuses a populated cart's catalog read @market",
   ).toBeVisible()
 })
 
+test("a cold expanded cart discovers categories from other eligible merchants without repeating discovery @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  await page.addInitScript(
+    (seed) => localStorage.setItem("conduit:cart", JSON.stringify(seed)),
+    {
+      version: 2,
+      items: [
+        {
+          productId: `30402:${best.pubkey}:best`,
+          productEventId: best.id,
+          merchantPubkey: best.pubkey,
+          merchantAddedAt: now,
+          title: "Handmade mug",
+          price: 1,
+          currency: "SATS",
+          priceSats: 1,
+          format: "digital",
+          quantity: 1,
+        },
+      ],
+    }
+  )
+  const relay = await controlledSearch(page)
+  relay.state.catalogProducts = [
+    best,
+    listing(merchantKeys[1], "second", "Clay bowl", now, "ceramics"),
+  ]
+  await page.goto(`${marketUrl}/cart?merchant=${best.pubkey}&source=following`)
+  const catalogs = () => broadCatalogRequests(relay.requests)
+  await expect
+    .poll(() =>
+      catalogs().some((filter) => filter.authors?.includes(best.pubkey))
+    )
+    .toBe(true)
+  expect(
+    catalogs().some((filter) => filter.authors?.includes(second.pubkey))
+  ).toBe(false)
+  await searchBox(page).fill("cer")
+  const category = page.getByRole("option", {
+    name: /^# ceramics Browse category$/i,
+  })
+  await expect(category).toBeVisible()
+  const discovery = () =>
+    catalogs().filter((filter) => filter.authors?.includes(second.pubkey))
+  expect(discovery().length).toBeGreaterThan(0)
+  const discoveryCount = discovery().length
+  await searchBox(page).fill("cera")
+  await expect(category).toBeVisible()
+  await page.waitForTimeout(500)
+  expect(discovery()).toHaveLength(discoveryCount)
+  expect(
+    relay.requests.filter(
+      (filter) => filter.search && filter.kinds?.includes(30402)
+    )
+  ).toHaveLength(0)
+})
+
 test("typing waits for a stable two-character query before remote search @market", async ({
   page,
 }) => {

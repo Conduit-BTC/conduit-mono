@@ -42,7 +42,8 @@ Header search waits 350 ms after typing stops. One-character queries use cached
 text matches and show guidance to enter another character. Header suggestions
 reuse the cached catalog and observe later page cache commits. When a route
 does not supply a catalog, an eligible settled query can run one bounded
-discovery pass. This includes cold product search links and empty carts.
+discovery pass. This includes cold product search links, empty carts, and carts
+whose related-product read covers only the selected merchant or purchase.
 Retained fallback records reconcile with locally observed signed deletions before
 building header categories and sellers. A deletion retracts its product without
 opening another product read.

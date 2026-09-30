@@ -296,7 +296,7 @@ describe("merchant matches on the product search", () => {
     expect(header).not.toContain('to: "/merchants"')
     expect(header).toContain('const isBrowseRoute = pathname === "/products"')
     expect(header).toMatch(
-      /pageSuppliesCatalog:\s+\(isBrowseRoute && currentQuery\.trim\(\)\.length === 0\) \|\|\s+pathname === "\/merchants" \|\|\s+\(pathname === "\/cart" && cart\.items\.length > 0\)/
+      /pageSuppliesCatalog:\s+\(isBrowseRoute && currentQuery\.trim\(\)\.length === 0\) \|\|\s+pathname === "\/merchants" \|\|\s+\(pathname === "\/cart" &&\s+cart\.items\.length > 0 &&\s+!search\.merchant &&\s+!search\.purchase\)/
     )
     expect(header).toContain("useMarketHeaderSuggestions({")
     expect(header).toContain("catalogSource: routeCatalogSource")
