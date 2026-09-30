@@ -1,3 +1,4 @@
+import { hasValidCheckoutAttributionTelemetry } from "./checkout-attribution"
 import {
   decodeProductReference,
   encodeProductNaddr,
@@ -22,6 +23,7 @@ export type {
   BrowserTelemetryPropertyName,
 } from "./telemetry-contract"
 import {
+  isCheckoutAttributionTelemetryEvent,
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
   getOfficialProductTelemetryApp,
@@ -465,7 +467,7 @@ export function sanitizeTelemetryEventProperties(
     sanitized[key] = normalized
   }
 
-  return sanitized
+  return hasValidCheckoutAttributionTelemetry(sanitized) ? sanitized : null
 }
 
 export function buildTelemetryEventPageContext(input: {
@@ -582,7 +584,12 @@ export function sanitizePostHogCaptureEvent(
     sanitizedProperties[key] = normalized
   }
 
-  addPostHogSessionContext(sanitizedProperties, sourceProperties)
+  const isAttributionCounter = isCheckoutAttributionTelemetryEvent(
+    eventName,
+    sourceProperties
+  )
+  if (!isAttributionCounter)
+    addPostHogSessionContext(sanitizedProperties, sourceProperties)
   if (eventName === "$pageleave") {
     addPostHogPageLeaveProperties(sanitizedProperties, sourceProperties)
   }
@@ -641,12 +648,15 @@ export function sanitizePostHogCaptureEvent(
     event: eventName,
     properties: sanitizedProperties,
   }
-  if (isTelemetryEventUuid(event.uuid)) sanitizedEvent.uuid = event.uuid
+  if (!isAttributionCounter && isTelemetryEventUuid(event.uuid))
+    sanitizedEvent.uuid = event.uuid
   if (
     event.timestamp instanceof Date &&
     Number.isFinite(event.timestamp.getTime())
   ) {
-    sanitizedEvent.timestamp = event.timestamp
+    sanitizedEvent.timestamp = isAttributionCounter
+      ? new Date(Math.floor(event.timestamp.getTime() / 3_600_000) * 3_600_000)
+      : event.timestamp
   }
   return sanitizedEvent
 }
@@ -777,6 +787,14 @@ function recordBrowserTelemetryEventUnsafe(input: TelemetryEventInput): void {
   if (!config.enabled) return
   if (!isTelemetryAllowedForCurrentHost(config)) return
   if (isGlobalPrivacyControlEnabled()) return
+  if (
+    isCheckoutAttributionTelemetryEvent(
+      input.eventName,
+      input.properties ?? {}
+    ) &&
+    getOfficialProductTelemetryApp(window.location.hostname) !== input.app
+  )
+    return
 
   const sanitizedProperties = sanitizeTelemetryEventProperties(input)
   if (!sanitizedProperties) return

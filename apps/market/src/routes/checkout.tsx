@@ -48,6 +48,7 @@ import {
   patchOrderLifecycle,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
+  checkoutAttributionTelemetryProperties,
   resolveWalletPaymentInstance,
   validateAddressConsistency,
   useAuth,
@@ -1401,18 +1402,26 @@ function CheckoutPage() {
       ? matchingMerchantPurchases[0]
       : undefined
   const selectedMerchant = selectedPurchase?.merchantPubkey
+  const checkoutReferralSessionScope = `${authGeneration}:${accountPubkey ?? "guest"}`
+  const checkoutReferralSessionScopeRef = useRef(checkoutReferralSessionScope)
+  useLayoutEffect(() => {
+    checkoutReferralSessionScopeRef.current = checkoutReferralSessionScope
+  }, [checkoutReferralSessionScope])
   useEffect(() => {
-    if (!cart.hydrated) return
+    if (!cart.hydrated || authPending) return
     getCheckoutReferralClaim(
       selectedMerchant,
       selectedPurchase?.id,
-      selectedPurchase?.items ?? []
+      selectedPurchase?.items ?? [],
+      checkoutReferralSessionScopeRef.current
     )
   }, [
     cart.hydrated,
+    authPending,
     selectedMerchant,
     selectedPurchase?.id,
     selectedPurchase?.items,
+    checkoutReferralSessionScope,
   ])
   const checkoutRecoveryScope = `${authGeneration}:${search.merchant ?? "none"}:${search.purchase ?? "none"}:${selectedPurchase?.id ?? "none"}:${cart.mutationSequence}`
   const [checkoutRecoveryResolution, setCheckoutRecoveryResolution] = useState<{
@@ -2066,6 +2075,14 @@ function CheckoutPage() {
           input.checkoutMode,
           input.amountSats
         ),
+        ...checkoutAttributionTelemetryProperties(
+          getCheckoutReferralClaim(
+            selectedMerchant,
+            selectedPurchase?.id,
+            checkoutItems,
+            checkoutReferralSessionScopeRef.current
+          )
+        ),
         rail: input.rail ?? "none",
         status: input.status,
         step: input.stepName,
@@ -2091,6 +2108,14 @@ function CheckoutPage() {
           input.checkoutMode,
           input.amountSats
         ),
+        ...checkoutAttributionTelemetryProperties(
+          getCheckoutReferralClaim(
+            selectedMerchant,
+            selectedPurchase?.id,
+            checkoutItems,
+            checkoutReferralSessionScopeRef.current
+          )
+        ),
         rail: input.rail ?? "none",
         status: input.status,
       },
@@ -2113,6 +2138,14 @@ function CheckoutPage() {
           input.amountSats
         ),
         network: "browser",
+        ...checkoutAttributionTelemetryProperties(
+          getCheckoutReferralClaim(
+            selectedMerchant,
+            selectedPurchase?.id,
+            checkoutItems,
+            checkoutReferralSessionScopeRef.current
+          )
+        ),
         rail: input.rail ?? "none",
         status: input.status,
       },
@@ -2644,7 +2677,8 @@ function CheckoutPage() {
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,
-          checkoutItems
+          checkoutItems,
+          checkoutReferralSessionScopeRef.current
         ),
         createdAt: orderCreatedAt,
         buyerPubkey,
@@ -2695,7 +2729,8 @@ function CheckoutPage() {
       recordCheckoutReferralOrderSubmitted(
         selectedMerchant,
         selectedPurchase?.id,
-        checkoutItems
+        checkoutItems,
+        checkoutReferralSessionScopeRef.current
       )
       recordCheckoutStepResult({
         checkoutMode: "order_first",
@@ -3273,7 +3308,8 @@ function CheckoutPage() {
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,
-          checkoutItems
+          checkoutItems,
+          checkoutReferralSessionScopeRef.current
         ),
         createdAt: orderCreatedAt,
         buyerPubkey,
@@ -3342,7 +3378,8 @@ function CheckoutPage() {
       recordCheckoutReferralOrderSubmitted(
         selectedMerchant,
         selectedPurchase?.id,
-        checkoutItems
+        checkoutItems,
+        checkoutReferralSessionScopeRef.current
       )
       if (!shouldContinueBuyerSession()) {
         throw new Error(

@@ -41,6 +41,7 @@ export type CheckoutIntentGateState =
   | {
       status: "conflict"
       prepared: Extract<CheckoutImportPreparation, { status: "ready" }>
+      authGeneration: number
     }
 
 export function useCheckoutIntentImport() {
@@ -49,9 +50,12 @@ export function useCheckoutIntentImport() {
     stage ? { status: "loading" } : { status: "idle" }
   )
   const started = useRef<string | null>(null)
+  const stageAuthGeneration = useRef<number | null>(null)
   const { hydrated, installCheckoutIntentPurchase } = useCart()
   const session = useConduitSession()
-  const { authGeneration } = useAuth()
+  const { authGeneration, signerReadiness, restorePendingPubkey } = useAuth()
+  const authPending =
+    signerReadiness === "pending" || restorePendingPubkey !== null
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -61,7 +65,13 @@ export function useCheckoutIntentImport() {
   const finish = useCallback(
     async (merchantPubkey: string, purchaseId: string) => {
       if (stage?.result.status === "valid")
-        bindCheckoutReferral(stage.result.intent, merchantPubkey, purchaseId)
+        bindCheckoutReferral(
+          stage.result.intent,
+          merchantPubkey,
+          purchaseId,
+          `${authGenerationRef.current}:${session.pubkey ?? "guest"}`,
+          stage.createdAt
+        )
       try {
         await navigate({
           to: "/checkout",
@@ -80,11 +90,22 @@ export function useCheckoutIntentImport() {
         setState({ status: "error", error: "navigation_failed" })
       }
     },
-    [navigate, stage]
+    [navigate, stage, session.pubkey]
   )
 
   const attempt = useCallback(async () => {
-    if (!stage || !hydrated) return
+    if (!stage || !hydrated || authPending) return
+    if (
+      getStagedCheckoutIntent()?.id !== stage.id ||
+      (stageAuthGeneration.current !== null &&
+        stageAuthGeneration.current !== authGenerationRef.current)
+    ) {
+      clearStagedCheckoutIntent()
+      clearCheckoutReferral()
+      setState({ status: "error", error: "session_changed" })
+      return
+    }
+    stageAuthGeneration.current = authGenerationRef.current
     if (stage.result.status === "invalid") {
       setState({ status: "error", error: stage.result.error })
       return
@@ -100,8 +121,9 @@ export function useCheckoutIntentImport() {
       shouldContinue,
     })
     if (!shouldContinue()) {
-      if (getStagedCheckoutIntent()?.id === stage.id)
-        setState({ status: "error", error: "session_changed" })
+      clearStagedCheckoutIntent()
+      clearCheckoutReferral()
+      setState({ status: "error", error: "session_changed" })
       return
     }
     if (prepared.status === "error") {
@@ -116,14 +138,25 @@ export function useCheckoutIntentImport() {
       return
     }
     recordCheckoutHandoffStage(stage, "products_resolved")
+    if (!shouldContinue()) return
     const result = await installCheckoutIntentPurchase(
       prepared.items,
       expectedRevision,
       false
     )
+    if (!shouldContinue()) {
+      clearStagedCheckoutIntent()
+      clearCheckoutReferral()
+      setState({ status: "error", error: "session_changed" })
+      return
+    }
     if (result.status === "cart_conflict") {
       recordCheckoutHandoffStage(stage, "cart_conflict")
-      setState({ status: "conflict", prepared })
+      setState({
+        status: "conflict",
+        prepared,
+        authGeneration: startedAuthGeneration,
+      })
     } else if (result.status === "revision_conflict")
       setState({ status: "error", error: "cart_changed" })
     else if (result.status === "storage_unavailable")
@@ -135,6 +168,7 @@ export function useCheckoutIntentImport() {
   }, [
     stage,
     hydrated,
+    authPending,
     installCheckoutIntentPurchase,
     session.mode,
     session.pubkey,
@@ -142,10 +176,11 @@ export function useCheckoutIntentImport() {
   ])
 
   useEffect(() => {
-    if (!stage || !hydrated || started.current === stage.id) return
+    if (!stage || !hydrated || authPending || started.current === stage.id)
+      return
     started.current = stage.id
     void attempt()
-  }, [stage, hydrated, attempt])
+  }, [stage, hydrated, authPending, attempt])
 
   const retry = useCallback(() => {
     void attempt()
@@ -157,13 +192,32 @@ export function useCheckoutIntentImport() {
     setState({ status: "idle" })
   }, [])
   const useLinkedItems = useCallback(async () => {
-    if (state.status !== "conflict") return
+    if (state.status !== "conflict" || !stage) return
+    const startedAuthGeneration = authGenerationRef.current
+    if (
+      getStagedCheckoutIntent()?.id !== stage.id ||
+      state.authGeneration !== startedAuthGeneration
+    ) {
+      clearStagedCheckoutIntent()
+      clearCheckoutReferral()
+      setState({ status: "error", error: "session_changed" })
+      return
+    }
     setState({ status: "loading" })
     const result = await installCheckoutIntentPurchase(
       state.prepared.items,
       getCartRepositorySnapshot().revision,
       true
     )
+    if (
+      authGenerationRef.current !== startedAuthGeneration ||
+      getStagedCheckoutIntent()?.id !== stage.id
+    ) {
+      clearStagedCheckoutIntent()
+      clearCheckoutReferral()
+      setState({ status: "error", error: "session_changed" })
+      return
+    }
     if (result.status === "revision_conflict")
       setState({ status: "error", error: "cart_changed" })
     else if (result.status === "storage_unavailable")
@@ -174,7 +228,7 @@ export function useCheckoutIntentImport() {
       setState({ status: "error", error: "cart_changed" })
     else if ("purchaseId" in result)
       await finish(state.prepared.merchantPubkey, result.purchaseId)
-  }, [state, installCheckoutIntentPurchase, finish])
+  }, [state, stage, installCheckoutIntentPurchase, finish])
 
   return { state, retry, keepCart, useLinkedItems }
 }

@@ -30,6 +30,9 @@ export const allowedTelemetryProperties = new Set([
   "block_reason",
   "handoff_stage",
   "partner_code",
+  "source_domain",
+  "source_method",
+  "source_partner_status",
 ])
 
 const gmvTelemetryEventName = "commerce_gmv_estimated"
@@ -73,6 +76,9 @@ export const bannedPrivacyPackages = [
 
 export const sensitiveTelemetryPropertyNames = new Set([
   "address",
+  "referrer",
+  "referrer_url",
+  "source_url",
   "content",
   "fingerprint",
   "invoice",
@@ -224,6 +230,24 @@ export function validateTelemetryEvents(
     }
 
     for (const property of event.properties) {
+      if (
+        [
+          "source_domain",
+          "source_method",
+          "source_partner_status",
+          "partner_code",
+        ].includes(property) &&
+        ![
+          "checkout_handoff_result",
+          "checkout_step_result",
+          "checkout_success",
+          "checkout_result",
+        ].includes(event.eventName)
+      ) {
+        errors.push(
+          `Telemetry event ${event.eventName} cannot use checkout attribution property: ${property}`
+        )
+      }
       if (!allowedTelemetryProperties.has(property)) {
         errors.push(
           `Telemetry event ${event.eventName} uses disallowed property: ${property}`

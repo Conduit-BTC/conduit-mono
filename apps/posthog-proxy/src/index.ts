@@ -1,4 +1,5 @@
 import {
+  isCheckoutAttributionTelemetryEvent,
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
   getOfficialProductTelemetryApp,
@@ -11,6 +12,10 @@ import {
   decodeProductReference,
   encodeProductNaddr,
 } from "@conduit/core/protocol/product-reference"
+
+import { createCheckoutSourceBudget } from "./checkout-source-budget"
+
+const applyCheckoutSourceBudget = createCheckoutSourceBudget()
 
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
 const MAX_INGEST_BODY_BYTES = 1024 * 1024
@@ -191,6 +196,9 @@ export async function handlePostHogProxyRequest(
   if (request.method !== "POST") {
     return corsJsonResponse({ error: "method_not_allowed" }, 405, origin)
   }
+
+  if (request.headers.get("sec-gpc") === "1")
+    return corsJsonResponse({ status: "dropped" }, 200, origin)
 
   if (request.headers.get("content-encoding")) {
     return corsJsonResponse({ error: "unsupported_encoding" }, 415, origin)
@@ -400,17 +408,26 @@ function rebuildIngestEvent(
   )
   if (!properties) return null
 
+  const isAttributionCounter = isCheckoutAttributionTelemetryEvent(
+    eventName,
+    properties
+  )
   const rebuilt: Record<string, unknown> = { event: eventName, properties }
 
   if (value.uuid !== undefined) {
     if (typeof value.uuid !== "string" || !eventUuidPattern.test(value.uuid)) {
       return null
     }
-    rebuilt.uuid = value.uuid
+    if (!isAttributionCounter) rebuilt.uuid = value.uuid
   }
   if (value.timestamp !== undefined) {
     if (!isCanonicalIsoTimestamp(value.timestamp)) return null
-    rebuilt.timestamp = value.timestamp
+    rebuilt.timestamp = isAttributionCounter
+      ? new Date(
+          Math.floor(Date.parse(value.timestamp as string) / 3_600_000) *
+            3_600_000
+        ).toISOString()
+      : value.timestamp
   }
   if (value.offset !== undefined) {
     if (
@@ -421,7 +438,7 @@ function rebuildIngestEvent(
     ) {
       return null
     }
-    rebuilt.offset = value.offset
+    if (!isAttributionCounter) rebuilt.offset = value.offset
   }
 
   return rebuilt
@@ -502,7 +519,8 @@ function rebuildIngestEventProperties(
       ) {
         return null
       }
-      rebuilt[key] = propertyValue
+      if (!isCheckoutAttributionTelemetryEvent(eventName, value))
+        rebuilt[key] = propertyValue
       continue
     }
     if (eventName === "$pageleave" && key === "$prev_pageview_pathname") {
@@ -566,6 +584,7 @@ function rebuildIngestEventProperties(
     return null
   }
 
+  applyCheckoutSourceBudget(rebuilt)
   return rebuilt
 }
 
