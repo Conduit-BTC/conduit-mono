@@ -4,6 +4,8 @@ This directory contains public implementation context for the `conduit-mono` cli
 
 ## Source of Truth
 
+- `docs/PROTOCOLS.md`: public, status-aware inventory of NIPs and other open protocols used by the clients
+- `docs/OPEN_MARKETS.md`: commerce implementation map, compatibility differences, examples, and experimental proposal status
 - `docs/ARCHITECTURE.md`: system design, protocol boundaries, and data flow
 - `docs/DESIGN.md`: shared design system and theming guidance
 - `docs/specs/*`: durable feature, protocol, and product contracts where the repository maintains one
@@ -48,6 +50,11 @@ Reviewers may request a durable contract update when the behavior has broad or l
   inbox authentication, relay operator contract, and client-first rollout
 
 ### QA Runbooks
+
+- `docs/knowledge/checkout-with-conduit.md`: public V1 product/cart link format,
+  validation limits, relay hints, and checkout authority.
+- `docs/knowledge/product-search-ranking.md`: ranked product search, scoped
+  author requests, signed reconciliation, and observed category-filter limits
 
 - `docs/knowledge/event-catalog-progressive-loading.md`: progressive browsing,
   scoped query sharing, and the boundary between display and pickup authorization

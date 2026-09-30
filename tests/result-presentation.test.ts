@@ -61,7 +61,7 @@ describe("result presentation", () => {
   it("keeps filtered recovery wired into product and storefront projections", async () => {
     const [products, storefront] = await Promise.all([
       Bun.file("apps/market/src/routes/products/index.tsx").text(),
-      Bun.file("apps/market/src/routes/store/$pubkey.tsx").text(),
+      Bun.file("apps/market/src/routes/$identityRef.tsx").text(),
     ])
 
     for (const route of [products, storefront]) {

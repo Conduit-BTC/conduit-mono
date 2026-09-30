@@ -329,6 +329,77 @@ async function publishProduct(page: Page, title: string): Promise<void> {
   await expect(dialog).toBeHidden({ timeout: 20_000 })
 }
 
+test("public identity keeps self actions and legacy links usable @commerce", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const viewer = createRuntimeSignerIdentity()
+  const other = createRuntimeSignerIdentity()
+  try {
+    await seedPublicIdentity(viewer, { name: "Identity Viewer" })
+    await seedPublicIdentity(other, { name: "Other Identity" })
+    await installRealTestSigner(page, viewer, TEST_RELAY_URL)
+    const viewerNpub = nip19.npubEncode(viewer.pubkey)
+    const otherNpub = nip19.npubEncode(other.pubkey)
+
+    await page.goto(`${marketUrl}/${viewerNpub}`)
+    await expect(
+      page.getByRole("heading", { name: "Identity Viewer", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Follow Identity Viewer", exact: true })
+    ).toHaveCount(0)
+
+    for (const reference of [
+      other.pubkey,
+      nip19.nprofileEncode({ pubkey: other.pubkey }),
+    ]) {
+      await page.goto(`${marketUrl}/u/${reference}`)
+      await expect(page).toHaveURL(`${marketUrl}/${otherNpub}`)
+      await expect(
+        page.getByRole("heading", { name: "Other Identity", exact: true })
+      ).toBeVisible()
+      await expect(
+        page.getByRole("button", { name: "Follow Other Identity", exact: true })
+      ).toBeEnabled()
+    }
+
+    await page.goto(
+      `${marketUrl}/store/${otherNpub}?q=coffee&sort=price_asc&tag=coffee`
+    )
+    await expect
+      .poll(() => {
+        const url = new URL(page.url())
+        return [
+          url.pathname,
+          url.searchParams.get("q"),
+          url.searchParams.get("sort"),
+          url.searchParams.get("tag"),
+        ]
+      })
+      .toEqual([`/${otherNpub}`, "coffee", "price_asc", '["coffee"]'])
+    await expect(
+      page.getByRole("textbox", { name: "Search listings", exact: true })
+    ).toHaveValue("coffee")
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click()
+    await expect
+      .poll(() => {
+        const url = new URL(page.url())
+        return [
+          url.pathname,
+          url.searchParams.get("tab"),
+          url.searchParams.get("merchant"),
+        ]
+      })
+      .toEqual(["/messages", "dms", other.pubkey])
+  } finally {
+    disposeRuntimeSignerIdentity(viewer)
+    disposeRuntimeSignerIdentity(other)
+  }
+})
+
 test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", async ({
   browser,
 }) => {
@@ -364,6 +435,20 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       installHermeticRoutes(buyerContext),
       installHermeticRoutes(merchantContext),
     ])
+    // Keep the live service outside this hermetic journey. Exercise the real
+    // route and listing reads, observing whether its presence scope stays open.
+    await buyerContext.route("**/src/hooks/useLivePresenceCount.ts*", (route) =>
+      route.fulfill({
+        contentType: "application/javascript",
+        body: `
+          export function useLivePresenceCount({ canonicalId }) {
+            document.documentElement.dataset.storePresenceConnected = canonicalId ? "true" : "false"
+            return canonicalId ? 2 : undefined
+          }
+          export function useProductLivePresenceCount() { return undefined }
+        `,
+      })
+    )
     const buyerPage = await buyerContext.newPage()
     const merchantPage = await merchantContext.newPage()
     await installRealTestSigner(buyerPage, buyer, TEST_RELAY_URL)
@@ -410,12 +495,53 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
       })
       .toBe(true)
 
+    await buyerPage.goto(`${marketUrl}/${nip19.npubEncode(buyer.pubkey)}`)
+    await expect(
+      buyerPage.getByRole("heading", { name: "Hermetic Buyer", exact: true })
+    ).toBeVisible()
+    await expect(buyerPage.locator("html")).toHaveAttribute(
+      "data-store-presence-connected",
+      "false"
+    )
     const merchantNpub = nip19.npubEncode(merchant.pubkey)
-    await buyerPage.goto(`${marketUrl}/store/${merchantNpub}`)
+    const presence = buyerPage.getByRole("status").filter({
+      hasText: "2 visitors are browsing this merchant",
+    })
+    await buyerPage.goto(
+      `${marketUrl}/${merchantNpub}?q=no-match-for-presence-regression`
+    )
+    await expect(
+      buyerPage.getByText("0 listings", { exact: true })
+    ).toBeVisible()
+    await expect(presence).toBeVisible()
+    await expect(
+      buyerPage.getByText("1 listings", { exact: true })
+    ).toBeVisible()
+    await buyerPage.goto(
+      `${marketUrl}/store/${merchantNpub}?q=${encodeURIComponent(productTitle)}`
+    )
+    await expect
+      .poll(() => {
+        const url = new URL(buyerPage.url())
+        return `${url.pathname}?q=${url.searchParams.get("q")}`
+      })
+      .toBe(`/${merchantNpub}?q=${productTitle}`)
+    await buyerPage.goto(`${marketUrl}/${merchantNpub}`)
     await expect(
       buyerPage.getByRole("heading", { name: merchantName, exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    const search = buyerPage.getByPlaceholder("Search this merchant's items")
+    await expect(presence).toBeVisible()
+    const search = buyerPage.getByPlaceholder("Search listings")
+    await search.fill("no-match-for-presence-regression")
+    await search.press("Enter")
+    await expect(
+      buyerPage.getByText("0 listings", { exact: true })
+    ).toBeVisible()
+    await expect(presence).toBeVisible()
+    await expect(buyerPage.locator("html")).toHaveAttribute(
+      "data-store-presence-connected",
+      "true"
+    )
     await search.fill(productTitle)
     await search.press("Enter")
     const product = buyerPage

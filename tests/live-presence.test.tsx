@@ -14,6 +14,7 @@ import {
   LIVE_PRESENCE_MAX_RECONNECT_ATTEMPTS,
   LIVE_PRESENCE_MAX_COUNT,
   LIVE_PRESENCE_STALE_AFTER_MS,
+  PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL,
   PRODUCTION_LIVE_PRESENCE_WEBSOCKET_URL,
   advanceLivePresenceRequestRevision,
   buildLivePresenceWebSocketUrl,
@@ -309,6 +310,36 @@ describe("live presence count messages", () => {
 })
 
 describe("live presence connection lifecycle", () => {
+  it("uses either preview Worker hostname across the account rename", () => {
+    const browser = createRuntime()
+    const stop = startLivePresenceSession({
+      endpoint: PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL,
+      scopeHash: SCOPE_HASH,
+      runtime: browser.runtime,
+      onCount: () => {},
+    })
+
+    expect(browser.urls[0]).toBe(
+      `${PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL}/v1/presence/${SCOPE_HASH}`
+    )
+    browser.sockets[0]!.emit("error")
+    expect(browser.nextTimer()).toBe(1_000)
+    expect(browser.urls[1]).toBe(
+      `wss://conduit-presence-preview.eric-furletti.workers.dev/v1/presence/${SCOPE_HASH}`
+    )
+
+    browser.sockets[1]!.emit("message", '{"count":2}')
+    browser.sockets[1]!.emit("close")
+    expect(browser.nextTimer()).toBe(1_000)
+    expect(browser.urls[2]).toBe(browser.urls[1])
+
+    browser.sockets[2]!.emit("error")
+    expect(browser.nextTimer()).toBe(2_000)
+    expect(browser.urls[3]).toBe(browser.urls[0])
+    browser.sockets[3]!.emit("message", '{"count":3}')
+    stop()
+  })
+
   it("reconnects when a socket never delivers its initial count", () => {
     const browser = createRuntime()
     const counts: Array<number | null> = []
@@ -564,14 +595,16 @@ describe("LivePresenceIndicator", () => {
       "utf8"
     )
     const storeRoute = await readFile(
-      "apps/market/src/routes/store/$pubkey.tsx",
+      "apps/market/src/routes/$identityRef.tsx",
       "utf8"
     )
 
     expect(productRoute).toContain("useProductLivePresenceCount")
     expect(productRoute).toContain("merchantPubkey: selectedProduct?.pubkey")
     expect(productRoute).toContain("productCanonicalId: selectedProduct?.id")
-    expect(storeRoute).toContain("canonicalId: normalizedStorePubkey")
+    expect(storeRoute).toContain(
+      "canonicalId: productCount > 0 ? pubkey : null"
+    )
     expect(storeRoute).toContain(
       "col-span-2 min-w-0 pt-2 sm:col-span-1 sm:col-start-2"
     )

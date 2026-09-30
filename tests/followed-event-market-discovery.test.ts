@@ -852,8 +852,24 @@ describe("organizer event-market read coverage", () => {
       ORGANIZER_SECRET
     )
     const observedRelaySets: string[][] = []
+    const participantRelayLookupAuthors: string[][] = []
     configureRead({ relayListState: "network", relayUrls: organizerRelayUrls })
     __setEventMarketTestOverrides({
+      getRelayLists: async (pubkeys) => {
+        participantRelayLookupAuthors.push([...pubkeys])
+        return new Map(
+          pubkeys.map((pubkey) => [
+            pubkey,
+            {
+              pubkey,
+              readRelayUrls: [...organizerRelayUrls],
+              writeRelayUrls: [...organizerRelayUrls],
+              eventCreatedAt: 1,
+              cachedAt: 1,
+            },
+          ])
+        )
+      },
       fetchEventsFanoutDetailed: async (_filter, options) => {
         const relayUrls = boundedRelayUrls(options)
         observedRelaySets.push(relayUrls)
@@ -884,6 +900,7 @@ describe("organizer event-market read coverage", () => {
     })
 
     expect(observedRelaySets.length).toBeGreaterThan(0)
+    expect(participantRelayLookupAuthors).toEqual([[ORGANIZER]])
     const organizerReadRelays = observedRelaySets[0]!
     expect(organizerReadRelays.slice(0, organizerRelayUrls.length)).toEqual(
       organizerRelayUrls

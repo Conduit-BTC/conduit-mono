@@ -49,7 +49,7 @@ import {
 import {
   getEventMarketUrl,
   getMerchantEventParticipationUrl,
-  getStorefrontUrl,
+  getIdentityUrl,
 } from "../lib/market-links"
 import {
   buildEventQrSignSheet,
@@ -477,7 +477,7 @@ function MerchantIdentity({
           {copied ? "Copied" : "Copy npub"}
         </Button>
         <Button type="button" size="sm" variant="ghost" asChild>
-          <a href={getStorefrontUrl(pubkey)} target="_blank" rel="noreferrer">
+          <a href={getIdentityUrl(pubkey)} target="_blank" rel="noreferrer">
             <ExternalLink />
             Open storefront
           </a>

@@ -191,6 +191,15 @@ function ProductsPage() {
         ? "degraded"
         : "complete",
   })
+  const searchStatusMessage = browseModel.isShowingCachedSearch
+    ? "Showing cached text matches while live search is unavailable or loading."
+    : productsQuery.error
+      ? productData.length
+        ? "Search is unavailable. Showing previous matches for this search."
+        : "Search is unavailable. Retry to check again."
+      : browseModel.searchTagScopeVerified === false
+        ? "Category search may miss matching products. Try removing category filters."
+        : "Search results may be incomplete. Retry to check again."
   const visibleMatchingMerchants = useMemo(
     () => matchingSellers.slice(0, MATCHING_MERCHANT_LIMIT),
     [matchingSellers]
@@ -597,41 +606,66 @@ function ProductsPage() {
             refreshingLabel="Updating listings..."
           />
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className="gap-1 px-1 text-sm">
-              <span className="text-[var(--text-muted)]">Sort:</span>
-              <span>
-                {
-                  SORT_OPTIONS.find(
-                    (option) => option.value === (search.sort ?? "newest")
-                  )?.label
-                }
-              </span>
-              <ChevronDown className="size-4" aria-hidden="true" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            className="w-64 max-w-[calc(100vw-2rem)]"
-          >
-            {SORT_OPTIONS.map((option) => (
-              <DropdownMenuCheckboxItem
-                key={option.value}
-                checked={(search.sort ?? "newest") === option.value}
-                onSelect={() =>
-                  updateSearch({
-                    sort: option.value === "newest" ? undefined : option.value,
-                  })
-                }
-                className="min-h-10 border-b border-[var(--border)] last:border-b-0"
-              >
-                {option.label}
-              </DropdownMenuCheckboxItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {browseModel.isSearching ? (
+          <span className="text-sm text-[var(--text-secondary)]">
+            {browseModel.isShowingCachedSearch ||
+            !browseModel.isRemoteSearchEligible
+              ? "Cached matches"
+              : "Best match"}
+          </span>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="gap-1 px-1 text-sm">
+                <span className="text-[var(--text-muted)]">Sort:</span>
+                <span>
+                  {
+                    SORT_OPTIONS.find(
+                      (option) => option.value === (search.sort ?? "newest")
+                    )?.label
+                  }
+                </span>
+                <ChevronDown className="size-4" aria-hidden="true" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="w-64 max-w-[calc(100vw-2rem)]"
+            >
+              {SORT_OPTIONS.map((option) => (
+                <DropdownMenuCheckboxItem
+                  key={option.value}
+                  checked={(search.sort ?? "newest") === option.value}
+                  onSelect={() =>
+                    updateSearch({
+                      sort:
+                        option.value === "newest" ? undefined : option.value,
+                    })
+                  }
+                  className="min-h-10 border-b border-[var(--border)] last:border-b-0"
+                >
+                  {option.label}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
+
+      {browseModel.isSearching && !browseModel.isRemoteSearchEligible && (
+        <p role="status" className="text-sm text-[var(--text-secondary)]">
+          Enter at least two characters for live search.
+        </p>
+      )}
+
+      {browseModel.isSearching &&
+        !productsQuery.isInitialLoading &&
+        productsQuery.isRefreshStale &&
+        (productData.length > 0 || productsQuery.isHydrating) && (
+          <p role="status" className="text-sm text-[var(--text-secondary)]">
+            {searchStatusMessage}
+          </p>
+        )}
 
       {/* Loading */}
       {productsQuery.isInitialLoading && (
@@ -648,7 +682,11 @@ function ProductsPage() {
         !productsQuery.isHydrating &&
         resultPresentation.kind === "degraded_empty" && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4 text-sm text-[var(--text-primary)]">
-            <span>Products couldn&apos;t be loaded. Retry to check again.</span>
+            <span>
+              {browseModel.isSearching
+                ? searchStatusMessage
+                : "Products couldn't be loaded. Retry to check again."}
+            </span>
             <Button
               type="button"
               variant="outline"
@@ -665,7 +703,11 @@ function ProductsPage() {
         !productsQuery.isHydrating &&
         resultPresentation.kind === "complete_empty" && (
           <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-            No product listings found yet.
+            {browseModel.isSearching
+              ? browseModel.isRemoteSearchEligible
+                ? "No matching products found in this Market view."
+                : "No cached products match this search."
+              : "No product listings found yet."}
           </div>
         )}
 

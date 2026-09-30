@@ -36,6 +36,8 @@ Runtime telemetry events may only use these fields:
 - `ack_outcome`
 - `repair_outcome`
 - `block_reason`
+- `handoff_stage`
+- `partner_code` (registered public business source code only)
 
 ## Retention and Redaction
 
@@ -115,7 +117,8 @@ invoices, order contents, product titles, addresses, message contents, IPs,
 fingerprints, signer connection strings, NWC URIs, raw URLs, raw paths, query
 strings, cross-session identifiers, or SDK window/device identifiers. Browser
 custom events may include only shared-helper route context through `page_url`
-and `page_path`. Store route context may include the public store `npub`.
+and `page_path`. Canonical identity and legacy `/u` and `/store` routes use
+the redacted `/:identity` class; no identity pubkey or npub is retained.
 Only `$pageview` may include a canonical public kind-30402 product `naddr` with
 no relay hints. The pageview sanitizer derives that `naddr` from a valid raw
 coordinate or existing `naddr`. Every custom event, error event, `$pageleave`,
@@ -124,15 +127,21 @@ enforces this event-specific boundary. It verifies the naddr checksum and
 requires relay-free canonical re-encoding before accepting a product-attributed
 `$pageview`.
 Profile, order, query string, unknown route, and active user identifiers stay
-redacted. Public store npubs must not be copied into custom properties or
-joined to viewer identity. Product naddrs must not appear outside `$pageview`
+redacted. Identity pubkeys and npubs must not be copied into custom properties
+or joined to viewer identity. Product naddrs must not appear outside `$pageview`
 route context.
+
+The ingestion proxy must accept `/:identity` before clients emitting that route
+class are released. Older clients that still send identifier-bearing storefront
+paths are rejected by the stricter proxy; do not restore that attribution while
+rolling out the unified identity route.
 
 ## Historical Pageviews and Live Presence
 
 PostHog `$pageview` events provide historical pageview counts. A valid product
-page is attributed to `/products/<canonical-naddr>`, and a valid storefront is
-attributed to `/store/<canonical-npub>`. These retained pageviews are anonymous
+page is attributed to `/products/<canonical-naddr>`. Public identity and
+storefront visits are grouped under `/:identity`; they do not retain per-identity
+pageview attribution. These retained pageviews are anonymous
 session metrics. They are not an exact concurrent count or a count of unique
 people.
 
@@ -332,6 +341,18 @@ failure, blocked direct-payment, or degraded local tracking outcomes. It must
 use enum and bucket properties only and must not contain invoice strings, order
 contents, item titles, buyer identity, merchant identity, or shipping/contact
 data.
+
+<!-- telemetry-event: checkout_handoff_result properties=event_name,app,page_url,page_path,surface,handoff_stage,mode,partner_code -->
+
+### `checkout_handoff_result`
+
+Market counts a checkout link landing and finite handoff stages. `partner_code`
+is optional and accepted only when the code is active in the shared, bounded
+registry. It is a claimed public business source, never a shopper, click, order,
+or payout identifier. A copied link can claim another source. Browser telemetry
+is optional, so these counts are measured Market arrivals and outcomes, not
+complete partner clicks, settled orders, or GMV. No fragment, product reference,
+cart contents, merchant key, invoice, or payment content is sent.
 
 <!-- telemetry-event: wallet_connect_result properties=event_name,app,page_url,page_path,rail,method,status,latency_bucket,count,time_bucket -->
 

@@ -65,9 +65,16 @@ export interface ProductPublishFormValues {
 
 export interface MerchantProductFormValues extends ProductPublishFormValues {
   summary: string
+  listingAreaCountry: string
+  listingAreaState: string
+  listingAreaPlaceId: number | null
+  listingAreaMode: "unchanged" | "default" | "selected" | "clear"
+  listingAreaDefault?: { location: string; geohash: string } | null
   variations: ProductVariationFormState
   fulfillment: ProductFulfillmentChoice
   eventMarketReference: string
+  /** Experimental kind-30409 association; separate from legacy local pickup. */
+  futureEventMarketReference?: string
   eventHandoffMode: EventMarketHandoffMode
   merchantPickupTitle: string
   merchantPickupLocation: string

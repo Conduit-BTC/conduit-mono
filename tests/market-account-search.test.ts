@@ -73,16 +73,16 @@ describe("account suggestion items", () => {
     expect(route).not.toContain("nip05")
   })
 
-  it("routes sellers to their storefront and other accounts to the profile view", () => {
+  it("routes sellers and other accounts to the same public identity page", () => {
     expect(
       getAccountSuggestionTarget(match({ pubkey: SELLER, isSeller: true }))
     ).toEqual({
-      to: "/store/$pubkey",
-      params: { pubkey: expect.stringMatching(/^npub1/) },
+      to: "/$identityRef",
+      params: { identityRef: expect.stringMatching(/^npub1/) },
     })
     expect(getAccountSuggestionTarget(match({ pubkey: BUYER }))).toEqual({
-      to: "/u/$profileRef",
-      params: { profileRef: expect.stringMatching(/^npub1/) },
+      to: "/$identityRef",
+      params: { identityRef: expect.stringMatching(/^npub1/) },
     })
   })
 

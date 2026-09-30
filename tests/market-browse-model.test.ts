@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+import { ProductCard } from "@conduit/ui"
 import {
   prepareProductCatalog,
   type CommerceProductRecord,
@@ -11,7 +14,6 @@ import {
   getStoreFacetOptions,
 } from "../apps/market/src/lib/facets"
 import {
-  allowsGlobalProductSearch,
   getGlobalProductSearchQueryKey,
   getMerchantIdentityView,
   getProductShippingPresetEligibility,
@@ -190,23 +192,33 @@ describe("market browse model helpers", () => {
     ).toBe(true)
   })
 
-  it("keeps global search out of explicit connected catalog scopes", () => {
-    expect(
-      allowsGlobalProductSearch({
-        catalogSource: "following",
-        anonymous: false,
-      })
-    ).toBe(false)
-    expect(
-      allowsGlobalProductSearch({ catalogSource: "conduit", anonymous: false })
-    ).toBe(false)
-    expect(
-      allowsGlobalProductSearch({ catalogSource: "combined", anonymous: false })
-    ).toBe(true)
-    expect(
-      allowsGlobalProductSearch({ catalogSource: "conduit", anonymous: true })
-    ).toBe(true)
+  it("preserves catalog evidence while remote search is disabled", () => {
+    const localSearch = {
+      catalogMeta: freshMeta,
+      catalogError: null,
+      catalogPaused: false,
+      discoveryStale: false,
+      globalSearchEnabled: false,
+      globalSearchMeta: { ...freshMeta, degraded: true },
+      globalSearchError: new Error("Inactive search failed"),
+      globalSearchPaused: true,
+    }
+    expect(isMarketBrowseRefreshStale(localSearch)).toBe(false)
+    for (const evidence of [
+      { catalogMeta: { ...freshMeta, stale: true } },
+      { catalogMeta: { ...freshMeta, degraded: true } },
+      { catalogMeta: { ...freshMeta, capped: true } },
+      { catalogError: new Error("Cache unavailable") },
+      { catalogPaused: true },
+      { discoveryStale: true },
+    ]) {
+      expect(isMarketBrowseRefreshStale({ ...localSearch, ...evidence })).toBe(
+        true
+      )
+    }
+  })
 
+  it("searches each connected perspective within its eligible author scope", () => {
     const followingKey = getGlobalProductSearchQueryKey({
       query: "soap",
       pubkey: "viewer",
@@ -257,6 +269,46 @@ describe("market browse model helpers", () => {
         [updatedCatalogProduct, searchProduct]
       )
     ).toEqual([updatedCatalogProduct, searchProduct])
+  })
+
+  it("keeps a semantic Congee hit through Market facets and renders its card", () => {
+    const indexedProduct = {
+      ...product("indexed-mug", "merchant-b", ["ceramic"], 200),
+      title: "Handmade mug",
+    }
+    const candidates = [indexedProduct]
+    const visible = filterProductsByFacets(candidates, {
+      merchants: ["merchant-b"],
+      tags: ["ceramic"],
+    })
+
+    expect(candidates.map((item) => item.id)).toEqual(["indexed-mug"])
+    expect(visible.map((item) => item.id)).toEqual(["indexed-mug"])
+    const html = renderToStaticMarkup(
+      createElement(ProductCard, {
+        title: visible[0].title,
+        merchantName: "Merchant B",
+        images: visible[0].images,
+        primaryPrice: "1 sat",
+      })
+    )
+    expect(html).toContain("Handmade mug")
+  })
+
+  it("keeps merchant and category selections within already searched products", () => {
+    const ranked = [
+      product("rank-1", "a", ["books"], 100),
+      product("rank-2", "b", ["books"], 200),
+      product("rank-3", "b", ["clothing"], 300),
+    ]
+    expect(
+      filterProductsByFacets(ranked, { merchants: ["b"], tags: ["books"] }).map(
+        (item) => item.id
+      )
+    ).toEqual(["rank-2"])
+    expect(filterProductsByFacets(ranked, { merchants: ["outside"] })).toEqual(
+      []
+    )
   })
 
   it("sorts store options by recent publisher while preserving counts", () => {

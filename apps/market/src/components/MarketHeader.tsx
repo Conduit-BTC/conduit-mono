@@ -52,6 +52,7 @@ import { useCart } from "../hooks/useCart"
 import { useMarketHeaderSuggestions } from "../hooks/useMarketHeaderSuggestions"
 import { DEFAULT_MARKET_CATALOG_SOURCE } from "../lib/productCatalogRead"
 import { resolveActiveSuggestionIndex } from "../lib/accountSearch"
+import { MARKET_SEARCH_SETTLE_MS } from "../lib/searchPolicy"
 
 const SEARCH_SUGGESTIONS_LISTBOX_ID = "market-search-suggestions"
 
@@ -427,6 +428,13 @@ export function MarketHeader({
     catalogSource: routeCatalogSource,
     enabled: searchSuggestionsEnabled,
     isBrowseRoute,
+    pageSuppliesCatalog:
+      (isBrowseRoute && currentQuery.trim().length === 0) ||
+      pathname === "/merchants" ||
+      (pathname === "/cart" &&
+        cart.items.length > 0 &&
+        !search.merchant &&
+        !search.purchase),
     listboxId: SEARCH_SUGGESTIONS_LISTBOX_ID,
     merchantFilter: search.merchant,
     onSelect: handleSuggestionSelected,
@@ -521,7 +529,7 @@ export function MarketHeader({
         }),
         replace: true,
       })
-    }, 260)
+    }, MARKET_SEARCH_SETTLE_MS)
 
     return () => window.clearTimeout(timeoutId)
   }, [

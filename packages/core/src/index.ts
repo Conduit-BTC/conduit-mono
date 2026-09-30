@@ -12,6 +12,8 @@ export * from "./schemas"
 export * from "./utils"
 export * from "./network-target-safety"
 export * from "./app-links"
+export * from "./checkout-intent"
+export * from "./checkout-partner-registry"
 
 // Wallets
 export * from "./wallets"
@@ -201,6 +203,7 @@ export {
   pruneCommerceCaches,
   subscribeToWalletDescriptorChanges,
   subscribeToShoppingCartChanges,
+  subscribeToProductCacheChanges,
   pruneShopperTrustSnapshots,
   shopperTrustSnapshotIsExpired,
   SHOPPER_TRUST_SNAPSHOT_MAX_ROWS,

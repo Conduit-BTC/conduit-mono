@@ -80,6 +80,10 @@ function form(
   return {
     title: "Pocket Relay",
     summary: "A local-first relay appliance",
+    listingAreaCountry: "",
+    listingAreaState: "",
+    listingAreaPlaceId: null,
+    listingAreaMode: "clear",
     price: "25",
     stock: "12",
     variations: createEmptyProductVariationForm(),
@@ -87,6 +91,7 @@ function form(
     format: "physical",
     fulfillment: "ship",
     eventMarketReference: "",
+    futureEventMarketReference: "",
     eventHandoffMode: "merchant_handoff",
     merchantPickupTitle: "Merchant booth pickup",
     merchantPickupLocation: "",
@@ -129,6 +134,64 @@ function legacyForm(
 }
 
 describe("merchant product drafts", () => {
+  it("keeps the ships from default as a draft snapshot", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const selected = form({
+      listingAreaMode: "default",
+      listingAreaDefault: {
+        location: "Oakland, Alameda County, California, United States",
+        geohash: "9q9p",
+      },
+    })
+    expect(saveProductDraft(draftTarget, selected, storage)).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft).toEqual(selected)
+  })
+
+  it("retains a selected listing-area ID and rejects unsupported country drafts", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const selected = form({
+      listingAreaCountry: "US",
+      listingAreaState: "CA",
+      listingAreaPlaceId: 5378538,
+      listingAreaMode: "selected",
+    })
+    expect(saveProductDraft(draftTarget, selected, storage)).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft).toEqual(selected)
+    const key = getProductDraftStorageKey(draftTarget)!
+    const tampered = JSON.parse(storage.getItem(key)!)
+    tampered.form.listingAreaCountry = "RU"
+    storage.setItem(key, JSON.stringify(tampered))
+    expect(loadProductDraft(draftTarget, storage).draft).toBeNull()
+    tampered.form.listingAreaCountry = "US"
+    tampered.form.listingAreaState = "XX"
+    storage.setItem(key, JSON.stringify(tampered))
+    expect(loadProductDraft(draftTarget, storage).draft).toBeNull()
+  })
+
+  it("clears a version 8 US place that has no state partition", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const selected = form({
+      listingAreaCountry: "US",
+      listingAreaState: "CA",
+      listingAreaPlaceId: 5378538,
+      listingAreaMode: "selected",
+    })
+    saveProductDraft(draftTarget, selected, storage)
+    const key = getProductDraftStorageKey(draftTarget)!
+    const stored = JSON.parse(storage.getItem(key)!)
+    stored.version = 8
+    delete stored.form.listingAreaState
+    storage.setItem(key, JSON.stringify(stored))
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      listingAreaCountry: "US",
+      listingAreaState: "",
+      listingAreaPlaceId: null,
+      listingAreaMode: "clear",
+    })
+  })
   it("keeps draft publication bound to the original merchant", () => {
     const accountA = "a".repeat(64)
     const accountB = "b".repeat(64)
@@ -257,6 +320,28 @@ describe("merchant product drafts", () => {
       fulfillment: "local_pickup",
       eventMarketReference: reference,
       eventHandoffMode: "merchant_handoff",
+    })
+  })
+
+  it("retains a future Event Market association independently of legacy pickup", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const reference = `30409:${"b".repeat(64)}:future-market`
+    expect(
+      saveProductDraft(
+        draftTarget,
+        form({
+          fulfillment: "ship",
+          eventMarketReference: "",
+          futureEventMarketReference: reference,
+        }),
+        storage
+      )
+    ).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      fulfillment: "ship",
+      eventMarketReference: "",
+      futureEventMarketReference: reference,
     })
   })
 

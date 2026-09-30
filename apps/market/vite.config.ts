@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { createConduitBuildContract } from "../../scripts/vite/build_info.ts"
 import { createRepositoryContributorsPlugin } from "../../scripts/vite/repository_contributors.ts"
 import { createThemeBootstrapPlugin } from "../../scripts/vite/theme_bootstrap.ts"
+import { createAboutMetadataPlugin } from "../../scripts/vite/about_metadata.ts"
 
 const appDir = fileURLToPath(new URL(".", import.meta.url))
 const buildContract = createConduitBuildContract(appDir)
@@ -18,6 +19,15 @@ export default defineConfig({
     react(),
     createRepositoryContributorsPlugin(),
     buildContract.deploymentManifestPlugin,
+    createAboutMetadataPlugin({
+      homeTitle: "Conduit Market",
+      homeDescription:
+        "Browse decentralized storefronts, send orders over Nostr, and complete Bitcoin-native checkout flows on Conduit Market.",
+      origin: "https://shop.conduit.market",
+      aboutTitle: "About Conduit Shop | Open Nostr Commerce",
+      aboutDescription:
+        "Explore the open Nostr standards behind Conduit Shop, its source code, contributors, and current build information.",
+    }),
   ],
   resolve: {
     dedupe: ["react", "react-dom"],

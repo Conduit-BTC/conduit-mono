@@ -52,7 +52,6 @@ describe("Market live account authority", () => {
       "apps/market/src/routes/orders.tsx",
       "apps/market/src/routes/products/$productId.tsx",
       "apps/market/src/routes/profile.tsx",
-      "apps/market/src/routes/u/$profileRef.tsx",
     ]
 
     for (const path of paths) {
@@ -76,21 +75,28 @@ describe("Market live account authority", () => {
         source("apps/market/src/hooks/useProgressiveProducts.ts"),
         source("apps/market/src/routes/cart.tsx"),
         source("apps/market/src/routes/orders.tsx"),
-        source("apps/market/src/routes/u/$profileRef.tsx"),
+        source("apps/market/src/routes/$identityRef.tsx"),
         source("apps/market/src/hooks/useMerchantTrustContext.ts"),
         source("apps/market/src/routes/checkout.tsx"),
       ])
 
     expect(browse).toContain("!signal.aborted && shouldContinueAccountRead()")
-    expect(progressive).toContain(
-      "!cancelled && authGenerationRef.current === authGeneration"
+    expect(progressive).toMatch(
+      /const controller = new AbortController\(\)\s+const \{ signal \} = controller\s+const shouldContinue = \(\) =>\s+!signal\.aborted && authGenerationRef\.current === authGeneration/
+    )
+    expect(progressive).toMatch(
+      /getMarketplaceProductsProgressive\([\s\S]{0,600}accountPubkey: finalIoAccountPubkey,\s+shouldContinue,\s+signal,/
+    )
+    expect(progressive).toMatch(
+      /return \(\) => \{\s+controller\.abort\(\)\s+cancelScheduledFlush\(\)/
     )
     expect(
       progressive.match(
         /!signal\.aborted && authGenerationRef\.current === authGeneration/g
       )?.length
     ).toBeGreaterThanOrEqual(3)
-    for (const route of [cart, orders, publicProfile, trust]) {
+    expect(publicProfile).toContain("useMerchantTrustContext({")
+    for (const route of [cart, orders, trust]) {
       expect(route).toContain("!signal.aborted && shouldContinueAccountRead()")
     }
     expect(checkout).toMatch(

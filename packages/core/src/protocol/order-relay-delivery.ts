@@ -13,6 +13,7 @@ import {
 import { publishSignedEventToRelay } from "./relay-publish"
 import {
   isApprovedCompatibilityOrderRelayPlan,
+  MAX_COMPATIBILITY_ORDER_RELAYS,
   MAX_DECLARED_INBOX_WRITE_RELAYS,
 } from "./private-message-routing"
 import {
@@ -27,6 +28,12 @@ import {
 const RETRY_DELAY_MS = 60_000
 const FOREGROUND_RETRY_DELAY_MS = 15_000
 export const ORDER_RELAY_DELIVERY_LEASE_MS = 30_000
+// The compatibility registry before the Congee cutover. This is only used to
+// validate already-staged exact wraps; new plans use the current registry.
+const PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS = new Set([
+  "wss://relay.conduit.market",
+  "wss://relay.ditto.pub",
+])
 
 export type PreparedOrderRelayDelivery = {
   rumorId: string
@@ -47,10 +54,12 @@ export type PreparedOrderRelayDelivery = {
 export type StagedOrderLifecycleInput = Pick<
   OrderLifecycle,
   | "orderId"
+  | "claimedReferralSource"
   | "buyerPubkey"
   | "buyerIdentityKind"
   | "merchantPubkey"
   | "checkoutMode"
+  | "checkoutSparkRouterBinding"
   | "publicZapSigner"
   | "publicZapFallback"
   | "merchantLightningAddress"
@@ -172,7 +181,24 @@ function hasRetryablePublicTarget(
   return delivery.relayDelivery.some(
     (target) =>
       target.status !== "acked" &&
-      normalizePublicWebSocketUrl(target.relayUrl) !== null
+      normalizePublicWebSocketUrl(target.relayUrl) !== null &&
+      (delivery.route !== "compatibility_order" ||
+        isApprovedCompatibilityOrderRelayPlan([target.relayUrl]))
+  )
+}
+
+function isValidPersistedCompatibilityPlan(
+  relayUrls: readonly string[]
+): boolean {
+  return (
+    isApprovedCompatibilityOrderRelayPlan(relayUrls) ||
+    (relayUrls.length > 0 &&
+      relayUrls.length <= MAX_COMPATIBILITY_ORDER_RELAYS &&
+      new Set(relayUrls).size === relayUrls.length &&
+      relayUrls.includes("wss://relay.conduit.market") &&
+      relayUrls.every((relayUrl) =>
+        PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS.has(relayUrl)
+      ))
   )
 }
 
@@ -198,10 +224,12 @@ function immutableLifecycleSnapshot(
 ): unknown {
   return {
     orderId: lifecycle.orderId,
+    claimedReferralSource: lifecycle.claimedReferralSource,
     buyerPubkey: lifecycle.buyerPubkey,
     buyerIdentityKind: lifecycle.buyerIdentityKind,
     merchantPubkey: lifecycle.merchantPubkey,
     checkoutMode: lifecycle.checkoutMode,
+    checkoutSparkRouterBinding: lifecycle.checkoutSparkRouterBinding,
     publicZapSigner: lifecycle.publicZapSigner,
     publicZapFallback: lifecycle.publicZapFallback,
     merchantLightningAddress: lifecycle.merchantLightningAddress,
@@ -271,7 +299,7 @@ function hasValidOrderRelayRoutingAuthority(
       (delivery.route === "declared_inbox"
         ? delivery.relayDelivery.every(({ source }) => source === "declared")
         : delivery.route === "compatibility_order" &&
-          isApprovedCompatibilityOrderRelayPlan(relayUrls) &&
+          isValidPersistedCompatibilityPlan(relayUrls) &&
           delivery.relayDelivery.every(
             ({ source }) =>
               source === "recipient_nip65" ||
@@ -281,11 +309,19 @@ function hasValidOrderRelayRoutingAuthority(
   }
   if (delivery.route === "compatibility_order") {
     const relayUrls = delivery.relayDelivery.map(({ relayUrl }) => relayUrl)
+    const recipients = delivery.signedRecipientWrap.tags.filter(
+      (tag) => tag[0] === "p" && typeof tag[1] === "string"
+    )
     return (
       !delivery.routingAuthority &&
       !!delivery.compatibilityPlan &&
+      isValidSignedPublicNostrEvent(delivery.signedRecipientWrap) &&
+      delivery.signedRecipientWrap.kind === EVENT_KINDS.GIFT_WRAP &&
+      recipients.length === 1 &&
+      recipients[0]![1]!.trim().toLowerCase() ===
+        merchantPubkey.trim().toLowerCase() &&
       sameValue(delivery.compatibilityPlan.relayUrls, relayUrls) &&
-      isApprovedCompatibilityOrderRelayPlan(relayUrls) &&
+      isValidPersistedCompatibilityPlan(relayUrls) &&
       delivery.relayDelivery.every(
         ({ source }) =>
           source === "recipient_nip65" || source === "compatibility_registry"
@@ -517,7 +553,11 @@ export async function beginOrderRelayDeliveryAttempt(
       relayUrls.length === 0 ||
       relayUrls.some(
         (relayUrl) =>
-          !delivery.relayDelivery.some((target) => target.relayUrl === relayUrl)
+          !delivery.relayDelivery.some(
+            (target) => target.relayUrl === relayUrl
+          ) ||
+          (delivery.route === "compatibility_order" &&
+            !isApprovedCompatibilityOrderRelayPlan([relayUrl]))
       )
     ) {
       return current
@@ -740,7 +780,9 @@ export async function retryOrderRelayDelivery(
     const outstanding = claimed.orderRelayDelivery.relayDelivery.filter(
       (target) =>
         target.status !== "acked" &&
-        normalizePublicWebSocketUrl(target.relayUrl) !== null
+        normalizePublicWebSocketUrl(target.relayUrl) !== null &&
+        (claimed.orderRelayDelivery?.route !== "compatibility_order" ||
+          isApprovedCompatibilityOrderRelayPlan([target.relayUrl]))
     )
     const orderedOutstanding = await orderEquivalentAccountRelayOperations({
       accountPubkey: claimed.buyerPubkey,

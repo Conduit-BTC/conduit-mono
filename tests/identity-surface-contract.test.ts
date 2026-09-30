@@ -35,7 +35,7 @@ describe("identity surface contracts", () => {
         "getMerchantIdentity",
         'merchant.status === "pending"',
       ],
-      "apps/market/src/routes/store/$pubkey.tsx": [
+      "apps/market/src/routes/$identityRef.tsx": [
         "merchantIdentityPending",
         "useMerchantTrustContext({",
         "profileRelayHints,",
@@ -104,7 +104,7 @@ describe("identity surface contracts", () => {
       "utf8"
     )
     const store = await readFile(
-      "apps/market/src/routes/store/$pubkey.tsx",
+      "apps/market/src/routes/$identityRef.tsx",
       "utf8"
     )
 
@@ -129,7 +129,8 @@ describe("identity surface contracts", () => {
     expect(checkout).not.toContain("Merchant context")
 
     expect(store).toContain("Nip05TrustIndicator")
-    expect(store).toContain("<MerchantTrustSummary trust={merchantTrust} />")
+    expect(store).toContain("<MerchantTrustSummary")
+    expect(store).toContain("trust={merchantTrust}")
   })
 
   it("keeps merchant trust owned by the retained account and authenticates only with a ready signer", async () => {
@@ -138,7 +139,7 @@ describe("identity surface contracts", () => {
       "utf8"
     )
     const store = await readFile(
-      "apps/market/src/routes/store/$pubkey.tsx",
+      "apps/market/src/routes/$identityRef.tsx",
       "utf8"
     )
     const checkout = await readFile(

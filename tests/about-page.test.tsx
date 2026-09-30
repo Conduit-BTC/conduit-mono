@@ -51,6 +51,13 @@ function renderAbout(
       identity={identity}
       contributors={contributors}
       supportUrl="https://github.com/Conduit-BTC/conduit-mono/issues/new"
+      protocols={[
+        {
+          name: "Private orders and messages · NIP-17",
+          description: "Send encrypted orders to merchants.",
+          href: "https://github.com/nostr-protocol/nips/blob/master/17.md",
+        },
+      ]}
     />
   )
 }
@@ -65,6 +72,14 @@ describe("AboutPagePanel", () => {
     expect(markup).toContain("Multiple relays")
     expect(markup).toContain("Public and private data")
     expect(markup).toContain("You stay in control")
+    expect(markup).toContain("Built on open standards")
+    expect(markup).toContain("Private orders and messages · NIP-17")
+    expect(markup).toContain(
+      "Explore all supported protocols and current limits"
+    )
+    expect(markup.indexOf("Built on open standards")).toBeLessThan(
+      markup.indexOf("Nostr app handler metadata")
+    )
     expect(markup).toContain("Source revision")
     expect(markup).toContain("0123456")
     expect(markup).toContain("Full source revision")
@@ -102,6 +117,17 @@ describe("AboutPagePanel", () => {
       "Contributor details could not be refreshed for this build."
     )
     expect(markup).not.toContain("42 commits in those PRs")
+  })
+
+  it("shows the last dated snapshot when contributor refresh is stale", () => {
+    const markup = renderAbout({ ...availableContributors, status: "stale" })
+
+    expect(markup).toContain("This contributor snapshot is out of date.")
+    expect(markup).toContain("alice")
+    expect(markup).toContain("42 commits in those PRs")
+    expect(markup).not.toContain(
+      "Contributor details could not be refreshed for this build."
+    )
   })
 
   it("only shows a release badge for non-production builds", () => {

@@ -139,6 +139,10 @@ describe("merchant product form validation", () => {
     const values: MerchantProductFormValues = {
       ...form({ usePresetShippingZone: true }),
       summary: "",
+      listingAreaCountry: "",
+      listingAreaState: "",
+      listingAreaPlaceId: null,
+      listingAreaMode: "clear",
       fulfillment: "ship",
       eventMarketReference: "",
       eventHandoffMode: "merchant_handoff",

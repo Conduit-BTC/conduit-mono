@@ -550,9 +550,12 @@ test("market product variation panel opens above the card when the page ends bel
   await chooseSize.click()
   await expect(page.getByRole("option", { name: "M" })).toBeVisible()
   await page.mouse.move(0, 0)
-  const panelWhileOpen = await geometry(panel)
+  const [panelWhileOpen, cardWhileOpen] = await Promise.all([
+    geometry(panel),
+    geometry(variableCard),
+  ])
   expect(
-    Math.abs(panelWhileOpen.y + panelWhileOpen.height - cardBox.y)
+    Math.abs(panelWhileOpen.y + panelWhileOpen.height - cardWhileOpen.y)
   ).toBeLessThanOrEqual(1)
   await page.keyboard.press("Escape")
 })
@@ -833,7 +836,7 @@ test("market integrated pickup provenance keeps keyboard actions inside the noti
     )
   ).toBe("0")
   const profileLink = notice.getByRole("link")
-  await expect(profileLink).toHaveAttribute("href", /\/u\/npub1/)
+  await expect(profileLink).toHaveAttribute("href", /^\/npub1[a-z0-9]+$/)
   expect(
     await page.evaluate(
       () => document.documentElement.dataset.variationCopiedText

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises"
 const SHOPPER_PRICE_ROUTES = [
   "apps/market/src/routes/products/index.tsx",
   "apps/market/src/routes/products/$productId.tsx",
-  "apps/market/src/routes/store/$pubkey.tsx",
+  "apps/market/src/routes/$identityRef.tsx",
   "apps/market/src/routes/cart.tsx",
   "apps/market/src/routes/checkout.tsx",
   "apps/market/src/routes/orders.tsx",

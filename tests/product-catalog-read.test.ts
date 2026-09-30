@@ -11,6 +11,8 @@ import {
   retainedFollowSnapshotSupersedesLive,
   resolvePerspectiveAuthorPubkeys,
   selectStrongestFollowListSnapshot,
+  settlePendingProgressiveRefreshes,
+  type PendingProgressiveRefresh,
 } from "../apps/market/src/lib/productCatalogRead"
 
 describe("product catalog read planning", () => {
@@ -18,8 +20,44 @@ describe("product catalog read planning", () => {
   const merchantAPubkey = "b".repeat(64)
   const merchantBPubkey = "c".repeat(64)
 
+  it("settles canceled reads while preserving a refresh waiting for its replacement", async () => {
+    const settled: string[] = []
+    const pending: PendingProgressiveRefresh[] = []
+    const waitingForCanceledPass = new Promise<void>((resolve) => {
+      pending.push({ fromDiscoveryKey: "previous", resolve })
+    }).then(() => settled.push("canceled"))
+    const waitingForReplacement = new Promise<void>((resolve) => {
+      pending.push({ fromDiscoveryKey: "current", resolve })
+    }).then(() => settled.push("replacement"))
+
+    const remaining = settlePendingProgressiveRefreshes(pending, "current")
+    await waitingForCanceledPass
+    expect(settled).toEqual(["canceled"])
+    expect(remaining).toHaveLength(1)
+
+    expect(settlePendingProgressiveRefreshes(remaining, "replacement")).toEqual(
+      []
+    )
+    await waitingForReplacement
+    expect(settled).toEqual(["canceled", "replacement"])
+  })
+
+  it("settles every pending refresh when streaming stops or the hook unmounts", async () => {
+    const pending: PendingProgressiveRefresh[] = []
+    const waits = ["previous", "current"].map(
+      (fromDiscoveryKey) =>
+        new Promise<void>((resolve) =>
+          pending.push({ fromDiscoveryKey, resolve })
+        )
+    )
+    expect(settlePendingProgressiveRefreshes(pending)).toEqual([])
+    await Promise.all(waits)
+    expect(settlePendingProgressiveRefreshes([])).toEqual([])
+  })
+
   function runRefresh(input: {
     queryEnabled?: boolean
+    networkEnabled?: boolean
     catalogReady?: boolean
     streamsNetwork?: boolean
     usesPerspectiveGraph?: boolean
@@ -29,6 +67,7 @@ describe("product catalog read planning", () => {
     const refreshes: string[] = []
     return refreshProductCatalogSources({
       queryEnabled: input.queryEnabled ?? true,
+      networkEnabled: input.networkEnabled ?? true,
       catalogReady: input.catalogReady ?? true,
       streamsNetwork: input.streamsNetwork ?? true,
       usesPerspectiveGraph: input.usesPerspectiveGraph ?? true,
@@ -77,6 +116,14 @@ describe("product catalog read planning", () => {
     ).toEqual(["network", "cache"])
   })
 
+  it("refreshes discovery and cache without a catalog read while search owns the network", async () => {
+    for (const streamsNetwork of [false, true]) {
+      expect(
+        await runRefresh({ networkEnabled: false, streamsNetwork })
+      ).toEqual(["authors", "cache"])
+    }
+  })
+
   it("does not refresh disabled catalog queries", async () => {
     expect(await runRefresh({ queryEnabled: false })).toEqual([])
   })
@@ -87,6 +134,7 @@ describe("product catalog read planning", () => {
     let settled = false
     const refresh = refreshProductCatalogSources({
       queryEnabled: true,
+      networkEnabled: true,
       catalogReady: true,
       streamsNetwork: true,
       usesPerspectiveGraph: false,

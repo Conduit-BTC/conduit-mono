@@ -40,13 +40,6 @@ export interface MerchantIdentityView {
   relayHints: string[]
 }
 
-export function allowsGlobalProductSearch(input: {
-  catalogSource: ProductCatalogSourceMode
-  anonymous: boolean
-}): boolean {
-  return input.anonymous || input.catalogSource === "combined"
-}
-
 export async function refreshMarketBrowseData(input: {
   globalSearchEnabled: boolean
   refreshDiscovery?: () => Promise<boolean>

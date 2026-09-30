@@ -212,7 +212,7 @@ describe("RefreshChip", () => {
     const surfaces = [
       "apps/market/src/routes/products/index.tsx",
       "apps/market/src/routes/products/$productId.tsx",
-      "apps/market/src/routes/store/$pubkey.tsx",
+      "apps/market/src/routes/$identityRef.tsx",
       "apps/market/src/routes/orders.tsx",
       "apps/merchant/src/routes/products.tsx",
       "apps/merchant/src/routes/orders.tsx",
@@ -254,7 +254,7 @@ describe("RefreshChip", () => {
       "utf8"
     )
     const storefrontSource = await readFile(
-      "apps/market/src/routes/store/$pubkey.tsx",
+      "apps/market/src/routes/$identityRef.tsx",
       "utf8"
     )
 
@@ -304,7 +304,7 @@ describe("RefreshChip", () => {
       "utf8"
     )
     const storefrontSource = await readFile(
-      "apps/market/src/routes/store/$pubkey.tsx",
+      "apps/market/src/routes/$identityRef.tsx",
       "utf8"
     )
     const merchantProductsSource = await readFile(
@@ -376,7 +376,7 @@ describe("RefreshChip", () => {
       "utf8"
     )
     const storefrontSource = await readFile(
-      "apps/market/src/routes/store/$pubkey.tsx",
+      "apps/market/src/routes/$identityRef.tsx",
       "utf8"
     )
     const merchantProductsSource = await readFile(
@@ -394,9 +394,7 @@ describe("RefreshChip", () => {
     expect(browseSource).toContain(
       "catalogPaused: productsQuery.isRefreshPaused"
     )
-    expect(browseSource).toContain(
-      "globalSearchPaused: globalSearchQuery.isPaused"
-    )
+    expect(browseSource).toContain("globalSearchQuery.isPaused")
     expect(browseSource).toContain("globalSearchQuery.isPending")
     expect(detailSource).toContain("productQuery.isRefreshPaused")
     expect(storefrontSource).toContain("productsQuery.isRefreshPaused")
