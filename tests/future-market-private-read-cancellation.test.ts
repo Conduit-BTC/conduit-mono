@@ -1,6 +1,10 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
-import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
   __resetInboxDeclarationCache,
