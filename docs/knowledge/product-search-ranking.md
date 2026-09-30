@@ -63,6 +63,8 @@ relay plans. A successful sibling read cannot clear this pause. NIP-01 provides
 no retry delay, so this interval is a client recovery policy.
 A queued request suppressed during this pause does not consume a bounded
 fanout slot. A later healthy relay can fill that slot; throttle diagnostics remain visible.
+Known throttled sources remain failed coverage evidence when healthy peers
+complete empty reads. The bounded result remains partial.
 
 Detailed read results expose only `failureReason: "rate_limited"`, without the
 relay message. Verified events received before throttling remain partial results;

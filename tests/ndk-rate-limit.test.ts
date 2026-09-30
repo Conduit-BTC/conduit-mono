@@ -157,6 +157,41 @@ it("resumes reads after the throttle window expires", async () => {
   expect(requests).toHaveLength(1)
 })
 
+for (const maxRelayAttempts of [undefined, 1]) {
+  it(`retains throttled source coverage alongside a healthy empty read (budget ${maxRelayAttempts ?? "unbounded"})`, async () => {
+    const healthy = "wss://healthy.example"
+    const requestedUrls: string[] = []
+    recordRelayRateLimit(relay)
+    onRequest = (socket, id) => {
+      requestedUrls.push(socket.url)
+      queueMicrotask(() => socket.emit(["EOSE", id]))
+    }
+    const result = await fetchEventsFanoutDetailed(
+      { kinds: [30402], limit: 10 },
+      {
+        // Suppression must remain visible even after the first healthy source
+        // fills the actual attempt budget.
+        relayUrls: [healthy, relay],
+        maxRelayAttempts,
+        fetchTimeoutMs: 1_000,
+      }
+    )
+    expect(result.events).toEqual([])
+    expect(result.relays).toEqual([
+      {
+        relayUrl: relay,
+        status: "failed",
+        eventCount: 0,
+        failureReason: "rate_limited",
+      },
+      { relayUrl: healthy, status: "success", eventCount: 0 },
+    ])
+    expect(result.admittedRelayUrls).toEqual([healthy])
+    expect(requestedUrls).toEqual([healthy])
+    expect(connections).toBe(1)
+  })
+}
+
 it("does not extend generic cooldown when every active subscription receives throttle CLOSED", async () => {
   onRequest = (socket) => {
     if (requests.length === 8)

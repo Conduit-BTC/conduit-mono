@@ -1109,7 +1109,8 @@ async function fetchEventsFromRelay(
     | "shouldContinue"
     | "signal"
     | "preserveEventOrder"
-  >
+  >,
+  rateLimitedAtPlan = false
 ): Promise<FetchEventsFromRelayResult | null> {
   let acquiredRelayReadSlot = false
   let admittedRelayUrl: string | null = null
@@ -1143,7 +1144,7 @@ async function fetchEventsFromRelay(
     }
     // Recheck after the execution queue and account policy await. Even an
     // explicit relay plan must respect throttling observed by a sibling read.
-    if (isRelayRateLimited(admittedRelayUrl)) {
+    if (rateLimitedAtPlan || isRelayRateLimited(admittedRelayUrl)) {
       return {
         relayUrl: admittedRelayUrl,
         events: [],
@@ -1277,20 +1278,13 @@ async function runBoundedRelayAttempts(
     )
   }
 
-  // Known throttles are diagnostic observations, not network attempts. Visit
-  // them before the bounded slots are consumed by eligible sources.
-  const throttled = new Set(relayUrls.filter((url) => isRelayRateLimited(url)))
-  const candidates = [
-    ...relayUrls.filter((url) => throttled.has(url)),
-    ...relayUrls.filter((url) => !throttled.has(url)),
-  ]
   let nextIndex = 0
-  const workerCount = Math.min(maxRelayAttempts, candidates.length)
+  const workerCount = Math.min(maxRelayAttempts, relayUrls.length)
   const results = await Promise.all(
     Array.from({ length: workerCount }, async () => {
       const observations: FetchEventsFromRelayResult[] = []
-      while (nextIndex < candidates.length) {
-        const relayUrl = candidates[nextIndex]
+      while (nextIndex < relayUrls.length) {
+        const relayUrl = relayUrls[nextIndex]
         nextIndex += 1
         const result = await attempt(relayUrl)
         // Only an actual attempt consumes this worker's bounded slot. Keep
@@ -1377,6 +1371,25 @@ async function orderAccountRelayFanout(
   return ordered.map((operation) => operation.value)
 }
 
+async function resolveFanoutRelayPlan(options: FetchEventsFanoutOptions) {
+  const ordered = await orderAccountRelayFanout(
+    resolveFanoutRelayUrls(options),
+    options
+  )
+  const rateLimitedRelayUrls = new Set(
+    ordered.filter((url) => isRelayRateLimited(url))
+  )
+  return {
+    // Record known suppression before healthy reads consume the bounded
+    // attempt budget. Each candidate still passes live account admission.
+    relayUrls: [
+      ...rateLimitedRelayUrls,
+      ...ordered.filter((url) => !rateLimitedRelayUrls.has(url)),
+    ],
+    rateLimitedRelayUrls,
+  }
+}
+
 function mergeEventsInto(
   merged: Map<string, NDKEvent>,
   events: NDKEvent[]
@@ -1407,10 +1420,8 @@ export async function fetchEventsFanoutDetailed(
   options: FetchEventsFanoutOptions = {}
 ): Promise<FetchEventsFanoutResult> {
   throwIfAborted(options.signal)
-  const relayUrls = await orderAccountRelayFanout(
-    resolveFanoutRelayUrls(options),
-    options
-  )
+  const { relayUrls, rateLimitedRelayUrls } =
+    await resolveFanoutRelayPlan(options)
 
   if (relayUrls.length === 0) {
     return {
@@ -1442,7 +1453,8 @@ export async function fetchEventsFanoutDetailed(
           connectTimeoutMs,
           fetchTimeoutMs,
           connections,
-          options
+          options,
+          rateLimitedRelayUrls.has(relayUrl)
         )
         throwIfAborted(options.signal)
         if (
@@ -1539,10 +1551,8 @@ export async function fetchEventsFanoutProgressive(
   onProgress: (progress: FetchEventsFanoutProgress) => void | Promise<void>
 ): Promise<NDKEvent[]> {
   throwIfAborted(options.signal)
-  const relayUrls = await orderAccountRelayFanout(
-    resolveFanoutRelayUrls(options),
-    options
-  )
+  const { relayUrls, rateLimitedRelayUrls } =
+    await resolveFanoutRelayPlan(options)
   if (relayUrls.length === 0) return []
 
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
@@ -1564,7 +1574,8 @@ export async function fetchEventsFanoutProgressive(
           connectTimeoutMs,
           fetchTimeoutMs,
           connections,
-          options
+          options,
+          rateLimitedRelayUrls.has(relayUrl)
         )
         if (!result) return null
         throwIfAborted(options.signal)
