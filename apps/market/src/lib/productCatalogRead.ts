@@ -45,6 +45,7 @@ export function retainedFollowSnapshotSupersedesLive(
 
 export async function refreshProductCatalogSources(input: {
   queryEnabled: boolean
+  networkEnabled: boolean
   catalogReady: boolean
   streamsNetwork: boolean
   usesPerspectiveGraph: boolean
@@ -62,9 +63,11 @@ export async function refreshProductCatalogSources(input: {
   }
 
   if (!input.catalogReady) return
-  const networkRefresh = input.streamsNetwork
-    ? input.restartNetworkStream()
-    : input.refreshNetwork()
+  const networkRefresh = !input.networkEnabled
+    ? undefined
+    : input.streamsNetwork
+      ? input.restartNetworkStream()
+      : input.refreshNetwork()
   await Promise.all([
     Promise.resolve(networkRefresh),
     Promise.resolve(input.refreshCache()),

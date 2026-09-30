@@ -92,6 +92,8 @@ type ProgressiveListQuery =
       sort?: SortOption
       limit?: number
       enabled?: boolean
+      /** Resolve scope/cache while a ranked search owns product network reads. */
+      networkEnabled?: boolean
     }
   | {
       scope: "storefront"
@@ -299,7 +301,10 @@ export function useProgressiveProducts(
     input.scope === "marketplace" && !!perspectivePubkey
   const firstDegreeDiscoveryEnabled =
     queryEnabled && usesPerspectiveGraph && catalogSource !== "conduit"
-  const streamsNetwork = queryEnabled && input.scope === "marketplace"
+  const networkEnabled =
+    input.scope !== "marketplace" || input.networkEnabled !== false
+  const streamsNetwork =
+    queryEnabled && networkEnabled && input.scope === "marketplace"
   const rawSeedAuthorPubkeys =
     input.scope === "marketplace" ? input.seedAuthorPubkeys : undefined
   const seededAuthors = useMemo(
@@ -577,7 +582,7 @@ export function useProgressiveProducts(
         undefined,
         () => !signal.aborted && authGenerationRef.current === authGeneration
       ),
-    enabled: queryEnabled && catalogReady && !streamsNetwork,
+    enabled: queryEnabled && networkEnabled && catalogReady && !streamsNetwork,
     staleTime: 20_000,
   })
 
@@ -898,6 +903,7 @@ export function useProgressiveProducts(
     await Promise.all([
       refreshProductCatalogSources({
         queryEnabled,
+        networkEnabled,
         catalogReady,
         streamsNetwork,
         usesPerspectiveGraph,
@@ -932,6 +938,7 @@ export function useProgressiveProducts(
     catalogReady,
     catalogSource,
     queryEnabled,
+    networkEnabled,
     refetchCached,
     refetchFirstNetwork,
     refetchPerspectiveAuthors,

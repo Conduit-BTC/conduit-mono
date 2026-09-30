@@ -133,6 +133,7 @@ export interface CachedProduct {
   publicZapPolicyKnown?: boolean
   eventGuestContactOptional?: boolean
   location?: string
+  geohash?: string
   eventId?: string
   eventCreatedAt?: number
   createdAt?: number
@@ -190,6 +191,12 @@ export interface CachedEventMarketRosterEvidence {
   marketCoordinate: string
   signedEvent: SignedPublicNostrEvent
   cachedAt: number
+}
+
+/** Account-scoped signed settings evidence; relay omission cannot erase it. */
+export interface StoredMerchantShippingSettingsEvidence {
+  pubkey: string
+  signedEvent: SignedPublicNostrEvent
 }
 
 /** Exact paired organizer signatures kept outside admitted relay evidence. */
@@ -1054,6 +1061,10 @@ export class ConduitDB extends Dexie {
     InboxDeclarationEvidenceRecord,
     "pubkey"
   >
+  merchantShippingSettingsEvidence!: EntityTable<
+    StoredMerchantShippingSettingsEvidence,
+    "pubkey"
+  >
   ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
   eventMarketEvidence!: EntityTable<CachedEventMarketEvidence, "id">
   eventMarketRosterEvidence!: EntityTable<CachedEventMarketRosterEvidence, "id">
@@ -1289,6 +1300,11 @@ export class ConduitDB extends Dexie {
       checkoutSparkPlanBindings: "checkoutId",
       checkoutSparkReconciliations: "checkoutId",
       checkoutSparkRetirements: "checkoutId",
+    })
+
+    this.version(23).stores({
+      // Durable signed evidence, kept outside prunable commerce caches.
+      merchantShippingSettingsEvidence: "pubkey",
     })
   }
 }

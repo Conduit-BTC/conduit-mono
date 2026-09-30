@@ -20,6 +20,7 @@ describe("product catalog read planning", () => {
 
   function runRefresh(input: {
     queryEnabled?: boolean
+    networkEnabled?: boolean
     catalogReady?: boolean
     streamsNetwork?: boolean
     usesPerspectiveGraph?: boolean
@@ -29,6 +30,7 @@ describe("product catalog read planning", () => {
     const refreshes: string[] = []
     return refreshProductCatalogSources({
       queryEnabled: input.queryEnabled ?? true,
+      networkEnabled: input.networkEnabled ?? true,
       catalogReady: input.catalogReady ?? true,
       streamsNetwork: input.streamsNetwork ?? true,
       usesPerspectiveGraph: input.usesPerspectiveGraph ?? true,
@@ -77,6 +79,14 @@ describe("product catalog read planning", () => {
     ).toEqual(["network", "cache"])
   })
 
+  it("refreshes discovery and cache without a catalog read while search owns the network", async () => {
+    for (const streamsNetwork of [false, true]) {
+      expect(
+        await runRefresh({ networkEnabled: false, streamsNetwork })
+      ).toEqual(["authors", "cache"])
+    }
+  })
+
   it("does not refresh disabled catalog queries", async () => {
     expect(await runRefresh({ queryEnabled: false })).toEqual([])
   })
@@ -87,6 +97,7 @@ describe("product catalog read planning", () => {
     let settled = false
     const refresh = refreshProductCatalogSources({
       queryEnabled: true,
+      networkEnabled: true,
       catalogReady: true,
       streamsNetwork: true,
       usesPerspectiveGraph: false,

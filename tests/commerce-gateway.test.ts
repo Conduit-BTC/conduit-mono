@@ -1,6 +1,7 @@
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, NDKUser, nip19, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { matchFilter } from "nostr-tools"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
@@ -51,7 +52,10 @@ import type {
   FollowListReadResult,
   SignedPublicNostrEvent,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import {
+  attachEventSourceRelayUrl,
+  __resetNdkTestState,
+} from "@conduit/core/protocol/ndk"
 import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityReadDecision,
@@ -2512,16 +2516,535 @@ describe("commerce gateway", () => {
     ])
   })
 
+  it("preserves controlled relay relevance through real signatures, revisions, safety and Market facets", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket")
+    const first = makeSignedProductEvent({
+      dTag: "shared",
+      createdAt: 100,
+      title: "Handmade vessel",
+    })
+    const second = makeSignedProductEvent({
+      secretKey: MERCHANT_B_SECRET,
+      dTag: "shared",
+      createdAt: 300,
+      title: "Linen bag",
+    })
+    const revised = makeSignedProductEvent({
+      dTag: "shared",
+      createdAt: 400,
+      title: "Blue pottery",
+    })
+    const hidden = makeProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "hidden",
+      createdAt: 500,
+      title: "Hidden",
+      id: "placeholder",
+      visibility: "private",
+    })
+    const hiddenSigned = finalizeEvent(
+      { ...hidden, id: undefined, sig: undefined } as never,
+      MERCHANT_A_SECRET
+    )
+    const invalid = { ...first.rawEvent(), content: "tampered" }
+    const ranked = [
+      invalid,
+      hiddenSigned,
+      first.rawEvent(),
+      second.rawEvent(),
+      first.rawEvent(),
+    ]
+    const current = [revised.rawEvent(), second.rawEvent(), hiddenSigned]
+    const productFilters: Array<Record<string, unknown>> = []
+    class SearchSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSED = 3
+      readyState = 0
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+      constructor() {
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.onopen?.(new Event("open"))
+        })
+      }
+      send(payload: string) {
+        const [type, id, filter] = JSON.parse(payload)
+        if (type !== "REQ") return
+        if (filter.kinds.includes(EVENT_KINDS.PRODUCT))
+          productFilters.push(filter)
+        queueMicrotask(() => {
+          for (const event of filter.search ? ranked : current) {
+            if (!matchFilter(filter, event as never)) continue
+            this.onmessage?.({
+              data: JSON.stringify(["EVENT", id, event]),
+            } as MessageEvent<string>)
+          }
+          this.onmessage?.({
+            data: JSON.stringify(["EOSE", id]),
+          } as MessageEvent<string>)
+        })
+      }
+      close() {
+        this.readyState = 3
+      }
+    }
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: SearchSocket,
+    })
+    try {
+      const result = await getMarketplaceProducts({
+        textQuery: "ceramics",
+        searchIndex: true,
+        sort: "price_desc",
+        authorPubkeys: [MERCHANT_A_PUBKEY, second.pubkey],
+      })
+      expect(result.data.map((record) => record.product.title)).toEqual([
+        "Blue pottery",
+        "Linen bag",
+      ])
+      expect(result.data.map((record) => record.addressId)).toEqual([
+        `30402:${MERCHANT_A_PUBKEY}:shared`,
+        `30402:${second.pubkey}:shared`,
+      ])
+      expect(result.meta.productSearch?.coverage).toBe("partial")
+      expect(productFilters.filter((filter) => filter.search)).toHaveLength(1)
+      expect(
+        productFilters
+          .filter((filter) => !filter.search)
+          .every((filter) => Array.isArray(filter["#d"]))
+      ).toBe(true)
+      const { filterProductsByFacets } =
+        await import("../apps/market/src/lib/facets")
+      const survivors = filterProductsByFacets(
+        result.data.map((record) => record.product),
+        { tags: ["test"] }
+      )
+      expect(survivors.map((product) => product.title)).toEqual([
+        "Blue pottery",
+        "Linen bag",
+      ])
+    } finally {
+      __resetNdkTestState()
+      if (descriptor) Object.defineProperty(globalThis, "WebSocket", descriptor)
+      else Reflect.deleteProperty(globalThis, "WebSocket")
+    }
+  })
+
+  it("keeps complete empty, partial empty, and unavailable search distinct without a catalog sweep", async () => {
+    let status: "success" | "partial" | "failed" = "success"
+    const productReads: string[] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT))
+          productReads.push(filter.search ?? "catalog")
+        return {
+          events: [],
+          relays: (options?.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status,
+            eventCount: 0,
+          })),
+          eventsVerified: true,
+        } as never
+      },
+    })
+    const complete = await getMarketplaceProducts({
+      textQuery: "pottery",
+      searchIndex: true,
+    })
+    expect(complete.data).toEqual([])
+    expect(complete.meta.productSearch?.coverage).toBe("complete")
+    expect(complete.meta.degraded).toBe(false)
+    status = "partial"
+    const partial = await getMarketplaceProducts({
+      textQuery: "pottery",
+      searchIndex: true,
+    })
+    expect(partial.data).toEqual([])
+    expect(partial.meta.productSearch?.coverage).toBe("partial")
+    expect(partial.meta.degraded).toBe(true)
+    status = "failed"
+    await expect(
+      getMarketplaceProducts({ textQuery: "pottery", searchIndex: true })
+    ).rejects.toThrow("Product search is unavailable")
+    expect(productReads).toEqual(["pottery", "pottery", "pottery"])
+  })
+
+  it("cancels an obsolete ranked response before persistence or reconciliation", async () => {
+    const controller = new AbortController()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let seenSignal: AbortSignal | undefined
+    const indexed = makeProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "old",
+      id: "old-query",
+      createdAt: 100,
+      title: "Old query",
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (!filter.search) return []
+        seenSignal = options?.signal
+        await gate
+        return [indexed] as never
+      },
+    })
+    const read = getMarketplaceProducts({
+      textQuery: "old",
+      searchIndex: true,
+      signal: controller.signal,
+    })
+    await Promise.resolve()
+    controller.abort()
+    release()
+    await expect(read).rejects.toThrow()
+    expect(seenSignal).toBe(controller.signal)
+    expect(cachedProducts).toEqual([])
+  })
+
+  it("publishes ranked signed hits with newer cached revisions before lazy network reads finish", async () => {
+    const first = makeSignedProductEvent({
+      dTag: "first",
+      title: "Old cup",
+      createdAt: 100,
+    })
+    const cached = makeSignedProductEvent({
+      dTag: "first",
+      title: "Cached blue cup",
+      createdAt: 200,
+    })
+    const revised = makeSignedProductEvent({
+      dTag: "first",
+      title: "Current blue cup",
+      createdAt: 300,
+    })
+    const second = makeSignedProductEvent({
+      secretKey: MERCHANT_B_SECRET,
+      dTag: "second",
+      title: "Linen bag",
+      createdAt: 400,
+    })
+    await cacheSignedProductListingEvent(cached)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let ready!: (titles: string[]) => void
+    const initial = new Promise<string[]>((resolve) => {
+      ready = resolve
+    })
+    let finished = false
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        if (filter.search) return [first, second] as never
+        await gate
+        return [revised, second].filter((event) =>
+          matchFilter(filter, event.rawEvent() as never)
+        ) as never
+      },
+    })
+    const read = getMarketplaceProducts({
+      textQuery: "ceramics",
+      searchIndex: true,
+      onProgress: (snapshot) =>
+        ready(snapshot.data.map((record) => record.product.title)),
+    }).finally(() => {
+      finished = true
+    })
+    expect(await initial).toEqual(["Cached blue cup", "Linen bag"])
+    expect(finished).toBe(false)
+    release()
+    expect((await read).data.map((record) => record.product.title)).toEqual([
+      "Current blue cup",
+      "Linen bag",
+    ])
+  })
+
+  it("reconciles a ranked hit with a newer live revision when seed caching fails", async () => {
+    const indexed = makeSignedProductEvent({
+      dTag: "uncached-ranked-hit",
+      title: "Old cup",
+      createdAt: 100,
+    })
+    const revised = makeSignedProductEvent({
+      dTag: "uncached-ranked-hit",
+      title: "Current blue cup",
+      createdAt: 200,
+    })
+    let exactReads = 0
+    __setCommerceTestOverrides({
+      putCachedProducts: async () => {
+        throw new Error("Synthetic product cache write failure")
+      },
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        if (filter.search) return [indexed] as never
+        exactReads += 1
+        return [revised].filter((event) =>
+          matchFilter(filter, event.rawEvent() as never)
+        ) as never
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      textQuery: "ceramics",
+      searchIndex: true,
+    })
+
+    expect(exactReads).toBeGreaterThan(0)
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Current blue cup",
+    ])
+  })
+
+  for (const exactRead of ["unavailable", "older"] as const) {
+    it(`retains a signed ranked hit after a failed seed write and ${exactRead} exact read`, async () => {
+      const ranked = makeSignedProductEvent({
+        dTag: `unsaved-${exactRead}`,
+        title: "Current ranked cup",
+        createdAt: 200,
+      })
+      const older = makeSignedProductEvent({
+        dTag: `unsaved-${exactRead}`,
+        title: "Older cup",
+        createdAt: 100,
+      })
+      let exactReads = 0
+      __setCommerceTestOverrides({
+        putCachedProducts: async () => {
+          throw new Error("Synthetic product cache write failure")
+        },
+        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+          const relayUrls = [...(options?.relayUrls ?? [])]
+          if (filter.search) {
+            return {
+              events: [ranked] as never,
+              attemptedRelayUrls: relayUrls,
+              successfulRelayUrls: relayUrls,
+              failedRelayUrls: [],
+            }
+          }
+          if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) exactReads += 1
+          const unavailable =
+            exactRead === "unavailable" &&
+            filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          return {
+            events: (filter.kinds?.includes(EVENT_KINDS.PRODUCT) && !unavailable
+              ? [older]
+              : []) as never,
+            attemptedRelayUrls: relayUrls,
+            successfulRelayUrls: unavailable ? [] : relayUrls,
+            failedRelayUrls: unavailable ? relayUrls : [],
+          }
+        },
+      })
+      const progress: string[][] = []
+
+      const result = await getMarketplaceProducts({
+        textQuery: "ceramics",
+        searchIndex: true,
+        onProgress: (snapshot) => {
+          progress.push(snapshot.data.map((record) => record.product.title))
+        },
+      })
+
+      expect(cachedProducts).toEqual([])
+      expect(exactReads).toBeGreaterThan(0)
+      expect(progress.length).toBeGreaterThan(1)
+      for (const titles of progress)
+        expect(titles).toEqual(["Current ranked cup"])
+      expect(result.data.map((record) => record.product.title)).toEqual([
+        "Current ranked cup",
+      ])
+      expect(result.meta.stale).toBe(true)
+      expect(result.meta.degraded).toBe(true)
+    })
+  }
+
+  it("removes a ranked hit when an exact read finds its signed deletion after seed caching fails", async () => {
+    const ranked = makeSignedProductEvent({
+      dTag: "unsaved-deleted",
+      title: "Deleted cup",
+      createdAt: 100,
+    })
+    const addressId = `30402:${ranked.pubkey}:unsaved-deleted`
+    const deletion = makeSignedDeletionEvent({
+      createdAt: 101,
+      tags: [["a", addressId]],
+    })
+    __setCommerceTestOverrides({
+      putCachedProducts: async () => {
+        throw new Error("Synthetic product cache write failure")
+      },
+      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        const relayUrls = [...(options?.relayUrls ?? [])]
+        return {
+          events: (filter.search
+            ? [ranked]
+            : filter.kinds?.includes(EVENT_KINDS.DELETION)
+              ? [deletion]
+              : []) as never,
+          attemptedRelayUrls: relayUrls,
+          successfulRelayUrls: relayUrls,
+          failedRelayUrls: [],
+        }
+      },
+    })
+    const progress: string[][] = []
+
+    const result = await getMarketplaceProducts({
+      textQuery: "ceramics",
+      searchIndex: true,
+      onProgress: (snapshot) => {
+        progress.push(snapshot.data.map((record) => record.product.title))
+      },
+    })
+
+    expect(progress[0]).toEqual(["Deleted cup"])
+    expect(progress.at(-1)).toEqual([])
+    expect(result.data).toEqual([])
+  })
+
+  it("does not persist or hydrate ranked hits after the first snapshot becomes obsolete", async () => {
+    const controller = new AbortController()
+    const hit = makeSignedProductEvent({
+      dTag: "obsolete",
+      createdAt: 100,
+      title: "Obsolete cup",
+    })
+    let revisionReads = 0
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.search) return [hit] as never
+        revisionReads += 1
+        return []
+      },
+    })
+    await expect(
+      getMarketplaceProducts({
+        textQuery: "ceramics",
+        searchIndex: true,
+        signal: controller.signal,
+        onProgress: () => controller.abort(),
+      })
+    ).rejects.toThrow()
+    expect(cachedProducts).toEqual([])
+    expect(revisionReads).toBe(0)
+  })
+
+  it("groups ranked family hits at the first eligible child rank and excludes hidden child promotion", async () => {
+    const parent = makeSignedGammaProductEvent({
+      dTag: "family",
+      createdAt: 100,
+      title: "Pottery set",
+      type: "variable",
+    })
+    const child = makeSignedGammaProductEvent({
+      dTag: "child",
+      createdAt: 101,
+      title: "Blue vessel",
+      type: "variation",
+      parentProductId: `30402:${MERCHANT_A_PUBKEY}:family`,
+      size: "Blue",
+    })
+    const hiddenChild = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          ...child.rawEvent(),
+          created_at: 102,
+          tags: child.tags.map((tag) =>
+            tag[0] === "d"
+              ? ["d", "hidden-child"]
+              : tag[0] === "spec"
+                ? ["spec", "size", "Hidden"]
+                : tag[0] === "visibility"
+                  ? ["visibility", "hidden"]
+                  : tag
+          ),
+        },
+        MERCHANT_A_SECRET
+      )
+    )
+    const simple = makeSignedProductEvent({
+      secretKey: MERCHANT_B_SECRET,
+      dTag: "simple",
+      createdAt: 500,
+      title: "Plain bowl",
+    })
+    const indexed = [hiddenChild, simple, child, parent]
+    const current = [parent, child, hiddenChild, simple]
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        return (
+          filter.search
+            ? indexed
+            : current.filter((event) =>
+                matchFilter(filter, event.rawEvent() as never)
+              )
+        ) as never
+      },
+    })
+    const result = await getMarketplaceProducts({
+      textQuery: "ceramics",
+      searchIndex: true,
+    })
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Plain bowl",
+      "Pottery set",
+    ])
+    expect(
+      result.data[1]?.family?.children.map((record) => record.addressId)
+    ).toEqual([`30402:${MERCHANT_A_PUBKEY}:child`])
+  })
+
+  it("keeps a large whitelist and category constraint client-side with a minimal relay request", async () => {
+    const authors = Array.from({ length: 2048 }, (_, index) =>
+      (index + 1).toString(16).padStart(64, "0")
+    )
+    const requests: Array<Record<string, unknown>> = []
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.search) requests.push(filter)
+        return []
+      },
+    })
+    const result = await getMarketplaceProducts({
+      textQuery: "pottery",
+      searchIndex: true,
+      authorPubkeys: authors,
+      tags: ["ceramic"],
+    })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.authors).toBeUndefined()
+    expect(requests[0]?.["#t"]).toBeUndefined()
+    expect(requests[0]?.limit).toBe(100)
+    expect(result.meta.productSearch?.tagScopeVerified).toBe(false)
+    expect(result.meta.productSearch?.coverage).toBe("partial")
+  })
+
   it("sends typed Market search to Congee and retains a newer product revision", async () => {
     const olderSearchHit = makeProductEvent({
-      pubkey: "merchant-a",
+      pubkey: MERCHANT_A_PUBKEY,
       dTag: "mug",
       id: "search-hit-older",
       createdAt: 101,
       title: "Handmade vessel",
     })
     const newerRevision = makeProductEvent({
-      pubkey: "merchant-a",
+      pubkey: MERCHANT_A_PUBKEY,
       dTag: "mug",
       id: "catalog-newer",
       createdAt: 102,
@@ -2562,14 +3085,14 @@ describe("commerce gateway", () => {
     const result = await getMarketplaceProducts({
       textQuery: "ceramics",
       searchIndex: true,
-      authorPubkeys: ["merchant-a"],
+      authorPubkeys: [MERCHANT_A_PUBKEY],
     })
 
     expect(searchRequests).toEqual([
       {
         search: "ceramics",
         kinds: [EVENT_KINDS.PRODUCT],
-        authors: ["merchant-a"],
+        authors: undefined,
         limit: 100,
         relayUrls: ["wss://conduit-congee.fly.dev"],
       },
@@ -2579,7 +3102,7 @@ describe("commerce gateway", () => {
     ])
   })
 
-  it("searches each bounded author batch before the NIP-50 result limit", async () => {
+  it("reports capped whitelist coverage rather than asking the relay to enforce the whitelist", async () => {
     const authorPubkeys = Array.from(
       { length: 65 },
       (_, index) => `merchant-${index}`
@@ -2623,20 +3146,16 @@ describe("commerce gateway", () => {
       authorPubkeys,
     })
 
-    expect(searchFilters).toHaveLength(2)
+    expect(searchFilters).toHaveLength(1)
     expect(searchFilters.every((filter) => filter.limit === 100)).toBe(true)
-    expect(
-      searchFilters.every((filter) => (filter.authors?.length ?? 0) <= 64)
-    ).toBe(true)
-    expect(searchFilters.flatMap((filter) => filter.authors ?? [])).toEqual(
-      authorPubkeys
+    expect(searchFilters.every((filter) => filter.authors === undefined)).toBe(
+      true
     )
-    expect(result.data.map((record) => record.product.title)).toEqual([
-      "Blue cotton tee",
-    ])
+    expect(result.data).toEqual([])
+    expect(result.meta.productSearch?.coverage).toBe("partial")
   })
 
-  it("uses bounded catalog search when Congee is unavailable and skips NIP-50 for empty text", async () => {
+  it("reports unavailable search without mixing catalog products and skips NIP-50 for empty text", async () => {
     const fallbackProduct = makeProductEvent({
       pubkey: "merchant-a",
       dTag: "bowl",
@@ -2663,14 +3182,12 @@ describe("commerce gateway", () => {
       },
     })
 
-    const fallback = await getMarketplaceProducts({
-      textQuery: "ceramic",
-      searchIndex: true,
-    })
-    expect(fallback.data.map((record) => record.product.title)).toEqual([
-      "Ceramic bowl",
-    ])
-    expect(fallback.meta.degraded).toBe(true)
+    await expect(
+      getMarketplaceProducts({
+        textQuery: "ceramic",
+        searchIndex: true,
+      })
+    ).rejects.toThrow("Product search is unavailable")
 
     searchFilters.length = 0
     await getMarketplaceProducts({ textQuery: "  ", searchIndex: true })
@@ -2679,7 +3196,7 @@ describe("commerce gateway", () => {
 
   it("shows a Congee search hit when the broader catalog read fails", async () => {
     const indexedProduct = makeProductEvent({
-      pubkey: "merchant-a",
+      pubkey: MERCHANT_A_PUBKEY,
       dTag: "cup",
       id: "indexed-cup",
       createdAt: 105,

@@ -77,6 +77,7 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
         return (
           root === "event-market" ||
           root === "progressive-products" ||
+          root === "market-global-product-search" ||
           root === "market-perspective-follows" ||
           root === "visible-product-card-profiles" ||
           root === "default-market-perspective-follow-refresh"

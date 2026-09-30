@@ -138,6 +138,10 @@ describe("merchant product form validation", () => {
     const values: MerchantProductFormValues = {
       ...form({ usePresetShippingZone: true }),
       summary: "",
+      listingAreaCountry: "",
+      listingAreaState: "",
+      listingAreaPlaceId: null,
+      listingAreaMode: "clear",
       fulfillment: "ship",
       publicZapEnabled: true,
       zapMessagePolicy: "generic_only",

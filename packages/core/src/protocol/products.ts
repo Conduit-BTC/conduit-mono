@@ -311,6 +311,14 @@ export function buildProductListingEventDraft({
 
   if (content) tags.push(["summary", content])
 
+  if (product.location?.trim()) tags.push(["location", product.location])
+  if (product.geohash) {
+    if (!/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,12}$/.test(product.geohash)) {
+      throw new Error("Product geohash is invalid")
+    }
+    tags.push(["g", product.geohash])
+  }
+
   if (
     typeof product.stock === "number" &&
     Number.isSafeInteger(product.stock) &&
@@ -948,6 +956,14 @@ export function parseProductEvent(
   const productTypeTag = parseProductTypeTag(event.tags)
   const visibilityTag = parseProductVisibilityTag(event.tags)
   const specifications = parseProductSpecifications(event.tags)
+  const signedLocation = getTagValue(event.tags, "location")
+  const signedGeohash = getTagValue(event.tags, "g")
+  const validLocation = signedLocation?.trim() ? signedLocation : undefined
+  const validGeohash =
+    signedGeohash &&
+    /^[0123456789bcdefghjkmnpqrstuvwxyz]{1,12}$/.test(signedGeohash)
+      ? signedGeohash
+      : undefined
 
   // Try legacy Conduit JSON content first for already-published listings.
   try {
@@ -968,6 +984,12 @@ export function parseProductEvent(
       ...(productTypeTag.format ? { format: productTypeTag.format } : {}),
       ...(visibilityTag ? { visibility: visibilityTag } : {}),
       specifications,
+      // Older Conduit events carried location only in their signed JSON.
+      // A present tag remains authoritative, including an explicit empty tag.
+      location: event.tags.some(([name]) => name === "location")
+        ? validLocation
+        : parsed.location,
+      geohash: validGeohash,
       // Compatibility content may describe the product, but it cannot replace
       // identity or time committed to by the signed event envelope.
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
@@ -1038,7 +1060,6 @@ export function parseProductEvent(
   const priceInfo = standardPrice
   const shippingTags = parseProductShippingTags(event.tags, priceInfo?.currency)
   const summaryTag = getTagValue(event.tags, "summary")
-  const locationTag = getTagValue(event.tags, "location")
 
   // Open Markets: ["type", "simple|variable|variation", "digital|physical"]
   const type = productTypeTag.type ?? "simple"
@@ -1090,7 +1111,8 @@ export function parseProductEvent(
       ...stockTag,
       images,
       tags,
-      location: locationTag ?? undefined,
+      location: validLocation,
+      geohash: validGeohash,
       createdAt: createdAtMs,
       updatedAt: createdAtMs,
     })

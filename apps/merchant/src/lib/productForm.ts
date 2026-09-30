@@ -50,6 +50,11 @@ export interface ProductPublishFormValues {
 
 export interface MerchantProductFormValues extends ProductPublishFormValues {
   summary: string
+  listingAreaCountry: string
+  listingAreaState: string
+  listingAreaPlaceId: number | null
+  listingAreaMode: "unchanged" | "default" | "selected" | "clear"
+  listingAreaDefault?: { location: string; geohash: string } | null
   variations: ProductVariationFormState
   fulfillment: ProductFulfillmentChoice
   /** Current Event Market association, separate from ordinary shop fulfillment. */

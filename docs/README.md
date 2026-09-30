@@ -53,6 +53,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### QA Runbooks
 
+- `docs/knowledge/product-search-ranking.md`: ranked product search, scoped
+  author requests, signed reconciliation, and observed category-filter limits
+
 - `docs/knowledge/event-catalog-progressive-loading.md`: progressive browsing,
   scoped query sharing, and the boundary between display and pickup authorization
 - `docs/knowledge/merchant-product-mutation-boundary.md`: owned-product editing

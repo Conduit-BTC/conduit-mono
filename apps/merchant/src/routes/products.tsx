@@ -5,6 +5,7 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Plus, Search } from "lucide-react"
 import {
   EVENT_KINDS,
+  fetchMerchantShippingSettings,
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   buildProductDeletionEventDraft,
@@ -67,11 +68,16 @@ import {
   cn,
 } from "@conduit/ui"
 import { ProductCombinationMatrix } from "../components/ProductCombinationMatrix"
+import { ListingAreaPicker } from "../components/ListingAreaPicker"
 import { ProductInboxReadinessDialog } from "../components/ProductInboxReadinessDialog"
 import { ProductPaymentSetupNotice } from "../components/ProductPaymentSetupNotice"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
+import {
+  getListingAreaForPublication,
+  resolveListingArea,
+} from "../lib/listingArea"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
 import { getProductUrl } from "../lib/market-links"
@@ -129,6 +135,7 @@ import {
 import {
   isShippingComplete,
   loadShippingConfig,
+  saveShippingConfig,
   type ShippingConfig,
 } from "../lib/readiness"
 import { needsProductInboxPublishGuidance } from "../lib/productInboxReadiness"
@@ -223,6 +230,7 @@ type ProductPublishMutationPayload = {
   merchantPubkey: string
   form: ProductFormState
   associationContext?: string
+  presetShippingConfig: ShippingConfig
   dTag: string
   existing?: MerchantProductFamily
   signedBundle?: SignedProductWriteBundle
@@ -254,11 +262,17 @@ function getShareableProductUrl(
 }
 
 function createEmptyProductForm(
-  usePresetShippingZone = true
+  usePresetShippingZone = true,
+  shipsFrom: ShippingConfig["shipsFrom"] = null
 ): ProductFormState {
   return {
     title: "",
     summary: "",
+    listingAreaCountry: "",
+    listingAreaState: "",
+    listingAreaPlaceId: null,
+    listingAreaMode: shipsFrom ? "default" : "clear",
+    ...(shipsFrom ? { listingAreaDefault: shipsFrom } : {}),
     price: "0",
     stock: "",
     variations: createEmptyProductVariationForm(),
@@ -365,6 +379,11 @@ function productToForm(
   return {
     title: product.title,
     summary: product.summary ?? "",
+    listingAreaCountry: "",
+    listingAreaState: "",
+    listingAreaPlaceId: null,
+    listingAreaMode:
+      product.location || product.geohash ? "unchanged" : "clear",
     price: formatProductAmountInput(source?.amount ?? product.price),
     stock: typeof product.stock === "number" ? String(product.stock) : "",
     variations: family.variationForm.state,
@@ -399,10 +418,11 @@ function productToForm(
 function buildShippingMetadata(
   merchantPubkey: string,
   productDTag: string,
-  form: ProductFormState
+  form: ProductFormState,
+  presetShippingConfig: ShippingConfig
 ) {
   const shippingConfig = form.usePresetShippingZone
-    ? loadShippingConfig(merchantPubkey)
+    ? presetShippingConfig
     : form.customShippingConfig
   const intent = compileProductFulfillmentIntent({
     format: form.format,
@@ -743,6 +763,7 @@ async function fetchCachedMerchantProducts(
 async function publishProduct(
   merchantPubkey: string,
   form: ProductFormState,
+  presetShippingConfig: ShippingConfig,
   dTag: string,
   onSignedLocal: (
     bundle: SignedProductWriteBundle,
@@ -761,7 +782,7 @@ async function publishProduct(
       "Existing fulfillment can only be kept for an existing product."
     )
   }
-  const presetShippingConfig = loadShippingConfig(merchantPubkey)
+
   const formValidation = validateProductPublishForm(
     preserveFulfillment
       ? { ...form, shippingPricingMode: "coordinate_after_order" }
@@ -813,7 +834,7 @@ async function publishProduct(
           authoringCountries: [],
           metadata: {},
         }
-      : buildShippingMetadata(signerPubkey, dTag, form)
+      : buildShippingMetadata(signerPubkey, dTag, form, presetShippingConfig)
   const shippingMetadata = publicationFulfillment.metadata
   const normalizedPrice = normalizePublishableProductPrice(price, currency, {
     allowZero:
@@ -838,6 +859,10 @@ async function publishProduct(
   const summary = form.summary.trim()
   const now = Date.now()
   const tags = formValidation.tags
+  const listingArea = await getListingAreaForPublication(
+    form,
+    existing?.product
+  )
 
   let product: ProductSchema = canonicalizeProductPrice({
     id: `30402:${signerPubkey}:${dTag}`,
@@ -865,7 +890,8 @@ async function publishProduct(
     publicZapEnabled: form.publicZapEnabled,
     zapMessagePolicy: form.zapMessagePolicy,
     publicZapPolicyKnown: true,
-    location: undefined,
+    location: listingArea.location,
+    geohash: listingArea.geohash,
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
   })
@@ -930,6 +956,8 @@ async function publishProduct(
   const plan = buildProductFamilyChangePlan({
     parentDTag: dTag,
     baseProduct: product,
+    listingAreaMode:
+      form.listingAreaMode === "unchanged" ? "preserve" : "apply",
     variations: form.variations,
     preservationBaselineVariations: existing?.variationForm.state,
     currency,
@@ -1121,6 +1149,12 @@ function ProductsPage() {
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProductFamily | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
+  const [showListingAreaPicker, setShowListingAreaPicker] = useState(false)
+  const [shippingCacheUnavailable, setShippingCacheUnavailable] =
+    useState(false)
+  useEffect(() => {
+    if (!productDialogOpen) setShowListingAreaPicker(false)
+  }, [productDialogOpen])
   const [activeProductDraftTarget, setActiveProductDraftTarget] =
     useState<ProductDraftTarget | null>(null)
   const [draftStorageAvailable, setDraftStorageAvailable] = useState(true)
@@ -1261,7 +1295,45 @@ function ProductsPage() {
     [merchantProductReadMeta, merchantProductRecords]
   )
   const shippingConfig = loadShippingConfig(accountPubkey)
-  const hasPresetShippingZone = isShippingComplete(shippingConfig)
+  const signedShippingQuery = useQuery({
+    queryKey: ["merchant-shipping-settings", accountPubkey ?? "none"],
+    enabled: !!accountPubkey && authStatus === "connected",
+    queryFn: () => fetchMerchantShippingSettings(accountPubkey!),
+    staleTime: 30_000,
+  })
+  const selectedAreaQuery = useQuery({
+    queryKey: [
+      "listing-area-selection",
+      form.listingAreaCountry,
+      form.listingAreaState,
+      form.listingAreaPlaceId,
+    ],
+    enabled:
+      form.listingAreaMode === "selected" && form.listingAreaPlaceId !== null,
+    queryFn: () =>
+      resolveListingArea(
+        form.listingAreaCountry,
+        form.listingAreaState,
+        form.listingAreaPlaceId!
+      ),
+    staleTime: Infinity,
+  })
+  const effectiveShippingConfig: ShippingConfig =
+    signedShippingQuery.data?.state === "found"
+      ? signedShippingQuery.data.settings
+      : shippingConfig
+  useEffect(() => setShippingCacheUnavailable(false), [accountPubkey])
+  useEffect(() => {
+    if (accountPubkey && signedShippingQuery.data?.state === "found") {
+      try {
+        saveShippingConfig(signedShippingQuery.data.settings, accountPubkey)
+        setShippingCacheUnavailable(false)
+      } catch {
+        setShippingCacheUnavailable(true)
+      }
+    }
+  }, [accountPubkey, signedShippingQuery.data])
+  const hasPresetShippingZone = isShippingComplete(effectiveShippingConfig)
 
   useEffect(() => {
     setDraftContinuationError(null)
@@ -1380,7 +1452,12 @@ function ProductsPage() {
     if (!isCurrentProductOwner(variables.merchantPubkey)) return
     setEditing(null)
     setActiveProductDraftTarget(null)
-    setForm(createEmptyProductForm(hasPresetShippingZone))
+    setForm(
+      createEmptyProductForm(
+        hasPresetShippingZone,
+        effectiveShippingConfig.shipsFrom
+      )
+    )
     setProductDialogOpen(false)
     if (!variables.existing) setHasResumableCreateDraft(false)
     setDraftStorageAvailable(
@@ -1431,6 +1508,7 @@ function ProductsPage() {
         return await publishProduct(
           payload.merchantPubkey,
           payload.form,
+          payload.presetShippingConfig,
           payload.dTag,
           async (signedBundle, authoringTarget) => {
             signedLocally = true
@@ -1642,7 +1720,12 @@ function ProductsPage() {
         ) {
           setEditing(null)
           setActiveProductDraftTarget(null)
-          setForm(createEmptyProductForm(hasPresetShippingZone))
+          setForm(
+            createEmptyProductForm(
+              hasPresetShippingZone,
+              effectiveShippingConfig.shipsFrom
+            )
+          )
           setDraftStorageAvailable(draftCleared && authoringCleared)
         }
       }
@@ -1788,8 +1871,11 @@ function ProductsPage() {
     () =>
       editing
         ? productToForm(editing, hasPresetShippingZone)
-        : createEmptyProductForm(hasPresetShippingZone),
-    [editing, hasPresetShippingZone]
+        : createEmptyProductForm(
+            hasPresetShippingZone,
+            effectiveShippingConfig.shipsFrom
+          ),
+    [editing, hasPresetShippingZone, effectiveShippingConfig.shipsFrom]
   )
   const hasProductChanges = useMemo(
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
@@ -1809,14 +1895,19 @@ function ProductsPage() {
     setActiveProductDraftTarget(null)
     setHasResumableCreateDraft(false)
     setDraftStorageAvailable(true)
-    setForm(createEmptyProductForm(hasPresetShippingZone))
+    setForm(
+      createEmptyProductForm(
+        hasPresetShippingZone,
+        effectiveShippingConfig.shipsFrom
+      )
+    )
     setDraftContinuationError(null)
     setProductSignerProgress(null)
     setProductSignerRequestsComplete(false)
     setProductDeliveryNotice(null)
     setProductDeliveryRetry(null)
     setSignerRestoredForDraft(false)
-  }, [accountPubkey, hasPresetShippingZone])
+  }, [accountPubkey, hasPresetShippingZone, effectiveShippingConfig.shipsFrom])
   useEffect(() => {
     if (!productDialogOpen || !activeProductDraftTarget) return
     if (
@@ -1885,7 +1976,7 @@ function ProductsPage() {
         : form,
       {
         hasPresetShippingZone,
-        presetShippingConfig: shippingConfig,
+        presetShippingConfig: effectiveShippingConfig,
         allowZeroPrice: zeroPriceFormAuthorized,
         preserveExistingFulfillment: preservingFulfillment,
       }
@@ -1894,7 +1985,7 @@ function ProductsPage() {
   }, [
     form,
     hasPresetShippingZone,
-    shippingConfig,
+    effectiveShippingConfig,
     zeroPriceFormAuthorized,
     preservingFulfillment,
   ])
@@ -2191,7 +2282,12 @@ function ProductsPage() {
     setProductDialogOpen(false)
     setEditing(null)
     setActiveProductDraftTarget(null)
-    setForm(createEmptyProductForm(hasPresetShippingZone))
+    setForm(
+      createEmptyProductForm(
+        hasPresetShippingZone,
+        effectiveShippingConfig.shipsFrom
+      )
+    )
     if (discardingCreateDraft) setHasResumableCreateDraft(false)
     setDraftStorageAvailable(true)
     setDraftContinuationError(null)
@@ -2223,6 +2319,7 @@ function ProductsPage() {
   }
 
   function openCreateDialog(): void {
+    if (authStatus !== "connected" || signedShippingQuery.isLoading) return
     rememberProductDialogTrigger()
     if (accountPubkey) clearProductDraftReturnIntent(accountPubkey)
     focusProductTitleOnOpenRef.current = false
@@ -2246,7 +2343,10 @@ function ProductsPage() {
       return
     }
     const emptyForm = {
-      ...createEmptyProductForm(hasPresetShippingZone),
+      ...createEmptyProductForm(
+        hasPresetShippingZone,
+        effectiveShippingConfig.shipsFrom
+      ),
       futureEventMarketReference: eventContextCoordinate ?? "",
     }
     const draftTarget = accountPubkey
@@ -2441,7 +2541,14 @@ function ProductsPage() {
           >
             {itemCountLabel}
           </Badge>
-          <Button onClick={openCreateDialog} disabled={!accountPubkey}>
+          <Button
+            onClick={openCreateDialog}
+            disabled={
+              !accountPubkey ||
+              authStatus !== "connected" ||
+              signedShippingQuery.isLoading
+            }
+          >
             <Plus className="h-4 w-4" />
             Add product
           </Button>
@@ -2758,7 +2865,11 @@ function ProductsPage() {
               <Button
                 className="mt-4"
                 onClick={openCreateDialog}
-                disabled={!accountPubkey}
+                disabled={
+                  !accountPubkey ||
+                  authStatus !== "connected" ||
+                  signedShippingQuery.isLoading
+                }
               >
                 <Plus className="h-4 w-4" />
                 Add product
@@ -3015,6 +3126,7 @@ function ProductsPage() {
                 requestProductPublish({
                   merchantPubkey: draftOwnerPubkey,
                   form,
+                  presetShippingConfig: effectiveShippingConfig,
                   dTag:
                     editing?.dTag ??
                     `${slugify(form.title.trim()) || "product"}-${randomSuffix()}`,
@@ -3460,6 +3572,129 @@ function ProductsPage() {
                   </div>
                 </div>
               </div>
+
+              <div className="grid gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-[var(--text-primary)]">
+                      Listing area
+                    </p>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      {form.listingAreaMode === "default"
+                        ? `Ships from default: ${form.listingAreaDefault?.location ?? "None"}`
+                        : form.listingAreaMode === "unchanged"
+                          ? `Existing area: ${editing?.product.location ?? "None"}`
+                          : form.listingAreaMode === "clear"
+                            ? "No public area for this listing"
+                            : selectedAreaQuery.data
+                              ? `Public listing area: ${selectedAreaQuery.data.location}`
+                              : "Checking selected place…"}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowListingAreaPicker((open) => !open)}
+                    >
+                      {showListingAreaPicker ? "Done" : "Change"}
+                    </Button>
+                    {form.listingAreaMode !== "clear" && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setForm((current) => ({
+                            ...current,
+                            listingAreaMode: "clear",
+                            listingAreaPlaceId: null,
+                          }))
+                          setShowListingAreaPicker(false)
+                        }}
+                      >
+                        No area
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                <p className="text-xs text-[var(--text-muted)]">
+                  This approximate public area is not an exact position or
+                  pickup promise.
+                </p>
+                {(signedShippingQuery.isError ||
+                  signedShippingQuery.data?.state === "unavailable") && (
+                  <p role="status" className="text-xs text-[var(--warning)]">
+                    Shipping defaults could not be checked on relays. Check
+                    Shipping before publishing if you expect a ships from
+                    default.
+                  </p>
+                )}
+                {shippingCacheUnavailable && (
+                  <p role="status" className="text-xs text-[var(--warning)]">
+                    Shipping defaults loaded from relays, but this device could
+                    not cache them.
+                  </p>
+                )}
+              </div>
+
+              {showListingAreaPicker && (
+                <ListingAreaPicker
+                  countryCode={form.listingAreaCountry}
+                  stateCode={form.listingAreaState}
+                  placeId={form.listingAreaPlaceId}
+                  preservedLocation={
+                    form.listingAreaMode === "unchanged"
+                      ? editing?.product.location
+                      : form.listingAreaMode === "default"
+                        ? form.listingAreaDefault?.location
+                        : undefined
+                  }
+                  onCountryChange={(code) =>
+                    setForm((current) => ({
+                      ...current,
+                      listingAreaCountry: code,
+                      listingAreaState: "",
+                      listingAreaPlaceId: null,
+                      listingAreaMode:
+                        current.listingAreaMode === "selected"
+                          ? "clear"
+                          : current.listingAreaMode,
+                    }))
+                  }
+                  onStateChange={(code) =>
+                    setForm((current) => ({
+                      ...current,
+                      listingAreaState: code,
+                      listingAreaPlaceId: null,
+                      listingAreaMode:
+                        current.listingAreaMode === "selected"
+                          ? "clear"
+                          : current.listingAreaMode,
+                    }))
+                  }
+                  onPlaceChange={(id) =>
+                    setForm((current) => ({
+                      ...current,
+                      listingAreaPlaceId: id,
+                      listingAreaMode:
+                        id === null
+                          ? current.listingAreaMode === "selected"
+                            ? "clear"
+                            : current.listingAreaMode
+                          : "selected",
+                    }))
+                  }
+                  onClear={() =>
+                    setForm((current) => ({
+                      ...current,
+                      listingAreaPlaceId: null,
+                      listingAreaMode: "clear",
+                    }))
+                  }
+                />
+              )}
 
               <ProductImageUrlCollectionField
                 id="product-image"
