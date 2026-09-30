@@ -227,7 +227,6 @@ export function useCart() {
     hydrated: snap.hydrated,
     persistenceMode: snap.persistenceMode,
     mutationSequence: snap.mutationSequence,
-    revision: snap.revision,
     addItem,
     incrementItem,
     refreshAndIncrementItem,

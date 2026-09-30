@@ -21,7 +21,6 @@ export type CheckoutImportPreparation =
   | {
       status: "ready"
       merchantPubkey: string
-      purchaseId: string
       items: CartItem[]
     }
   | { status: "error"; error: CheckoutImportError }
@@ -110,7 +109,6 @@ export async function prepareCheckoutIntent(
   return {
     status: "ready",
     merchantPubkey: groups[0].merchantPubkey,
-    purchaseId: groups[0].id,
     items,
   }
 }
