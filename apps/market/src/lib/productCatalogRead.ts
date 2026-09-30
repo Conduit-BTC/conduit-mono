@@ -33,6 +33,27 @@ export interface PerspectiveAuthorResolution {
   source: PerspectiveAuthorSource
 }
 
+export interface PendingProgressiveRefresh {
+  fromDiscoveryKey: string
+  resolve: () => void
+}
+
+/** A refresh waits for the pass after its starting key, unless canceled. */
+export function settlePendingProgressiveRefreshes(
+  pending: readonly PendingProgressiveRefresh[],
+  settledDiscoveryKey?: string
+): PendingProgressiveRefresh[] {
+  const remaining: PendingProgressiveRefresh[] = []
+  for (const refresh of pending) {
+    if (refresh.fromDiscoveryKey === settledDiscoveryKey) {
+      remaining.push(refresh)
+    } else {
+      refresh.resolve()
+    }
+  }
+  return remaining
+}
+
 export function retainedFollowSnapshotSupersedesLive(
   live: Pick<SignedPublicNostrEvent, "id" | "created_at"> | null | undefined,
   retained: Pick<SignedPublicNostrEvent, "id" | "created_at"> | null | undefined

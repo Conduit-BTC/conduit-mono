@@ -120,8 +120,14 @@ describe("app account-network read propagation", () => {
     expect(readinessHook).toContain(
       "authGenerationRef.current === readAuthGeneration"
     )
-    expect(detailHook).toContain(
-      "!cancelled && authGenerationRef.current === authGeneration"
+    expect(detailHook).toMatch(
+      /const controller = new AbortController\(\)\s+const \{ signal \} = controller\s+const shouldContinue = \(\) =>\s+!signal\.aborted && authGenerationRef\.current === authGeneration/
+    )
+    expect(detailHook).toMatch(
+      /getMarketplaceProductsProgressive\([\s\S]{0,600}accountPubkey: finalIoAccountPubkey,\s+shouldContinue,\s+signal,/
+    )
+    expect(detailHook).toMatch(
+      /return \(\) => \{\s+controller\.abort\(\)\s+cancelScheduledFlush\(\)/
     )
     expect(cart).toContain("getMarketplaceProducts({")
     expect(cart).toContain("accountPubkey,\n          authenticatedPubkey,")
