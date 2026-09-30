@@ -77,7 +77,11 @@ function option(revision = 1, changes: Partial<ShippingPolicy> = {}) {
   )
   const parsed = parseShippingOptionEvent(new NDKEvent(undefined, event))
   if (!parsed) throw new Error("Signed policy fixture failed parsing")
-  return parsed
+  return {
+    ...parsed,
+    readSource: "relay" as const,
+    readCoverage: "complete" as const,
+  }
 }
 function product(
   name: string,
@@ -200,6 +204,8 @@ describe("signed shipping policy composed checkout", () => {
     const otherOption = parseShippingOptionEvent(
       new NDKEvent(undefined, otherPolicyEvent)
     )!
+    otherOption.readSource = "relay"
+    otherOption.readCoverage = "complete"
     const otherItem = {
       ...createCartItemFromProduct(
         product("other", 300, "physical", otherMerchant, otherSecret)
@@ -728,7 +734,11 @@ function mixedOption(changes: Partial<ShippingPolicy> = {}) {
     },
     secret
   )
-  return parseShippingOptionEvent(new NDKEvent(undefined, event))!
+  return {
+    ...parseShippingOptionEvent(new NDKEvent(undefined, event))!,
+    readSource: "relay" as const,
+    readCoverage: "complete" as const,
+  }
 }
 function mixedProduct(
   name: string,

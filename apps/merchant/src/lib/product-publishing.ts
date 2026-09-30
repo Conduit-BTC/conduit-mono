@@ -14,6 +14,7 @@ import {
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,
   getShippingOptionsByCoordinates,
+  hasCurrentShippingPolicyEvidence,
   isValidSignedPublicNostrEvent,
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
@@ -507,6 +508,7 @@ export async function prepareProductPublicationListings(
   if (
     !option?.shippingPolicy ||
     !option.signedEvent ||
+    !hasCurrentShippingPolicyEvidence(option) ||
     option.pubkey !== input.merchantPubkey ||
     !isValidSignedPublicNostrEvent(option.signedEvent)
   ) {

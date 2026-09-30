@@ -4,6 +4,7 @@ import {
   normalizeShippingPolicyRegion,
   shippingAmountToMinor,
   getShippingDestinationEligibility,
+  hasCurrentShippingPolicyEvidence,
   resolveProductFulfillment,
   type ParsedShippingOption,
   type PricingRateInput,
@@ -79,8 +80,7 @@ export function prepareCartFulfillment(
             (option) =>
               option.id === item.shippingOptionId &&
               option.pubkey === item.merchantPubkey &&
-              option.shippingPolicy &&
-              option.signedEvent
+              hasCurrentShippingPolicyEvidence(option)
           )
         : undefined
     if (policyOption) {

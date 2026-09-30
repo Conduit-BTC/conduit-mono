@@ -68,6 +68,8 @@ const policy: ShippingPolicy = {
 const draft = buildShippingPolicyEventDraft({ policy })
 const event = finalizeEvent({ ...draft, created_at: 20 }, secret)
 const option = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+option.readSource = "relay"
+option.readCoverage = "complete"
 const product = productSchema.parse({
   id: `30402:${pubkey}:one`,
   pubkey,
@@ -304,6 +306,8 @@ describe("merchant shipping table authoring", () => {
     const newerOption = parseShippingOptionEvent(
       new NDKEvent(undefined, newerEvent)
     )!
+    newerOption.readSource = "relay"
+    newerOption.readCoverage = "complete"
     const prepared = await prepareProductPublicationListings(
       [
         {

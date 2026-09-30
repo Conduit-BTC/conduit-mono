@@ -398,6 +398,19 @@ export interface ParsedShippingOption {
   readCoverage?: "complete" | "partial" | "unavailable"
 }
 
+/** A retained policy is display/recovery evidence, not authority for new terms.
+ * Partial reads may authorize when the selected revision was observed now;
+ * missing deletion coverage alone does not veto that positive evidence. */
+export function hasCurrentShippingPolicyEvidence(
+  option: ParsedShippingOption
+): boolean {
+  return (
+    !!option.shippingPolicy &&
+    !!option.signedEvent &&
+    option.readSource === "relay"
+  )
+}
+
 export type ProductFulfillmentResolutionReason =
   | "missing_reference"
   | "invalid_reference"
