@@ -1,4 +1,4 @@
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
   appendConduitClientTag,
@@ -8,6 +8,8 @@ import {
   createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   getNdk,
+  getAccountSigner,
+  type NostrKeySigner,
   parseOrderMessageRumorEvent,
   patchOrderLifecycle,
   publishPrivateMessage,
@@ -86,14 +88,14 @@ export type BuyerOrderSigningIdentity =
   | {
       kind: "guest_ephemeral"
       pubkey: string
-      signer: NDKSigner
+      signer: NostrKeySigner
       orderId: string
       merchantPubkey: string
     }
   | {
       kind?: "signed_in"
       pubkey: string
-      signer?: NDKSigner
+      signer?: NostrKeySigner
       orderId?: never
       merchantPubkey?: never
     }
@@ -251,12 +253,14 @@ export function assertStagedOrderLifecycleMatchesRumor(
 }
 
 function resolveBuyerOrderSigningIdentity(
-  ndk: ReturnType<typeof getNdk>,
+  _ndk: ReturnType<typeof getNdk>,
   buyer: BuyerOrderIdentityInput
-): BuyerOrderSigningIdentity & { signer: NDKSigner } {
+): BuyerOrderSigningIdentity & { signer: NostrKeySigner } {
   const identity =
-    typeof buyer === "string" ? { pubkey: buyer, signer: ndk.signer } : buyer
-  const signer = identity.signer ?? ndk.signer
+    typeof buyer === "string"
+      ? { pubkey: buyer, signer: getAccountSigner() }
+      : buyer
+  const signer = identity.signer ?? getAccountSigner()
   if (!signer) throw new Error("Buyer order signer is not connected.")
   if (signer.pubkey && signer.pubkey !== identity.pubkey) {
     throw new Error("Buyer order signer does not match its declared pubkey.")
@@ -335,7 +339,7 @@ export function buildOrderCompanionNotificationRumor(
 
 async function publishOrderCompanionNotification(input: {
   authoritativeOrder: NDKEvent
-  buyerIdentity: BuyerOrderSigningIdentity & { signer: NDKSigner }
+  buyerIdentity: BuyerOrderSigningIdentity & { signer: NostrKeySigner }
   merchantPubkey: string
   deliveryRoute: OrderDeliveryRoute
   publish: typeof publishPrivateMessage
@@ -462,7 +466,7 @@ export async function publishBuyerOrderMessage(
       ? dependencies.shouldContinue
       : () =>
           (dependencies.shouldContinue?.() ?? true) &&
-          ndk.signer === buyerIdentity.signer
+          getAccountSigner() === buyerIdentity.signer
 
   const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
   const orderRelayDeliveryOptions = dependencies.orderRelayDeliveryRepository

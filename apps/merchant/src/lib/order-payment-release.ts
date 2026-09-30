@@ -1,5 +1,5 @@
 import {
-  getNdk,
+  getAccountSigner,
   publishMerchantOrderMessage,
   type EventMarketResolution,
   type MerchantOrderDelivery,
@@ -61,7 +61,7 @@ const defaults: PaymentConfirmationDependencies = {
     if (authorization.status !== "verified" || !market) {
       throw new Error("Current signed pickup evidence is unavailable.")
     }
-    const signer = getNdk().signer
+    const signer = getAccountSigner()
     if (!signer) throw new Error("Merchant signer is not connected.")
     const delivery = await issueOrganizerReadyReceipt({
       merchantPubkey: input.merchantPubkey,

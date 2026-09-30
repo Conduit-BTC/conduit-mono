@@ -41,18 +41,22 @@ export class NostrSignerError extends Error {
 export interface AccountSignerCapabilities {
   readonly signEvent: boolean
   readonly nip44: boolean
-  readonly nip04: boolean
+  readonly nip04Decrypt: boolean
 }
 
-/** Established account authority. Guest order keys never implement this grant. */
-export interface AccountSigner extends NostrEventSigner {
+/** Plain key operations; local guest implementations remain purpose-scoped. */
+export interface NostrKeySigner extends NostrEventSigner {
   readonly pubkey: string
-  readonly revision: string
-  readonly authMethod: "nip07" | "nip46"
-  readonly capabilities: AccountSignerCapabilities
   encryptNip44(recipientPubkey: string, plaintext: string): Promise<string>
   decryptNip44(senderPubkey: string, ciphertext: string): Promise<string>
   decryptLegacy(senderPubkey: string, ciphertext: string): Promise<string>
+}
+
+/** Established account authority. Guest order keys never implement this grant. */
+export interface AccountSigner extends NostrKeySigner {
+  readonly revision: string
+  readonly authMethod: "nip07" | "nip46"
+  readonly capabilities: AccountSignerCapabilities
 }
 
 export function classifyNostrSignerError(error: unknown): NostrSignerError {
@@ -98,7 +102,8 @@ export function classifyNostrSignerError(error: unknown): NostrSignerError {
   ) {
     return new NostrSignerError("authorization_denied")
   }
-  if (code === "unsupported_operation") return new NostrSignerError(code)
+  if (code === "unsupported_operation" || code === "unsupported")
+    return new NostrSignerError("unsupported_operation")
   if (code === "disconnected") return new NostrSignerError(code)
   if (code === "timeout") return new NostrSignerError("timeout")
   if (

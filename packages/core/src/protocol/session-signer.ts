@@ -1,17 +1,9 @@
-import type NDK from "@nostr-dev-kit/ndk"
-import type {
-  NDKEncryptionScheme,
-  NDKRelay,
-  NDKSigner,
-  NDKUser,
-  NostrEvent,
-} from "@nostr-dev-kit/ndk"
-import { getEventHash } from "nostr-tools"
 import {
   classifyNostrSignerError,
   NostrSignerError,
   type AccountSigner,
   type AccountSignerCapabilities,
+  type NostrKeySigner,
   type SignedNostrEvent,
   type UnsignedNostrEvent,
 } from "./nostr-event-signer"
@@ -27,6 +19,33 @@ export class SessionSignerError extends Error {
     super(message)
     this.name = "SessionSignerError"
     this.code = code
+  }
+}
+
+// Relay clients are recreated independently of account authority. The auth
+// provider installs and retires this exact owner, never a relay-client signer.
+let activeAccountSigner: SessionSigner | null = null
+
+export function activateAccountSigner(signer: SessionSigner): void {
+  signer.pubkey
+  if (activeAccountSigner !== signer) activeAccountSigner?.invalidateLocal()
+  activeAccountSigner = signer
+}
+
+export function retireAccountSigner(signer: SessionSigner): void {
+  if (activeAccountSigner === signer) activeAccountSigner = null
+  signer.invalidateLocal()
+}
+
+export function getAccountSigner(): AccountSigner | undefined {
+  const signer = activeAccountSigner
+  if (!signer) return undefined
+  try {
+    signer.pubkey
+    return signer
+  } catch {
+    // Stale authority has already been retired by the session owner.
+    return undefined
   }
 }
 
@@ -49,8 +68,8 @@ function normalizePubkey(value: string): string {
  * session. This is the final authority fence for NIP-07 and NIP-46: a stale
  * tab or replaced auth claim cannot start or complete a key operation.
  */
-export class SessionSigner implements NDKSigner, AccountSigner {
-  private readonly signer: NDKSigner
+export class SessionSigner implements AccountSigner {
+  private readonly signer: NostrKeySigner
   private readonly expectedPubkey: string
   private readonly hasAuthority: SessionSignerOptions["hasAuthority"]
   private readonly onInvalidated?: SessionSignerOptions["onInvalidated"]
@@ -62,7 +81,7 @@ export class SessionSigner implements NDKSigner, AccountSigner {
   private readonly cancellation = new AbortController()
   private invalidated = false
 
-  constructor(signer: NDKSigner, options: SessionSignerOptions) {
+  constructor(signer: NostrKeySigner, options: SessionSignerOptions) {
     this.signer = signer
     this.revision = options.revision
     this.authMethod = options.authMethod
@@ -94,29 +113,6 @@ export class SessionSigner implements NDKSigner, AccountSigner {
     const pubkey = normalizePubkey(this.signer.pubkey)
     this.assertExpectedPubkey(pubkey)
     return pubkey
-  }
-
-  get userSync(): NDKUser {
-    this.assertAuthority()
-    const user = this.signer.userSync
-    this.assertExpectedPubkey(user.pubkey)
-    return user
-  }
-
-  async blockUntilReady(): Promise<NDKUser> {
-    this.assertAuthority()
-    const user = await this.signer.blockUntilReady()
-    this.assertExpectedPubkey(user.pubkey)
-    this.assertAuthority()
-    return user
-  }
-
-  async user(): Promise<NDKUser> {
-    this.assertAuthority()
-    const user = await this.signer.user()
-    this.assertExpectedPubkey(user.pubkey)
-    this.assertAuthority()
-    return user
   }
 
   get capabilities(): AccountSignerCapabilities {
@@ -166,40 +162,31 @@ export class SessionSigner implements NDKSigner, AccountSigner {
           ...expected,
           tags: expected.tags.map((tag) => [...tag]),
         }
-        const sig = await this.signer.sign(draft)
+        const signed = await this.signer.signEvent(draft)
         this.assertAuthority()
-        if (
-          draft.pubkey !== expected.pubkey ||
-          draft.kind !== expected.kind ||
-          draft.created_at !== expected.created_at ||
-          draft.content !== expected.content ||
-          JSON.stringify(draft.tags) !== JSON.stringify(expected.tags)
-        ) {
-          this.reject(
-            "invalid_response",
-            "The signer changed the event. Reconnect the intended account and try again."
-          )
-        }
-        const signed = { ...expected, id: getEventHash(expected), sig }
         if (!isValidSignedPublicNostrEvent(signed)) {
           this.reject(
             "invalid_response",
             "The signer returned an invalid signature. Reconnect the intended account and try again."
           )
         }
-        return signed
+        if (
+          signed.pubkey !== expected.pubkey ||
+          signed.kind !== expected.kind ||
+          signed.created_at !== expected.created_at ||
+          signed.content !== expected.content ||
+          JSON.stringify(signed.tags) !== JSON.stringify(expected.tags)
+        ) {
+          this.reject(
+            "invalid_response",
+            "The signer changed the event. Reconnect the intended account and try again."
+          )
+        }
+        return { ...expected, id: signed.id, sig: signed.sig }
       })
     } catch (error) {
       throw classifyNostrSignerError(error)
     }
-  }
-
-  /** Removed when the remaining NDK event callers migrate to signEvent. */
-  async sign(event: NostrEvent): Promise<string> {
-    // Existing event callers use the same queue and validated plain response.
-    this.assertAuthority()
-    this.assertExpectedPubkey(event.pubkey)
-    return (await this.signEvent(event as UnsignedNostrEvent)).sig
   }
 
   async encryptNip44(
@@ -227,13 +214,19 @@ export class SessionSigner implements NDKSigner, AccountSigner {
     operation: "encrypt" | "decrypt",
     peerPubkey: string,
     value: string,
-    scheme: NDKEncryptionScheme
+    scheme: "nip44" | "nip04"
   ): Promise<string> {
     if (!/^[0-9a-f]{64}$/i.test(peerPubkey))
       throw new NostrSignerError("invalid_response")
-    const peer = { pubkey: normalizePubkey(peerPubkey) } as NDKUser
-    const result = await this.runOperation(scheme, () =>
-      this.signer[operation](peer, value, scheme)
+    const peer = normalizePubkey(peerPubkey)
+    const result = await this.runOperation(
+      scheme === "nip04" ? "nip04Decrypt" : "nip44",
+      () =>
+        operation === "encrypt"
+          ? this.signer.encryptNip44(peer, value)
+          : scheme === "nip44"
+            ? this.signer.decryptNip44(peer, value)
+            : this.signer.decryptLegacy(peer, value)
     )
     if (
       typeof result !== "string" ||
@@ -241,44 +234,6 @@ export class SessionSigner implements NDKSigner, AccountSigner {
     )
       throw new NostrSignerError("invalid_response")
     return result
-  }
-
-  async relays(ndk?: NDK): Promise<NDKRelay[]> {
-    this.assertAuthority()
-    const relays = this.signer.relays ? await this.signer.relays(ndk) : []
-    this.assertAuthority()
-    return relays
-  }
-
-  async encryptionEnabled(
-    scheme?: NDKEncryptionScheme
-  ): Promise<NDKEncryptionScheme[]> {
-    this.assertAuthority()
-    const enabled = this.signer.encryptionEnabled
-      ? await this.signer.encryptionEnabled(scheme)
-      : []
-    this.assertAuthority()
-    return enabled
-  }
-
-  async encrypt(
-    recipient: NDKUser,
-    value: string,
-    scheme?: NDKEncryptionScheme
-  ): Promise<string> {
-    return this.runOperation(scheme ?? "nip04", () =>
-      this.signer.encrypt(recipient, value, scheme)
-    )
-  }
-
-  async decrypt(
-    sender: NDKUser,
-    value: string,
-    scheme?: NDKEncryptionScheme
-  ): Promise<string> {
-    return this.runOperation(scheme ?? "nip04", () =>
-      this.signer.decrypt(sender, value, scheme)
-    )
   }
 
   private async runOperation<T>(
@@ -337,11 +292,6 @@ export class SessionSigner implements NDKSigner, AccountSigner {
         this.cancellation.signal.removeEventListener("abort", onAbort)
       release?.()
     }
-  }
-
-  toPayload(): string {
-    this.assertAuthority()
-    return this.signer.toPayload()
   }
 
   private assertAuthority(): void {

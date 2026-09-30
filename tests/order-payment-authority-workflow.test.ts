@@ -1,3 +1,4 @@
+import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
@@ -17,10 +18,7 @@ import {
   type OrderLifecycle,
 } from "@conduit/core"
 import { db } from "../packages/core/src/db"
-import {
-  __resetNdkTestState,
-  setSigner,
-} from "../packages/core/src/protocol/ndk"
+import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
 import {
   runOrderPayment,
   type OrderPaymentContext,

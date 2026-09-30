@@ -1,3 +1,4 @@
+import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import {
   NDKEvent,
@@ -23,7 +24,6 @@ import {
   getShippingOptionsByCoordinates,
   parseEventMarketPickupEvent,
   selectEventMarketEvidenceForRetention,
-  setSigner,
   type CachedEventMarketEvidence,
   type CommerceProductRecord,
   type OrderSummary,

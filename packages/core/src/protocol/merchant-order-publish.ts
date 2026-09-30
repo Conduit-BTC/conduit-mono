@@ -2,6 +2,7 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { cacheParsedOrderMessage } from "./commerce"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
+import { getAccountSigner } from "./session-signer"
 import { appendConduitClientTag } from "./nip89"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
@@ -112,7 +113,8 @@ export async function publishMerchantOrderMessage(
   input: PublishMerchantOrderMessageInput
 ): Promise<PublishMerchantOrderMessageResult> {
   const ndk = getNdk()
-  if (!ndk.signer) throw new Error("Signer not connected")
+  const signer = getAccountSigner()
+  if (!signer) throw new Error("Signer not connected")
 
   const rumor = new NDKEvent(ndk)
   rumor.kind = EVENT_KINDS.ORDER
@@ -135,7 +137,7 @@ export async function publishMerchantOrderMessage(
     authenticatedPubkey: input.authenticatedPubkey,
     shouldContinue: input.shouldContinue,
     recipientPubkey: target.recipientPubkey,
-    signer: ndk.signer,
+    signer,
     rumorKind: EVENT_KINDS.ORDER,
     selfCopy: target.selfCopy,
     signerInteraction: input.signerInteraction ?? "background_external",

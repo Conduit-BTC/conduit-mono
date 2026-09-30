@@ -1,22 +1,51 @@
 import { describe, expect, it } from "bun:test"
-import type { NDKSigner, NostrEvent } from "@nostr-dev-kit/ndk"
-import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools"
-import { createNdkNostrEventSigner } from "../packages/core/src/protocol/ndk-nostr-event-signer"
+import type { NostrEvent } from "@nostr-dev-kit/ndk"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+  verifyEvent,
+} from "nostr-tools"
+import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
 import { Nip07SessionSigner } from "../packages/core/src/protocol/nip07-signer"
 import {
-  NdkBunkerSignerAdapter,
+  RemoteSessionSigner,
   type RemoteBunkerSigner,
 } from "../packages/core/src/protocol/remote-signer"
 import { SessionSigner } from "../packages/core/src/protocol/session-signer"
 
-const PRIVATE_KEY = new Uint8Array(32).fill(3)
+const PRIVATE_KEY = generateSecretKey()
 const PUBKEY = getPublicKey(PRIVATE_KEY)
 
-describe("NDK external-signer edge adapter", () => {
+function createTestSession(provider: Pick<NostrKeySigner, "signEvent">) {
+  return new SessionSigner(
+    {
+      ...provider,
+      pubkey: PUBKEY,
+      getPublicKey: async () => PUBKEY,
+      encryptNip44: async () => "unused",
+      decryptNip44: async () => "unused",
+      decryptLegacy: async () => "unused",
+    },
+    {
+      expectedPubkey: PUBKEY,
+      revision: "test-claim",
+      authMethod: "nip07",
+      getCapabilities: () => ({
+        signEvent: true,
+        nip44: true,
+        nip04Decrypt: false,
+      }),
+      hasAuthority: () => true,
+    }
+  )
+}
+
+describe("plain external-signer session edge", () => {
   it("returns a verified plain event without exposing NDK objects to the executor", async () => {
     let received: NostrEvent | undefined
     const ndkSigner = {
-      sign: async (event: NostrEvent) => {
+      signEvent: async (event: NostrEvent) => {
         received = event
         return finalizeEvent(
           {
@@ -27,10 +56,10 @@ describe("NDK external-signer edge adapter", () => {
             content: event.content,
           },
           PRIVATE_KEY
-        ).sig
+        )
       },
-    } as NDKSigner
-    const signer = createNdkNostrEventSigner(ndkSigner, PUBKEY, "nip07")
+    }
+    const signer = createTestSession(ndkSigner)
 
     const signed = await signer.signEvent({
       kind: 22_242,
@@ -60,12 +89,12 @@ describe("NDK external-signer edge adapter", () => {
   it("rejects a draft whose identity differs from the active account", async () => {
     let signCalls = 0
     const ndkSigner = {
-      sign: async () => {
+      signEvent: async () => {
         signCalls += 1
-        return "0".repeat(128)
+        throw new Error("must not dispatch")
       },
-    } as unknown as NDKSigner
-    const signer = createNdkNostrEventSigner(ndkSigner, PUBKEY, "nip07")
+    }
+    const signer = createTestSession(ndkSigner)
 
     await expect(
       signer.signEvent({
@@ -95,27 +124,23 @@ describe("NDK external-signer edge adapter", () => {
       { code: 4001, message: "Request rejected by user" },
     ]) {
       const ndkSigner = {
-        sign: async () => {
+        signEvent: async () => {
           throw rejection
         },
-      } as unknown as NDKSigner
-      const signer = createNdkNostrEventSigner(ndkSigner, PUBKEY, "nip07")
+      }
+      const signer = createTestSession(ndkSigner)
       await expect(signer.signEvent(draft)).rejects.toMatchObject({
         code: "authorization_denied",
       })
     }
 
-    const transientSigner = createNdkNostrEventSigner(
-      {
-        sign: async () => {
-          throw new Error(
-            "Connection cancelled because extension context invalidated"
-          )
-        },
-      } as unknown as NDKSigner,
-      PUBKEY,
-      "nip07"
-    )
+    const transientSigner = createTestSession({
+      signEvent: async () => {
+        throw new Error(
+          "Connection cancelled because extension context invalidated"
+        )
+      },
+    })
     await expect(transientSigner.signEvent(draft)).rejects.toMatchObject({
       code: "unavailable",
     })
@@ -140,15 +165,19 @@ describe("NDK external-signer edge adapter", () => {
     })
     try {
       const nip07 = new Nip07SessionSigner()
-      await nip07.blockUntilReady()
+      await nip07.getPublicKey()
       const session = new SessionSigner(nip07, {
         expectedPubkey: PUBKEY,
         revision: "test-claim",
         authMethod: "nip07",
-        getCapabilities: () => ({ signEvent: true, nip44: true, nip04: false }),
+        getCapabilities: () => ({
+          signEvent: true,
+          nip44: true,
+          nip04Decrypt: false,
+        }),
         hasAuthority: () => true,
       })
-      const signer = createNdkNostrEventSigner(session, PUBKEY, "nip07")
+      const signer = session
       const signed = await signer.signEvent({
         kind: 22_242,
         pubkey: PUBKEY,
@@ -181,15 +210,19 @@ describe("NDK external-signer edge adapter", () => {
       }) => finalizeEvent(event, PRIVATE_KEY),
       close: async () => undefined,
     } as unknown as RemoteBunkerSigner
-    const nip46 = new NdkBunkerSignerAdapter(bunkerSigner, PUBKEY)
+    const nip46 = new RemoteSessionSigner(bunkerSigner, PUBKEY)
     const session = new SessionSigner(nip46, {
       expectedPubkey: PUBKEY,
       revision: "test-claim",
       authMethod: "nip46",
-      getCapabilities: () => ({ signEvent: true, nip44: true, nip04: false }),
+      getCapabilities: () => ({
+        signEvent: true,
+        nip44: true,
+        nip04Decrypt: false,
+      }),
       hasAuthority: () => true,
     })
-    const signer = createNdkNostrEventSigner(session, PUBKEY, "nip46")
+    const signer = session
     const signed = await signer.signEvent({
       kind: 22_242,
       pubkey: PUBKEY,
@@ -219,7 +252,7 @@ describe("NDK external-signer edge adapter", () => {
         close: async () => undefined,
       } as unknown as RemoteBunkerSigner
       const session = new SessionSigner(
-        new NdkBunkerSignerAdapter(bunkerSigner, PUBKEY, options),
+        new RemoteSessionSigner(bunkerSigner, PUBKEY, options),
         {
           expectedPubkey: PUBKEY,
           revision: "test-claim",
@@ -227,12 +260,12 @@ describe("NDK external-signer edge adapter", () => {
           getCapabilities: () => ({
             signEvent: true,
             nip44: true,
-            nip04: false,
+            nip04Decrypt: false,
           }),
           hasAuthority: () => true,
         }
       )
-      const signer = createNdkNostrEventSigner(session, PUBKEY, "nip46")
+      const signer = session
 
       await expect(
         signer.signEvent({

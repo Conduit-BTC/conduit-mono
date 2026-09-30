@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { describe, expect, it } from "bun:test"
 import {
   NDKEvent,
@@ -83,9 +84,9 @@ function signedInboxDeclaration(
   )
 }
 
-const signer = {
+const signer = plainTestSigner({
   user: async () => ({ pubkey: "sender" }),
-} as unknown as NDKSigner
+} as unknown as NDKSigner)
 
 function wrap(id: string): NDKEvent {
   return { id } as unknown as NDKEvent
@@ -743,9 +744,9 @@ describe("publishPrivateMessage", () => {
       }),
       senderPubkey,
       recipientPubkey,
-      signer: {
+      signer: plainTestSigner({
         user: async () => ({ pubkey: senderPubkey }),
-      } as unknown as NDKSigner,
+      } as unknown as NDKSigner),
       recipientInboxRelays: undefined,
     }
   }
@@ -1119,9 +1120,9 @@ describe("publishPrivateMessage", () => {
         rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
         senderPubkey: "sender",
         recipientPubkey: "recipient",
-        signer: {
+        signer: plainTestSigner({
           user: async () => ({ pubkey: "other" }),
-        } as unknown as NDKSigner,
+        } as unknown as NDKSigner),
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
         giftWrapFn: (async () => {
@@ -1217,9 +1218,9 @@ describe("publishPrivateMessage", () => {
       recipientPubkey: INBOX_PEER,
       accountPubkey: INBOX_OWNER,
       accountNetworkLocalStateRepository: repository,
-      signer: {
+      signer: plainTestSigner({
         user: async () => ({ pubkey: INBOX_OWNER }),
-      } as unknown as NDKSigner,
+      } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       selfCopy: false,
       recipientInboxRelays: [excludedRelayUrl, eligibleRelayUrl],
@@ -1287,9 +1288,9 @@ describe("publishPrivateMessage", () => {
         recipientPubkey: INBOX_PEER,
         accountPubkey: INBOX_OWNER,
         accountNetworkLocalStateRepository: repository,
-        signer: {
+        signer: plainTestSigner({
           user: async () => ({ pubkey: INBOX_OWNER }),
-        } as unknown as NDKSigner,
+        } as unknown as NDKSigner),
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
         recipientInboxRelays: [excludedRelayUrl],
@@ -1338,9 +1339,9 @@ describe("publishPrivateMessage", () => {
         senderPubkey: INBOX_OWNER,
         recipientPubkey: INBOX_PEER,
         accountPubkey: INBOX_PEER,
-        signer: {
+        signer: plainTestSigner({
           user: async () => ({ pubkey: INBOX_OWNER }),
-        } as unknown as NDKSigner,
+        } as unknown as NDKSigner),
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: ["wss://recipient.inbox.conduit.market"],
       })
@@ -1421,9 +1422,9 @@ describe("publishPrivateMessage", () => {
       rumor: companion,
       senderPubkey: "guest",
       recipientPubkey: "merchant",
-      signer: {
+      signer: plainTestSigner({
         user: async () => ({ pubkey: "guest" }),
-      } as unknown as NDKSigner,
+      } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       selfCopy: false,
       recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
@@ -1498,14 +1499,14 @@ describe("publishPrivateMessage", () => {
     })
     const wrappedRecipients: string[] = []
     let visibilityChecks = 0
-    const interactiveSigner = {
+    const interactiveSigner = plainTestSigner({
       user: async () => ({ pubkey: "sender" }),
       encrypt: async (recipient: { pubkey: string }) => {
         wrappedRecipients.push(recipient.pubkey)
         if (recipient.pubkey === "recipient") visible = false
         return "ciphertext"
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
 
     const publishing = publishPrivateMessage({
       rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
@@ -1526,7 +1527,7 @@ describe("publishPrivateMessage", () => {
         if (!visible) await visibilityRestored
       },
       giftWrapFn: (async (_rumor, recipient, workflowSigner) => {
-        await workflowSigner.encrypt(recipient, "seal", "nip44")
+        await workflowSigner.encryptNip44(recipient.pubkey, "seal")
         return wrap(`wrap-${recipient.pubkey}`)
       }) as never,
       publishFn: (async (_event, options) => ({
@@ -1556,7 +1557,7 @@ describe("publishPrivateMessage", () => {
     let encryptCalls = 0
     let signCalls = 0
     let visibilityChecks = 0
-    const interactiveSigner = {
+    const interactiveSigner = plainTestSigner({
       user: async () => ({ pubkey: "sender" }),
       encrypt: async () => {
         encryptCalls += 1
@@ -1567,7 +1568,7 @@ describe("publishPrivateMessage", () => {
         signCalls += 1
         return "signature"
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
 
     const publishing = publishPrivateMessage({
       rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
@@ -1589,8 +1590,14 @@ describe("publishPrivateMessage", () => {
         if (!visible) await visibleAgain
       },
       giftWrapFn: (async (_message, recipient, workflowSigner) => {
-        await workflowSigner.encrypt(recipient, "seal", "nip44")
-        await workflowSigner.sign({} as never)
+        await workflowSigner.encryptNip44(recipient.pubkey, "seal")
+        await workflowSigner.signEvent({
+          pubkey: INBOX_OWNER,
+          kind: 13,
+          created_at: 1_700_000_000,
+          content: "synthetic",
+          tags: [],
+        })
         return wrap("wrap-recipient")
       }) as never,
       publishFn: (async (_event, options) => ({
@@ -1620,7 +1627,8 @@ describe("publishPrivateMessage", () => {
     })
     let signerCalls = 0
     let visibilityChecks = 0
-    const signer = {
+    const signer = plainTestSigner({
+      authMethod: "nip07",
       user: async () => ({ pubkey: INBOX_OWNER }),
       sign: async (event: {
         kind: number
@@ -1631,7 +1639,7 @@ describe("publishPrivateMessage", () => {
         signerCalls += 1
         return finalizeEvent(event, INBOX_OWNER_SECRET).sig
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
 
     const publishing = publishPrivateMessage({
       rumor: rumor(EVENT_KINDS.ORDER, {
@@ -1696,9 +1704,9 @@ describe("publishPrivateMessage", () => {
       rumor: first.companion,
       senderPubkey: "guest",
       recipientPubkey: "merchant",
-      signer: {
+      signer: plainTestSigner({
         user: async () => ({ pubkey: "guest" }),
-      } as unknown as NDKSigner,
+      } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       selfCopy: false,
       recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
@@ -1751,9 +1759,9 @@ describe("publishPrivateMessage", () => {
           rumor: fixture.companion,
           senderPubkey: "guest",
           recipientPubkey: "merchant",
-          signer: {
+          signer: plainTestSigner({
             user: async () => ({ pubkey: "guest" }),
-          } as unknown as NDKSigner,
+          } as unknown as NDKSigner),
           rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
           selfCopy: false,
           recipientInboxRelays: ["wss://merchant.inbox.conduit.market"],
@@ -1849,9 +1857,9 @@ describe("publishPrivateMessage", () => {
       authenticatedPubkey: senderPubkey,
       accountNetworkLocalStateRepository,
       recipientPubkey,
-      signer: {
+      signer: plainTestSigner({
         user: async () => ({ pubkey: senderPubkey }),
-      } as unknown as NDKSigner,
+      } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       recipientInboxRelays: [remoteWs, "wss://recipient.inbox.conduit.market"],
       inspectOwnInboxReadiness: async () => ({
@@ -1924,9 +1932,9 @@ describe("publishPrivateMessage", () => {
         authenticatedPubkey,
         accountNetworkLocalStateRepository,
         recipientPubkey,
-        signer: {
+        signer: plainTestSigner({
           user: async () => ({ pubkey: senderPubkey }),
-        } as unknown as NDKSigner,
+        } as unknown as NDKSigner),
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         recipientInboxRelays: [recipientWss],
         inspectOwnInboxReadiness: async () => ({
@@ -2102,9 +2110,9 @@ describe("publishPrivateMessage", () => {
 
   for (const declared of [true, false]) {
     it(`delivers an encrypted synthetic order through ${declared ? "strict" : "bounded compatibility"} routing for recipient decryption`, async () => {
-      const senderSigner = NDKPrivateKeySigner.generate()
-      const recipientSigner = NDKPrivateKeySigner.generate()
-      const unrelatedSigner = NDKPrivateKeySigner.generate()
+      const senderSigner = plainTestSigner(NDKPrivateKeySigner.generate())
+      const recipientSigner = plainTestSigner(NDKPrivateKeySigner.generate())
+      const unrelatedSigner = plainTestSigner(NDKPrivateKeySigner.generate())
       const sender = await senderSigner.user()
       const recipient = await recipientSigner.user()
       const unsigned = {
@@ -2297,7 +2305,7 @@ describe("publishPrivateMessage", () => {
     let encryptCalls = 0
     let signCalls = 0
     let wrapCalls = 0
-    const heldSigner = {
+    const heldSigner = plainTestSigner({
       user: async () => {
         markSignerUserStarted()
         await signerUserBlocked
@@ -2311,7 +2319,7 @@ describe("publishPrivateMessage", () => {
         signCalls += 1
         return "signature"
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
 
     const publishing = publishPrivateMessage({
       ...validatedOrderInput(),
@@ -2344,13 +2352,13 @@ describe("publishPrivateMessage", () => {
   it("checks the session immediately before each background gift-wrap signer operation", async () => {
     let sessionCurrent = true
     let encryptCalls = 0
-    const backgroundSigner = {
+    const backgroundSigner = plainTestSigner({
       user: async () => ({ pubkey: "sender" }),
       encrypt: async () => {
         encryptCalls += 1
         return "ciphertext"
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
 
     await expect(
       publishPrivateMessage({
@@ -2365,7 +2373,7 @@ describe("publishPrivateMessage", () => {
         signerInteraction: "background_external",
         giftWrapFn: (async (_rumor, recipient, workflowSigner) => {
           sessionCurrent = false
-          await workflowSigner.encrypt(recipient, "seal", "nip44")
+          await workflowSigner.encryptNip44(recipient.pubkey, "seal")
           return wrap("unexpected-wrap")
         }) as never,
         publishFn: (async () => {
@@ -2379,7 +2387,7 @@ describe("publishPrivateMessage", () => {
   it("does not turn caller-supplied relay hints into durable retry authority", async () => {
     const recipientA = "wss://recipient-a.inbox.conduit.market"
     const recipientB = "wss://recipient-b.inbox.conduit.market"
-    const wrapSigner = NDKPrivateKeySigner.generate()
+    const wrapSigner = plainTestSigner(NDKPrivateKeySigner.generate())
 
     const result = await publishPrivateMessage({
       ...validatedOrderInput(),
@@ -2491,7 +2499,7 @@ describe("publishPrivateMessage", () => {
     })
     order.id = order.getEventHash()
     const sequence: string[] = []
-    const wrapSigner = NDKPrivateKeySigner.generate()
+    const wrapSigner = plainTestSigner(NDKPrivateKeySigner.generate())
 
     try {
       const result = await publishPrivateMessage({
@@ -2504,9 +2512,9 @@ describe("publishPrivateMessage", () => {
         }),
         senderPubkey,
         recipientPubkey,
-        signer: {
+        signer: plainTestSigner({
           user: async () => ({ pubkey: senderPubkey }),
-        } as unknown as NDKSigner,
+        } as unknown as NDKSigner),
         rumorKind: EVENT_KINDS.ORDER,
         selfCopy: false,
         giftWrapFn: (async () => {
@@ -2556,8 +2564,8 @@ describe("publishPrivateMessage", () => {
   })
 
   it("attaches an NDK instance before the real gift-wrap encryption path", async () => {
-    const senderSigner = NDKPrivateKeySigner.generate()
-    const recipientSigner = NDKPrivateKeySigner.generate()
+    const senderSigner = plainTestSigner(NDKPrivateKeySigner.generate())
+    const recipientSigner = plainTestSigner(NDKPrivateKeySigner.generate())
     const sender = await senderSigner.user()
     const recipient = await recipientSigner.user()
     const directRumor = buildDirectMessageRumor({
@@ -2599,9 +2607,9 @@ describe("publishPrivateMessage", () => {
       }),
       senderPubkey: "guest",
       recipientPubkey: "merchant",
-      signer: {
+      signer: plainTestSigner({
         user: async () => ({ pubkey: "guest" }),
-      } as unknown as NDKSigner,
+      } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
       resolveInboxRelays: async (pubkey) => {
@@ -2755,9 +2763,9 @@ describe("publishPrivateMessage", () => {
       rumor: guestOrderUpdate,
       senderPubkey: "merchant",
       recipientPubkey: "merchant",
-      signer: {
+      signer: plainTestSigner({
         user: async () => ({ pubkey: "merchant" }),
-      } as unknown as NDKSigner,
+      } as unknown as NDKSigner),
       rumorKind: EVENT_KINDS.ORDER,
       selfCopy: false,
       recipientInboxRelays: [],
@@ -2899,7 +2907,7 @@ describe("publishPrivateMessage", () => {
     wrapped.created_at = 100
     wrapped.tags = [["p", "recipient"]]
     wrapped.content = "encrypted test fixture"
-    await wrapped.sign(NDKPrivateKeySigner.generate())
+    await wrapped.sign(plainTestSigner(NDKPrivateKeySigner.generate()))
     let preparedRelayUrls: string[] = []
     const originalCompatibilityRelays = config.dmCompatibilityOrderRelayUrls
     const originalInboxFallbacks = config.commerceDmFallbackRelayUrls

@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { describe, expect, it, mock } from "bun:test"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
@@ -27,8 +28,8 @@ import { withMockRouterInvoiceWitnesses } from "./support/checkout-spark-invoice
 const CREATED_AT = 1_800_000_000_000
 const RELAY = "wss://merchant.inbox.relay.dev"
 const MNEMONIC = generateSparkMnemonic()
-const BUYER = NDKPrivateKeySigner.generate()
-const MERCHANT = NDKPrivateKeySigner.generate()
+const BUYER = plainTestSigner(NDKPrivateKeySigner.generate())
+const MERCHANT = plainTestSigner(NDKPrivateKeySigner.generate())
 
 class MemoryStorage {
   readonly values = new Map<string, string>()

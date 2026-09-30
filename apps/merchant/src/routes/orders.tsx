@@ -16,7 +16,7 @@ import {
   decodeLightningInvoiceAmount,
   deriveProtectedReadPresentationState,
   formatNpub,
-  getNdk,
+  getAccountSigner,
   getCachedMerchantConversationList,
   getCachedMerchantStorefront,
   getCurrencyAmountStep,
@@ -2194,15 +2194,15 @@ function OrdersWorkspace() {
         if (!market) {
           throw new Error("Current signed pickup evidence is unavailable.")
         }
-        const ndk = getNdk()
-        if (!ndk.signer) throw new Error("Merchant signer is not connected.")
+        const signer = getAccountSigner()
+        if (!signer) throw new Error("Merchant signer is not connected.")
         const delivery = await issueOrganizerReadyReceipt({
           merchantPubkey: pubkey,
           order: selectedOrder,
           paymentAuthenticated: merchantPaid,
           authorizationConfirmed,
           market,
-          signer: ndk.signer,
+          signer,
           transport: {
             authenticatedPubkey,
             shouldContinue: () => isCurrentOrderAction(authority),
@@ -2326,8 +2326,8 @@ function OrdersWorkspace() {
         if (!selectedUsesOrganizerHandoff) {
           throw new Error("This order does not authorize organizer handoff.")
         }
-        const ndk = getNdk()
-        if (!ndk.signer) throw new Error("Merchant signer is not connected.")
+        const signer = getAccountSigner()
+        if (!signer) throw new Error("Merchant signer is not connected.")
         const currentAck = await readCurrentOrganizerHandoffAck()
         if (
           currentAck.currentAckState.exactAck ||
@@ -2340,7 +2340,7 @@ function OrdersWorkspace() {
         await revokeOrganizerReadyReceipt({
           merchantPubkey: pubkey,
           orderId: selected.orderId,
-          signer: ndk.signer,
+          signer,
           transport: {
             authenticatedPubkey,
             shouldContinue: () => isCurrentOrderAction(authority),
@@ -2437,8 +2437,8 @@ function OrdersWorkspace() {
         const actionCorrelationRef = selectedOrderCorrelationRef
         const actionReadyDelivery = selectedReadyDelivery
         if (nextStatus === "cancelled") {
-          const ndk = getNdk()
-          if (!ndk.signer) throw new Error("Merchant signer is not connected.")
+          const signer = getAccountSigner()
+          if (!signer) throw new Error("Merchant signer is not connected.")
           const currentFallback =
             coordinatedMerchantFallbackActive &&
             hasCurrentCoordinatedMerchantFallback()
@@ -2453,7 +2453,7 @@ function OrdersWorkspace() {
             await revokeOrganizerReadyReceipt({
               merchantPubkey: pubkey,
               orderId: actionConversation.orderId,
-              signer: ndk.signer,
+              signer,
               transport: {
                 authenticatedPubkey,
                 shouldContinue: () => isCurrentOrderAction(authority),

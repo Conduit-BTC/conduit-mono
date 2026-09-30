@@ -9,12 +9,7 @@ import {
 } from "react"
 import type { ClientMetadata } from "nostr-tools/nip46"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS, CLAVE_PUSH_RELAY } from "../config"
-import {
-  getNdk,
-  setSigner,
-  removeSigner,
-  type SignerLease,
-} from "../protocol/ndk"
+import type { AccountSigner, AccountSignerCapabilities } from "../protocol/nostr-event-signer"
 import {
   Nip07SessionSigner,
   type Nip07SessionSignerError,
@@ -22,6 +17,8 @@ import {
 import {
   SessionSigner,
   SessionSignerError,
+  activateAccountSigner,
+  retireAccountSigner,
 } from "../protocol/session-signer"
 import {
   abandonRemoteSignerConnection,
@@ -69,7 +66,7 @@ export interface AuthContextValue {
   accountPubkey: string | null
   pubkey: string | null
   restorePendingPubkey: string | null
-  signer: SessionSigner | null
+  signer: AccountSigner | null
   authGeneration: number
   /** Check provider-owned authority even after the calling route unmounts. */
   isAuthGenerationCurrent: (generation: number) => boolean
@@ -102,11 +99,7 @@ type RemoteSignerState =
   | "recoverable"
 
 export type AuthMethod = "nip07" | "nip46"
-export interface AuthSignerCapabilities {
-  signEvent: boolean
-  nip44: boolean
-  nip04: boolean
-}
+export type AuthSignerCapabilities = AccountSignerCapabilities
 
 export type AuthSignerReadiness =
   | "disconnected"
@@ -118,7 +111,7 @@ export type AuthSignerReadiness =
 export function getAuthSignerReadiness(input: {
   status: AuthStatus
   pubkey: string | null
-  signer: SessionSigner | null
+  signer: AccountSigner | null
   capabilities: AuthSignerCapabilities
   remoteSignerState?: RemoteSignerState
 }): AuthSignerReadiness {
@@ -220,7 +213,7 @@ export const NOSTR_CONNECT_RELAYS = [
 const NO_SIGNER_CAPABILITIES: AuthSignerCapabilities = {
   signEvent: false,
   nip44: false,
-  nip04: false,
+  nip04Decrypt: false,
 }
 const SIGNER_AUTHORITY_RETRY_MESSAGE =
   "This browser lost signer authority or could not read site storage. Check site storage permissions and reconnect."
@@ -310,9 +303,8 @@ export function getNip07Capabilities(): AuthSignerCapabilities {
       typeof window !== "undefined" &&
       typeof window.nostr?.nip44?.encrypt === "function" &&
       typeof window.nostr?.nip44?.decrypt === "function",
-    nip04:
+    nip04Decrypt:
       typeof window !== "undefined" &&
-      typeof window.nostr?.nip04?.encrypt === "function" &&
       typeof window.nostr?.nip04?.decrypt === "function",
   }
 }
@@ -407,7 +399,7 @@ export async function connectNip07SignerForAuth(
   } = {}
 ): Promise<{
   signer: Nip07SessionSigner
-  user: Awaited<ReturnType<Nip07SessionSigner["user"]>>
+  pubkey: string
 }> {
   const retryDelays =
     options.retryDelaysMs ??
@@ -427,12 +419,12 @@ export async function connectNip07SignerForAuth(
     })
 
     try {
-      const user = await withTimeout(
-        signer.user(),
+      const pubkey = await withTimeout(
+        signer.getPublicKey(),
         approvalTimeoutMs,
         getSignerTimeoutMessage(mode)
       )
-      return { signer, user }
+      return { signer, pubkey }
     } catch (error) {
       lastError = error
 
@@ -574,7 +566,6 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const authorityDisplacedSession = useRef<AuthSession | null>(null)
   const retirementBlockedSession = useRef<AuthSession | null>(null)
   const remoteConnection = useRef<RemoteSignerConnection | null>(null)
-  const activeSignerLease = useRef<SignerLease | null>(null)
   const protectedReadSessionLifecycle = useRef<ProtectedReadSessionLifecycle>(
     createProtectedReadSessionLifecycle()
   )
@@ -676,19 +667,17 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     connecting.current = false
     connected.current = false
     const connection = remoteConnection.current
-    const signerLease = activeSignerLease.current
     const sessionSigner = activeSessionSigner.current
     const session = options.preservedSession ?? activeSession.current
     remoteConnection.current = null
-    activeSignerLease.current = null
     activeSessionSigner.current = null
     activeSession.current = null
     resumeController.reset()
     resumeVerification.current = null
     protectedReadSessionLifecycle.current.deactivate()
     sessionSigner?.invalidateLocal(options.signerFailure)
+    if (sessionSigner) retireAccountSigner(sessionSigner)
     connection?.signer.invalidate()
-    if (signerLease) removeSigner(signerLease)
     setAuthSigner(null)
     const preservedRemotePubkey = getRetainedAuthAccountPubkey(
       session,
@@ -983,7 +972,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         session = {
           version: 1,
           type: "nip07",
-          userPubkey: result.user.pubkey,
+          userPubkey: result.pubkey,
         }
       } else {
         const onAuthUrl = (url: string) => {
@@ -1077,10 +1066,6 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         connectedRemote.session = session
       }
 
-      // Initialize the shared client before persistence without exposing the
-      // uncommitted signer to background work.
-      getNdk()
-
       if (session.type === "nip46") {
         remotePersistenceStarted = true
         const persisted = connectedRemote
@@ -1127,13 +1112,11 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         revision: authRevision,
         authMethod: session.type,
         getCapabilities: session.type === "nip46"
-          ? () => ({ signEvent: true, nip44: true, nip04: false })
+          ? () => connectedRemote?.signer.capabilities ?? NO_SIGNER_CAPABILITIES
           : getNip07Capabilities,
         hasAuthority: hasSessionAuthority,
         onInvalidated: handleSignerSessionInvalidated,
       })
-      const signerLease = setSigner(sessionSigner)
-      activeSignerLease.current = signerLease
       try {
         protectedReadSessionLifecycle.current.activate(
           sessionSigner,
@@ -1141,11 +1124,11 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
           hasSessionAuthority
         )
       } catch (installError) {
-        removeSigner(signerLease)
-        activeSignerLease.current = null
+        sessionSigner.invalidateLocal()
         throw installError
       }
       activeSessionSigner.current = sessionSigner
+      activateAccountSigner(sessionSigner)
       remoteConnection.current = connectedRemote
       if (connectedRemote) void commitRemoteSignerConnection(connectedRemote)
       uncommittedRemote = null
@@ -1165,7 +1148,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       setRemoteSignerState(session.type === "nip46" ? "active" : "none")
       setCapabilities(
         session.type === "nip46"
-          ? { signEvent: true, nip44: true, nip04: false }
+          ? connectedRemote?.signer.capabilities ?? NO_SIGNER_CAPABILITIES
           : getNip07Capabilities()
       )
       setAuthUrl(null)
@@ -1622,7 +1605,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
           return
         }
         setRemoteSignerState("active")
-        setCapabilities({ signEvent: true, nip44: true, nip04: false })
+        setCapabilities(connection.signer.capabilities)
         setStatus("connected")
         setError(null)
       })

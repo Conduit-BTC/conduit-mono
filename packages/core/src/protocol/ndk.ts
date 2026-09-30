@@ -1,8 +1,4 @@
-import NDK, {
-  NDKEvent,
-  type NDKFilter,
-  type NDKSigner,
-} from "@nostr-dev-kit/ndk"
+import NDK, { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import { schnorr } from "@noble/curves/secp256k1.js"
 import { hexToBytes } from "@noble/curves/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
@@ -138,18 +134,7 @@ type EventWithSourceRelayUrls = NDKEvent & {
   [EVENT_SOURCE_RELAY_URLS]?: string[]
 }
 
-/**
- * Identifies the auth lifecycle that installed the shared NDK signer.
- * Cleanup must present the same lease so an older provider cannot clear a
- * signer installed by a newer provider during remounts or Fast Refresh.
- */
-export type SignerLease = {
-  readonly signer: NDKSigner
-  readonly token: symbol
-}
-
 let ndkInstance: NDK | null = null
-let activeSignerLease: SignerLease | null = null
 
 function uniqueRelayUrls(urls: readonly string[]): string[] {
   return Array.from(new Set(urls.map((url) => url.trim()).filter(Boolean)))
@@ -189,7 +174,7 @@ export function mergeEventSourceRelayUrls(
 
 /**
  * Return the shared NDK compatibility context used for event construction,
- * signing, encryption, and explicitly planned publishes.
+ * and explicitly planned publishes. Account authority lives in SessionSigner.
  *
  * The instance is deliberately offline: Conduit owns relay discovery and read
  * execution, and publish callers must provide an approved relay set. Keeping
@@ -203,10 +188,6 @@ export function getNdk(): NDK {
       enableOutboxModel: false,
       autoConnectUserRelays: false,
     })
-    if (activeSignerLease) {
-      // Relay-client resets must not silently disconnect the auth session.
-      ndkInstance.signer = activeSignerLease.signer
-    }
   }
   return ndkInstance
 }
@@ -567,7 +548,6 @@ export function __setNdkVerifyTimeoutMsForTests(timeoutMs: number): void {
 }
 
 export function __resetNdkTestState(): void {
-  activeSignerLease = null
   // Detach test-owned relays first: NDK treats simultaneous disconnects in a
   // populated pool as an outage and can reconnect during fixture teardown.
   if (ndkInstance) {
@@ -1597,29 +1577,9 @@ export async function fetchEventsFanoutProgressive(
   }
 }
 
-export function setSigner(signer: NDKSigner): SignerLease {
-  const ndk = getNdk()
-  const lease = Object.freeze({
-    signer,
-    token: Symbol("ndk-signer-lease"),
-  })
-  ndk.signer = signer
-  activeSignerLease = lease
-  return lease
-}
-
-export function removeSigner(lease: SignerLease): void {
-  if (lease !== activeSignerLease) return
-  activeSignerLease = null
-  if (ndkInstance) {
-    ndkInstance.signer = undefined
-  }
-}
-
 export function disconnectNdk(): void {
   if (ndkInstance) {
     disconnectNdkPools(ndkInstance)
-    ndkInstance.signer = undefined
     ndkInstance = null
   }
   closeAllRelayConnections()
@@ -1632,7 +1592,6 @@ export function refreshNdkRelaySettings(scope?: string | null): void {
 
   if (ndkInstance) {
     disconnectNdkPools(ndkInstance)
-    ndkInstance.signer = undefined
   }
   closeAllRelayConnections()
 

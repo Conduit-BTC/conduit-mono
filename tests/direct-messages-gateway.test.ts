@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   __resetCommerceTestOverrides,
@@ -110,7 +111,7 @@ beforeEach(() => {
   __setCommerceTestOverrides({
     allowMissingProtectedReadAuthorization: true,
     now: () => 1_700_000_000_000,
-    getNdk: async () => ({ signer: {} }) as never,
+    getAccountSigner: () => plainTestSigner({} as never),
     resolveInboxRelayUrls: async () => ["wss://inbox.example"],
     getCachedDirectMessages: async (principalPubkey) =>
       directRows.filter(
@@ -216,13 +217,11 @@ describe("general direct-message gateway", () => {
       createdAt: 100,
     })
     __setCommerceTestOverrides({
-      getNdk: async () =>
-        ({
-          signer: {
-            decrypt: async (_user: unknown, ciphertext: string) =>
-              `plain:${ciphertext}`,
-          },
-        }) as never,
+      getAccountSigner: () =>
+        plainTestSigner({
+          decrypt: async (_user: unknown, ciphertext: string) =>
+            `plain:${ciphertext}`,
+        } as never),
       fetchEventsFanout: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
           return [giftWrapEvent("wrap-current")] as never
@@ -283,16 +282,14 @@ describe("general direct-message gateway", () => {
       createdAt: 100,
     })
     __setCommerceTestOverrides({
-      getNdk: async () =>
-        ({
-          signer: {
-            decrypt: async (_user: unknown, ciphertext: string) => {
-              decryptCalls[ciphertext] = (decryptCalls[ciphertext] ?? 0) + 1
-              if (ciphertext === "bad-cipher") throw new Error("private")
-              return "legacy readable"
-            },
+      getAccountSigner: () =>
+        plainTestSigner({
+          decrypt: async (_user: unknown, ciphertext: string) => {
+            decryptCalls[ciphertext] = (decryptCalls[ciphertext] ?? 0) + 1
+            if (ciphertext === "bad-cipher") throw new Error("private")
+            return "legacy readable"
           },
-        }) as never,
+        } as never),
       fetchEventsFanout: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
           return [giftWrapEvent("wrap-current")] as never

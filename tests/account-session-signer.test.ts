@@ -12,6 +12,7 @@ import { createProtectedReadSessionLifecycle } from "../packages/core/src/protoc
 import { getProtectedReadAuthorization } from "../packages/core/src/protocol/protected-read-authorization"
 import type {
   AccountSignerCapabilities,
+  NostrKeySigner,
   SignedNostrEvent,
   UnsignedNostrEvent,
 } from "../packages/core/src/protocol/nostr-event-signer"
@@ -19,7 +20,7 @@ import type {
 const secret = generateSecretKey()
 const principal = getPublicKey(secret)
 const peer = getPublicKey(generateSecretKey())
-const allCapabilities = { signEvent: true, nip44: true, nip04: true }
+const allCapabilities = { signEvent: true, nip44: true, nip04Decrypt: true }
 const template = (): UnsignedNostrEvent => ({
   pubkey: principal,
   kind: 1,
@@ -37,6 +38,7 @@ function deferred<T>() {
 function fixture(
   input: {
     sign?: (draft: NostrEvent) => Promise<string>
+    signEvent?: NostrKeySigner["signEvent"]
     encrypt?: () => Promise<string>
     hasAuthority?: () => boolean
     getCapabilities?: () => AccountSignerCapabilities
@@ -54,13 +56,24 @@ function fixture(
     user: async () => user,
     blockUntilReady: async () => user,
     sign: input.sign ?? (async (draft) => finalizeEvent(draft, secret).sig),
+    signEvent:
+      input.signEvent ??
+      (async (draft: UnsignedNostrEvent) => {
+        if (!input.sign) return finalizeEvent(draft, secret)
+        const sig = await input.sign(draft)
+        return { ...draft, id: finalizeEvent(draft, secret).id, sig }
+      }),
+    getPublicKey: async () => principal,
+    encryptNip44: input.encrypt ?? (async () => "synthetic-ciphertext"),
+    decryptNip44: async () => "synthetic-plaintext",
+    decryptLegacy: async () => "synthetic-plaintext",
     encrypt: input.encrypt ?? (async () => "synthetic-ciphertext"),
     decrypt: async () => "synthetic-plaintext",
     encryptionEnabled: async () => ["nip44", "nip04"],
     toPayload: () => {
       throw new Error("Not serializable")
     },
-  } as NDKSigner
+  } as NDKSigner & NostrKeySigner
   return new SessionSigner(transport, {
     expectedPubkey: principal,
     revision: "synthetic-revision",
@@ -73,6 +86,17 @@ function fixture(
 }
 
 describe("shared account session operations", () => {
+  it("rejects missing or malformed provider events with a typed integrity failure", async () => {
+    for (const response of [null, undefined, {}, { tags: "invalid" }]) {
+      const signer = fixture({ signEvent: async () => response as never })
+      await expect(signer.signEvent(template())).rejects.toMatchObject({
+        code: "invalid_response",
+      })
+      await expect(signer.signEvent(template())).rejects.toMatchObject({
+        code: "authority_changed",
+      })
+    }
+  })
   it("returns one bound principal/revision and a verified independent plain event", async () => {
     const signer = fixture()
     expect(await signer.getPublicKey()).toBe(principal)
@@ -339,7 +363,7 @@ describe("shared account session operations", () => {
     )
     await expect(
       fixture({
-        getCapabilities: () => ({ ...allCapabilities, nip04: false }),
+        getCapabilities: () => ({ ...allCapabilities, nip04Decrypt: false }),
       }).decryptLegacy(peer, "synthetic-ciphertext")
     ).rejects.toMatchObject({ code: "unsupported_operation" })
   })
@@ -391,7 +415,7 @@ describe("shared account session operations", () => {
     })
     try {
       const provider = new Nip07SessionSigner()
-      await provider.blockUntilReady()
+      await provider.getPublicKey()
       const signer = new SessionSigner(provider, {
         expectedPubkey: principal,
         revision: "synthetic-revision",

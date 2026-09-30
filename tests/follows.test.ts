@@ -83,7 +83,8 @@ describe("NIP-02 follow helpers", () => {
     }
 
     __setFollowListTestOverrides({
-      getNdk: () => ({ signer }) as never,
+      getAccountSigner: () =>
+        ({ getPublicKey: async () => ALICE_PUBKEY }) as never,
       readLatestFollowLists: (async () => {
         sessionCurrent = false
         return {

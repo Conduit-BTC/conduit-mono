@@ -7,6 +7,8 @@ import { EVENT_KINDS } from "./kinds"
 import { getProfiles, type ProfileBatchQuery } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getNdk } from "./ndk"
+import { getAccountSigner } from "./session-signer"
+import type { UnsignedNostrEvent } from "./nostr-event-signer"
 import {
   projectProfileContent,
   createSelectedProfileContext,
@@ -324,20 +326,18 @@ export async function publishProfileContext(
 ): Promise<SelectedProfileContext> {
   buildNip01ProfilePublishContent({ profile })
   const ndk = getNdk()
-  if (!ndk.signer) throw new Error("Signer not connected")
-
-  const signer = ndk.signer
+  const signer = getAccountSigner()
+  if (!signer) throw new Error("Signer not connected")
   const assertCurrentSession = () => {
-    if (options.shouldContinue?.() === false || ndk.signer !== signer) {
+    if (options.shouldContinue?.() === false || getAccountSigner() !== signer) {
       throw new Error(
         "The connected account changed. Review the profile before saving again."
       )
     }
   }
   assertCurrentSession()
-  const user = await signer.user()
+  const pubkey = await signer.getPublicKey()
   assertCurrentSession()
-  const pubkey = user.pubkey
   const authenticatedPubkey =
     options.authenticatedPubkey?.trim().toLowerCase() === pubkey.toLowerCase()
       ? pubkey
@@ -382,7 +382,11 @@ export async function publishProfileContext(
 
   assertSafeReplaceablePublish(event)
   assertCurrentSession()
-  await event.sign(signer)
+  event.pubkey = pubkey
+  Object.assign(
+    event,
+    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+  )
   assertCurrentSession()
   await publishWithPlanner(event, {
     intent: "author_event",
