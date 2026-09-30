@@ -1073,6 +1073,112 @@ test("merchant ships from settings sync and default a new listing @merchant", as
   ).toBeVisible()
 })
 
+test("merchant shipping requires loading signed settings discovered after local edits @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  const settings = {
+    format: "conduit-merchant-shipping-settings",
+    version: 1,
+    countries: [
+      { code: "US", name: "United States", restrictTo: [], exclude: ["AK"] },
+    ],
+    shipsFrom: {
+      location: "Oakland, Alameda County, California, United States",
+      geohash: "9q9p",
+    },
+  }
+  const signed = finalizeEvent(
+    {
+      kind: 30_078,
+      created_at: Math.floor(Date.now() / 1000) - 60,
+      tags: [["d", "conduit/merchant-shipping-settings"]],
+      content: JSON.stringify(settings),
+    },
+    secretKey
+  )
+  await publishTestRelayEvents([signed])
+  await installTestSigner(page, pubkey, { secretKey })
+  const heldReads: Array<() => void> = []
+  let holdReads = true
+  await page.routeWebSocket(TEST_RELAY_URL, (socket) => {
+    const server = socket.connectToServer()
+    socket.onMessage((message) => {
+      const frame: unknown =
+        typeof message === "string" ? JSON.parse(message) : null
+      const isSettingsRead =
+        Array.isArray(frame) &&
+        frame[0] === "REQ" &&
+        frame
+          .slice(2)
+          .some(
+            (filter) =>
+              isRecord(filter) &&
+              Array.isArray(filter.kinds) &&
+              filter.kinds.includes(30_078)
+          )
+      if (holdReads && isSettingsRead)
+        heldReads.push(() => server.send(message))
+      else server.send(message)
+    })
+  })
+  await page.goto(`${merchantUrl}/shipping`)
+  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await page
+    .getByText("Listing area and fixed-shipping defaults", { exact: true })
+    .click()
+  await expect.poll(() => heldReads.length).toBeGreaterThan(0)
+  const destination = page.getByRole("combobox", {
+    name: "Search countries to add...",
+  })
+  await destination.fill("Canada")
+  await page.getByRole("option", { name: /CA Canada/ }).click()
+  holdReads = false
+  for (const release of heldReads) release()
+  await expect(
+    page.getByRole("button", { name: "Load signed settings", exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Save changes" })
+  ).toBeDisabled()
+  // Also exercise the submit handler, rather than relying on a disabled button.
+  await page
+    .locator("details form")
+    .evaluate((form) => (form as HTMLFormElement).requestSubmit())
+  expect(
+    (await readTestRelayEvents({ kinds: [30_078], authors: [pubkey] })).map(
+      ({ id }) => id
+    )
+  ).toEqual([signed.id])
+  await page
+    .getByRole("button", { name: "Load signed settings", exact: true })
+    .click()
+  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Remove United States" })
+  ).toBeVisible()
+  await expect(page.getByRole("button", { name: "Remove Canada" })).toHaveCount(
+    0
+  )
+  await destination.fill("Canada")
+  await page.getByRole("option", { name: /CA Canada/ }).click()
+  await page.getByRole("button", { name: "Save changes" }).click()
+  await expect(
+    page.getByText("Shipping settings published to relays.")
+  ).toBeVisible({ timeout: 20_000 })
+  const [updated] = await readTestRelayEvents({
+    kinds: [30_078],
+    authors: [pubkey],
+  })
+  const saved = JSON.parse(updated!.content) as typeof settings
+  expect(saved.countries.map(({ code }) => code)).toEqual(["US", "CA"])
+  expect(saved.countries[0]!.exclude).toEqual(["AK"])
+  expect(saved.shipsFrom).toEqual(settings.shipsFrom)
+})
+
 test("merchant product editing preserves signed area after cancelled place search @merchant", async ({
   page,
 }) => {

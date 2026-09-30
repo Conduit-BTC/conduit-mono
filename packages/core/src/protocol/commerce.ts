@@ -222,6 +222,13 @@ export interface CommerceQueryMeta {
   capped?: boolean
   capabilities: CommerceCapabilities
   fetchedAt: number
+  /** One ranked product-index response; coverage never implies corpus completeness. */
+  productSearch?: {
+    coverage: "complete" | "partial" | "unavailable"
+    relayUrls: string[]
+    /** Live Congee has not demonstrated tag filtering before the result cap. */
+    tagScopeVerified: boolean
+  }
   nextCursor?: string
   /** Present on private-message reads (order/DM surfaces). */
   inbox?: PrivateInboxReadStatus
@@ -314,8 +321,11 @@ export interface MarketplaceProductsQuery {
   /** Live account session authority for relay admission after policy awaits. */
   shouldContinue?: () => boolean
   textQuery?: string
-  /** Query the configured NIP-50 product index in addition to bounded catalog reads. */
+  /** Query one NIP-50 product index and preserve its relevance order. */
+  signal?: AbortSignal
   searchIndex?: boolean
+  /** Browse snapshots before and during lazy exact-coordinate refresh. */
+  onProgress?: (result: CommerceResult<CommerceProductRecord[]>) => void
   tags?: string[]
   sort?: CommerceSortMode
   limit?: number
@@ -1128,7 +1138,12 @@ function isBoundedFanoutSaturated(
 async function runFetchEventsFanoutDetailed(
   filter: NDKFilter,
   options?: Parameters<typeof fetchEventsFanoutDetailed>[1]
-): Promise<{ events: NDKEvent[]; degraded: boolean; capped: boolean }> {
+): Promise<{
+  events: NDKEvent[]
+  degraded: boolean
+  capped: boolean
+  coverage: "complete" | "partial" | "unavailable"
+}> {
   if (testOverrides.fetchEventsFanoutDetailed) {
     const result = await testOverrides.fetchEventsFanoutDetailed(
       filter,
@@ -1136,6 +1151,13 @@ async function runFetchEventsFanoutDetailed(
     )
     return {
       events: result.events,
+      coverage:
+        result.relays.length === 0 ||
+        result.relays.every((relay) => relay.status === "failed")
+          ? "unavailable"
+          : result.relays.every((relay) => relay.status === "success")
+            ? "complete"
+            : "partial",
       degraded:
         result.relays.length === 0 ||
         result.relays.some((relay) => relay.status !== "success"),
@@ -1156,6 +1178,12 @@ async function runFetchEventsFanoutDetailed(
     )
     return {
       events: result.events,
+      coverage:
+        result.successfulRelayUrls.length === 0
+          ? "unavailable"
+          : result.failedRelayUrls.length
+            ? "partial"
+            : "complete",
       degraded:
         result.successfulRelayUrls.length === 0 ||
         result.failedRelayUrls.length > 0,
@@ -1172,6 +1200,7 @@ async function runFetchEventsFanoutDetailed(
     )) as NDKEvent[]
     return {
       events,
+      coverage: "complete",
       degraded: false,
       capped: isBoundedFanoutSaturated(filter, events),
     }
@@ -1180,6 +1209,13 @@ async function runFetchEventsFanoutDetailed(
   const result = await fetchEventsFanoutDetailed(filter, options)
   return {
     events: result.events,
+    coverage:
+      result.relays.length === 0 ||
+      result.relays.every((relay) => relay.status === "failed")
+        ? "unavailable"
+        : result.relays.every((relay) => relay.status === "success")
+          ? "complete"
+          : "partial",
     degraded:
       result.relays.length === 0 ||
       result.relays.some((relay) => relay.status !== "success"),
@@ -3722,6 +3758,7 @@ async function fetchProductDeletionTimestamps(
     authenticatedPubkey?: string | null
     /** Final-I/O exclusions without changing generic relay planning authority. */
     accountPubkey?: string | null
+    signal?: AbortSignal
     shouldContinue?: () => boolean
     fetchEvents?: typeof runFetchEventsFanout
     onSkippedRelayUrls?: (relayUrls: readonly string[]) => void
@@ -3825,6 +3862,7 @@ async function fetchProductDeletionTimestamps(
                 accountNetworkLocalStateRepository:
                   testOverrides.accountNetworkLocalStateRepository,
                 shouldContinue: options.shouldContinue,
+                signal: options.signal,
                 connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
                 fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
               })
@@ -4104,12 +4142,16 @@ async function fetchPublicProductRecords(query: {
   authenticatedPubkey?: string | null
   /** Final-I/O exclusions without changing generic relay planning authority. */
   accountPubkey?: string | null
+  signal?: AbortSignal
   shouldContinue?: () => boolean
   extraRelayUrls?: readonly string[]
   searchText?: string
   limit?: number
   readPolicy?: CommerceReadPolicy
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
+  onSearchCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
+  /** Ranked discovery paints from signed hits and known local evidence first. */
+  localDeletionEvidenceOnly?: boolean
 }): Promise<CommerceProductRecord[]> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.PRODUCT],
@@ -4162,24 +4204,33 @@ async function fetchPublicProductRecords(query: {
     accountNetworkLocalStateRepository:
       testOverrides.accountNetworkLocalStateRepository,
     shouldContinue: query.shouldContinue,
+    signal: query.signal,
+    preserveEventOrder: !!query.searchText,
     connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
   })
   query.onTransportStatus?.(result.degraded, result.capped)
+  query.onSearchCoverage?.(result.coverage)
 
-  const deletionTimestamps = await fetchProductDeletionTimestamps(
-    [
-      ...result.events.map(deletionCandidateFromEvent),
-      ...(query.deletionCandidates ?? []).map(deletionCandidateFromRecord),
-    ],
-    {
-      readPolicy: query.deletionReadPolicy ?? query.readPolicy,
-      fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
-      authenticatedPubkey: query.authenticatedPubkey,
-      accountPubkey: query.accountPubkey,
-      shouldContinue: query.shouldContinue,
-    }
-  )
+  const deletionTimestamps = query.localDeletionEvidenceOnly
+    ? await getLocalProductDeletionTimestamps(
+        undefined,
+        uniqueStrings(result.events.map((event) => event.pubkey))
+      )
+    : await fetchProductDeletionTimestamps(
+        [
+          ...result.events.map(deletionCandidateFromEvent),
+          ...(query.deletionCandidates ?? []).map(deletionCandidateFromRecord),
+        ],
+        {
+          readPolicy: query.deletionReadPolicy ?? query.readPolicy,
+          fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
+          authenticatedPubkey: query.authenticatedPubkey,
+          accountPubkey: query.accountPubkey,
+          shouldContinue: query.shouldContinue,
+          signal: query.signal,
+        }
+      )
   return dedupeProductEvents(result.events, deletionTimestamps)
 }
 
@@ -4417,6 +4468,193 @@ export async function getFollowPubkeys(
   }
 }
 
+/** Ranked discovery is independent of a broad catalog sweep. Only the returned
+ * coordinates and their family context can survive into this response. */
+function projectRankedProductSearch(
+  hits: CommerceProductRecord[],
+  records: CommerceProductRecord[],
+  query: MarketplaceProductsQuery
+): CommerceProductRecord[] {
+  records = [...selectLatestProductRecordsByAddress(records).values()]
+  const wanted = new Set(hits.map((record) => record.addressId))
+  const byAddress = new Map(records.map((record) => [record.addressId, record]))
+  const eligible = new Set(
+    filterExactProductRecordsForRead(records, wanted).map(
+      (record) => record.addressId
+    )
+  )
+  const ranks = new Map<string, number>()
+  hits.forEach((hit, index) => {
+    const current = byAddress.get(hit.addressId)
+    if (!current || !eligible.has(current.addressId)) return
+    const address = getVariationParentAddress(current) ?? current.addressId
+    if (!ranks.has(address)) ranks.set(address, index)
+  })
+  return applyProductLimit(
+    filterProductRecordsForRead(records)
+      .filter(
+        (record) =>
+          ranks.has(record.addressId) &&
+          productMatchesQuery(record, { ...query, textQuery: undefined })
+      )
+      .sort(
+        (left, right) =>
+          ranks.get(left.addressId)! - ranks.get(right.addressId)!
+      ),
+    query.limit
+  )
+}
+
+async function getRankedMarketplaceProducts(
+  query: MarketplaceProductsQuery
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  const assertCurrent = () => {
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+  }
+  assertCurrent()
+  const authors = query.merchantPubkey
+    ? [query.merchantPubkey]
+    : query.authorPubkeys
+  const allowedAuthors = authors ? new Set(authors) : null
+  const transport: { coverage: "complete" | "partial" | "unavailable" } = {
+    coverage: "unavailable",
+  }
+  let capped = false
+  // Keep relay capabilities minimal. Perspective/merchant/category eligibility
+  // is a client filter of this one ranked response, never independently ranked chunks.
+  const hits = (
+    await fetchPublicProductRecords({
+      searchText: query.textQuery!.trim(),
+      accountPubkey: query.accountPubkey,
+      authenticatedPubkey: query.authenticatedPubkey,
+      signal: query.signal,
+      shouldContinue: query.shouldContinue,
+      limit: 100,
+      localDeletionEvidenceOnly: true,
+      readPolicy: {
+        maxRelays: 1,
+        connectTimeoutMs: 2_000,
+        fetchTimeoutMs: 3_000,
+      },
+      onTransportStatus: (_, value) => {
+        capped = value
+      },
+      onSearchCoverage: (value) => {
+        transport.coverage = value
+      },
+    })
+  ).filter(
+    (record) =>
+      record.dTag !== null &&
+      (!allowedAuthors || allowedAuthors.has(record.product.pubkey))
+  )
+  assertCurrent()
+  if (transport.coverage === "unavailable")
+    throw new Error("Product search is unavailable")
+  const wanted = hits.map((record) => record.addressId)
+  const cached = await getCachedExactProductRecords(wanted, hits).catch(
+    () => []
+  )
+  assertCurrent()
+  const deletions = await getLocalProductDeletionTimestamps(
+    undefined,
+    uniqueStrings(hits.map((record) => record.product.pubkey))
+  )
+  const initialRecords = mergeCachedAndLiveProductRecords({
+    cached,
+    live: hits,
+    deletionTimestamps: deletions,
+  })
+  const resultFor = (
+    records: CommerceProductRecord[],
+    refreshing: boolean,
+    refreshMeta?: CommerceQueryMeta
+  ): CommerceResult<CommerceProductRecord[]> => {
+    const partial =
+      capped ||
+      !!allowedAuthors ||
+      !!query.tags?.length ||
+      transport.coverage !== "complete"
+    const meta = createMeta(
+      "marketplace_products",
+      "public",
+      { ...PRODUCT_CAPABILITIES, sortModes: [] },
+      {
+        stale: refreshing || !!refreshMeta?.stale,
+        degraded: partial || refreshing || !!refreshMeta?.degraded,
+        capped: capped || !!refreshMeta?.capped,
+      }
+    )
+    meta.productSearch = {
+      coverage: partial ? "partial" : transport.coverage,
+      tagScopeVerified: !query.tags?.length,
+      relayUrls: config.searchIndexRelayUrls.slice(0, 1),
+    }
+    return {
+      data: withProductFamilyReadEvidence(
+        projectRankedProductSearch(hits, records, query),
+        meta
+      ),
+      meta,
+    }
+  }
+  assertCurrent()
+  const initial = resultFor(initialRecords, wanted.length > 0)
+  query.onProgress?.(initial)
+  assertCurrent()
+  if (wanted.length === 0) return initial
+  // Seed the existing exact-product reader with verified discovery evidence.
+  // Cards have already painted; revisions/deletions/family context arrive lazily.
+  try {
+    await cacheProductRecords(initialRecords)
+  } catch {
+    // A failed seed write must not prevent live revision/deletion reads.
+  }
+  assertCurrent()
+  const project = (snapshot: ProductsByIdsResult) =>
+    resultFor(
+      snapshot.data.flatMap(
+        (record) =>
+          record.exactReadContext?.records ?? [
+            record,
+            ...(record.family
+              ? [record.family.parent, ...record.family.children]
+              : []),
+          ]
+      ),
+      !!snapshot.meta.stale,
+      snapshot.meta
+    )
+  try {
+    const refreshed = await readProductsByIds(
+      wanted,
+      {
+        accountPubkey: query.accountPubkey,
+        authenticatedPubkey: query.authenticatedPubkey,
+        shouldContinue: () =>
+          !query.signal?.aborted && query.shouldContinue?.() !== false,
+        relayHintsByAddressId: Object.fromEntries(
+          hits.map((record) => [record.addressId, record.sourceRelayUrls])
+        ),
+        onProgress: query.onProgress
+          ? (snapshot) => {
+              assertCurrent()
+              query.onProgress?.(project(snapshot))
+            }
+          : undefined,
+      },
+      initialRecords
+    )
+    assertCurrent()
+    return project(refreshed)
+  } catch {
+    assertCurrent()
+    return initial
+  }
+}
+
 export async function getMarketplaceProducts(
   query: MarketplaceProductsQuery = {}
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
@@ -4427,8 +4665,23 @@ export async function getMarketplaceProducts(
   ) {
     return {
       data: [],
-      meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
+      meta: {
+        ...createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
+        ...(query.searchIndex && query.textQuery?.trim()
+          ? {
+              productSearch: {
+                coverage: "complete" as const,
+                relayUrls: [],
+                tagScopeVerified: true,
+              },
+            }
+          : {}),
+      },
     }
+  }
+
+  if (query.searchIndex && query.textQuery?.trim()) {
+    return getRankedMarketplaceProducts(query)
   }
 
   try {
@@ -4443,45 +4696,8 @@ export async function getMarketplaceProducts(
     const rawEventLimit = getProductRawEventLimit(query.limit)
     let transportDegraded = false
     let readCapped = false
-    let searchDegraded = false
-    let searchCapped = false
-    const searchText = query.searchIndex ? query.textQuery?.trim() : undefined
-    const searchAuthorChunks = authorPubkeys
-      ? chunkStrings(uniqueStrings(authorPubkeys), PRODUCT_AUTHOR_CHUNK_SIZE)
-      : [undefined]
-    const searchRecordChunksPromise = searchText
-      ? mapWithConcurrency(
-          searchAuthorChunks,
-          PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
-          async (authors) =>
-            await fetchPublicProductRecords({
-              authors,
-              searchText,
-              authenticatedPubkey: query.authenticatedPubkey,
-              accountPubkey: query.accountPubkey,
-              shouldContinue: query.shouldContinue,
-              limit: 100,
-              readPolicy: {
-                maxRelays: 1,
-                connectTimeoutMs: 2_000,
-                fetchTimeoutMs: 3_000,
-              },
-              onTransportStatus: (degraded, capped) => {
-                searchDegraded ||= degraded
-                searchCapped ||= capped
-              },
-            }).catch((error: unknown) => {
-              if (query.shouldContinue?.() === false) throw error
-              searchDegraded = true
-              return [] as CommerceProductRecord[]
-            })
-        )
-      : Promise.resolve([] as CommerceProductRecord[][])
-    const fetchedRecordsPromise = fetchPublicProductRecords({
-      authors:
-        authorPubkeys && authorPubkeys.length > 0
-          ? uniqueStrings(authorPubkeys)
-          : undefined,
+    const fetchedRecords = await fetchPublicProductRecords({
+      authors: authorPubkeys ? uniqueStrings(authorPubkeys) : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
       shouldContinue: query.shouldContinue,
@@ -4492,43 +4708,22 @@ export async function getMarketplaceProducts(
         transportDegraded ||= degraded
         readCapped ||= capped
       },
-    }).catch((error: unknown) => {
-      if (!searchText || query.shouldContinue?.() === false) throw error
-      transportDegraded = true
-      return [] as CommerceProductRecord[]
     })
-    const [fetchedRecords, searchRecordChunks] = await Promise.all([
-      fetchedRecordsPromise,
-      searchRecordChunksPromise,
-    ])
-    const rawSearchRecords = searchRecordChunks.flat()
-    const allowedAuthors = authorPubkeys ? new Set(authorPubkeys) : null
-    const searchRecords = allowedAuthors
-      ? rawSearchRecords.filter((record) =>
-          allowedAuthors.has(record.product.pubkey)
-        )
-      : rawSearchRecords
-    const searchAddresses = new Set(
-      searchRecords.map((record) => record.addressId)
-    )
     const deletionTimestamps = await getLocalProductDeletionTimestamps(
       query.merchantPubkey,
       query.authorPubkeys
     )
     const records = mergeCachedAndLiveProductRecords({
       cached,
-      live: [...fetchedRecords, ...searchRecords],
+      live: fetchedRecords,
       deletionTimestamps,
     })
     await cacheProductRecords(records)
 
     const filtered = applyProductLimit(
       sortProducts(
-        filterProductRecordsForRead(records).filter(
-          (record) =>
-            productMatchesQuery(record, query) ||
-            (searchAddresses.has(record.addressId) &&
-              productMatchesQuery(record, { ...query, textQuery: undefined }))
+        filterProductRecordsForRead(records).filter((record) =>
+          productMatchesQuery(record, query)
         ),
         query.sort
       ),
@@ -4540,13 +4735,10 @@ export async function getMarketplaceProducts(
       "public",
       PRODUCT_CAPABILITIES,
       {
-        capped:
-          readCapped || searchCapped || fetchedRecords.length >= rawEventLimit,
+        capped: readCapped || fetchedRecords.length >= rawEventLimit,
         degraded:
           transportDegraded ||
           readCapped ||
-          searchDegraded ||
-          searchCapped ||
           fetchedRecords.length >= rawEventLimit,
       }
     )
@@ -5853,9 +6045,11 @@ function aggregateProductAvailabilityCoverage(
 // diagnostic so checkout can distinguish unreachable relays, partial reads,
 // cache-only confirmation, filtered listings, malformed references, and truly
 // missing listings instead of one generic failure.
-export async function getProductsByIds(
+// Ranked search may provide already verified records when persistence failed.
+async function readProductsByIds(
   productIds: string[],
-  options: ProductsByIdsOptions = {}
+  options: ProductsByIdsOptions,
+  verifiedRecords: readonly CommerceProductRecord[] = []
 ): Promise<ProductsByIdsResult> {
   const lookups = productIds.map((productId) => {
     const { address, addressId } = getProductLookupIds(productId)
@@ -5909,11 +6103,19 @@ export async function getProductsByIds(
 
   const authors = uniqueStrings(addresses.map((address) => address.pubkey))
   const wanted = new Set(lookups.flatMap((lookup) => lookup.addressId ?? []))
-  const initialCached = await getCachedExactProductRecords([...wanted])
+  const persisted = await getCachedExactProductRecords(
+    [...wanted],
+    verifiedRecords
+  )
   const initialDeletions = await getLocalProductDeletionTimestamps(
     undefined,
     authors
   )
+  const initialCached = mergeCachedAndLiveProductRecords({
+    cached: persisted,
+    live: [...verifiedRecords],
+    deletionTimestamps: initialDeletions,
+  })
   const context: ExactProductReadContext = {
     cached: initialCached,
     deletions: initialDeletions,
@@ -6082,6 +6284,13 @@ export async function getProductsByIds(
   if (options.shouldContinue?.() === false)
     throw new NostrSignerError("authority_changed")
   return latestPublished ?? aggregate()
+}
+
+export async function getProductsByIds(
+  productIds: string[],
+  options: ProductsByIdsOptions = {}
+): Promise<ProductsByIdsResult> {
+  return readProductsByIds(productIds, options)
 }
 
 /** Shared preparation and publication state for one exact read invocation. */

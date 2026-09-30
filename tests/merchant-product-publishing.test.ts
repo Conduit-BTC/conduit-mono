@@ -333,6 +333,51 @@ describe("merchant product event delivery", () => {
     )
     expect(reloaded?.geohash).toBe("9q9p")
   })
+  it("preserves a signed legacy content location through cache reload and title editing", async () => {
+    const dTag = "legacy-content-location"
+    const event = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.PRODUCT,
+          created_at: Math.floor(NOW / 1000),
+          content: JSON.stringify({
+            ...makeProduct(dTag),
+            location: "Legacy nearby town",
+          }),
+          tags: [
+            ["d", dTag],
+            ["price", "10", "USD"],
+          ],
+        },
+        MERCHANT_SECRET
+      )
+    )
+    await cacheSignedProductListingEvent(event)
+    const reloaded = await readProductAfterCacheReload(
+      structuredClone(cachedProducts),
+      dTag
+    )
+    expect(reloaded?.location).toBe("Legacy nearby town")
+    const edited = buildProductListingEventDraft({
+      product: { ...reloaded!, title: "Updated legacy title" },
+      dTag,
+    })
+    expect(edited.tags).toContainEqual(["location", "Legacy nearby town"])
+    const updated = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        {
+          kind: edited.kind,
+          created_at: Math.floor(NOW / 1000) + 1,
+          content: edited.content,
+          tags: edited.tags,
+        },
+        MERCHANT_SECRET
+      )
+    )
+    expect(parseProductEvent(updated).location).toBe("Legacy nearby town")
+  })
   it("routes product and shipping events through the commerce author intent", async () => {
     const relayUrl = "wss://relay.example"
     const intents: string[] = []
