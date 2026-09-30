@@ -134,6 +134,43 @@ function legacyForm(
 }
 
 describe("merchant product drafts", () => {
+  it("recovers explicit shared measurements and independent variation fields", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const variations = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      shareShippingMeasurements: true,
+      axes: [createProductVariationAxis("Size", "Small, Large")],
+    })
+    variations.rows[0] = {
+      ...variations.rows[0]!,
+      shippingWeightGrams: "250",
+      shippingLengthCm: "12",
+      shippingWidthCm: "8",
+      shippingHeightCm: "2",
+      shippingWeightAllowanceGrams: "30",
+      shippingHandling: "1.25",
+      shippingWeightUnit: "lb",
+    }
+    const values = form({ shippingPricingMode: "weight_table", variations })
+    expect(saveProductDraft(draftTarget, values, storage)).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft?.variations).toEqual(
+      variations
+    )
+    const authoringTarget = {
+      merchantPubkey: draftTarget.merchantPubkey,
+      productAddressId: `30402:${draftTarget.merchantPubkey}:one`,
+      rootEventId: "root-one",
+    }
+    expect(
+      saveProductVariationAuthoringState(authoringTarget, variations, storage)
+    ).toBe(true)
+    expect(
+      loadProductVariationAuthoringState(authoringTarget, storage).state
+    ).toEqual(variations)
+  })
+
   it("recovers product packing adjustments and imperial units without changing canonical grams", () => {
     const storage = new MemoryStorage()
     const draftTarget = target()

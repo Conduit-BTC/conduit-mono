@@ -52,6 +52,7 @@ const mobileTestFiles = [
 ]
 const responsiveCoverageFiles = [
   "**/merchant-shipping-tables.playwright.ts",
+  "**/merchant-variation-shipping.playwright.ts",
   "**/not-found.playwright.ts",
   "**/merchant-product-image-preview.playwright.ts",
 ]

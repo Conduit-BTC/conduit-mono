@@ -10,6 +10,8 @@ The policy keeps the standard `d`, `title`, `price`, `country`, and `service` ta
 
 Conduit's earlier fixed-only reader rejects the unfamiliar extension and falls back to merchant coordination. Other clients must detect the extension before offering automatic shipping. Existing product-scoped fixed kind `30406` options continue to use their existing pricing and destination rules. Switching or deleting one product never withdraws a reusable policy used by other products.
 
+Sharing a rate table across variations does not share measurements. Merchant preserves each existing variation's signed weight, dimensions, packing, and handling. Individual mode requires a positive weight for every physical variation using the table; optional dimensions must include all three measurements. Merchants can explicitly choose the same parent weight and dimensions for all physical variations, using the heaviest and largest variation for a conservative estimate. Packing and handling remain separate per variation. This choice is retained in local authoring state; publication still signs explicit measurements on each product. Digital variations publish without physical shipping terms.
+
 ## Calculation and eligibility
 
 A compatible group shares merchant, policy coordinate, and exact policy event revision. The calculation is:

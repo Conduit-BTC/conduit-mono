@@ -77,6 +77,10 @@ import { ProductPaymentSetupNotice } from "../components/ProductPaymentSetupNoti
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
 import { ProductShippingMeasurements } from "../components/ProductShippingMeasurements"
+import {
+  SharedVariationMeasurementsToggle,
+  VariationShippingMeasurements,
+} from "../components/VariationShippingMeasurements"
 import { getProductShippingMeasurements } from "../lib/shippingPolicyForm"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import {
@@ -215,6 +219,7 @@ import {
   setProductVariationCombinationIncluded,
   updateProductVariationAxis,
   updateProductVariationInheritance,
+  updateProductVariationMeasurements,
   updateProductVariationOverride,
   type ProductVariationFormResult,
 } from "../lib/productVariations"
@@ -4261,6 +4266,19 @@ function ProductsPage() {
 
                 {form.variations.enabled && (
                   <>
+                    <SharedVariationMeasurementsToggle
+                      form={form}
+                      disabled={preservingFulfillment}
+                      onChange={(checked) =>
+                        setForm((previous) => ({
+                          ...previous,
+                          variations: {
+                            ...previous.variations,
+                            shareShippingMeasurements: checked,
+                          },
+                        }))
+                      }
+                    />
                     <div className="grid gap-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
@@ -4450,6 +4468,8 @@ function ProductsPage() {
                             (combination, index) => (
                               <div
                                 key={combination.identity}
+                                role="group"
+                                aria-label={`Variation ${combination.label}`}
                                 className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
                               >
                                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -4726,7 +4746,10 @@ function ProductsPage() {
                                         htmlFor={`product-variation-shipping-${index}`}
                                         className="text-xs"
                                       >
-                                        Shipping ({form.currency})
+                                        {form.shippingPricingMode ===
+                                        "weight_table"
+                                          ? "Shipping table"
+                                          : `Shipping (${form.currency})`}
                                       </Label>
                                       <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
                                         <input
@@ -4746,7 +4769,10 @@ function ProductsPage() {
                                             }))
                                           }
                                         />
-                                        Base
+                                        {form.shippingPricingMode ===
+                                        "weight_table"
+                                          ? "Use table"
+                                          : "Base"}
                                       </label>
                                     </div>
                                     <Input
@@ -4759,7 +4785,13 @@ function ProductsPage() {
                                       inputMode={getProductAmountInputMode(
                                         form.currency
                                       )}
-                                      placeholder="Coordinate after order"
+                                      placeholder={
+                                        form.shippingPricingMode ===
+                                          "weight_table" &&
+                                        combination.inheritShipping
+                                          ? "Uses merchant shipping table"
+                                          : "Coordinate after order"
+                                      }
                                       onChange={(event) => {
                                         if (
                                           !isPlainDecimalInput(
@@ -4782,6 +4814,23 @@ function ProductsPage() {
                                     />
                                   </div>
                                 </div>
+                                <VariationShippingMeasurements
+                                  form={form}
+                                  combination={combination}
+                                  index={index}
+                                  disabled={preservingFulfillment}
+                                  onChange={(update) =>
+                                    setForm((previous) => ({
+                                      ...previous,
+                                      variations:
+                                        updateProductVariationMeasurements(
+                                          previous.variations,
+                                          combination.identity,
+                                          update
+                                        ),
+                                    }))
+                                  }
+                                />
                               </div>
                             )
                           )}

@@ -7,6 +7,7 @@ import {
 } from "nostr-tools/pure"
 import {
   buildShippingPolicyEventDraft,
+  buildProductListingEventDraft,
   getMerchantShippingPolicyCoordinate,
   type ShippingPolicyV1,
   parseShippingOptionEvent,
@@ -24,6 +25,10 @@ import {
   createProductVariationAxis,
   generateProductVariationRows,
   getProductVariationFormState,
+  getProductVariationFormError,
+  parseProductVariationFormState,
+  reconcileProductVariationDraftResolution,
+  updateProductVariationMeasurements,
 } from "../apps/merchant/src/lib/productVariations"
 import { getMerchantSetupReadiness } from "../apps/merchant/src/lib/readiness"
 import { validateProductPublishForm } from "../apps/merchant/src/lib/productForm"
@@ -324,12 +329,18 @@ describe("merchant shipping table authoring", () => {
     // Shared policy remains unchanged; switching one product generates no withdrawal.
     expect(option.eventId).toBe(event.id)
   })
-  test("table variations inherit measurements and remain editable after publication", async () => {
+  test("table variations share measurements only with an explicit authoring choice", async () => {
     const state = generateProductVariationRows({
       ...createEmptyProductVariationForm(),
       enabled: true,
       axes: [createProductVariationAxis("Size", "Small, Large", 0)],
     })
+    state.shareShippingMeasurements = true
+    state.rows = state.rows.map((row) => ({
+      ...row,
+      shippingWeightAllowanceGrams: "50",
+      shippingHandling: "1.25",
+    }))
     const initial = buildProductFamilyChangePlan({
       parentDTag: "one",
       baseProduct: product,
@@ -366,6 +377,7 @@ describe("merchant shipping table authoring", () => {
       family.variations
     )
     expect(restored.supported).toBe(true)
+    expect(restored.state.shareShippingMeasurements).not.toBe(true)
     expect(
       restored.state.rows.every(
         (row) => row.inheritShipping && !row.shippingResolution
@@ -374,7 +386,7 @@ describe("merchant shipping table authoring", () => {
     const changed = buildProductFamilyChangePlan({
       parentDTag: "one",
       baseProduct: { ...family.root.product, shippingWeightGrams: 300 },
-      variations: restored.state,
+      variations: { ...restored.state, shareShippingMeasurements: true },
       currency: "USD",
       fulfillmentIntent: tableIntent,
       authoringCountries: [],
@@ -389,6 +401,226 @@ describe("merchant shipping table authoring", () => {
     expect(
       prepared.every((target) => target.product.shippingWeightGrams === 300)
     ).toBe(true)
+  })
+  test("family edits preserve distinct table measurements and packing adjustments", async () => {
+    const state = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("Size", "Small, Large", 0)],
+    })
+    state.rows = state.rows.map((row, index) => ({
+      ...row,
+      shippingWeightGrams: String(200 + index * 300),
+      shippingWeightAllowanceGrams: String(20 + index * 30),
+      shippingHandling: String(1 + index),
+      shippingLengthCm: String(10 + index),
+      shippingWidthCm: "5",
+      shippingHeightCm: "2",
+    }))
+    const initial = buildProductFamilyChangePlan({
+      parentDTag: "one",
+      baseProduct: product,
+      variations: state,
+      currency: "USD",
+      fulfillmentIntent: tableIntent,
+      authoringCountries: [],
+    })
+    const records = initial.desired.map((target, index) => ({
+      ...target,
+      addressId: target.product.id,
+      eventId: `existing-${index}`,
+      eventCreatedAt: 20,
+    }))
+    const family = {
+      root: records[0]!,
+      variations: records.slice(1),
+      orphanVariation: false,
+    }
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    )
+    expect(restored.state.shareShippingMeasurements).not.toBe(true)
+    const change = buildProductFamilyChangePlan({
+      parentDTag: "one",
+      baseProduct: {
+        ...family.root.product,
+        title: "Edited family",
+        shippingWeightGrams: 900,
+      },
+      variations: restored.state,
+      currency: "USD",
+      fulfillmentIntent: tableIntent,
+      authoringCountries: [],
+      existing: family,
+    })
+    const prepared = await prepareProductPublicationListings(
+      change.publish,
+      { merchantPubkey: pubkey },
+      dependencies
+    )
+    const children = prepared.filter(
+      ({ product }) => product.type === "variation"
+    )
+    expect(children.map(({ product }) => product.shippingWeightGrams)).toEqual([
+      200, 500,
+    ])
+    expect(
+      children.map(({ product }) => product.shippingWeightAllowanceGrams)
+    ).toEqual([20, 50])
+    expect(
+      children.map(({ product }) => product.shippingHandling?.amount)
+    ).toEqual([1, 2])
+    expect(
+      children.map(({ product }) => product.shippingDimensionsCm?.length)
+    ).toEqual([10, 11])
+    const shared = buildProductFamilyChangePlan({
+      parentDTag: "one",
+      baseProduct: {
+        ...family.root.product,
+        shippingWeightGrams: 900,
+        shippingDimensionsCm: { length: 30, width: 20, height: 10 },
+      },
+      variations: { ...restored.state, shareShippingMeasurements: true },
+      currency: "USD",
+      fulfillmentIntent: tableIntent,
+      authoringCountries: [],
+      existing: family,
+    })
+    const sharedChildren = (
+      await prepareProductPublicationListings(
+        shared.publish,
+        { merchantPubkey: pubkey },
+        dependencies
+      )
+    ).filter(({ product }) => product.type === "variation")
+    expect(
+      sharedChildren.map(({ product }) => product.shippingWeightGrams)
+    ).toEqual([900, 900])
+    expect(
+      sharedChildren.every(
+        ({ product }) => product.shippingDimensionsCm?.length === 30
+      )
+    ).toBe(true)
+    expect(
+      sharedChildren.map(({ product }) => product.shippingHandling?.amount)
+    ).toEqual([1, 2])
+    const wire = buildProductListingEventDraft({
+      product: sharedChildren[0]!.product,
+      dTag: sharedChildren[0]!.dTag,
+    })
+    expect(wire.tags).toContainEqual(["weight", "900", "g"])
+    expect(wire.tags).toContainEqual(["dim", "30x20x10", "cm"])
+  })
+  test("individual table rows require weights and complete optional dimensions; drafts retain the explicit choice", () => {
+    const state = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("Size", "Small, Large", 0)],
+    })
+    const options = {
+      shippingPricingMode: "weight_table",
+      baseFormat: "physical",
+    }
+    expect(getProductVariationFormError(state, "USD", options)).toContain(
+      "Small: Add a shipping weight"
+    )
+    const one = updateProductVariationMeasurements(
+      state,
+      state.rows[0]!.identity,
+      { shippingWeightGrams: "250", shippingLengthCm: "10" }
+    )
+    expect(getProductVariationFormError(one, "USD", options)).toContain(
+      "All three dimensions"
+    )
+    const complete = { ...one, shareShippingMeasurements: true }
+    expect(getProductVariationFormError(complete, "USD", options)).toBeNull()
+    expect(
+      parseProductVariationFormState(JSON.parse(JSON.stringify(complete)))
+    ).toMatchObject(complete)
+    expect(
+      parseProductVariationFormState({
+        ...complete,
+        shareShippingMeasurements: "yes",
+      })
+    ).toBeNull()
+    expect(() =>
+      buildProductFamilyChangePlan({
+        parentDTag: "one",
+        baseProduct: product,
+        variations: state,
+        currency: "USD",
+        fulfillmentIntent: tableIntent,
+        authoringCountries: [],
+      })
+    ).toThrow("Add a shipping weight")
+    const published = {
+      supported: true,
+      state: {
+        ...state,
+        rows: state.rows.map((row) => ({
+          ...row,
+          shippingWeightGrams: "400",
+          shippingHandling: "2",
+        })),
+      },
+    }
+    expect(
+      reconcileProductVariationDraftResolution(published, state).rows[0]
+    ).toMatchObject({ shippingWeightGrams: "400", shippingHandling: "2" })
+  })
+  test("digital variations publish without inherited physical adjustment tags", async () => {
+    const state = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      shareShippingMeasurements: true,
+      axes: [createProductVariationAxis("Edition", "Printed, Download", 0)],
+    })
+    state.rows[1] = {
+      ...state.rows[1]!,
+      format: "digital",
+      shippingWeightGrams: "invalid",
+      shippingHandling: "invalid",
+      shippingWeightAllowanceGrams: "invalid",
+    }
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "one",
+      baseProduct: product,
+      variations: state,
+      currency: "USD",
+      fulfillmentIntent: tableIntent,
+      authoringCountries: [],
+    })
+    const prepared = await prepareProductPublicationListings(
+      plan.publish,
+      { merchantPubkey: pubkey },
+      dependencies
+    )
+    const digital = prepared.find(
+      ({ product }) => product.format === "digital"
+    )!
+    const signed = finalizeEvent(
+      {
+        ...buildProductListingEventDraft({
+          product: digital.product,
+          dTag: digital.dTag,
+        }),
+        created_at: 21,
+      },
+      secret
+    )
+    expect(
+      signed.tags.some(([name]) =>
+        [
+          "weight",
+          "dim",
+          "conduit_shipping_adjustments",
+          "shipping_option",
+        ].includes(name)
+      )
+    ).toBe(false)
+    expect(digital.product.shippingHandling).toBeUndefined()
+    expect(digital.product.shippingWeightAllowanceGrams).toBeUndefined()
   })
   test("verified published tables complete shipping setup without a fixed-price zone", () => {
     const input = { profile: null, shippingConfig: { countries: [] } }

@@ -374,6 +374,10 @@ export function validateProductPublishForm(
       currency,
       {
         preserveExistingFulfillment: options.preserveExistingFulfillment,
+        shippingPricingMode: options.skipShippingMeasurements
+          ? undefined
+          : form.shippingPricingMode,
+        baseFormat: form.format,
         // Each preserved child's baseline is checked at publication. A paid
         // parent does not imply that every existing child has a positive price.
         allowZeroPrice:
