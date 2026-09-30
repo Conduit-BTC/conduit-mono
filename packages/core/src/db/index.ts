@@ -1339,6 +1339,20 @@ export function subscribeToShoppingCartChanges(observer: {
   return () => subscription.unsubscribe()
 }
 
+/** Observe local product-cache commits without loading product contents. */
+export function subscribeToProductCacheChanges(observer: {
+  onChange(): void
+  onError(error: unknown): void
+}): () => void {
+  const subscription = liveQuery(() =>
+    Promise.all([db.products.count(), db.productTombstones.count()])
+  ).subscribe({
+    next: () => observer.onChange(),
+    error: (error) => observer.onError(error),
+  })
+  return () => subscription.unsubscribe()
+}
+
 const CACHE_SCOPE_KEY = "conduit:commerce-cache-scope:v1"
 const FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024
 const FALLBACK_CACHE_PRUNE_TARGET_BYTES = 24 * 1024 * 1024

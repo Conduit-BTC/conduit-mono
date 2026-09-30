@@ -11,8 +11,8 @@
     "lint": "eslint \"src/**/*.ts\""
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260918.1",
+    "@cloudflare/workers-types": "^5.20260926.1",
     "typescript": "^6.0.3",
-    "wrangler": "4.131.1"
+    "wrangler": "4.141.0"
   }
 }

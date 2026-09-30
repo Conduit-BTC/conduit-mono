@@ -9,6 +9,7 @@ import {
   recordRelaySuccess,
   snapshotRelayHealth,
 } from "@conduit/core"
+import { recordRelayRateLimit } from "../packages/core/src/protocol/relay-health"
 
 const T0 = 1_700_000_000_000
 
@@ -53,6 +54,29 @@ describe("relay-health", () => {
     const record = getRelayHealth("wss://a.example.com")
     expect(record?.consecutiveFailures).toBe(0)
     expect(record?.cooldownUntil).toBeNull()
+  })
+
+  it("keeps duplicate subscription throttles within the explicit throttle window", () => {
+    const relay = "wss://a.example.com"
+    for (let index = 0; index < 8; index++) recordRelayRateLimit(relay, T0)
+    expect(getRelayHealth(relay)?.consecutiveFailures).toBe(0)
+    expect(getRelayHealth(relay)?.cooldownUntil).toBeNull()
+    expect(isRelayInCooldown(relay, T0 + 59_999)).toBe(true)
+    expect(partitionByHealth([relay], T0 + 60_000)).toEqual({
+      healthy: [relay],
+      parked: [],
+    })
+  })
+
+  it("preserves a preexisting connection failure cooldown when throttled", () => {
+    const relay = "wss://a.example.com"
+    for (let index = 0; index < 4; index++) recordRelayFailure(relay, T0)
+    const cooldownUntil = getRelayHealth(relay)?.cooldownUntil
+    for (let index = 0; index < 8; index++) recordRelayRateLimit(relay, T0)
+    expect(getRelayHealth(relay)?.consecutiveFailures).toBe(4)
+    expect(getRelayHealth(relay)?.cooldownUntil).toBe(cooldownUntil)
+    expect(isRelayInCooldown(relay, T0 + 60_000)).toBe(true)
+    expect(isRelayInCooldown(relay, T0 + 120_000)).toBe(false)
   })
 
   it("partitions urls into healthy and parked", () => {

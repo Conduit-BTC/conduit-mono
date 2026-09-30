@@ -201,6 +201,7 @@ export {
   pruneCommerceCaches,
   subscribeToWalletDescriptorChanges,
   subscribeToShoppingCartChanges,
+  subscribeToProductCacheChanges,
   pruneShopperTrustSnapshots,
   shopperTrustSnapshotIsExpired,
   SHOPPER_TRUST_SNAPSHOT_MAX_ROWS,
