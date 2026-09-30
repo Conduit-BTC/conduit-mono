@@ -195,6 +195,7 @@ function createRelayHarness() {
   const eventsById = new Map<string, SignedEvent>()
   const publications: PublishedEvent[] = []
   const requests: RelayRequest[] = []
+  const incompleteRequests: RelayRequest[] = []
   let heldPublicationAck: {
     predicate: (event: SignedEvent) => boolean
     capture: (event: SignedEvent) => void
@@ -212,12 +213,17 @@ function createRelayHarness() {
     released: Promise<void>
     captured: boolean
   } | null = null
+  const incompleteReadKinds = new Set<number>()
   const rejectedKinds = new Set<number>()
   let rejectReads = false
 
   return {
     publications,
     requests,
+    incompleteRequests,
+    incompleteReadsForKind(kind: number) {
+      incompleteReadKinds.add(kind)
+    },
     rejectReads(reject: boolean) {
       rejectReads = reject
     },
@@ -374,6 +380,21 @@ function createRelayHarness() {
               )
               for (const event of immediateMatches) {
                 socket.send(JSON.stringify(["EVENT", subscriptionId, event]))
+              }
+              if (
+                filters.some((filter) =>
+                  filter.kinds?.some((kind) => incompleteReadKinds.has(kind))
+                )
+              ) {
+                incompleteRequests.push(structuredClone(request))
+                socket.send(
+                  JSON.stringify([
+                    "CLOSED",
+                    subscriptionId,
+                    "error: synthetic incomplete read",
+                  ])
+                )
+                return
               }
               if (heldResponse && heldMatches.length > 0) {
                 if (!heldResponse.captured) {
@@ -1090,6 +1111,7 @@ test("signed series dates open one market and keep separate buyer choices @marke
   page,
 }) => {
   test.setTimeout(120_000)
+  page.setDefaultTimeout(15_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   const createdAt = Math.floor(Date.now() / 1_000)
@@ -1155,6 +1177,7 @@ test("signed series dates open one market and keep separate buyer choices @marke
     content: "Series soap",
     tags: [
       ["d", "series-soap"],
+      ["image", "https://cdn.conduit.market/conduit-test/template-product.svg"],
       ["title", "Series soap"],
       ["price", "12", "USD"],
       ["type", "simple", "physical"],
@@ -1182,16 +1205,47 @@ test("signed series dates open one market and keep separate buyer choices @marke
   expect(new URL(page.url()).searchParams.get("occurrence")).toBe(
     eventCoordinate(first)
   )
+  relay.incompleteReadsForKind(31923)
+  await page.reload()
   await expect(page.getByRole("heading", { name: "Series soap" })).toBeVisible()
   await page.getByRole("combobox", { name: "Choose date" }).click()
   await page.getByRole("option").last().click()
   expect(new URL(page.url()).searchParams.get("occurrence")).toBe(
     eventCoordinate(second)
   )
+  expect(
+    relay.incompleteRequests.some((request) =>
+      request.matchedEventIds.includes(second.id)
+    )
+  ).toBe(true)
+  await gotoAs(
+    page,
+    marketUrl,
+    `/products/${encodeURIComponent(eventCoordinate(product))}?event=${encodeURIComponent(nip19.naddrEncode({ kind: 30409, pubkey: ORGANIZER_PUBKEY, identifier: "series-fair" }))}`,
+    "buyer"
+  )
+  await page.getByRole("combobox", { name: "Choose date" }).click()
+  await page.getByRole("option").last().click()
+  expect(new URL(page.url()).searchParams.get("occurrence")).toBe(
+    eventCoordinate(second)
+  )
+  await expect(
+    page.getByRole("button", { name: /^Add \d+ to cart$/ })
+  ).toBeEnabled()
   await gotoAs(page, merchantUrl, "/events", "merchant")
   await expect(
     page.getByRole("button", { name: /^Open Series Fair\./ })
   ).toHaveCount(2)
+  relay.remove(second)
+  await gotoAs(
+    page,
+    marketUrl,
+    `/events/${nip19.naddrEncode({ kind: 30409, pubkey: ORGANIZER_PUBKEY, identifier: "series-fair" })}`,
+    "buyer"
+  )
+  await page.getByRole("combobox", { name: "Choose date" }).click()
+  await expect(page.getByRole("option").first()).toBeEnabled()
+  await expect(page.getByRole("option").last()).toBeDisabled()
 })
 
 test("Merchant links an approved shop product and Market discovers it without pickup records @market @merchant", async ({
@@ -1510,6 +1564,20 @@ test("two future market products form one order and one private organizer releas
     "Future handoff soap",
     "Future handoff candle",
   ].entries()) {
+    if (index === 1) {
+      relay.seed(
+        signEvent(ORGANIZER_SECRET, {
+          ...market,
+          created_at: createdAt + 1,
+          tags: [
+            ...market.tags,
+            ["prev", market.id],
+            ["merchant", BUYER_PUBKEY, "merchant_present", "Other booth"],
+          ],
+        })
+      )
+      await page.reload()
+    }
     const card = page.getByRole("listitem").filter({ hasText: name })
     await expect(
       card.getByRole("button", { name: "Add", exact: true })
@@ -1874,6 +1942,7 @@ test("organizer generates weekly dates and publishes one signed series @merchant
   page,
 }) => {
   test.setTimeout(120_000)
+  page.setDefaultTimeout(25_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   await gotoAs(page, merchantUrl, "/events/new", "organizer")
@@ -1911,6 +1980,13 @@ test("organizer generates weekly dates and publishes one signed series @merchant
   ])
   await page.locator("#series-new-start").fill("2030-06-15T10:00")
   await page.locator("#series-new-end").fill("2030-06-15T16:00")
+  const heldRefresh = relay.holdRelayRequests(
+    (request) =>
+      uniquePublishedEvents(relay.publications).filter(
+        (event) => event.kind === 31924
+      ).length === 2 &&
+      request.filters.some((filter) => filter.kinds?.includes(30409))
+  )
   await page.getByRole("button", { name: "Add signed date" }).click()
   await expect
     .poll(
@@ -1925,6 +2001,21 @@ test("organizer generates weekly dates and publishes one signed series @merchant
       (event) => event.kind === 31923
     )
   ).toHaveLength(3)
+  await heldRefresh.captured
+  try {
+    // A published schedule is not yet the refreshed editing state.
+    await expect(
+      page.getByRole("button", { name: "Save selected date" })
+    ).toBeDisabled()
+    await expect(
+      page.getByRole("button", { name: "Remove future date" })
+    ).toBeDisabled()
+  } finally {
+    heldRefresh.release()
+  }
+  await expect(
+    page.getByRole("button", { name: "Save selected date" })
+  ).toBeEnabled()
   await page.locator("#series-edit-title").fill("Weekly Future Fair updated")
   await page.getByRole("button", { name: "Save selected date" }).click()
   await expect

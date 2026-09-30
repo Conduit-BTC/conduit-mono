@@ -342,7 +342,6 @@ export function getMixedFulfillmentBlockingMessage(
       const current = item.fulfillment
       return (
         current?.type !== "event_market_pickup" ||
-        current.market.eventId !== firstMarket.market.eventId ||
         current.calendar.eventId !== firstMarket.calendar.eventId ||
         current.grant.eventId !== firstMarket.grant.eventId ||
         current.mode !== firstMarket.mode ||

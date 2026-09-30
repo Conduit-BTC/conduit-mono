@@ -406,7 +406,7 @@ function SeriesDateManager({
   selectedOccurrence?: string
   onSelectOccurrence?: (coordinate: string) => void
   authenticatedPubkey: string
-  onChanged: () => void
+  onChanged: () => Promise<unknown>
 }) {
   const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const [localSelection, setLocalSelection] = useState<string | undefined>()
@@ -625,10 +625,10 @@ function SeriesDateManager({
       }
       localStorage.removeItem(mutationStorageKey(market.coordinate))
       setPendingMutation(null)
-      onChanged()
+      await onChanged()
     } catch (cause) {
       setError(errorText(cause))
-      onChanged()
+      await onChanged()
     } finally {
       setPending(false)
     }
@@ -750,10 +750,10 @@ function SeriesDateManager({
         onSignedLocal: (event) =>
           retainSignedEventMarketEvidence(market.coordinate, event),
       })
-      onChanged()
+      await onChanged()
     } catch (cause) {
       setError(errorText(cause))
-      onChanged()
+      await onChanged()
     } finally {
       setPending(false)
     }
@@ -1797,7 +1797,7 @@ export function FutureEventMarketManager({
               selectedOccurrence={selectedOccurrence}
               onSelectOccurrence={onSelectOccurrence}
               authenticatedPubkey={authenticatedPubkey}
-              onChanged={() => void query.refetch()}
+              onChanged={() => query.refetch()}
             />
           ) : null}
           {!isOrganizer ? (

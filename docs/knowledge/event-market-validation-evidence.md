@@ -34,3 +34,13 @@ readiness is lost: fresh actions remain disabled, altered saved wraps are reject
 and the original recipient and self-copy IDs are replayed without new signing.
 Owner-retirement cancellation is covered separately at the shared delivery
 boundary. Real relay authentication can still require a connected signer.
+
+The cart-to-order journey adds two products across an unrelated signed roster
+revision and verifies one order and private release. Signed recurring dates
+remain selectable after an interrupted calendar read; a retained date absent
+from the next live read stays disabled in the buyer selector. The product-detail
+selector reaches the same action-time signed-evidence gate.
+
+The weekly-date authoring journey holds the post-publication roster refresh and
+checks that another edit or removal cannot start until the refreshed schedule
+arrives. Publication alone does not mean the editing state has caught up.

@@ -193,6 +193,20 @@ describe("future Event Market cart and order snapshots", () => {
     )
   })
 
+  it("allows compatible cart lines added across a roster-only revision", () => {
+    const first = item("soap")
+    const second = item("candles", "Booth 12", 101)
+    expect(groupCartPurchases([first, second])).toHaveLength(1)
+    expect(getMixedFulfillmentBlockingMessage([first, second])).toBeNull()
+    expect(getMixedFulfillmentBlockingMessage([second, first])).toBeNull()
+    expect(
+      getMixedFulfillmentBlockingMessage([
+        first,
+        item("candles", "Booth 14", 101),
+      ])
+    ).toContain("current signed")
+  })
+
   it("keeps exact market, product, merchant assignment, and payee in a created order", () => {
     const source = item("soap")
     const parsed = orderItemSchema.parse({

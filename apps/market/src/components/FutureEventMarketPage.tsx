@@ -456,7 +456,8 @@ export function FutureEventMarketPage({
                       key={entry.occurrence.coordinate}
                       value={entry.occurrence.coordinate}
                       disabled={
-                        entry.coverage !== "complete" ||
+                        (entry.coverage !== "complete" &&
+                          entry.coverage !== "partial") ||
                         entry.occurrence.end <= Date.now()
                       }
                     >
