@@ -51,6 +51,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### QA Runbooks
 
+- `docs/knowledge/checkout-with-conduit.md`: public V1 product/cart link format,
+  validation limits, relay hints, and checkout authority.
 - `docs/knowledge/product-search-ranking.md`: ranked product search, scoped
   author requests, signed reconciliation, and observed category-filter limits
 

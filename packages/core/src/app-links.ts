@@ -4,6 +4,10 @@ import {
   encodeEventMarketNaddr,
 } from "./protocol/event-market"
 import { normalizePubkey, pubkeyToNpub } from "./utils"
+import {
+  isCheckoutPartnerCode,
+  parseCheckoutIntentFragment,
+} from "./checkout-intent"
 
 export type ConduitBrowserLocation = Pick<
   Location,
@@ -179,6 +183,63 @@ export function buildMarketProductShareUrl(
 
   const naddr = encodeProductNaddr(productAddressId, sourceRelayUrls)
   url.pathname = `/products/${naddr}`
+  return url.toString()
+}
+
+export type MarketCheckoutLinkItem = { product: string; quantity: number }
+
+function checkoutLinkBase(marketOrigin: string, partner?: string): URL {
+  let url: URL
+  try {
+    url = new URL(marketOrigin)
+  } catch {
+    throw new Error("Checkout link requires an absolute Market origin.")
+  }
+  if (!isConduitMarketOrigin(url))
+    throw new Error("Checkout link requires a safe Market origin.")
+  if (partner !== undefined && !isCheckoutPartnerCode(partner))
+    throw new Error("Checkout link requires a valid partner code.")
+  url.pathname = "/checkout"
+  return url
+}
+
+/** A public one-product checkout link; current signed terms are resolved on arrival. */
+export function buildMarketCheckoutBuyUrl(
+  marketOrigin: string,
+  productNaddr: string,
+  quantity = 1,
+  partner?: string
+): string {
+  const url = checkoutLinkBase(marketOrigin, partner)
+  const hash = new URLSearchParams({ buy: encodeProductNaddr(productNaddr) })
+  if (quantity !== 1) hash.set("qty", String(quantity))
+  if (partner) hash.set("partner", partner)
+  if (parseCheckoutIntentFragment(hash.toString()).status !== "valid")
+    throw new Error("Checkout link has invalid items or quantity.")
+  url.hash = hash.toString()
+  return url.toString()
+}
+
+/** A public one-merchant cart link; checkout validates the signed merchant on arrival. */
+export function buildMarketCheckoutCartUrl(
+  marketOrigin: string,
+  items: readonly MarketCheckoutLinkItem[],
+  partner?: string
+): string {
+  const url = checkoutLinkBase(marketOrigin, partner)
+  const hash = new URLSearchParams({
+    cart: JSON.stringify({
+      v: 1,
+      items: items.map((item) => ({
+        product: encodeProductNaddr(item.product),
+        quantity: item.quantity,
+      })),
+    }),
+  })
+  if (partner) hash.set("partner", partner)
+  if (parseCheckoutIntentFragment(hash.toString()).status !== "valid")
+    throw new Error("Checkout link has invalid items or quantity.")
+  url.hash = hash.toString()
   return url.toString()
 }
 
