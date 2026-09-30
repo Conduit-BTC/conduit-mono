@@ -26,6 +26,7 @@ import {
   normalizePubkey,
   peekRetainedOwnFollowListSnapshot,
   readRetainedOwnFollowListSnapshot,
+  subscribeToProductCacheChanges,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
   type Product,
@@ -570,6 +571,17 @@ export function useProgressiveProducts(
     staleTime: 15_000,
   })
 
+  const refetchCached = cachedQuery.refetch
+  useEffect(() => {
+    if (input.scope !== "marketplace" || networkEnabled || !canReadCache) return
+    // Page catalog reads commit after their progressive callbacks. Observe
+    // those local commits, including cart reads, without another relay stream.
+    return subscribeToProductCacheChanges({
+      onChange: () => void refetchCached(),
+      onError: () => void refetchCached(),
+    })
+  }, [input.scope, networkEnabled, canReadCache, discoveryKey, refetchCached])
+
   const firstNetworkQuery = useQuery({
     queryKey: [
       ...getProductCatalogQueryKey(input as ProductCatalogReadInput, "network"),
@@ -899,7 +911,6 @@ export function useProgressiveProducts(
     streamsNetwork,
   ])
 
-  const refetchCached = cachedQuery.refetch
   const refetchFirstNetwork = firstNetworkQuery.refetch
   const refetchPerspectiveAuthors = firstDegreeQuery.refetch
   const refetch = useCallback(async () => {

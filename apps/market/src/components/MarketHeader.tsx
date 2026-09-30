@@ -429,7 +429,7 @@ export function MarketHeader({
     enabled: searchSuggestionsEnabled,
     isBrowseRoute,
     pageSuppliesCatalog:
-      isBrowseRoute ||
+      (isBrowseRoute && currentQuery.trim().length === 0) ||
       pathname === "/merchants" ||
       (pathname === "/cart" && cart.items.length > 0),
     listboxId: SEARCH_SUGGESTIONS_LISTBOX_ID,

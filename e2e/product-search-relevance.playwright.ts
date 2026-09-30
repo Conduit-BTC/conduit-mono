@@ -334,6 +334,43 @@ test("a cold cart header discovers categories once after a settled eligible quer
   expect(catalogs()).toHaveLength(firstCatalogs)
 })
 
+test("a cold Products search header discovers categories without a page catalog @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  // Ranked search cannot hydrate the local catalog in this case.
+  relay.state.unavailable = true
+  await page.goto(`${marketUrl}/products?source=following&q=ar`)
+  await expect
+    .poll(() => relay.requests.filter((filter) => filter.search).length)
+    .toBeGreaterThan(0)
+  const catalogs = () =>
+    relay.requests.filter(
+      (filter) =>
+        !filter.search &&
+        filter.kinds?.includes(30402) &&
+        !filter["#d"] &&
+        !filter.ids
+    )
+  expect(catalogs()).toHaveLength(0)
+  const input = page.getByRole("combobox", {
+    name: "Search products, categories, merchants, and accounts",
+  })
+  await input.fill("art")
+  await page.waitForTimeout(100)
+  expect(catalogs()).toHaveLength(0)
+  await expect(
+    page.getByRole("option", { name: /^# art Browse category$/i })
+  ).toBeVisible()
+  const firstCatalogs = catalogs().length
+  expect(firstCatalogs).toBeGreaterThan(0)
+  expect(catalogs().every((filter) => filter.limit <= 600)).toBe(true)
+  await input.fill("ar")
+  await page.waitForTimeout(500)
+  expect(catalogs()).toHaveLength(firstCatalogs)
+})
+
 test("a pending header fallback survives text edits and cancels when suggestions close @market", async ({
   page,
 }) => {
@@ -382,32 +419,42 @@ test("header retry waits for its author scope before catalog discovery @market",
   ).toBeVisible()
 })
 
-test("header category discovery does not duplicate a pending browse catalog @market", async ({
-  page,
-}) => {
-  await installTestSigner(page, owner, { secretKey: ownerKey })
-  const relay = await controlledSearch(page)
-  relay.state.holdRevisions = true
-  await page.goto(`${marketUrl}/products?source=following`)
-  await expect.poll(() => relay.pendingRevisions.length).toBeGreaterThan(0)
-  const catalogs = () =>
-    relay.requests.filter(
-      (filter) => !filter.search && filter.kinds?.includes(30402)
-    )
-  const initialCatalogs = catalogs().length
-  await page
-    .getByRole("combobox", {
-      name: "Search products, categories, merchants, and accounts",
-    })
-    .fill("ar")
-  await page.waitForTimeout(500)
-  expect(catalogs()).toHaveLength(initialCatalogs)
-  relay.releaseRevisions()
-})
+for (const catalogRoute of ["products", "merchants"]) {
+  test(`header categories update from a delayed ${catalogRoute} catalog without a duplicate stream @market`, async ({
+    page,
+  }) => {
+    await installTestSigner(page, owner, { secretKey: ownerKey })
+    const relay = await controlledSearch(page)
+    relay.state.holdRevisions = true
+    await page.goto(`${marketUrl}/${catalogRoute}?source=following`)
+    await expect.poll(() => relay.pendingRevisions.length).toBeGreaterThan(0)
+    const catalogs = () =>
+      relay.requests.filter(
+        (filter) =>
+          !filter.search &&
+          filter.kinds?.includes(30402) &&
+          !filter["#d"] &&
+          !filter.ids
+      )
+    const initialCatalogs = catalogs().length
+    await page
+      .getByRole("combobox", {
+        name: "Search products, categories, merchants, and accounts",
+      })
+      .fill("ar")
+    await page.waitForTimeout(500)
+    expect(catalogs()).toHaveLength(initialCatalogs)
+    relay.releaseRevisions()
+    await expect(
+      page.getByRole("option", { name: /^# art Browse category$/i })
+    ).toBeVisible()
+  })
+}
 
 test("header category discovery reuses a populated cart's catalog read @market", async ({
   page,
 }) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
   await page.addInitScript(
     (seed) => localStorage.setItem("conduit:cart", JSON.stringify(seed)),
     {
@@ -449,6 +496,9 @@ test("header category discovery reuses a populated cart's catalog read @market",
   await page.waitForTimeout(500)
   expect(catalogs()).toHaveLength(initialCatalogs)
   relay.releaseRevisions()
+  await expect(
+    page.getByRole("option", { name: /^# art Browse category$/i })
+  ).toBeVisible()
 })
 
 test("typing waits for a stable two-character query before remote search @market", async ({
