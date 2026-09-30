@@ -1277,13 +1277,20 @@ async function runBoundedRelayAttempts(
     )
   }
 
+  // Known throttles are diagnostic observations, not network attempts. Visit
+  // them before the bounded slots are consumed by eligible sources.
+  const throttled = new Set(relayUrls.filter((url) => isRelayRateLimited(url)))
+  const candidates = [
+    ...relayUrls.filter((url) => throttled.has(url)),
+    ...relayUrls.filter((url) => !throttled.has(url)),
+  ]
   let nextIndex = 0
-  const workerCount = Math.min(maxRelayAttempts, relayUrls.length)
+  const workerCount = Math.min(maxRelayAttempts, candidates.length)
   const results = await Promise.all(
     Array.from({ length: workerCount }, async () => {
       const observations: FetchEventsFromRelayResult[] = []
-      while (nextIndex < relayUrls.length) {
-        const relayUrl = relayUrls[nextIndex]
+      while (nextIndex < candidates.length) {
+        const relayUrl = candidates[nextIndex]
         nextIndex += 1
         const result = await attempt(relayUrl)
         // Only an actual attempt consumes this worker's bounded slot. Keep
@@ -1317,7 +1324,14 @@ function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
   if (options.skipHealthFilter) return dedupedUrls
 
   const { healthy, parked } = partitionByHealth(dedupedUrls)
-  if (healthy.length > 0) return healthy
+  if (healthy.length > 0) {
+    const healthySet = new Set(healthy)
+    // Preserve known suppression in coverage while transport preflight keeps
+    // these sources quiet and backfills their slots from healthy peers.
+    return dedupedUrls.filter(
+      (url) => healthySet.has(url) || isRelayRateLimited(url)
+    )
+  }
   if (parked.length === 0) return []
 
   // Everything is parked (e.g. every relay is failing right now). Re-trying the
@@ -1333,7 +1347,12 @@ function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
     config.defaultRelays.map((url) => url.trim()).filter(Boolean)
   )
   const cappedFallback = dedupedUrls.filter((url) => defaultRelaySet.has(url))
-  return cappedFallback.length > 0 ? cappedFallback : dedupedUrls.slice(0, 4)
+  const fallback = new Set(
+    cappedFallback.length > 0 ? cappedFallback : dedupedUrls.slice(0, 4)
+  )
+  return dedupedUrls.filter(
+    (url) => fallback.has(url) || isRelayRateLimited(url)
+  )
 }
 
 async function orderAccountRelayFanout(

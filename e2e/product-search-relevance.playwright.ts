@@ -428,6 +428,29 @@ test("a signed deletion retracts fallback header categories without product read
     name: /^# art Browse category$/i,
   })
   await expect(category).toBeVisible()
+  await page.waitForTimeout(500)
+  await page.evaluate(() => {
+    for (const prototype of [IDBObjectStore.prototype, IDBIndex.prototype]) {
+      for (const method of ["getAll", "openCursor"] as const) {
+        const original = prototype[method]
+        Object.defineProperty(prototype, method, {
+          configurable: true,
+          value: function (
+            this: IDBObjectStore | IDBIndex,
+            ...args: unknown[]
+          ) {
+            const store = this instanceof IDBIndex ? this.objectStore : this
+            if (store.name === "products")
+              throw new DOMException(
+                "Fixture cache unavailable",
+                "UnknownError"
+              )
+            return Reflect.apply(original, this, args)
+          },
+        })
+      }
+    }
+  })
   const catalogs = () =>
     relay.requests.filter((filter) => filter.kinds?.includes(30402))
   const beforeDeletion = catalogs().length

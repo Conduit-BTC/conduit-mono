@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   getMarketplaceProducts,
   getLocalProductDeletionSnapshot,
-  reconcileProductRecordsWithDeletions,
+  isProductDeletedByNip09,
   subscribeLocalProductDeletionChanges,
   useAuth,
   useProfileSearch,
@@ -96,15 +96,15 @@ export function useSellerDirectory(input: {
   )
   const fallbackAllowed =
     input.networkEnabled === false && input.fallbackNetworkAllowed !== false
-  const observeFallbackDeletions = useCallback(
+  const observeCatalogDeletions = useCallback(
     (onChange: () => void) =>
-      enabled && fallbackAllowed
+      enabled && input.networkEnabled === false
         ? subscribeLocalProductDeletionChanges(onChange)
         : () => {},
-    [enabled, fallbackAllowed]
+    [enabled, input.networkEnabled]
   )
   const localDeletions = useSyncExternalStore(
-    observeFallbackDeletions,
+    observeCatalogDeletions,
     getLocalProductDeletionSnapshot
   )
   const fallbackReady =
@@ -161,15 +161,24 @@ export function useSellerDirectory(input: {
   ])
   const catalogProducts = useMemo(
     () =>
-      !fallbackAllowed
-        ? productsQuery.products
-        : mergeProductSearchResults(
-            reconcileProductRecordsWithDeletions(
-              fallbackQuery.data?.data ?? [],
-              localDeletions.evidence
-            ).map((record) => record.product),
+      (fallbackAllowed
+        ? mergeProductSearchResults(
+            (fallbackQuery.data?.data ?? []).map((record) => record.product),
             productsQuery.products
-          ),
+          )
+        : productsQuery.products
+      ).filter(
+        (product) =>
+          !isProductDeletedByNip09(
+            {
+              authorPubkey: product.pubkey,
+              eventId: product.sourceEventId,
+              addressId: product.id,
+              createdAt: Math.floor(product.createdAt / 1000),
+            },
+            localDeletions.evidence
+          )
+      ),
     [
       fallbackAllowed,
       fallbackQuery.data,

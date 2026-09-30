@@ -45,8 +45,8 @@ does not supply a catalog, an eligible settled query can run one bounded
 discovery pass. This includes cold product search links, empty carts, and carts
 whose related-product read covers only the selected merchant or purchase.
 Retained fallback records reconcile with locally observed signed deletions before
-building header categories and sellers. A deletion retracts its product without
-opening another product read.
+building header categories and sellers, including retained cached products when
+a reread fails. A deletion retracts its product without opening another product read.
 Product and profile search disable automatic retry, focus refetch, and reconnect
 refetch. Explicit Refresh and Retry update eligible remote queries. One-character
 queries can retry author discovery and cached evidence without a product network

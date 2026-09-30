@@ -282,3 +282,32 @@ it("counts an actual throttled relay request against the bounded attempt budget"
   expect(requests).toHaveLength(1)
   expect(connections).toBe(1)
 })
+
+for (const relayUrls of [
+  [relay, "wss://healthy.example"],
+  ["wss://healthy.example", relay],
+]) {
+  it(`retains throttled empty-read coverage with healthy peer order ${relayUrls[0]}`, async () => {
+    recordRelayRateLimit(relay)
+    onRequest = (socket, id) => queueMicrotask(() => socket.emit(["EOSE", id]))
+    const result = await fetchEventsFanoutDetailed(
+      { kinds: [30402], limit: 10 },
+      { relayUrls, maxRelayAttempts: 1 }
+    )
+    expect(result.events).toEqual([])
+    expect(result.relays).toContainEqual({
+      relayUrl: relay,
+      status: "failed",
+      eventCount: 0,
+      failureReason: "rate_limited",
+    })
+    expect(result.relays).toContainEqual({
+      relayUrl: "wss://healthy.example",
+      status: "success",
+      eventCount: 0,
+    })
+    expect(result.admittedRelayUrls).toEqual(["wss://healthy.example"])
+    expect(requests).toHaveLength(1)
+    expect(connections).toBe(1)
+  })
+}
