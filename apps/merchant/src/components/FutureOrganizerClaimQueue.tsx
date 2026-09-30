@@ -24,6 +24,7 @@ import {
   Input,
   Label,
 } from "@conduit/ui"
+import { SavedFutureHandoffUpdate } from "./SavedFutureHandoffUpdate"
 
 function ClaimCard({
   claim,
@@ -357,6 +358,25 @@ export function FutureOrganizerClaimQueue({
     refetchInterval: 30_000,
   })
   const visibleRead = authenticated ? query.data : undefined
+  const [, refreshRecovery] = useState(0)
+  let savedUpdates: ReturnType<typeof loadFutureMarketPrivateDeliveries> = []
+  let recoveryError = ""
+  if (accountPubkey === organizerPubkey) {
+    try {
+      savedUpdates = loadFutureMarketPrivateDeliveries(
+        organizerPubkey,
+        undefined,
+        {
+          pendingOnly: true,
+        }
+      ).filter((record) => record.type === "future_market_handed_out")
+    } catch (cause) {
+      recoveryError =
+        cause instanceof Error
+          ? cause.message
+          : "Saved handoff recovery could not be read."
+    }
+  }
   return (
     <Card>
       <CardHeader>
@@ -403,6 +423,32 @@ export function FutureOrganizerClaimQueue({
             onUpdated={() => void query.refetch()}
           />
         ))}
+        {savedUpdates
+          .filter(
+            (record) =>
+              !visibleRead?.claims.some(
+                (claim) => claim.receipt.id === record.readyReceiptId
+              )
+          )
+          .map((record) => (
+            <SavedFutureHandoffUpdate
+              key={`${authGeneration}:${record.rumorId}`}
+              record={record}
+              organizerPubkey={organizerPubkey}
+              blocked={
+                query.data?.claims.some(
+                  (claim) =>
+                    claim.receipt.id === record.readyReceiptId &&
+                    (claim.state === "revoked" || claim.state === "conflicting")
+                ) ?? false
+              }
+              onUpdated={() => {
+                refreshRecovery((revision) => revision + 1)
+                if (authenticated) void query.refetch()
+              }}
+            />
+          ))}
+        {recoveryError ? <p role="alert">{recoveryError}</p> : null}
         <Button
           type="button"
           variant="outline"

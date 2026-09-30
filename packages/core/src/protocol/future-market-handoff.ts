@@ -486,7 +486,8 @@ export function loadFutureMarketPrivateDeliveries(
   ownerPubkey: string,
   storage: Pick<Storage, "getItem"> | null = typeof localStorage === "undefined"
     ? null
-    : localStorage
+    : localStorage,
+  options: { pendingOnly?: boolean } = {}
 ): FutureMarketPrivateDeliveryRecord[] {
   if (!storage || !HEX_64.test(ownerPubkey)) return []
   const parseRecords = (
@@ -508,6 +509,7 @@ export function loadFutureMarketPrivateDeliveries(
   const pending = parseRecords(
     storage.getItem(`${FUTURE_DELIVERY_STORAGE_PREFIX}:${ownerPubkey}`)
   )
+  if (options.pendingOnly) return pending
   const archiveRaw = storage.getItem(
     `${FUTURE_DELIVERY_ARCHIVE_PREFIX}:${ownerPubkey}`
   )

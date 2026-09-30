@@ -976,6 +976,29 @@ describe("future Event Market private physical handoff", () => {
     }
     const recovered = loadFutureMarketPrivateDeliveries(merchant, storage)
     expect(recovered).toHaveLength(125)
+    expect(
+      loadFutureMarketPrivateDeliveries(merchant, storage, {
+        pendingOnly: true,
+      })
+    ).toEqual([])
+    const pendingRecord = {
+      ...recovered[0]!,
+      rumorId: "f".repeat(64),
+      claimRef: "f".repeat(64),
+      readyReceiptId: "f".repeat(64),
+    }
+    saveFutureMarketPrivateDelivery(merchant, pendingRecord, storage)
+    expect(
+      loadFutureMarketPrivateDeliveries(merchant, storage, {
+        pendingOnly: true,
+      })
+    ).toEqual([pendingRecord])
+    expect(
+      loadFutureMarketPrivateDeliveries(organizer, storage, {
+        pendingOnly: true,
+      })
+    ).toEqual([])
+    archiveFutureMarketPrivateDelivery(merchant, pendingRecord.rumorId, storage)
     expect(recovered[0]?.signedRecipientWrap).toEqual(
       JSON.parse(JSON.stringify(recipientWrap))
     )

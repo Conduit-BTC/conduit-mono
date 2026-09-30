@@ -124,6 +124,33 @@ describe("event-market coordinates and naddr references", () => {
 })
 
 describe("event-market protocol fixtures", () => {
+  it("requires every UTC day for a signed calendar crossing midnight", () => {
+    const now = Date.UTC(2026, 8, 30, 22, 30) / 1_000
+    for (const offset of [3_600, -60]) {
+      const draft = buildEventMarketCalendarDraft({
+        kind: EVENT_KINDS.CALENDAR_TIME,
+        dTag: "midnight-market",
+        title: "Midnight market",
+        start: now + offset,
+        end: now + 7_200,
+      })
+      const dayTags = draft.tags.filter((tag) => tag[0] === "D")
+      expect(dayTags).toHaveLength(2)
+      expect(
+        parseEventMarketCalendarEvent(signDraft(ORGANIZER_SECRET, draft, now))
+      ).not.toBeNull()
+      const incomplete = {
+        ...draft,
+        tags: draft.tags.filter((tag) => tag !== dayTags[1]),
+      }
+      expect(
+        parseEventMarketCalendarEvent(
+          signDraft(ORGANIZER_SECRET, incomplete, now)
+        )
+      ).toBeNull()
+    }
+  })
+
   it("builds and parses NIP-52 date and timed calendar events", () => {
     const dateDraft = buildEventMarketCalendarDraft({
       kind: EVENT_KINDS.CALENDAR_DATE,

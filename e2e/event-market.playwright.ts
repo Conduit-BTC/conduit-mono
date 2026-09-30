@@ -7,6 +7,8 @@ import {
   verifyEvent,
 } from "nostr-tools/pure"
 
+import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
+
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
 test.use({ trace: "off", video: "off", screenshot: "off" })
 
@@ -1493,6 +1495,156 @@ test("organizer grants, revokes, and reapproves one merchant without republishin
   await expect(page.getByText(/Merchant booth: Booth 14/)).toBeVisible()
 })
 
+test("Event Market variable products select a purchasable variation before checkout @market", async ({
+  page,
+}) => {
+  test.setTimeout(300_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1_000) - 10
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: createdAt,
+    content: "Two product future pickup",
+    tags: [
+      ["d", "future-handoff-fair"],
+      ["title", "Future Handoff Fair"],
+      ["start", "1790000000"],
+      ["D", "20717"],
+      ["location", "Town Hall"],
+    ],
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "future-handoff-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+      ["merchant", MERCHANT_PUBKEY, "organizer_handoff", "Pickup Desk"],
+    ],
+  })
+  const grant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["openmarkets", "event-market-auth", "1"],
+      ["a", eventCoordinate(market)],
+      ["p", MERCHANT_PUBKEY],
+      ["state", "active"],
+      ["seq", "0"],
+      ["alt", "Open Markets event merchant authorization"],
+    ],
+  })
+  const product = (name: string, dTag: string) =>
+    signEvent(MERCHANT_SECRET, {
+      kind: 30402,
+      created_at: createdAt,
+      content: name,
+      tags: [
+        ["d", dTag],
+        ["title", name],
+        ["price", "0", "SAT"],
+        [
+          "type",
+          dTag === "future-handoff-soap" ? "variable" : "variation",
+          "physical",
+        ],
+        ...(dTag === "future-handoff-candle"
+          ? [
+              ["a", `30402:${MERCHANT_PUBKEY}:future-handoff-soap`],
+              ["spec", "Size", "Large"],
+            ]
+          : []),
+        ["stock", "5"],
+        [
+          "image",
+          "https://cdn.conduit.market/conduit-test/template-product.svg",
+        ],
+        ["t", "market"],
+        ["t", "merchant"],
+        ["t", "handmade"],
+        ["a", eventCoordinate(market)],
+      ],
+    })
+  const soap = product("Future handoff soap", "future-handoff-soap")
+  const candle = product("Future handoff candle", "future-handoff-candle")
+  relay.seed(
+    calendar,
+    market,
+    grant,
+    soap,
+    candle,
+    createInboxDeclaration("organizer", createdAt),
+    createInboxDeclaration("merchant", createdAt),
+    createInboxDeclaration("buyer", createdAt)
+  )
+  const marketNaddr = nip19.naddrEncode({
+    kind: 30409,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: "future-handoff-fair",
+  })
+  await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
+  await expect(
+    page.getByRole("button", { name: "Open account menu" })
+  ).toBeVisible()
+  const card = page
+    .getByRole("listitem")
+    .filter({ hasText: "Future handoff soap" })
+  await expect(
+    card.getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
+  await card.getByRole("button", { name: "Add", exact: true }).click()
+  await expect(page).toHaveURL(/\/products\//)
+  expect(new URL(page.url()).searchParams.get("event")).toBe(
+    eventCoordinate(market)
+  )
+  await expect(page.getByRole("button", { name: "Cart, 1 item" })).toHaveCount(
+    0
+  )
+  const add = page.getByRole("button", { name: /^Add 1 to cart$/i })
+  await expect(add).toBeEnabled()
+  await add.click()
+  await expect(page.getByRole("button", { name: "Cart, 1 item" })).toBeVisible()
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await page.getByRole("button", { name: "Order", exact: true }).click()
+  await expect(page.getByRole("heading", { name: "Checkout" })).toBeVisible()
+  await expect(
+    page.getByText(/Pickup from event organizer/).first()
+  ).toBeVisible()
+  const orderStart = relay.publications.length
+  await page.getByRole("button", { name: /^Send order$/i }).click()
+  await expect(page).toHaveURL(/\/orders(?:\?|$)/)
+  const orders = () =>
+    uniquePrivatePublications(
+      decryptPrivatePublications(
+        relay.publications,
+        MERCHANT_SECRET,
+        orderStart
+      )
+    ).filter((message) => rumorType(message.rumor) === "order")
+  await expect.poll(() => orders().length).toBe(1)
+  const order = JSON.parse(orders()[0]!.rumor.content) as {
+    items: Array<{
+      productId: string
+      selectedSpecifications?: Array<{ key: string; value: string }>
+      fulfillment?: { type: string; market?: { coordinate: string } }
+    }>
+  }
+  expect(order.items).toHaveLength(1)
+  expect(order.items[0]?.productId).toBe(eventCoordinate(candle))
+  expect(order.items[0]?.selectedSpecifications).toEqual([
+    { key: "Size", value: "Large" },
+  ])
+  expect(order.items[0]?.fulfillment?.type).toBe("event_market_pickup")
+  expect(order.items[0]?.fulfillment?.market?.coordinate).toBe(
+    eventCoordinate(market)
+  )
+})
+
 test("two future market products form one order and one private organizer release @market @merchant", async ({
   page,
 }) => {
@@ -1874,8 +2026,124 @@ test("two future market products form one order and one private organizer releas
   await expect(
     page.getByRole("button", { name: "Mark handed out" })
   ).toBeEnabled()
+  relay.rejectKind(1059, true)
   const ackStart = relay.publications.length
   await page.getByRole("button", { name: "Mark handed out" }).click()
+  await expect(
+    page.getByRole("button", { name: "Retry exact handed-out update" })
+  ).toBeEnabled()
+  const originalAckIds = await page.evaluate((owner) => {
+    const records = JSON.parse(
+      localStorage.getItem(
+        `conduit:future-market-handoff-delivery:v2:${owner}`
+      ) ?? "[]"
+    ) as Array<{
+      type: string
+      signedRecipientWrap: { id: string }
+      signedSelfWrap: { id: string }
+    }>
+    const saved = records.find(
+      (record) => record.type === "future_market_handed_out"
+    )
+    if (!saved) throw new Error("Expected saved exact handoff update.")
+    return [saved.signedRecipientWrap.id, saved.signedSelfWrap.id].sort()
+  }, ORGANIZER_PUBKEY)
+  expect(originalAckIds).toHaveLength(2)
+  await page.evaluate(
+    (key) => localStorage.setItem(key, "1"),
+    SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+  )
+  await page.reload()
+  await expect(
+    page.getByText(
+      "Connect the organizer signer to read private pickup claims."
+    )
+  ).toBeVisible()
+  const retrySavedAck = page.getByRole("button", {
+    name: "Retry saved handoff update",
+  })
+  await expect(retrySavedAck).toBeEnabled()
+  await expect(
+    page.getByRole("button", { name: "Mark handed out" })
+  ).toHaveCount(0)
+  const wrongOwnerStart = relay.publications.length
+  await gotoAs(page, merchantUrl, `/events/${marketNaddr}`, "merchant")
+  await expect(retrySavedAck).toHaveCount(0)
+  expect(relay.publications).toHaveLength(wrongOwnerStart)
+  await gotoAs(page, merchantUrl, `/events/${marketNaddr}`, "organizer")
+  await expect(retrySavedAck).toBeEnabled()
+  await page.evaluate((owner) => {
+    const button = [...document.querySelectorAll("button")].find(
+      (candidate) =>
+        candidate.textContent?.trim() === "Retry saved handoff update"
+    )
+    if (!button) throw new Error("Expected saved handoff retry control.")
+    // Change storage at the action boundary, after the control is rendered.
+    button.addEventListener(
+      "pointerdown",
+      () => {
+        const key = `conduit:future-market-handoff-delivery:v2:${owner}`
+        const original = localStorage.getItem(key)
+        if (!original) throw new Error("Expected saved handoff update.")
+        sessionStorage.setItem("conduit:e2e:saved-ack-original", original)
+        const records = JSON.parse(original) as Array<{
+          signedRecipientWrap: { sig: string }
+        }>
+        records[0]!.signedRecipientWrap.sig = "0".repeat(128)
+        localStorage.setItem(key, JSON.stringify(records))
+      },
+      { once: true }
+    )
+  }, ORGANIZER_PUBKEY)
+  const invalidAckStart = relay.publications.length
+  await retrySavedAck.click()
+  await expect(
+    page.getByText("Future Event Market exact delivery wraps are invalid.")
+  ).toBeVisible()
+  expect(relay.publications).toHaveLength(invalidAckStart)
+  await page.evaluate((owner) => {
+    const original = sessionStorage.getItem("conduit:e2e:saved-ack-original")
+    if (!original) throw new Error("Expected original saved handoff update.")
+    localStorage.setItem(
+      `conduit:future-market-handoff-delivery:v2:${owner}`,
+      original
+    )
+    sessionStorage.removeItem("conduit:e2e:saved-ack-original")
+  }, ORGANIZER_PUBKEY)
+  await page.reload()
+  await expect(retrySavedAck).toBeEnabled()
+  relay.rejectKind(1059, false)
+  const ackReplayStart = relay.publications.length
+  await retrySavedAck.click()
+  await expect
+    .poll(
+      () =>
+        uniquePublishedEvents(relay.publications.slice(ackReplayStart)).filter(
+          (event) => originalAckIds.includes(event.id)
+        ).length
+    )
+    .toBe(2)
+  expect(
+    uniquePublishedEvents(relay.publications.slice(ackReplayStart))
+      .filter((event) => originalAckIds.includes(event.id))
+      .map((event) => event.id)
+      .sort()
+  ).toEqual(originalAckIds)
+  await expect(retrySavedAck).toHaveCount(0)
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __conduitSyntheticSignAttempts?: number
+          }
+        ).__conduitSyntheticSignAttempts ?? 0
+    )
+  ).toBe(0)
+  await page.evaluate(
+    (key) => localStorage.removeItem(key),
+    SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+  )
   const ackMessages = () =>
     uniquePrivatePublications(
       decryptPrivatePublications(relay.publications, MERCHANT_SECRET, ackStart)
@@ -2065,16 +2333,14 @@ test("event product chooses ordinary shipping and changes fulfillment in checkou
   await installSyntheticEnvironment(page, relay)
   const createdAt = Math.floor(Date.now() / 1000)
   const calendar = signEvent(ORGANIZER_SECRET, {
-    kind: 31923,
+    ...buildEventMarketCalendarDraft({
+      kind: 31923,
+      dTag: "choice-fair",
+      title: "Choice Fair",
+      start: createdAt + 3600,
+      end: createdAt + 7200,
+    }),
     created_at: createdAt,
-    content: "",
-    tags: [
-      ["d", "choice-fair"],
-      ["title", "Choice Fair"],
-      ["start", String(createdAt + 3600)],
-      ["end", String(createdAt + 7200)],
-      ["D", String(Math.floor((createdAt + 3600) / 86400))],
-    ],
   })
   const market = signEvent(ORGANIZER_SECRET, {
     kind: 30409,
@@ -2173,16 +2439,14 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   await installSyntheticEnvironment(page, relay)
   const createdAt = Math.floor(Date.now() / 1000)
   const calendar = signEvent(ORGANIZER_SECRET, {
-    kind: 31923,
+    ...buildEventMarketCalendarDraft({
+      kind: 31923,
+      dTag: "choice-fair",
+      title: "Choice Fair",
+      start: createdAt - 60,
+      end: createdAt + 7200,
+    }),
     created_at: createdAt,
-    content: "",
-    tags: [
-      ["d", "choice-fair"],
-      ["title", "Choice Fair"],
-      ["start", String(createdAt - 60)],
-      ["end", String(createdAt + 7200)],
-      ["D", String(Math.floor((createdAt + 3600) / 86400))],
-    ],
   })
   const market = signEvent(ORGANIZER_SECRET, {
     kind: 30409,

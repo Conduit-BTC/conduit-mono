@@ -311,8 +311,12 @@ export function FutureEventMarketPage({
     choice: EventFulfillmentSelection
   ): Promise<void> {
     if (!canPurchase || !market || !shouldContinue()) return
-    // A variable child has its own detail route and exact revision check.
-    if (selected.id !== entry.productCoordinate) {
+    // Choose a purchasable variation on the existing detail surface. The
+    // variable parent is a catalog entry and must never enter the cart.
+    if (
+      selected.type === "variable" ||
+      selected.id !== entry.productCoordinate
+    ) {
       navigateToProduct(selected.id)
       return
     }

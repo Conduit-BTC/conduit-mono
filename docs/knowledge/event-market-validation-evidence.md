@@ -29,9 +29,11 @@ live relay, preview, real signer or physical pickup evidence. Disable screenshot
 trace and video in private-order fixtures. Public evidence must omit identities,
 orders, contact details, invoices, wallet material and private message contents.
 
-The composed private-handoff journey also checks exact retry after signer
-readiness is lost: fresh actions remain disabled, altered saved wraps are rejected,
-and the original recipient and self-copy IDs are replayed without new signing.
+The composed private-handoff journey also checks merchant receipt and organizer
+handed-out retries after signer readiness is lost: fresh actions remain disabled,
+altered saved wraps are rejected, and the original recipient and self-copy IDs
+are replayed without new signing. Organizer recovery is scoped to the retained
+owner and pending deliveries; a different account cannot access its retry control.
 Owner-retirement cancellation is covered separately at the shared delivery
 boundary. Real relay authentication can still require a connected signer.
 
@@ -40,6 +42,15 @@ revision and verifies one order and private release. Signed recurring dates
 remain selectable after an interrupted calendar read; a retained date absent
 from the next live read stays disabled in the buyer selector. The product-detail
 selector reaches the same action-time signed-evidence gate.
+
+The variable-product journey opens the existing variation selector before adding
+an Event Market product. The composed checkout verifies that the signed order
+contains the purchasable variation and its specifications, retaining Event Market
+pickup terms rather than placing the variable parent in the cart.
+
+Shipping-choice and guest-receipt fixtures use the shared calendar builder so
+timed events retain every required UTC day tag when the test runs near midnight.
+A fixed midnight unit case verifies both complete and incomplete signed calendars.
 
 The weekly-date authoring journey holds the post-publication roster refresh and
 checks that another edit or removal cannot start until the refreshed schedule
