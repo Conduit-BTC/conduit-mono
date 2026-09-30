@@ -200,6 +200,8 @@ export function useProfileSearch(
       authorPubkeys
     ),
     enabled: networkEligible && settledQuery.length > 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     staleTime: 60_000,
     gcTime: 5 * 60_000,
     retry: false,

@@ -14,7 +14,6 @@ import {
 import {
   getBrowseSearchKey,
   getGlobalProductSearchQueryKey,
-  getProductSearchAuthors,
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
   isMarketBrowseRefreshStale,
@@ -26,6 +25,10 @@ import {
   type MarketProductCardView,
 } from "../lib/marketBrowseModel"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import {
+  isRemoteMarketSearchEligible,
+  MARKET_SEARCH_QUERY_POLICY,
+} from "../lib/searchPolicy"
 import {
   filterSellersByName,
   groupDiscoveredSellers,
@@ -80,6 +83,9 @@ export function useMarketBrowseModel({
   })
   const normalizedSearchQuery = search.q?.trim() ?? ""
   const isSearching = normalizedSearchQuery.length > 0
+  const isRemoteSearchEligible = isRemoteMarketSearchEligible(
+    normalizedSearchQuery
+  )
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
     catalogSource: effectiveCatalogSource,
@@ -92,20 +98,18 @@ export function useMarketBrowseModel({
   })
   const catalogAuthorPubkeys = productsQuery.catalogAuthorPubkeys
   const globalSearchEnabled =
-    normalizedSearchQuery.length > 0 && catalogAuthorPubkeys !== undefined
-  const searchAuthorPubkeys = useMemo(
-    () => getProductSearchAuthors(catalogAuthorPubkeys, selectedMerchants),
-    [catalogAuthorPubkeys, selectedMerchants]
-  )
+    isRemoteSearchEligible && catalogAuthorPubkeys !== undefined
+  // Merchant and category facets filter this response locally, preserving rank
+  // without repeating the same relay search when a selection changes.
   const globalSearchKey = getGlobalProductSearchQueryKey({
     query: normalizedSearchQuery,
     pubkey,
     catalogSource: effectiveCatalogSource,
     anonymous: usesAnonymousPerspective,
-    authorPubkeys: searchAuthorPubkeys,
-    tags: selectedTags,
+    authorPubkeys: catalogAuthorPubkeys,
   })
   const globalSearchQuery = useQuery({
+    ...MARKET_SEARCH_QUERY_POLICY,
     queryKey: globalSearchKey,
     queryFn: ({ signal }) =>
       getMarketplaceProducts({
@@ -114,8 +118,7 @@ export function useMarketBrowseModel({
         signal,
         textQuery: normalizedSearchQuery,
         searchIndex: true,
-        authorPubkeys: searchAuthorPubkeys,
-        tags: selectedTags,
+        authorPubkeys: catalogAuthorPubkeys,
         onProgress: (snapshot) => {
           if (!signal.aborted && shouldContinueAccountRead())
             queryClient.setQueryData(globalSearchKey, snapshot)
@@ -202,36 +205,42 @@ export function useMarketBrowseModel({
   ])
   const preparedProductsQuery = {
     ...productsQuery,
-    isInitialLoading: isSearching
-      ? !isShowingCachedSearch &&
-        (!globalSearchEnabled ||
-          (productData.length === 0 && globalSearchQuery.isPending))
-      : productsQuery.isInitialLoading,
-    isHydrating: isSearching
-      ? globalSearchEnabled && globalSearchQuery.isFetching
-      : productsQuery.isHydrating ||
-        (usesAnonymousPerspective && guestMarket.isRefreshing),
-    error: isSearching ? globalSearchQuery.error : productsQuery.error,
-    isRefreshStale: isSearching
-      ? isShowingCachedSearch ||
-        productsQuery.discoveryStale ||
-        (usesAnonymousPerspective && guestMarket.stale) ||
-        !!globalSearchQuery.error ||
-        globalSearchQuery.isPaused ||
-        !!globalSearchQuery.data?.meta.degraded ||
-        !!globalSearchQuery.data?.meta.capped
-      : isMarketBrowseRefreshStale({
-          catalogMeta: productsQuery.meta,
-          catalogError: productsQuery.error,
-          catalogPaused: productsQuery.isRefreshPaused,
-          discoveryStale:
-            productsQuery.discoveryStale ||
-            (usesAnonymousPerspective && guestMarket.stale),
-          globalSearchEnabled: false,
-          globalSearchMeta: undefined,
-          globalSearchError: null,
-          globalSearchPaused: false,
-        }),
+    isInitialLoading:
+      isSearching && isRemoteSearchEligible
+        ? !isShowingCachedSearch &&
+          (!globalSearchEnabled ||
+            (productData.length === 0 && globalSearchQuery.isPending))
+        : productsQuery.isInitialLoading,
+    isHydrating:
+      isSearching && isRemoteSearchEligible
+        ? globalSearchEnabled && globalSearchQuery.isFetching
+        : productsQuery.isHydrating ||
+          (usesAnonymousPerspective && guestMarket.isRefreshing),
+    error:
+      isSearching && isRemoteSearchEligible
+        ? globalSearchQuery.error
+        : productsQuery.error,
+    isRefreshStale:
+      isSearching && isRemoteSearchEligible
+        ? isShowingCachedSearch ||
+          productsQuery.discoveryStale ||
+          (usesAnonymousPerspective && guestMarket.stale) ||
+          !!globalSearchQuery.error ||
+          globalSearchQuery.isPaused ||
+          !!globalSearchQuery.data?.meta.degraded ||
+          !!globalSearchQuery.data?.meta.capped
+        : isMarketBrowseRefreshStale({
+            catalogMeta: productsQuery.meta,
+            catalogError: productsQuery.error,
+            catalogPaused: productsQuery.isRefreshPaused,
+            discoveryStale:
+              productsQuery.discoveryStale ||
+              (usesAnonymousPerspective && guestMarket.stale),
+            globalSearchEnabled: false,
+            globalSearchMeta: undefined,
+            globalSearchError: null,
+            globalSearchPaused: false,
+          }),
     refetch,
   }
   const allMerchantPubkeys = useMemo(() => {
@@ -408,9 +417,12 @@ export function useMarketBrowseModel({
   return {
     auth: { pubkey, status },
     isSearching,
+    isRemoteSearchEligible,
     isShowingCachedSearch,
     searchTagScopeVerified:
-      globalSearchQuery.data?.meta.productSearch?.tagScopeVerified,
+      selectedTags.length > 0
+        ? false
+        : globalSearchQuery.data?.meta.productSearch?.tagScopeVerified,
     catalogSource: effectiveCatalogSource,
     categoryFacetOptions,
     categoryFacetTotal: categoryFacetProducts.length,

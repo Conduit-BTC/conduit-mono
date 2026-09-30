@@ -26,6 +26,7 @@ import {
   normalizePubkey,
   peekRetainedOwnFollowListSnapshot,
   readRetainedOwnFollowListSnapshot,
+  subscribeToProductCacheChanges,
   type ListingSafetyEvaluation,
   type PreparedProductFamily,
   type Product,
@@ -42,6 +43,8 @@ import {
   refreshProductCatalogSources,
   retainedFollowSnapshotSupersedesLive,
   resolvePerspectiveAuthorPubkeys,
+  settlePendingProgressiveRefreshes,
+  type PendingProgressiveRefresh,
   type PerspectiveAuthorSource,
   type ProductCatalogSourceMode,
   type ProductCatalogReadInput,
@@ -110,6 +113,8 @@ type ProgressiveListQuery =
 
 export interface ProgressiveProductsResult {
   products: Product[]
+  /** Retained cache records preserve signed metadata for local reconciliation. */
+  cachedProductRecords: CommerceProductRecord[]
   familiesByProductId: Record<
     string,
     PreparedProductFamily<CommerceProductRecord>
@@ -479,9 +484,7 @@ export function useProgressiveProducts(
   // pass. The settled frontier remains authoritative during that handoff so a
   // stale cache cannot resurrect listings while the replacement read starts.
   const [refreshNonce, setRefreshNonce] = useState(0)
-  const pendingProgressiveRefreshesRef = useRef<
-    Array<{ fromDiscoveryKey: string; resolve: () => void }>
-  >([])
+  const pendingProgressiveRefreshesRef = useRef<PendingProgressiveRefresh[]>([])
   const catalogDiscoveryKey = useMemo(
     () =>
       JSON.stringify([
@@ -509,16 +512,18 @@ export function useProgressiveProducts(
     [discoveryKey]
   )
   const settleProgressiveRefreshes = useCallback(
-    (settledDiscoveryKey: string) => {
-      const pending = pendingProgressiveRefreshesRef.current
-      pendingProgressiveRefreshesRef.current = pending.filter(
-        ({ fromDiscoveryKey }) => fromDiscoveryKey === settledDiscoveryKey
-      )
-      for (const refresh of pending) {
-        if (refresh.fromDiscoveryKey !== settledDiscoveryKey) refresh.resolve()
-      }
+    (settledDiscoveryKey?: string) => {
+      pendingProgressiveRefreshesRef.current =
+        settlePendingProgressiveRefreshes(
+          pendingProgressiveRefreshesRef.current,
+          settledDiscoveryKey
+        )
     },
     []
+  )
+  useEffect(
+    () => () => settleProgressiveRefreshes(),
+    [settleProgressiveRefreshes]
   )
   const catalogTextQuery = perspectiveMarketplaceRead
     ? undefined
@@ -568,6 +573,17 @@ export function useProgressiveProducts(
     staleTime: 15_000,
   })
 
+  const refetchCached = cachedQuery.refetch
+  useEffect(() => {
+    if (input.scope !== "marketplace" || networkEnabled || !canReadCache) return
+    // Page catalog reads commit after their progressive callbacks. Observe
+    // those local commits, including cart reads, without another relay stream.
+    return subscribeToProductCacheChanges({
+      onChange: () => void refetchCached(),
+      onError: () => void refetchCached(),
+    })
+  }, [input.scope, networkEnabled, canReadCache, discoveryKey, refetchCached])
+
   const firstNetworkQuery = useQuery({
     queryKey: [
       ...getProductCatalogQueryKey(input as ProductCatalogReadInput, "network"),
@@ -586,10 +602,14 @@ export function useProgressiveProducts(
     staleTime: 20_000,
   })
 
-  const hasNetworkResult = hasAuthoritativeQuerySnapshot({
-    hasData: firstNetworkQuery.data !== undefined,
-    isPlaceholderData: firstNetworkQuery.isPlaceholderData,
-  })
+  // A cache-only consumer must use the refreshed local frontier. A retained
+  // sibling network query can still contain a product deleted since that read.
+  const hasNetworkResult =
+    networkEnabled &&
+    hasAuthoritativeQuerySnapshot({
+      hasData: firstNetworkQuery.data !== undefined,
+      isPlaceholderData: firstNetworkQuery.isPlaceholderData,
+    })
   const authoritativeNetworkResult = hasNetworkResult
     ? firstNetworkQuery.data
     : undefined
@@ -720,12 +740,14 @@ export function useProgressiveProducts(
 
   useEffect(() => {
     if (!streamsNetwork || !catalogReady || input.scope !== "marketplace") {
+      settleProgressiveRefreshes()
       return undefined
     }
 
-    let cancelled = false
+    const controller = new AbortController()
+    const { signal } = controller
     const shouldContinue = () =>
-      !cancelled && authGenerationRef.current === authGeneration
+      !signal.aborted && authGenerationRef.current === authGeneration
     let flushHandle: number | null = null
     let pendingResult: CommerceResult<CommerceProductRecord[]> | null = null
     const completionRead = perspectiveMarketplaceRead
@@ -820,6 +842,7 @@ export function useProgressiveProducts(
           authenticatedPubkey,
           accountPubkey: finalIoAccountPubkey,
           shouldContinue,
+          signal,
           readPolicy,
         },
         (result) => {
@@ -868,8 +891,9 @@ export function useProgressiveProducts(
     )
 
     return () => {
-      cancelled = true
+      controller.abort()
       cancelScheduledFlush()
+      settleProgressiveRefreshes(discoveryKey)
     }
   }, [
     catalogAuthorKey,
@@ -893,13 +917,13 @@ export function useProgressiveProducts(
     streamsNetwork,
   ])
 
-  const refetchCached = cachedQuery.refetch
   const refetchFirstNetwork = firstNetworkQuery.refetch
   const refetchPerspectiveAuthors = firstDegreeQuery.refetch
   const refetch = useCallback(async () => {
-    const progressiveRefresh = streamsNetwork
-      ? waitForNextProgressiveRead()
-      : Promise.resolve()
+    const progressiveRefresh =
+      streamsNetwork && catalogReady
+        ? waitForNextProgressiveRead()
+        : Promise.resolve()
     await Promise.all([
       refreshProductCatalogSources({
         queryEnabled,
@@ -948,13 +972,15 @@ export function useProgressiveProducts(
     waitForNextProgressiveRead,
   ])
 
-  const products = selectProgressiveProductFrontier({
-    hasAuthoritativeProgressiveSnapshot,
-    hasAuthoritativeNetworkSnapshot: hasNetworkResult,
-    progressiveProducts: accumulatedProducts,
-    networkProducts: mergedNetworkProducts,
-    cachedProducts,
-  })
+  const products = networkEnabled
+    ? selectProgressiveProductFrontier({
+        hasAuthoritativeProgressiveSnapshot,
+        hasAuthoritativeNetworkSnapshot: hasNetworkResult,
+        progressiveProducts: accumulatedProducts,
+        networkProducts: mergedNetworkProducts,
+        cachedProducts,
+      })
+    : cachedProducts
   const cachedCount = cachedQuery.data?.data.length ?? 0
   const isResolvingPerspectiveGraph =
     perspectiveMarketplaceRead && !catalogReady
@@ -996,6 +1022,7 @@ export function useProgressiveProducts(
 
   return {
     products,
+    cachedProductRecords: cachedQuery.data?.data ?? [],
     familiesByProductId,
     meta:
       (hasAuthoritativeProgressiveSnapshot ? progressiveRead.meta : null) ??
@@ -1018,17 +1045,22 @@ export function useProgressiveProducts(
         (firstDegreeDiscoveryEnabled && firstDegreeQuery.isPending) ||
         (canReadCache && cachedQuery.isPending) ||
         (queryEnabled &&
+          networkEnabled &&
           catalogReady &&
           !streamsNetwork &&
           firstNetworkQuery.isPending) ||
         isRestartingProgressiveRead ||
-        (progressiveRead.key === discoveryKey && progressiveRead.isFetching)),
+        (streamsNetwork &&
+          progressiveRead.key === discoveryKey &&
+          progressiveRead.isFetching)),
     isHydrating:
       isResolvingPerspectiveGraph ||
       (firstDegreeDiscoveryEnabled && firstDegreeQuery.isFetching) ||
       firstNetworkQuery.isFetching ||
       isRestartingProgressiveRead ||
-      (progressiveRead.key === discoveryKey && progressiveRead.isFetching),
+      (streamsNetwork &&
+        progressiveRead.key === discoveryKey &&
+        progressiveRead.isFetching),
     isRefreshPaused:
       (firstDegreeDiscoveryEnabled && firstDegreeQuery.isPaused) ||
       (!streamsNetwork && firstNetworkQuery.isPaused),

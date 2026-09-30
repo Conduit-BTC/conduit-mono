@@ -17,7 +17,9 @@ import {
   tryNormalizeRelayUrl,
 } from "./relay-settings"
 import {
+  isRelayRateLimited,
   partitionByHealth,
+  recordRelayRateLimit,
   recordRelayFailure,
   recordRelaySuccess,
 } from "./relay-health"
@@ -34,8 +36,8 @@ export interface FetchEventsFanoutOptions {
   relayUrls?: string[]
   /**
    * Bound actual relay attempts after the live account source-policy check.
-   * Policy-suppressed and durably excluded candidates do not consume this
-   * limit, allowing a later eligible source to fill the bounded fanout.
+   * Policy-suppressed, throttled, and durably excluded candidates do not consume
+   * this limit, allowing a later eligible source to fill the bounded fanout.
    */
   maxRelayAttempts?: number
   /**
@@ -91,6 +93,8 @@ export interface FetchEventsRelayStatus {
   eventCount: number
   /** Structurally matching events rejected by id or signature verification. */
   rejectedEventCount?: number
+  /** Content-free rejection category; never retain the relay message. */
+  failureReason?: "rate_limited"
 }
 
 export interface FetchEventsFanoutResult {
@@ -731,7 +735,7 @@ export async function verifySignedPublicNostrEvents(
 // concurrent reads. Explicit CLOSE per sub; the socket stays warm and idle-closes
 // once no reads are using it. No auto-reconnect, so failing relays are attempted
 // once (not re-hammered by every concurrent read) and freed deterministically.
-type RelaySubEnd = "eose" | "closed" | "drop" | "cancelled"
+type RelaySubEnd = "eose" | "closed" | "drop" | "cancelled" | "rate_limited"
 type RelaySub = {
   onEvent: (raw: RawNostrEvent, frameChars: number) => void
   end: (reason: RelaySubEnd) => void
@@ -754,7 +758,7 @@ const relayConnections = new Map<string, RelayConnection>()
 function dropRelayConnection(
   conn: RelayConnection,
   connections: Map<string, RelayConnection>,
-  reason: "drop" | "cancelled" = "drop"
+  reason: "drop" | "cancelled" | "rate_limited" = "drop"
 ): void {
   if (connections.get(conn.url) === conn) connections.delete(conn.url)
   if (conn.closed) return
@@ -864,6 +868,13 @@ function getRelayConnection(
       if (!Array.isArray(parsed)) return
       const [type, sub] = parsed as [string, string, ...unknown[]]
       if (typeof sub !== "string") return
+      // NOTICE is connection-wide, not keyed by a subscription id. Congee uses
+      // a space-separated prefix; other relays use the NIP-01 machine prefix.
+      if (type === "NOTICE" && /^(rate-limited|rate limited):/i.test(sub)) {
+        recordRelayRateLimit(conn.url)
+        dropRelayConnection(conn, connections, "rate_limited")
+        return
+      }
       const handler = conn.subs.get(sub)
       if (!handler) return
       if (type === "EVENT" && parsed[2]) {
@@ -871,7 +882,13 @@ function getRelayConnection(
       } else if (type === "EOSE") {
         handler.end("eose")
       } else if (type === "CLOSED") {
-        handler.end("closed")
+        if (
+          typeof parsed[2] === "string" &&
+          /^(rate-limited|rate limited):/i.test(parsed[2])
+        ) {
+          recordRelayRateLimit(conn.url)
+          handler.end("rate_limited")
+        } else handler.end("closed")
       }
     }
   })
@@ -918,6 +935,7 @@ function readRelayEvents(
   events: RawNostrEvent[]
   complete: boolean
   truncated: boolean
+  failureReason?: "rate_limited"
 }> {
   try {
     throwIfAborted(signal)
@@ -972,11 +990,15 @@ function readRelayEvents(
       }
     }
 
-    const finish = (complete: boolean, truncated = false) => {
+    const finish = (
+      complete: boolean,
+      truncated = false,
+      failureReason?: "rate_limited"
+    ) => {
       if (settled) return
       settled = true
       cleanup()
-      resolve({ events, complete, truncated })
+      resolve({ events, complete, truncated, failureReason })
     }
     const cancel = () => {
       if (settled) return
@@ -1013,7 +1035,13 @@ function readRelayEvents(
         }
       },
       end: (reason) =>
-        reason === "cancelled" ? cancel() : finish(reason === "eose"),
+        reason === "cancelled"
+          ? cancel()
+          : finish(
+              reason === "eose",
+              false,
+              reason === "rate_limited" ? "rate_limited" : undefined
+            ),
     })
 
     if (signal) {
@@ -1038,6 +1066,10 @@ function readRelayEvents(
           finish(false)
           return
         }
+        if (isRelayRateLimited(relayUrl)) {
+          finish(false, false, "rate_limited")
+          return
+        }
         fetchTimer = setTimeout(() => finish(false), fetchTimeoutMs)
         try {
           conn.ws.send(JSON.stringify(["REQ", subId, filter]))
@@ -1054,6 +1086,9 @@ interface FetchEventsFromRelayResult {
   events: NDKEvent[]
   status: FetchEventsRelayStatus["status"]
   rejectedEventCount: number
+  failureReason?: "rate_limited"
+  /** No relay I/O occurred; retain the diagnostic without consuming a slot. */
+  requestSuppressed?: true
 }
 
 async function fetchEventsFromRelay(
@@ -1074,7 +1109,8 @@ async function fetchEventsFromRelay(
     | "shouldContinue"
     | "signal"
     | "preserveEventOrder"
-  >
+  >,
+  rateLimitedAtPlan = false
 ): Promise<FetchEventsFromRelayResult | null> {
   let acquiredRelayReadSlot = false
   let admittedRelayUrl: string | null = null
@@ -1106,14 +1142,27 @@ async function fetchEventsFromRelay(
     if (options.shouldContinue?.() === false) {
       throw new NostrSignerError("authority_changed")
     }
-    const { events, complete, truncated } = await readRelayEvents(
-      admittedRelayUrl,
-      filter,
-      connectTimeoutMs,
-      fetchTimeoutMs,
-      connections,
-      options.signal
-    )
+    // Recheck after the execution queue and account policy await. Even an
+    // explicit relay plan must respect throttling observed by a sibling read.
+    if (rateLimitedAtPlan || isRelayRateLimited(admittedRelayUrl)) {
+      return {
+        relayUrl: admittedRelayUrl,
+        events: [],
+        status: "failed",
+        rejectedEventCount: 0,
+        failureReason: "rate_limited",
+        requestSuppressed: true,
+      }
+    }
+    const { events, complete, truncated, failureReason } =
+      await readRelayEvents(
+        admittedRelayUrl,
+        filter,
+        connectTimeoutMs,
+        fetchTimeoutMs,
+        connections,
+        options.signal
+      )
     throwIfAborted(options.signal)
     const orderedEvents = options.preserveEventOrder
       ? events
@@ -1181,13 +1230,14 @@ async function fetchEventsFromRelay(
             : "failed"
 
     if (status === "success") recordRelaySuccess(admittedRelayUrl)
-    else recordRelayFailure(admittedRelayUrl)
+    else if (!failureReason) recordRelayFailure(admittedRelayUrl)
 
     return {
       relayUrl: admittedRelayUrl,
       events: verified,
       status,
       rejectedEventCount,
+      ...(failureReason ? { failureReason } : {}),
     }
   } catch (error) {
     if (options.signal?.aborted || isAbortError(error)) throw error
@@ -1232,21 +1282,21 @@ async function runBoundedRelayAttempts(
   const workerCount = Math.min(maxRelayAttempts, relayUrls.length)
   const results = await Promise.all(
     Array.from({ length: workerCount }, async () => {
+      const observations: FetchEventsFromRelayResult[] = []
       while (nextIndex < relayUrls.length) {
         const relayUrl = relayUrls[nextIndex]
         nextIndex += 1
         const result = await attempt(relayUrl)
-        // An eligible attempt consumes this worker's one bounded slot. A
-        // source-policy suppression returns null and backfills from the next
-        // ordered candidate without opening another socket.
-        if (result !== null) return result
+        // Only an actual attempt consumes this worker's bounded slot. Keep
+        // throttle diagnostics while backfilling from later eligible sources.
+        if (result === null) continue
+        observations.push(result)
+        if (!result.requestSuppressed) break
       }
-      return null
+      return observations
     })
   )
-  return results.filter(
-    (result): result is FetchEventsFromRelayResult => result !== null
-  )
+  return results.flat()
 }
 
 function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
@@ -1268,7 +1318,14 @@ function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
   if (options.skipHealthFilter) return dedupedUrls
 
   const { healthy, parked } = partitionByHealth(dedupedUrls)
-  if (healthy.length > 0) return healthy
+  if (healthy.length > 0) {
+    const healthySet = new Set(healthy)
+    // Preserve known suppression in coverage while transport preflight keeps
+    // these sources quiet and backfills their slots from healthy peers.
+    return dedupedUrls.filter(
+      (url) => healthySet.has(url) || isRelayRateLimited(url)
+    )
+  }
   if (parked.length === 0) return []
 
   // Everything is parked (e.g. every relay is failing right now). Re-trying the
@@ -1284,7 +1341,12 @@ function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
     config.defaultRelays.map((url) => url.trim()).filter(Boolean)
   )
   const cappedFallback = dedupedUrls.filter((url) => defaultRelaySet.has(url))
-  return cappedFallback.length > 0 ? cappedFallback : dedupedUrls.slice(0, 4)
+  const fallback = new Set(
+    cappedFallback.length > 0 ? cappedFallback : dedupedUrls.slice(0, 4)
+  )
+  return dedupedUrls.filter(
+    (url) => fallback.has(url) || isRelayRateLimited(url)
+  )
 }
 
 async function orderAccountRelayFanout(
@@ -1307,6 +1369,25 @@ async function orderAccountRelayFanout(
     repository: options.accountNetworkLocalStateRepository,
   })
   return ordered.map((operation) => operation.value)
+}
+
+async function resolveFanoutRelayPlan(options: FetchEventsFanoutOptions) {
+  const ordered = await orderAccountRelayFanout(
+    resolveFanoutRelayUrls(options),
+    options
+  )
+  const rateLimitedRelayUrls = new Set(
+    ordered.filter((url) => isRelayRateLimited(url))
+  )
+  return {
+    // Record known suppression before healthy reads consume the bounded
+    // attempt budget. Each candidate still passes live account admission.
+    relayUrls: [
+      ...rateLimitedRelayUrls,
+      ...ordered.filter((url) => !rateLimitedRelayUrls.has(url)),
+    ],
+    rateLimitedRelayUrls,
+  }
 }
 
 function mergeEventsInto(
@@ -1339,10 +1420,8 @@ export async function fetchEventsFanoutDetailed(
   options: FetchEventsFanoutOptions = {}
 ): Promise<FetchEventsFanoutResult> {
   throwIfAborted(options.signal)
-  const relayUrls = await orderAccountRelayFanout(
-    resolveFanoutRelayUrls(options),
-    options
-  )
+  const { relayUrls, rateLimitedRelayUrls } =
+    await resolveFanoutRelayPlan(options)
 
   if (relayUrls.length === 0) {
     return {
@@ -1362,6 +1441,7 @@ export async function fetchEventsFanoutDetailed(
 
   const progressEvents = new Map<string, NDKEvent>()
   const progressRelays: FetchEventsRelayStatus[] = []
+  const progressAdmittedRelayUrls: string[] = []
   try {
     const perRelayResults = await runBoundedRelayAttempts(
       relayUrls,
@@ -1373,7 +1453,8 @@ export async function fetchEventsFanoutDetailed(
           connectTimeoutMs,
           fetchTimeoutMs,
           connections,
-          options
+          options,
+          rateLimitedRelayUrls.has(relayUrl)
         )
         throwIfAborted(options.signal)
         if (
@@ -1381,11 +1462,17 @@ export async function fetchEventsFanoutDetailed(
           options.onProgress &&
           options.shouldContinue?.() !== false
         ) {
+          if (!result.requestSuppressed) {
+            progressAdmittedRelayUrls.push(result.relayUrl)
+          }
           mergeEventsInto(progressEvents, result.events)
           progressRelays.push({
             relayUrl: result.relayUrl,
             status: result.status,
             eventCount: result.events.length,
+            ...(result.failureReason
+              ? { failureReason: result.failureReason }
+              : {}),
             ...(result.rejectedEventCount > 0
               ? { rejectedEventCount: result.rejectedEventCount }
               : {}),
@@ -1393,9 +1480,7 @@ export async function fetchEventsFanoutDetailed(
           options.onProgress({
             events: Array.from(progressEvents.values()),
             relays: [...progressRelays],
-            admittedRelayUrls: progressRelays.map(
-              ({ relayUrl: admittedRelayUrl }) => admittedRelayUrl
-            ),
+            admittedRelayUrls: [...progressAdmittedRelayUrls],
             eventsVerified: true,
           })
         }
@@ -1415,11 +1500,16 @@ export async function fetchEventsFanoutDetailed(
         relayUrl: result.relayUrl,
         status: result.status,
         eventCount: result.events.length,
+        ...(result.failureReason
+          ? { failureReason: result.failureReason }
+          : {}),
         ...(result.rejectedEventCount > 0
           ? { rejectedEventCount: result.rejectedEventCount }
           : {}),
       })),
-      admittedRelayUrls: perRelayResults.map(({ relayUrl }) => relayUrl),
+      admittedRelayUrls: perRelayResults
+        .filter((result) => !result.requestSuppressed)
+        .map(({ relayUrl }) => relayUrl),
       eventsVerified: true,
     }
   } finally {
@@ -1461,10 +1551,8 @@ export async function fetchEventsFanoutProgressive(
   onProgress: (progress: FetchEventsFanoutProgress) => void | Promise<void>
 ): Promise<NDKEvent[]> {
   throwIfAborted(options.signal)
-  const relayUrls = await orderAccountRelayFanout(
-    resolveFanoutRelayUrls(options),
-    options
-  )
+  const { relayUrls, rateLimitedRelayUrls } =
+    await resolveFanoutRelayPlan(options)
   if (relayUrls.length === 0) return []
 
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
@@ -1486,7 +1574,8 @@ export async function fetchEventsFanoutProgressive(
           connectTimeoutMs,
           fetchTimeoutMs,
           connections,
-          options
+          options,
+          rateLimitedRelayUrls.has(relayUrl)
         )
         if (!result) return null
         throwIfAborted(options.signal)

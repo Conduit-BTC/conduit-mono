@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { normalizePubkey } from "@conduit/core"
 
@@ -17,12 +17,17 @@ import {
   getCategoryBrowseSearch,
 } from "../lib/marketHeaderSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import {
+  isRemoteMarketSearchEligible,
+  MARKET_SEARCH_SETTLE_MS,
+} from "../lib/searchPolicy"
 import { useSellerDirectory } from "./useSellerDirectory"
 
 export function useMarketHeaderSuggestions(input: {
   catalogSource: ProductCatalogSourceMode
   enabled: boolean
   isBrowseRoute: boolean
+  pageSuppliesCatalog: boolean
   listboxId: string
   merchantFilter: unknown
   onSelect: () => void
@@ -38,9 +43,29 @@ export function useMarketHeaderSuggestions(input: {
     query,
   } = input
   const navigate = useNavigate()
+  const [settledQuery, setSettledQuery] = useState("")
+  const normalizedQuery = query.trim()
+  useEffect(() => {
+    if (!enabled || input.pageSuppliesCatalog) {
+      setSettledQuery("")
+      return
+    }
+    const timer = setTimeout(
+      () => setSettledQuery(normalizedQuery),
+      MARKET_SEARCH_SETTLE_MS
+    )
+    return () => clearTimeout(timer)
+  }, [enabled, input.pageSuppliesCatalog, normalizedQuery])
   const sellerDirectory = useSellerDirectory({
     catalogSource,
     enabled,
+    networkEnabled: false,
+    fallbackNetworkAllowed: !input.pageSuppliesCatalog,
+    fallbackNetworkEnabled:
+      !input.pageSuppliesCatalog &&
+      settledQuery === normalizedQuery &&
+      isRemoteMarketSearchEligible(normalizedQuery),
+    accountSearchSettleMs: MARKET_SEARCH_SETTLE_MS,
     query,
   })
   const accountSearch = sellerDirectory.accountSearch
