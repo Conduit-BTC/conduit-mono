@@ -17,6 +17,7 @@ jobs:
   refresh:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
+    environment: contributor-refresh
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
@@ -35,11 +36,14 @@ jobs:
 
       - name: Verify the existing refresh branch
         uses: actions/github-script@v9
+        env:
+          CONTRIBUTOR_REFRESH_BOT_LOGIN: ${{ vars.CONTRIBUTOR_REFRESH_BOT_LOGIN }}
         with:
           script: |
-            const { assertContributorRefreshPullRequest, CONTRIBUTOR_REFRESH_BRANCH } = await import(
+            const { assertContributorRefreshBotLogin, assertContributorRefreshPullRequest, CONTRIBUTOR_REFRESH_BRANCH } = await import(
               `${process.env.GITHUB_WORKSPACE}/scripts/ci/contributor_refresh_pr.mjs`
             );
+            const botLogin = assertContributorRefreshBotLogin(process.env.CONTRIBUTOR_REFRESH_BOT_LOGIN);
             const { owner, repo } = context.repo;
             const { data: pulls } = await github.rest.pulls.list({
               owner, repo, head: `${owner}:${CONTRIBUTOR_REFRESH_BRANCH}`,
@@ -60,7 +64,7 @@ jobs:
             const files = pr ? await github.paginate(github.rest.pulls.listFiles, {
               owner, repo, pull_number: pr.number, per_page: 100,
             }) : [];
-            assertContributorRefreshPullRequest(pr, files, `${owner}/${repo}`);
+            assertContributorRefreshPullRequest(pr, files, `${owner}/${repo}`, botLogin);
             if (branch.object.sha !== pr.head.sha) {
               throw new Error("The refresh branch changed during verification.");
             }
@@ -69,10 +73,25 @@ jobs:
         id: app_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          client-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_CLIENT_ID }}
-          private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.CONTRIBUTOR_REFRESH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONTRIBUTOR_REFRESH_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
+
+      - name: Verify contributor App identity
+        uses: actions/github-script@v9
+        env:
+          CONTRIBUTOR_REFRESH_BOT_LOGIN: ${{ vars.CONTRIBUTOR_REFRESH_BOT_LOGIN }}
+          CONTRIBUTOR_REFRESH_APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+        with:
+          script: |
+            const { assertContributorRefreshBotLogin } = await import(
+              `${process.env.GITHUB_WORKSPACE}/scripts/ci/contributor_refresh_pr.mjs`
+            );
+            const botLogin = assertContributorRefreshBotLogin(process.env.CONTRIBUTOR_REFRESH_BOT_LOGIN);
+            if (botLogin !== `${process.env.CONTRIBUTOR_REFRESH_APP_SLUG}[bot]`) {
+              throw new Error("The contributor refresh App does not match the configured bot login.");
+            }
 
       - name: Create or update the snapshot-only PR
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8

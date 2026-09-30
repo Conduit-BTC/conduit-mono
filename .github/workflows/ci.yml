@@ -325,7 +325,8 @@ jobs:
     name: >-
       ${{
         (github.event.pull_request.user.type != 'Bot' ||
-          (github.event.pull_request.user.login == 'conduit-sudden-agent[bot]' &&
+          (vars.CONTRIBUTOR_REFRESH_BOT_LOGIN != '' &&
+            github.event.pull_request.user.login == vars.CONTRIBUTOR_REFRESH_BOT_LOGIN &&
             github.event.pull_request.head.repo.full_name == github.repository &&
             github.event.pull_request.head.ref == 'chore/refresh-repository-contributors')) &&
           'preview-links' ||
@@ -352,10 +353,13 @@ jobs:
 
       - name: Verify contributor refresh scope
         if: >-
-          github.event.pull_request.user.login == 'conduit-sudden-agent[bot]' &&
+          vars.CONTRIBUTOR_REFRESH_BOT_LOGIN != '' &&
+          github.event.pull_request.user.login == vars.CONTRIBUTOR_REFRESH_BOT_LOGIN &&
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.head.ref == 'chore/refresh-repository-contributors'
         uses: actions/github-script@v9
+        env:
+          CONTRIBUTOR_REFRESH_BOT_LOGIN: ${{ vars.CONTRIBUTOR_REFRESH_BOT_LOGIN }}
         with:
           script: |
             const { data: policy } = await github.rest.repos.getContent({
@@ -371,7 +375,7 @@ jobs:
             const files = await github.paginate(github.rest.pulls.listFiles, {
               ...context.repo, pull_number: pr.number, per_page: 100,
             });
-            assertContributorRefreshPullRequest(pr, files, `${context.repo.owner}/${context.repo.repo}`);
+            assertContributorRefreshPullRequest(pr, files, `${context.repo.owner}/${context.repo.repo}`, process.env.CONTRIBUTOR_REFRESH_BOT_LOGIN);
             if (pr.head.sha !== context.payload.pull_request.head.sha) {
               throw new Error("The refresh PR head changed during preview verification.");
             }
