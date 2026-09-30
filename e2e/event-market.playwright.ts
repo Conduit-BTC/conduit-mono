@@ -1371,6 +1371,7 @@ test("organizer grants, revokes, and reapproves one merchant without republishin
   page,
 }) => {
   test.setTimeout(120_000)
+  page.setDefaultTimeout(25_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   const createdAt = Math.floor(Date.now() / 1000) - 10
@@ -1429,6 +1430,9 @@ test("organizer grants, revokes, and reapproves one merchant without republishin
     .fill("Booth 12")
   await page.getByRole("button", { name: "Approve merchant" }).click()
   await expect(page.getByText("Approved", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Revoke", exact: true })
+  ).toBeEnabled()
   const approvedWrites = uniquePublishedEvents(relay.publications)
   expect(approvedWrites.map((event) => event.kind)).toContain(3841)
   expect(approvedWrites.map((event) => event.kind)).toContain(30409)
@@ -1450,6 +1454,15 @@ test("organizer grants, revokes, and reapproves one merchant without republishin
       )
     )
     .toBe(true)
+  // A published authorization is only the first half of the saved decision.
+  // Stay on the organizer screen until the roster and journal also settle.
+  await expect(page.getByText("Revoked", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Approve merchant" })
+  ).toBeEnabled()
+  await expect(
+    page.getByRole("button", { name: "Retry saved decision" })
+  ).toHaveCount(0)
   await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
   await expect(
     page.getByRole("heading", { name: "Organizer Grants soap" })
@@ -1469,6 +1482,9 @@ test("organizer grants, revokes, and reapproves one merchant without republishin
   ).toBeVisible()
   await page.getByRole("button", { name: "Confirm reapproval" }).click()
   await expect(page.getByText("Approved", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Revoke", exact: true })
+  ).toBeEnabled()
 
   await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
   await expect(
