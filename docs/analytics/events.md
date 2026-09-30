@@ -371,9 +371,15 @@ checkout counters, never on general browsing or provider lifecycle events.
   fallback. `partner` preserves active legacy partner-code-only links. `none`
   means no usable source. These are source indicators, not ownership proof.
 - `source_partner_status=active` requires an exact, unique active domain mapping
-  or a recognized legacy partner code. `unregistered` domains remain measurable
-  without activation. Missing source uses `none`. Both sanitizers reject forged
-  or inconsistent activation labels. A domain takes precedence over `partner=`.
+  when a domain is present; partner-only links use `active` for a recognized
+  legacy code. `unregistered` domains remain measurable without activation.
+  Missing source uses `none`. With an observed referrer, `partner_code` preserves
+  an explicit active legacy code when supplied, otherwise it uses the domain
+  mapping. Domain activation status stays independent: an unregistered observed
+  domain remains `unregistered` even alongside an active claimed code. With an
+  explicit `source=`, only its mapping determines the code. Both sanitizers
+  independently check domain status and active code membership; codes never
+  prove control of a referrer or grant it activation.
 - One Conduit-owned `normalizeCheckoutSourceDomain` wrapper rejects URL syntax,
   credentials, ports, paths, queries, fragments, IP literals, special/local
   hosts and unknown suffixes. It uses WHATWG IDNA conversion and pinned `tldts`
@@ -405,8 +411,12 @@ checkout counters, never on general browsing or provider lifecycle events.
   Emission occurs after scrubbing. The temporary purchase binding lasts at most
   30 minutes from arrival, including retries. It requires exact product lines,
   quantities, merchant, purchase, and buyer session. Keeping the existing cart,
-  a mismatch, account/session change, or expiry clears that binding. The exact
-  order snapshot retains local provenance for retries, under the existing
+  a mismatch, account/session change, or expiry clears that binding. Market's
+  global auth boundary rotates a tab-local session fence and clears provenance
+  on account transitions even away from checkout. Same-identity saved signer
+  restoration can reuse the persisted fence despite a reset process counter;
+  the fence never enters telemetry or supplies account/payment authority. The
+  exact order snapshot retains local provenance for retries, under the existing
   order lifecycle retention. It is not included in the encrypted order content,
   public Nostr events, or payment authority.
 - Browser telemetry stays optional, respects Global Privacy Control, and source

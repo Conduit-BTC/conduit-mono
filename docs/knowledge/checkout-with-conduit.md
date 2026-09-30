@@ -32,10 +32,12 @@ as `other`. Unknown domains remain measurable, subject to the privacy
 and abuse limits in [the analytics contract](../analytics/events.md).
 
 Existing `partner=<assigned-code>` links remain compatible. Active registered
-codes may still be used without a domain. When a domain is present, only its
-reviewed active mapping determines the partner; another `partner` claim cannot
-override it. Unknown or inactive partner codes do not block checkout. Approval
-is separate from integration and source measurement.
+codes remain claimed partner attribution when an automatic browser referrer is
+also observed. The observed domain's activation status depends only on its
+reviewed mapping; a claimed code does not approve that domain. An explicit
+`source=` instead takes precedence, and only that domain's mapping determines
+the partner code. Unknown or inactive partner codes do not block checkout.
+Approval is separate from integration and source measurement.
 
 The `buy` form defaults to quantity one. The `cart` value is JSON with this
 shape, encoded by `URLSearchParams`:
@@ -173,8 +175,11 @@ retroactive commission promise. Payment splits require separate future work.
 
 Attribution belongs to the imported purchase and its exact buyer-local order.
 Keeping a conflicting existing cart, changing the purchase quantities, switching
-accounts, or expiring the handoff clears the temporary source. Retrying a
-matching purchase keeps the original expiry; attribution never changes checkout
+accounts anywhere in Market, or expiring the handoff clears the temporary
+source. A tab-local session fence survives reloads of the same buyer session and
+rotates on account transitions, even away from checkout. It is never emitted as
+telemetry or used as account authority. Retrying a matching purchase keeps the
+original expiry; attribution never changes checkout
 authority or signed product, quantity, delivery, or payment checks. It is not
 sent in public Nostr events or to the merchant as order content.
 
@@ -195,13 +200,13 @@ a preview does not produce an official-host attribution report.
 
 ## Implementation acceptance and evidence
 
-| ID        | Criterion                                                                               | Automated coverage                                 | Remaining manual validation                              |
-| --------- | --------------------------------------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------- |
-| SOURCE-01 | Unregistered buy/cart links preserve exact products and quantities                      | Source parser and Chromium handoff tests           | Candidate preview with public signed listings            |
-| SOURCE-02 | Explicit claim wins; referrer fallback and missing/invalid sources never block checkout | Source parser, staging and Chromium scenarios      | Chrome/Safari referrer-policy differences                |
-| SOURCE-03 | PSL, hosted-domain, IDNA, malformed URL/IP/local input and subdomain bounds             | Domain and telemetry tests                         | Review pinned suffix data on dependency updates          |
-| SOURCE-04 | Legacy partner links and unique active domain mapping                                   | Registry and client/proxy tests                    | Maintainer domain-control verification before activation |
-| SOURCE-05 | Exact purchase/session/quantity binding, conflict choice, retries and expiry            | Referral, order staging and Chromium handoff tests | External-signer account switches on preview              |
-| SOURCE-06 | Capture then scrub then emit; no attribution identifiers or content through ingest      | Staging, client/proxy, policy and Chromium tests   | Official-host aggregate report after release             |
-| SOURCE-07 | Optional telemetry, GPC, official-host restrictions and finite abuse bounds             | Client/proxy, policy and source-budget tests       | Deployment configuration review                          |
-| SOURCE-08 | Public email request, manual verification and activation; no payout promises            | Developer guide contract test                      | Maintainer review and private follow-up                  |
+| ID        | Criterion                                                                                                    | Automated coverage                                 | Remaining manual validation                              |
+| --------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | -------------------------------------------------------- |
+| SOURCE-01 | Unregistered buy/cart links preserve exact products and quantities                                           | Source parser and Chromium handoff tests           | Candidate preview with public signed listings            |
+| SOURCE-02 | Explicit claim wins; referrer fallback and missing/invalid sources never block checkout                      | Source parser, staging and Chromium scenarios      | Chrome/Safari referrer-policy differences                |
+| SOURCE-03 | PSL, hosted-domain, IDNA, malformed URL/IP/local input and subdomain bounds                                  | Domain and telemetry tests                         | Review pinned suffix data on dependency updates          |
+| SOURCE-04 | Legacy partner links with referrers and unique active domain mapping                                         | Registry and client/proxy tests                    | Maintainer domain-control verification before activation |
+| SOURCE-05 | Exact purchase/session/quantity binding, off-checkout account changes, reload, conflicts, retries and expiry | Referral, order staging and Chromium handoff tests | External-signer account switches on preview              |
+| SOURCE-06 | Capture then scrub then emit; no attribution identifiers or content through ingest                           | Staging, client/proxy, policy and Chromium tests   | Official-host aggregate report after release             |
+| SOURCE-07 | Optional telemetry, GPC, official-host restrictions and finite abuse bounds                                  | Client/proxy, policy and source-budget tests       | Deployment configuration review                          |
+| SOURCE-08 | Public email request, manual verification and activation; no payout promises                                 | Developer guide contract test                      | Maintainer review and private follow-up                  |

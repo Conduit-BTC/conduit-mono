@@ -14,6 +14,7 @@ import {
   pruneCommerceCaches,
   pruneExpiredGuestOrderData,
   resumePendingOrderRelayDeliveries,
+  useAuth,
   useBtcUsdRate,
   useConduitSession,
 } from "@conduit/core"
@@ -26,6 +27,7 @@ import { routeTree } from "./routeTree.gen"
 import { ShopperPresetsProvider } from "./hooks/useShopperPresets"
 import { pruneExpiredCheckoutShippingSession } from "./lib/checkout-session"
 import { captureCheckoutIntentFragment } from "./lib/checkout-intent-stage"
+import { checkoutReferralSessionFence } from "./lib/checkout-referral-session"
 import { pruneExpiredSessionGuestOrderSigningIdentities } from "./lib/guest-order-identity"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
@@ -61,6 +63,21 @@ function preloadCriticalMarketFonts() {
 
 function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
   const session = useConduitSession()
+  const {
+    accountPubkey,
+    authGeneration,
+    signerReadiness,
+    restorePendingPubkey,
+  } = useAuth()
+  const authPending =
+    signerReadiness === "pending" || restorePendingPubkey !== null
+  useLayoutEffect(() => {
+    checkoutReferralSessionFence.synchronize({
+      accountPubkey,
+      authGeneration,
+      pending: authPending,
+    })
+  }, [accountPubkey, authGeneration, authPending])
   const queryClient = useQueryClient()
   const identityRef = useRef<string | null>(null)
   const identity =

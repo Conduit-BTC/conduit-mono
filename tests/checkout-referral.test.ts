@@ -11,9 +11,15 @@ import {
   getStagedCheckoutIntent,
   recordCheckoutHandoffStage,
 } from "../apps/market/src/lib/checkout-intent-stage"
-import { encodeProductNaddr, type CheckoutIntent } from "@conduit/core"
+import {
+  checkoutAttributionTelemetryProperties,
+  encodeProductNaddr,
+  type CheckoutIntent,
+} from "@conduit/core"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
 import { readFileSync } from "node:fs"
+
+import { createCheckoutReferralSessionFence } from "../apps/market/src/lib/checkout-referral-session"
 
 const storage = new Map<string, string>()
 const oldWindow = globalThis.window
@@ -30,6 +36,7 @@ const intent: CheckoutIntent = {
 let scrubbed = false
 beforeEach(() => {
   scrubbed = false
+  storage.clear()
   globalThis.window = {
     location: {
       pathname: "/checkout",
@@ -225,6 +232,168 @@ describe("checkout source staging and buyer-local purchase", () => {
     clearStagedCheckoutIntent()
     expect(claim()).toBeUndefined()
     expect(getStagedCheckoutIntent()).toBeNull()
+  })
+
+  it("invalidates sources on off-checkout account transitions before a generation-reset reload", () => {
+    const fence = createCheckoutReferralSessionFence()
+    fence.synchronize({
+      accountPubkey: null,
+      authGeneration: 0,
+      pending: false,
+    })
+    const original = fence.getScope(null, 0)!
+    bindCheckoutReferral(intent, merchant, "purchase", original)
+    fence.synchronize({ accountPubkey: null, authGeneration: 1, pending: true })
+    expect(claim([item], original)).toBeUndefined()
+    fence.synchronize({
+      accountPubkey: merchant,
+      authGeneration: 1,
+      pending: false,
+    })
+    fence.synchronize({
+      accountPubkey: null,
+      authGeneration: 2,
+      pending: false,
+    })
+    const reloaded = createCheckoutReferralSessionFence()
+    reloaded.synchronize({
+      accountPubkey: null,
+      authGeneration: 0,
+      pending: false,
+    })
+    expect(reloaded.getScope(null, 0) !== original).toBe(true)
+    expect(claim([item], reloaded.getScope(null, 0)!)).toBeUndefined()
+    expect(fence.getScope(null, 0)).toBeUndefined()
+    const main = readFileSync("apps/market/src/main.tsx", "utf8")
+    expect(main.includes("checkoutReferralSessionFence.synchronize")).toBe(true)
+  })
+
+  it("keeps the guest fence across process-only startup cleanup and reload", () => {
+    const fence = createCheckoutReferralSessionFence()
+    fence.synchronize({
+      accountPubkey: null,
+      authGeneration: 0,
+      pending: false,
+    })
+    const original = fence.getScope(null, 0)!
+    bindCheckoutReferral(intent, merchant, "purchase", original)
+    fence.synchronize({
+      accountPubkey: null,
+      authGeneration: 1,
+      pending: false,
+    })
+    expect(fence.getScope(null, 1) === original).toBe(true)
+    expect(claim([item], fence.getScope(null, 1)!)?.sourceDomain).toBe(
+      "example.com"
+    )
+    const reloaded = createCheckoutReferralSessionFence()
+    reloaded.synchronize({
+      accountPubkey: null,
+      authGeneration: 0,
+      pending: false,
+    })
+    expect(reloaded.getScope(null, 0) === original).toBe(true)
+  })
+
+  it("preserves the same identity and arrival expiry across saved signer restoration", () => {
+    const fence = createCheckoutReferralSessionFence()
+    fence.synchronize({
+      accountPubkey: merchant,
+      authGeneration: 3,
+      pending: false,
+    })
+    const original = fence.getScope(merchant, 3)!
+    const arrival = Date.now() - 20 * 60_000
+    bindCheckoutReferral(intent, merchant, "purchase", original, arrival)
+    const reloaded = createCheckoutReferralSessionFence()
+    reloaded.synchronize({
+      accountPubkey: merchant,
+      authGeneration: 0,
+      pending: true,
+    })
+    expect(reloaded.getScope(merchant, 0)).toBeUndefined()
+    reloaded.synchronize({
+      accountPubkey: merchant,
+      authGeneration: 1,
+      pending: false,
+    })
+    expect(reloaded.getScope(merchant, 1) === original).toBe(true)
+    expect(claim([item], reloaded.getScope(merchant, 1)!)?.sourceDomain).toBe(
+      "example.com"
+    )
+    const stored = [...storage.entries()].find(
+      ([key]) => key === "conduit:checkout-referral:v1"
+    )!
+    expect(JSON.parse(stored[1]).createdAt).toBe(arrival)
+    expect(
+      JSON.stringify(
+        checkoutAttributionTelemetryProperties(claim([item], original))
+      ).includes(original)
+    ).toBe(false)
+    reloaded.synchronize({
+      accountPubkey: "different-account",
+      authGeneration: 2,
+      pending: false,
+    })
+    expect(claim([item], original)).toBeUndefined()
+  })
+
+  it("does not let an older async buyer frame adopt or clear a newer source", () => {
+    const fence = createCheckoutReferralSessionFence()
+    fence.synchronize({
+      accountPubkey: merchant,
+      authGeneration: 1,
+      pending: false,
+    })
+    const oldScope = () => fence.getScope(merchant, 1)
+    bindCheckoutReferral(intent, merchant, "purchase", oldScope()!)
+    const nextBuyer = "b".repeat(64)
+    fence.synchronize({
+      accountPubkey: nextBuyer,
+      authGeneration: 2,
+      pending: false,
+    })
+    const nextScope = fence.getScope(nextBuyer, 2)!
+    bindCheckoutReferral(
+      { ...intent, source: { domain: "other.com", method: "claimed" } },
+      merchant,
+      "purchase",
+      nextScope
+    )
+    expect(
+      getCheckoutReferralClaim(merchant, "purchase", [item], oldScope())
+    ).toBeUndefined()
+    recordCheckoutReferralOrderSubmitted(
+      merchant,
+      "purchase",
+      [item],
+      oldScope()
+    )
+    expect(claim([item], nextScope)?.sourceDomain).toBe("other.com")
+    const stored = storage.get("conduit:checkout-referral:v1")!
+    expect(JSON.parse(stored).orderSubmitted).toBe(false)
+  })
+
+  it("does not reuse an old persisted fence when session storage cannot rotate it", () => {
+    const fence = createCheckoutReferralSessionFence()
+    fence.synchronize({
+      accountPubkey: null,
+      authGeneration: 0,
+      pending: false,
+    })
+    const original = fence.getScope(null, 0)!
+    bindCheckoutReferral(intent, merchant, "purchase", original)
+    window.sessionStorage.setItem = () => {
+      throw new Error("quota exceeded")
+    }
+    const reloaded = createCheckoutReferralSessionFence()
+    reloaded.synchronize({
+      accountPubkey: null,
+      authGeneration: 0,
+      pending: false,
+    })
+    expect(reloaded.getScope(null, 0) !== original).toBe(true)
+    expect(claim([item], original)).toBeUndefined()
   })
 
   it("keeps the same expiry in tab memory when storage is unavailable", () => {

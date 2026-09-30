@@ -234,7 +234,20 @@ describe("public checkout source domains", () => {
         },
         registry
       )
-    ).toEqual({ sourceDomain: "unknown.com", sourceMethod: "referrer" })
+    ).toEqual({
+      sourceDomain: "unknown.com",
+      sourceMethod: "referrer",
+      partnerCode: "project_a",
+    })
+    expect(
+      resolveCheckoutAttribution(
+        {
+          source: { domain: "unknown.com", method: "claimed" },
+          partner: "project_a",
+        },
+        registry
+      )
+    ).toEqual({ sourceDomain: "unknown.com", sourceMethod: "claimed" })
     expect(
       resolveCheckoutPartnerDomain("example.co.uk", [
         { ...registry[0]!, active: false },

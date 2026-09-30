@@ -634,6 +634,13 @@ test("signer restoration preserves the purchase and disconnect clears its source
       () => sessionStorage.getItem("conduit:checkout-referral:v1") !== null
     )
   ).toBe(true)
+  await page.reload()
+  await waitForSourcePurchase(page, `30402:${product.pubkey}:source-handoff`)
+  expect(
+    await page.evaluate(
+      () => sessionStorage.getItem("conduit:checkout-referral:v1") !== null
+    )
+  ).toBe(true)
   await accountMenu.click()
   await page.getByRole("menuitem", { name: "Disconnect", exact: true }).click()
   await expect
@@ -643,4 +650,57 @@ test("signer restoration preserves the purchase and disconnect clears its source
       )
     )
     .toBe(true)
+})
+
+test("account changes away from checkout cannot revive a guest source after reload @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  const { product, naddr } = await sourceProduct()
+  await publishTestRelayEvents([product])
+  await page.goto(
+    `${marketUrl}/checkout#${new URLSearchParams({ buy: naddr, source: "example.com" })}`
+  )
+  await waitForSourcePurchase(page, `30402:${product.pubkey}:source-handoff`)
+  const checkoutUrl = page.url()
+  expect(
+    await page.evaluate(
+      () => sessionStorage.getItem("conduit:checkout-referral:v1") !== null
+    )
+  ).toBe(true)
+  await page.goto(`${marketUrl}/products`)
+  expect(
+    await page.evaluate(
+      () => sessionStorage.getItem("conduit:checkout-referral:v1") !== null
+    )
+  ).toBe(true)
+  await page
+    .getByRole("button", { name: /^Connect$/ })
+    .first()
+    .click()
+  await page
+    .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
+    .click()
+  const accountMenu = page.getByRole("button", { name: "Open account menu" })
+  await expect(accountMenu).toBeVisible()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => sessionStorage.getItem("conduit:checkout-referral:v1") === null
+      )
+    )
+    .toBe(true)
+  await accountMenu.click()
+  await page.getByRole("menuitem", { name: "Disconnect", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: /^Connect$/ }).first()
+  ).toBeVisible()
+  await page.reload()
+  await page.goto(checkoutUrl)
+  await waitForSourcePurchase(page, `30402:${product.pubkey}:source-handoff`)
+  expect(
+    await page.evaluate(
+      () => sessionStorage.getItem("conduit:checkout-referral:v1") === null
+    )
+  ).toBe(true)
 })

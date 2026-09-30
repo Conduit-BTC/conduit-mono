@@ -235,6 +235,7 @@ import {
 } from "../lib/checkout-payment-target"
 import type { CheckoutPaymentTarget } from "../lib/payment-rails"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
+import { checkoutReferralSessionFence } from "../lib/checkout-referral-session"
 import { useCheckoutIntentImport } from "../hooks/useCheckoutIntentImport"
 import {
   getCheckoutReferralClaim,
@@ -1402,18 +1403,18 @@ function CheckoutPage() {
       ? matchingMerchantPurchases[0]
       : undefined
   const selectedMerchant = selectedPurchase?.merchantPubkey
-  const checkoutReferralSessionScope = `${authGeneration}:${accountPubkey ?? "guest"}`
-  const checkoutReferralSessionScopeRef = useRef(checkoutReferralSessionScope)
-  useLayoutEffect(() => {
-    checkoutReferralSessionScopeRef.current = checkoutReferralSessionScope
-  }, [checkoutReferralSessionScope])
+  // Async work must keep its originating buyer frame, not adopt a newer session.
+  const getCheckoutReferralScope = useCallback(
+    () => checkoutReferralSessionFence.getScope(accountPubkey, authGeneration),
+    [accountPubkey, authGeneration]
+  )
   useEffect(() => {
     if (!cart.hydrated || authPending) return
     getCheckoutReferralClaim(
       selectedMerchant,
       selectedPurchase?.id,
       selectedPurchase?.items ?? [],
-      checkoutReferralSessionScopeRef.current
+      getCheckoutReferralScope()
     )
   }, [
     cart.hydrated,
@@ -1421,7 +1422,9 @@ function CheckoutPage() {
     selectedMerchant,
     selectedPurchase?.id,
     selectedPurchase?.items,
-    checkoutReferralSessionScope,
+    accountPubkey,
+    authGeneration,
+    getCheckoutReferralScope,
   ])
   const checkoutRecoveryScope = `${authGeneration}:${search.merchant ?? "none"}:${search.purchase ?? "none"}:${selectedPurchase?.id ?? "none"}:${cart.mutationSequence}`
   const [checkoutRecoveryResolution, setCheckoutRecoveryResolution] = useState<{
@@ -2080,7 +2083,7 @@ function CheckoutPage() {
             selectedMerchant,
             selectedPurchase?.id,
             checkoutItems,
-            checkoutReferralSessionScopeRef.current
+            getCheckoutReferralScope()
           )
         ),
         rail: input.rail ?? "none",
@@ -2113,7 +2116,7 @@ function CheckoutPage() {
             selectedMerchant,
             selectedPurchase?.id,
             checkoutItems,
-            checkoutReferralSessionScopeRef.current
+            getCheckoutReferralScope()
           )
         ),
         rail: input.rail ?? "none",
@@ -2143,7 +2146,7 @@ function CheckoutPage() {
             selectedMerchant,
             selectedPurchase?.id,
             checkoutItems,
-            checkoutReferralSessionScopeRef.current
+            getCheckoutReferralScope()
           )
         ),
         rail: input.rail ?? "none",
@@ -2678,7 +2681,7 @@ function CheckoutPage() {
           selectedMerchant,
           selectedPurchase?.id,
           checkoutItems,
-          checkoutReferralSessionScopeRef.current
+          getCheckoutReferralScope()
         ),
         createdAt: orderCreatedAt,
         buyerPubkey,
@@ -2730,7 +2733,7 @@ function CheckoutPage() {
         selectedMerchant,
         selectedPurchase?.id,
         checkoutItems,
-        checkoutReferralSessionScopeRef.current
+        getCheckoutReferralScope()
       )
       recordCheckoutStepResult({
         checkoutMode: "order_first",
@@ -3309,7 +3312,7 @@ function CheckoutPage() {
           selectedMerchant,
           selectedPurchase?.id,
           checkoutItems,
-          checkoutReferralSessionScopeRef.current
+          getCheckoutReferralScope()
         ),
         createdAt: orderCreatedAt,
         buyerPubkey,
@@ -3379,7 +3382,7 @@ function CheckoutPage() {
         selectedMerchant,
         selectedPurchase?.id,
         checkoutItems,
-        checkoutReferralSessionScopeRef.current
+        getCheckoutReferralScope()
       )
       if (!shouldContinueBuyerSession()) {
         throw new Error(

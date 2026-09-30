@@ -122,8 +122,10 @@ export function getCheckoutReferralClaim(
   merchantPubkey: string | undefined,
   purchaseId: string | undefined,
   items: readonly CartItem[],
-  sessionScope: string
+  sessionScope: string | undefined
 ): CheckoutReferralClaim | undefined {
+  // A stale async buyer frame has no authority to read or clear a newer binding.
+  if (!sessionScope) return undefined
   const current = read()
   if (!current) return undefined
   const lines = items
@@ -150,7 +152,7 @@ export function recordCheckoutReferralOrderSubmitted(
   merchantPubkey: string | undefined,
   purchaseId: string | undefined,
   items: readonly CartItem[],
-  sessionScope: string
+  sessionScope: string | undefined
 ): void {
   const claim = getCheckoutReferralClaim(
     merchantPubkey,

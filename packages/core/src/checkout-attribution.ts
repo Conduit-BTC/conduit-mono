@@ -26,7 +26,11 @@ export function resolveCheckoutAttribution(
       !["claimed", "referrer"].includes(input.source.method)
     )
       return undefined
-    const partnerCode = resolveCheckoutPartnerDomain(domain, registry)
+    const mappedPartner = resolveCheckoutPartnerDomain(domain, registry)
+    const partnerCode =
+      input.source.method === "referrer"
+        ? (resolveCheckoutPartnerCode(input.partner, registry) ?? mappedPartner)
+        : mappedPartner
     return {
       sourceDomain: domain,
       sourceMethod: input.source.method,
@@ -43,16 +47,20 @@ export function checkoutAttributionTelemetryProperties(
   if (!attribution)
     return { source_method: "none", source_partner_status: "none" }
   const domain = attribution.sourceDomain
-  const partnerCode = domain
-    ? resolveCheckoutPartnerDomain(domain)
-    : resolveCheckoutPartnerCode(attribution.partnerCode)
+  const mappedPartner = domain ? resolveCheckoutPartnerDomain(domain) : null
+  const partnerCode =
+    attribution.sourceMethod === "claimed"
+      ? mappedPartner
+      : (resolveCheckoutPartnerCode(attribution.partnerCode) ?? mappedPartner)
   return {
     source_method: attribution.sourceMethod,
-    source_partner_status: partnerCode ? "active" : "unregistered",
+    source_partner_status: (domain ? mappedPartner : partnerCode)
+      ? "active"
+      : "unregistered",
     ...(domain
       ? {
           source_domain:
-            partnerCode || isBoundedCheckoutSourceDomain(domain)
+            mappedPartner || isBoundedCheckoutSourceDomain(domain)
               ? domain
               : "other",
         }
@@ -81,17 +89,24 @@ export function hasValidCheckoutAttributionTelemetry(
       resolveCheckoutPartnerCode(code) === code
     )
   if (method !== "claimed" && method !== "referrer") return false
-  if (domain === "other") return status === "unregistered" && code === undefined
   if (
-    typeof domain !== "string" ||
-    normalizeCheckoutSourceDomain(domain) !== domain
+    domain !== "other" &&
+    (typeof domain !== "string" ||
+      normalizeCheckoutSourceDomain(domain) !== domain)
   )
     return false
-  const mapped = resolveCheckoutPartnerDomain(domain)
-  if (mapped) return status === "active" && code === mapped
-  return (
-    status === "unregistered" &&
-    code === undefined &&
-    isBoundedCheckoutSourceDomain(domain)
+  const mapped =
+    domain === "other" ? null : resolveCheckoutPartnerDomain(domain as string)
+  if (status !== (mapped ? "active" : "unregistered")) return false
+  if (
+    !mapped &&
+    domain !== "other" &&
+    !isBoundedCheckoutSourceDomain(domain as string)
   )
+    return false
+  if (method === "claimed") return code === (mapped ?? undefined)
+  // An observed domain never upgrades an explicit legacy code to domain approval.
+  return code === undefined
+    ? mapped === null
+    : typeof code === "string" && resolveCheckoutPartnerCode(code) === code
 }

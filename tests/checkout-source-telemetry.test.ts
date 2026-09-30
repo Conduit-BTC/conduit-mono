@@ -3,6 +3,8 @@ import {
   checkoutAttributionTelemetryProperties,
   checkoutPartnerRegistry,
   resolveCheckoutAttribution,
+  parseCheckoutIntentFragment,
+  encodeProductNaddr,
   sanitizeTelemetryEventProperties,
   sanitizePostHogCaptureEvent,
   recordBrowserTelemetryEvent,
@@ -148,6 +150,86 @@ describe("checkout domain telemetry pipeline", () => {
       event({ source_partner_status: "active", partner_code: "project_a" })
     )
     if (inactive.ok) expect(inactive.events).toHaveLength(0)
+  })
+
+  it("preserves a legacy claimed code alongside an observed domain through parser, client and ingest", () => {
+    registry.push(
+      { code: "legacy_a", account: "public-legacy", active: true },
+      {
+        code: "mapped_b",
+        account: "public-mapped",
+        active: true,
+        domains: ["approved.com"],
+      }
+    )
+    const product = encodeProductNaddr(
+      `30402:${"a".repeat(64)}:legacy-referrer`
+    )
+    const fragment = new URLSearchParams({
+      buy: product,
+      partner: "legacy_a",
+    }).toString()
+    for (const [referrer, expectedDomain, status] of [
+      ["https://unknown.co.uk/", "unknown.co.uk", "unregistered"],
+      ["https://approved.com/", "approved.com", "active"],
+      ["https://deadbeefdeadbeef.com/", "other", "unregistered"],
+    ]) {
+      const parsed = parseCheckoutIntentFragment(fragment, referrer)
+      expect(parsed.status).toBe("valid")
+      if (parsed.status !== "valid")
+        throw new Error("Fixture failed purchase parsing")
+      const source = checkoutAttributionTelemetryProperties(
+        resolveCheckoutAttribution(parsed.intent)
+      )
+      expect(source).toEqual({
+        source_method: "referrer",
+        source_domain: expectedDomain,
+        source_partner_status: status,
+        partner_code: "legacy_a",
+      })
+      expect(client(source)).not.toBeNull()
+      const rebuilt = rebuild(event(source))
+      expect(rebuilt.ok).toBe(true)
+      if (rebuilt.ok) {
+        expect(rebuilt.events).toHaveLength(1)
+        expect(rebuilt.events[0]?.properties?.partner_code).toBe("legacy_a")
+        expect(rebuilt.events[0]?.properties?.source_partner_status).toBe(
+          status
+        )
+      }
+      expect(
+        client({
+          ...source,
+          source_partner_status:
+            status === "active" ? "unregistered" : "active",
+        })
+      ).toBeNull()
+      expect(
+        client({ ...source, partner_code: "unregistered_code" })
+      ).toBeNull()
+    }
+    const explicit = parseCheckoutIntentFragment(
+      `${fragment}&source=unknown.co.uk`,
+      "https://approved.com/"
+    )
+    if (explicit.status !== "valid")
+      throw new Error("Fixture failed purchase parsing")
+    const explicitSource = checkoutAttributionTelemetryProperties(
+      resolveCheckoutAttribution(explicit.intent)
+    )
+    expect(explicitSource.partner_code).toBeUndefined()
+    expect(explicitSource.source_partner_status).toBe("unregistered")
+    expect(client({ ...explicitSource, partner_code: "legacy_a" })).toBeNull()
+    registry[0]!.active = false
+    const observed = parseCheckoutIntentFragment(
+      fragment,
+      "https://approved.com/"
+    )
+    if (observed.status !== "valid")
+      throw new Error("Fixture failed purchase parsing")
+    expect(resolveCheckoutAttribution(observed.intent)?.partnerCode).toBe(
+      "mapped_b"
+    )
   })
 
   it("rejects URLs, subdomains, free text and forged status through both validators", () => {

@@ -18,6 +18,7 @@ import {
   getStagedCheckoutIntent,
   recordCheckoutHandoffStage,
 } from "../lib/checkout-intent-stage"
+import { checkoutReferralSessionFence } from "../lib/checkout-referral-session"
 import { getCartRepositorySnapshot } from "../lib/cart-repository"
 import {
   bindCheckoutReferral,
@@ -64,14 +65,19 @@ export function useCheckoutIntentImport() {
 
   const finish = useCallback(
     async (merchantPubkey: string, purchaseId: string) => {
-      if (stage?.result.status === "valid")
+      const sessionScope = checkoutReferralSessionFence.getScope(
+        session.pubkey ?? null,
+        authGenerationRef.current
+      )
+      if (stage?.result.status === "valid" && sessionScope)
         bindCheckoutReferral(
           stage.result.intent,
           merchantPubkey,
           purchaseId,
-          `${authGenerationRef.current}:${session.pubkey ?? "guest"}`,
+          sessionScope,
           stage.createdAt
         )
+      else clearCheckoutReferral()
       try {
         await navigate({
           to: "/checkout",
