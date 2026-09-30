@@ -121,8 +121,8 @@ describe("current Merchant Event Market routes", () => {
     expect(products).toContain("readEventMarketAuthorization")
     expect(products).toContain("setEventMarketProductAssociation")
     expect(products).toContain("existing?.product.eventMarketRefs")
-    expect(products).toContain(
-      "buildShippingMetadata(signerPubkey, dTag, form)"
+    expect(products).toMatch(
+      /buildShippingMetadata\(\s*signerPubkey,\s*dTag,\s*form,\s*presetShippingConfig\s*\)/
     )
     expect(fulfillment).toContain('<SelectItem value="ship">')
     expect(fulfillment).toContain('<SelectItem value="digital">')

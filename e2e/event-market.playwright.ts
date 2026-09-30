@@ -29,6 +29,7 @@ const FIXTURE_RELAY_PORT = process.env.PLAYWRIGHT_RELAY_PORT ?? "7777"
 const FIXTURE_RELAY = `ws://127.0.0.1:${FIXTURE_RELAY_PORT}`
 const SYNTHETIC_IDENTITY_SEARCH_KEY = "__conduit_e2e_identity"
 const SYNTHETIC_IDENTITY_STORAGE_KEY = "conduit:e2e:identity"
+const SYNTHETIC_SIGNER_UNAVAILABLE_KEY = "conduit:e2e:signer-unavailable"
 
 const syntheticIdentities = {
   organizer: {
@@ -496,7 +497,7 @@ async function installSyntheticSigner(page: Page): Promise<void> {
     }
   )
   await page.addInitScript(
-    ({ identities, relayUrl, searchKey, storageKey }) => {
+    ({ identities, relayUrl, searchKey, storageKey, unavailableKey }) => {
       type Identity = keyof typeof identities
       const requested = new URL(window.location.href).searchParams.get(
         searchKey
@@ -513,6 +514,7 @@ async function installSyntheticSigner(page: Page): Promise<void> {
         throw new Error("Choose a synthetic signer identity before app boot.")
       }
       const signer = window as typeof window & {
+        __conduitSyntheticSignAttempts?: number
         __conduitSignSyntheticEvent: (
           identity: Identity,
           event: UnsignedEvent
@@ -528,6 +530,8 @@ async function installSyntheticSigner(page: Page): Promise<void> {
           ciphertext: string
         ) => Promise<string>
       }
+      signer.__conduitSyntheticSignAttempts = 0
+      const signerUnavailable = localStorage.getItem(unavailableKey) === "1"
       Object.defineProperty(window, "nostr", {
         configurable: true,
         value: {
@@ -538,19 +542,25 @@ async function installSyntheticSigner(page: Page): Promise<void> {
             return { [relayUrl]: { read: true, write: true } }
           },
           async signEvent(event: UnsignedEvent) {
+            if (localStorage.getItem(unavailableKey) === "1") {
+              signer.__conduitSyntheticSignAttempts =
+                (signer.__conduitSyntheticSignAttempts ?? 0) + 1
+              throw new Error("Synthetic signer is unavailable.")
+            }
             return await signer.__conduitSignSyntheticEvent(
               currentIdentity(),
               event
             )
           },
           nip44: {
-            async encrypt(peerPubkey: string, plaintext: string) {
-              return await signer.__conduitEncryptSyntheticNip44(
-                currentIdentity(),
-                peerPubkey,
-                plaintext
-              )
-            },
+            encrypt: signerUnavailable
+              ? undefined
+              : async (peerPubkey: string, plaintext: string) =>
+                  await signer.__conduitEncryptSyntheticNip44(
+                    currentIdentity(),
+                    peerPubkey,
+                    plaintext
+                  ),
             async decrypt(peerPubkey: string, ciphertext: string) {
               return await signer.__conduitDecryptSyntheticNip44(
                 currentIdentity(),
@@ -571,6 +581,7 @@ async function installSyntheticSigner(page: Page): Promise<void> {
       relayUrl: FIXTURE_RELAY,
       searchKey: SYNTHETIC_IDENTITY_SEARCH_KEY,
       storageKey: SYNTHETIC_IDENTITY_STORAGE_KEY,
+      unavailableKey: SYNTHETIC_SIGNER_UNAVAILABLE_KEY,
     }
   )
 }
@@ -1614,6 +1625,118 @@ test("two future market products form one order and one private organizer releas
       (item) => item.product.coordinate === eventCoordinate(soap)
     )?.product.signedEvent?.id
   ).toBe(soap.id)
+  await expect(
+    merchantRelease.getByText("Release authorized", { exact: true })
+  ).toBeVisible()
+  const originalReleaseWrapIds = uniquePublishedEvents(
+    relay.publications.slice(releaseStart)
+  )
+    .filter(
+      (event) =>
+        event.kind === 1059 &&
+        event.tags.some(
+          (tag) =>
+            tag[0] === "p" &&
+            (tag[1] === ORGANIZER_PUBKEY || tag[1] === MERCHANT_PUBKEY)
+        )
+    )
+    .map((event) => event.id)
+    .sort()
+  expect(originalReleaseWrapIds).toHaveLength(2)
+
+  await page.evaluate(
+    (unavailableKey) => localStorage.setItem(unavailableKey, "1"),
+    SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+  )
+  await page.reload()
+  const savedRelease = page.getByTestId("merchant-future-organizer-handoff")
+  const retryExactReceipt = savedRelease.getByRole("button", {
+    name: "Retry exact receipt",
+  })
+  await expect(retryExactReceipt).toBeEnabled()
+  await expect(
+    savedRelease.getByRole("button", { name: "Revoke release", exact: true })
+  ).toBeDisabled()
+  await page.evaluate((ownerPubkey) => {
+    const pendingKey = `conduit:future-market-handoff-delivery:v2:${ownerPubkey}`
+    const pending = JSON.parse(
+      localStorage.getItem(pendingKey) ?? "[]"
+    ) as Array<{
+      type: string
+      signedRecipientWrap: { sig: string }
+    }>
+    const archivePrefix = `conduit:future-market-handoff-delivery:v2:archive:${ownerPubkey}`
+    const archivedIds = JSON.parse(
+      localStorage.getItem(archivePrefix) ?? "[]"
+    ) as string[]
+    const key = pending.some((record) => record.type === "future_market_ready")
+      ? pendingKey
+      : archivedIds.length === 1
+        ? `${archivePrefix}:${archivedIds[0]}`
+        : null
+    if (!key) throw new Error("Expected one saved exact release record.")
+    const original = localStorage.getItem(key)
+    if (!original) throw new Error("Saved exact release record is unavailable.")
+    sessionStorage.setItem("conduit:e2e:saved-release-key", key)
+    sessionStorage.setItem("conduit:e2e:saved-release-original", original)
+    const value = JSON.parse(original) as
+      typeof pending | { type: string; signedRecipientWrap: { sig: string } }
+    const record = Array.isArray(value)
+      ? value.find((candidate) => candidate.type === "future_market_ready")
+      : value
+    if (!record) throw new Error("Saved exact release record is unavailable.")
+    record.signedRecipientWrap.sig = "0".repeat(128)
+    localStorage.setItem(key, JSON.stringify(value))
+  }, MERCHANT_PUBKEY)
+  const rejectedReplayStart = relay.publications.length
+  await retryExactReceipt.click()
+  await expect(
+    savedRelease.getByText(
+      "Future Event Market exact delivery wraps are invalid."
+    )
+  ).toBeVisible()
+  expect(relay.publications).toHaveLength(rejectedReplayStart)
+  await page.evaluate(() => {
+    const key = sessionStorage.getItem("conduit:e2e:saved-release-key")
+    const original = sessionStorage.getItem(
+      "conduit:e2e:saved-release-original"
+    )
+    if (!key || !original)
+      throw new Error("Saved exact release test record is unavailable.")
+    localStorage.setItem(key, original)
+    sessionStorage.removeItem("conduit:e2e:saved-release-key")
+    sessionStorage.removeItem("conduit:e2e:saved-release-original")
+  })
+  const replayStart = relay.publications.length
+  await retryExactReceipt.click()
+  await expect
+    .poll(
+      () =>
+        uniquePublishedEvents(relay.publications.slice(replayStart)).filter(
+          (event) => originalReleaseWrapIds.includes(event.id)
+        ).length
+    )
+    .toBe(2)
+  expect(
+    uniquePublishedEvents(relay.publications.slice(replayStart))
+      .filter((event) => originalReleaseWrapIds.includes(event.id))
+      .map((event) => event.id)
+      .sort()
+  ).toEqual(originalReleaseWrapIds)
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __conduitSyntheticSignAttempts?: number
+          }
+        ).__conduitSyntheticSignAttempts ?? 0
+    )
+  ).toBe(0)
+  await page.evaluate(
+    (unavailableKey) => localStorage.removeItem(unavailableKey),
+    SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+  )
   relay.remove(soap)
   relay.seed(
     signEvent(MERCHANT_SECRET, {
@@ -2257,8 +2380,30 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(
     page.getByText("Offered at this event", { exact: true })
   ).toBeVisible()
+  await expect
+    .poll(() =>
+      uniquePublishedEvents(relay.publications).some(
+        (event) =>
+          event.kind === 30402 &&
+          event.pubkey === MERCHANT_PUBKEY &&
+          event.tags.some(
+            (tag) => tag[0] === "d" && tag[1] === MERCHANT_TEMPLATE_D_TAG
+          ) &&
+          event.tags.some(
+            (tag) => tag[0] === "a" && tag[1] === eventCoordinate(market)
+          )
+      )
+    )
+    .toBe(true)
   const listing = uniquePublishedEvents(relay.publications)
-    .filter((event) => event.kind === 30402)
+    .filter(
+      (event) =>
+        event.kind === 30402 &&
+        event.pubkey === MERCHANT_PUBKEY &&
+        event.tags.some(
+          (tag) => tag[0] === "d" && tag[1] === MERCHANT_TEMPLATE_D_TAG
+        )
+    )
     .at(-1)!
   expect(listing.tags).toContainEqual(["a", eventCoordinate(market)])
   expect(

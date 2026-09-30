@@ -28,3 +28,9 @@ synthetic external signers and controlled relays; it is not cryptographic wallet
 live relay, preview, real signer or physical pickup evidence. Disable screenshots,
 trace and video in private-order fixtures. Public evidence must omit identities,
 orders, contact details, invoices, wallet material and private message contents.
+
+The composed private-handoff journey also checks exact retry after signer
+readiness is lost: fresh actions remain disabled, altered saved wraps are rejected,
+and the original recipient and self-copy IDs are replayed without new signing.
+Owner-retirement cancellation is covered separately at the shared delivery
+boundary. Real relay authentication can still require a connected signer.

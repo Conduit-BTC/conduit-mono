@@ -1068,6 +1068,7 @@ export async function retryFutureMarketPrivateDelivery(input: {
   authenticatedOwnerPubkey: string
   shouldContinue?: () => boolean
 }): Promise<{ recipientDelivered: boolean; selfCopyDelivered: boolean }> {
+  assertFutureMarketReadCurrent(input.shouldContinue)
   const record = parseFutureMarketPrivateDeliveryRecord(input.record)
   if (record.senderPubkey !== input.authenticatedOwnerPubkey)
     throw new Error("Exact future handoff delivery belongs to another account.")
@@ -1079,6 +1080,7 @@ export async function retryFutureMarketPrivateDelivery(input: {
       shouldContinue: input.shouldContinue,
     }
   )
+  assertFutureMarketReadCurrent(input.shouldContinue)
   const senderInbox = await resolveEventMarketOrganizerInbox(
     record.senderPubkey,
     {
@@ -1087,6 +1089,7 @@ export async function retryFutureMarketPrivateDelivery(input: {
       shouldContinue: input.shouldContinue,
     }
   )
+  assertFutureMarketReadCurrent(input.shouldContinue)
   if (recipientInbox.state !== "ready" || senderInbox.state !== "ready")
     throw new Error(
       "Current private inbox routes are unavailable for exact-wrap retry."
@@ -1104,6 +1107,7 @@ export async function retryFutureMarketPrivateDelivery(input: {
       shouldContinue: input.shouldContinue,
     }
   )
+  assertFutureMarketReadCurrent(input.shouldContinue)
   const selfDelivery = await publishWithPlanner(
     new NDKEvent(getNdk(), record.signedSelfWrap),
     {
@@ -1117,6 +1121,7 @@ export async function retryFutureMarketPrivateDelivery(input: {
       shouldContinue: input.shouldContinue,
     }
   )
+  assertFutureMarketReadCurrent(input.shouldContinue)
   return {
     recipientDelivered: recipientDelivery.successfulRelayUrls.length > 0,
     selfCopyDelivered: selfDelivery.successfulRelayUrls.length > 0,

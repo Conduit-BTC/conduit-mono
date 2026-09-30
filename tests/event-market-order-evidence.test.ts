@@ -33,6 +33,7 @@ import {
   formatEventMarketPickupClaimCode,
   getFutureMarketClaimRef,
   loadFutureMarketPrivateDeliveries,
+  retryFutureMarketPrivateDelivery,
   saveFutureMarketPrivateDelivery,
   orderSchema,
   reduceFutureMarketOrganizerClaims,
@@ -1156,7 +1157,7 @@ describe("future Event Market private physical handoff", () => {
     }
   })
 
-  it("retains the same signed private wraps for exact delivery recovery", () => {
+  it("retains exact signed wraps and rejects another owner or retired retry", async () => {
     const recipientWrap = finalizeEvent(
       {
         kind: 1059,
@@ -1212,5 +1213,32 @@ describe("future Event Market private physical handoff", () => {
     expect(() =>
       saveFutureMarketPrivateDelivery(organizer, record, storage)
     ).toThrow()
+    await expect(
+      retryFutureMarketPrivateDelivery({
+        record,
+        authenticatedOwnerPubkey: organizer,
+      })
+    ).rejects.toThrow("belongs to another account")
+    let retryCurrentChecks = 0
+    await expect(
+      retryFutureMarketPrivateDelivery({
+        record,
+        authenticatedOwnerPubkey: merchant,
+        shouldContinue: () => {
+          retryCurrentChecks += 1
+          return false
+        },
+      })
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(retryCurrentChecks).toBeGreaterThan(0)
+    await expect(
+      retryFutureMarketPrivateDelivery({
+        record: {
+          ...record,
+          signedRecipientWrap: { ...recipientWrap, content: "tampered" },
+        },
+        authenticatedOwnerPubkey: merchant,
+      })
+    ).rejects.toThrow("exact delivery wraps are invalid")
   })
 })
