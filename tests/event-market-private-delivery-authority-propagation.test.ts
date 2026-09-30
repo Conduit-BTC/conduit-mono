@@ -32,7 +32,7 @@ describe("Event Market private-delivery authority propagation", () => {
     expect(retry).toContain("record.signedSelfWrap")
   })
 
-  it("binds Merchant and organizer actions to their active signer generation", async () => {
+  it("binds fresh actions to the signer and exact retries to the owning account", async () => {
     const [orders, payment, queue, commerce] = await Promise.all([
       source("apps/merchant/src/routes/orders.tsx"),
       source("apps/merchant/src/lib/order-payment-release.ts"),
@@ -42,7 +42,6 @@ describe("Event Market private-delivery authority propagation", () => {
     for (const name of [
       "publishFutureMarketReadyReceipt",
       "publishFutureMarketRevocation",
-      "retryFutureMarketPrivateDelivery",
     ]) {
       expect(orders).toMatch(
         new RegExp(
@@ -50,6 +49,14 @@ describe("Event Market private-delivery authority propagation", () => {
         )
       )
     }
+    const exactRetry = orders.slice(
+      orders.indexOf("const futureRetryMutation"),
+      orders.indexOf("const futureRevokeMutation")
+    )
+    expect(exactRetry).toMatch(
+      /retryFutureMarketPrivateDelivery\(\{[\s\S]{0,300}shouldContinue: \(\) =>\s+isCurrentOrderOwner\(retryOwner, retryGeneration\)/
+    )
+    expect(exactRetry).not.toContain("captureFreshOrderAuthority")
     expect(payment).toContain("authenticatedPubkey: input.authenticatedPubkey,")
     expect(payment).toContain("shouldContinue: input.shouldContinue,")
     const privateRead = commerce.slice(

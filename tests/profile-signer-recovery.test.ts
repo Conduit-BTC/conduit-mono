@@ -58,10 +58,42 @@ describe("merchant order signer recovery", () => {
     expect(exactRetryStart).toBeGreaterThan(-1)
     expect(freshRevocationStart).toBeGreaterThan(exactRetryStart)
     expect(exactRetryBlock).toContain("retryFutureMarketPrivateDelivery({")
-    expect(exactRetryBlock).toContain("record.senderPubkey !== pubkey")
-    expect(exactRetryBlock).toContain("authenticatedOwnerPubkey: pubkey")
+    expect(exactRetryBlock).toContain("record.senderPubkey !== retryOwner")
+    expect(exactRetryBlock).toContain("authenticatedOwnerPubkey: retryOwner")
     expect(exactRetryBlock).toContain("isCurrentOrderOwner")
-    expect(exactRetryBlock).toContain("shouldContinue:")
+    expect(exactRetryBlock).toContain(
+      "loadFutureMarketPrivateDeliveries(retryOwner)"
+    )
+    expect(exactRetryBlock).toContain(
+      "JSON.stringify(savedRecord) !== JSON.stringify(record)"
+    )
+    expect(exactRetryBlock).toContain("record: savedRecord,")
+    expect(exactRetryBlock).toMatch(
+      /shouldContinue: \(\) =>\s+isCurrentOrderOwner\(retryOwner, retryGeneration\)/
+    )
+    expect(exactRetryBlock).toMatch(
+      /if \(!isCurrentOrderOwner\(retryOwner, retryGeneration\)\)[\s\S]{0,180}if \(delivery\.recipientDelivered && delivery\.selfCopyDelivered\)\s+archiveFutureMarketPrivateDelivery\(retryOwner, savedRecord\.rumorId\)/
+    )
+    expect(exactRetryBlock).toMatch(
+      /onSuccess:[\s\S]{0,80}if \(isCurrentOrderOwner\(retryOwner, retryGeneration\)\)/
+    )
+    const ownerPredicate = contents.slice(
+      contents.indexOf("const isCurrentOrderOwner ="),
+      contents.indexOf("const isCurrentOrderSigner =")
+    )
+    expect(ownerPredicate).toContain("isCurrentOrderAccount(ownerPubkey)")
+    expect(ownerPredicate).toContain("isAuthGenerationCurrent(generation)")
+    expect(ownerPredicate).toContain("current.authGeneration === generation")
+    for (const record of ["futureReadyRecord", "futureRevocationRecord"]) {
+      expect(contents).toMatch(
+        new RegExp(
+          `disabled=\\{orderDeliveryPending\\}[\\s\\S]{0,180}futureRetryMutation\\.mutate\\(\\s+${record}`
+        )
+      )
+    }
+    expect(contents).toContain(
+      "const orderActionPending = !signerConnected || orderDeliveryPending"
+    )
     expect(contents).toContain("const mountedRef = useRef(true)")
     expect(contents).toContain("mountedRef.current = false")
     expect(contents).toContain(

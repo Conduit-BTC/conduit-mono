@@ -2027,24 +2027,41 @@ function OrdersWorkspace() {
   const futureRetryMutation = useMutation({
     mutationFn: (record: NonNullable<typeof futureReadyRecord>) =>
       runExclusiveOrderAction(orderActionLockRef, async () => {
-        const authority = captureFreshOrderAuthority()
+        const retryOwner = pubkey
+        const retryGeneration = orderAuthorityRef.current.authGeneration
         if (
-          !pubkey ||
-          record.senderPubkey !== pubkey ||
-          authority.accountPubkey !== pubkey
+          !retryOwner ||
+          record.senderPubkey !== retryOwner ||
+          !isCurrentOrderOwner(retryOwner, retryGeneration)
         )
           throw new Error("Exact handoff delivery belongs to another account.")
+        // Journal loading verifies both signatures and exact recipient/self tags.
+        const savedRecord = loadFutureMarketPrivateDeliveries(retryOwner).find(
+          (candidate) => candidate.rumorId === record.rumorId
+        )
+        if (
+          !savedRecord ||
+          JSON.stringify(savedRecord) !== JSON.stringify(record)
+        )
+          throw new Error(
+            "Exact handoff delivery no longer matches saved bytes."
+          )
         const delivery = await retryFutureMarketPrivateDelivery({
-          record,
-          authenticatedOwnerPubkey: pubkey,
-          shouldContinue: () => isCurrentOrderAction(authority),
+          record: savedRecord,
+          authenticatedOwnerPubkey: retryOwner,
+          shouldContinue: () =>
+            isCurrentOrderOwner(retryOwner, retryGeneration),
         })
+        if (!isCurrentOrderOwner(retryOwner, retryGeneration))
+          throw new Error(
+            "Exact handoff delivery belongs to a previous session."
+          )
         if (delivery.recipientDelivered && delivery.selfCopyDelivered)
-          archiveFutureMarketPrivateDelivery(pubkey, record.rumorId)
-        return { authority, delivery }
+          archiveFutureMarketPrivateDelivery(retryOwner, savedRecord.rumorId)
+        return { retryOwner, retryGeneration, delivery }
       }),
-    onSuccess: ({ authority, delivery }) => {
-      if (isCurrentOrderAction(authority))
+    onSuccess: ({ retryOwner, retryGeneration, delivery }) => {
+      if (isCurrentOrderOwner(retryOwner, retryGeneration))
         flash(
           delivery.recipientDelivered && delivery.selfCopyDelivered
             ? "Exact signed handoff wraps delivered"
@@ -2392,8 +2409,8 @@ function OrdersWorkspace() {
     },
   })
 
-  const orderActionPending =
-    !signerConnected ||
+  const orderDeliveryPending =
+    !hasAccount ||
     stockUpdateMutation.isPending ||
     confirmPaymentMutation.isPending ||
     futureReadyMutation.isPending ||
@@ -2406,6 +2423,7 @@ function OrdersWorkspace() {
       advanceStatus: advanceStatusMutation.isPending,
       recordShipping: shippingMutation.isPending,
     })
+  const orderActionPending = !signerConnected || orderDeliveryPending
 
   const previousOrderAuthorityKeyRef = useRef(
     `${authGeneration}:${signerReadiness}`
@@ -3547,7 +3565,7 @@ function OrdersWorkspace() {
                                   type="button"
                                   size="sm"
                                   variant="outline"
-                                  disabled={orderActionPending}
+                                  disabled={orderDeliveryPending}
                                   onClick={() =>
                                     futureRetryMutation.mutate(
                                       futureReadyRecord
@@ -3572,7 +3590,7 @@ function OrdersWorkspace() {
                               type="button"
                               size="sm"
                               variant="outline"
-                              disabled={orderActionPending}
+                              disabled={orderDeliveryPending}
                               onClick={() =>
                                 futureRetryMutation.mutate(
                                   futureRevocationRecord
