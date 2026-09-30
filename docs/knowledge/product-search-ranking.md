@@ -57,6 +57,8 @@ on that connection. A throttling `CLOSED` ends the named subscription.
 Both responses pause new reads to that relay for 60 seconds, including explicit
 relay plans. A successful sibling read cannot clear this pause. NIP-01 provides
 no retry delay, so this interval is a client recovery policy.
+A queued request suppressed during this pause does not consume a bounded
+fanout slot. A later healthy relay can fill that slot; throttle diagnostics remain visible.
 
 Detailed read results expose only `failureReason: "rate_limited"`, without the
 relay message. Verified events received before throttling remain partial results;

@@ -3,6 +3,7 @@ import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import {
   __resetNdkTestState,
   fetchEventsFanoutDetailed,
+  fetchEventsFanoutProgressive,
 } from "../packages/core/src/protocol/ndk"
 import {
   __resetRelayHealth,
@@ -28,7 +29,7 @@ class TestSocket {
   onmessage: ((event: MessageEvent<string>) => void) | null = null
   onerror: ((event: Event) => void) | null = null
   onclose: ((event: Event) => void) | null = null
-  constructor() {
+  constructor(readonly url: string) {
     connections++
     queueMicrotask(() => {
       this.readyState = 1
@@ -189,4 +190,95 @@ it("ignores informational NOTICE frames and unrelated subscription CLOSED frames
     })
   expect((await read()).relays[0]?.status).toBe("success")
   expect(isRelayRateLimited(relay)).toBe(false)
+})
+
+for (const progressive of [false, true]) {
+  it(`backfills a queued ${progressive ? "progressive" : "detailed"} bounded read after a sibling throttle`, async () => {
+    const healthy = "wss://healthy.example"
+    const unused = "wss://unused.example"
+    const held: TestSocket[] = []
+    const requestedUrls: string[] = []
+    let releaseStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      releaseStarted = resolve
+    })
+    onRequest = (socket, id) => {
+      requestedUrls.push(socket.url)
+      if (socket.url === relay) {
+        held.push(socket)
+        if (held.length === 8) releaseStarted()
+      } else {
+        queueMicrotask(() => socket.emit(["EOSE", id]))
+      }
+    }
+    // Occupy all executor slots before the bounded read queues. The throttle
+    // arrives after its relay plan is selected, before its admission check.
+    const siblings = Array.from({ length: 8 }, read)
+    await started
+    const options = {
+      relayUrls: [relay, healthy, unused],
+      maxRelayAttempts: 1,
+      skipHealthFilter: true,
+      fetchTimeoutMs: 1_000,
+    }
+    const snapshots: { admittedRelayUrls?: string[]; relays: unknown[] }[] = []
+    const progressUrls: string[] = []
+    const bounded = progressive
+      ? fetchEventsFanoutProgressive({ kinds: [1] }, options, (result) => {
+          progressUrls.push(result.relayUrl)
+        })
+      : fetchEventsFanoutDetailed(
+          { kinds: [1] },
+          {
+            ...options,
+            onProgress: (result) => snapshots.push(result),
+          }
+        )
+    held[0].emit(["NOTICE", "rate-limited: shared subscription budget"])
+    const result = await bounded
+    await Promise.all(siblings)
+    expect(requestedUrls).toEqual([...Array(8).fill(relay), healthy])
+    if (progressive) {
+      expect(progressUrls).toEqual([relay, healthy])
+    } else {
+      const detailed = result as Awaited<
+        ReturnType<typeof fetchEventsFanoutDetailed>
+      >
+      expect(detailed.relays).toEqual([
+        {
+          relayUrl: relay,
+          status: "failed",
+          eventCount: 0,
+          failureReason: "rate_limited",
+        },
+        { relayUrl: healthy, status: "success", eventCount: 0 },
+      ])
+      expect(detailed.admittedRelayUrls).toEqual([healthy])
+      expect(snapshots.map((snapshot) => snapshot.admittedRelayUrls)).toEqual([
+        [],
+        [healthy],
+      ])
+    }
+  })
+}
+
+it("counts an actual throttled relay request against the bounded attempt budget", async () => {
+  onRequest = (socket, id) =>
+    queueMicrotask(() => {
+      socket.emit(["CLOSED", id, "rate-limited: subscription budget"])
+    })
+  const result = await fetchEventsFanoutDetailed(
+    { kinds: [1] },
+    {
+      relayUrls: [relay, "wss://healthy.example"],
+      maxRelayAttempts: 1,
+      skipHealthFilter: true,
+      fetchTimeoutMs: 1_000,
+    }
+  )
+  expect(result.admittedRelayUrls).toEqual([relay])
+  expect(result.relays).toHaveLength(1)
+  expect(result.relays[0]?.failureReason).toBe("rate_limited")
+  expect(requests).toHaveLength(1)
+  expect(connections).toBe(1)
 })

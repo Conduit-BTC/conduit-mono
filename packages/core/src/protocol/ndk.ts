@@ -36,8 +36,8 @@ export interface FetchEventsFanoutOptions {
   relayUrls?: string[]
   /**
    * Bound actual relay attempts after the live account source-policy check.
-   * Policy-suppressed and durably excluded candidates do not consume this
-   * limit, allowing a later eligible source to fill the bounded fanout.
+   * Policy-suppressed, throttled, and durably excluded candidates do not consume
+   * this limit, allowing a later eligible source to fill the bounded fanout.
    */
   maxRelayAttempts?: number
   /**
@@ -1087,6 +1087,8 @@ interface FetchEventsFromRelayResult {
   status: FetchEventsRelayStatus["status"]
   rejectedEventCount: number
   failureReason?: "rate_limited"
+  /** No relay I/O occurred; retain the diagnostic without consuming a slot. */
+  requestSuppressed?: true
 }
 
 async function fetchEventsFromRelay(
@@ -1148,6 +1150,7 @@ async function fetchEventsFromRelay(
         status: "failed",
         rejectedEventCount: 0,
         failureReason: "rate_limited",
+        requestSuppressed: true,
       }
     }
     const { events, complete, truncated, failureReason } =
@@ -1278,21 +1281,21 @@ async function runBoundedRelayAttempts(
   const workerCount = Math.min(maxRelayAttempts, relayUrls.length)
   const results = await Promise.all(
     Array.from({ length: workerCount }, async () => {
+      const observations: FetchEventsFromRelayResult[] = []
       while (nextIndex < relayUrls.length) {
         const relayUrl = relayUrls[nextIndex]
         nextIndex += 1
         const result = await attempt(relayUrl)
-        // An eligible attempt consumes this worker's one bounded slot. A
-        // source-policy suppression returns null and backfills from the next
-        // ordered candidate without opening another socket.
-        if (result !== null) return result
+        // Only an actual attempt consumes this worker's bounded slot. Keep
+        // throttle diagnostics while backfilling from later eligible sources.
+        if (result === null) continue
+        observations.push(result)
+        if (!result.requestSuppressed) break
       }
-      return null
+      return observations
     })
   )
-  return results.filter(
-    (result): result is FetchEventsFromRelayResult => result !== null
-  )
+  return results.flat()
 }
 
 function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
@@ -1408,6 +1411,7 @@ export async function fetchEventsFanoutDetailed(
 
   const progressEvents = new Map<string, NDKEvent>()
   const progressRelays: FetchEventsRelayStatus[] = []
+  const progressAdmittedRelayUrls: string[] = []
   try {
     const perRelayResults = await runBoundedRelayAttempts(
       relayUrls,
@@ -1427,6 +1431,9 @@ export async function fetchEventsFanoutDetailed(
           options.onProgress &&
           options.shouldContinue?.() !== false
         ) {
+          if (!result.requestSuppressed) {
+            progressAdmittedRelayUrls.push(result.relayUrl)
+          }
           mergeEventsInto(progressEvents, result.events)
           progressRelays.push({
             relayUrl: result.relayUrl,
@@ -1442,9 +1449,7 @@ export async function fetchEventsFanoutDetailed(
           options.onProgress({
             events: Array.from(progressEvents.values()),
             relays: [...progressRelays],
-            admittedRelayUrls: progressRelays.map(
-              ({ relayUrl: admittedRelayUrl }) => admittedRelayUrl
-            ),
+            admittedRelayUrls: [...progressAdmittedRelayUrls],
             eventsVerified: true,
           })
         }
@@ -1471,7 +1476,9 @@ export async function fetchEventsFanoutDetailed(
           ? { rejectedEventCount: result.rejectedEventCount }
           : {}),
       })),
-      admittedRelayUrls: perRelayResults.map(({ relayUrl }) => relayUrl),
+      admittedRelayUrls: perRelayResults
+        .filter((result) => !result.requestSuppressed)
+        .map(({ relayUrl }) => relayUrl),
       eventsVerified: true,
     }
   } finally {

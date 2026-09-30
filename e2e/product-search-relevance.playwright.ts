@@ -67,6 +67,22 @@ const profiles = merchantKeys.map((key, index) =>
   )
 )
 
+function searchBox(page: Page) {
+  return page.getByRole("combobox", {
+    name: "Search products, categories, merchants, and accounts",
+  })
+}
+
+function broadCatalogRequests(requests: Filter[]) {
+  return requests.filter(
+    (filter) =>
+      !filter.search &&
+      filter.kinds?.includes(30402) &&
+      !filter["#d"] &&
+      !filter.ids
+  )
+}
+
 async function controlledSearch(page: Page) {
   const requests: Filter[] = []
   const closed: string[] = []
@@ -215,11 +231,7 @@ test("one-character header retry recovers author discovery without product or pr
   await expect(
     page.getByText("Search results may be incomplete. Retry to check again.")
   ).toBeVisible()
-  await page
-    .getByRole("combobox", {
-      name: "Search products, categories, merchants, and accounts",
-    })
-    .fill("P")
+  await searchBox(page).fill("P")
   const retry = page.getByRole("button", { name: "Try again", exact: true })
   await expect(retry).toBeVisible()
   const failedDiscoveryRequests = relay.requests.filter((filter) =>
@@ -313,9 +325,7 @@ test("a cold cart header discovers categories once after a settled eligible quer
   await page.goto(`${marketUrl}/cart`)
   const catalogs = () =>
     relay.requests.filter((filter) => filter.kinds?.includes(30402))
-  const input = page.getByRole("combobox", {
-    name: "Search products, categories, merchants, and accounts",
-  })
+  const input = searchBox(page)
   await input.fill("a")
   await page.waitForTimeout(400)
   expect(catalogs()).toHaveLength(0)
@@ -345,18 +355,9 @@ test("a cold Products search header discovers categories without a page catalog 
   await expect
     .poll(() => relay.requests.filter((filter) => filter.search).length)
     .toBeGreaterThan(0)
-  const catalogs = () =>
-    relay.requests.filter(
-      (filter) =>
-        !filter.search &&
-        filter.kinds?.includes(30402) &&
-        !filter["#d"] &&
-        !filter.ids
-    )
+  const catalogs = () => broadCatalogRequests(relay.requests)
   expect(catalogs()).toHaveLength(0)
-  const input = page.getByRole("combobox", {
-    name: "Search products, categories, merchants, and accounts",
-  })
+  const input = searchBox(page)
   await input.fill("art")
   await page.waitForTimeout(100)
   expect(catalogs()).toHaveLength(0)
@@ -378,9 +379,7 @@ test("a pending header fallback survives text edits and cancels when suggestions
   const relay = await controlledSearch(page)
   relay.state.holdRevisions = true
   await page.goto(`${marketUrl}/cart`)
-  const input = page.getByRole("combobox", {
-    name: "Search products, categories, merchants, and accounts",
-  })
+  const input = searchBox(page)
   await input.fill("ar")
   await expect.poll(() => relay.pendingRevisions.length).toBeGreaterThan(0)
   const initialCatalogs = relay.catalogIds.length
@@ -401,11 +400,7 @@ test("header retry waits for its author scope before catalog discovery @market",
   const relay = await controlledSearch(page)
   relay.state.holdFollows = true
   await page.goto(`${marketUrl}/cart?source=following`)
-  await page
-    .getByRole("combobox", {
-      name: "Search products, categories, merchants, and accounts",
-    })
-    .fill("ar")
+  await searchBox(page).fill("ar")
   await expect.poll(() => relay.pendingFollows.length).toBeGreaterThan(0)
   await page.waitForTimeout(400)
   await page.getByRole("button", { name: "Try again", exact: true }).click()
@@ -428,20 +423,9 @@ for (const catalogRoute of ["products", "merchants"]) {
     relay.state.holdRevisions = true
     await page.goto(`${marketUrl}/${catalogRoute}?source=following`)
     await expect.poll(() => relay.pendingRevisions.length).toBeGreaterThan(0)
-    const catalogs = () =>
-      relay.requests.filter(
-        (filter) =>
-          !filter.search &&
-          filter.kinds?.includes(30402) &&
-          !filter["#d"] &&
-          !filter.ids
-      )
+    const catalogs = () => broadCatalogRequests(relay.requests)
     const initialCatalogs = catalogs().length
-    await page
-      .getByRole("combobox", {
-        name: "Search products, categories, merchants, and accounts",
-      })
-      .fill("ar")
+    await searchBox(page).fill("ar")
     await page.waitForTimeout(500)
     expect(catalogs()).toHaveLength(initialCatalogs)
     relay.releaseRevisions()
@@ -478,21 +462,10 @@ test("header category discovery reuses a populated cart's catalog read @market",
   const relay = await controlledSearch(page)
   relay.state.holdRevisions = true
   await page.goto(`${marketUrl}/cart`)
-  const catalogs = () =>
-    relay.requests.filter(
-      (filter) =>
-        !filter.search &&
-        filter.kinds?.includes(30402) &&
-        !filter["#d"] &&
-        !filter.ids
-    )
+  const catalogs = () => broadCatalogRequests(relay.requests)
   await expect.poll(() => catalogs().length).toBeGreaterThan(0)
   const initialCatalogs = catalogs().length
-  await page
-    .getByRole("combobox", {
-      name: "Search products, categories, merchants, and accounts",
-    })
-    .fill("ar")
+  await searchBox(page).fill("ar")
   await page.waitForTimeout(500)
   expect(catalogs()).toHaveLength(initialCatalogs)
   relay.releaseRevisions()
@@ -508,9 +481,7 @@ test("typing waits for a stable two-character query before remote search @market
   const relay = await controlledSearch(page)
   await page.goto(`${marketUrl}/products?source=following`)
   await expect(page.getByText("Cotton tote", { exact: true })).toBeVisible()
-  const input = page.getByRole("combobox", {
-    name: "Search products, categories, merchants, and accounts",
-  })
+  const input = searchBox(page)
   const searches = () =>
     relay.requests.filter(
       (filter) => filter.search && filter.kinds?.includes(30402)
@@ -600,9 +571,7 @@ test("ranked search renders semantic matches, cancels old queries, retains exact
       .every((filter) => filter["#d"] || filter.ids)
   ).toBe(true)
   relay.state.unavailable = false
-  const input = page.getByRole("combobox", {
-    name: "Search products, categories, merchants, and accounts",
-  })
+  const input = searchBox(page)
   await input.fill("obsolete")
   await expect
     .poll(() => searches().some((filter) => filter.search === "obsolete"))
@@ -711,11 +680,7 @@ test("cached text matches stay labeled during an unavailable live search @market
   await page.goto(`${marketUrl}/products?source=following`)
   await expect(page.getByText("Handmade mug", { exact: true })).toBeVisible()
   relay.state.unavailable = true
-  await page
-    .getByRole("combobox", {
-      name: "Search products, categories, merchants, and accounts",
-    })
-    .fill("mug")
+  await searchBox(page).fill("mug")
   await expect(page.getByText("Cached matches", { exact: true })).toBeVisible()
   await expect(page.locator("main h3")).toHaveText(["Handmade mug"])
   await expect(
@@ -763,11 +728,7 @@ test("search Refresh avoids broad catalog reads and capped empty results offer r
       .filter((filter) => filter.kinds?.includes(30402) && !filter.search)
       .every((filter) => filter["#d"] || filter.ids)
   ).toBe(true)
-  await page
-    .getByRole("combobox", {
-      name: "Search products, categories, merchants, and accounts",
-    })
-    .fill("capped")
+  await searchBox(page).fill("capped")
   await expect(
     page.getByText("Search results may be incomplete. Retry to check again.")
   ).toBeVisible()
