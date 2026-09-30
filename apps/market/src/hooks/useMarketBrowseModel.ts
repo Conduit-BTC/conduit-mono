@@ -214,32 +214,36 @@ export function useMarketBrowseModel({
           (!globalSearchEnabled ||
             (productData.length === 0 && globalSearchQuery.isPending))
         : productsQuery.isInitialLoading,
-    isHydrating: isSearching
-      ? globalSearchEnabled && globalSearchQuery.isFetching
-      : productsQuery.isHydrating ||
-        (usesAnonymousPerspective && guestMarket.isRefreshing),
-    error: isSearching ? globalSearchQuery.error : productsQuery.error,
-    isRefreshStale: isSearching
-      ? isRemoteSearchEligible &&
-        (isShowingCachedSearch ||
+    isHydrating:
+      isSearching && isRemoteSearchEligible
+        ? globalSearchEnabled && globalSearchQuery.isFetching
+        : productsQuery.isHydrating ||
+          (usesAnonymousPerspective && guestMarket.isRefreshing),
+    error:
+      isSearching && isRemoteSearchEligible
+        ? globalSearchQuery.error
+        : productsQuery.error,
+    isRefreshStale:
+      isSearching && isRemoteSearchEligible
+        ? isShowingCachedSearch ||
           productsQuery.discoveryStale ||
           (usesAnonymousPerspective && guestMarket.stale) ||
           !!globalSearchQuery.error ||
           globalSearchQuery.isPaused ||
           !!globalSearchQuery.data?.meta.degraded ||
-          !!globalSearchQuery.data?.meta.capped)
-      : isMarketBrowseRefreshStale({
-          catalogMeta: productsQuery.meta,
-          catalogError: productsQuery.error,
-          catalogPaused: productsQuery.isRefreshPaused,
-          discoveryStale:
-            productsQuery.discoveryStale ||
-            (usesAnonymousPerspective && guestMarket.stale),
-          globalSearchEnabled: false,
-          globalSearchMeta: undefined,
-          globalSearchError: null,
-          globalSearchPaused: false,
-        }),
+          !!globalSearchQuery.data?.meta.capped
+        : isMarketBrowseRefreshStale({
+            catalogMeta: productsQuery.meta,
+            catalogError: productsQuery.error,
+            catalogPaused: productsQuery.isRefreshPaused,
+            discoveryStale:
+              productsQuery.discoveryStale ||
+              (usesAnonymousPerspective && guestMarket.stale),
+            globalSearchEnabled: false,
+            globalSearchMeta: undefined,
+            globalSearchError: null,
+            globalSearchPaused: false,
+          }),
     refetch,
   }
   const allMerchantPubkeys = useMemo(() => {

@@ -75,6 +75,7 @@ async function controlledSearch(page: Page) {
     unavailable: false,
     holdRevisions: false,
     holdFollows: false,
+    followsUnavailable: false,
     throttled: false,
   }
   const pendingRevisions: Array<() => void> = []
@@ -91,6 +92,12 @@ async function controlledSearch(page: Page) {
       if (type !== "REQ") return
       requests.push(filter)
       if (filter.kinds?.includes(30402)) catalogIds.push(id)
+      if (filter.kinds?.includes(3) && state.followsUnavailable) {
+        socket.send(
+          JSON.stringify(["CLOSED", id, "error: fixture unavailable"])
+        )
+        return
+      }
       if (filter.search && filter.kinds?.includes(30402) && state.throttled) {
         socket.send(
           JSON.stringify(["NOTICE", "rate limited: fixture requests"])
@@ -162,10 +169,66 @@ test("one-character local search waits for its initial catalog scope @market", a
   const empty = page.getByText("No cached products match this search.")
   await expect(empty).toBeHidden()
   relay.releaseFollows()
-  await expect(empty).toBeVisible()
+  await expect(
+    page.getByText("Search results may be incomplete. Retry to check again.")
+  ).toBeVisible()
+  await expect(empty).toBeHidden()
   expect(
     relay.requests.filter((filter) => filter.kinds?.includes(30402))
   ).toHaveLength(0)
+})
+
+test("one-character local search preserves unavailable author discovery @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  relay.state.followsUnavailable = true
+  await page.goto(`${marketUrl}/products?source=following&q=p`)
+  await expect(
+    page.getByText("Search results may be incomplete. Retry to check again.")
+  ).toBeVisible()
+  await expect(
+    page.getByText("No cached products match this search.")
+  ).toBeHidden()
+  expect(relay.catalogIds).toHaveLength(0)
+})
+
+test("one-character local search preserves cache read errors @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  await page.addInitScript(() => {
+    for (const prototype of [IDBObjectStore.prototype, IDBIndex.prototype]) {
+      for (const method of ["getAll", "openCursor"] as const) {
+        const original = prototype[method]
+        Object.defineProperty(prototype, method, {
+          configurable: true,
+          value: function (
+            this: IDBObjectStore | IDBIndex,
+            ...args: unknown[]
+          ) {
+            const store = this instanceof IDBIndex ? this.objectStore : this
+            if (store.name === "products")
+              throw new DOMException(
+                "Fixture cache unavailable",
+                "UnknownError"
+              )
+            return Reflect.apply(original, this, args)
+          },
+        })
+      }
+    }
+  })
+  const relay = await controlledSearch(page)
+  await page.goto(`${marketUrl}/products?source=following&q=p`)
+  await expect(
+    page.getByText("Search is unavailable. Retry to check again.")
+  ).toBeVisible({ timeout: 15_000 })
+  await expect(
+    page.getByText("No cached products match this search.")
+  ).toBeHidden()
+  expect(relay.catalogIds).toHaveLength(0)
 })
 
 test("a cold cart header discovers categories once after a settled eligible query @market", async ({
