@@ -18,7 +18,8 @@ const listing = (
   key: Uint8Array,
   d: string,
   title: string,
-  createdAt: number
+  createdAt: number,
+  category = "art"
 ) =>
   finalizeEvent(
     {
@@ -32,7 +33,7 @@ const listing = (
         ["type", "simple", "digital"],
         ["visibility", "public"],
         ["stock", "10"],
-        ["t", "art"],
+        ["t", category],
         ["image", "https://blossom.conduit.market/search-fixture.png"],
       ],
     },
@@ -93,6 +94,7 @@ async function controlledSearch(page: Page) {
     holdFollows: false,
     followsUnavailable: false,
     throttled: false,
+    catalogProducts: [best, second, browse, obsolete],
   }
   const pendingRevisions: Array<() => void> = []
   const pendingFollows: Array<() => void> = []
@@ -135,7 +137,7 @@ async function controlledSearch(page: Page) {
               : filter.search === "obsolete"
                 ? [obsolete]
                 : [best, second]
-          : [follows, ...profiles, best, second, browse, obsolete]
+          : [follows, ...profiles, ...state.catalogProducts]
       const emit = () => {
         for (const event of events
           .filter((event) => matchFilter(filter, event))
@@ -340,6 +342,42 @@ test("a cold cart header discovers categories once after a settled eligible quer
   // The core caps signed-event overfetch at six times the visible limit.
   expect(catalogs().every((filter) => filter.limit <= 600)).toBe(true)
   await input.fill("art")
+  await page.waitForTimeout(500)
+  expect(catalogs()).toHaveLength(firstCatalogs)
+})
+
+test("a warm partial cache does not suppress cart header category discovery @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  const cached = listing(
+    merchantKeys[0],
+    "cached",
+    "Cached cloth",
+    now,
+    "textiles"
+  )
+  relay.state.catalogProducts = [cached]
+  await page.goto(`${marketUrl}/products?source=following`)
+  await expect(
+    page.getByRole("heading", { name: "Cached cloth", exact: true })
+  ).toBeVisible()
+  await page.goto(`${marketUrl}/cart?source=following`)
+  const catalogs = () => broadCatalogRequests(relay.requests)
+  const previousCatalogs = catalogs().length
+  relay.state.catalogProducts = [best, second]
+  const input = searchBox(page)
+  await input.fill("ar")
+  await expect(
+    page.getByRole("option", { name: /^# art Browse category$/i })
+  ).toBeVisible()
+  expect(catalogs().length).toBeGreaterThan(previousCatalogs)
+  const firstCatalogs = catalogs().length
+  await input.fill("te")
+  await expect(
+    page.getByRole("option", { name: /^# textiles Browse category$/i })
+  ).toBeVisible()
   await page.waitForTimeout(500)
   expect(catalogs()).toHaveLength(firstCatalogs)
 })

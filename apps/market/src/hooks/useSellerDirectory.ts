@@ -11,6 +11,7 @@ import {
   limitAccountMatches,
 } from "../lib/accountSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import { mergeProductSearchResults } from "../lib/marketBrowseModel"
 import {
   getProductSourceRelayHintsByPubkey,
   mergeRelayHintsByPubkey,
@@ -83,8 +84,10 @@ export function useSellerDirectory(input: {
       pubkey,
     ]
   )
+  const fallbackAllowed =
+    input.networkEnabled === false && input.fallbackNetworkAllowed !== false
   const fallbackReady =
-    input.fallbackNetworkAllowed !== false &&
+    fallbackAllowed &&
     productsQuery.catalogAuthorPubkeys !== undefined &&
     !productsQuery.isInitialLoading
   const fallbackQuery = useQuery({
@@ -109,7 +112,12 @@ export function useSellerDirectory(input: {
       enabled &&
       fallbackReady &&
       input.fallbackNetworkEnabled === true &&
-      productsQuery.products.length === 0,
+      isSellerCatalogEvidenceIncomplete({
+        error: productsQuery.error,
+        meta: productsQuery.meta,
+        isRefreshPaused: productsQuery.isRefreshPaused,
+        discoveryStale: productsQuery.discoveryStale,
+      }),
     staleTime: 60_000,
   })
   useEffect(() => {
@@ -132,11 +140,13 @@ export function useSellerDirectory(input: {
   ])
   const catalogProducts = useMemo(
     () =>
-      productsQuery.products.length > 0
+      !fallbackAllowed
         ? productsQuery.products
-        : (fallbackQuery.data?.data.map((record) => record.product) ??
-          productsQuery.products),
-    [fallbackQuery.data, productsQuery.products]
+        : mergeProductSearchResults(
+            fallbackQuery.data?.data.map((record) => record.product) ?? [],
+            productsQuery.products
+          ),
+    [fallbackAllowed, fallbackQuery.data, productsQuery.products]
   )
   const profileRelayHintsByPubkey = useMemo(
     () =>
@@ -195,10 +205,9 @@ export function useSellerDirectory(input: {
     productsQuery.isHydrating ||
     fallbackQuery.isFetching
   const catalogError = productsQuery.error ?? fallbackQuery.error
-  const catalogMeta =
-    productsQuery.products.length > 0
-      ? productsQuery.meta
-      : (fallbackQuery.data?.meta ?? productsQuery.meta)
+  const catalogMeta = !fallbackAllowed
+    ? productsQuery.meta
+    : (fallbackQuery.data?.meta ?? productsQuery.meta)
   const isUnavailable = isSellerDirectoryUnavailable({
     hasSellers: sellers.length > 0,
     isFetching,
