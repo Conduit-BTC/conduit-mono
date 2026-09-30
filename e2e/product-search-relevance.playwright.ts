@@ -359,15 +359,48 @@ test("a warm partial cache does not suppress cart header category discovery @mar
     "textiles"
   )
   relay.state.catalogProducts = [cached]
-  await page.goto(`${marketUrl}/products?source=following`)
+  await page.goto(`${marketUrl}/products`)
   await expect(
     page.getByRole("heading", { name: "Cached cloth", exact: true })
   ).toBeVisible()
-  await page.goto(`${marketUrl}/cart?source=following`)
+  // A rendered progressive card can precede its durable cache commit.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) =>
+          new Promise<boolean>((resolve, reject) => {
+            const open = indexedDB.open("conduit")
+            open.onerror = () => reject(open.error)
+            open.onsuccess = () => {
+              const database = open.result
+              const read = database
+                .transaction("products")
+                .objectStore("products")
+                .get(id)
+              read.onerror = () => {
+                database.close()
+                reject(read.error)
+              }
+              read.onsuccess = () => {
+                database.close()
+                resolve(!!read.result)
+              }
+            }
+          }),
+        `30402:${cached.pubkey}:cached`
+      )
+    )
+    .toBe(true)
+  await page.goto(`${marketUrl}/cart`)
   const catalogs = () => broadCatalogRequests(relay.requests)
   const previousCatalogs = catalogs().length
-  relay.state.catalogProducts = [best, second]
   const input = searchBox(page)
+  await input.fill("t")
+  await expect(
+    page.getByRole("option", { name: /^# textiles Browse category$/i })
+  ).toBeVisible()
+  expect(catalogs()).toHaveLength(previousCatalogs)
+  relay.state.catalogProducts = [best, second]
   await input.fill("ar")
   await expect(
     page.getByRole("option", { name: /^# art Browse category$/i })
