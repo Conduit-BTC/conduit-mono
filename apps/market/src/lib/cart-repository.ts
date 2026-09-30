@@ -64,6 +64,16 @@ export type CartPurchaseClaim = {
   }>
 }
 
+export type CheckoutIntentInstallResult =
+  | { status: "installed" | "unchanged"; purchaseId: string; revision: number }
+  | {
+      status:
+        | "cart_conflict"
+        | "invalid_purchase"
+        | "revision_conflict"
+        | "storage_unavailable"
+    }
+
 export class CartChangedDuringCheckoutError extends Error {
   constructor() {
     super(
@@ -741,6 +751,148 @@ export function addCartRepositoryItem(
     appendBatch(record, line, requested)
     record.lines.push(line)
     return true
+  })
+}
+
+/** Install one resolved delivery purchase under the same revision-checked IDB transaction. */
+export async function installCheckoutIntentPurchase(
+  proposed: readonly CartItem[],
+  expectedRevision: number,
+  replaceExisting: boolean
+): Promise<CheckoutIntentInstallResult> {
+  await initializeCartRepository()
+  return enqueue(async () => {
+    if (snapshot.persistenceMode !== "persistent")
+      return { status: "storage_unavailable" }
+    const incoming = groupCartPurchases([...proposed])
+    if (
+      incoming.length !== 1 ||
+      incoming[0]?.kind !== "delivery" ||
+      proposed.length === 0 ||
+      proposed.length > 20 ||
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 0 ||
+      new Set(proposed.map((item) => item.productId)).size !==
+        proposed.length ||
+      proposed.some(
+        (item) =>
+          !Number.isSafeInteger(item.quantity) ||
+          item.quantity < 1 ||
+          item.quantity > 99 ||
+          item.merchantPubkey !== incoming[0]?.merchantPubkey ||
+          item.fulfillment?.type === "pickup" ||
+          item.fulfillment?.type === "event_pickup_pending" ||
+          (item.stock !== undefined && item.quantity > item.stock)
+      ) ||
+      proposed.reduce((sum, item) => sum + item.quantity, 0) > 100
+    ) {
+      return { status: "invalid_purchase" }
+    }
+    try {
+      const outcome = await db.transaction("rw", db.shoppingCarts, async () => {
+        const stored = await db.shoppingCarts.get(CART_RECORD_ID)
+        if (!stored) throw new Error("Canonical cart record is missing")
+        const record = parseStoredRecord(stored)
+        if (record.revision !== expectedRevision)
+          return { status: "revision_conflict" } as const
+        const merchant = incoming[0]!.merchantPubkey
+        const existing = groupCartPurchases(
+          materializeLines(record.lines)
+        ).find(
+          (group) =>
+            group.merchantPubkey === merchant && group.kind === "delivery"
+        )
+        const same =
+          existing?.items.length === proposed.length &&
+          proposed.every((item) =>
+            existing.items.some(
+              (current) =>
+                current.productId === item.productId &&
+                current.quantity === item.quantity
+            )
+          )
+        if (existing && !same && !replaceExisting)
+          return { status: "cart_conflict" } as const
+
+        if (same && existing) {
+          const byProduct = new Map(
+            proposed.map((item) => [item.productId, item])
+          )
+          let refreshed = false
+          for (const line of record.lines) {
+            if (
+              line.item.merchantPubkey !== merchant ||
+              !byProduct.has(line.item.productId)
+            )
+              continue
+            const next = selectCartItemSnapshot(
+              line.item,
+              sanitizeCartItemImage(byProduct.get(line.item.productId)!)
+            )
+            refreshed ||= JSON.stringify(next) !== JSON.stringify(line.item)
+            line.item = next
+          }
+          if (!refreshed)
+            return {
+              status: "unchanged",
+              purchaseId: existing.id,
+              revision: record.revision,
+              record,
+            } as const
+        } else {
+          const removed = new Set(
+            (existing?.items ?? []).flatMap((item) =>
+              item.cartLineId ? [item.cartLineId] : []
+            )
+          )
+          const merchantAddedAt =
+            existing?.merchantAddedAt ??
+            getMerchantAddedAt(record, merchant) ??
+            Date.now()
+          record.lines = record.lines.filter((line) => !removed.has(line.id))
+          for (const item of proposed) {
+            const id = takeId(record, "line")
+            record.lines.push({
+              id,
+              item: sanitizeCartItemImage({
+                ...item,
+                cartLineId: id,
+                merchantAddedAt,
+              }),
+              batches: [
+                { id: takeId(record, "batch"), quantity: item.quantity },
+              ],
+            })
+          }
+        }
+        record.revision += 1
+        record.updatedAt = Date.now()
+        await db.shoppingCarts.put(record)
+        const purchase = groupCartPurchases(
+          materializeLines(record.lines)
+        ).find(
+          (group) =>
+            group.merchantPubkey === merchant && group.kind === "delivery"
+        )
+        return {
+          status: same ? "unchanged" : "installed",
+          purchaseId: purchase!.id,
+          revision: record.revision,
+          record,
+        } as const
+      })
+      if (outcome.status === "installed" || outcome.status === "unchanged") {
+        publishRecord(outcome.record, "persistent")
+        return {
+          status: outcome.status,
+          purchaseId: outcome.purchaseId,
+          revision: outcome.revision,
+        }
+      }
+      return outcome
+    } catch {
+      return { status: "storage_unavailable" }
+    }
   })
 }
 

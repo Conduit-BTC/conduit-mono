@@ -134,6 +134,11 @@ const validBrowserEventProperties = {
     status: "success",
     surface: "checkout",
   },
+  checkout_handoff_result: {
+    surface: "checkout",
+    handoff_stage: "arrival",
+    mode: "buy",
+  },
   relay_connect_result: { network: "browser", status: "success" },
   relay_publish_result: { network: "browser", status: "failure" },
   nip17_compatibility_result: {
