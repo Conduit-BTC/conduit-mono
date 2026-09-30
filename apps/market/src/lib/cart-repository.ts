@@ -839,8 +839,7 @@ export async function installCheckoutIntentPurchase(
           item.quantity < 1 ||
           item.quantity > 99 ||
           item.merchantPubkey !== incoming[0]?.merchantPubkey ||
-          item.fulfillment?.type === "pickup" ||
-          item.fulfillment?.type === "event_pickup_pending" ||
+          item.fulfillment?.type === "event_market_pickup" ||
           (item.stock !== undefined && item.quantity > item.stock)
       ) ||
       proposed.reduce((sum, item) => sum + item.quantity, 0) > 100
