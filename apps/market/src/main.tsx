@@ -25,10 +25,12 @@ import bricolageSemiBoldUrl from "../../../packages/ui/src/assets/fonts/Bricolag
 import { routeTree } from "./routeTree.gen"
 import { ShopperPresetsProvider } from "./hooks/useShopperPresets"
 import { pruneExpiredCheckoutShippingSession } from "./lib/checkout-session"
+import { captureCheckoutIntentFragment } from "./lib/checkout-intent-stage"
 import { pruneExpiredSessionGuestOrderSigningIdentities } from "./lib/guest-order-identity"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
 
+captureCheckoutIntentFragment()
 initializeTheme()
 
 const queryClient = new QueryClient()

@@ -22,6 +22,7 @@ import {
   decrementCartRepositoryItem,
   getCartRepositorySnapshot,
   incrementCartRepositoryItem,
+  installCheckoutIntentPurchase,
   refreshAndIncrementCartRepositoryItem,
   removeCartRepositoryItem,
   subscribeToCartRepository,
@@ -230,5 +231,6 @@ export function useCart() {
     clearPurchase,
     capturePurchase: captureCartPurchase,
     consumePurchase: consumeCartPurchase,
+    installCheckoutIntentPurchase,
   }
 }
