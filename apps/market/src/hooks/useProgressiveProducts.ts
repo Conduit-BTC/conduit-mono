@@ -600,10 +600,14 @@ export function useProgressiveProducts(
     staleTime: 20_000,
   })
 
-  const hasNetworkResult = hasAuthoritativeQuerySnapshot({
-    hasData: firstNetworkQuery.data !== undefined,
-    isPlaceholderData: firstNetworkQuery.isPlaceholderData,
-  })
+  // A cache-only consumer must use the refreshed local frontier. A retained
+  // sibling network query can still contain a product deleted since that read.
+  const hasNetworkResult =
+    networkEnabled &&
+    hasAuthoritativeQuerySnapshot({
+      hasData: firstNetworkQuery.data !== undefined,
+      isPlaceholderData: firstNetworkQuery.isPlaceholderData,
+    })
   const authoritativeNetworkResult = hasNetworkResult
     ? firstNetworkQuery.data
     : undefined
@@ -966,13 +970,15 @@ export function useProgressiveProducts(
     waitForNextProgressiveRead,
   ])
 
-  const products = selectProgressiveProductFrontier({
-    hasAuthoritativeProgressiveSnapshot,
-    hasAuthoritativeNetworkSnapshot: hasNetworkResult,
-    progressiveProducts: accumulatedProducts,
-    networkProducts: mergedNetworkProducts,
-    cachedProducts,
-  })
+  const products = networkEnabled
+    ? selectProgressiveProductFrontier({
+        hasAuthoritativeProgressiveSnapshot,
+        hasAuthoritativeNetworkSnapshot: hasNetworkResult,
+        progressiveProducts: accumulatedProducts,
+        networkProducts: mergedNetworkProducts,
+        cachedProducts,
+      })
+    : cachedProducts
   const cachedCount = cachedQuery.data?.data.length ?? 0
   const isResolvingPerspectiveGraph =
     perspectiveMarketplaceRead && !catalogReady

@@ -1,7 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   getMarketplaceProducts,
+  getLocalProductDeletionSnapshot,
+  reconcileProductRecordsWithDeletions,
+  subscribeLocalProductDeletionChanges,
   useAuth,
   useProfileSearch,
 } from "@conduit/core"
@@ -86,6 +96,17 @@ export function useSellerDirectory(input: {
   )
   const fallbackAllowed =
     input.networkEnabled === false && input.fallbackNetworkAllowed !== false
+  const observeFallbackDeletions = useCallback(
+    (onChange: () => void) =>
+      enabled && fallbackAllowed
+        ? subscribeLocalProductDeletionChanges(onChange)
+        : () => {},
+    [enabled, fallbackAllowed]
+  )
+  const localDeletions = useSyncExternalStore(
+    observeFallbackDeletions,
+    getLocalProductDeletionSnapshot
+  )
   const fallbackReady =
     fallbackAllowed &&
     productsQuery.catalogAuthorPubkeys !== undefined &&
@@ -143,10 +164,18 @@ export function useSellerDirectory(input: {
       !fallbackAllowed
         ? productsQuery.products
         : mergeProductSearchResults(
-            fallbackQuery.data?.data.map((record) => record.product) ?? [],
+            reconcileProductRecordsWithDeletions(
+              fallbackQuery.data?.data ?? [],
+              localDeletions.evidence
+            ).map((record) => record.product),
             productsQuery.products
           ),
-    [fallbackAllowed, fallbackQuery.data, productsQuery.products]
+    [
+      fallbackAllowed,
+      fallbackQuery.data,
+      localDeletions.evidence,
+      productsQuery.products,
+    ]
   )
   const profileRelayHintsByPubkey = useMemo(
     () =>

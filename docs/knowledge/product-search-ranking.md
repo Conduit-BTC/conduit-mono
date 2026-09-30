@@ -43,6 +43,9 @@ text matches and show guidance to enter another character. Header suggestions
 reuse the cached catalog and observe later page cache commits. When a route
 does not supply a catalog, an eligible settled query can run one bounded
 discovery pass. This includes cold product search links and empty carts.
+Retained fallback records reconcile with locally observed signed deletions before
+building header categories and sellers. A deletion retracts its product without
+opening another product read.
 Product and profile search disable automatic retry, focus refetch, and reconnect
 refetch. Explicit Refresh and Retry update eligible remote queries. One-character
 queries can retry author discovery and cached evidence without a product network

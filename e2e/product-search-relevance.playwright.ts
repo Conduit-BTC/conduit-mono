@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url"
 import { expect, test, type Page } from "@playwright/test"
 import { matchFilter, type Filter } from "nostr-tools"
 import {
@@ -413,6 +414,51 @@ test("a warm partial cache does not suppress cart header category discovery @mar
   ).toBeVisible()
   await page.waitForTimeout(500)
   expect(catalogs()).toHaveLength(firstCatalogs)
+})
+
+test("a signed deletion retracts fallback header categories without product reads @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  relay.state.catalogProducts = [best]
+  await page.goto(`${marketUrl}/cart`)
+  await searchBox(page).fill("ar")
+  const category = page.getByRole("option", {
+    name: /^# art Browse category$/i,
+  })
+  await expect(category).toBeVisible()
+  const catalogs = () =>
+    relay.requests.filter((filter) => filter.kinds?.includes(30402))
+  const beforeDeletion = catalogs().length
+  const deletion = finalizeEvent(
+    {
+      kind: 5,
+      created_at: now + 1,
+      content: "",
+      tags: [
+        ["a", `30402:${best.pubkey}:best`],
+        ["k", "30402"],
+      ],
+    },
+    merchantKeys[0]
+  )
+  const commerceUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/protocol/commerce.ts", import.meta.url))}`
+  const retainedCount = await page.evaluate(
+    async ({ moduleUrl, event }) => {
+      const { cacheSignedProductDeletionEvent } = await import(moduleUrl)
+      const retained = await cacheSignedProductDeletionEvent({
+        ...event,
+        rawEvent: () => event,
+      })
+      return retained.length as number
+    },
+    { moduleUrl: commerceUrl, event: deletion }
+  )
+  expect(retainedCount).toBe(1)
+  await expect(category).toBeHidden()
+  await page.waitForTimeout(500)
+  expect(catalogs().length).toBe(beforeDeletion)
 })
 
 test("a cold Products search header discovers categories without a page catalog @market", async ({
