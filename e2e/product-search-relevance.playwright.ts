@@ -1009,6 +1009,8 @@ test("search Refresh avoids broad catalog reads and capped empty results offer r
       .every((filter) => filter["#d"] || filter.ids)
   ).toBe(true)
   await searchBox(page).fill("capped")
+  // Test page recovery after dismissing the header's separate discovery pass.
+  await searchBox(page).blur()
   await expect(
     page.getByText("Search results may be incomplete. Retry to check again.")
   ).toBeVisible()
