@@ -113,6 +113,8 @@ type ProgressiveListQuery =
 
 export interface ProgressiveProductsResult {
   products: Product[]
+  /** Retained cache records preserve signed metadata for local reconciliation. */
+  cachedProductRecords: CommerceProductRecord[]
   familiesByProductId: Record<
     string,
     PreparedProductFamily<CommerceProductRecord>
@@ -1020,6 +1022,7 @@ export function useProgressiveProducts(
 
   return {
     products,
+    cachedProductRecords: cachedQuery.data?.data ?? [],
     familiesByProductId,
     meta:
       (hasAuthoritativeProgressiveSnapshot ? progressiveRead.meta : null) ??

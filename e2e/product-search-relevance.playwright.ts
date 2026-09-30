@@ -484,6 +484,87 @@ test("a signed deletion retracts fallback header categories without product read
   expect(catalogs().length).toBe(beforeDeletion)
 })
 
+for (const path of ["cart", "merchants"]) {
+  test(`a signed deletion retracts cached ${path} header categories when cache rereads fail @market`, async ({
+    page,
+  }) => {
+    await installTestSigner(page, owner, { secretKey: ownerKey })
+    const relay = await controlledSearch(page)
+    relay.state.catalogProducts = [best]
+    await page.goto(`${marketUrl}/${path}`)
+    if (path === "merchants")
+      await expect(page.getByText("1 of 1", { exact: true })).toBeVisible()
+    const commerceUrl = `/@fs${fileURLToPath(new URL("../packages/core/src/protocol/commerce.ts", import.meta.url))}`
+    await page.evaluate(
+      async ({ moduleUrl, event }) => {
+        const { cacheSignedProductListingEvent } = await import(moduleUrl)
+        await cacheSignedProductListingEvent({
+          ...event,
+          rawEvent: () => event,
+        })
+      },
+      { moduleUrl: commerceUrl, event: best }
+    )
+    await searchBox(page).fill("a")
+    const category = page.getByRole("option", {
+      name: /^# art Browse category$/i,
+    })
+    await expect(category).toBeVisible()
+    const beforeDeletion = relay.requests.filter((filter) =>
+      filter.kinds?.includes(30402)
+    ).length
+    if (path === "cart") expect(beforeDeletion).toBe(0)
+    else expect(beforeDeletion).toBeGreaterThan(0)
+    const deletion = finalizeEvent(
+      {
+        kind: 5,
+        created_at: now + 1,
+        content: "",
+        tags: [
+          ["a", `30402:${best.pubkey}:best`],
+          ["k", "30402"],
+        ],
+      },
+      merchantKeys[0]
+    )
+    await page.evaluate(
+      async ({ moduleUrl, event }) => {
+        const { __setCommerceTestOverrides, cacheSignedProductDeletionEvent } =
+          await import(moduleUrl)
+        let failedReads = 0
+        Object.defineProperty(window, "__sellerDirectoryCacheReadFailures", {
+          get: () => failedReads,
+        })
+        __setCommerceTestOverrides({
+          getCachedProducts: async () => {
+            failedReads += 1
+            throw new Error("Fixture cache reread unavailable")
+          },
+        })
+        await cacheSignedProductDeletionEvent({
+          ...event,
+          rawEvent: () => event,
+        })
+      },
+      { moduleUrl: commerceUrl, event: deletion }
+    )
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Reflect.get(window, "__sellerDirectoryCacheReadFailures")
+        )
+      )
+      .toBeGreaterThan(0)
+    await expect(category).toBeHidden()
+    // No successful reread can replace the retained pre-deletion listing.
+    await page.waitForTimeout(500)
+    await expect(category).toBeHidden()
+    expect(
+      relay.requests.filter((filter) => filter.kinds?.includes(30402))
+    ).toHaveLength(beforeDeletion)
+  })
+}
+
 test("a cold Products search header discovers categories without a page catalog @market", async ({
   page,
 }) => {

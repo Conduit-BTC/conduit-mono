@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   getMarketplaceProducts,
   getLocalProductDeletionSnapshot,
-  isProductDeletedByNip09,
+  reconcileProductRecordsWithDeletions,
   subscribeLocalProductDeletionChanges,
   useAuth,
   useProfileSearch,
@@ -94,14 +94,14 @@ export function useSellerDirectory(input: {
       pubkey,
     ]
   )
-  const fallbackAllowed =
-    input.networkEnabled === false && input.fallbackNetworkAllowed !== false
+  const cacheOnly = input.networkEnabled === false
+  const fallbackAllowed = cacheOnly && input.fallbackNetworkAllowed !== false
   const observeCatalogDeletions = useCallback(
     (onChange: () => void) =>
-      enabled && input.networkEnabled === false
+      enabled && cacheOnly
         ? subscribeLocalProductDeletionChanges(onChange)
         : () => {},
-    [enabled, input.networkEnabled]
+    [enabled, cacheOnly]
   )
   const localDeletions = useSyncExternalStore(
     observeCatalogDeletions,
@@ -161,28 +161,24 @@ export function useSellerDirectory(input: {
   ])
   const catalogProducts = useMemo(
     () =>
-      (fallbackAllowed
-        ? mergeProductSearchResults(
-            (fallbackQuery.data?.data ?? []).map((record) => record.product),
-            productsQuery.products
-          )
-        : productsQuery.products
-      ).filter(
-        (product) =>
-          !isProductDeletedByNip09(
-            {
-              authorPubkey: product.pubkey,
-              eventId: product.sourceEventId,
-              addressId: product.id,
-              createdAt: Math.floor(product.createdAt / 1000),
-            },
-            localDeletions.evidence
-          )
-      ),
+      !cacheOnly
+        ? productsQuery.products
+        : mergeProductSearchResults(
+            reconcileProductRecordsWithDeletions(
+              fallbackAllowed ? (fallbackQuery.data?.data ?? []) : [],
+              localDeletions.evidence
+            ).map((record) => record.product),
+            reconcileProductRecordsWithDeletions(
+              productsQuery.cachedProductRecords,
+              localDeletions.evidence
+            ).map((record) => record.product)
+          ),
     [
+      cacheOnly,
       fallbackAllowed,
       fallbackQuery.data,
       localDeletions.evidence,
+      productsQuery.cachedProductRecords,
       productsQuery.products,
     ]
   )
