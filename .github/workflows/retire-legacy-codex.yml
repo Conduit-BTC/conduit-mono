@@ -18,12 +18,11 @@ jobs:
     steps:
       - name: Revoke and verify obsolete sessions
         env:
-          LEGACY_CODEX_AUTH: ${{ secrets.CODEX_AUTH_JSON }}
           LEGACY_SUDDEN_AUTH: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
         shell: bash
         run: |
           set -euo pipefail
-          python3 - LEGACY_CODEX_AUTH LEGACY_SUDDEN_AUTH <<'PYTHON'
+          python3 - LEGACY_SUDDEN_AUTH <<'PYTHON'
           """Retire saved legacy sessions without logging credentials or server responses."""
           import json
           import os
@@ -74,8 +73,9 @@ jobs:
               if hint == "refresh_token":
                   payload["client_id"] = CLIENT_ID
               status, _ = send("/oauth/revoke", payload)
+              print("Retirement HTTP " + hint + ": " + str(status), flush=True)
               if not 200 <= status < 300:
-                  raise RetirementError("revoke-rejected")
+                  raise RetirementError(hint + "-revoke-http-" + str(status))
 
 
           def retire(raw, send=post):
@@ -93,12 +93,18 @@ jobs:
                   raise RetirementError("invalid-legacy-auth") from None
 
               # Match the official Codex 0.145.0 revocation and refresh contracts.
-              revoke(refresh, "refresh_token", send)
-              revoke(access, "access_token", send)
+              revoke_failed = False
+              for token, hint in ((refresh, "refresh_token"), (access, "access_token")):
+                  try:
+                      revoke(token, hint, send)
+                  except RetirementError as error:
+                      revoke_failed = True
+                      print("Retirement phase " + hint + ": " + str(error), flush=True)
               status, body = send("/oauth/token", {
                   "client_id": CLIENT_ID, "grant_type": "refresh_token",
                   "refresh_token": refresh,
               })
+              print("Saved refresh HTTP: " + str(status), flush=True)
               result = decode(body)
               if 200 <= status < 300:
                   # Never leave an unexpectedly issued credential active or persist it.
@@ -116,7 +122,11 @@ jobs:
               code = error.get("code") if isinstance(error, dict) else error
               if not isinstance(code, str):
                   code = result.get("code")
-              if status not in (400, 401) or not isinstance(code, str) or code.lower() != "refresh_token_invalidated":
+              known = {"refresh_token_invalidated", "refresh_token_expired", "refresh_token_reused"}
+              category = code.lower() if isinstance(code, str) and code.lower() in known else "unclassified"
+              print("Saved refresh status: " + category, flush=True)
+              if (status not in (400, 401) or not isinstance(code, str) or
+                      code.lower() != "refresh_token_invalidated" or revoke_failed):
                   raise RetirementError("revocation-unverified")
 
 
@@ -124,7 +134,7 @@ jobs:
               # The workflow uses a separate environment with no new bootstrap secret.
               if not sys.argv[1:]:
                   raise RetirementError("missing-secret-selection")
-              if any(name not in ("LEGACY_CODEX_AUTH", "LEGACY_SUDDEN_AUTH") for name in sys.argv[1:]):
+              if any(name != "LEGACY_SUDDEN_AUTH" for name in sys.argv[1:]):
                   raise RetirementError("invalid-secret-selection")
               failed = False
               for name in sys.argv[1:]:
