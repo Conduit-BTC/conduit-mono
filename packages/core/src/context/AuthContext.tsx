@@ -7,7 +7,6 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import type { ClientMetadata } from "nostr-tools/nip46"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS, CLAVE_PUSH_RELAY } from "../config"
 import {
@@ -52,7 +51,6 @@ import {
 } from "../protocol/remote-signer"
 import { withBrowserAuthOperationLock } from "../protocol/remote-signer-vault"
 import { isTransientNip07BridgeError } from "../protocol/signing-retry"
-import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
 import {
   createProtectedReadSessionLifecycle,
   type ProtectedReadSessionLifecycle,
@@ -71,7 +69,7 @@ export interface AuthContextValue {
   accountPubkey: string | null
   pubkey: string | null
   restorePendingPubkey: string | null
-  signer: NDKSigner | null
+  signer: SessionSigner | null
   authGeneration: number
   /** Check provider-owned authority even after the calling route unmounts. */
   isAuthGenerationCurrent: (generation: number) => boolean
@@ -120,7 +118,7 @@ export type AuthSignerReadiness =
 export function getAuthSignerReadiness(input: {
   status: AuthStatus
   pubkey: string | null
-  signer: NDKSigner | null
+  signer: SessionSigner | null
   capabilities: AuthSignerCapabilities
   remoteSignerState?: RemoteSignerState
 }): AuthSignerReadiness {
@@ -538,7 +536,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const [restorePendingPubkey, setRestorePendingPubkey] = useState<
     string | null
   >(() => initialSessionRef.current?.userPubkey ?? null)
-  const [signer, setAuthSigner] = useState<NDKSigner | null>(null)
+  const [signer, setAuthSigner] = useState<SessionSigner | null>(null)
   const [method, setMethod] = useState<AuthMethod | null>(
     () => initialSessionRef.current?.type ?? null
   )
@@ -665,6 +663,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
 
   const deactivateLocalSigner = useCallback((options: {
     preserveSessionIdentity?: boolean
+    signerFailure?: unknown
     preservedSession?: AuthSession | null
     status?: AuthStatus
     error?: string | null
@@ -687,7 +686,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     resumeController.reset()
     resumeVerification.current = null
     protectedReadSessionLifecycle.current.deactivate()
-    sessionSigner?.invalidateLocal()
+    sessionSigner?.invalidateLocal(options.signerFailure)
     connection?.signer.invalidate()
     if (signerLease) removeSigner(signerLease)
     setAuthSigner(null)
@@ -791,7 +790,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
             })
           : null
       const causalMessage = sessionError.message
-      const connection = deactivateLocalSigner()
+      const connection = deactivateLocalSigner({ signerFailure: sessionError })
       if (connection) void connection.bunkerSigner.close()
       setStatus("error")
       setError(
@@ -834,6 +833,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         : transition.error.message
       deactivateLocalSigner({
         preserveSessionIdentity: canRecover,
+        signerFailure: transition.error,
         status: "error",
         error:
           revocation && !revocation.authorityRevoked
@@ -1124,6 +1124,11 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       }
       const sessionSigner = new SessionSigner(signer, {
         expectedPubkey: pk,
+        revision: authRevision,
+        authMethod: session.type,
+        getCapabilities: session.type === "nip46"
+          ? () => ({ signEvent: true, nip44: true, nip04: false })
+          : getNip07Capabilities,
         hasAuthority: hasSessionAuthority,
         onInvalidated: handleSignerSessionInvalidated,
       })
@@ -1131,7 +1136,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       activeSignerLease.current = signerLease
       try {
         protectedReadSessionLifecycle.current.activate(
-          createNdkNostrEventSigner(sessionSigner, pk, session.type),
+          sessionSigner,
           pk,
           hasSessionAuthority
         )

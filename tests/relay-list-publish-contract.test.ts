@@ -43,7 +43,8 @@ describe("relay-list publish contract", () => {
     expect(controller.slice(executeIndex, executeIndex + 240)).toContain(
       "reviewed,"
     )
-    expect(controller).toContain("createNdkNostrEventSigner(")
+    expect(controller).toContain("signer = snapshot.signer")
+    expect(controller).not.toContain("createNdkNostrEventSigner")
     expect(controller).not.toContain("publishWithPlanner")
     expect(mutationOwner).toContain("await input.signer.signEvent")
     expect(mutationOwner).toContain("await repository.stage")

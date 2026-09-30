@@ -143,6 +143,9 @@ describe("NDK external-signer edge adapter", () => {
       await nip07.blockUntilReady()
       const session = new SessionSigner(nip07, {
         expectedPubkey: PUBKEY,
+        revision: "test-claim",
+        authMethod: "nip07",
+        getCapabilities: () => ({ signEvent: true, nip44: true, nip04: false }),
         hasAuthority: () => true,
       })
       const signer = createNdkNostrEventSigner(session, PUBKEY, "nip07")
@@ -181,6 +184,9 @@ describe("NDK external-signer edge adapter", () => {
     const nip46 = new NdkBunkerSignerAdapter(bunkerSigner, PUBKEY)
     const session = new SessionSigner(nip46, {
       expectedPubkey: PUBKEY,
+      revision: "test-claim",
+      authMethod: "nip46",
+      getCapabilities: () => ({ signEvent: true, nip44: true, nip04: false }),
       hasAuthority: () => true,
     })
     const signer = createNdkNostrEventSigner(session, PUBKEY, "nip46")
@@ -216,6 +222,13 @@ describe("NDK external-signer edge adapter", () => {
         new NdkBunkerSignerAdapter(bunkerSigner, PUBKEY, options),
         {
           expectedPubkey: PUBKEY,
+          revision: "test-claim",
+          authMethod: "nip07",
+          getCapabilities: () => ({
+            signEvent: true,
+            nip44: true,
+            nip04: false,
+          }),
           hasAuthority: () => true,
         }
       )

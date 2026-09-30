@@ -6,8 +6,8 @@ import {
   useRef,
   useState,
 } from "react"
-import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { useQueryClient } from "@tanstack/react-query"
+import type { AccountSigner } from "../protocol/nostr-event-signer"
 import { config } from "../config"
 import {
   useAuth,
@@ -56,7 +56,6 @@ import {
   type AccountNetworkRole,
   type AccountNetworkSettingsView,
 } from "../protocol/network-settings-view"
-import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
 import { invalidateInboxDeclaration } from "../protocol/private-message-routing"
 import {
   getRelayAuthenticationEvidence,
@@ -157,7 +156,7 @@ export interface AccountNetworkSettingsController {
 interface AuthFenceSnapshot {
   status: AuthStatus
   pubkey: string
-  signer: NDKSigner
+  signer: AccountSigner
   method: AuthMethod
   generation: number
 }
@@ -755,7 +754,7 @@ export function useAccountNetworkSettings(
       reviewed: ReviewedAccountNetworkMutation,
       authenticatedPubkey: string,
       shouldContinue: () => boolean,
-      signer?: ReturnType<typeof createNdkNostrEventSigner>
+      signer?: AccountSigner
     ): Promise<void> => {
       let lastPhase: AccountNetworkSettingsOperationPhase = "checking"
       setOperation({ kind, phase: "checking", message: null })
@@ -847,17 +846,13 @@ export function useAccountNetworkSettings(
         throw new Error("These Network preferences are already current.")
       }
       let shouldContinue: () => boolean
-      let signer: ReturnType<typeof createNdkNostrEventSigner> | undefined
+      let signer: AccountSigner | undefined
       let authenticatedPubkey: string
       if (summary.signerRequestCount > 0) {
         const snapshot = captureAuth()
         authenticatedPubkey = snapshot.pubkey
         shouldContinue = authFenceFor(snapshot)
-        signer = createNdkNostrEventSigner(
-          snapshot.signer,
-          snapshot.pubkey,
-          snapshot.method
-        )
+        signer = snapshot.signer
       } else {
         const snapshot = captureAccount()
         authenticatedPubkey = snapshot.pubkey
