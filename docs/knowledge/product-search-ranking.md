@@ -42,7 +42,9 @@ Header search waits 350 ms after typing stops. One-character queries use cached
 text matches and show guidance to enter another character. Header suggestions
 reuse the cached catalog instead of starting a second catalog stream.
 Product and profile search disable automatic retry, focus refetch, and reconnect
-refetch. Explicit Refresh and Retry remain available for eligible queries.
+refetch. Explicit Refresh and Retry update eligible remote queries. One-character
+queries can retry author discovery and cached evidence without a product network
+request.
 
 Cancellation reaches queued and active catalog, discovery, and exact-product
 reads. Obsolete reads cannot continue background hydration or publish snapshots.

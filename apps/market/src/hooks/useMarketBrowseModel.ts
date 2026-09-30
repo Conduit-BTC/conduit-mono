@@ -188,7 +188,6 @@ export function useMarketBrowseModel({
   const refreshGuestDiscovery = guestMarket.refetch
   const refreshGlobalSearch = globalSearchQuery.refetch
   const refetch = useCallback(async () => {
-    if (isSearching && !isRemoteSearchEligible) return
     await refreshMarketBrowseData({
       globalSearchEnabled,
       refreshDiscovery: usesAnonymousPerspective
@@ -199,8 +198,6 @@ export function useMarketBrowseModel({
     })
   }, [
     globalSearchEnabled,
-    isSearching,
-    isRemoteSearchEligible,
     refreshCatalog,
     refreshGlobalSearch,
     refreshGuestDiscovery,

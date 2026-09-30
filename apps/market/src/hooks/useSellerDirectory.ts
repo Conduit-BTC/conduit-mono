@@ -219,7 +219,6 @@ export function useSellerDirectory(input: {
   const refreshAccountSearch = accountSearch.refetch
   const retry = useCallback(() => {
     const remoteSearchEligible = isRemoteMarketSearchEligible(query)
-    if (input.networkEnabled === false && !remoteSearchEligible) return
     if (!connected) void refreshGuestDiscovery()
     if (input.fallbackNetworkEnabled && fallbackReady) void refreshFallback()
     else refreshCatalog()
@@ -227,7 +226,6 @@ export function useSellerDirectory(input: {
   }, [
     connected,
     fallbackReady,
-    input.networkEnabled,
     input.fallbackNetworkEnabled,
     query,
     refreshAccountSearch,

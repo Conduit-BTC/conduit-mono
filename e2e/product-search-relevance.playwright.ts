@@ -178,7 +178,7 @@ test("one-character local search waits for its initial catalog scope @market", a
   ).toHaveLength(0)
 })
 
-test("one-character local search preserves unavailable author discovery @market", async ({
+test("one-character Refresh retries unavailable author discovery without product reads @market", async ({
   page,
 }) => {
   await installTestSigner(page, owner, { secretKey: ownerKey })
@@ -192,13 +192,57 @@ test("one-character local search preserves unavailable author discovery @market"
     page.getByText("No cached products match this search.")
   ).toBeHidden()
   expect(relay.catalogIds).toHaveLength(0)
+  const failedDiscoveryRequests = relay.requests.filter((filter) =>
+    filter.kinds?.includes(3)
+  ).length
+  relay.state.followsUnavailable = false
+  await page.getByRole("button", { name: "Refresh", exact: true }).click()
+  await expect
+    .poll(
+      () => relay.requests.filter((filter) => filter.kinds?.includes(3)).length
+    )
+    .toBeGreaterThan(failedDiscoveryRequests)
+  expect(relay.catalogIds).toHaveLength(0)
 })
 
-test("one-character local search preserves cache read errors @market", async ({
+test("one-character header retry recovers author discovery without product or profile search reads @market", async ({
+  page,
+}) => {
+  await installTestSigner(page, owner, { secretKey: ownerKey })
+  const relay = await controlledSearch(page)
+  relay.state.followsUnavailable = true
+  await page.goto(`${marketUrl}/products?source=following&q=p`)
+  await expect(
+    page.getByText("Search results may be incomplete. Retry to check again.")
+  ).toBeVisible()
+  await page
+    .getByRole("combobox", {
+      name: "Search products, categories, merchants, and accounts",
+    })
+    .fill("P")
+  const retry = page.getByRole("button", { name: "Try again", exact: true })
+  await expect(retry).toBeVisible()
+  const failedDiscoveryRequests = relay.requests.filter((filter) =>
+    filter.kinds?.includes(3)
+  ).length
+  relay.state.followsUnavailable = false
+  await retry.click()
+  await expect
+    .poll(
+      () => relay.requests.filter((filter) => filter.kinds?.includes(3)).length
+    )
+    .toBeGreaterThan(failedDiscoveryRequests)
+  expect(relay.catalogIds).toHaveLength(0)
+  expect(relay.requests.filter((filter) => filter.search)).toHaveLength(0)
+})
+
+test("one-character Refresh recovers a failed cache read without product reads @market", async ({
   page,
 }) => {
   await installTestSigner(page, owner, { secretKey: ownerKey })
   await page.addInitScript(() => {
+    const recovery = { unavailable: true, reads: 0 }
+    Object.assign(window, { __productCacheRecovery: recovery })
     for (const prototype of [IDBObjectStore.prototype, IDBIndex.prototype]) {
       for (const method of ["getAll", "openCursor"] as const) {
         const original = prototype[method]
@@ -209,11 +253,14 @@ test("one-character local search preserves cache read errors @market", async ({
             ...args: unknown[]
           ) {
             const store = this instanceof IDBIndex ? this.objectStore : this
-            if (store.name === "products")
-              throw new DOMException(
-                "Fixture cache unavailable",
-                "UnknownError"
-              )
+            if (store.name === "products") {
+              recovery.reads++
+              if (recovery.unavailable)
+                throw new DOMException(
+                  "Fixture cache unavailable",
+                  "UnknownError"
+                )
+            }
             return Reflect.apply(original, this, args)
           },
         })
@@ -228,6 +275,33 @@ test("one-character local search preserves cache read errors @market", async ({
   await expect(
     page.getByText("No cached products match this search.")
   ).toBeHidden()
+  expect(relay.catalogIds).toHaveLength(0)
+  const failedReads = await page.evaluate(() => {
+    const recovery = (
+      window as Window & {
+        __productCacheRecovery: { unavailable: boolean; reads: number }
+      }
+    ).__productCacheRecovery
+    recovery.unavailable = false
+    return recovery.reads
+  })
+  await page.getByRole("button", { name: "Refresh", exact: true }).click()
+  await expect(
+    page.getByText("Search is unavailable. Retry to check again.")
+  ).toBeHidden()
+  await expect(
+    page.getByText("Search results may be incomplete. Retry to check again.")
+  ).toBeVisible()
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          window as Window & {
+            __productCacheRecovery: { reads: number }
+          }
+        ).__productCacheRecovery.reads
+    )
+  ).toBeGreaterThan(failedReads)
   expect(relay.catalogIds).toHaveLength(0)
 })
 
