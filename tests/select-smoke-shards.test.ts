@@ -74,7 +74,6 @@ describe("path-aware smoke shard selection", () => {
       "scripts/dev/run_playwright_e2e.ts",
       "tests/run-playwright-e2e.test.ts",
       "scripts/vite/build_info.ts",
-      "tests/agent-review-handoff.test.ts",
       "tests/playwright-smoke-areas.test.ts",
       "tests/pr-evidence-contract.test.ts",
       "tests/select-smoke-shards.test.ts",
