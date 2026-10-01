@@ -1,10 +1,10 @@
 # PR Review Instructions
 
-Apply these instructions when generating Sudden pull request reviews.
+Apply these instructions when generating automated pull request reviews.
 
 ## Code Review And Human Handoff
 
-Sudden reviews the candidate code. It does not decide whether the pull request
+The reviewer inspects the candidate code. It does not decide whether the pull request
 is mergeable. Protected CI tests the code, required human approval supplies
 approval, and GitHub determines mergeability.
 
@@ -32,7 +32,7 @@ Treat this review as point-in-time evidence for the reviewed head.
 
 Use the pull request's stated user outcome and acceptance criteria as a scope
 ceiling, not permission to invent adjacent guarantees. The scope anchor is the
-outcome and criteria that predate the first Sudden review. Later pull request
+outcome and criteria that predate the first automated review. Later pull request
 body edits, prior automated findings, and remediation-added behavior are not
 independent requirement sources without an explicit maintainer-approved scope
 expansion. When provenance affects severity, inspect the edit and review
@@ -73,8 +73,9 @@ state.
 
 ## Visible Review Contract
 
-Keep provenance markers in HTML comments. After those hidden markers, the first
-two visible lines must be:
+The trusted delivery host owns provenance markers and the top-level summary.
+Return structured findings to the host. Do not submit GitHub reviews directly.
+For completed correctness reviews, the first two visible lines must be:
 
 1. Exactly one code result:
    - `No code changes needed. Ready for human review.`
@@ -84,14 +85,14 @@ two visible lines must be:
 
 For a clean review:
 
-- Include the exact clean marker supplied by the workflow.
+- The delivery host adds the clean marker after validation.
 - Submit zero inline comments.
-- Keep the complete visible review at or below 100 words.
+- Keep the host summary concise.
 - Put optional uncertainty on short `Residual risk:` lines after `Next:`.
 
 For a code-change review:
 
-- Do not include the clean marker.
+- The delivery host must not include the clean marker.
 - Put every actionable P0-P2 defect in an inline comment on the relevant changed
   line. Do not duplicate defect details in the top-level review.
 - Use this exact inline shape so the required action is complete:
@@ -107,7 +108,8 @@ For a code-change review:
 
   Replace `P2` with `P0` or `P1` when appropriate.
 
-Do not use generic `Blocked`. Do not expose internal workflow terms such as
+Report incomplete analysis as a blocked structured result. The host reports
+delivery failures separately from code findings. Do not expose internal terms such as
 `acceptance/evidence mapping`, `QA disposition`, `PR-only graph`,
 `synthetic merge`, or `clean-review contract`.
 
