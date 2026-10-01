@@ -19,6 +19,7 @@ import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
 import type { WalletDescriptor, WalletProviderId } from "../wallets"
+import type { SparkRecoveryState } from "../wallets/spark-recovery-service"
 
 export interface StoredOrder {
   id: string
@@ -1080,6 +1081,7 @@ export class ConduitDB extends Dexie {
   >
   wallets!: EntityTable<WalletDescriptor, "id">
   walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
+  sparkRecoveryEvidence!: EntityTable<SparkRecoveryState, "ownerPubkey">
   shoppingCarts!: EntityTable<StoredShoppingCart, "id">
   checkoutSparkPlanBindings!: EntityTable<
     StoredCheckoutSparkPlanBinding,
@@ -1311,6 +1313,11 @@ export class ConduitDB extends Dexie {
     this.version(23).stores({
       // Durable signed evidence, kept outside prunable commerce caches.
       merchantShippingSettingsEvidence: "pubkey",
+    })
+
+    this.version(24).stores({
+      // Account-scoped signed ciphertext and exact delivery plans, never plaintext.
+      sparkRecoveryEvidence: "ownerPubkey",
     })
   }
 }

@@ -167,6 +167,7 @@
         "@noble/curves": "^2.4.0",
         "@noble/hashes": "^2.4.0",
         "@nostr-dev-kit/ndk": "^3.0.3",
+        "@scure/bip39": "2.4.0",
         "clsx": "^2.1.1",
         "country-list": "^2.4.1",
         "dexie": "^4.4.6",

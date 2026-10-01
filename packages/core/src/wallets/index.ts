@@ -324,3 +324,8 @@ export class WalletRegistry {
 }
 
 export * from "./provider"
+
+export * from "./spark-recovery-contract"
+export * from "./spark-recovery-service"
+export * from "./spark-recovery-store"
+export * from "./spark-recovery-read"

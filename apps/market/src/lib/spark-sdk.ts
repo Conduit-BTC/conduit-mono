@@ -6,6 +6,8 @@ import {
   getLightningInvoiceNetwork,
   getWalletNetworkFromLightningConfig,
   isAmountlessLightningInvoice,
+  isValidSparkMnemonic,
+  isValidSparkAccountNumber,
   normalizeLightningInvoice,
   type WalletNetwork,
 } from "@conduit/core"
@@ -1924,4 +1926,24 @@ export async function payInvoiceWithSparkWallet(
     }
   }
   return manager.payInvoice(walletId, input)
+}
+
+/** Offline validation through the pinned provider; does not initialize or fund a wallet. */
+export async function deriveSparkRecoveryIdentity(
+  bundle: import("@conduit/core").SparkRecoveryBundle
+): Promise<string> {
+  if (
+    !isValidSparkMnemonic(bundle.mnemonic) ||
+    !isValidSparkAccountNumber(bundle.accountNumber) ||
+    (bundle.network !== "mainnet" && bundle.network !== "regtest")
+  ) {
+    throw new Error("Spark recovery parameters are invalid or unsupported.")
+  }
+  const { deriveViewerIdentityPublicKey } =
+    await import("@buildonspark/spark-sdk")
+  return deriveViewerIdentityPublicKey(
+    { network: toNativeNetwork(bundle.network) },
+    bundle.mnemonic,
+    bundle.accountNumber
+  )
 }

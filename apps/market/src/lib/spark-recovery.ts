@@ -1,6 +1,17 @@
-import { generateMnemonic, validateMnemonic } from "@scure/bip39"
-import { wordlist } from "@scure/bip39/wordlists/english.js"
-import { isWalletNetwork, type WalletNetwork } from "@conduit/core"
+import {
+  isWalletNetwork,
+  type WalletNetwork,
+  isValidSparkMnemonic,
+  normalizeSparkMnemonic,
+  isValidSparkAccountNumber,
+} from "@conduit/core"
+export {
+  generateSparkMnemonic,
+  isValidSparkMnemonic,
+  normalizeSparkMnemonic,
+  isValidSparkAccountNumber,
+  MAX_SPARK_ACCOUNT_NUMBER,
+} from "@conduit/core"
 
 const DEFAULT_PBKDF2_ITERATIONS = 600_000
 const MIN_PBKDF2_ITERATIONS = 100_000
@@ -16,7 +27,6 @@ const MIN_CIPHERTEXT_BASE64_LENGTH = 24
 const MAX_CIPHERTEXT_BASE64_LENGTH = Math.ceil(MAX_CIPHERTEXT_BYTES / 3) * 4
 const MAX_WALLET_ID_LENGTH = 128
 const SPARK_RECOVERY_AAD_DOMAIN = "conduit:spark-recovery:v2"
-export const MAX_SPARK_ACCOUNT_NUMBER = 0x7fffffff
 
 export interface SparkEncryptedRecovery {
   version: 2
@@ -38,29 +48,6 @@ export interface SparkRecoveryBinding {
   providerId: "spark"
   network: WalletNetwork
   accountNumber: number
-}
-
-export function generateSparkMnemonic(): string {
-  return generateMnemonic(wordlist, 128)
-}
-
-export function normalizeSparkMnemonic(mnemonic: string): string {
-  return mnemonic.trim().toLowerCase().replace(/\s+/g, " ")
-}
-
-export function isValidSparkMnemonic(mnemonic: string): boolean {
-  return validateMnemonic(normalizeSparkMnemonic(mnemonic), wordlist)
-}
-
-export function isValidSparkAccountNumber(
-  accountNumber: unknown
-): accountNumber is number {
-  return (
-    typeof accountNumber === "number" &&
-    Number.isSafeInteger(accountNumber) &&
-    accountNumber >= 0 &&
-    accountNumber <= MAX_SPARK_ACCOUNT_NUMBER
-  )
 }
 
 export async function encryptSparkMnemonic(
