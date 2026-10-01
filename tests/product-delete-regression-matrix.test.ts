@@ -197,6 +197,112 @@ afterEach(() => {
 })
 
 describe("product deletion convergence regression matrix", () => {
+  for (const surface of ["marketplace", "merchant", "progressive"] as const) {
+    for (const origin of ["local", "other-tab"] as const) {
+      it.each(["cached", "live"] as const)(
+        `retains the prior %s revision after ${origin} exact deletion during ${surface} cache writes`,
+        async (priorSource) => {
+          const prior = makeSignedProduct({
+            dTag: "revised-product",
+            createdAt: 100,
+            title: "Prior revision",
+          })
+          const newer = makeSignedProduct({
+            dTag: "revised-product",
+            createdAt: 120,
+            title: "New revision",
+          })
+          const deletion = makeSignedDeletion({
+            createdAt: 130,
+            tags: [["e", newer.id]],
+          })
+          if (priorSource === "cached")
+            await cacheSignedProductListingEvent(prior)
+          setRelayReads({
+            products: priorSource === "cached" ? [newer] : [prior, newer],
+          })
+          __setCommerceTestOverrides({
+            putCachedProducts: async () => {
+              if (origin === "local") {
+                await cacheSignedProductDeletionEvent(deletion)
+              } else {
+                cachedProductTombstones.push({
+                  id: `e:${MERCHANT_A_PUBKEY}:${newer.id}`,
+                  pubkey: MERCHANT_A_PUBKEY,
+                  eventId: newer.id,
+                  deletedAt: deletion.created_at!,
+                  deletionEventId: deletion.id,
+                  signedEvent:
+                    deletion.rawEvent() as CachedProductTombstone["signedEvent"],
+                  cachedAt: FIXED_NOW,
+                })
+                expect(getLocalProductDeletionSnapshot().evidence).toEqual([])
+              }
+            },
+          })
+          const snapshots: string[][] = []
+          const query = { merchantPubkey: MERCHANT_A_PUBKEY, limit: 1 }
+          const result =
+            surface === "merchant"
+              ? await getMerchantStorefront(query)
+              : surface === "marketplace"
+                ? await getMarketplaceProducts(query)
+                : await getMarketplaceProductsProgressive(query, (progress) => {
+                    snapshots.push(progress.data.map(({ eventId }) => eventId))
+                  })
+          expect(result.data.map(({ eventId }) => eventId)).toEqual([prior.id])
+          if (surface === "progressive")
+            expect(snapshots.at(-1)).toEqual([prior.id])
+        }
+      )
+    }
+  }
+
+  it.each(["cached", "live"] as const)(
+    "retains the prior %s revision after exact deletion between progressive snapshots",
+    async (priorSource) => {
+      const prior = makeSignedProduct({
+        dTag: "revised-product",
+        createdAt: 100,
+        title: "Prior revision",
+      })
+      const newer = makeSignedProduct({
+        dTag: "revised-product",
+        createdAt: 120,
+        title: "New revision",
+      })
+      const deletion = makeSignedDeletion({
+        createdAt: 130,
+        tags: [["e", newer.id]],
+      })
+      if (priorSource === "cached") await cacheSignedProductListingEvent(prior)
+      const products = priorSource === "cached" ? [newer] : [prior, newer]
+      const snapshots: string[][] = []
+      __setCommerceTestOverrides({
+        fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+          const progress = {
+            relayUrl: options?.relayUrls?.[0] ?? "wss://source.example",
+            events: products as never,
+            mergedEvents: products as never,
+          }
+          await onProgress(progress)
+          await cacheSignedProductDeletionEvent(deletion)
+          await onProgress(progress)
+          setRelayReads({ products, deletions: [] })
+          return products as never
+        },
+      })
+      const result = await getMarketplaceProductsProgressive(
+        { merchantPubkey: MERCHANT_A_PUBKEY, limit: 1 },
+        (progress) =>
+          snapshots.push(progress.data.map(({ eventId }) => eventId))
+      )
+      expect(snapshots[0]).toEqual([newer.id])
+      expect(snapshots[1]).toEqual([prior.id])
+      expect(result.data.map(({ eventId }) => eventId)).toEqual([prior.id])
+    }
+  )
+
   it.each(["events-only", "progressive"] as const)(
     "does not reinsert a preloaded deleted product in %s progress or final results",
     async (transport) => {

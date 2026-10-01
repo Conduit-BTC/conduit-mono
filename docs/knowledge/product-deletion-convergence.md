@@ -67,8 +67,12 @@ so an individual relay's omission is not interpreted as removal of either a
 product observation or deletion evidence.
 
 Captured cache candidates are not resolved results. Every cache/live merge
-applies the current session's validated deletion frontier before grouping,
-query filtering, sorting, or display limits. Final catalog and storefront
+applies the current session's validated deletion frontier before choosing a
+coordinate revision, grouping, query filtering, sorting, or display limits.
+Catalog reads retain cached and live revision candidates until final resolution;
+an exact event deletion of the newest revision leaves an older valid revision
+eligible, including when the deletion arrives between progressive snapshots or
+during a cache write. Final catalog and storefront
 results also reload durable evidence after asynchronous product-cache writes,
 so a deletion committed by another tab cannot be undone by an older read.
 

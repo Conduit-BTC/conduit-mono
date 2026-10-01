@@ -1503,6 +1503,7 @@ async function streamProductRecordChunks(input: {
   readPolicy?: CommerceReadPolicy
   merged: Map<string, NDKEvent>
   deletionTimestamps?: DeletionTimestamps
+  retainRevisions?: boolean
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
 }): Promise<void> {
@@ -1563,7 +1564,8 @@ async function streamProductRecordChunks(input: {
             input.onRecords(
               dedupeProductEvents(
                 Array.from(input.merged.values()),
-                input.deletionTimestamps
+                input.deletionTimestamps,
+                input.retainRevisions
               ),
               relayUrl
             )
@@ -3991,9 +3993,10 @@ function parseAndEvaluateProductEvent(event: NDKEvent) {
 
 function dedupeProductEvents(
   events: NDKEvent[],
-  deletionTimestamps?: DeletionTimestamps
+  deletionTimestamps?: DeletionTimestamps,
+  retainRevisions = false
 ): CommerceProductRecord[] {
-  const byAddress = new Map<string, CommerceProductRecord>()
+  const byKey = new Map<string, CommerceProductRecord>()
 
   for (const event of events) {
     try {
@@ -4022,16 +4025,19 @@ function dedupeProductEvents(
         sourceRelayUrls: getEventSourceRelayUrls(event),
       }
 
-      const existing = byAddress.get(addressId)
-      if (!existing) byAddress.set(addressId, candidate)
-      else
-        byAddress.set(addressId, mergeProductRecordSources(existing, candidate))
+      // Catalog reads keep revisions until the last asynchronous write settles.
+      // An exact deletion may invalidate the newest event without deleting its
+      // older, still-valid coordinate candidate.
+      const key = retainRevisions && event.id ? event.id : addressId
+      const existing = byKey.get(key)
+      if (!existing) byKey.set(key, candidate)
+      else byKey.set(key, mergeProductRecordSources(existing, candidate))
     } catch {
       // ignore malformed product events
     }
   }
 
-  return Array.from(byAddress.values())
+  return Array.from(byKey.values())
 }
 
 function isRecordDeletedByNip09(
@@ -4096,31 +4102,26 @@ function mergeCachedAndLiveProductRecords(input: {
 }): CommerceProductRecord[] {
   const byAddress = new Map<string, CommerceProductRecord>()
 
-  for (const record of input.cached) {
-    if (isRecordDeletedByNip09(record, input.deletionTimestamps)) continue
-    byAddress.set(record.addressId, record)
-  }
-
-  for (const record of input.live) {
-    if (isRecordDeletedByNip09(record, input.deletionTimestamps)) continue
-    const existing = byAddress.get(record.addressId)
-    if (!existing) byAddress.set(record.addressId, record)
-    else
-      byAddress.set(
-        record.addressId,
-        mergeProductRecordSources(existing, record)
-      )
-  }
-
-  // The captured cache/frontier can predate a signed deletion observed while
-  // this read was in flight. Resolve after merging, before grouping or limits.
-  return reconcileProductRecordsWithDeletions(
-    Array.from(byAddress.values()),
+  // Resolve both frontiers before choosing a coordinate winner, so an exact
+  // deletion of the newer revision cannot discard the surviving older one.
+  const candidates = reconcileProductRecordsWithDeletions(
+    [...input.cached, ...input.live].filter(
+      (record) => !isRecordDeletedByNip09(record, input.deletionTimestamps)
+    ),
     getLocalProductDeletionSnapshot().evidence
   )
+  for (const record of candidates) {
+    const existing = byAddress.get(record.addressId)
+    byAddress.set(
+      record.addressId,
+      existing ? mergeProductRecordSources(existing, record) : record
+    )
+  }
+  return Array.from(byAddress.values())
 }
 
 async function fetchPublicProductRecords(query: {
+  retainRevisions?: boolean
   authors?: string[]
   ids?: string[]
   dTags?: string[]
@@ -4221,11 +4222,16 @@ async function fetchPublicProductRecords(query: {
           signal: query.signal,
         }
       )
-  return dedupeProductEvents(result.events, deletionTimestamps)
+  return dedupeProductEvents(
+    result.events,
+    deletionTimestamps,
+    query.retainRevisions
+  )
 }
 
 async function fetchPublicProductRecordsProgressive(
   query: {
+    retainRevisions?: boolean
     authors?: string[]
     ids?: string[]
     dTags?: string[]
@@ -4311,6 +4317,7 @@ async function fetchPublicProductRecordsProgressive(
     readPolicy: query.readPolicy,
     merged,
     deletionTimestamps: initialDeletionTimestamps,
+    retainRevisions: query.retainRevisions,
     onRecords,
     onTransportStatus: query.onTransportStatus,
   })
@@ -4346,6 +4353,7 @@ async function fetchPublicProductRecordsProgressive(
       readPolicy: query.readPolicy,
       merged,
       deletionTimestamps: initialDeletionTimestamps,
+      retainRevisions: query.retainRevisions,
       onRecords,
       onTransportStatus: query.onTransportStatus,
     })
@@ -4365,7 +4373,11 @@ async function fetchPublicProductRecordsProgressive(
       signal: query.signal,
     }
   )
-  const resolved = dedupeProductEvents(mergedEvents, deletionTimestamps)
+  const resolved = dedupeProductEvents(
+    mergedEvents,
+    deletionTimestamps,
+    query.retainRevisions
+  )
   return resolved
 }
 
@@ -4696,6 +4708,7 @@ export async function getMarketplaceProducts(
     let transportDegraded = false
     let readCapped = false
     const fetchedRecords = await fetchPublicProductRecords({
+      retainRevisions: true,
       authors: authorPubkeys ? uniqueStrings(authorPubkeys) : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
@@ -4737,8 +4750,8 @@ export async function getMarketplaceProducts(
     if (query.shouldContinue?.() === false)
       throw new NostrSignerError("authority_changed")
     const currentRecords = mergeCachedAndLiveProductRecords({
-      cached: [],
-      live: records,
+      cached,
+      live: fetchedRecords,
       deletionTimestamps: finalDeletionTimestamps,
     })
     const filtered = applyProductLimit(
@@ -4866,6 +4879,7 @@ export async function getMarketplaceProductsProgressive(
 
   const fetchedRecords = await fetchPublicProductRecordsProgressive(
     {
+      retainRevisions: true,
       authors:
         authorPubkeys && authorPubkeys.length > 0
           ? uniqueStrings(authorPubkeys)
@@ -4916,7 +4930,7 @@ export async function getMarketplaceProductsProgressive(
       query.authorPubkeys
     )
     result = toResult(
-      records,
+      fetchedRecords,
       {
         degraded:
           transportDegraded ||
@@ -4995,6 +5009,7 @@ export async function getMerchantStorefront(
     let readCapped = false
     const rawEventLimit = getProductRawEventLimit(query.limit)
     const liveRecords = await fetchPublicProductRecords({
+      retainRevisions: true,
       authors: [query.merchantPubkey],
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
@@ -5028,8 +5043,8 @@ export async function getMerchantStorefront(
     if (query.shouldContinue?.() === false)
       throw new NostrSignerError("authority_changed")
     const currentRecords = mergeCachedAndLiveProductRecords({
-      cached: [],
-      live: mergedRecords,
+      cached,
+      live: liveRecords,
       deletionTimestamps: currentDeletionTimestamps,
     })
     const sorted = sortProducts(
