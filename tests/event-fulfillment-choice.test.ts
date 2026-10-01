@@ -208,6 +208,60 @@ describe("Event Market fulfillment choice", () => {
     const line = getCartRepositorySnapshot().items[0]!
     expect((await incrementCartRepositoryItem(line)).changed).toBe(false)
   })
+  for (const destination of ["shipping", "pickup"] as const) {
+    it(`merges into an existing ${destination} line without consuming moved quantities through old claims`, async () => {
+      const source = destination === "shipping" ? pickup() : shipping()
+      const target = destination === "shipping" ? shipping() : pickup()
+      await addCartRepositoryItem(source, 2)
+      await addCartRepositoryItem(target, 1)
+      const before = getCartRepositorySnapshot()
+      const sourceLine = before.items[0]!
+      const targetLine = before.items[1]!
+      const groups = groupCartPurchases(before.items)
+      const sourceGroup = groups.find((group) =>
+        group.items.some((item) => item.cartLineId === sourceLine.cartLineId)
+      )!
+      const targetGroup = groups.find((group) =>
+        group.items.some((item) => item.cartLineId === targetLine.cartLineId)
+      )!
+      const sourceClaim = await captureCartPurchase(
+        sourceGroup.id,
+        sourceGroup.items
+      )
+      const targetClaim = await captureCartPurchase(
+        targetGroup.id,
+        targetGroup.items
+      )
+
+      const result = await changeCartRepositoryFulfillment(
+        sourceLine,
+        target,
+        before.revision
+      )
+      expect(result.changed).toBe(true)
+      expect(result.after).toHaveLength(1)
+      expect(result.after[0]?.quantity).toBe(3)
+      expect(result.after[0]?.cartLineId).toBe(targetLine.cartLineId)
+      expect((await consumeCartPurchase(sourceClaim)).changed).toBe(false)
+      expect((await consumeCartPurchase(targetClaim)).changed).toBe(true)
+      expect(getCartRepositorySnapshot().items[0]?.quantity).toBe(2)
+    })
+  }
+  it("rejects a switch whose destination has newer product evidence", async () => {
+    await addCartRepositoryItem(pickup())
+    await addCartRepositoryItem({ ...shipping(), productUpdatedAt: 101_000 })
+    const before = getCartRepositorySnapshot()
+    expect(
+      (
+        await changeCartRepositoryFulfillment(
+          before.items[0]!,
+          shipping(),
+          before.revision
+        )
+      ).changed
+    ).toBe(false)
+    expect(getCartRepositorySnapshot().items).toEqual(before.items)
+  })
   it("does not offer shipping for missing or unsupported product references", () => {
     const product = {
       format: "physical",

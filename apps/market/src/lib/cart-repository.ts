@@ -692,7 +692,7 @@ function productQuantity(
     )
 }
 
-/** A changed lane gets a new incarnation so a captured purchase cannot consume it. */
+/** Moved quantities get new batch identities so prior claims cannot consume them. */
 export function changeCartRepositoryFulfillment(
   identity: CartItemIdentity,
   input: CartItemInput,
@@ -744,13 +744,36 @@ export function changeCartRepositoryFulfillment(
       (sum, batch) => sum + batch.quantity,
       0
     )
-    line.id = takeId(record, "line")
-    line.item = sanitizeCartItemImage({
+    const nextItem = sanitizeCartItemImage({
       ...input,
       fulfillment: parsed.data,
       quantity,
       merchantAddedAt: line.item.merchantAddedAt,
     })
+    const target = record.lines.find(
+      (candidate) =>
+        candidate !== line &&
+        candidate.item.productId === input.productId &&
+        candidate.item.merchantPubkey === input.merchantPubkey &&
+        isSameCartLineFulfillment(candidate.item, nextItem)
+    )
+    if (target) {
+      if (hasStrictlyOlderProductRevision(target.item, nextItem)) return false
+      const mergedItem = selectCartItemSnapshot(target.item, nextItem)
+      if (
+        typeof mergedItem.stock === "number" &&
+        productQuantity(record, input) > mergedItem.stock
+      )
+        return false
+      target.item = mergedItem
+      // Keep existing destination allocations valid, but give the moved
+      // quantity a new batch so neither earlier claim can consume it.
+      appendBatch(record, target, quantity)
+      record.lines.splice(index, 1)
+      return true
+    }
+    line.id = takeId(record, "line")
+    line.item = nextItem
     line.batches = [{ id: takeId(record, "batch"), quantity }]
     return true
   })

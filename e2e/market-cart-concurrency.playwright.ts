@@ -341,6 +341,136 @@ function currentStockProduct(input: {
   )
 }
 
+for (const destination of ["shipping", "pickup"] as const) {
+  test(`fulfillment merges into existing ${destination} across tabs and reload @market`, async ({
+    context,
+    page,
+  }) => {
+    const pickup = {
+      ...pickupItem({
+        merchant: MERCHANT,
+        organizer: ORGANIZER,
+        product: "fulfillment-merge",
+        title: "Fulfillment merge",
+        event: "a",
+      }),
+      stock: 4,
+      quantity: 2,
+    }
+    const shipping = {
+      ...pickup,
+      fulfillment: { type: "shipping" as const },
+      shippingOptionId: `30406:${MERCHANT}:shipping`,
+      shippingCostSats: 100,
+    }
+    const source = destination === "shipping" ? pickup : shipping
+    const target = destination === "shipping" ? shipping : pickup
+    await seedLegacyCart(context, {
+      version: 2,
+      items: [source, { ...target, quantity: 1 }],
+    })
+    await page.goto(`${marketUrl}/cart`)
+    await awaitCartRepositoryInitialization(page)
+    const observer = await context.newPage()
+    await observer.goto(`${marketUrl}/cart`)
+    await awaitCartRepositoryInitialization(observer)
+    const result = await page.evaluate(async (input) => {
+      const repositoryPath = "/src/lib/cart-repository.ts"
+      const modelPath = "/src/lib/cart-model.ts"
+      const repository = (await import(
+        /* @vite-ignore */ repositoryPath
+      )) as typeof import("../apps/market/src/lib/cart-repository")
+      const model = (await import(
+        /* @vite-ignore */ modelPath
+      )) as typeof import("../apps/market/src/lib/cart-model")
+      const before = repository.getCartRepositorySnapshot()
+      const sourceLine = before.items.find(
+        (item) => item.fulfillment?.type !== input.fulfillment.type
+      )!
+      const targetLine = before.items.find(
+        (item) => item.fulfillment?.type === input.fulfillment.type
+      )!
+      const groups = model.groupCartPurchases(before.items)
+      const sourceGroup = groups.find((group) =>
+        group.items.some((item) => item.cartLineId === sourceLine.cartLineId)
+      )!
+      const targetGroup = groups.find((group) =>
+        group.items.some((item) => item.cartLineId === targetLine.cartLineId)
+      )!
+      const sourceClaim = await repository.captureCartPurchase(
+        sourceGroup.id,
+        sourceGroup.items
+      )
+      const targetClaim = await repository.captureCartPurchase(
+        targetGroup.id,
+        targetGroup.items
+      )
+      const changed = await repository.changeCartRepositoryFulfillment(
+        sourceLine,
+        input,
+        before.revision
+      )
+      const merged = repository.getCartRepositorySnapshot()
+      const sourceConsumed = await repository.consumeCartPurchase(sourceClaim)
+      const targetConsumed = await repository.consumeCartPurchase(targetClaim)
+      const after = repository.getCartRepositorySnapshot()
+      return {
+        changed: changed.changed,
+        mergedLines: merged.items.length,
+        mergedQuantity: merged.items[0]?.quantity,
+        keptDestination: merged.items[0]?.cartLineId === targetLine.cartLineId,
+        sourceConsumed: sourceConsumed.changed,
+        targetConsumed: targetConsumed.changed,
+        remainingQuantity: after.items[0]?.quantity,
+        mode: after.persistenceMode,
+      }
+    }, target)
+    expect(result).toEqual({
+      changed: true,
+      mergedLines: 1,
+      mergedQuantity: 3,
+      keptDestination: true,
+      sourceConsumed: false,
+      targetConsumed: true,
+      remainingQuantity: 2,
+      mode: "persistent",
+    })
+    const readProjection = (tab: Page) =>
+      tab.evaluate(async () => {
+        const path = "/src/lib/cart-repository.ts"
+        const repository = (await import(
+          /* @vite-ignore */ path
+        )) as typeof import("../apps/market/src/lib/cart-repository")
+        await repository.initializeCartRepository()
+        const snapshot = repository.getCartRepositorySnapshot()
+        return {
+          lines: snapshot.items.length,
+          quantity: snapshot.items[0]?.quantity,
+          mode: snapshot.persistenceMode,
+        }
+      })
+    await expect
+      .poll(() => readProjection(observer))
+      .toEqual({ lines: 1, quantity: 2, mode: "persistent" })
+    await page.reload()
+    await expect
+      .poll(() => readProjection(page))
+      .toEqual({ lines: 1, quantity: 2, mode: "persistent" })
+    await page.evaluate(async () => {
+      const path = "/src/lib/cart-repository.ts"
+      const repository = (await import(
+        /* @vite-ignore */ path
+      )) as typeof import("../apps/market/src/lib/cart-repository")
+      await repository.incrementCartRepositoryItem(
+        repository.getCartRepositorySnapshot().items[0]!
+      )
+    })
+    await expect
+      .poll(() => readProjection(observer))
+      .toEqual({ lines: 1, quantity: 3, mode: "persistent" })
+  })
+}
+
 test("Cart and HUD increments honor newer signed stock evidence @market", async ({
   context,
 }) => {

@@ -2326,6 +2326,7 @@ test("organizer generates weekly dates and publishes one signed series @merchant
 }) => {
   test.setTimeout(120_000)
   page.setDefaultTimeout(25_000)
+  await page.clock.setFixedTime(new Date("2029-01-01T12:00:00Z"))
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   await gotoAs(page, merchantUrl, "/events/new", "organizer")
@@ -2370,7 +2371,49 @@ test("organizer generates weekly dates and publishes one signed series @merchant
       ).length === 2 &&
       request.filters.some((filter) => filter.kinds?.includes(30409))
   )
+  relay.rejectKind(31923, true)
   await page.getByRole("button", { name: "Add signed date" }).click()
+  await expect(
+    page.getByRole("button", { name: "Resume publishing" })
+  ).toBeEnabled()
+  const rejectedNewDate = uniquePublishedEvents(relay.publications)
+    .filter((event) => event.kind === 31923)
+    .at(-1)!
+  expect(rejectedNewDate.created_at).toBe(
+    published.find((event) => event.kind === 31924)!.created_at
+  )
+  await page.reload()
+  const resumeNewDate = page.getByRole("button", { name: "Resume publishing" })
+  await expect(resumeNewDate).toBeEnabled()
+  await page.evaluate(() => {
+    const syntheticWindow = window as typeof window & {
+      __conduitNewDateSignAttempts: number
+      nostr: { signEvent: (event: UnsignedEvent) => Promise<SignedEvent> }
+    }
+    const sign = syntheticWindow.nostr.signEvent
+    syntheticWindow.__conduitNewDateSignAttempts = 0
+    syntheticWindow.nostr.signEvent = async (event) => {
+      if (event.kind === 31923) syntheticWindow.__conduitNewDateSignAttempts++
+      return await sign(event)
+    }
+  })
+  const newDateRetryStart = relay.publications.length
+  relay.rejectKind(31923, false)
+  await resumeNewDate.click()
+  await expect(resumeNewDate).toHaveCount(0)
+  const newDateRetries = relay.publications
+    .slice(newDateRetryStart)
+    .filter(({ event }) => event.kind === 31923)
+  expect(newDateRetries.length).toBeGreaterThan(0)
+  for (const { event } of newDateRetries)
+    expect(JSON.stringify(event) === JSON.stringify(rejectedNewDate)).toBe(true)
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { __conduitNewDateSignAttempts: number })
+          .__conduitNewDateSignAttempts
+    )
+  ).toBe(0)
   await expect
     .poll(
       () =>

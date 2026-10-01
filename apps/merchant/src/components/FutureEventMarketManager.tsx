@@ -54,7 +54,10 @@ import {
   Textarea,
 } from "@conduit/ui"
 import { retainEventMarketMerchantDecision } from "../lib/event-market-merchant-decision"
-import { getSavedDateRecoveryAction } from "../lib/event-market-date-recovery"
+import {
+  getMatchingSavedSeriesDateEvents,
+  getSavedDateRecoveryAction,
+} from "../lib/event-market-date-recovery"
 import { buildFutureEventQrSignSheets } from "../lib/event-signage"
 import { EventMessagesSetup } from "./EventMessagesSetup"
 import { EventQrPrintPreview } from "./EventQrPrintPreview"
@@ -593,24 +596,12 @@ function SeriesDateManager({
           coordinate: `${calendar.kind}:${market.organizerPubkey}:${calendar.dTag}`,
           draft: buildEventMarketCalendarDraft(calendar),
         }))
-        const matchingSigned = signed.filter((event) => {
-          if (
-            event.created_at <=
-            Math.floor(mutation.expectedPreviousCreatedAt / 1_000)
-          )
-            return false
-          const coordinate = `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
-          const expected =
-            coordinate === schedule.coordinate
-              ? expectedSchedule
-              : expectedOccurrences.find(
-                  (item) => item.coordinate === coordinate
-                )?.draft
-          return (
-            !!expected &&
-            JSON.stringify(event.tags) === JSON.stringify(expected.tags) &&
-            event.content === expected.content
-          )
+        const matchingSigned = getMatchingSavedSeriesDateEvents({
+          signedEvents: signed,
+          scheduleCoordinate: schedule.coordinate,
+          expectedSchedule,
+          expectedOccurrences,
+          expectedPreviousCreatedAt: mutation.expectedPreviousCreatedAt,
         })
         const savedSchedule = matchingSigned.find(
           (event) =>
