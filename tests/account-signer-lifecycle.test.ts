@@ -1,3 +1,9 @@
+import {
+  setTestAccountSigner as setSigner,
+  removeTestAccountSigner as removeSigner,
+  clearTestAccountSigner,
+} from "./helpers/plain-signer"
+import { getAccountSigner } from "../packages/core/src/protocol/session-signer"
 import { afterEach, describe, expect, it } from "bun:test"
 import { type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
@@ -5,8 +11,6 @@ import {
   disconnectNdk,
   getNdk,
   refreshNdkRelaySettings,
-  removeSigner,
-  setSigner,
 } from "../packages/core/src/protocol/ndk"
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
@@ -30,8 +34,9 @@ function fakeSigner(pubkey: string): NDKSigner {
   } as NDKSigner
 }
 
-describe("NDK signer lifecycle", () => {
+describe("account authority independent of relay-client lifecycle", () => {
   afterEach(() => {
+    clearTestAccountSigner()
     __resetNdkTestState()
     disconnectNdk()
     restoreWindow()
@@ -40,19 +45,21 @@ describe("NDK signer lifecycle", () => {
   it("keeps the connected signer across a relay-client reset", () => {
     const activeSigner = fakeSigner("a".repeat(64))
 
-    setSigner(activeSigner)
+    const account = setSigner(activeSigner)
     disconnectNdk()
 
-    expect(getNdk().signer).toBe(activeSigner)
+    expect(getAccountSigner()).toBe(account)
+    expect(getNdk().signer).toBeUndefined()
   })
 
   it("keeps the connected signer when relay settings rebuild the client", () => {
     const activeSigner = fakeSigner("a".repeat(64))
 
-    setSigner(activeSigner)
+    const account = setSigner(activeSigner)
     refreshNdkRelaySettings()
 
-    expect(getNdk().signer).toBe(activeSigner)
+    expect(getAccountSigner()).toBe(account)
+    expect(getNdk().signer).toBeUndefined()
   })
 
   it("constructs an offline compatibility context without ambient relays", () => {
@@ -69,10 +76,10 @@ describe("NDK signer lifecycle", () => {
     const activeSigner = fakeSigner("b".repeat(64))
 
     const staleLease = setSigner(staleSigner)
-    setSigner(activeSigner)
+    const account = setSigner(activeSigner)
     removeSigner(staleLease)
 
-    expect(getNdk().signer).toBe(activeSigner)
+    expect(getAccountSigner()).toBe(account)
   })
 
   it("lets the active auth lifecycle remove its own signer", () => {
@@ -81,10 +88,10 @@ describe("NDK signer lifecycle", () => {
 
     removeSigner(activeLease)
 
-    expect(getNdk().signer).toBeUndefined()
+    expect(getAccountSigner()).toBeUndefined()
   })
 
-  it("clears a divergent client signer when the active lifecycle disconnects", () => {
+  it("does not derive account authority from a divergent client signer", () => {
     const activeSigner = fakeSigner("a".repeat(64))
     const divergentSigner = fakeSigner("b".repeat(64))
     const activeLease = setSigner(activeSigner)
@@ -92,7 +99,8 @@ describe("NDK signer lifecycle", () => {
 
     removeSigner(activeLease)
 
-    expect(getNdk().signer).toBeUndefined()
+    expect(getAccountSigner()).toBeUndefined()
+    expect(getNdk().signer).toBe(divergentSigner)
   })
 
   it("does not read relay settings while installing a signer", () => {
@@ -113,7 +121,7 @@ describe("NDK signer lifecycle", () => {
 
     restoreWindow()
 
-    expect(getNdk().signer).toBe(activeSigner)
+    expect(getAccountSigner()?.pubkey).toBe(activeSigner.pubkey)
   })
 
   it("does not ask an installed signer for relays", () => {

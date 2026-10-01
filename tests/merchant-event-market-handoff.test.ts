@@ -256,7 +256,7 @@ function ndkWrap(recipientPubkey: string): NDKEvent {
 }
 
 const merchantSigner = {
-  user: async () => ({ pubkey: MERCHANT }),
+  getPublicKey: async () => MERCHANT,
 } as unknown as NDKSigner
 
 function plannerResult(input: {

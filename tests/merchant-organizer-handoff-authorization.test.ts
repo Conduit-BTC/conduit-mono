@@ -265,7 +265,7 @@ class MemoryStorage implements Storage {
 }
 
 const organizerSigner = {
-  user: async () => ({ pubkey: ORGANIZER }),
+  getPublicKey: async () => ORGANIZER,
 } as unknown as NDKSigner
 
 describe("merchant organizer handoff authorization", () => {

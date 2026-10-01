@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { describe, expect, it } from "bun:test"
 import { NDKEvent, NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
@@ -34,10 +35,10 @@ const CREATED_AT = 1_800_000_000_000
 const MNEMONIC = generateSparkMnemonic()
 
 function signer(pubkey: string): NDKSigner {
-  return {
+  return plainTestSigner({
     pubkey,
     user: async () => new NDKUser({ pubkey }),
-  } as NDKSigner
+  } as NDKSigner)
 }
 
 const senderSigner = signer(SENDER)
