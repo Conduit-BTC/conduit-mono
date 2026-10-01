@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test"
+import {
+  clearTestAccountSigner,
+  setTestAccountSigner,
+} from "./helpers/plain-signer"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
@@ -202,7 +206,10 @@ function fanoutResult(
     })),
   }
 }
-afterEach(() => __resetShippingTestOverrides())
+afterEach(() => {
+  __resetShippingTestOverrides()
+  clearTestAccountSigner()
+})
 
 describe("shipping policy arithmetic", () => {
   it("normalizes identifiers and rejects duplicate rules after normalization", () => {
@@ -902,10 +909,11 @@ describe("shipping policy read evidence", () => {
 })
 
 describe("shipping policy publication", () => {
-  it("checks current revision, signer authority and ACK before returning signed terms", async () => {
+  it("uses the active account signer and checks current revision and ACK before returning signed terms", async () => {
     cacheOverrides()
-    const signer = NDKPrivateKeySigner.generate()
-    const pubkey = (await signer.user()).pubkey
+    const legacySigner = NDKPrivateKeySigner.generate()
+    const signer = setTestAccountSigner(legacySigner)
+    const pubkey = await signer.getPublicKey()
     let published: NDKEvent | undefined
     const publishEvent = (async (event: NDKEvent) => {
       published = event
@@ -915,7 +923,6 @@ describe("shipping policy publication", () => {
       pubkey,
       policy,
       dependencies: {
-        signer,
         fetchPolicy: async () => ({
           state: "not_found",
           coverageComplete: true,
@@ -930,8 +937,9 @@ describe("shipping policy publication", () => {
   })
   it("rejects revision changes, incomplete reads, wrong signer, and zero ACK", async () => {
     cacheOverrides()
-    const signer = NDKPrivateKeySigner.generate()
-    const pubkey = (await signer.user()).pubkey
+    const legacySigner = NDKPrivateKeySigner.generate()
+    const signer = setTestAccountSigner(legacySigner)
+    const pubkey = await signer.getPublicKey()
     const foreignEvent = signedPolicy()
     const found: MerchantShippingPolicyReadResult = {
       state: "found",
@@ -980,8 +988,9 @@ describe("shipping policy publication", () => {
   })
   it("publishes replacement strictly after an accepted withdrawal cutoff", async () => {
     cacheOverrides()
-    const signer = NDKPrivateKeySigner.generate()
-    const pubkey = (await signer.user()).pubkey
+    const legacySigner = NDKPrivateKeySigner.generate()
+    const signer = setTestAccountSigner(legacySigner)
+    const pubkey = await signer.getPublicKey()
     const deletion = new NDKEvent(undefined, {
       kind: 5,
       pubkey,
@@ -989,7 +998,7 @@ describe("shipping policy publication", () => {
       content: "",
       tags: [["a", getMerchantShippingPolicyCoordinate(pubkey)]],
     })
-    await deletion.sign(signer)
+    await deletion.sign(legacySigner)
     const revision = { eventId: deletion.id, createdAt: 30 }
     let published: NDKEvent | undefined
     await publishMerchantShippingPolicy({
@@ -1017,8 +1026,9 @@ describe("shipping policy publication", () => {
   })
 
   it("fences auth changes before signing or relay publication", async () => {
-    const signer = NDKPrivateKeySigner.generate()
-    const pubkey = (await signer.user()).pubkey
+    const legacySigner = NDKPrivateKeySigner.generate()
+    const signer = setTestAccountSigner(legacySigner)
+    const pubkey = await signer.getPublicKey()
     let active = true
     await expect(
       publishMerchantShippingPolicy({
@@ -1037,14 +1047,15 @@ describe("shipping policy publication", () => {
   })
   it("withdraws the exact event and address using a later signed deletion", async () => {
     cacheOverrides()
-    const signer = NDKPrivateKeySigner.generate()
-    const pubkey = (await signer.user()).pubkey
+    const legacySigner = NDKPrivateKeySigner.generate()
+    const signer = setTestAccountSigner(legacySigner)
+    const pubkey = await signer.getPublicKey()
     const event = new NDKEvent(undefined, {
       ...buildShippingPolicyEventDraft({ policy }),
       pubkey,
       created_at: 10,
     })
-    await event.sign(signer)
+    await event.sign(legacySigner)
     const revision = { eventId: event.id, createdAt: 10 }
     let deletion: NDKEvent | undefined
     await withdrawMerchantShippingPolicy({

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Locator } from "@playwright/test"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -17,6 +17,9 @@ test("variation measurements require explicit sharing and preserve independent a
   page,
 }, testInfo) => {
   test.setTimeout(120_000)
+  page.setDefaultTimeout(25_000)
+  const activate = (control: Locator) =>
+    testInfo.project.use.hasTouch ? control.tap() : control.click()
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
   await seedTestRelayIdentity(secretKey)
@@ -51,8 +54,9 @@ test("variation measurements require explicit sharing and preserve independent a
   await publishTestRelayEvents([policy])
   await installTestSigner(page, pubkey, { secretKey })
   await page.goto(`${merchantUrl}/products`)
-  await page.getByRole("button", { name: "Add product" }).first().click()
+  await activate(page.getByRole("button", { name: "Add product" }).first())
   const dialog = page.getByRole("dialog", { name: "Add product" })
+  await expect(dialog).toBeVisible()
   await dialog
     .getByLabel("Title", { exact: true })
     .fill("Variation shipping test")
@@ -171,8 +175,11 @@ test("variation measurements require explicit sharing and preserve independent a
       ].includes(name)
     )
   ).toBe(false)
-  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+  await activate(
+    page.getByRole("button", { name: "Edit", exact: true }).first()
+  )
   const edit = page.getByRole("dialog", { name: "Edit product family" })
+  await expect(edit).toBeVisible()
   await edit
     .getByRole("button", { name: "Change fulfillment", exact: true })
     .click()
@@ -222,6 +229,8 @@ test("variation measurements require explicit sharing and preserve independent a
         ?.tags.find(([name]) => name === "weight")?.[1]
     })
     .toBe("900")
-  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+  await activate(
+    page.getByRole("button", { name: "Edit", exact: true }).first()
+  )
   await expect(editShared).toBeChecked()
 })

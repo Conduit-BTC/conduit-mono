@@ -13,12 +13,14 @@ import {
   getShippingOptionsByCoordinates,
   parseProductEvent,
   shippingPolicyQuoteSchema,
-  setSigner,
-  removeSigner,
   type CachedShippingOptionFrontier,
   type Product,
   type ShippingPolicy,
 } from "@conduit/core"
+import {
+  setTestAccountSigner,
+  removeTestAccountSigner,
+} from "./helpers/plain-signer"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
 import { createCartItemFromProduct } from "../apps/market/src/lib/cart-model"
 import {
@@ -296,8 +298,8 @@ describe("current policy evidence at commerce action gates", () => {
     await source.read()
     source.setMode("unavailable")
     const signer = new NDKPrivateKeySigner(secret)
-    const lease = setSigner(signer)
-    const sign = spyOn(signer, "sign")
+    const lease = setTestAccountSigner(signer)
+    const sign = spyOn(lease, "signEvent")
     let localWrites = 0
     try {
       await expect(
@@ -319,7 +321,7 @@ describe("current policy evidence at commerce action gates", () => {
       expect(localWrites).toBe(0)
     } finally {
       sign.mockRestore()
-      removeSigner(lease)
+      removeTestAccountSigner(lease)
     }
   })
 

@@ -3,7 +3,7 @@
  * The Open Markets content remains a human-readable description; clients that
  * do not understand the extension must not treat its base price as a quote.
  */
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { z } from "zod"
 import {
   getCurrencyFractionDigits,
@@ -14,6 +14,8 @@ import {
 import { parseProductEvent } from "./products"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
+import { getAccountSigner } from "./session-signer"
+import type { AccountSigner, UnsignedNostrEvent } from "./nostr-event-signer"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { publishWithPlanner } from "./relay-publish"
 import {
@@ -444,7 +446,7 @@ export async function fetchMerchantShippingPolicy(
 }
 
 interface ShippingPolicyMutationDependencies {
-  signer?: NDKSigner
+  signer?: AccountSigner
   fetchPolicy?: typeof fetchMerchantShippingPolicy
   publishEvent?: typeof publishWithPlanner
   readOptions?: ShippingOptionReadOptions
@@ -464,8 +466,8 @@ async function prepareMutation(
 ) {
   const owner = ownerPubkey(pubkey)
   ensureSession(dependencies)
-  const signer = dependencies?.signer ?? getNdk().signer
-  if (!signer || (await signer.user()).pubkey.toLowerCase() !== owner)
+  const signer = dependencies?.signer ?? getAccountSigner()
+  if (!signer || (await signer.getPublicKey()).toLowerCase() !== owner)
     throw new Error(
       "Connect the matching merchant signer before saving shipping."
     )
@@ -504,7 +506,7 @@ async function prepareMutation(
 }
 async function signAndPublishPolicyDraft(
   owner: string,
-  signer: NDKSigner,
+  signer: AccountSigner,
   createdAt: number,
   draft:
     | ShippingOptionEventDraft
@@ -518,7 +520,10 @@ async function signAndPublishPolicyDraft(
   event.created_at = createdAt
   event.tags = draft.tags
   event.content = draft.content
-  await event.sign(signer)
+  Object.assign(
+    event,
+    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+  )
   ensureSession(dependencies)
   const signedEvent = event.rawEvent() as SignedPublicNostrEvent
   if (

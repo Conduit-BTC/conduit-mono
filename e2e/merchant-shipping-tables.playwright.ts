@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -32,6 +32,8 @@ for (const [viewportName, width, height] of [
   }, testInfo) => {
     test.setTimeout(180_000)
     page.setDefaultTimeout(25_000)
+    const activate = (control: Locator) =>
+      testInfo.project.use.hasTouch ? control.tap() : control.click()
     const secretKey = generateSecretKey()
     const pubkey = getPublicKey(secretKey)
     await seedTestRelayIdentity(secretKey)
@@ -166,8 +168,9 @@ for (const [viewportName, width, height] of [
       [1, "250"],
       [2, "400"],
     ] as const) {
-      await page.getByRole("button", { name: "Add product" }).first().click()
+      await activate(page.getByRole("button", { name: "Add product" }).first())
       const dialog = page.getByRole("dialog", { name: "Add product" })
+      await expect(dialog).toBeVisible()
       await dialog
         .getByLabel("Title", { exact: true })
         .fill(`Table product ${index}`)
@@ -263,11 +266,11 @@ for (const [viewportName, width, height] of [
       expect(product.tags.some((tag) => tag[0] === "weight")).toBe(true)
     }
 
-    await page
-      .getByRole("button", { name: "Edit", exact: true })
-      .first()
-      .click()
+    await activate(
+      page.getByRole("button", { name: "Edit", exact: true }).first()
+    )
     const edit = page.getByRole("dialog", { name: "Edit listing" })
+    await expect(edit).toBeVisible()
     const measurements = edit.getByRole("region", {
       name: "Product shipping measurements",
       exact: true,
