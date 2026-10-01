@@ -4112,7 +4112,12 @@ function mergeCachedAndLiveProductRecords(input: {
       )
   }
 
-  return Array.from(byAddress.values())
+  // The captured cache/frontier can predate a signed deletion observed while
+  // this read was in flight. Resolve after merging, before grouping or limits.
+  return reconcileProductRecordsWithDeletions(
+    Array.from(byAddress.values()),
+    getLocalProductDeletionSnapshot().evidence
+  )
 }
 
 async function fetchPublicProductRecords(query: {
@@ -4724,9 +4729,21 @@ export async function getMarketplaceProducts(
     if (query.shouldContinue?.() === false)
       throw new NostrSignerError("authority_changed")
 
+    const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentRecords = mergeCachedAndLiveProductRecords({
+      cached: [],
+      live: records,
+      deletionTimestamps: finalDeletionTimestamps,
+    })
     const filtered = applyProductLimit(
       sortProducts(
-        filterProductRecordsForRead(records).filter((record) =>
+        filterProductRecordsForRead(currentRecords).filter((record) =>
           productMatchesQuery(record, query)
         ),
         query.sort
@@ -4816,12 +4833,13 @@ export async function getMarketplaceProductsProgressive(
   )
   const toResult = (
     records: CommerceProductRecord[],
-    options: { degraded?: boolean; capped?: boolean } = {}
+    options: { degraded?: boolean; capped?: boolean } = {},
+    deletionTimestamps: DeletionTimestamps = localDeletionTimestamps
   ) => {
     const filteredRecords = mergeCachedAndLiveProductRecords({
       cached,
       live: records,
-      deletionTimestamps: localDeletionTimestamps,
+      deletionTimestamps,
     })
     const data = applyProductLimit(
       sortProducts(
@@ -4885,14 +4903,34 @@ export async function getMarketplaceProductsProgressive(
     live: fetchedRecords,
     deletionTimestamps: currentDeletionTimestamps,
   })
-  const result = toResult(records, {
-    degraded:
-      transportDegraded || readCapped || fetchedRecords.length >= rawEventLimit,
-    capped: readCapped || fetchedRecords.length >= rawEventLimit,
-  })
-  query.signal?.throwIfAborted()
-  onProgress(result, "deletion-frontier")
-  await cacheProductRecords(records)
+  // Final resolution must follow writes that can yield to a new deletion. A
+  // failed cache write still needs to retract the previous progressive paint;
+  // preserve its rejection after delivering the resolved snapshot.
+  let result: CommerceResult<CommerceProductRecord[]>
+  try {
+    await cacheProductRecords(records)
+  } finally {
+    query.signal?.throwIfAborted()
+    const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    result = toResult(
+      records,
+      {
+        degraded:
+          transportDegraded ||
+          readCapped ||
+          fetchedRecords.length >= rawEventLimit,
+        capped: readCapped || fetchedRecords.length >= rawEventLimit,
+      },
+      finalDeletionTimestamps
+    )
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    onProgress(result, "deletion-frontier")
+  }
   return result
 }
 
@@ -4983,8 +5021,19 @@ export async function getMerchantStorefront(
       deletionTimestamps,
     })
 
+    await cacheProductRecords(mergedRecords)
+    const currentDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey
+    )
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentRecords = mergeCachedAndLiveProductRecords({
+      cached: [],
+      live: mergedRecords,
+      deletionTimestamps: currentDeletionTimestamps,
+    })
     const sorted = sortProducts(
-      filterProductRecordsForRead(mergedRecords, {
+      filterProductRecordsForRead(currentRecords, {
         includeMarketHidden: query.includeMarketHidden,
         groupVariations: query.includeMarketHidden ? false : true,
       }).filter((record) =>
@@ -5000,7 +5049,6 @@ export async function getMerchantStorefront(
     )
     const filtered = applyProductLimit(sorted, query.limit)
 
-    await cacheProductRecords(mergedRecords)
     const meta =
       liveRecords.length === 0 && filtered.length > 0
         ? createMeta(
@@ -5022,8 +5070,18 @@ export async function getMerchantStorefront(
     }
   } catch (error) {
     if (query.shouldContinue?.() === false) throw error
+    const deletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey
+    )
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentCache = mergeCachedAndLiveProductRecords({
+      cached,
+      live: [],
+      deletionTimestamps,
+    })
     const filteredCache = sortProducts(
-      filterProductRecordsForRead(cached, {
+      filterProductRecordsForRead(currentCache, {
         includeMarketHidden: query.includeMarketHidden,
         groupVariations: query.includeMarketHidden ? false : true,
       }).filter((record) =>
@@ -5036,7 +5094,9 @@ export async function getMerchantStorefront(
       query.sort
     )
 
-    if (filteredCache.length > 0) {
+    // An empty resolved fallback is meaningful when signed evidence removed
+    // the captured products. Rejecting would leave callers' old paint intact.
+    if (filteredCache.length > 0 || currentCache.length < cached.length) {
       const meta = createMeta(
         "merchant_storefront",
         "local_cache",
