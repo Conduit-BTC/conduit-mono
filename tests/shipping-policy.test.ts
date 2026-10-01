@@ -343,6 +343,60 @@ describe("shipping policy arithmetic", () => {
       preview({ destination: { country: "CA", postalCode: "K1A" } })
     ).toMatchObject({ amountMinor: 1250 })
   })
+  it("matches supported address region names and ISO codes to the same rate", () => {
+    for (const [country, name, code] of [
+      ["US", "California", "CA"],
+      ["CA", "British Columbia", "BC"],
+      ["AU", "New South Wales", "NSW"],
+      ["NZ", "Canterbury", "CAN"],
+    ]) {
+      const tablePolicy: ShippingPolicyV2 = {
+        version: 2,
+        title: "Regional rates",
+        originCountry: country!,
+        currency: "SATS",
+        domestic: {
+          rules: [
+            {
+              country: country!,
+              bands: [{ maxWeightGrams: 1000, priceMinor: 500 }],
+            },
+            {
+              country: country!,
+              subdivision: `${country}${code}`,
+              bands: [{ maxWeightGrams: 1000, priceMinor: 2000 }],
+            },
+          ],
+        },
+        international: null,
+      }
+      for (const subdivision of [
+        name,
+        code,
+        `${country}-${code}`,
+        `${country}${code}`,
+      ]) {
+        expect(
+          previewShippingPolicy({
+            policy: tablePolicy,
+            items: [
+              {
+                weightGrams: 100,
+                quantity: 1,
+                currency: "SATS",
+                subtotalMinor: 100,
+              },
+            ],
+            destination: { country: country!, subdivision },
+          })
+        ).toMatchObject({
+          status: "quoted",
+          amountSats: 2000,
+          destination: { subdivision: `${country}${code}` },
+        })
+      }
+    }
+  })
   it("applies the shipped subtotal threshold only after destination and weight eligibility", () => {
     expect(
       preview({

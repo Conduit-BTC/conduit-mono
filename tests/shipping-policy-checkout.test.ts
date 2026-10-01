@@ -21,6 +21,7 @@ import {
   type BtcUsdRateQuote,
   type PricingRateInput,
   type ShippingPolicy,
+  validateAddressConsistency,
 } from "@conduit/core"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
 import { buildCheckoutSparkQuoteAuthority } from "../apps/market/src/lib/checkout-spark-quote-authority"
@@ -157,6 +158,83 @@ function payload(
 }
 
 describe("signed shipping policy composed checkout", () => {
+  it("keeps accepted region names aligned through pricing, authorization and order replay", async () => {
+    const input = raw("region-name")
+    const table = option(3, {
+      domestic: {
+        rules: [
+          { country: "US", bands: [{ maxWeightGrams: 1000, priceMinor: 500 }] },
+          {
+            country: "US",
+            subdivision: "USCA",
+            bands: [{ maxWeightGrams: 1000, priceMinor: 2000 }],
+          },
+        ],
+      },
+    })
+    const address = {
+      ...payload([], 0).shippingAddress,
+      city: "San Francisco",
+      state: "California",
+      postalCode: "94103",
+    }
+    expect(validateAddressConsistency(address).canDirectPay).toBe(true)
+    const destination = {
+      country: "US",
+      subdivision: address.state,
+      postalCode: address.postalCode,
+    }
+    const reviewed = prepareCartFulfillment([input], [table], destination).items
+    const coded = prepareCartFulfillment([input], [table], {
+      ...destination,
+      subdivision: "CA",
+    }).items
+    expect(reviewed[0]!.shippingPolicyQuote).toEqual(
+      coded[0]!.shippingPolicyQuote
+    )
+    expect(priced(reviewed).shippingCost.totalSats).toBe(2001)
+    expect(
+      getCartShippingDestinationEligibility(destination, reviewed)
+    ).toMatchObject({ eligible: true })
+    const authorization = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      rawItems: [input],
+      reviewedItems: reviewed,
+      refreshedProducts: [product("region-name")],
+      readShippingOptions: async () => [table],
+      destination,
+      resolveProductFulfillment: async (product) => ({
+        status: "standard",
+        type: "shipping",
+        product,
+      }),
+      authorizePickupHandlers: async () => {},
+    })
+    expect(authorization.status).toBe("ok")
+    const order = {
+      ...payload(priced(reviewed).items, 2001),
+      shippingAddress: address,
+    }
+    expect(orderSchema.safeParse(order).success).toBe(true)
+    const recovered = parseOrderRumorEvent({
+      content: serializeOrderRumorContent(order),
+    })
+    expect(recovered.items[0]!.shippingPolicyQuote).toEqual(
+      reviewed[0]!.shippingPolicyQuote
+    )
+    expect(
+      orderSchema.safeParse({
+        ...order,
+        shippingAddress: { ...address, state: "CA" },
+      }).success
+    ).toBe(true)
+    expect(
+      orderSchema.safeParse({
+        ...order,
+        shippingAddress: { ...address, state: "Washington" },
+      }).success
+    ).toBe(false)
+  })
   it("charges one combined band and handling for two products and quantities, with integer allocations", () => {
     const prepared = prepareCartFulfillment(
       [raw("a", 2), raw("b")],

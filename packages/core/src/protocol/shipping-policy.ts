@@ -12,6 +12,7 @@ import {
   type SourcePriceQuote,
 } from "../pricing"
 import { parseProductEvent } from "./products"
+import { normalizeAddressRegion } from "./address-validation"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
 import { getAccountSigner } from "./session-signer"
@@ -157,6 +158,23 @@ export type ShippingPolicyBand = z.infer<typeof shippingPolicyBandSchema>
 
 export function normalizeShippingPolicyRegion(value: string): string {
   return value.trim().toUpperCase().replace(/[\s-]/g, "")
+}
+
+export function normalizeShippingPolicySubdivision(
+  country: string,
+  value: string | undefined
+): string | undefined {
+  const code = country.trim().toUpperCase()
+  const normalized = normalizeShippingPolicyRegion(value ?? "")
+  if (!normalized) return undefined
+  const region =
+    normalizeAddressRegion(code, value) ??
+    normalizeAddressRegion(
+      code,
+      normalized.startsWith(code) ? normalized.slice(code.length) : normalized
+    ) ??
+    normalized
+  return region.startsWith(code) ? region : `${code}${region}`
 }
 
 /** Normalize human-entered identifiers before validating the signed document. */
@@ -999,7 +1017,8 @@ export function previewShippingPolicy(input: {
     country: input.destination.country.trim().toUpperCase(),
     ...(input.destination.subdivision
       ? {
-          subdivision: normalizeShippingPolicyRegion(
+          subdivision: normalizeShippingPolicySubdivision(
+            input.destination.country,
             input.destination.subdivision
           ),
         }
@@ -1012,12 +1031,6 @@ export function previewShippingPolicy(input: {
         }
       : {}),
   }
-  // ISO subdivision values include the country. Accept a form's state code too.
-  if (
-    destination.subdivision &&
-    !destination.subdivision.startsWith(destination.country)
-  )
-    destination.subdivision = `${destination.country}${destination.subdivision}`
   const table =
     destination.country === policy.originCountry
       ? policy.domestic

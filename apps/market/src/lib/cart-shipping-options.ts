@@ -2,6 +2,7 @@ import {
   canonicalizeShippingCost,
   quoteShippingPolicy,
   normalizeShippingPolicyRegion,
+  normalizeShippingPolicySubdivision,
   shippingAmountToMinor,
   getShippingDestinationEligibility,
   hasCurrentShippingPolicyEvidence,
@@ -262,15 +263,14 @@ export function getCartShippingDestinationEligibility(
       if (item.shippingPolicyQuote) {
         const quoted = item.shippingPolicyQuote.destination
         const country = destination.country.trim().toUpperCase()
-        let subdivision = normalizeShippingPolicyRegion(
-          destination.subdivision ?? ""
+        const subdivision = normalizeShippingPolicySubdivision(
+          country,
+          destination.subdivision
         )
-        if (subdivision && !subdivision.startsWith(country))
-          subdivision = `${country}${subdivision}`
         return quoted.country === country &&
           (quoted.postalCode ?? "") ===
             normalizeShippingPolicyRegion(destination.postalCode) &&
-          (quoted.subdivision ?? "") === subdivision
+          quoted.subdivision === subdivision
           ? ({ eligible: true } as const)
           : ({ eligible: null, reason: "unknown" } as const)
       }

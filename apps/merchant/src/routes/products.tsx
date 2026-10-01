@@ -948,40 +948,46 @@ async function publishProduct(
           authoringCountries: [],
           metadata: {},
         }
-      : localPickup
+      : isDigital
         ? {
-            intent: { kind: "coordinate_after_order" as const },
+            intent: { kind: "digital" as const },
             authoringCountries: [] as string[],
             metadata: {},
           }
-        : form.shippingPricingMode === "weight_table"
-          ? await (async () => {
-              const read = await fetchMerchantShippingPolicy(signerPubkey, {
-                accountPubkey: signerPubkey,
-                authenticatedPubkey,
-                shouldContinue,
-              })
-              if (read.state !== "found")
-                throw new Error(
-                  "Publish your shipping table before assigning it to a product."
-                )
-              return {
-                intent: {
-                  kind: "weight_table" as const,
-                  policyCoordinate:
-                    getMerchantShippingPolicyCoordinate(signerPubkey),
-                  policyEventId: read.revision.eventId,
-                },
-                authoringCountries: [],
-                metadata: {},
-              }
-            })()
-          : buildShippingMetadata(
-              signerPubkey,
-              dTag,
-              form,
-              presetShippingConfig
-            )
+        : localPickup
+          ? {
+              intent: { kind: "coordinate_after_order" as const },
+              authoringCountries: [] as string[],
+              metadata: {},
+            }
+          : form.shippingPricingMode === "weight_table"
+            ? await (async () => {
+                const read = await fetchMerchantShippingPolicy(signerPubkey, {
+                  accountPubkey: signerPubkey,
+                  authenticatedPubkey,
+                  shouldContinue,
+                })
+                if (read.state !== "found")
+                  throw new Error(
+                    "Publish your shipping table before assigning it to a product."
+                  )
+                return {
+                  intent: {
+                    kind: "weight_table" as const,
+                    policyCoordinate:
+                      getMerchantShippingPolicyCoordinate(signerPubkey),
+                    policyEventId: read.revision.eventId,
+                  },
+                  authoringCountries: [],
+                  metadata: {},
+                }
+              })()
+            : buildShippingMetadata(
+                signerPubkey,
+                dTag,
+                form,
+                presetShippingConfig
+              )
   let shippingMetadata: Pick<
     ProductSchema,
     | "shippingOptionId"

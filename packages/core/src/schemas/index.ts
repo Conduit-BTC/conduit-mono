@@ -10,6 +10,7 @@ import {
   shippingAmountToMinor,
   convertShippingMinor,
   normalizeShippingPolicyRegion,
+  normalizeShippingPolicySubdivision,
   hasSameShippingPolicyQuote,
 } from "../protocol/shipping-policy"
 export { shippingPolicyQuoteSchema } from "../protocol/shipping-policy"
@@ -1090,11 +1091,10 @@ export const orderSchema = z
     for (const group of policyGroups.values()) {
       const quote = group[0]!.shippingPolicyQuote!
       const country = order.shippingAddress?.country.trim().toUpperCase()
-      let subdivision = order.shippingAddress?.state
-        ? normalizeShippingPolicyRegion(order.shippingAddress.state)
-        : undefined
-      if (subdivision && country && !subdivision.startsWith(country))
-        subdivision = `${country}${subdivision}`
+      const subdivision = normalizeShippingPolicySubdivision(
+        country ?? "",
+        order.shippingAddress?.state
+      )
       const postalCode = order.shippingAddress?.postalCode
         ? normalizeShippingPolicyRegion(order.shippingAddress.postalCode)
         : undefined

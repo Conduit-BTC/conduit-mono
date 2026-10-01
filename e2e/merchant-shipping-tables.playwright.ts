@@ -22,6 +22,119 @@ async function chooseCountry(page: Page, label: string, country: string) {
   await page.getByRole("option", { name: country, exact: true }).click()
 }
 
+test("digital drafts publish after their unused shipping table is withdrawn @merchant", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(90_000)
+  page.setDefaultTimeout(25_000)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  const coordinate = `30406:${pubkey}:conduit-shipping-policy`
+  const policy = {
+    version: 2,
+    title: "Shipping",
+    originCountry: "US",
+    currency: "SATS",
+    domestic: {
+      rules: [
+        { country: "US", bands: [{ maxWeightGrams: 1000, priceMinor: 500 }] },
+      ],
+    },
+    international: null,
+  }
+  const now = Math.floor(Date.now() / 1000)
+  const event = finalizeEvent(
+    {
+      kind: 30406,
+      created_at: now,
+      content: "Synthetic shipping",
+      tags: [
+        ["d", "conduit-shipping-policy"],
+        ["title", "Shipping"],
+        ["price", "500", "SATS"],
+        ["country", "US"],
+        ["service", "standard"],
+        ["conduit_shipping_table", "2", JSON.stringify(policy)],
+      ],
+    },
+    secretKey
+  )
+  await publishTestRelayEvents([event])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${merchantUrl}/products`)
+  await expect(page.locator('aside a[href="/shipping"]')).toHaveText("Shipping")
+  const add = page.getByRole("button", { name: "Add product" }).first()
+  if (testInfo.project.use.hasTouch) await add.tap()
+  else await add.click()
+  const dialog = page.getByRole("dialog", { name: "Add product" })
+  await expect(dialog).toBeVisible()
+  await expect(
+    dialog.getByLabel("Shipping pricing", { exact: true })
+  ).toContainText("Use my shipping table")
+  await dialog
+    .getByLabel("Title", { exact: true })
+    .fill("Synthetic digital listing")
+  await dialog.getByLabel("Price", { exact: true }).fill("1000")
+  await dialog.getByLabel("Fulfillment", { exact: true }).click()
+  await page.getByRole("option", { name: "Digital", exact: true }).click()
+  await dialog.getByRole("button", { name: "Add by URL" }).click()
+  await dialog
+    .getByLabel("Primary image URL")
+    .fill("https://media.conduit.market/synthetic-digital.png")
+  const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
+  for (const tag of ["digital", "shipping", "test"]) {
+    await tags.fill(tag)
+    await tags.press("Enter")
+  }
+  await publishTestRelayEvents([
+    finalizeEvent(
+      {
+        kind: 5,
+        created_at: now + 1,
+        content: "Synthetic withdrawal",
+        tags: [
+          ["a", coordinate],
+          ["e", event.id],
+          ["k", "30406"],
+        ],
+      },
+      secretKey
+    ),
+  ])
+  const publish = dialog.getByRole("button", {
+    name: "Publish product",
+    exact: true,
+  })
+  await expect(publish).toBeEnabled()
+  await publish.click()
+  await expect(dialog).not.toBeVisible()
+  await expect
+    .poll(
+      async () =>
+        (await readTestRelayEvents({ kinds: [30402], authors: [pubkey] }))
+          .length,
+      { timeout: 20_000 }
+    )
+    .toBe(1)
+  const products = await readTestRelayEvents({
+    kinds: [30402],
+    authors: [pubkey],
+  })
+  expect(products).toHaveLength(1)
+  expect(products[0]!.tags).toContainEqual(["type", "simple", "digital"])
+  expect(
+    products[0]!.tags.some((tag) =>
+      [
+        "shipping_option",
+        "weight",
+        "dim",
+        "conduit_shipping_adjustments",
+      ].includes(tag[0]!)
+    )
+  ).toBe(false)
+})
+
 for (const [viewportName, width, height] of [
   ["mobile", 375, 812],
   ["desktop", 1440, 1000],
