@@ -2,6 +2,7 @@ import { encodeProductNaddr } from "./protocol/product-reference"
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  parseAddressableCoordinate,
 } from "./protocol/event-market"
 import { normalizePubkey, pubkeyToNpub } from "./utils"
 import {
@@ -257,6 +258,7 @@ export function normalizeExactEventCatalogNaddr(value: string): string {
 
 export interface MarketEventCatalogUrlOptions {
   merchantPubkey?: string
+  occurrenceCoordinate?: string
 }
 
 /** Build a canonical Market event-catalog URL on a safe Conduit origin. */
@@ -285,6 +287,18 @@ export function buildMarketEventCatalogUrl(
       )
     }
     url.searchParams.set("merchant", pubkeyToNpub(merchantPubkey))
+  }
+  if (options.occurrenceCoordinate !== undefined) {
+    const occurrence = parseAddressableCoordinate(
+      options.occurrenceCoordinate,
+      [31922, 31923]
+    )
+    if (!occurrence) {
+      throw new Error(
+        "Event catalog link requires a valid event occurrence coordinate."
+      )
+    }
+    url.searchParams.set("occurrence", occurrence.coordinate)
   }
   return url.toString()
 }

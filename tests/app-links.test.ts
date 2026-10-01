@@ -197,6 +197,40 @@ describe("event market links", () => {
     }
   })
 
+  it("retains the selected date on hinted and hint-free event links", () => {
+    for (const kind of [31922, 31923]) {
+      const occurrenceCoordinate = `${kind}:${"1".repeat(64)}:selected-date`
+      for (const reference of [EVENT_NADDR, FUTURE_MARKET_NADDR]) {
+        for (const merchantPubkey of [undefined, MERCHANT_PUBKEY]) {
+          const url = new URL(
+            buildMarketEventCatalogUrl(
+              "https://shop.conduit.market",
+              reference,
+              {
+                merchantPubkey,
+                occurrenceCoordinate,
+              }
+            )
+          )
+          expect(url.searchParams.get("occurrence")).toBe(occurrenceCoordinate)
+          expect(url.searchParams.get("merchant")).toBe(
+            merchantPubkey ? MERCHANT_NPUB : null
+          )
+        }
+      }
+    }
+  })
+
+  it("rejects invalid selected occurrence coordinates", () => {
+    for (const occurrenceCoordinate of ["not-a-coordinate", EVENT_COORDINATE]) {
+      expect(() =>
+        buildMarketEventCatalogUrl("https://shop.conduit.market", EVENT_NADDR, {
+          occurrenceCoordinate,
+        })
+      ).toThrow("valid event occurrence coordinate")
+    }
+  })
+
   it("rejects attacker origins and non-exact naddr values", () => {
     expect(() =>
       buildMarketEventCatalogUrl("https://attacker.example", EVENT_NADDR)

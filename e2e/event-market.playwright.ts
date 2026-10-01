@@ -1220,6 +1220,69 @@ test("signed series dates open one market and keep separate buyer choices @marke
       request.matchedEventIds.includes(second.id)
     )
   ).toBe(true)
+  const selectedDateLabel = await page
+    .getByRole("combobox", { name: "Choose date" })
+    .textContent()
+  await page.evaluate(() => {
+    const target = window as typeof window & { __eventMarketSharedUrl?: string }
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (url: string) => {
+          target.__eventMarketSharedUrl = url
+        },
+      },
+    })
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async (data: ShareData) => {
+        target.__eventMarketSharedUrl = data.url
+      },
+    })
+  })
+  await page.getByRole("button", { name: "Share event Series Fair" }).click()
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window as typeof window & { __eventMarketSharedUrl?: string })
+            .__eventMarketSharedUrl
+        )
+      )
+    )
+    .toBe(true)
+  const sharedUrl = await page.evaluate(
+    () =>
+      (window as typeof window & { __eventMarketSharedUrl?: string })
+        .__eventMarketSharedUrl!
+  )
+  const qrUrl = await page
+    .getByRole("img", { name: "Series Fair event QR code" })
+    .locator("..")
+    .locator("p")
+    .textContent()
+  for (const destination of [sharedUrl, qrUrl!]) {
+    expect(
+      new URL(destination).searchParams.get("occurrence") ===
+        eventCoordinate(second)
+    ).toBe(true)
+    await page.goto(destination)
+    await expect(
+      page.getByRole("heading", { name: "Series soap" })
+    ).toBeVisible()
+    expect(
+      new URL(page.url()).searchParams.get("occurrence") ===
+        eventCoordinate(second)
+    ).toBe(true)
+    expect(
+      (await page
+        .getByRole("combobox", { name: "Choose date" })
+        .textContent()) === selectedDateLabel
+    ).toBe(true)
+    await expect(
+      page.getByRole("button", { name: "Add", exact: true })
+    ).toBeEnabled()
+  }
   await gotoAs(
     page,
     marketUrl,

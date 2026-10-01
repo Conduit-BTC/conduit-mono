@@ -283,11 +283,10 @@ export function FutureEventMarketPage({
     : null
   const shareUrl =
     naddr && typeof window !== "undefined"
-      ? buildMarketEventCatalogUrl(
-          window.location.origin,
-          naddr,
-          selectedMerchant ? { merchantPubkey: selectedMerchant } : undefined
-        )
+      ? buildMarketEventCatalogUrl(window.location.origin, naddr, {
+          merchantPubkey: selectedMerchant,
+          occurrenceCoordinate: selectedOccurrence,
+        })
       : undefined
   const qrUrl =
     shareUrl && new TextEncoder().encode(shareUrl).length <= 2_200
@@ -296,7 +295,10 @@ export function FutureEventMarketPage({
         ? buildMarketEventCatalogUrl(
             window.location.origin,
             encodeEventMarketNaddr(market.coordinate),
-            selectedMerchant ? { merchantPubkey: selectedMerchant } : undefined
+            {
+              merchantPubkey: selectedMerchant,
+              occurrenceCoordinate: selectedOccurrence,
+            }
           )
         : undefined
   const canPurchase =
