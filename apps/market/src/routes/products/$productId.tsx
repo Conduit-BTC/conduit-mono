@@ -30,6 +30,7 @@ import {
   ShareLinkButton,
 } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
+import { BrainstormGlobalScoreLink } from "../../components/BrainstormGlobalScoreLink"
 import { LivePresenceIndicator } from "../../components/LivePresenceIndicator"
 import {
   EventActorName,
@@ -729,6 +730,9 @@ function ProductPage() {
                       </div>
                     ) : null}
                   </div>
+                </div>
+                <div className="mt-3">
+                  <BrainstormGlobalScoreLink pubkey={product.pubkey} />
                 </div>
               </div>
 
