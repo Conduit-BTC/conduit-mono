@@ -13,7 +13,7 @@ import {
   EVENT_KINDS,
   publishWithPlannerProgressive,
   type AccountNetworkLocalStateRepository,
-  type ExactRelayWriteStatus,
+  type ExclusiveRelayPublishStatus,
 } from "@conduit/core"
 
 const FAST_RELAY = "wss://fast-progressive.fixture.conduit.market"
@@ -51,8 +51,8 @@ afterEach(() => {
 
 describe("progressive relay publishing", () => {
   it("resolves the first relay ACK while exact-target settlement continues", async () => {
-    const fast = deferred<ExactRelayWriteStatus>()
-    const slow = deferred<ExactRelayWriteStatus>()
+    const fast = deferred<ExclusiveRelayPublishStatus>()
+    const slow = deferred<ExclusiveRelayPublishStatus>()
     const event = giftWrapEvent()
     const signedBytes = JSON.stringify(event)
     const attempted: string[] = []
@@ -188,7 +188,7 @@ describe("progressive relay publishing", () => {
     const accountSecret = generateSecretKey()
     const accountPubkey = getPublicKey(accountSecret)
     const firstWriterStarted = deferred<void>()
-    const firstWrite = deferred<ExactRelayWriteStatus>()
+    const firstWrite = deferred<ExclusiveRelayPublishStatus>()
     let slowRelayExcluded = false
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => ({
@@ -255,7 +255,7 @@ describe("progressive relay publishing", () => {
   it("does not pass signer authorization to relays started after the first ACK", async () => {
     const accountSecret = generateSecretKey()
     const accountPubkey = getPublicKey(accountSecret)
-    const firstWrite = deferred<ExactRelayWriteStatus>()
+    const firstWrite = deferred<ExclusiveRelayPublishStatus>()
     const attempted: string[] = []
     let signerCalls = 0
     __setRelayPublishTestOverrides({

@@ -1,6 +1,6 @@
 import type {
   SignedPublicNostrEvent,
-  ExactRelayWriteStatus,
+  ExclusiveRelayPublishStatus,
 } from "@conduit/core"
 
 type FixturePublisher = (
@@ -34,13 +34,13 @@ let queue: Array<{
   relayUrl: string
   signedEvent: SignedPublicNostrEvent
   timeoutMs: number
-  resolve: (status: ExactRelayWriteStatus) => void
+  resolve: (status: ExclusiveRelayPublishStatus) => void
 }> = []
 export function fixtureWrite(input: {
   relayUrl: string
   signedEvent: SignedPublicNostrEvent
   timeoutMs: number
-}): Promise<ExactRelayWriteStatus> {
+}): Promise<ExclusiveRelayPublishStatus> {
   return new Promise((resolve) => {
     queue.push({ ...input, resolve })
     if (queue.length !== 1) return
