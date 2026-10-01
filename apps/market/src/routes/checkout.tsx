@@ -48,6 +48,7 @@ import {
   patchOrderLifecycle,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
+  checkoutAttributionTelemetryProperties,
   resolveWalletPaymentInstance,
   validateAddressConsistency,
   useAuth,
@@ -234,6 +235,7 @@ import {
 } from "../lib/checkout-payment-target"
 import type { CheckoutPaymentTarget } from "../lib/payment-rails"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
+import { checkoutReferralSessionFence } from "../lib/checkout-referral-session"
 import { useCheckoutIntentImport } from "../hooks/useCheckoutIntentImport"
 import {
   getCheckoutReferralClaim,
@@ -1401,18 +1403,28 @@ function CheckoutPage() {
       ? matchingMerchantPurchases[0]
       : undefined
   const selectedMerchant = selectedPurchase?.merchantPubkey
+  // Async work must keep its originating buyer frame, not adopt a newer session.
+  const getCheckoutReferralScope = useCallback(
+    () => checkoutReferralSessionFence.getScope(accountPubkey, authGeneration),
+    [accountPubkey, authGeneration]
+  )
   useEffect(() => {
-    if (!cart.hydrated) return
+    if (!cart.hydrated || authPending) return
     getCheckoutReferralClaim(
       selectedMerchant,
       selectedPurchase?.id,
-      selectedPurchase?.items ?? []
+      selectedPurchase?.items ?? [],
+      getCheckoutReferralScope()
     )
   }, [
     cart.hydrated,
+    authPending,
     selectedMerchant,
     selectedPurchase?.id,
     selectedPurchase?.items,
+    accountPubkey,
+    authGeneration,
+    getCheckoutReferralScope,
   ])
   const checkoutRecoveryScope = `${authGeneration}:${search.merchant ?? "none"}:${search.purchase ?? "none"}:${selectedPurchase?.id ?? "none"}:${cart.mutationSequence}`
   const [checkoutRecoveryResolution, setCheckoutRecoveryResolution] = useState<{
@@ -2066,6 +2078,14 @@ function CheckoutPage() {
           input.checkoutMode,
           input.amountSats
         ),
+        ...checkoutAttributionTelemetryProperties(
+          getCheckoutReferralClaim(
+            selectedMerchant,
+            selectedPurchase?.id,
+            checkoutItems,
+            getCheckoutReferralScope()
+          )
+        ),
         rail: input.rail ?? "none",
         status: input.status,
         step: input.stepName,
@@ -2091,6 +2111,14 @@ function CheckoutPage() {
           input.checkoutMode,
           input.amountSats
         ),
+        ...checkoutAttributionTelemetryProperties(
+          getCheckoutReferralClaim(
+            selectedMerchant,
+            selectedPurchase?.id,
+            checkoutItems,
+            getCheckoutReferralScope()
+          )
+        ),
         rail: input.rail ?? "none",
         status: input.status,
       },
@@ -2113,6 +2141,14 @@ function CheckoutPage() {
           input.amountSats
         ),
         network: "browser",
+        ...checkoutAttributionTelemetryProperties(
+          getCheckoutReferralClaim(
+            selectedMerchant,
+            selectedPurchase?.id,
+            checkoutItems,
+            getCheckoutReferralScope()
+          )
+        ),
         rail: input.rail ?? "none",
         status: input.status,
       },
@@ -2644,7 +2680,8 @@ function CheckoutPage() {
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,
-          checkoutItems
+          checkoutItems,
+          getCheckoutReferralScope()
         ),
         createdAt: orderCreatedAt,
         buyerPubkey,
@@ -2695,7 +2732,8 @@ function CheckoutPage() {
       recordCheckoutReferralOrderSubmitted(
         selectedMerchant,
         selectedPurchase?.id,
-        checkoutItems
+        checkoutItems,
+        getCheckoutReferralScope()
       )
       recordCheckoutStepResult({
         checkoutMode: "order_first",
@@ -3273,7 +3311,8 @@ function CheckoutPage() {
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,
-          checkoutItems
+          checkoutItems,
+          getCheckoutReferralScope()
         ),
         createdAt: orderCreatedAt,
         buyerPubkey,
@@ -3342,7 +3381,8 @@ function CheckoutPage() {
       recordCheckoutReferralOrderSubmitted(
         selectedMerchant,
         selectedPurchase?.id,
-        checkoutItems
+        checkoutItems,
+        getCheckoutReferralScope()
       )
       if (!shouldContinueBuyerSession()) {
         throw new Error(

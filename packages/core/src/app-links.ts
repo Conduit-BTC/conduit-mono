@@ -1,3 +1,4 @@
+import { normalizeCheckoutSourceDomain } from "./checkout-source-domain"
 import { encodeProductNaddr } from "./protocol/product-reference"
 import {
   decodeEventMarketReference,
@@ -208,12 +209,18 @@ export function buildMarketCheckoutBuyUrl(
   marketOrigin: string,
   productNaddr: string,
   quantity = 1,
-  partner?: string
+  partner?: string,
+  source?: string
 ): string {
   const url = checkoutLinkBase(marketOrigin, partner)
   const hash = new URLSearchParams({ buy: encodeProductNaddr(productNaddr) })
   if (quantity !== 1) hash.set("qty", String(quantity))
   if (partner) hash.set("partner", partner)
+  if (source !== undefined) {
+    const domain = normalizeCheckoutSourceDomain(source)
+    if (!domain) throw new Error("Checkout source requires a public domain.")
+    hash.set("source", domain)
+  }
   if (parseCheckoutIntentFragment(hash.toString()).status !== "valid")
     throw new Error("Checkout link has invalid items or quantity.")
   url.hash = hash.toString()
@@ -224,7 +231,8 @@ export function buildMarketCheckoutBuyUrl(
 export function buildMarketCheckoutCartUrl(
   marketOrigin: string,
   items: readonly MarketCheckoutLinkItem[],
-  partner?: string
+  partner?: string,
+  source?: string
 ): string {
   const url = checkoutLinkBase(marketOrigin, partner)
   const hash = new URLSearchParams({
@@ -237,6 +245,11 @@ export function buildMarketCheckoutCartUrl(
     }),
   })
   if (partner) hash.set("partner", partner)
+  if (source !== undefined) {
+    const domain = normalizeCheckoutSourceDomain(source)
+    if (!domain) throw new Error("Checkout source requires a public domain.")
+    hash.set("source", domain)
+  }
   if (parseCheckoutIntentFragment(hash.toString()).status !== "valid")
     throw new Error("Checkout link has invalid items or quantity.")
   url.hash = hash.toString()

@@ -1,10 +1,14 @@
 /**
- * Dependency-free browser telemetry contract shared by the in-app sanitizer
+ * Browser telemetry contract shared by the in-app sanitizer
  * (`packages/core/src/telemetry.ts`) and the PostHog proxy worker
- * (`apps/posthog-proxy`). Keep this module import-free so edge bundles can
- * consume it without pulling app or protocol code.
+ * (`apps/posthog-proxy`). Imports must stay pure so edge bundles do not pull app or protocol code.
  */
-import { activeCheckoutPartnerCodes } from "./checkout-partner-registry"
+import { hasValidCheckoutAttributionTelemetry } from "./checkout-attribution"
+import { normalizeCheckoutSourceDomain } from "./checkout-source-domain"
+import {
+  resolveCheckoutPartnerCode,
+  resolveCheckoutPartnerDomain,
+} from "./checkout-partner-registry"
 
 export const browserTelemetryEventNames = [
   "app_load_result",
@@ -80,6 +84,8 @@ export const browserTelemetryPropertyNames = [
   "block_reason",
   "handoff_stage",
   "partner_code",
+  "source_domain",
+  "source_method",
   "page_url",
   "page_path",
 ] as const
@@ -101,6 +107,11 @@ const browserTelemetryBasePropertyNames = [
 ] as const
 const countAndTimePropertyNames = ["count", "time_bucket"] as const
 const timePropertyNames = ["time_bucket"] as const
+const checkoutSourcePropertyNames = [
+  "source_domain",
+  "source_method",
+  "partner_code",
+] as const
 const sharedTelemetryApps = ["market", "merchant"] as const
 const marketTelemetryApps = ["market"] as const
 const merchantTelemetryApps = ["merchant"] as const
@@ -164,7 +175,11 @@ export const browserTelemetryEventPropertyContracts = {
       "amount_bucket",
       "product_type",
     ],
-    optional: ["latency_bucket", ...timePropertyNames],
+    optional: [
+      "latency_bucket",
+      ...timePropertyNames,
+      ...checkoutSourcePropertyNames,
+    ],
   },
   checkout_success: {
     apps: marketTelemetryApps,
@@ -177,7 +192,7 @@ export const browserTelemetryEventPropertyContracts = {
       "amount_bucket",
       "product_type",
     ],
-    optional: timePropertyNames,
+    optional: [...timePropertyNames, ...checkoutSourcePropertyNames],
   },
   checkout_result: {
     apps: marketTelemetryApps,
@@ -191,12 +206,12 @@ export const browserTelemetryEventPropertyContracts = {
       "amount_bucket",
       "product_type",
     ],
-    optional: timePropertyNames,
+    optional: [...timePropertyNames, ...checkoutSourcePropertyNames],
   },
   checkout_handoff_result: {
     apps: marketTelemetryApps,
     required: ["surface", "handoff_stage", "mode"],
-    optional: ["partner_code"],
+    optional: checkoutSourcePropertyNames,
   },
   relay_connect_result: {
     apps: sharedTelemetryApps,
@@ -300,9 +315,12 @@ export function hasRequiredBrowserTelemetryEventProperties(
   const contract = getBrowserTelemetryEventPropertyContract(eventName)
   if (!contract) return false
 
-  return [...browserTelemetryBasePropertyNames, ...contract.required].every(
-    (propertyName) =>
-      Object.prototype.hasOwnProperty.call(properties, propertyName)
+  return (
+    hasValidCheckoutAttributionTelemetry(properties) &&
+    [...browserTelemetryBasePropertyNames, ...contract.required].every(
+      (propertyName) =>
+        Object.prototype.hasOwnProperty.call(properties, propertyName)
+    )
   )
 }
 
@@ -467,7 +485,9 @@ const browserTelemetryLabelValues = {
     "rejected_link",
     "order_submitted",
   ],
-  partner_code: activeCheckoutPartnerCodes(),
+  partner_code: [], // Exact active registry membership is checked below.
+  source_domain: [], // Explicitly validated below; never free text.
+  source_method: ["claimed", "referrer", "partner", "none"],
 } as const satisfies Record<
   BrowserTelemetryLabelPropertyName,
   readonly string[]
@@ -483,6 +503,15 @@ export function isAllowedBrowserTelemetryLabelValue(
   value: string,
   eventName?: string
 ): boolean {
+  if (propertyName === "partner_code")
+    return resolveCheckoutPartnerCode(value) === value
+  if (propertyName === "source_domain") {
+    return (
+      value === "other" ||
+      (normalizeCheckoutSourceDomain(value) === value &&
+        resolveCheckoutPartnerDomain(value) !== null)
+    )
+  }
   const allowedValues = (
     browserTelemetryLabelValues as Partial<Record<string, readonly string[]>>
   )[propertyName]
@@ -499,5 +528,18 @@ export function isAllowedBrowserTelemetryLabelValue(
     propertyName !== "event_name" ||
     eventName === undefined ||
     value === eventName
+  )
+}
+
+/** Attribution counters carry no browser session/pageview or event linkage. */
+export function isCheckoutAttributionTelemetryEvent(
+  eventName: string,
+  properties: Readonly<Record<string, unknown>>
+): boolean {
+  return (
+    eventName === "checkout_handoff_result" ||
+    properties.source_method !== undefined ||
+    properties.source_domain !== undefined ||
+    properties.partner_code !== undefined
   )
 }
