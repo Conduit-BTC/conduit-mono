@@ -120,7 +120,7 @@ async function fixture() {
   __setCommerceTestOverrides({
     now: () => nowMs,
     getRelayLists: async () => new Map(),
-    fetchEventsFanout: async () => {
+    fetchPublicEvents: async () => {
       relayReads++
       return []
     },

@@ -1,4 +1,4 @@
-import type { NDKFilter, NDKKind } from "@nostr-dev-kit/ndk"
+import type { Filter } from "nostr-tools"
 import { db, type CachedEventMarketRosterEvidence } from "../db"
 import {
   orderEventMarketPickupFulfillmentSchema,
@@ -24,7 +24,10 @@ import {
   type EventMarketAuthorizationResolution,
 } from "./event-market-authorization"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanoutDetailed, type FetchEventsFanoutOptions } from "./ndk"
+import {
+  fetchSignedEventsFanoutDetailed,
+  type PublicRelayReadOptions,
+} from "./relay-reader"
 import {
   compareReplaceableEventFrontiers,
   isValidSignedPublicNostrEvent,
@@ -138,8 +141,8 @@ interface SignedFanoutResult {
 interface RosterReadDependencies {
   plan: typeof getEventMarketReadPlan
   fetch: (
-    filter: NDKFilter,
-    options: FetchEventsFanoutOptions
+    filter: Filter,
+    options: PublicRelayReadOptions
   ) => Promise<SignedFanoutResult>
   load: (coordinate: string) => Promise<SignedPublicNostrEvent[]>
   retain: (
@@ -151,14 +154,12 @@ interface RosterReadDependencies {
 const MAX_RETAINED_MARKET_RECORDS = 2_048
 
 async function fetchSigned(
-  filter: NDKFilter,
-  options: FetchEventsFanoutOptions
+  filter: Filter,
+  options: PublicRelayReadOptions
 ): Promise<SignedFanoutResult> {
-  const result = await fetchEventsFanoutDetailed(filter, options)
+  const result = await fetchSignedEventsFanoutDetailed(filter, options)
   return {
-    events: result.events.map(
-      (event) => event.rawEvent() as SignedPublicNostrEvent
-    ),
+    events: result.events.map((event) => event as SignedPublicNostrEvent),
     relays: result.relays,
   }
 }
@@ -218,7 +219,7 @@ function fanoutOptions(
     shouldContinue?: () => boolean
     signal?: AbortSignal
   }
-): FetchEventsFanoutOptions {
+): PublicRelayReadOptions {
   return {
     relayUrls: plan.candidateRelayUrls,
     maxRelayAttempts: plan.maxRelayAttempts,
@@ -397,7 +398,7 @@ export async function readEventMarketRoster(
     }
   }
   const options = fanoutOptions(plan, input)
-  const safeFetch = async (filter: NDKFilter): Promise<SignedFanoutResult> => {
+  const safeFetch = async (filter: Filter): Promise<SignedFanoutResult> => {
     try {
       return await dependencies.fetch(filter, options)
     } catch (error) {
@@ -408,7 +409,7 @@ export async function readEventMarketRoster(
   }
   const [rosterRead, coordinateDeletions] = await Promise.all([
     safeFetch({
-      kinds: [EVENT_KINDS.EVENT_MARKET as NDKKind],
+      kinds: [EVENT_KINDS.EVENT_MARKET],
       authors: [decoded.authorPubkey],
       "#d": [decoded.dTag],
       limit: 64,
@@ -528,7 +529,7 @@ export async function readEventMarketRoster(
   )
   const [calendarRead, calendarCoordinateDeletions] = await Promise.all([
     safeFetch({
-      kinds: [calendarCoordinate.kind as NDKKind],
+      kinds: [calendarCoordinate.kind],
       authors: [decoded.authorPubkey],
       "#d": [calendarCoordinate.dTag],
       limit: 64,
@@ -736,7 +737,7 @@ export async function readEventMarketAuthorization(
     }
   }
   const options = fanoutOptions(plan, input)
-  const safeFetch = async (filter: NDKFilter): Promise<SignedFanoutResult> => {
+  const safeFetch = async (filter: Filter): Promise<SignedFanoutResult> => {
     try {
       return await dependencies.fetch(filter, options)
     } catch (error) {
@@ -747,7 +748,7 @@ export async function readEventMarketAuthorization(
   }
   const reads: SignedFanoutResult[] = await Promise.all([
     safeFetch({
-      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH as NDKKind],
+      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH],
       authors: [market.authorPubkey],
       "#a": [market.coordinate],
       "#p": [merchantPubkey],
@@ -793,7 +794,7 @@ export async function readEventMarketAuthorization(
     if (missing.length === 0) break
     missing.forEach((id) => requested.add(id))
     const read = await safeFetch({
-      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH as NDKKind],
+      kinds: [EVENT_KINDS.EVENT_MARKET_AUTH],
       authors: [market.authorPubkey],
       ids: missing,
       limit: 32,
@@ -992,7 +993,7 @@ async function readEventMarketProductImpl(
     }
   }
   const options = fanoutOptions(plan, input)
-  const safeFetch = async (filter: NDKFilter): Promise<SignedFanoutResult> => {
+  const safeFetch = async (filter: Filter): Promise<SignedFanoutResult> => {
     try {
       return await dependencies.fetch(filter, options)
     } catch (error) {

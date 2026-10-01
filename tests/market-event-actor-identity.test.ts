@@ -60,7 +60,7 @@ describe("Market event actor identity", () => {
       getCachedProducts: async () => [],
       getCachedProfiles: async (keys) => keys.map(() => undefined),
       putCachedProfiles: async () => {},
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         const authors = filter.authors ?? []
         authorFilters.push([...authors])
         if (authors.some((key) => !/^[0-9a-f]{64}$/.test(key))) return []

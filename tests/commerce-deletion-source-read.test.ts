@@ -13,7 +13,7 @@ import {
   type CachedProductTombstone,
   type CommerceProductRecord,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 
 const FIXED_NOW = 1_700_000_000_000
 const AUTHOR_COUNT = 17
@@ -98,7 +98,7 @@ describe("product deletion reads retain source-relay provenance", () => {
     const snapshots: CommerceProductRecord[][] = []
 
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
       loadCached: async (pubkey) => ({
         pubkey,
         readRelayUrls: [],
@@ -139,13 +139,13 @@ describe("product deletion reads retain source-relay provenance", () => {
           ]
         }
       },
-      fetchEventsFanoutProgressive: async (filter, options, onProgress) => {
+      fetchPublicEventsProgressive: async (filter, options, onProgress) => {
         const events = products.filter(
           (product) =>
             !filter.authors || filter.authors.includes(product.pubkey)
         )
         __setCommerceTestOverrides({
-          fetchEventsFanout: async (deletionFilter, deletionOptions) => {
+          fetchPublicEvents: async (deletionFilter, deletionOptions) => {
             if (!deletionFilter.kinds?.includes(EVENT_KINDS.DELETION)) {
               return []
             }

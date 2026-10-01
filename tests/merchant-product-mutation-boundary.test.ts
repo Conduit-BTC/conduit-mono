@@ -36,7 +36,7 @@ import {
   __resetEventMarketTestOverrides,
   __setEventMarketTestOverrides,
 } from "../packages/core/src/protocol/event-market"
-import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
+import { __resetPublicReaderTestState } from "../packages/core/src/protocol/relay-reader"
 import {
   applyProductFulfillmentIntentForPublication,
   getProductPreservedFulfillmentFields,
@@ -263,7 +263,7 @@ function installEventPickupReadHarness(
           },
         ])
       ),
-    fetchEventsFanoutDetailed: async (filter, fetchOptions) => {
+    fetchSignedEventsFanoutDetailed: async (filter, fetchOptions) => {
       const tagFilter = filter as NDKFilter & {
         "#a"?: string[]
         "#d"?: string[]
@@ -430,7 +430,7 @@ afterEach(() => {
   __resetRelayPublishTestOverrides()
   __resetEventMarketTestOverrides()
   __resetShippingTestOverrides()
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
 })
 
 describe("merchant-owned product mutation boundary", () => {
@@ -439,7 +439,7 @@ describe("merchant-owned product mutation boundary", () => {
       it(`signs only the merchant stock edit at ${now - START}ms with ${networkState} organizer evidence`, async () => {
         let graphReads = 0
         __setEventMarketTestOverrides({
-          fetchEventsFanoutDetailed: async () => {
+          fetchSignedEventsFanoutDetailed: async () => {
             graphReads += 1
             if (networkState === "unavailable")
               throw new Error("Organizer unavailable")
@@ -672,7 +672,7 @@ describe("merchant-owned product mutation boundary", () => {
             },
           ])
         ),
-      fetchEventsFanoutDetailed: async (filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (filter, options) => ({
         events: [],
         relays: (options?.relayUrls ?? []).map((relayUrl) => ({
           relayUrl,

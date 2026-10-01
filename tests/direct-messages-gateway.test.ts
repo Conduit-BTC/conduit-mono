@@ -176,7 +176,7 @@ describe("general direct-message gateway", () => {
   it("queries incoming and outgoing kind-4 filters", async () => {
     const legacyFilters: Array<Record<string, unknown>> = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.DM_LEGACY)) {
           legacyFilters.push(filter as Record<string, unknown>)
         }
@@ -222,7 +222,7 @@ describe("general direct-message gateway", () => {
           decrypt: async (_user: unknown, ciphertext: string) =>
             `plain:${ciphertext}`,
         } as never),
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
           return [giftWrapEvent("wrap-current")] as never
         }
@@ -290,7 +290,7 @@ describe("general direct-message gateway", () => {
             return "legacy readable"
           },
         } as never),
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
           return [giftWrapEvent("wrap-current")] as never
         }
@@ -357,7 +357,7 @@ describe("general direct-message gateway", () => {
     }
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([
               giftWrapEvent("wrap-a"),
@@ -396,7 +396,7 @@ describe("general direct-message gateway", () => {
       },
     ]
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([
               giftWrapEvent("wrap-order-companion"),
@@ -497,7 +497,7 @@ describe("general direct-message gateway", () => {
   it("reconciles a pending companion when its authoritative order arrives later", async () => {
     let unwrapCalls = 0
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([giftWrapEvent("wrap-late-companion")] as never)
           : [],
@@ -622,7 +622,7 @@ describe("general direct-message gateway", () => {
         rawContent: "{}",
       },
     ]
-    __setCommerceTestOverrides({ fetchEventsFanout: async () => [] })
+    __setCommerceTestOverrides({ fetchPublicEvents: async () => [] })
 
     const result = await getDirectMessageConversationList({
       principalPubkey: BUYER,
@@ -650,7 +650,7 @@ describe("general direct-message gateway", () => {
     expect(legacyEnvelope.length).toBeGreaterThan(140)
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([giftWrapEvent("wrap-legacy-envelope")] as never)
           : [],
@@ -674,7 +674,7 @@ describe("general direct-message gateway", () => {
   it("unwraps and routes a mixed inbox once across concurrent consumers", async () => {
     const unwrapCalls: Record<string, number> = {}
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([giftWrapEvent("wrap-dm"), giftWrapEvent("wrap-order")] as never)
           : [],
@@ -708,7 +708,7 @@ describe("general direct-message gateway", () => {
 
   it("surfaces decrypt failures in meta without leaking content", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([giftWrapEvent("wrap-ok"), giftWrapEvent("wrap-bad")] as never)
           : [],
@@ -740,7 +740,7 @@ describe("general direct-message gateway", () => {
   it("keeps a complete compatibility read healthy without a declaration", async () => {
     __setCommerceTestOverrides({
       resolveInboxRelayUrls: async () => [],
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const result = await getDirectMessageConversationList({
@@ -762,7 +762,7 @@ describe("general direct-message gateway", () => {
     let badResolves = false
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([giftWrapEvent("wrap-ok"), giftWrapEvent("wrap-bad")] as never)
           : [],
@@ -812,7 +812,7 @@ describe("general direct-message gateway", () => {
     let unwrapCalls = 0
     let cacheAttempts = 0
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([giftWrapEvent("wrap-cache-retry")] as never)
           : [],
@@ -851,7 +851,7 @@ describe("general direct-message gateway", () => {
     const otherBuyer = "other-buyer"
     let unwrapCalls = 0
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) return []
         const recipient = filter["#p"]?.[0] ?? BUYER
         return [giftWrapEvent("shared-wrap-id", recipient)] as never
@@ -885,7 +885,7 @@ describe("general direct-message gateway", () => {
     let giftWrapReadRelays: string[] | undefined
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS)) {
           return [
             {
@@ -921,7 +921,7 @@ describe("general direct-message gateway", () => {
 
   it("returns a single counterparty thread", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([giftWrapEvent("wrap-a")] as never)
           : [],
@@ -977,7 +977,7 @@ describe("general direct-message gateway", () => {
         read: 0,
       },
     ]
-    __setCommerceTestOverrides({ fetchEventsFanout: async () => [] })
+    __setCommerceTestOverrides({ fetchPublicEvents: async () => [] })
 
     const before = await getCachedDirectMessageConversationList({
       principalPubkey: BUYER,

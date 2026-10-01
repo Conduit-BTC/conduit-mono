@@ -164,7 +164,7 @@ async function fixture(scenario: Scenario, deletionTarget = scenario.target) {
   __setCommerceTestOverrides({
     now: () => nowMs,
     getRelayLists: async () => new Map(),
-    fetchEventsFanout: async (filter) => {
+    fetchPublicEvents: async (filter) => {
       relayReads++
       return listings
         .filter(

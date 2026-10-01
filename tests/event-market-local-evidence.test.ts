@@ -691,7 +691,7 @@ describe("local event market evidence observer", () => {
             },
           ],
         ]),
-      fetchEventsFanoutDetailed: async () => ({
+      fetchSignedEventsFanoutDetailed: async () => ({
         events: liveEvents.map((event) => new NDKEvent(undefined, event)),
         relays: [
           {
@@ -748,7 +748,7 @@ describe("local event market evidence observer", () => {
             },
           ],
         ]),
-      fetchEventsFanoutDetailed: async () => ({
+      fetchSignedEventsFanoutDetailed: async () => ({
         events: liveEvents.map((event) => new NDKEvent(undefined, event)),
         relays: [
           {
@@ -843,7 +843,7 @@ describe("local event market evidence observer", () => {
             },
           ],
         ]),
-      fetchEventsFanoutDetailed: async () => ({
+      fetchSignedEventsFanoutDetailed: async () => ({
         events: graph.map(
           (event) =>
             new NDKEvent(undefined, event.kind === 30405 ? newer : event)
@@ -944,7 +944,7 @@ describe("local event market evidence observer", () => {
             },
           ],
         ]),
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: [],
         relays: (options.relayUrls ?? []).map((relayUrl) => ({
           relayUrl,

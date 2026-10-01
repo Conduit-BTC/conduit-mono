@@ -9,6 +9,8 @@ import {
   getBuyerConversationList,
   getDirectMessageConversationList,
   getMerchantConversationList,
+  getEventMarketPrivateMessageList,
+  fetchSignedEventsFanoutDetailed,
   type CachedOrderMessage,
 } from "@conduit/core"
 import {
@@ -76,6 +78,7 @@ function orderRumor(recipient: string) {
   }
 }
 
+let paginatedWraps: SignedNostrEvent[] | null = null
 let signCalls = 0
 
 function signer(privateKey: Uint8Array): NostrEventSigner {
@@ -130,7 +133,25 @@ class CommerceProtectedRelaySocket {
       return
     }
     if (frame[0] !== "REQ") return
-    const filter = frame[2] as { "#p"?: string[] }
+    const filter = frame[2] as {
+      "#p"?: string[]
+      kinds?: number[]
+      limit?: number
+      since?: number
+      until?: number
+    }
+    if (paginatedWraps && filter.kinds?.includes(1059)) {
+      for (const event of paginatedWraps
+        .filter(
+          (event) =>
+            (filter.since === undefined || event.created_at >= filter.since) &&
+            (filter.until === undefined || event.created_at <= filter.until)
+        )
+        .slice(0, filter.limit))
+        this.relay(["EVENT", frame[1], event])
+      this.relay(["EOSE", frame[1]])
+      return
+    }
     const recipient = filter["#p"]?.[0]
     const wrap = recipient ? wraps.get(recipient) : undefined
     if (wrap) this.relay(["EVENT", frame[1], wrap])
@@ -224,6 +245,7 @@ function legacyDirectMessage() {
 const originalWebSocket = globalThis.WebSocket
 
 beforeEach(() => {
+  paginatedWraps = null
   rejectAuthentication = false
   challengeAuthentication = true
   signCalls = 0
@@ -485,7 +507,7 @@ describe("Market and Merchant protected inbox integration", () => {
           },
         }) as never,
       readProtectedInbox: async () => emptyProtectedRead(),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(4) ? ([legacyDirectMessage()] as never) : [],
       getCachedOrderMessages: async () => [],
       putCachedOrderMessages: async () => undefined,
@@ -520,7 +542,7 @@ describe("Market and Merchant protected inbox integration", () => {
       getAccountSigner: () =>
         ({ decryptLegacy: async () => "legacy plaintext" }) as never,
       readProtectedInbox: async () => emptyProtectedRead(),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(4) ? ([legacyDirectMessage()] as never) : [],
       getCachedOrderMessages: async () => [],
       putCachedOrderMessages: async () => undefined,
@@ -588,4 +610,74 @@ describe("Market and Merchant protected inbox integration", () => {
 
     await expect(pending).rejects.toThrow("authority changed")
   })
+})
+
+it("reads the paginated strict Event Market inbox through production protected transport", async () => {
+  paginatedWraps = Array.from({ length: 401 }, (_, index) =>
+    finalizeEvent(
+      {
+        kind: 1059,
+        created_at: 1700000500 - index,
+        tags: [["p", BUYER]],
+        content: `fixture-${index}`,
+      },
+      WRAP_KEY
+    )
+  )
+  const unwrapped = new Set<string>()
+  __setCommerceTestOverrides({
+    getAccountSigner: () => plainTestSigner({} as never),
+    resolveInboxRelayUrls: async () => [RELAY_URL],
+    giftUnwrap: async (event) => {
+      unwrapped.add(event.id)
+      return {
+        kind: 14,
+        pubkey: MERCHANT,
+        tags: [["p", BUYER]],
+        content: "",
+        created_at: 1700000500,
+      } as never
+    },
+  })
+  installProtectedReadSigner(signer(BUYER_KEY), BUYER, () => true)
+  const result = await getEventMarketPrivateMessageList(BUYER)
+  expect(result.inbox.coverage).toBe("partial")
+  expect(unwrapped.size).toBe(401)
+  const requests = sockets
+    .flatMap((socket) => socket.sent)
+    .filter((frame) => frame[0] === "REQ")
+  const filters = requests.map(
+    (frame) =>
+      frame[2] as {
+        kinds: number[]
+        "#p": string[]
+        since?: number
+        until?: number
+        limit: number
+      }
+  )
+  expect(filters).toHaveLength(3)
+  expect(
+    filters.map((filter) => [filter.since, filter.until, filter.limit])
+  ).toEqual([
+    [undefined, undefined, 400],
+    [1700000101, 1700000101, 512],
+    [undefined, 1700000100, 400],
+  ])
+  expect(
+    filters.every(
+      (filter) => filter.kinds[0] === 1059 && filter["#p"][0] === BUYER
+    )
+  ).toBe(true)
+  expect(
+    sockets
+      .flatMap((socket) => socket.sent)
+      .some((frame) => frame[0] === "AUTH")
+  ).toBe(true)
+  await expect(
+    fetchSignedEventsFanoutDetailed(
+      { kinds: [1059] },
+      { relayUrls: [RELAY_URL] }
+    )
+  ).rejects.toThrow("protected inbox")
 })

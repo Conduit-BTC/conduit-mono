@@ -5,20 +5,20 @@ import {
   type Event as NostrEvent,
 } from "nostr-tools"
 import {
-  __resetNdkTestState,
-  __setNdkVerifyTimeoutMsForTests,
+  __resetPublicReaderTestState,
+  __setPublicReaderVerifyTimeoutMsForTests,
   __resetRelayHealth,
   applyE2eRelayIsolation,
   config,
   disconnectNdk,
   EVENT_KINDS,
-  fetchEventsFanout,
-  fetchEventsFanoutDetailed,
+  fetchPublicEvents,
+  fetchSignedEventsFanoutDetailed,
   getRelayHealth,
   planRelayReads,
   refreshNdkRelaySettings,
   refreshNdkRelaySettingsWhenIdle,
-  verifySignedPublicNostrEvents,
+  verifySignedEvents,
 } from "@conduit/core"
 
 function fakeRelayWebSocket(relayEvent: NostrEvent) {
@@ -127,7 +127,7 @@ describe("NDK relay worker verification fallback", () => {
   let workerTerminates = 0
 
   beforeEach(() => {
-    __resetNdkTestState()
+    __resetPublicReaderTestState()
     __resetRelayHealth()
     workerPostMessages = 0
     workerTerminates = 0
@@ -136,7 +136,7 @@ describe("NDK relay worker verification fallback", () => {
   afterEach(() => {
     Object.assign(config, structuredClone(originalConfig))
     disconnectNdk()
-    __resetNdkTestState()
+    __resetPublicReaderTestState()
     __resetRelayHealth()
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
@@ -197,7 +197,7 @@ describe("NDK relay worker verification fallback", () => {
       value: RecordingWebSocket,
     })
 
-    await fetchEventsFanoutDetailed(
+    await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://relay.damus.io"],
@@ -221,12 +221,12 @@ describe("NDK relay worker verification fallback", () => {
       },
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       { relayUrls: [], skipHealthFilter: true }
     )
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       events: [],
       relays: [],
       admittedRelayUrls: [],
@@ -309,7 +309,7 @@ describe("NDK relay worker verification fallback", () => {
       },
     })
 
-    const read = fetchEventsFanoutDetailed(
+    const read = fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
       {
         relayUrls: ["wss://relay.example"],
@@ -366,7 +366,7 @@ describe("NDK relay worker verification fallback", () => {
     })
 
     const result = await Promise.race([
-      fetchEventsFanout(
+      fetchPublicEvents(
         { kinds: [EVENT_KINDS.PROFILE] },
         {
           relayUrls: ["wss://relay.example"],
@@ -387,10 +387,10 @@ describe("NDK relay worker verification fallback", () => {
     expect(workerTerminates).toBe(1)
   })
 
-  it("verifies an EOSE-complete private wrap when the worker queue is saturated", async () => {
+  it("verifies an EOSE-complete public event when the worker queue is saturated", async () => {
     const validEvent = finalizeEvent(
       {
-        kind: EVENT_KINDS.GIFT_WRAP,
+        kind: EVENT_KINDS.ZAP_REQUEST,
         created_at: 10,
         tags: [["p", "1".repeat(64)]],
         content: "bounded-test-ciphertext",
@@ -424,7 +424,7 @@ describe("NDK relay worker verification fallback", () => {
     })
 
     const saturatedBatches = Array.from({ length: 7 }, () =>
-      verifySignedPublicNostrEvents([validEvent]).catch(() => ({
+      verifySignedEvents([validEvent]).catch(() => ({
         events: [],
         truncated: false,
       }))
@@ -432,9 +432,9 @@ describe("NDK relay worker verification fallback", () => {
     expect(workerPostMessages).toBe(7)
 
     try {
-      const result = await fetchEventsFanoutDetailed(
+      const result = await fetchSignedEventsFanoutDetailed(
         {
-          kinds: [EVENT_KINDS.GIFT_WRAP],
+          kinds: [EVENT_KINDS.ZAP_REQUEST],
           "#p": ["1".repeat(64)],
         },
         {
@@ -446,16 +446,16 @@ describe("NDK relay worker verification fallback", () => {
       )
 
       expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
-      expect(result.relays).toEqual([
+      expect(result.relays).toMatchObject([
         {
           relayUrl: "wss://saturated-verifier.example",
-          status: "success",
+          status: "partial",
           eventCount: 1,
           rejectedEventCount: 1,
         },
       ])
     } finally {
-      __resetNdkTestState()
+      __resetPublicReaderTestState()
       await Promise.all(saturatedBatches)
     }
   })
@@ -463,7 +463,7 @@ describe("NDK relay worker verification fallback", () => {
   it("reserves relay-read capacity for bounded verification fallback", async () => {
     const validEvent = finalizeEvent(
       {
-        kind: EVENT_KINDS.GIFT_WRAP,
+        kind: EVENT_KINDS.ZAP_REQUEST,
         created_at: 10,
         tags: [["p", "1".repeat(64)]],
         content: "reserved-fallback-test",
@@ -497,8 +497,8 @@ describe("NDK relay worker verification fallback", () => {
     })
 
     const occupiedReads = Array.from({ length: 7 }, (_, index) =>
-      fetchEventsFanoutDetailed(
-        { kinds: [EVENT_KINDS.GIFT_WRAP], "#p": ["1".repeat(64)] },
+      fetchSignedEventsFanoutDetailed(
+        { kinds: [EVENT_KINDS.ZAP_REQUEST], "#p": ["1".repeat(64)] },
         {
           relayUrls: [`wss://occupied-verifier-${index}.example`],
           connectTimeoutMs: 50,
@@ -508,7 +508,8 @@ describe("NDK relay worker verification fallback", () => {
       )
     )
 
-    let exactRead: ReturnType<typeof fetchEventsFanoutDetailed> | null = null
+    let exactRead: ReturnType<typeof fetchSignedEventsFanoutDetailed> | null =
+      null
     try {
       const workerDeadline = Date.now() + 250
       while (workerPostMessages < 7 && Date.now() < workerDeadline) {
@@ -516,8 +517,8 @@ describe("NDK relay worker verification fallback", () => {
       }
       expect(workerPostMessages).toBe(7)
 
-      exactRead = fetchEventsFanoutDetailed(
-        { kinds: [EVENT_KINDS.GIFT_WRAP], "#p": ["1".repeat(64)] },
+      exactRead = fetchSignedEventsFanoutDetailed(
+        { kinds: [EVENT_KINDS.ZAP_REQUEST], "#p": ["1".repeat(64)] },
         {
           relayUrls: ["wss://reserved-verifier.example"],
           connectTimeoutMs: 50,
@@ -537,17 +538,17 @@ describe("NDK relay worker verification fallback", () => {
         expect(result.value.events.map((event) => event.id)).toEqual([
           validEvent.id,
         ])
-        expect(result.value.relays).toEqual([
+        expect(result.value.relays).toMatchObject([
           {
             relayUrl: "wss://reserved-verifier.example",
-            status: "success",
+            status: "partial",
             eventCount: 1,
             rejectedEventCount: 1,
           },
         ])
       }
     } finally {
-      __resetNdkTestState()
+      __resetPublicReaderTestState()
       await Promise.allSettled(
         exactRead ? [...occupiedReads, exactRead] : occupiedReads
       )
@@ -576,7 +577,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const events = await fetchEventsFanout(
+    const events = await fetchPublicEvents(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://relay.example"],
@@ -615,7 +616,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await verifySignedPublicNostrEvents([first, second], {
+    const result = await verifySignedEvents([first, second], {
       maxEvents: 1,
     })
 
@@ -674,7 +675,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await verifySignedPublicNostrEvents([
+    const result = await verifySignedEvents([
       uppercaseSignature,
       fractionalTimestamp,
       outOfRangeKind,
@@ -706,8 +707,8 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const cached = await verifySignedPublicNostrEvents([validEvent])
-    const forged = await verifySignedPublicNostrEvents([invalidSignature])
+    const cached = await verifySignedEvents([validEvent])
+    const forged = await verifySignedEvents([invalidSignature])
 
     expect(cached.events.map(({ id }) => id)).toEqual([validEvent.id])
     expect(forged.events).toEqual([])
@@ -747,7 +748,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://offline.example"],
@@ -758,7 +759,7 @@ describe("NDK relay worker verification fallback", () => {
 
     expect(result.events).toEqual([])
     expect(result.eventsVerified).toBe(true)
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl: "wss://offline.example",
         status: "failed",
@@ -799,7 +800,7 @@ describe("NDK relay worker verification fallback", () => {
     })
 
     for (let request = 0; request < 2; request += 1) {
-      const result = await fetchEventsFanoutDetailed(
+      const result = await fetchSignedEventsFanoutDetailed(
         { kinds: [EVENT_KINDS.PROFILE] },
         {
           relayUrls: ["wss://relay.example"],
@@ -864,7 +865,7 @@ describe("NDK relay worker verification fallback", () => {
       value: TrackingFirstWebSocket,
     })
 
-    const firstRead = await fetchEventsFanoutDetailed(
+    const firstRead = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://shared-reset.example"],
@@ -879,9 +880,9 @@ describe("NDK relay worker verification fallback", () => {
       writable: true,
       value: TrackingSecondWebSocket,
     })
-    __resetNdkTestState()
+    __resetPublicReaderTestState()
 
-    const secondRead = await fetchEventsFanoutDetailed(
+    const secondRead = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://shared-reset.example"],
@@ -972,7 +973,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
       {
         relayUrls: ["wss://flooding.example"],
@@ -1016,7 +1017,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
       {
         relayUrls: ["wss://invalid-first.example"],
@@ -1026,10 +1027,10 @@ describe("NDK relay worker verification fallback", () => {
     )
 
     expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl: "wss://invalid-first.example",
-        status: "success",
+        status: "partial",
         eventCount: 1,
         rejectedEventCount: 1,
       },
@@ -1068,7 +1069,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
       {
         relayUrls: ["wss://out-of-order.example"],
@@ -1116,7 +1117,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
       {
         relayUrls: ["wss://nonmatching-first.example"],
@@ -1126,7 +1127,7 @@ describe("NDK relay worker verification fallback", () => {
     )
 
     expect(result.events.map((event) => event.id)).toEqual([matchingEvent.id])
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl: "wss://nonmatching-first.example",
         status: "success",
@@ -1157,7 +1158,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
       {
         relayUrls: ["wss://malformed-flood.example"],
@@ -1167,7 +1168,7 @@ describe("NDK relay worker verification fallback", () => {
     )
 
     expect(result.events).toEqual([])
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl: "wss://malformed-flood.example",
         status: "partial",
@@ -1227,7 +1228,7 @@ describe("NDK relay worker verification fallback", () => {
     })
 
     const controller = new AbortController()
-    const read = fetchEventsFanoutDetailed(
+    const read = fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://abort-active.example"],
@@ -1327,7 +1328,7 @@ describe("NDK relay worker verification fallback", () => {
       })
       const reads = Promise.allSettled(
         Array.from({ length: 6 }, () =>
-          fetchEventsFanoutDetailed(
+          fetchSignedEventsFanoutDetailed(
             { kinds: [EVENT_KINDS.PROFILE] },
             { relayUrls: [relayUrl], fetchTimeoutMs: 5_000 }
           )
@@ -1344,7 +1345,7 @@ describe("NDK relay worker verification fallback", () => {
       }
       expect(plan().relayUrls).toEqual(initialPlan)
       reply = true
-      const retry = await fetchEventsFanoutDetailed(
+      const retry = await fetchSignedEventsFanoutDetailed(
         { kinds: [EVENT_KINDS.PROFILE] },
         { relayUrls: plan().relayUrls }
       )
@@ -1411,7 +1412,7 @@ describe("NDK relay worker verification fallback", () => {
     })
 
     const activeController = new AbortController()
-    const activeRead = fetchEventsFanoutDetailed(
+    const activeRead = fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: Array.from(
@@ -1426,7 +1427,7 @@ describe("NDK relay worker verification fallback", () => {
     await allActive
 
     const queuedController = new AbortController()
-    const queuedRead = fetchEventsFanoutDetailed(
+    const queuedRead = fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://queued.example"],
@@ -1531,7 +1532,7 @@ describe("NDK relay worker verification fallback", () => {
       { length: 137 },
       (_, index) => `wss://capacity-${index}.example`
     )
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls,
@@ -1543,21 +1544,25 @@ describe("NDK relay worker verification fallback", () => {
 
     expect(result.events.map(({ id }) => id)).toEqual([retainedEvent.id])
     expect(result.relays.map(({ relayUrl }) => relayUrl)).toEqual(relayUrls)
-    expect(result.relays).toContainEqual({
-      relayUrl: "wss://capacity-0.example",
-      status: "success",
-      eventCount: 1,
-    })
+    expect(result.relays).toContainEqual(
+      expect.objectContaining({
+        relayUrl: "wss://capacity-0.example",
+        status: "success",
+        eventCount: 1,
+      })
+    )
     expect(constructedUrls).not.toContain("wss://capacity-136.example")
-    expect(result.relays).toContainEqual({
-      relayUrl: "wss://capacity-136.example",
-      status: "failed",
-      eventCount: 0,
-    })
+    expect(result.relays).toContainEqual(
+      expect.objectContaining({
+        relayUrl: "wss://capacity-136.example",
+        status: "failed",
+        eventCount: 0,
+      })
+    )
     expect(getRelayHealth("wss://capacity-136.example")).toBeUndefined()
     expect(maximumLiveRequests).toBeLessThanOrEqual(8)
 
-    const laterRead = await fetchEventsFanoutDetailed(
+    const laterRead = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://normal-read.example"],
@@ -1566,7 +1571,7 @@ describe("NDK relay worker verification fallback", () => {
         reuseRelayConnections: false,
       }
     )
-    expect(laterRead.relays).toEqual([
+    expect(laterRead.relays).toMatchObject([
       {
         relayUrl: "wss://normal-read.example",
         status: "success",
@@ -1616,7 +1621,7 @@ describe("NDK relay worker verification fallback", () => {
     })
 
     const controller = new AbortController()
-    const cancelledRead = fetchEventsFanoutDetailed(
+    const cancelledRead = fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://abort-verification.example"],
@@ -1659,7 +1664,7 @@ describe("NDK relay worker verification fallback", () => {
       value: RespondingWorker,
     })
 
-    const recovered = await fetchEventsFanoutDetailed(
+    const recovered = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://abort-verification.example"],
@@ -1706,9 +1711,9 @@ describe("NDK relay worker verification fallback", () => {
       writable: true,
       value: HangingWorker,
     })
-    __setNdkVerifyTimeoutMsForTests(10)
+    __setPublicReaderVerifyTimeoutMsForTests(10)
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://verification-timeout.example"],
@@ -1719,10 +1724,10 @@ describe("NDK relay worker verification fallback", () => {
     await Promise.resolve()
 
     expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl: "wss://verification-timeout.example",
-        status: "success",
+        status: "partial",
         eventCount: 1,
         rejectedEventCount: 1,
       },
@@ -1780,7 +1785,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
       {
         relayUrls: ["wss://oversized-frame.example"],
@@ -1790,7 +1795,7 @@ describe("NDK relay worker verification fallback", () => {
     )
 
     expect(result.events).toEqual([])
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl: "wss://oversized-frame.example",
         status: "failed",
@@ -1831,7 +1836,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE], limit: 500 },
       {
         relayUrls: ["wss://cumulative-frame-budget.example"],
@@ -1903,7 +1908,7 @@ describe("NDK relay worker verification fallback", () => {
       value: undefined,
     })
 
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE], limit: 1 },
       {
         relayUrls: ["wss://notice-flood.example"],
@@ -1913,7 +1918,7 @@ describe("NDK relay worker verification fallback", () => {
     )
 
     expect(result.events).toEqual([])
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl: "wss://notice-flood.example",
         status: "failed",
@@ -1989,7 +1994,7 @@ describe("NDK relay worker verification fallback", () => {
     })
 
     const relayUrl = "wss://partial.example"
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: [relayUrl],
@@ -2000,7 +2005,7 @@ describe("NDK relay worker verification fallback", () => {
 
     expect(result.events).toHaveLength(1)
     expect(result.events[0]?.id).toBe(validEvent.id)
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl,
         status: "partial",

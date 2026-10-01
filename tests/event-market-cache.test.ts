@@ -240,7 +240,7 @@ function cacheHarness(initial: CachedEventMarketEvidence[] = []) {
   return {
     setFetch(events: SignedPublicNostrEvent[], status: "success" | "failed") {
       __setEventMarketTestOverrides({
-        fetchEventsFanoutDetailed: async (filter) => ({
+        fetchSignedEventsFanoutDetailed: async (filter) => ({
           events: filter.kinds?.includes(EVENT_KINDS.PRODUCT)
             ? []
             : events.map((event) => new NDKEvent(undefined, event)),
@@ -303,7 +303,7 @@ function participationCacheHarness() {
       }
       rows = Array.from(bySignedId.values())
     },
-    fetchEventsFanoutDetailed: async (rawFilter, options) => {
+    fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
       const filter = rawFilter as TagFilter
       let events: SignedPublicNostrEvent[] = []
       if (filter.authors?.includes(ORGANIZER)) {
@@ -394,7 +394,7 @@ function organizerFrontierCacheHarness() {
       }
       rows = Array.from(byId.values())
     },
-    fetchEventsFanoutDetailed: async (rawFilter, options) => {
+    fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
       const filter = rawFilter as TagFilter
       const isBroadOrganizerRead =
         filter.authors?.includes(ORGANIZER) && (filter.kinds?.length ?? 0) > 1
@@ -472,7 +472,7 @@ function coordinateScopedSaturationHarness(
       ),
     loadCachedEvidence: async () => [],
     persistCachedEvidence: async () => undefined,
-    fetchEventsFanoutDetailed: async (rawFilter, options) => {
+    fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
       const filter = rawFilter as TagFilter
       const events = evidence.filter(
         (event) =>
@@ -541,7 +541,7 @@ function merchantPickupCacheHarness() {
       }
       rows = Array.from(byId.values())
     },
-    fetchEventsFanoutDetailed: async (rawFilter, options) => {
+    fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
       const filter = rawFilter as TagFilter
       let events: SignedPublicNostrEvent[] = []
       let status: "success" | "partial" | "failed" = "success"
@@ -634,7 +634,7 @@ function saturatedCollectionDiscoveryHarness(input: {
     persistCachedEvidence: async ({ events }) => {
       persistedEventIds.push(...events.map((event) => event.id.toLowerCase()))
     },
-    fetchEventsFanoutDetailed: async (rawFilter, options) => {
+    fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
       const filter = rawFilter as TagFilter
       const broadRead =
         filter.authors?.includes(ORGANIZER) && filter.kinds?.length === 5
@@ -785,7 +785,7 @@ describe("event-market retained evidence", () => {
     const filters: TagFilter[] = []
     cacheHarness()
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         filters.push(filter)
         const events = [
@@ -877,7 +877,7 @@ describe("event-market retained evidence", () => {
     const filters: TagFilter[] = []
     cacheHarness()
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         filters.push(filter)
         const events = [...organizerEvents, ...productEvents].filter(
@@ -992,7 +992,7 @@ describe("event-market retained evidence", () => {
     const filters: TagFilter[] = []
     cacheHarness()
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         filters.push(filter)
         const events = [...organizerEvents, ...productEvents].filter(
@@ -1101,7 +1101,7 @@ describe("event-market retained evidence", () => {
       }),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => {
         relayPlans.push([...(options.relayUrls ?? [])])
         attemptedRelayUrls.push(...(options.relayUrls ?? []))
         ownerSelectedRelayUrls.push(...(options.ownerSelectedRelayUrls ?? []))
@@ -1155,7 +1155,7 @@ describe("event-market retained evidence", () => {
       }),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => {
         relayPlans.push([...(options.relayUrls ?? [])])
         ownerSelectedRelayPlans.push([
           ...(options.ownerSelectedRelayUrls ?? []),
@@ -1260,7 +1260,7 @@ describe("event-market retained evidence", () => {
       },
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         fanoutPredicates.push(options.shouldContinue)
         const filter = rawFilter as TagFilter
         const isBroadOrganizerRead =
@@ -1382,7 +1382,7 @@ describe("event-market retained evidence", () => {
       getRelayLists: async () => new Map(),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         const candidates = [...(options.relayUrls ?? [])]
         const eligible = await filterEligibleAccountRelayUrls({
@@ -1564,7 +1564,7 @@ describe("event-market retained evidence", () => {
         ),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         observedFilters.push(filter)
         let events: SignedPublicNostrEvent[] = []
@@ -1656,7 +1656,7 @@ describe("event-market retained evidence", () => {
         ),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         const broadRead =
           filter.authors?.includes(ORGANIZER) && filter.kinds?.length === 5
@@ -1903,7 +1903,7 @@ describe("event-market retained evidence", () => {
         ),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         const events =
           filter.authors?.includes(ORGANIZER) && filter.kinds?.length === 5
@@ -1950,7 +1950,7 @@ describe("event-market retained evidence", () => {
         ),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         const broadRead =
           filter.authors?.includes(ORGANIZER) && filter.kinds?.length === 5
@@ -2007,7 +2007,7 @@ describe("event-market retained evidence", () => {
         ),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         const events =
           filter.authors?.includes(ORGANIZER) && filter.kinds?.length === 5
@@ -2067,7 +2067,7 @@ describe("event-market retained evidence", () => {
         ),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         observedFilters.push(filter)
         let events: SignedPublicNostrEvent[] = []
@@ -2317,7 +2317,7 @@ describe("event-market retained evidence", () => {
     let otherPickupRead: "live" | "failed" | "empty" = "live"
     const readFilters: TagFilter[] = []
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const filter = rawFilter as TagFilter
         readFilters.push(filter)
         const omitted =

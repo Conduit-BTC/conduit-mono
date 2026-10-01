@@ -1,3 +1,4 @@
+import type { SignedPublicNostrEvent } from "./signed-event"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { Profile } from "../types"
 import type { ProfileFormValues } from "../schemas"
@@ -137,7 +138,7 @@ function parseProfilePublishContent(content: string | null | undefined): {
 }
 
 export function parseProfileEvent(
-  event: Pick<NDKEvent, "content" | "pubkey">
+  event: Pick<SignedPublicNostrEvent, "content" | "pubkey">
 ): Profile {
   return projectProfileContent(event.pubkey, event.content)
 }
@@ -296,7 +297,7 @@ export class ProfilePublishSupersededError extends Error {
 export function assertProfilePublishRetained(
   retainedProfile:
     Pick<CachedProfile, "eventId" | "eventCreatedAt"> | undefined,
-  publishedEvent: Pick<NDKEvent, "id" | "created_at">
+  publishedEvent: { id: string; created_at?: number }
 ): void {
   if (
     retainedProfile?.eventId !== publishedEvent.id ||

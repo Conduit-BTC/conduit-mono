@@ -13,7 +13,7 @@ import {
   EVENT_KINDS,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 import {
   loadOrganizerEventMarketDeliveryOutbox,
   mergeOrganizerEventMarketDeliveryState,
@@ -186,7 +186,7 @@ describe("merchant organizer delivery outbox", () => {
     ])
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const relayUrls = [...(options.relayUrls ?? [])]
         const filter = rawFilter as NDKFilter
         const events = signedRecords

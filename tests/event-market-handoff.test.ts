@@ -2033,7 +2033,7 @@ describe("event-market organizer inbox readiness", () => {
       fetchEventsWithDiagnostics: async (filter) => ({
         events: declarations
           .filter((event) => filter.authors?.includes(event.pubkey))
-          .map((event) => new NDKEvent(undefined, event)),
+          .map((event) => event),
         attemptedRelayUrls: [
           "wss://discovery.relay.dev",
           "wss://offline.relay.dev",
@@ -2250,7 +2250,7 @@ describe("event-market organizer inbox readiness", () => {
         relayUrls: [isolatedRelayUrl],
         now: () => createdAt * 1_000,
         fetchEventsWithDiagnostics: async () => ({
-          events: [new NDKEvent(undefined, declaration(relayUrl, createdAt))],
+          events: [declaration(relayUrl, createdAt)],
           attemptedRelayUrls: [isolatedRelayUrl],
           successfulRelayUrls: [isolatedRelayUrl],
           failedRelayUrls: [],
@@ -2285,7 +2285,7 @@ describe("event-market organizer inbox readiness", () => {
         relayUrls: ["wss://discovery.relay.dev"],
         now: () => ISSUED_AT * 1_000,
         fetchEventsWithDiagnostics: async () => ({
-          events: [new NDKEvent(undefined, declaration)],
+          events: [declaration],
           attemptedRelayUrls: ["wss://discovery.relay.dev"],
           successfulRelayUrls: ["wss://discovery.relay.dev"],
           failedRelayUrls: [],
@@ -2324,7 +2324,7 @@ describe("event-market organizer inbox readiness", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanout: async (_filter, options) => {
+      fetchPublicEvents: async (_filter, options) => {
         const relays = [...(options?.relayUrls ?? [])]
         seenPlans.push(relays)
         return relays.includes(compatibilityRelay) ? [wrap] : []
@@ -2338,7 +2338,7 @@ describe("event-market organizer inbox readiness", () => {
     expect(seenPlans).toEqual([[declaredRelay]])
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (_filter, options) => {
+      fetchPublicEvents: async (_filter, options) => {
         const relays = [...(options?.relayUrls ?? [])]
         seenPlans.push(relays)
         return relays.includes(declaredRelay) ? [wrap] : []
@@ -2365,7 +2365,7 @@ describe("event-market organizer inbox readiness", () => {
         otherLoopbackRelayUrl,
         isolatedRelayUrl,
       ],
-      fetchEventsFanout: async (_filter, options) => {
+      fetchPublicEvents: async (_filter, options) => {
         const relays = [...(options?.relayUrls ?? [])]
         seenPlans.push(relays)
         return relays.includes(isolatedRelayUrl) ? [wrap] : []
@@ -2417,7 +2417,7 @@ describe("event-market organizer inbox readiness", () => {
         if (declarationCount === 2) releaseDeclarations()
         return [declaredRelay]
       },
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         fetchCount += 1
         await declarationsReady
         return [readyWrap]
@@ -2464,7 +2464,7 @@ describe("event-market organizer inbox readiness", () => {
     __setCommerceTestOverrides({
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         fetchCount += 1
         const isFirst = fetchCount === 1
         if (isFirst) {
@@ -2525,7 +2525,7 @@ describe("event-market organizer inbox readiness", () => {
     __setCommerceTestOverrides({
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
         events: [currentWrap],
         attemptedRelayUrls: [...(options?.relayUrls ?? [])],
         successfulRelayUrls: [...(options?.relayUrls ?? [])],
@@ -2584,7 +2584,7 @@ describe("event-market organizer inbox readiness", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanout: async (_filter, options) => {
+      fetchPublicEvents: async (_filter, options) => {
         if (options?.relayUrls?.[0] === oldRelay) {
           markOldRelayStarted()
           await oldRelayGate
@@ -2637,7 +2637,7 @@ describe("event-market organizer inbox readiness", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         requestedFilters.push({
           limit: filter.limit,
           since: filter.since,
@@ -2712,7 +2712,7 @@ describe("event-market organizer inbox readiness", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         const page = relayEvents
           .filter(
             (event) =>
@@ -2784,7 +2784,7 @@ describe("event-market organizer inbox readiness", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.limit === 400) primaryPageCount += 1
         return relayEvents
           .filter(
@@ -2862,7 +2862,7 @@ describe("event-market organizer inbox readiness", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         relayEvents
           .filter(
             (event) =>
@@ -2943,7 +2943,7 @@ describe("event-market organizer inbox readiness", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [shortRelay, longRelay],
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         const relayUrl = options?.relayUrls?.[0]
         if (relayUrl === shortRelay && filter.limit === 400) {
           shortRelayPrimaryReads += 1
@@ -3030,7 +3030,7 @@ describe("event-market organizer inbox readiness", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         relayEvents
           .filter(
             (event) =>
@@ -3072,7 +3072,7 @@ describe("event-market organizer inbox readiness", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
-      fetchEventsFanoutWithDiagnostics: async () => ({
+      fetchPublicEventsWithDiagnostics: async () => ({
         events: [readyWrap],
         attemptedRelayUrls: [declaredRelay],
         successfulRelayUrls: [declaredRelay],

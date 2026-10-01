@@ -2408,6 +2408,32 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       malformedCount: 2,
       unusableCount: 1,
     })
+    const streamed = []
+    for await (const observation of executor.req(publicRequest()))
+      streamed.push(observation)
+    for (const [type, count] of [
+      ["event", 1],
+      ["duplicate", 1],
+      ["malformed", 2],
+      ["unusable", 1],
+    ] as const) {
+      expect(streamed.filter((entry) => entry.type === type)).toHaveLength(
+        count
+      )
+    }
+
+    expect(
+      result.observations.filter((entry) => entry.type === "event")
+    ).toHaveLength(1)
+    expect(
+      result.observations.filter((entry) => entry.type === "duplicate")
+    ).toHaveLength(1)
+    expect(
+      result.observations.filter((entry) => entry.type === "malformed")
+    ).toHaveLength(2)
+    expect(
+      result.observations.filter((entry) => entry.type === "unusable")
+    ).toHaveLength(1)
   })
 })
 
@@ -2457,5 +2483,52 @@ describe("relay executor dependency boundary", () => {
       expect(sourceText).not.toContain("@nostr-dev-kit/ndk")
       expect(sourceText).not.toMatch(/\bNDK(?:Event|Relay|Subscription)\b/)
     }
+  })
+})
+
+it("keeps requested relay indices when completion order precedes cancellation", async () => {
+  const controller = new AbortController()
+  const harness = new FakeRelayHarness()
+    .at("wss://first.example", {})
+    .at("wss://second.example", {
+      onSend: (socket, frame) => {
+        if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+      },
+    })
+  const executor = createExecutor(harness)
+  const observations = []
+  for await (const observation of executor.req(
+    publicRequest(["wss://first.example", "wss://second.example"]),
+    { signal: controller.signal, queryTimeoutMs: 1000 }
+  )) {
+    observations.push(observation)
+    if (observation.type === "eose") controller.abort()
+  }
+  expect(
+    observations
+      .filter((entry) => entry.type === "eose")
+      .map((entry) => entry.relayIndex)
+  ).toEqual([1])
+  expect(
+    observations
+      .filter((entry) => entry.type === "abort")
+      .map((entry) => entry.relayIndex)
+  ).toEqual([0])
+})
+
+it("reports public connection timeout in the connect phase", async () => {
+  const executor = createExecutor(
+    new FakeRelayHarness().at("wss://public.example", { autoOpen: false })
+  )
+  const result = await executor.query(publicRequest(), { connectTimeoutMs: 5 })
+  expect(result.observations).toContainEqual({
+    type: "timeout",
+    relayIndex: 0,
+    phase: "connect",
+  })
+  expect(result.observations).toContainEqual({
+    type: "connection",
+    relayIndex: 0,
+    state: "failed",
   })
 })

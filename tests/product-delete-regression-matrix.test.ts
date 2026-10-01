@@ -101,7 +101,7 @@ function setRelayReads(input: {
   deletions?: readonly NDKEvent[]
 }): void {
   __setCommerceTestOverrides({
-    fetchEventsFanout: async (filter) => {
+    fetchPublicEvents: async (filter) => {
       if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
         return [...input.products] as never
       }
@@ -183,7 +183,7 @@ describe("product deletion convergence regression matrix", () => {
     const deletionRelayPlans: string[][] = []
     Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [product] as never
         }
@@ -390,7 +390,7 @@ describe("product deletion convergence regression matrix", () => {
     const snapshots: CommerceProductRecord[][] = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
         await onProgress({
           relayUrl:
             options?.relayUrls?.[0] ?? "wss://product-source.conduit.market",
@@ -401,7 +401,7 @@ describe("product deletion convergence regression matrix", () => {
         // test on the progressive path while deterministically modeling a
         // tombstone that becomes observable after the first product snapshot.
         __setCommerceTestOverrides({
-          fetchEventsFanout: async (filter) =>
+          fetchPublicEvents: async (filter) =>
             filter.kinds?.includes(EVENT_KINDS.DELETION)
               ? ([deletion] as never)
               : [],
@@ -451,7 +451,7 @@ describe("product deletion convergence regression matrix", () => {
     const snapshots: CommerceProductRecord[][] = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
         await onProgress({
           relayUrl:
             options?.relayUrls?.[0] ?? "wss://product-source.conduit.market",
@@ -460,7 +460,7 @@ describe("product deletion convergence regression matrix", () => {
         })
         return [product] as never
       },
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const result = await getMarketplaceProductsProgressive(

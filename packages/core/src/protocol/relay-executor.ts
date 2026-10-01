@@ -1,4 +1,12 @@
 import {
+  fetchSignedEventsFanoutDetailed,
+  closePublicRelayConnections,
+  PublicRelayReadCancelledError,
+  type SignedEventRelayReadResult,
+  type PublicRelayReadSocketScope,
+  type PublicRelayReadSourceStatus,
+} from "./relay-reader"
+import {
   isExactRelayAuthEvent,
   isValidSignedPublicNostrEvent,
 } from "./signed-event"
@@ -126,6 +134,8 @@ export interface RelaySourceResult {
 }
 
 export interface RelayQueryResult {
+  /** Shared evidence for the public compatibility facade. */
+  publicRead?: SignedEventRelayReadResult
   status: "success" | "partial" | "unavailable" | "aborted"
   events: SignedNostrEvent[]
   observations: RelayObservation[]
@@ -1031,7 +1041,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
   private readonly createWebSocket: RelayWebSocketFactory
   private readonly now: () => number
   private readonly createSubscriptionId: () => string
-  private readonly publicConnections = new Map<string, RelayConnection>()
+  private readonly publicReadScope: PublicRelayReadSocketScope
   private readonly authenticatedConnections = new Map<
     string,
     Map<string, RelayConnection>
@@ -1060,6 +1070,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
           .toString(36)
           .slice(2, 10)}`
       })
+    this.publicReadScope = { createWebSocket: this.createWebSocket }
     this.unsubscribeRevocation = subscribeProtectedReadSignerRevocation(
       (sessionScope) => this.closeSession(sessionScope)
     )
@@ -1138,11 +1149,10 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
 
   closeAll(): void {
     this.closeAllAuthenticated()
-    for (const connection of this.publicConnections.values()) connection.close()
-    this.publicConnections.clear()
   }
 
   dispose(): void {
+    closePublicRelayConnections(this.publicReadScope)
     this.closeAll()
     this.unsubscribeRevocation()
   }
@@ -1158,6 +1168,188 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
   subscribeAuthenticationEvidence(listener: () => void): () => void {
     this.evidenceListeners.add(listener)
     return () => this.evidenceListeners.delete(listener)
+  }
+
+  private async executePublicRead(
+    request: RelayRequest,
+    options: RelayExecutionOptions,
+    observe: (value: RelayObservation) => void
+  ): Promise<Omit<RelayQueryResult, "observations">> {
+    const relayUrls = uniqueNormalizedRelayUrls(request.relayUrls)
+    const observedSources = new Set<string>()
+    const seenEventIds = new Set<string>()
+    const sourceCounts = new Map<
+      string,
+      { eventCount: number; duplicateCount: number }
+    >()
+    const observeSource = (
+      source: PublicRelayReadSourceStatus,
+      events: SignedNostrEvent[] = [],
+      retainedDuplicateCount = 0
+    ) => {
+      if (observedSources.has(source.relayUrl)) return
+      observedSources.add(source.relayUrl)
+      const relayIndex = relayUrls.indexOf(source.relayUrl)
+      if (relayIndex < 0)
+        throw new Error("Public source is outside the requested relay plan.")
+      let eventCount = 0,
+        duplicateCount = 0
+      for (const event of events) {
+        if (seenEventIds.has(event.id)) {
+          duplicateCount += 1
+          observe({ type: "duplicate", relayIndex })
+        } else {
+          seenEventIds.add(event.id)
+          eventCount += 1
+          observe({ type: "event", relayIndex })
+        }
+      }
+      for (let i = 0; i < retainedDuplicateCount; i += 1) {
+        duplicateCount += 1
+        observe({ type: "duplicate", relayIndex })
+      }
+      sourceCounts.set(source.relayUrl, { eventCount, duplicateCount })
+      for (
+        let i = 0;
+        i <
+        (source.malformedEventCount ?? 0) + (source.rejectedEventCount ?? 0);
+        i += 1
+      )
+        observe({ type: "malformed", relayIndex })
+      for (let i = 0; i < (source.unusableEventCount ?? 0); i += 1)
+        observe({ type: "unusable", relayIndex })
+      if (source.eoseReceived) observe({ type: "eose", relayIndex })
+      if (source.outcome === "connect_timeout") {
+        observe({ type: "connection", relayIndex, state: "failed" })
+        observe({ type: "timeout", relayIndex, phase: "connect" })
+      }
+      if (source.outcome === "timeout")
+        observe({ type: "timeout", relayIndex, phase: "query" })
+      if (source.outcome === "cancelled") observe({ type: "abort", relayIndex })
+      if (source.outcome === "disconnected")
+        observe({ type: "connection", relayIndex, state: "closed" })
+      if (
+        source.outcome === "closed" ||
+        source.outcome === "auth_required" ||
+        source.outcome === "rejected"
+      ) {
+        observe({
+          type: "closed",
+          relayIndex,
+          code:
+            source.outcome === "closed"
+              ? "other"
+              : source.outcome === "auth_required"
+                ? "auth_required"
+                : "restricted",
+        })
+      }
+    }
+    let read: SignedEventRelayReadResult
+    try {
+      read = await fetchSignedEventsFanoutDetailed(request.filters, {
+        relayUrls,
+        socketScope: this.publicReadScope,
+        skipHealthFilter: true,
+        signal: options.signal,
+        connectTimeoutMs: options.connectTimeoutMs,
+        fetchTimeoutMs: options.queryTimeoutMs,
+        maxFramesPerRelay: options.maxFramesPerRelay,
+        maxEventsPerRelay: options.maxEventsPerRelay,
+        maxBytesPerRelay: options.maxBytesPerRelay,
+        onRelayProgress: (progress) => {
+          const source = progress.result?.relays.find(
+            (entry) => entry.relayUrl === progress.relayUrl
+          )
+          if (!source) throw new Error("Missing public relay outcome.")
+          observeSource(source, progress.events)
+        },
+        onConnection: (url) =>
+          observe({
+            type: "connection",
+            relayIndex: Math.max(0, relayUrls.indexOf(url)),
+            state: "connected",
+          }),
+      })
+    } catch (error) {
+      if (!(error instanceof PublicRelayReadCancelledError)) throw error
+      read = error.result as SignedEventRelayReadResult
+    }
+    const relays: RelaySourceResult[] = read.relays.map((source) => {
+      const relayIndex = relayUrls.indexOf(source.relayUrl)
+      // Cancellation can retain verified source evidence before its progress
+      // callback runs. Reconstruct that source's observations from the snapshot.
+      observeSource(
+        source,
+        read.events.filter((event) =>
+          read.eventSourceRelayUrls?.[event.id]?.includes(source.relayUrl)
+        ),
+        source.duplicateEventCount ?? 0
+      )
+      const counts = sourceCounts.get(source.relayUrl)!
+      const malformedCount =
+        (source.malformedEventCount ?? 0) + (source.rejectedEventCount ?? 0)
+      const unusableCount = source.unusableEventCount ?? 0
+      const failure: RelayFailureCode | undefined =
+        source.outcome === "cancelled"
+          ? "aborted"
+          : source.outcome === "auth_required"
+            ? "missing_challenge"
+            : source.outcome === "rejected"
+              ? "subscription_rejected"
+              : source.outcome === "timeout"
+                ? "query_timed_out"
+                : source.outcome === "malformed" ||
+                    source.outcome === "verification_failed" ||
+                    unusableCount > 0
+                  ? "protocol_invalid"
+                  : source.outcome === "resource_limit"
+                    ? "protocol_limit_exceeded"
+                    : source.status === "success"
+                      ? undefined
+                      : "transport_unavailable"
+      return {
+        relayIndex,
+        status:
+          source.outcome === "cancelled"
+            ? "aborted"
+            : failure
+              ? source.eventCount > 0
+                ? "partial"
+                : "failed"
+              : "success",
+        auth:
+          source.outcome === "auth_required"
+            ? "authentication_required"
+            : "not_challenged",
+        eventCount: counts.eventCount,
+        duplicateCount: counts.duplicateCount,
+        malformedCount,
+        unusableCount,
+        ...(failure ? { failure } : {}),
+      }
+    })
+    relays.sort((left, right) => left.relayIndex - right.relayIndex)
+    const completedCount = relays.filter(
+      (source) => source.status === "success"
+    ).length
+    return {
+      publicRead: read,
+      status:
+        read.readCoverage === "cancelled"
+          ? "aborted"
+          : completedCount === relays.length && relays.length > 0
+            ? "success"
+            : read.events.length > 0 || completedCount > 0
+              ? "partial"
+              : "unavailable",
+      events: read.events,
+      relays,
+      attemptedCount: read.attemptedRelayUrls?.length ?? 0,
+      completedCount,
+      failedCount: relays.filter((source) => source.status === "failed").length,
+      authoritativeEmpty: false,
+    }
   }
 
   private async execute(
@@ -1183,6 +1375,8 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
   ): Promise<Omit<RelayQueryResult, "observations">> {
     const snapshot = cloneRequest(request)
     assertRequest(snapshot, options.authorization)
+    if (snapshot.operation === "public_read")
+      return await this.executePublicRead(snapshot, options, observe)
     const relayUrls = uniqueNormalizedRelayUrls(snapshot.relayUrls)
     const seenEventIds = new Set<string>()
     const events: SignedNostrEvent[] = []
@@ -1644,11 +1838,6 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
               observe({ type: "malformed", relayIndex })
               break
             }
-            if (request.operation === "public_read" && event.kind === 1_059) {
-              unusableCount += 1
-              observe({ type: "unusable", relayIndex })
-              break
-            }
             if (!eventMatchesRequest(event, request)) {
               unusableCount += 1
               observe({ type: "unusable", relayIndex })
@@ -1770,9 +1959,11 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
     connectTimeoutMs: number,
     signal: AbortSignal | undefined
   ): Promise<RelayConnection> {
-    const connections = authorization
-      ? this.getAuthenticatedConnections(authorization.sessionScope)
-      : this.publicConnections
+    if (!authorization)
+      throw new Error("Protected reads require authorization.")
+    const connections = this.getAuthenticatedConnections(
+      authorization.sessionScope
+    )
     let connection = connections.get(relayUrl)
     if (connection?.isClosed) {
       connections.delete(relayUrl)
@@ -1839,12 +2030,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
     sessionScope: string | undefined,
     connection: RelayConnection
   ): void {
-    if (!sessionScope) {
-      if (this.publicConnections.get(relayUrl) === connection) {
-        this.publicConnections.delete(relayUrl)
-      }
-      return
-    }
+    if (!sessionScope) return
     const connections = this.authenticatedConnections.get(sessionScope)
     if (connections?.get(relayUrl) === connection) {
       connections.delete(relayUrl)
@@ -1865,11 +2051,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
     relayUrl: string,
     authorization: ProtectedReadAuthorization | undefined
   ): void {
-    if (!authorization) {
-      this.publicConnections.get(relayUrl)?.close()
-      this.publicConnections.delete(relayUrl)
-      return
-    }
+    if (!authorization) return
     const connections = this.authenticatedConnections.get(
       authorization.sessionScope
     )
