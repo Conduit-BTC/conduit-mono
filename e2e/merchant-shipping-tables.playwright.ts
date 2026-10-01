@@ -13,6 +13,140 @@ import {
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
+for (const reopen of [false, true]) {
+  test(`conflicting shipping rates require explicit replacement${reopen ? " after reopening" : " while editing"} @merchant`, async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(90_000)
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    const createdAt = Math.floor(Date.now() / 1000) - 10
+    function signedRates(priceMinor: number) {
+      const policy = {
+        version: 2,
+        title: "Rates",
+        originCountry: "US",
+        currency: "SATS",
+        domestic: {
+          rules: [
+            { country: "US", bands: [{ maxWeightGrams: 1000, priceMinor }] },
+          ],
+        },
+        international: null,
+      }
+      return finalizeEvent(
+        {
+          kind: 30406,
+          created_at: createdAt,
+          content: "Synthetic rates",
+          tags: [
+            ["d", "conduit-shipping-policy"],
+            ["title", "Rates"],
+            ["price", String(priceMinor), "SATS"],
+            ["country", "US"],
+            ["service", "standard"],
+            ["conduit_shipping_table", "2", JSON.stringify(policy)],
+          ],
+        },
+        secretKey
+      )
+    }
+    // The relay replaces equal-timestamp events by ID. Observe both in sequence
+    // so the retained frontier must preserve the conflict even after reopening.
+    const [conflicting, initial] = [signedRates(100), signedRates(200)].sort(
+      (a, b) => a.id.localeCompare(b.id)
+    )
+    await publishTestRelayEvents([initial!])
+    await installTestSigner(page, pubkey, { secretKey })
+    await page.goto(`${merchantUrl}/shipping`)
+    const price = page.getByLabel("Shipping price", { exact: true }).first()
+    await expect(price).toHaveValue(
+      initial!.tags.find((tag) => tag[0] === "price")![1]!
+    )
+    await price.fill("300")
+    await publishTestRelayEvents([conflicting!])
+    async function activate(control: Locator) {
+      if (testInfo.project.use.hasTouch) await control.tap()
+      else await control.click()
+    }
+    await activate(
+      page.getByRole("button", { name: "Check for updates", exact: true })
+    )
+    const replace = page.getByRole("button", {
+      name: "Replace conflicting rates",
+      exact: true,
+    })
+    await expect(replace).toBeEnabled()
+    await expect(price).toHaveValue("300")
+    if (reopen) {
+      await page.reload()
+      await expect(replace).toBeEnabled()
+      await expect(price).toHaveValue("")
+      await chooseCountry(page, "Origin country", "United States")
+      await page.getByLabel("Shipping currency", { exact: true }).click()
+      await page.getByRole("option", { name: "SATS", exact: true }).click()
+      await page
+        .getByLabel("Up to weight", { exact: true })
+        .first()
+        .fill("1000")
+      await price.fill("300")
+    }
+    const publish = page.getByRole("button", {
+      name: "Publish shipping rates",
+      exact: true,
+    })
+    await expect(publish).toBeDisabled()
+    await page.screenshot({
+      path: testInfo.outputPath("shipping-conflict-review.png"),
+      fullPage: true,
+    })
+    await page.evaluate(() => {
+      const signer = (
+        window as unknown as {
+          nostr: { signEvent: (...args: unknown[]) => Promise<unknown> }
+        }
+      ).nostr
+      const sign = signer.signEvent.bind(signer)
+      const state = window as unknown as { shippingSignCount: number }
+      state.shippingSignCount = 0
+      signer.signEvent = async (...args) => {
+        state.shippingSignCount++
+        return sign(...args)
+      }
+      document
+        .querySelector('section[aria-label="Shipping rates"] form')!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    })
+    const signCount = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { shippingSignCount: number }).shippingSignCount
+      )
+    expect(await signCount()).toBe(0)
+    await activate(replace)
+    await expect(price).toHaveValue("300")
+    await expect(publish).toBeEnabled()
+    expect(await signCount()).toBe(0)
+    await activate(publish)
+    await expect(
+      page.getByText("Shipping rates published.", { exact: true })
+    ).toBeVisible({ timeout: 20_000 })
+    expect(await signCount()).toBe(1)
+    const [replacement] = await readTestRelayEvents({
+      kinds: [30406],
+      authors: [pubkey],
+      "#d": ["conduit-shipping-policy"],
+    })
+    expect(replacement!.created_at).toBeGreaterThan(createdAt)
+    expect(replacement!.tags).toContainEqual(["price", "300", "SATS"])
+    await page.reload()
+    await expect(price).toHaveValue("300")
+    await expect(replace).toHaveCount(0)
+    await expect(page.getByText("Published", { exact: true })).toBeVisible()
+  })
+}
+
 async function chooseCountry(page: Page, label: string, country: string) {
   await page.getByLabel(label, { exact: true }).click()
   await page

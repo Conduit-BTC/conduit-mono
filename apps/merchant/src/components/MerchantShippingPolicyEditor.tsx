@@ -101,12 +101,29 @@ export function MerchantShippingPolicyEditor() {
   const needsUpgrade = remote?.policy.version === 1
   const [acceptedRevision, setAcceptedRevision] =
     useState<ShippingPolicyRevision | null>(null)
+  const [acceptedConflictRevision, setAcceptedConflictRevision] =
+    useState<ShippingPolicyRevision | null>(null)
   const observedRevision =
     query.data && query.data.state !== "not_found"
       ? (query.data.revision ?? null)
       : null
   const revisionChanged =
     (observedRevision?.eventId ?? null) !== (acceptedRevision?.eventId ?? null)
+  const hasConflict =
+    query.data?.state === "unavailable" && query.data.reason === "conflicting"
+  const canReviewConflict =
+    hasConflict && query.data?.coverageComplete && !!observedRevision
+  const conflictNeedsReview =
+    hasConflict &&
+    (!canReviewConflict ||
+      acceptedConflictRevision?.eventId !== observedRevision?.eventId)
+  function acceptConflict() {
+    if (!canReviewConflict || busy || query.isFetching || query.isError) return
+    setAcceptedRevision(observedRevision)
+    setAcceptedConflictRevision(observedRevision)
+    setDirty(true)
+    setStatus({ state: "idle" })
+  }
   function loadLatestRates() {
     setDraft(
       remote
@@ -114,6 +131,7 @@ export function MerchantShippingPolicyEditor() {
         : createShippingPolicyDraft()
     )
     setAcceptedRevision(observedRevision)
+    setAcceptedConflictRevision(null)
     setDirty(false)
     setStatus({ state: "idle" })
   }
@@ -126,6 +144,7 @@ export function MerchantShippingPolicyEditor() {
         : createShippingPolicyDraft()
     )
     setAcceptedRevision(observedRevision)
+    setAcceptedConflictRevision(null)
   }, [remote, dirty, query.data, revisionChanged, observedRevision])
   function update(update: Partial<ShippingPolicyDraft>) {
     setDraft((current) => ({ ...current, ...update }))
@@ -146,6 +165,7 @@ export function MerchantShippingPolicyEditor() {
       !policy ||
       busy ||
       revisionChanged ||
+      conflictNeedsReview ||
       query.isPending ||
       authStatus !== "connected"
     )
@@ -235,8 +255,31 @@ export function MerchantShippingPolicyEditor() {
           <p className="text-pretty text-sm text-warning">
             {query.data?.state === "withdrawn"
               ? "These rates were withdrawn. Publish new rates when you are ready to ship."
-              : "The latest shipping policy could not be confirmed. Check the relay connection before publishing changes."}
+              : hasConflict
+                ? "Conflicting shipping rates were found. New checkouts need coordination until you publish replacement rates. Your draft will be kept."
+                : "The latest shipping policy could not be confirmed. Check the relay connection before publishing changes."}
           </p>
+          {hasConflict &&
+            (conflictNeedsReview ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={
+                  !canReviewConflict ||
+                  busy ||
+                  query.isFetching ||
+                  query.isError
+                }
+                onClick={acceptConflict}
+              >
+                Replace conflicting rates
+              </Button>
+            ) : (
+              <p className="text-pretty text-sm text-[var(--text-secondary)]">
+                Review your draft, then publish it as the new shipping rates.
+              </p>
+            ))}
           <Button
             type="button"
             size="sm"
@@ -247,7 +290,7 @@ export function MerchantShippingPolicyEditor() {
           </Button>
         </div>
       )}
-      {dirty && revisionChanged && (
+      {dirty && revisionChanged && !hasConflict && (
         <div
           role="alert"
           className="space-y-2 rounded-xl border border-warning/40 p-3"
@@ -367,6 +410,7 @@ export function MerchantShippingPolicyEditor() {
               busy ||
               query.isPending ||
               revisionChanged ||
+              conflictNeedsReview ||
               authStatus !== "connected" ||
               (!dirty && !!remote && !needsUpgrade)
             }

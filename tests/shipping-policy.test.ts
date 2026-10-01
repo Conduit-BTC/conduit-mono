@@ -962,6 +962,67 @@ describe("shipping policy read evidence", () => {
 })
 
 describe("shipping policy publication", () => {
+  it("replaces a reviewed complete conflict strictly later but rejects incomplete or changed evidence before signing", async () => {
+    cacheOverrides()
+    const signer = setTestAccountSigner(new NDKPrivateKeySigner(secret))
+    let events = [
+      signedPolicy(policy, 10),
+      signedPolicy({ ...policy, handlingMinor: 0 }, 10),
+    ]
+    let complete = true
+    __setShippingTestOverrides({
+      fetchEventsFanoutDetailed: async (filter, options = {}) =>
+        fanoutResult(
+          filter.kinds?.includes(30406) ? events : [],
+          options,
+          complete
+        ),
+    })
+    const conflict = await fetchMerchantShippingPolicy(merchant)
+    expect(conflict).toMatchObject({
+      state: "unavailable",
+      reason: "conflicting",
+      coverageComplete: true,
+    })
+    if (conflict.state !== "unavailable" || !conflict.revision)
+      throw new Error("Expected conflict revision")
+    let signCount = 0
+    const sign = signer.signEvent.bind(signer)
+    signer.signEvent = async (draft) => {
+      signCount++
+      return sign(draft)
+    }
+    const replace = () =>
+      publishMerchantShippingPolicy({
+        pubkey: merchant,
+        policy,
+        acceptedRevision: conflict.revision,
+        dependencies: {
+          signer,
+          now: () => 1000,
+          fetchPolicy: (pubkey) => fetchMerchantShippingPolicy(pubkey),
+          publishEvent: (async (event: NDKEvent) => {
+            events.push(event.rawEvent() as SignedPublicNostrEvent)
+            return { successfulRelayUrls: ["wss://shipping.example"] }
+          }) as typeof publishWithPlanner,
+        },
+      })
+    complete = false
+    await expect(replace()).rejects.toThrow("could not be read completely")
+    expect(signCount).toBe(0)
+    complete = true
+    const replacement = await replace()
+    expect(replacement.createdAt).toBe(11)
+    expect(signCount).toBe(1)
+    expect(await fetchMerchantShippingPolicy(merchant)).toMatchObject({
+      state: "found",
+      policy,
+      revision: replacement,
+      source: "relay",
+    })
+    await expect(replace()).rejects.toThrow("Shipping changed")
+    expect(signCount).toBe(1)
+  })
   it("uses the active account signer and checks current revision and ACK before returning signed terms", async () => {
     cacheOverrides()
     const legacySigner = NDKPrivateKeySigner.generate()
