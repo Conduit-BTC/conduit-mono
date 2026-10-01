@@ -1,11 +1,8 @@
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js"
 import { argon2idAsync } from "@noble/hashes/argon2.js"
-import {
-  default as NDK,
-  NDKEvent,
-  type NDKFilter,
-  type NDKSigner,
-} from "@nostr-dev-kit/ndk"
+import { default as NDK, NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import type { AccountSigner, UnsignedNostrEvent } from "./nostr-event-signer"
+import { getAccountSigner } from "./session-signer"
 import { z } from "zod"
 import { config } from "../config"
 import {
@@ -203,7 +200,7 @@ export type ShopperPresetsWriteResult = {
 
 export type ShopperPresetsProtocolDependencies = {
   ndk?: NDK
-  signer?: NDKSigner
+  signer?: AccountSigner
   fetchEvents?: typeof fetchEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
   publishEvent?: typeof publishWithPlanner
@@ -538,10 +535,9 @@ export function selectLatestShopperPresetsEvent<
 
 async function requireMatchingSigner(
   pubkey: string,
-  signer: NDKSigner
+  signer: AccountSigner
 ): Promise<void> {
-  const user = await signer.user()
-  if (user.pubkey.toLowerCase() !== normalizePubkey(pubkey)) {
+  if ((await signer.getPublicKey()).toLowerCase() !== normalizePubkey(pubkey)) {
     throw new Error("The active signer does not match the shopper identity.")
   }
 }
@@ -857,7 +853,7 @@ export async function publishShopperPresets({
 }): Promise<ShopperPresetsWriteResult> {
   const owner = normalizePubkey(pubkey)
   const ndk = dependencies.ndk ?? getNdk()
-  const signer = dependencies.signer ?? ndk.signer
+  const signer = dependencies.signer ?? getAccountSigner()
   if (!signer) {
     throw new Error("Connect a signer before syncing shopper presets.")
   }
@@ -899,7 +895,10 @@ export async function publishShopperPresets({
   event.created_at = createdAt
   event.tags = appendConduitClientTag([["d", SHOPPER_PRESETS_D_TAG]], appId)
   event.content = serializeShopperPresetsEnvelope(envelope)
-  await event.sign(signer)
+  Object.assign(
+    event,
+    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+  )
 
   const publishEvent = dependencies.publishEvent ?? publishWithPlanner
   const publish = await publishEvent(event, {

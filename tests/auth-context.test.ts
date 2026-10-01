@@ -104,7 +104,7 @@ describe("NIP-07 availability", () => {
     expect(getNip07Capabilities()).toEqual({
       signEvent: true,
       nip44: false,
-      nip04: false,
+      nip04Decrypt: false,
     })
   })
 
@@ -141,12 +141,12 @@ describe("NIP-07 availability", () => {
       })
     )
 
-    const { user } = await connectNip07SignerForAuth("interactive", {
+    const { pubkey } = await connectNip07SignerForAuth("interactive", {
       retryDelaysMs: [0],
     })
 
     expect(calls).toBe(2)
-    expect(user.pubkey).toBe("a".repeat(64))
+    expect(pubkey).toBe("a".repeat(64))
   })
 
   it("does not retry signer rejection errors", async () => {
@@ -211,7 +211,9 @@ describe("NIP-07 availability", () => {
     event.tags = []
     event.content = "private draft"
 
-    await expect(event.sign(signer)).rejects.toThrow("signer account changed")
+    await expect(signTestEvent(event, signer)).rejects.toThrow(
+      "signer account changed"
+    )
     expect(signCalls).toBe(0)
     expect(invalidationCodes).toEqual(["identity_changed"])
   })
@@ -240,7 +242,7 @@ describe("NIP-07 availability", () => {
     event.tags = []
     event.content = "private draft"
 
-    await expect(event.sign(signer)).rejects.toThrow(
+    await expect(signTestEvent(event, signer)).rejects.toThrow(
       "signed with a different account"
     )
     expect(signCalls).toBe(1)
@@ -270,7 +272,9 @@ describe("NIP-07 availability", () => {
     event.tags = []
     event.content = "private draft"
 
-    await expect(event.sign(signer)).rejects.toThrow("signer account changed")
+    await expect(signTestEvent(event, signer)).rejects.toThrow(
+      "signer account changed"
+    )
     expect(getPublicKeyCalls).toBe(3)
   })
 
@@ -298,7 +302,7 @@ describe("NIP-07 availability", () => {
     event.tags = []
     event.content = "private draft"
 
-    await expect(event.sign(signer)).rejects.toThrow(
+    await expect(signTestEvent(event, signer)).rejects.toThrow(
       "signer changed the event payload"
     )
   })
@@ -326,7 +330,7 @@ describe("NIP-07 availability", () => {
     event.tags = [["subject", "original"]]
     event.content = "public note"
 
-    await expect(event.sign(signer)).rejects.toThrow(
+    await expect(signTestEvent(event, signer)).rejects.toThrow(
       "signer changed the event payload"
     )
     expect(event.tags).toEqual([["subject", "original"]])
@@ -352,7 +356,7 @@ describe("NIP-07 availability", () => {
     event.tags = []
     event.content = "public note"
 
-    await event.sign(signer)
+    await signTestEvent(event, signer)
 
     expect(event.pubkey).toBe(ACCOUNT_A_PUBKEY)
     expect(verifyEvent(event.rawEvent())).toBe(true)
@@ -384,10 +388,9 @@ describe("NIP-07 availability", () => {
     activePubkey = ACCOUNT_B_PUBKEY
 
     await expect(
-      signer.encrypt(
-        new NDKUser({ pubkey: ACCOUNT_B_PUBKEY }),
-        "private message",
-        "nip44"
+      signer.encryptNip44(
+        new NDKUser({ pubkey: ACCOUNT_B_PUBKEY }).pubkey,
+        "private message"
       )
     ).rejects.toThrow("signer account changed")
     expect(encryptCalls).toBe(0)
@@ -411,7 +414,7 @@ describe("NIP-07 availability", () => {
     const signer = new Nip07SessionSigner({
       readinessRetryDelaysMs: [0],
     })
-    await signer.user()
+    await signer.getPublicKey()
 
     let bridgeReads = 0
     const lateWindow: Record<string, unknown> = {}
@@ -430,7 +433,7 @@ describe("NIP-07 availability", () => {
     event.tags = []
     event.content = "public note"
 
-    await event.sign(signer)
+    await signTestEvent(event, signer)
 
     expect(bridgeReads).toBeGreaterThanOrEqual(2)
     expect(signCalls).toBe(1)
@@ -459,7 +462,7 @@ describe("NIP-07 availability", () => {
     const signer = new Nip07SessionSigner({
       readinessRetryDelaysMs: [0],
     })
-    await signer.user()
+    await signer.getPublicKey()
 
     let bridgeReads = 0
     const lateWindow: Record<string, unknown> = {}
@@ -472,12 +475,10 @@ describe("NIP-07 availability", () => {
     })
     setTestWindow(lateWindow)
 
-    await expect(signer.encryptionEnabled("nip44")).resolves.toEqual(["nip44"])
     await expect(
-      signer.encrypt(
-        new NDKUser({ pubkey: ACCOUNT_B_PUBKEY }),
-        "private message",
-        "nip44"
+      signer.encryptNip44(
+        new NDKUser({ pubkey: ACCOUNT_B_PUBKEY }).pubkey,
+        "private message"
       )
     ).resolves.toBe("ciphertext")
 
@@ -513,14 +514,14 @@ describe("NIP-07 availability", () => {
     const signer = new Nip07SessionSigner({
       readinessRetryDelaysMs: [0],
     })
-    await signer.user()
+    await signer.getPublicKey()
     const event = new NDKEvent()
     event.kind = 1
     event.created_at = 1_700_000_000
     event.tags = []
     event.content = "public note"
 
-    await event.sign(signer)
+    await signTestEvent(event, signer)
 
     expect(getPublicKeyCalls).toBe(4)
     expect(signCalls).toBe(1)
@@ -542,14 +543,16 @@ describe("NIP-07 availability", () => {
     const signer = new Nip07SessionSigner({
       readinessRetryDelaysMs: [0, 0],
     })
-    await signer.user()
+    await signer.getPublicKey()
     const event = new NDKEvent()
     event.kind = 1
     event.created_at = 1_700_000_000
     event.tags = []
     event.content = "public note"
 
-    await expect(event.sign(signer)).rejects.toThrow("message port closed")
+    await expect(signTestEvent(event, signer)).rejects.toThrow(
+      "message port closed"
+    )
 
     expect(signCalls).toBe(1)
   })
@@ -581,15 +584,15 @@ describe("NIP-07 availability", () => {
     const signer = new Nip07SessionSigner({
       readinessRetryDelaysMs: [0],
     })
-    await signer.user()
+    await signer.getPublicKey()
     const peer = new NDKUser({ pubkey: ACCOUNT_B_PUBKEY })
 
-    await expect(signer.encrypt(peer, "private", "nip44")).rejects.toThrow(
+    await expect(signer.encryptNip44(peer.pubkey, "private")).rejects.toThrow(
       "call already executing"
     )
-    await expect(signer.decrypt(peer, "ciphertext", "nip44")).rejects.toThrow(
-      "call already executing"
-    )
+    await expect(
+      signer.decryptNip44(peer.pubkey, "ciphertext")
+    ).rejects.toThrow("call already executing")
 
     expect(encryptCalls).toBe(1)
     expect(decryptCalls).toBe(1)
@@ -617,14 +620,14 @@ describe("NIP-07 availability", () => {
       readinessRetryDelaysMs: [0],
       onInvalidated: (error) => invalidationCodes.push(error.code),
     })
-    await signer.user()
+    await signer.getPublicKey()
     const event = new NDKEvent()
     event.kind = 1
     event.created_at = 1_700_000_000
     event.tags = []
     event.content = "public note"
 
-    await expect(event.sign(signer)).rejects.toThrow(
+    await expect(signTestEvent(event, signer)).rejects.toThrow(
       "NIP-07 extension not available"
     )
 
@@ -653,14 +656,14 @@ describe("NIP-07 availability", () => {
       readinessRetryDelaysMs: [0, 0],
       onInvalidated: (error) => invalidationCodes.push(error.code),
     })
-    await signer.user()
+    await signer.getPublicKey()
     const event = new NDKEvent()
     event.kind = 1
     event.created_at = 1_700_000_000
     event.tags = []
     event.content = "public note"
 
-    await expect(event.sign(signer)).rejects.toMatchObject({
+    await expect(signTestEvent(event, signer)).rejects.toMatchObject({
       code: "invalid_response",
     })
     expect(getPublicKeyCalls).toBe(2)
@@ -874,7 +877,6 @@ describe("NIP-46 AuthContext API", () => {
       connectStart
     )
     const connectAttempt = source.slice(connectStart, connectEnd)
-    const prepareClient = connectAttempt.indexOf("getNdk()")
     const persistRemote = connectAttempt.indexOf("persistRemoteSignerSession(")
     const persistNip07 = connectAttempt.indexOf(
       "sessionPersisted = writeAuthSession(session)"
@@ -883,7 +885,9 @@ describe("NIP-46 AuthContext API", () => {
       "if (!attemptIsCurrent())",
       persistNip07
     )
-    const installSigner = connectAttempt.indexOf("setSigner(sessionSigner)")
+    const installSigner = connectAttempt.indexOf(
+      "activateAccountSigner(sessionSigner)"
+    )
     const commitRemote = connectAttempt.indexOf(
       "remoteConnection.current = connectedRemote"
     )
@@ -898,9 +902,9 @@ describe("NIP-46 AuthContext API", () => {
     const catchEnd = connectAttempt.indexOf("} finally", catchStart)
     const catchBlock = connectAttempt.slice(catchStart, catchEnd)
 
-    expect(prepareClient).toBeGreaterThan(-1)
-    expect(persistRemote).toBeGreaterThan(prepareClient)
-    expect(persistNip07).toBeGreaterThan(prepareClient)
+    expect(connectAttempt).not.toContain("getNdk()")
+    expect(persistRemote).toBeGreaterThan(-1)
+    expect(persistNip07).toBeGreaterThan(-1)
     expect(finalAuthorityFence).toBeGreaterThan(persistNip07)
     expect(installSigner).toBeGreaterThan(finalAuthorityFence)
     expect(installSigner).toBeGreaterThan(persistRemote)
@@ -1092,7 +1096,7 @@ describe("authenticated signer readiness", () => {
   const capabilities = {
     signEvent: true,
     nip44: true,
-    nip04: false,
+    nip04Decrypt: false,
   }
   const signer = {} as NonNullable<AuthContextValue["signer"]>
 
@@ -1381,3 +1385,12 @@ describe("NIP-46 Clave handoff pairing", () => {
     )
   })
 })
+
+async function signTestEvent(event: NDKEvent, signer: Nip07SessionSigner) {
+  const signed = await signer.signEvent({
+    ...event.rawEvent(),
+    pubkey: event.pubkey || signer.pubkey,
+  })
+  Object.assign(event, signed)
+  return signed
+}

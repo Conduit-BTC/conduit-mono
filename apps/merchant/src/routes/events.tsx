@@ -8,7 +8,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query"
 import {
-  getNdk,
+  getAccountSigner,
   readEventMarketReadyReceipts,
   useAuth,
   useConduitSession,
@@ -1171,8 +1171,8 @@ export function MyEventsPanel({
           "A signed handoff update is already saved. Retry that exact update instead."
         )
       }
-      const ndk = getNdk()
-      if (!ndk.signer) throw new Error("Organizer signer is not connected.")
+      const signer = getAccountSigner()
+      if (!signer) throw new Error("Organizer signer is not connected.")
       const initiatingReference = input.reference
       const receiptReadResult = await handoffReceiptsQuery.refetch()
       if (!isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)) {
@@ -1228,7 +1228,7 @@ export function MyEventsPanel({
         claim: freshClaim,
         market: freshMarket.source,
         merchandise,
-        signer: ndk.signer,
+        signer,
         transport: {
           authenticatedPubkey: input.ownerPubkey,
           shouldContinue: () =>

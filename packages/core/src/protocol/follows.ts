@@ -14,7 +14,8 @@ import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { getNdk } from "./ndk"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
-import { NostrSignerError } from "./nostr-event-signer"
+import { NostrSignerError, type UnsignedNostrEvent } from "./nostr-event-signer"
+import { getAccountSigner } from "./session-signer"
 import {
   getRelayLists,
   getRelayListsDetailed,
@@ -164,6 +165,7 @@ const observedOwnFollowLists = new Map<string, ObservedOwnFollowList>()
 
 interface FollowListTestOverrides {
   getNdk?: typeof getNdk
+  getAccountSigner?: typeof getAccountSigner
   readLatestFollowLists?: typeof readLatestFollowLists
   publishWithPlanner?: typeof publishWithPlanner
   loadOwnContactListSnapshot?: (
@@ -1224,16 +1226,18 @@ export async function publishContactListUpdate({
   }
 
   const ndk = followListTestOverrides.getNdk?.() ?? getNdk()
-  if (!ndk.signer) throw new Error("Signer not connected")
-  const signer = ndk.signer
+  const readSigner =
+    followListTestOverrides.getAccountSigner ?? getAccountSigner
+  const signer = readSigner()
+  if (!signer) throw new Error("Signer not connected")
 
   const assertCurrentSignerSession = () => {
-    if (ndk.signer !== signer || isSessionCurrent?.() === false) {
+    if (readSigner() !== signer || isSessionCurrent?.() === false) {
       throw new Error("Signer session changed while updating the follow list")
     }
   }
 
-  const signerPubkey = normalizeHexPubkey((await signer.user()).pubkey)
+  const signerPubkey = normalizeHexPubkey(await signer.getPublicKey())
   if (signerPubkey !== normalizedOwnerPubkey) {
     throw new Error("Active signer does not match this follow list")
   }
@@ -1352,7 +1356,11 @@ export async function publishContactListUpdate({
 
   assertSafeReplaceablePublish(event, replaceableSafety)
   assertCurrentSignerSession()
-  await event.sign(signer)
+  event.pubkey = normalizedOwnerPubkey
+  Object.assign(
+    event,
+    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+  )
   assertCurrentSignerSession()
   const signedEvent = event.rawEvent() as SignedPublicNostrEvent
   assertCurrentSignerSession()

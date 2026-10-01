@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
 import NDK, { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { nip19 } from "nostr-tools"
@@ -1246,7 +1247,7 @@ describe("NIP-02 merchant trust helpers", () => {
 
     __setFollowListTestOverrides({
       ...snapshotCache.overrides,
-      getNdk: () => ndk,
+      getAccountSigner: () => plainTestSigner(ndk.signer!),
       readLatestFollowLists: readWithLag,
       publishWithPlanner: async (event, input) => {
         published.push(event.rawEvent() as SignedPublicNostrEvent)
@@ -1299,7 +1300,7 @@ describe("NIP-02 merchant trust helpers", () => {
 
     __setFollowListTestOverrides({
       ...snapshotCache.overrides,
-      getNdk: () => ndk,
+      getAccountSigner: () => plainTestSigner(ndk.signer!),
       readLatestFollowLists: async (input, options) => {
         expect(options.refreshRelayLists).toBe(true)
         preReadShouldContinue = options.shouldContinue
@@ -1393,7 +1394,7 @@ describe("NIP-02 merchant trust helpers", () => {
     let publishAttempts = 0
 
     __setFollowListTestOverrides({
-      getNdk: () => ndk,
+      getAccountSigner: () => plainTestSigner(ndk.signer!),
       readLatestFollowLists: async () => ({
         events: [],
         authors: [
@@ -1472,7 +1473,7 @@ describe("NIP-02 merchant trust helpers", () => {
     let publishAttempts = 0
 
     __setFollowListTestOverrides({
-      getNdk: () => ndk,
+      getAccountSigner: () => plainTestSigner(ndk.signer!),
       readLatestFollowLists: async (input, options) => {
         expect(options.refreshRelayLists).toBe(true)
         return await readLatestFollowLists(input, {
@@ -1591,7 +1592,7 @@ describe("NIP-02 merchant trust helpers", () => {
     const installOverrides = () =>
       __setFollowListTestOverrides({
         ...snapshotCache.overrides,
-        getNdk: () => ndk,
+        getAccountSigner: () => plainTestSigner(ndk.signer!),
         readLatestFollowLists: readWithLag,
         publishWithPlanner: async (event, input) => {
           publishedIds.push(event.id)

@@ -1,3 +1,4 @@
+import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   NDKEvent,
@@ -24,10 +25,7 @@ import {
   ProfilePublishSupersededError,
   type CachedProfile,
 } from "@conduit/core"
-import {
-  __resetNdkTestState,
-  setSigner,
-} from "../packages/core/src/protocol/ndk"
+import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
 
 const SECRET = generateSecretKey()
 const PUBKEY = getPublicKey(SECRET)

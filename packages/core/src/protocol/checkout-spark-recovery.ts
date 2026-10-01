@@ -1,4 +1,5 @@
-import { giftUnwrap, NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { NostrKeySigner } from "./nostr-event-signer"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 
@@ -10,6 +11,7 @@ import {
 import { EVENT_KINDS } from "./kinds"
 import {
   publishPrivateMessage,
+  unwrapPrivateMessageEnvelope,
   type PreparedPrivateMessageWraps,
   type PublishPrivateMessageInput,
   type PublishPrivateMessageResult,
@@ -128,7 +130,7 @@ export interface RetryCheckoutSparkRecoveryResult {
 
 export type CheckoutSparkRecoveryGiftUnwrap = (
   event: NDKEvent,
-  signer: NDKSigner
+  signer: NostrKeySigner
 ) => Promise<NDKEvent | null>
 
 function normalizeHex64(value: string, label: string): string {
@@ -562,7 +564,7 @@ function mergeAcknowledgedRelayRefs(input: {
  */
 export async function publishCheckoutSparkRecovery(input: {
   payload: CheckoutSparkRecoveryPayload
-  signer: NDKSigner
+  signer: NostrKeySigner
   signerInteraction?: PublishPrivateMessageInput["signerInteraction"]
   persistExactWrap: PersistCheckoutSparkRecoveryWrap
   transport?: CheckoutSparkRecoveryTransportOptions
@@ -767,7 +769,7 @@ export type InspectCheckoutSparkRecoveryWrapOutcome =
  */
 export async function inspectCheckoutSparkRecoveryWrap(input: {
   signedRecipientWrap: SignedPublicNostrEvent
-  signer: NDKSigner
+  signer: NostrKeySigner
   giftUnwrap?: CheckoutSparkRecoveryGiftUnwrap
 }): Promise<InspectCheckoutSparkRecoveryWrapOutcome> {
   const wrapId = input.signedRecipientWrap.id?.toLowerCase() ?? ""
@@ -778,7 +780,7 @@ export async function inspectCheckoutSparkRecoveryWrap(input: {
     return { status: "malformed", wrapId }
   }
   const signerPubkey = normalizeHex64(
-    (await input.signer.user()).pubkey,
+    await input.signer.getPublicKey(),
     "Recovery signer pubkey"
   )
   if (!hasExactOuterRecipient(input.signedRecipientWrap, signerPubkey)) {
@@ -789,7 +791,7 @@ export async function inspectCheckoutSparkRecoveryWrap(input: {
   try {
     rumor = input.giftUnwrap
       ? await input.giftUnwrap(wrapped, input.signer)
-      : await giftUnwrap(wrapped, undefined, input.signer, "nip44")
+      : await unwrapPrivateMessageEnvelope(wrapped, input.signer)
   } catch {
     rumor = null
   }
@@ -825,7 +827,7 @@ export async function inspectCheckoutSparkRecoveryWrap(input: {
  */
 export async function openCheckoutSparkRecoveryWrap(input: {
   signedRecipientWrap: SignedPublicNostrEvent
-  signer: NDKSigner
+  signer: NostrKeySigner
   giftUnwrap?: CheckoutSparkRecoveryGiftUnwrap
 }): Promise<OpenCheckoutSparkRecoveryWrapResult> {
   const outcome = await inspectCheckoutSparkRecoveryWrap(input)
@@ -848,7 +850,7 @@ export async function openCheckoutSparkRecoveryWrap(input: {
  */
 export async function openCheckoutSparkRecoveryDelivery(input: {
   record: CheckoutSparkRecoveryDeliveryRecord
-  signer: NDKSigner
+  signer: NostrKeySigner
   giftUnwrap?: CheckoutSparkRecoveryGiftUnwrap
 }): Promise<CheckoutSparkRecoveryPayload> {
   assertRecoveryDeliveryRecord(input.record)

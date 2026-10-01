@@ -1,5 +1,16 @@
 import { describe, expect, it } from "bun:test"
+import { installProtectedReadSigner } from "../packages/core/src/protocol/protected-read-authorization"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { NostrKeySigner, UnsignedNostrEvent } from "@conduit/core"
+
+async function signGuestEvent(event: NDKEvent, signer: NostrKeySigner) {
+  event.pubkey = signer.pubkey
+  event.created_at ??= Math.floor(Date.now() / 1000)
+  Object.assign(
+    event,
+    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+  )
+}
 
 import {
   GUEST_ORDER_SESSION_TTL_MS,
@@ -49,7 +60,7 @@ describe("guest order signing identity", () => {
     ]
     event.content = "order payload"
 
-    await event.sign(first.signer)
+    await signGuestEvent(event, first.signer)
 
     expect(event.pubkey).toBe(first.pubkey)
     expect(event.sig).toMatch(/^[0-9a-f]{128}$/)
@@ -63,11 +74,14 @@ describe("guest order signing identity", () => {
 
     expect("privateKey" in identity.signer).toBe(false)
     expect("nsec" in identity.signer).toBe(false)
-    expect(() => identity.signer.toPayload()).toThrow(
-      "Guest order signer is ephemeral and cannot be serialized."
-    )
+    expect("toPayload" in identity.signer).toBe(false)
     expect(JSON.stringify(identity)).not.toContain("nsec")
     expect(JSON.stringify(identity)).not.toContain("private")
+    expect("authMethod" in identity.signer).toBe(false)
+    expect("revision" in identity.signer).toBe(false)
+    expect(() =>
+      installProtectedReadSigner(identity.signer, identity.pubkey, () => true)
+    ).toThrow("Protected reads require a NIP-07 or NIP-46 account signer")
   })
 
   it("rejects public events and messages outside the guest order scope", async () => {
@@ -80,9 +94,9 @@ describe("guest order signing identity", () => {
     publicProduct.kind = 30402
     publicProduct.tags = [["d", "not-allowed"]]
 
-    await expect(publicProduct.sign(identity.signer)).rejects.toThrow(
-      "Guest signer can only sign private order envelopes."
-    )
+    await expect(
+      signGuestEvent(publicProduct, identity.signer)
+    ).rejects.toThrow("Guest signer can only sign private order envelopes.")
 
     const otherOrder = new NDKEvent()
     otherOrder.kind = 16
@@ -91,7 +105,7 @@ describe("guest order signing identity", () => {
       ["type", "order"],
       ["order", "different-order"],
     ]
-    await expect(otherOrder.sign(identity.signer)).rejects.toThrow(
+    await expect(signGuestEvent(otherOrder, identity.signer)).rejects.toThrow(
       "Guest signer cannot sign outside its order scope."
     )
 
@@ -102,12 +116,12 @@ describe("guest order signing identity", () => {
       ["type", "message"],
       ["order", "scoped-order"],
     ]
-    await expect(unsupportedMessage.sign(identity.signer)).rejects.toThrow(
-      "Guest signer cannot sign outside its order scope."
-    )
+    await expect(
+      signGuestEvent(unsupportedMessage, identity.signer)
+    ).rejects.toThrow("Guest signer cannot sign outside its order scope.")
 
     await expect(
-      identity.signer.decrypt("merchant", "ciphertext", "nip44")
+      identity.signer.decryptNip44("merchant", "ciphertext")
     ).rejects.toThrow("Guest order signer cannot decrypt inbound messages.")
   })
 
@@ -126,7 +140,7 @@ describe("guest order signing identity", () => {
     ]
     recovery.content = "encrypted later by the NIP-59 wrapper"
 
-    await expect(recovery.sign(identity.signer)).rejects.toThrow(
+    await expect(signGuestEvent(recovery, identity.signer)).rejects.toThrow(
       "Guest signer cannot sign outside its order scope."
     )
 
@@ -137,7 +151,7 @@ describe("guest order signing identity", () => {
       ["type", "payment_proof"],
       ["order", "recovery-order"],
     ]
-    await payment.sign(identity.signer)
+    await signGuestEvent(payment, identity.signer)
     expect(payment.pubkey).toBe(identity.pubkey)
     expect(payment.sig).toMatch(/^[0-9a-f]{128}$/)
 
@@ -148,9 +162,9 @@ describe("guest order signing identity", () => {
       ["type", "checkout_spark_recovery"],
       ["order", "recovery-order"],
     ]
-    await expect(otherMerchant.sign(identity.signer)).rejects.toThrow(
-      "Guest signer cannot sign outside its order scope."
-    )
+    await expect(
+      signGuestEvent(otherMerchant, identity.signer)
+    ).rejects.toThrow("Guest signer cannot sign outside its order scope.")
   })
 
   it("restores an order-scoped signer from session storage", async () => {
@@ -187,7 +201,7 @@ describe("guest order signing identity", () => {
     ]
     event.content = "payment proof"
 
-    await event.sign(restored!.signer)
+    await signGuestEvent(event, restored!.signer)
 
     expect(event.pubkey).toBe(created.pubkey)
     expect(JSON.stringify(restored)).not.toContain("private")

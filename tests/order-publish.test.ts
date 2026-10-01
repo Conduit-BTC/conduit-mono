@@ -1,5 +1,16 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import {
+  activateAccountSigner,
+  getAccountSigner,
+  retireAccountSigner,
+  SessionSigner,
+} from "../packages/core/src/protocol/session-signer"
+import {
+  setTestAccountSigner as setSigner,
+  removeTestAccountSigner as removeSigner,
+} from "./helpers/plain-signer"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { plainTestSigner } from "./helpers/plain-signer"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -13,8 +24,6 @@ import {
   EVENT_KINDS,
   getNdk,
   publishPrivateMessage,
-  removeSigner,
-  setSigner,
   unwrapGiftWrap,
   type OrderLifecycle,
   type OrderRelayDeliveryRepository,
@@ -68,12 +77,12 @@ describe("buyer order rumor preparation", () => {
     })
     const first = buildOrderCompanionNotificationRumor(
       authoritativeOrder,
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "merchant-pubkey"
     )
     const retry = buildOrderCompanionNotificationRumor(
       authoritativeOrder,
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "merchant-pubkey"
     )
 
@@ -84,7 +93,7 @@ describe("buyer order rumor preparation", () => {
   it("uses the selected Merchant deployment for signed-in companions", () => {
     const companion = buildOrderCompanionNotificationRumor(
       orderRumor(),
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "merchant-pubkey",
       "https://fix-293.conduit-merchant-33n.pages.dev"
     )
@@ -100,9 +109,12 @@ describe("buyer order rumor preparation", () => {
       getEventHash: () => "derived-id",
     })
 
-    expect(() => prepareBuyerRumor(rumor, "buyer-pubkey")).toThrow(
-      "does not match its content"
-    )
+    expect(() =>
+      prepareBuyerRumor(
+        rumor,
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      )
+    ).toThrow("does not match its content")
   })
 })
 
@@ -116,7 +128,8 @@ function orderRumor(overrides: Record<string, unknown> = {}) {
     content: JSON.stringify({
       id: "guest-order",
       merchantPubkey: "merchant-pubkey",
-      buyerPubkey: "buyer-pubkey",
+      buyerPubkey:
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       items: [
         {
           productId: "product-id",
@@ -180,6 +193,9 @@ function guestOrderRumor(overrides: Record<string, unknown> = {}) {
 }
 
 describe("buyer order publishing", () => {
+  beforeEach(() => {
+    installBuyerSigner()
+  })
   afterEach(() => {
     if (activeSignerLease) {
       removeSigner(activeSignerLease)
@@ -286,7 +302,7 @@ describe("buyer order publishing", () => {
     }
     const locators: Array<{ orderId: string; expiresAt: number }> = []
     let relayWrites = 0
-    const signer = { pubkey: buyerPubkey }
+    const signer = installBuyerSigner(buyerPubkey)
 
     const result = await publishBuyerOrderMessage(
       rumor,
@@ -372,8 +388,13 @@ describe("buyer order publishing", () => {
   for (const identityKind of ["signed_in", "guest_ephemeral"] as const) {
     it(`adopts durable first-ACK delivery and lazy recovery for ${identityKind}`, async () => {
       const buyerPubkey =
-        identityKind === "signed_in" ? "buyer-pubkey" : "guest-pubkey"
-      const signer = { id: `${identityKind}-signer` }
+        identityKind === "signed_in"
+          ? "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          : "guest-pubkey"
+      const signer =
+        identityKind === "signed_in"
+          ? installBuyerSigner(buyerPubkey)
+          : { id: `${identityKind}-signer` }
       const stagedRumor = orderRumor({
         pubkey: buyerPubkey,
         content: JSON.stringify({
@@ -620,7 +641,7 @@ describe("buyer order publishing", () => {
   }
 
   it("publishes a recipient-only kind-14 companion after signed-in order delivery", async () => {
-    const signer = { id: "connected-signer" }
+    const signer = getAccountSigner()!
     const calls: Array<Record<string, unknown>> = []
     let cached = false
     let authoritativeOrderSucceeded = false
@@ -636,10 +657,12 @@ describe("buyer order publishing", () => {
       authoritativeOrder,
       { signer } as never,
       "merchant-pubkey",
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
-        accountPubkey: "buyer-pubkey",
-        authenticatedPubkey: "buyer-pubkey",
+        accountPubkey:
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        authenticatedPubkey:
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         relayAuthMethod: "nip07",
         publishPrivateMessageFn: async (input) => {
           calls.push(input as unknown as Record<string, unknown>)
@@ -678,25 +701,38 @@ describe("buyer order publishing", () => {
     ])
 
     const orderCall = calls[0]
-    expect(orderCall?.senderPubkey).toBe("buyer-pubkey")
+    expect(orderCall?.senderPubkey).toBe(
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
     expect(orderCall?.recipientPubkey).toBe("merchant-pubkey")
     expect(orderCall?.signer).toBe(signer)
     expect(orderCall?.selfCopy).toBe(true)
-    expect(orderCall?.accountPubkey).toBe("buyer-pubkey")
-    expect(orderCall?.authenticatedPubkey).toBe("buyer-pubkey")
+    expect(orderCall?.accountPubkey).toBe(
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
+    expect(orderCall?.authenticatedPubkey).toBe(
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
     expect(orderCall?.signerInteraction).toBe("external")
     expect(orderCall?.relayAuthMethod).toBe("nip07")
     expect(orderCall?.validatedOrderScope).toMatchObject({
       rumorId: "order-rumor",
       orderId: "guest-order",
-      senderPubkey: "buyer-pubkey",
+      senderPubkey:
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       recipientPubkey: "merchant-pubkey",
     })
 
     const companionCall = calls[1]
-    expect(companionCall?.senderPubkey).toBe("buyer-pubkey")
-    expect(companionCall?.accountPubkey).toBe("buyer-pubkey")
-    expect(companionCall?.authenticatedPubkey).toBe("buyer-pubkey")
+    expect(companionCall?.senderPubkey).toBe(
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
+    expect(companionCall?.accountPubkey).toBe(
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
+    expect(companionCall?.authenticatedPubkey).toBe(
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
     expect(companionCall?.recipientPubkey).toBe("merchant-pubkey")
     expect(companionCall?.signer).toBe(signer)
     expect(companionCall?.selfCopy).toBe(false)
@@ -713,7 +749,9 @@ describe("buyer order publishing", () => {
       tags: string[][]
     }
     expect(companion.kind).toBe(EVENT_KINDS.DIRECT_MESSAGE)
-    expect(companion.pubkey).toBe("buyer-pubkey")
+    expect(companion.pubkey).toBe(
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
     expect(companion.created_at).toBe(100)
     expect(companion.tags).toEqual([
       ["p", "merchant-pubkey"],
@@ -746,7 +784,7 @@ describe("buyer order publishing", () => {
   })
 
   it("stops signed-in private delivery when the active signer changes before transport", async () => {
-    const signer = { id: "connected-signer" }
+    const signer = getAccountSigner()!
     const ndk = { signer }
     let enteredFinalPolicy!: () => void
     const finalPolicyStarted = new Promise<void>((resolve) => {
@@ -762,7 +800,7 @@ describe("buyer order publishing", () => {
       orderRumor(),
       ndk as never,
       "merchant-pubkey",
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
         shouldContinue: () => true,
         publishPrivateMessageFn: async (input) => {
@@ -784,7 +822,7 @@ describe("buyer order publishing", () => {
     )
 
     await finalPolicyStarted
-    ndk.signer = { id: "replacement-signer" }
+    installBuyerSigner("c".repeat(64))
     finishFinalPolicy()
 
     await expect(publishing).rejects.toThrow(
@@ -798,9 +836,7 @@ describe("buyer order publishing", () => {
     const merchantPubkey = "b".repeat(64)
     const merchantRelayUrl = "wss://merchant.inbox.conduit.market"
     const buyerRelayUrl = "wss://buyer.inbox.conduit.market"
-    const signer = {
-      user: async () => ({ pubkey: buyerPubkey }),
-    }
+    const signer = installBuyerSigner(buyerPubkey)
     const ndk = { signer }
     let sessionCurrent = true
     const published: string[] = []
@@ -915,9 +951,7 @@ describe("buyer order publishing", () => {
       })
     )
     const openedRelayUrls: string[] = []
-    const signer = {
-      user: async () => ({ pubkey: buyerPubkey }),
-    }
+    const signer = installBuyerSigner(buyerPubkey)
     const rumor = orderRumor({
       tags: [
         ["p", merchantPubkey],
@@ -975,7 +1009,8 @@ describe("buyer order publishing", () => {
       content: JSON.stringify({
         id: orderId,
         merchantPubkey: "merchant-pubkey",
-        buyerPubkey: "buyer-pubkey",
+        buyerPubkey:
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         items: [
           {
             productId: "sensitive-product-id",
@@ -1016,7 +1051,7 @@ describe("buyer order publishing", () => {
       sensitiveRumor,
       { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
         publishPrivateMessageFn: async (input) => {
           calls.push(input as never)
@@ -1146,7 +1181,7 @@ describe("buyer order publishing", () => {
     let guestInboxChecks = 0
     const merchantInboxRelay = "wss://merchant.inbox.conduit.market"
     const guestSigner = {
-      user: async () => ({ pubkey: "guest-pubkey" }),
+      getPublicKey: async () => "guest-pubkey",
     }
 
     const result = await publishBuyerOrderMessage(
@@ -1195,7 +1230,7 @@ describe("buyer order publishing", () => {
   })
 
   it("gift-wraps a guest order and PII-free companion only to the merchant", async () => {
-    const merchantSigner = NDKPrivateKeySigner.generate()
+    const merchantSigner = plainTestSigner(NDKPrivateKeySigner.generate())
     const merchant = await merchantSigner.user()
     const guestIdentity = createGuestOrderSigningIdentity(
       "guest-order",
@@ -1353,7 +1388,7 @@ describe("buyer order publishing", () => {
       orderRumor(),
       { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
         publishPrivateMessageFn: async () => {
           publishAttempts += 1
@@ -1387,7 +1422,7 @@ describe("buyer order publishing", () => {
       }),
       { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
         publishPrivateMessageFn: async () => {
           publishAttempts += 1
@@ -1414,7 +1449,8 @@ describe("buyer order publishing", () => {
           note: "Order reply",
           orderId: "guest-order",
           merchantPubkey: "merchant-pubkey",
-          buyerPubkey: "buyer-pubkey",
+          buyerPubkey:
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           createdAt: 100_000,
         }),
         tags: [
@@ -1425,7 +1461,7 @@ describe("buyer order publishing", () => {
       }),
       { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
         publishPrivateMessageFn: async () => {
           publishAttempts += 1
@@ -1452,7 +1488,7 @@ describe("buyer order publishing", () => {
         orderRumor(),
         { signer: { id: "connected-signer" } } as never,
         "merchant-pubkey",
-        "buyer-pubkey",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         {
           publishPrivateMessageFn: async () => {
             publishAttempts += 1
@@ -1480,7 +1516,7 @@ describe("buyer order publishing", () => {
       orderRumor(),
       { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
-      "buyer-pubkey",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       {
         publishPrivateMessageFn: async (input) => {
           publishAttempts += 1
@@ -1522,7 +1558,7 @@ describe("buyer order publishing", () => {
         orderRumor(),
         { signer: { id: "connected-signer" } } as never,
         "merchant-pubkey",
-        "buyer-pubkey",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         {
           publishPrivateMessageFn: async (input) => {
             publishAttempts += 1
@@ -1585,13 +1621,14 @@ describe("buyer order publishing", () => {
   })
 
   it("fails before publishing when no buyer signer is available", async () => {
+    retireAccountSigner(activeSignerLease!)
     let publishAttempts = 0
     await expect(
       publishBuyerOrderMessage(
         orderRumor(),
         {} as never,
         "merchant-pubkey",
-        "buyer-pubkey",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         {
           publishPrivateMessageFn: async () => {
             publishAttempts += 1
@@ -1617,7 +1654,8 @@ describe("buyer order publishing", () => {
     const replacementNdk = getNdk()
 
     expect(replacementNdk).not.toBe(originalNdk)
-    expect(replacementNdk.signer).toBe(signer)
+    expect(replacementNdk.signer).toBeUndefined()
+    expect(getAccountSigner()).toBe(activeSignerLease)
 
     await publishBuyerOrderMessage(
       orderRumor(),
@@ -1626,7 +1664,7 @@ describe("buyer order publishing", () => {
       {
         kind: "signed_in",
         pubkey: buyerPubkey,
-        signer: signer as never,
+        signer: activeSignerLease!,
       },
       {
         publishPrivateMessageFn: async () => {
@@ -1644,3 +1682,40 @@ describe("buyer order publishing", () => {
     expect(publishAttempts).toBe(1)
   })
 })
+
+function installBuyerSigner(
+  pubkey = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+) {
+  const signer = new SessionSigner(
+    {
+      pubkey,
+      getPublicKey: async () => pubkey,
+      signEvent: async () => {
+        throw new Error("fixture must not sign")
+      },
+      encryptNip44: async () => {
+        throw new Error("fixture must not encrypt")
+      },
+      decryptNip44: async () => {
+        throw new Error("fixture must not decrypt")
+      },
+      decryptLegacy: async () => {
+        throw new Error("fixture must not decrypt")
+      },
+    },
+    {
+      expectedPubkey: pubkey,
+      revision: "synthetic-revision",
+      authMethod: "nip07",
+      getCapabilities: () => ({
+        signEvent: true,
+        nip44: true,
+        nip04Decrypt: false,
+      }),
+      hasAuthority: () => true,
+    }
+  )
+  activateAccountSigner(signer)
+  activeSignerLease = signer
+  return signer
+}
