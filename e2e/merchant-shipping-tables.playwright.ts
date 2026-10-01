@@ -31,6 +31,7 @@ for (const [viewportName, width, height] of [
     browser,
   }, testInfo) => {
     test.setTimeout(180_000)
+    page.setDefaultTimeout(25_000)
     const secretKey = generateSecretKey()
     const pubkey = getPublicKey(secretKey)
     await seedTestRelayIdentity(secretKey)
@@ -337,6 +338,7 @@ for (const [viewportName, width, height] of [
       viewport: { width, height },
     })
     const second = await secondContext.newPage()
+    second.setDefaultTimeout(25_000)
     await installTestSigner(second, pubkey, { secretKey })
     await second.goto(`${merchantUrl}/shipping`)
     await expect(
