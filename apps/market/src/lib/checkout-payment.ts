@@ -228,10 +228,12 @@ function shippingCostNeedsFreshQuote(
     item.sourceShippingCost?.normalizedCurrency
   return (
     approximate &&
-    !!sourceCurrency &&
-    !isSatsLikeCurrency(sourceCurrency) &&
-    !isMsatsLikeCurrency(sourceCurrency) &&
-    !isBtcLikeCurrency(sourceCurrency)
+    (item.shippingPolicyQuote
+      ? item.shippingPolicyQuote.pricingRate != null
+      : !!sourceCurrency &&
+        !isSatsLikeCurrency(sourceCurrency) &&
+        !isMsatsLikeCurrency(sourceCurrency) &&
+        !isBtcLikeCurrency(sourceCurrency))
   )
 }
 
@@ -286,9 +288,7 @@ export function getCheckoutShippingCost(
   rateInput: PricingRateInput = null
 ): CheckoutShippingCostSummary {
   return resolveCartShippingCost(
-    getCheckoutShippingResolvableItems(
-      allocateShippingPolicyCosts(items, rateInput)
-    ),
+    getCheckoutShippingResolvableItems(allocateShippingPolicyCosts(items)),
     rateInput
   )
 }
@@ -298,7 +298,7 @@ export function buildCheckoutPricingIntent(
   rateInput: PricingRateInput,
   nowMs = Date.now()
 ): CheckoutPricingIntent {
-  items = allocateShippingPolicyCosts(items, rateInput)
+  items = allocateShippingPolicyCosts(items)
   const pricedItems: CheckoutPricingItem[] = []
   let itemSubtotalSats = 0
   let needsFreshQuote = false
@@ -366,10 +366,7 @@ export function buildCheckoutPricingIntent(
       ? typeof shippingItem.shippingAllocatedCostSats === "number"
         ? {
             sats: 0,
-            approximate:
-              !isSatsLikeCurrency(shippingItem.shippingPolicyQuote.currency) &&
-              !isMsatsLikeCurrency(shippingItem.shippingPolicyQuote.currency) &&
-              !isBtcLikeCurrency(shippingItem.shippingPolicyQuote.currency),
+            approximate: shippingItem.shippingPolicyQuote.pricingRate != null,
           }
         : null
       : getKnownShippingCostSats(shippingItem, rateInput)

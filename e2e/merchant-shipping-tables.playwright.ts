@@ -1,7 +1,12 @@
 import { expect, test, type Page } from "@playwright/test"
-import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
 import {
   installTestSigner,
+  publishTestRelayEvents,
   readTestRelayEvents,
   seedTestRelayIdentity,
 } from "./helpers/auth"
@@ -146,7 +151,7 @@ for (const [viewportName, width, height] of [
       .getByRole("heading", { name: "Shipping", exact: true })
       .scrollIntoViewIfNeeded()
     await page.screenshot({
-      path: `/private/tmp/shipping-rates-${viewportName}.png`,
+      path: testInfo.outputPath(`shipping-rates-${viewportName}.png`),
       fullPage: true,
     })
 
@@ -210,7 +215,7 @@ for (const [viewportName, width, height] of [
           .getByLabel("Shipping weight", { exact: true })
           .scrollIntoViewIfNeeded()
         await page.screenshot({
-          path: "/private/tmp/shipping-product-mobile.png",
+          path: testInfo.outputPath("shipping-product-mobile.png"),
         })
       }
       await expect(
@@ -256,6 +261,76 @@ for (const [viewportName, width, height] of [
       }
       expect(product.tags.some((tag) => tag[0] === "weight")).toBe(true)
     }
+
+    await page
+      .getByRole("button", { name: "Edit", exact: true })
+      .first()
+      .click()
+    const edit = page.getByRole("dialog", { name: "Edit listing" })
+    const measurements = edit.getByRole("region", {
+      name: "Product shipping measurements",
+      exact: true,
+    })
+    await expect(
+      measurements.getByLabel("Shipping weight", { exact: true })
+    ).toBeDisabled()
+    await edit
+      .getByRole("button", { name: "Change fulfillment", exact: true })
+      .click()
+    await expect(
+      measurements.getByLabel("Shipping weight", { exact: true })
+    ).toBeEnabled()
+    await measurements.getByLabel("Weight unit", { exact: true }).click()
+    await page.getByRole("option", { name: "Grams", exact: true }).click()
+    await measurements
+      .getByLabel("Shipping weight", { exact: true })
+      .fill("450")
+    await measurements
+      .getByText("Packing and dimensions", { exact: true })
+      .click()
+    await measurements
+      .getByLabel("Extra packing weight", { exact: true })
+      .fill("75")
+    await measurements
+      .getByLabel("Handling per item", { exact: true })
+      .fill("2")
+    const editedTitle = await edit
+      .getByLabel("Title", { exact: true })
+      .inputValue()
+    await edit
+      .getByRole("button", {
+        name: /Publish changes|Save changes|Update product/,
+        exact: true,
+      })
+      .click()
+    await expect(edit).not.toBeVisible({ timeout: 30_000 })
+    await expect
+      .poll(async () => {
+        const events = await readTestRelayEvents({
+          kinds: [30402],
+          authors: [pubkey],
+        })
+        return events
+          .find((event) =>
+            event.tags.some(
+              (tag) => tag[0] === "title" && tag[1] === editedTitle
+            )
+          )
+          ?.tags.find((tag) => tag[0] === "weight")?.[1]
+      })
+      .toBe("450")
+    const editedEvent = (
+      await readTestRelayEvents({ kinds: [30402], authors: [pubkey] })
+    ).find((event) =>
+      event.tags.some((tag) => tag[0] === "title" && tag[1] === editedTitle)
+    )!
+    expect(
+      JSON.parse(
+        editedEvent.tags.find(
+          (tag) => tag[0] === "conduit_shipping_adjustments"
+        )![2]!
+      )
+    ).toMatchObject({ weightAllowanceGrams: 75, handling: { amount: 2 } })
 
     // A new browser storage context reads the public signed table independently.
     const secondContext = await browser.newContext({
@@ -307,3 +382,155 @@ for (const [viewportName, width, height] of [
     expect(testInfo.errors).toHaveLength(0)
   })
 }
+
+test("late shipping revisions and withdrawals require explicit draft review before signing @merchant", async ({
+  page,
+}) => {
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  await seedTestRelayIdentity(secretKey)
+  const table = {
+    version: 2,
+    title: "Rates",
+    originCountry: "US",
+    currency: "SATS",
+    domestic: {
+      rules: [
+        { country: "US", bands: [{ maxWeightGrams: 1000, priceMinor: 100 }] },
+      ],
+    },
+    international: null,
+  }
+  const initial = finalizeEvent(
+    {
+      kind: 30406,
+      created_at: Math.floor(Date.now() / 1000) - 10,
+      content: "Synthetic rates",
+      tags: [
+        ["d", "conduit-shipping-policy"],
+        ["title", "Rates"],
+        ["price", "100", "SATS"],
+        ["country", "US"],
+        ["service", "standard"],
+        ["conduit_shipping_table", "2", JSON.stringify(table)],
+      ],
+    },
+    secretKey
+  )
+  await publishTestRelayEvents([initial])
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${merchantUrl}/shipping`)
+  const price = page.getByLabel("Shipping price", { exact: true }).first()
+  await expect(price).toHaveValue("100")
+  await price.fill("101")
+  const newer = finalizeEvent(
+    {
+      ...initial,
+      created_at: initial.created_at + 1,
+      tags: initial.tags.map((tag) =>
+        tag[0] === "price"
+          ? ["price", "200", "SATS"]
+          : tag[0] === "conduit_shipping_table"
+            ? [
+                tag[0],
+                "2",
+                JSON.stringify({
+                  ...table,
+                  domestic: {
+                    rules: [
+                      {
+                        country: "US",
+                        bands: [{ maxWeightGrams: 1000, priceMinor: 200 }],
+                      },
+                    ],
+                  },
+                }),
+              ]
+            : tag
+      ),
+    },
+    secretKey
+  )
+  await publishTestRelayEvents([newer])
+  async function refresh() {
+    await page
+      .getByRole("button", { name: "Check for updates", exact: true })
+      .click()
+  }
+  await refresh()
+  await expect(
+    page.getByRole("button", { name: "Load latest rates" })
+  ).toBeVisible()
+  await expect(price).toHaveValue("101")
+  const publish = page.getByRole("button", {
+    name: "Publish rate changes",
+    exact: true,
+  })
+  await expect(publish).toBeDisabled()
+  await page.evaluate(() => {
+    const signer = (
+      window as unknown as {
+        nostr: { signEvent: (...args: unknown[]) => Promise<unknown> }
+      }
+    ).nostr
+    const sign = signer.signEvent.bind(signer)
+    const state = window as unknown as { shippingSignCount: number }
+    state.shippingSignCount = 0
+    signer.signEvent = async (...args) => {
+      state.shippingSignCount++
+      return sign(...args)
+    }
+    document
+      .querySelector('section[aria-label="Shipping rates"] form')!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+  })
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { shippingSignCount: number }).shippingSignCount
+    )
+  ).toBe(0)
+  await page.getByRole("button", { name: "Load latest rates" }).click()
+  await expect(price).toHaveValue("200")
+  await price.fill("201")
+  const deletion = finalizeEvent(
+    {
+      kind: 5,
+      created_at: newer.created_at + 1,
+      content: "Synthetic withdrawal",
+      tags: [
+        ["a", `30406:${pubkey}:conduit-shipping-policy`],
+        ["e", newer.id],
+        ["k", "30406"],
+      ],
+    },
+    secretKey
+  )
+  await publishTestRelayEvents([deletion])
+  await refresh()
+  await expect(
+    page.getByRole("button", { name: "Load latest rates" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Publish shipping rates", exact: true })
+  ).toBeDisabled()
+  await expect(price).toHaveValue("201")
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { shippingSignCount: number }).shippingSignCount
+    )
+  ).toBe(0)
+  await page.getByRole("button", { name: "Load latest rates" }).click()
+  await chooseCountry(page, "Origin country", "United States")
+  await page.getByLabel("Shipping currency", { exact: true }).click()
+  await page.getByRole("option", { name: "SATS", exact: true }).click()
+  await page.getByLabel("Up to weight", { exact: true }).first().fill("1000")
+  await price.fill("300")
+  await page
+    .getByRole("button", { name: "Publish shipping rates", exact: true })
+    .click()
+  await expect(page.getByText(/Shipping rates published\./)).toBeVisible({
+    timeout: 20_000,
+  })
+})

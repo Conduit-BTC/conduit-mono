@@ -54,7 +54,7 @@ function signedProduct(currency = "USD"): SignedPublicNostrEvent {
       tags: [
         ["d", "one"],
         ["title", "One"],
-        ["price", "20", currency],
+        ["price", currency === "MSATS" ? "20000" : "20", currency],
         ["type", "simple", "physical"],
         ["weight", "200", "g"],
         ["shipping_option", coordinate],
@@ -131,7 +131,11 @@ function quote(
         quantity: 2,
         weightGrams: 200,
         currency: value.currency,
-        subtotalMinor: 4000,
+        subtotalMinor:
+          shippingAmountToMinor(
+            value.currency === "MSATS" ? 20000 : 20,
+            value.currency
+          ) * 2,
       },
     ],
     destination: { country: "US", subdivision: "NY", postalCode: "10001" },
@@ -615,7 +619,7 @@ describe("shipping signed terms and product wire tags", () => {
     ).toMatchObject({ totalSats: 0, status: "manual" })
   })
   it("binds immutable quote groups to order items, destination, and totals", () => {
-    const snapshot = quote()
+    const snapshot = quote(policy, { rateInput: 1_000_000 })
     const order = {
       id: "order",
       merchantPubkey: merchant,
@@ -651,6 +655,64 @@ describe("shipping signed terms and product wire tags", () => {
       createdAt: 20,
     }
     expect(orderSchema.safeParse(order).success).toBe(true)
+    for (const currency of ["BTC", "MSATS"]) {
+      const native = quote({
+        ...policy,
+        currency,
+        handlingMinor: 0,
+        domestic: {
+          rules: [
+            {
+              country: "US",
+              bands: [{ maxWeightGrams: 1000, priceMinor: 1000 }],
+            },
+          ],
+        },
+      })
+      const sats = convertShippingMinor(native.amountMinor, currency, "SATS")
+      const nativeOrder = {
+        ...order,
+        shippingCostSats: sats,
+        items: [
+          {
+            ...order.items[0],
+            sourcePrice: {
+              amount: currency === "MSATS" ? 20000 : 20,
+              currency,
+              normalizedCurrency: currency,
+            },
+            shippingPolicyQuote: native,
+            shippingAllocatedCostSats: sats,
+          },
+        ],
+      }
+      expect(orderSchema.safeParse(nativeOrder).success).toBe(true)
+      expect(
+        orderSchema.safeParse({
+          ...nativeOrder,
+          shippingCostSats: sats + 1,
+          items: [
+            { ...nativeOrder.items[0], shippingAllocatedCostSats: sats + 1 },
+          ],
+        }).success
+      ).toBe(false)
+    }
+
+    expect(
+      orderSchema.safeParse({
+        ...order,
+        shippingCostSats: 1,
+        items: [{ ...order.items[0], shippingAllocatedCostSats: 1 }],
+      }).success
+    ).toBe(false)
+    const legacy = quote()
+    expect(shippingPolicyQuoteSchema.safeParse(legacy).success).toBe(true)
+    expect(
+      orderSchema.safeParse({
+        ...order,
+        items: [{ ...order.items[0], shippingPolicyQuote: legacy }],
+      }).success
+    ).toBe(false)
     expect(
       orderSchema.safeParse({
         ...order,
@@ -1208,7 +1270,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
     expect(result.quote).toMatchObject({
       version: 2,
       combinedWeightGrams: 1150,
-      shippedSubtotalMinor: 1600,
+      shippedSubtotalMinor: 0,
       handlingMinor: 2,
       amountMinor: 502,
       amountSats: 10040,
@@ -1217,18 +1279,33 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
         {
           currency: "EUR",
           subtotalMinor: 3000,
-          convertedSubtotalMinor: 1500,
+          convertedSubtotalMinor: 0,
           convertedHandlingMinor: 2,
         },
         {
           currency: "SATS",
           subtotalMinor: 2000,
-          convertedSubtotalMinor: 100,
+          convertedSubtotalMinor: 0,
           convertedHandlingMinor: 0,
         },
       ],
     })
     expect(shippingPolicyQuoteSchema.safeParse(result.quote).success).toBe(true)
+    const historical = {
+      ...result.quote,
+      shippedSubtotalMinor: 1600,
+      items: result.quote.items.map((item, index) => ({
+        ...item,
+        convertedSubtotalMinor: index === 0 ? 1500 : 100,
+      })),
+    }
+    expect(shippingPolicyQuoteSchema.safeParse(historical).success).toBe(true)
+    expect(
+      shippingPolicyQuoteSchema.safeParse({
+        ...historical,
+        shippedSubtotalMinor: 1,
+      }).success
+    ).toBe(false)
     for (const forged of [
       { ...result.quote, amountSats: 10041 },
       { ...result.quote, pricingRate: { ...rates, rate: 25_000 } },

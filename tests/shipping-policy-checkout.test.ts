@@ -1022,3 +1022,91 @@ describe("per-product shipping adjustments with saved currency conversions", () 
     ).toBe(true)
   })
 })
+
+describe("shipping review regressions", () => {
+  it("prices an explicit zero fiat band without FX, but still requires threshold, handling and positive-charge conversions", () => {
+    const zero = mixedOption({
+      currency: "USD",
+      domestic: {
+        rules: [
+          { country: "US", bands: [{ maxWeightGrams: 1000, priceMinor: 0 }] },
+        ],
+      },
+    })
+    const items = [raw("zero-fiat")]
+    const prepared = prepareCartFulfillment(items, [zero], destination, null)
+    expect(prepared.items[0]!.shippingPolicyQuote).toMatchObject({
+      amountSats: 0,
+      pricingRate: null,
+    })
+    const checkout = priced(prepared.items, null)
+    expect(checkout.shippingCost).toMatchObject({
+      status: "included",
+      totalSats: 0,
+    })
+    expect(checkout.approximate).toBe(false)
+    expect(orderSchema.safeParse(payload(checkout.items, 0)).success).toBe(true)
+    for (const table of [
+      mixedOption({
+        currency: "USD",
+        domestic: {
+          rules: [
+            {
+              country: "US",
+              bands: [{ maxWeightGrams: 1000, priceMinor: 100 }],
+            },
+          ],
+        },
+      }),
+      mixedOption({
+        currency: "USD",
+        domestic: {
+          ...zero.shippingPolicy!.domestic!,
+          freeShippingThresholdMinor: 100,
+        },
+      }),
+    ]) {
+      expect(
+        prepareCartFulfillment(items, [table], destination, null).items[0]!
+          .shippingPolicyQuote
+      ).toBeUndefined()
+    }
+    const stale = mixedRate({ fetchedAt: 1, source: "mempool" })
+    const unusedRate = prepareCartFulfillment(items, [zero], destination, stale)
+    expect(priced(unusedRate.items, stale).approximate).toBe(false)
+    const threshold = mixedOption({
+      currency: "USD",
+      domestic: {
+        ...zero.shippingPolicy!.domestic!,
+        freeShippingThresholdMinor: 0,
+      },
+    })
+    const waived = prepareCartFulfillment(
+      items,
+      [threshold],
+      destination,
+      stale
+    )
+    expect(waived.items[0]!.shippingPolicyQuote).toMatchObject({
+      amountSats: 0,
+      pricingRate: stale,
+    })
+    expect(buildCheckoutPricingIntent(waived.items, stale)).toMatchObject({
+      status: "error",
+      code: "stale_quote",
+    })
+    const handled = [
+      createCartItemFromProduct(
+        mixedProduct("zero-handled", {
+          currency: "SATS",
+          price: 100,
+          handling: 1,
+        })
+      ),
+    ]
+    expect(
+      prepareCartFulfillment(handled, [zero], destination, null).items[0]!
+        .shippingPolicyQuote
+    ).toBeUndefined()
+  })
+})

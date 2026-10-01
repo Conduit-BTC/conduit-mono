@@ -3772,6 +3772,7 @@ function ProductsPage() {
                 {form.format === "physical" && !productIsLocalPickup && (
                   <div className="sm:col-span-4">
                     <ProductShippingMeasurements
+                      disabled={preservingFulfillment}
                       form={form}
                       onChange={(update) =>
                         setForm((current) => ({ ...current, ...update }))

@@ -1,9 +1,4 @@
-import {
-  normalizeCommercePrice,
-  hasSameShippingPolicyQuote,
-  shippingMinorToAmount,
-  type PricingRateInput,
-} from "@conduit/core"
+import { convertShippingMinor, hasSameShippingPolicyQuote } from "@conduit/core"
 import type { CartItem } from "./cart-model"
 
 function handlingFingerprint(value: CartItem["shippingHandling"]): string {
@@ -14,8 +9,7 @@ function handlingFingerprint(value: CartItem["shippingHandling"]): string {
 
 /** Convert once per compatible signed policy revision, then apportion whole sats. */
 export function allocateShippingPolicyCosts(
-  items: readonly CartItem[],
-  rateInput: PricingRateInput
+  items: readonly CartItem[]
 ): CartItem[] {
   const result = items.map((item) => ({
     ...item,
@@ -67,20 +61,21 @@ export function allocateShippingPolicyCosts(
       )
     )
       continue
-    // V2 already converts once using the exact rate saved with the quote.
+    // Converted quotes retain the exact settlement amount.
     // A later display-rate refresh must not reinterpret its agreed result.
-    const normalized =
-      quote.version === 2
-        ? Number.isSafeInteger(quote.amountSats) && quote.amountSats >= 0
-          ? { status: "ok" as const, sats: quote.amountSats }
-          : { status: "invalid" as const }
-        : normalizeCommercePrice(
-            shippingMinorToAmount(quote.amountMinor, quote.currency),
-            quote.currency,
-            rateInput,
-            { allowZero: true }
-          )
-    if (normalized.status !== "ok") continue
+    let amountSats = quote.amountSats
+    if (amountSats === undefined) {
+      try {
+        amountSats = convertShippingMinor(
+          quote.amountMinor,
+          quote.currency,
+          "SATS"
+        )
+      } catch {
+        continue
+      }
+    }
+    if (!Number.isSafeInteger(amountSats) || amountSats < 0) continue
     const quantity = group.reduce((sum, item) => sum + item.quantity, 0)
     if (!Number.isSafeInteger(quantity) || quantity <= 0) continue
     const ordered = [...group].sort((a, b) =>
@@ -89,11 +84,11 @@ export function allocateShippingPolicyCosts(
     let allocated = 0
     for (const item of ordered) {
       item.shippingAllocatedCostSats = Number(
-        (BigInt(normalized.sats) * BigInt(item.quantity)) / BigInt(quantity)
+        (BigInt(amountSats) * BigInt(item.quantity)) / BigInt(quantity)
       )
       allocated += item.shippingAllocatedCostSats
     }
-    let remaining = normalized.sats - allocated
+    let remaining = amountSats - allocated
     for (const item of ordered) {
       if (remaining-- <= 0) break
       item.shippingAllocatedCostSats! += 1

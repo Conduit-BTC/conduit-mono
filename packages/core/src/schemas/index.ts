@@ -3,11 +3,12 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "../protocol/signed-event"
-import { normalizeCurrencyIdentity, isSatsLikeCurrency } from "../pricing"
+import { normalizeCurrencyIdentity } from "../pricing"
 import {
   shippingPolicySchema,
   shippingPolicyQuoteSchema,
   shippingAmountToMinor,
+  convertShippingMinor,
   normalizeShippingPolicyRegion,
   hasSameShippingPolicyQuote,
 } from "../protocol/shipping-policy"
@@ -1123,18 +1124,29 @@ export const orderSchema = z
           invalid = true
         }
       }
-      if (quote.version === 2 || isSatsLikeCurrency(quote.currency)) {
-        const groupAllocation = group.reduce(
-          (sum, item) => sum + (item.shippingAllocatedCostSats ?? 0),
-          0
-        )
-        if (
-          !Number.isSafeInteger(groupAllocation) ||
-          groupAllocation !==
-            (quote.version === 2 ? quote.amountSats : quote.amountMinor)
-        )
+      const groupAllocation = group.reduce(
+        (sum, item) => sum + (item.shippingAllocatedCostSats ?? 0),
+        0
+      )
+      let expectedAllocation = quote.amountSats
+      if (expectedAllocation === undefined) {
+        try {
+          // Historical native Bitcoin amounts are exact; legacy fiat quotes
+          // remain readable but cannot establish an automatic settlement amount.
+          expectedAllocation = convertShippingMinor(
+            quote.amountMinor,
+            quote.currency,
+            "SATS"
+          )
+        } catch {
           invalid = true
+        }
       }
+      if (
+        !Number.isSafeInteger(groupAllocation) ||
+        groupAllocation !== expectedAllocation
+      )
+        invalid = true
       if (invalid)
         context.addIssue({
           code: "custom",

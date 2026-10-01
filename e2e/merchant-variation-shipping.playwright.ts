@@ -129,7 +129,9 @@ test("variation measurements require explicit sharing and preserve independent a
   })
   expect(duplicateIds).toEqual([])
   await page.screenshot({
-    path: `/private/tmp/pr588-variation-individual-${testInfo.project.name}.png`,
+    path: testInfo.outputPath(
+      `pr588-variation-individual-${testInfo.project.name}.png`
+    ),
   })
   await publish.click()
   await expect(dialog).not.toBeVisible({ timeout: 30_000 })
@@ -201,7 +203,9 @@ test("variation measurements require explicit sharing and preserve independent a
     editSmall.getByLabel("Handling per item", { exact: true })
   ).toHaveValue("10")
   await page.screenshot({
-    path: `/private/tmp/pr588-variation-shared-${testInfo.project.name}.png`,
+    path: testInfo.outputPath(
+      `pr588-variation-shared-${testInfo.project.name}.png`
+    ),
   })
   await edit.getByRole("button", { name: "Save changes", exact: true }).click()
   await expect(edit).not.toBeVisible({ timeout: 30_000 })

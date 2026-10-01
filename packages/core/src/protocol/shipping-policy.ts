@@ -688,6 +688,8 @@ const shippingQuoteFields = z
   .strict()
 const shippingPolicyQuoteV1Schema = shippingQuoteFields.extend({
   version: z.literal(1),
+  amountSats: integer.optional(),
+  pricingRate: shippingPricingRateSchema.optional(),
   items: z.array(shippingQuoteItemSchema).min(1),
 })
 const shippingPolicyQuoteV2Schema = shippingQuoteFields.extend({
@@ -738,8 +740,51 @@ export const shippingPolicyQuoteSchema = z
       policyEvent: event,
       items: quote.items,
       destination: quote.destination,
-      rateInput: quote.version === 2 ? quote.pricingRate : undefined,
+      rateInput: quote.pricingRate,
     })
+    // Earlier v2 snapshots converted merchandise even without a threshold.
+    // Preserve readback of those exact terms using their retained rate only.
+    if (
+      result.status === "quoted" &&
+      quote.version === 2 &&
+      result.quote.version === 2
+    ) {
+      const table =
+        quote.destination.country === policy.originCountry
+          ? policy.domestic
+          : policy.international
+      if (
+        table?.freeShippingThresholdMinor === undefined &&
+        !hasSameShippingPolicyQuote(result.quote, quote)
+      ) {
+        try {
+          const converted = quote.items.map((item) =>
+            convertShippingMinor(
+              item.subtotalMinor,
+              item.currency,
+              policy.currency,
+              quote.pricingRate
+            )
+          )
+          result.quote.shippedSubtotalMinor = converted.reduce(
+            (sum, amount) => sum + amount,
+            0
+          )
+          result.quote.items.forEach((item, index) => {
+            item.convertedSubtotalMinor = converted[index]!
+          })
+          // The old snapshot retained the rate used for these optional conversions.
+          result.quote.pricingRate = quote.pricingRate
+        } catch {
+          context.addIssue({
+            code: "custom",
+            message:
+              "Historical shipping subtotal conversion cannot be verified.",
+          })
+          return
+        }
+      }
+    }
     if (
       result.status !== "quoted" ||
       !hasSameShippingPolicyQuote(result.quote, quote)
@@ -995,19 +1040,22 @@ export function previewShippingPolicy(input: {
         item.quantity,
     policy.version === 1 ? policy.weightAllowanceGrams : 0
   )
+  const needsSubtotal =
+    policy.version === 1 || table!.freeShippingThresholdMinor !== undefined
   let shippedSubtotalMinor = 0
   let handlingMinor = policy.version === 1 ? policy.handlingMinor : 0
   try {
     for (const item of items) {
-      shippedSubtotalMinor +=
-        policy.version === 1
-          ? item.subtotalMinor
-          : convertShippingMinor(
-              item.subtotalMinor,
-              item.currency,
-              policy.currency,
-              input.rateInput ?? null
-            )
+      if (needsSubtotal)
+        shippedSubtotalMinor +=
+          policy.version === 1
+            ? item.subtotalMinor
+            : convertShippingMinor(
+                item.subtotalMinor,
+                item.currency,
+                policy.currency,
+                input.rateInput ?? null
+              )
       if (policy.version === 2 && item.shippingHandling) {
         const handling = item.shippingHandling
         if (
@@ -1183,10 +1231,31 @@ export function quoteShippingPolicy(input: {
     rateInput: input.rateInput,
   })
   if (calculation.status !== "quoted") return calculation
-  const { status, amountSats, ...terms } = calculation
+  const { status, amountSats: calculatedSats, ...terms } = calculation
+  let amountSats = calculatedSats
+  const retainsConversion =
+    policy.version === 2 || input.rateInput !== undefined
+  if (policy.version === 1 && retainsConversion) {
+    try {
+      amountSats = convertShippingMinor(
+        terms.amountMinor,
+        policy.currency,
+        "SATS",
+        input.rateInput
+      )
+    } catch {
+      return { status: "rate_required" }
+    }
+  }
+  const table =
+    terms.destination.country === policy.originCountry
+      ? policy.domestic
+      : policy.international
+  const needsSubtotal =
+    policy.version === 1 || table?.freeShippingThresholdMinor !== undefined
   if (policy.version === 2 && amountSats === undefined)
     return { status: "rate_required" }
-  if (policy.version === 2 && terms.amountMinor > 0 && amountSats === 0)
+  if (retainsConversion && terms.amountMinor > 0 && amountSats === 0)
     return { status: "invalid_items" }
   const usesRate = (from: string, to: string, minor: number) =>
     minor !== 0 &&
@@ -1199,7 +1268,9 @@ export function quoteShippingPolicy(input: {
     usesRate(policy.currency, "SATS", terms.amountMinor) ||
     items.some(
       (item) =>
-        usesRate(item.currency, policy.currency, item.subtotalMinor) ||
+        (policy.version === 2 &&
+          needsSubtotal &&
+          usesRate(item.currency, policy.currency, item.subtotalMinor)) ||
         (item.shippingHandling &&
           usesRate(
             item.shippingHandling.currency,
@@ -1214,7 +1285,7 @@ export function quoteShippingPolicy(input: {
     status,
     quote: {
       version: policy.version,
-      ...(policy.version === 2
+      ...(retainsConversion
         ? {
             amountSats: amountSats!,
             pricingRate: structuredClone(
@@ -1247,12 +1318,14 @@ export function quoteShippingPolicy(input: {
               ...(item.shippingHandling
                 ? { shippingHandling: structuredClone(item.shippingHandling) }
                 : {}),
-              convertedSubtotalMinor: convertShippingMinor(
-                item.subtotalMinor,
-                item.currency,
-                policy.currency,
-                input.rateInput ?? null
-              ),
+              convertedSubtotalMinor: needsSubtotal
+                ? convertShippingMinor(
+                    item.subtotalMinor,
+                    item.currency,
+                    policy.currency,
+                    input.rateInput ?? null
+                  )
+                : 0,
               convertedHandlingMinor: item.shippingHandling
                 ? convertShippingMinor(
                     shippingAmountToMinor(

@@ -8,6 +8,7 @@ import {
   useAuth,
   withdrawMerchantShippingPolicy,
   type ShippingPolicy,
+  type ShippingPolicyRevision,
 } from "@conduit/core"
 import {
   AlertDialog,
@@ -98,17 +99,34 @@ export function MerchantShippingPolicyEditor() {
   })
   const remote = query.data?.state === "found" ? query.data : null
   const needsUpgrade = remote?.policy.version === 1
-  const hydratedRevision = useRef<string | null>(null)
-  useEffect(() => {
-    if (
-      !remote ||
-      dirty ||
-      hydratedRevision.current === remote.revision.eventId
+  const [acceptedRevision, setAcceptedRevision] =
+    useState<ShippingPolicyRevision | null>(null)
+  const observedRevision =
+    query.data && query.data.state !== "not_found"
+      ? (query.data.revision ?? null)
+      : null
+  const revisionChanged =
+    (observedRevision?.eventId ?? null) !== (acceptedRevision?.eventId ?? null)
+  function loadLatestRates() {
+    setDraft(
+      remote
+        ? shippingPolicyToDraft(remote.policy)
+        : createShippingPolicyDraft()
     )
-      return
-    setDraft(shippingPolicyToDraft(remote.policy))
-    hydratedRevision.current = remote.revision.eventId
-  }, [remote, dirty])
+    setAcceptedRevision(observedRevision)
+    setDirty(false)
+    setStatus({ state: "idle" })
+  }
+  useEffect(() => {
+    if (dirty || !query.data || query.data.state === "unavailable") return
+    if (!revisionChanged) return
+    setDraft(
+      remote
+        ? shippingPolicyToDraft(remote.policy)
+        : createShippingPolicyDraft()
+    )
+    setAcceptedRevision(observedRevision)
+  }, [remote, dirty, query.data, revisionChanged, observedRevision])
   function update(update: Partial<ShippingPolicyDraft>) {
     setDraft((current) => ({ ...current, ...update }))
     setDirty(true)
@@ -123,16 +141,22 @@ export function MerchantShippingPolicyEditor() {
   }
   async function publish(event: React.FormEvent) {
     event.preventDefault()
-    if (!pubkey || !policy || busy || authStatus !== "connected") return
+    if (
+      !pubkey ||
+      !policy ||
+      busy ||
+      revisionChanged ||
+      query.isPending ||
+      authStatus !== "connected"
+    )
+      return
     setBusy(true)
     setStatus({ state: "idle" })
     try {
       await publishMerchantShippingPolicy({
         pubkey,
         policy,
-        acceptedRevision:
-          remote?.revision ??
-          (query.data?.state === "withdrawn" ? query.data.revision : null),
+        acceptedRevision,
         dependencies: {
           shouldContinue: () => generationRef.current === authGeneration,
         },
@@ -152,12 +176,13 @@ export function MerchantShippingPolicyEditor() {
     }
   }
   async function withdraw() {
-    if (!pubkey || !remote || busy) return
+    if (!pubkey || !remote || !acceptedRevision || busy || revisionChanged)
+      return
     setBusy(true)
     try {
       await withdrawMerchantShippingPolicy({
         pubkey,
-        acceptedRevision: remote.revision,
+        acceptedRevision,
         dependencies: {
           shouldContinue: () => generationRef.current === authGeneration,
         },
@@ -192,6 +217,15 @@ export function MerchantShippingPolicyEditor() {
                 ? "Published"
                 : "Not published"}
         </Badge>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={busy || query.isFetching}
+          onClick={() => void query.refetch()}
+        >
+          Check for updates
+        </Button>
       </div>
       {(query.isError ||
         (query.data &&
@@ -210,6 +244,26 @@ export function MerchantShippingPolicyEditor() {
             onClick={() => void query.refetch()}
           >
             Check again
+          </Button>
+        </div>
+      )}
+      {dirty && revisionChanged && (
+        <div
+          role="alert"
+          className="space-y-2 rounded-xl border border-warning/40 p-3"
+        >
+          <p className="text-pretty text-sm text-warning">
+            Shipping changed while you were editing. Load the latest rates
+            before publishing. This replaces your unpublished edits.
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={busy || query.data?.state === "unavailable"}
+            onClick={loadLatestRates}
+          >
+            Load latest rates
           </Button>
         </div>
       )}
@@ -312,6 +366,7 @@ export function MerchantShippingPolicyEditor() {
               !policy ||
               busy ||
               query.isPending ||
+              revisionChanged ||
               authStatus !== "connected" ||
               (!dirty && !!remote && !needsUpgrade)
             }
@@ -326,7 +381,7 @@ export function MerchantShippingPolicyEditor() {
             <Button
               type="button"
               variant="ghost"
-              disabled={busy}
+              disabled={busy || revisionChanged}
               onClick={() => setWithdrawOpen(true)}
             >
               Withdraw policy
