@@ -8,6 +8,7 @@ import {
   listPendingEventMarketMerchantDecisions,
   loadRetainedSignedEventMarketEvidence,
   normalizePubkey,
+  parseEventMarketCalendarEvent,
   publishEventMarketMerchantDecision,
   publishEventMarketRoster,
   previewEventMarketMerchantProducts,
@@ -428,6 +429,7 @@ function SeriesDateManager({
     (entry) => entry.occurrence.coordinate === chosenCoordinate
   )
   const seed = chosen?.occurrence ?? fallback?.occurrence
+  const [editSource, setEditSource] = useState(seed)
   const [timezone, setTimezone] = useState(seed?.startTzid || "UTC")
   const [summary, setSummary] = useState(seed?.summary ?? "")
   const [image, setImage] = useState(seed?.image ?? "")
@@ -474,8 +476,33 @@ function SeriesDateManager({
   }, [market.coordinate])
 
   function choose(coordinate: string): void {
+    const occurrence = schedule.occurrences.find(
+      (entry) => entry.occurrence.coordinate === coordinate
+    )?.occurrence
+    if (occurrence) reviewDate(occurrence)
     setLocalSelection(coordinate)
     onSelectOccurrence?.(coordinate)
+  }
+
+  function reviewDate(occurrence: ParsedEventMarketCalendar): void {
+    const nextTimezone = occurrence.startTzid || "UTC"
+    setEditSource(occurrence)
+    setTimezone(nextTimezone)
+    setSummary(occurrence.summary ?? "")
+    setImage(occurrence.image ?? "")
+    setTitle(occurrence.title)
+    setLocation(occurrence.locations[0] ?? "")
+    setStart(
+      occurrence.kind === 31922
+        ? (occurrence.startDate ?? "")
+        : epochSecondsToLocalDateTime(occurrence.start / 1_000, nextTimezone)
+    )
+    setEnd(
+      occurrence.kind === 31922
+        ? (occurrence.endDate ?? "")
+        : epochSecondsToLocalDateTime(occurrence.end / 1_000, nextTimezone)
+    )
+    setError("")
   }
 
   function calendarDraft(input: {
@@ -542,6 +569,7 @@ function SeriesDateManager({
           coverage: current?.coverage ?? "unavailable",
           canEdit,
         })
+        let publishedDate = saved[0]
         if (recovery === "already_live") {
           setStep("Signed date is already current.")
         } else if (recovery === "retry_saved") {
@@ -562,7 +590,7 @@ function SeriesDateManager({
               "Refresh current signed dates before continuing publication."
             )
           setStep(saved[0] ? "Retrying saved date…" : "Signing date revision…")
-          await publishFutureEventMarketOccurrenceRevision({
+          const published = await publishFutureEventMarketOccurrenceRevision({
             marketCoordinate: market.coordinate,
             organizerPubkey: market.organizerPubkey,
             authenticatedPubkey,
@@ -578,7 +606,13 @@ function SeriesDateManager({
                 "Selected date": `${delivery.acknowledged} ACK · ${delivery.rejected} rejected · ${delivery.timedOut} timed out${delivery.otherFailed ? ` · ${delivery.otherFailed} other failure` : ""}`,
               })),
           })
+          publishedDate = published.signedEvent
         }
+        const updatedDate =
+          publishedDate && parseEventMarketCalendarEvent(publishedDate)
+        if (!updatedDate)
+          throw new Error("The published date could not be verified.")
+        reviewDate(updatedDate)
       } else {
         const expectedSchedule = buildEventMarketSeriesDraft({
           dTag: mutation.scheduleDTag,
@@ -690,15 +724,21 @@ function SeriesDateManager({
   function editDate(): void {
     if (
       !chosen ||
+      !editSource ||
       chosen.coverage !== "complete" ||
       chosen.occurrence.end <= Date.now()
     )
       return
     try {
+      if (chosen.occurrence.eventId !== editSource.eventId) {
+        throw new Error(
+          "This date changed. Review the updated date before saving."
+        )
+      }
       const calendar = calendarDraft({
-        source: chosen.occurrence,
-        dTag: chosen.occurrence.dTag,
-        kind: chosen.occurrence.kind,
+        source: editSource,
+        dTag: editSource.dTag,
+        kind: editSource.kind,
         title,
         location,
         start,
@@ -710,9 +750,9 @@ function SeriesDateManager({
         version: 1,
         action: "edit",
         marketCoordinate: market.coordinate,
-        occurrenceCoordinate: chosen.occurrence.coordinate,
-        expectedPreviousEventId: chosen.occurrence.eventId,
-        expectedPreviousCreatedAt: chosen.occurrence.createdAt,
+        occurrenceCoordinate: editSource.coordinate,
+        expectedPreviousEventId: editSource.eventId,
+        expectedPreviousCreatedAt: editSource.createdAt,
         calendar,
       })
     } catch (cause) {
@@ -804,6 +844,7 @@ function SeriesDateManager({
 
   const selectedFuture = !!chosen && chosen.occurrence.end > Date.now()
   const editReady = canEdit && selectedFuture && chosen?.coverage === "complete"
+  const editChanged = chosen?.occurrence.eventId !== editSource?.eventId
   return (
     <Card>
       <CardHeader>
@@ -888,6 +929,26 @@ function SeriesDateManager({
         {editReady && chosen ? (
           <div className="space-y-3 rounded-lg border border-[var(--border)] p-3">
             <h3 className="font-medium">Edit selected date</h3>
+            {editChanged && !pending && !pendingMutation ? (
+              <div className="space-y-2">
+                <p
+                  role="status"
+                  className="text-sm text-[var(--text-secondary)]"
+                >
+                  This date changed since you started editing. Your unsaved text
+                  is still shown. Review the updated date to replace these
+                  fields with its current details before saving.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={bannerBusy}
+                  onClick={() => reviewDate(chosen.occurrence)}
+                >
+                  Review updated date
+                </Button>
+              </div>
+            ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <Label htmlFor="series-edit-title">Title</Label>
@@ -973,6 +1034,7 @@ function SeriesDateManager({
                   pending ||
                   bannerBusy ||
                   !!pendingMutation ||
+                  editChanged ||
                   !title.trim() ||
                   !summary.trim() ||
                   !location.trim()

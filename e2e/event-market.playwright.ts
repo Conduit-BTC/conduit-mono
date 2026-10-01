@@ -2513,6 +2513,137 @@ test("organizer generates weekly dates and publishes one signed series @merchant
   ).toHaveLength(1)
 })
 
+test("organizer reviews a refreshed date revision before saving local edits @merchant @commerce", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1_000)
+  const calendarDraft = buildEventMarketCalendarDraft({
+    kind: 31923,
+    dTag: "concurrent-date",
+    title: "Original date",
+    summary: "Original description",
+    locations: ["Original hall"],
+    start: createdAt + 86_400,
+    end: createdAt + 90_000,
+    startTzid: "UTC",
+    endTzid: "UTC",
+  })
+  const original = signEvent(ORGANIZER_SECRET, {
+    ...calendarDraft,
+    created_at: createdAt,
+  })
+  const schedule = signEvent(ORGANIZER_SECRET, {
+    kind: 31924,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "concurrent-schedule"],
+      ["title", "Concurrent fair"],
+      ["a", eventCoordinate(original)],
+    ],
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "concurrent-market"],
+      ["a", eventCoordinate(schedule)],
+      ["event_market", "2", "open"],
+    ],
+  })
+  relay.seed(original, schedule, market)
+  const marketRef = nip19.naddrEncode({
+    kind: 30409,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: "concurrent-market",
+  })
+  await gotoAs(page, merchantUrl, `/events/${marketRef}`, "organizer")
+  const saveDate = page.getByRole("button", { name: "Save selected date" })
+  await expect(saveDate).toBeEnabled()
+  await page.locator("#series-edit-title").fill("Unsaved local title")
+  const remote = signEvent(ORGANIZER_SECRET, {
+    ...calendarDraft,
+    created_at: createdAt + 1,
+    tags: calendarDraft.tags.map((tag) => {
+      if (tag[0] === "title") return ["title", "Updated remote date"]
+      if (tag[0] === "summary") return ["summary", "Updated description"]
+      if (tag[0] === "location") return ["location", "Updated hall"]
+      return tag
+    }),
+  })
+  relay.seed(remote)
+  await page.getByRole("button", { name: "Refresh event records" }).click()
+  const reviewDate = page.getByRole("button", { name: "Review updated date" })
+  await expect(reviewDate).toBeVisible()
+  await expect(saveDate).toBeDisabled()
+  await expect(page.locator("#series-edit-title")).toHaveValue(
+    "Unsaved local title"
+  )
+  expect(
+    relay.publications.filter(({ event }) => event.kind === 31923)
+  ).toHaveLength(0)
+
+  await reviewDate.click()
+  await expect(page.locator("#series-edit-title")).toHaveValue(
+    "Updated remote date"
+  )
+  await expect(page.locator("#series-edit-location")).toHaveValue(
+    "Updated hall"
+  )
+  await expect(page.locator("#series-edit-summary")).toHaveValue(
+    "Updated description"
+  )
+  await expect(saveDate).toBeEnabled()
+  await page.locator("#series-edit-title").fill("Reviewed local title")
+  await saveDate.click()
+  await expect
+    .poll(
+      () =>
+        uniquePublishedEvents(relay.publications).filter(
+          (event) => event.kind === 31923
+        ).length
+    )
+    .toBe(1)
+  await expect(saveDate).toBeEnabled()
+  await expect(reviewDate).toHaveCount(0)
+  const saved = uniquePublishedEvents(relay.publications).find(
+    (event) => event.kind === 31923
+  )!
+  expect(saved.created_at > remote.created_at).toBe(true)
+  expect(
+    saved.tags.some(
+      (tag) => tag[0] === "title" && tag[1] === "Reviewed local title"
+    )
+  ).toBe(true)
+  expect(
+    saved.tags.some((tag) => tag[0] === "location" && tag[1] === "Updated hall")
+  ).toBe(true)
+  expect(
+    saved.tags.some(
+      (tag) => tag[0] === "summary" && tag[1] === "Updated description"
+    )
+  ).toBe(true)
+
+  // A successful save advances the form's baseline for the next edit.
+  await page.locator("#series-edit-title").fill("Second local title")
+  await saveDate.click()
+  await expect
+    .poll(
+      () =>
+        uniquePublishedEvents(relay.publications).filter(
+          (event) => event.kind === 31923
+        ).length
+    )
+    .toBe(2)
+  await expect(saveDate).toBeEnabled()
+  expect(relay.publications.some(({ event }) => event.kind === 31924)).toBe(
+    false
+  )
+})
+
 test("event product chooses ordinary shipping and changes fulfillment in checkout @market @commerce", async ({
   page,
 }) => {

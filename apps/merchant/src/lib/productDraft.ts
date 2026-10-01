@@ -190,6 +190,8 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     if (!images) return null
     if (
       (form.format !== "physical" && form.format !== "digital") ||
+      (form.eventGuestContactOptional !== undefined &&
+        typeof form.eventGuestContactOptional !== "boolean") ||
       typeof form.usePresetShippingZone !== "boolean" ||
       typeof form.publicZapEnabled !== "boolean" ||
       (form.zapMessagePolicy !== "generic_only" &&
@@ -343,6 +345,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
           typeof form.futureEventMarketReference === "string"
             ? form.futureEventMarketReference
             : "",
+        ...(typeof form.eventGuestContactOptional === "boolean"
+          ? { eventGuestContactOptional: form.eventGuestContactOptional }
+          : {}),
         shippingPricingMode,
         shippingCost,
         usePresetShippingZone: form.usePresetShippingZone,

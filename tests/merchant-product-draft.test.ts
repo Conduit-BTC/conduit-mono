@@ -128,6 +128,41 @@ function legacyForm(
 }
 
 describe("merchant product drafts", () => {
+  for (const draftTarget of [
+    target(),
+    target({
+      productAddressId: `30402:${"a".repeat(64)}:event-product`,
+      baseEventId: "b".repeat(64),
+    }),
+  ]) {
+    it(`restores contact-free handoff in ${draftTarget.productAddressId ? "edit" : "create"} drafts`, () => {
+      const storage = new MemoryStorage()
+      for (const eventGuestContactOptional of [true, false, undefined]) {
+        const selected = form({ eventGuestContactOptional })
+        expect(saveProductDraft(draftTarget, selected, storage)).toBe(true)
+        const restored = loadProductDraft(draftTarget, storage).draft
+        expect(restored).not.toBeNull()
+        expect(restored?.eventGuestContactOptional).toBe(
+          eventGuestContactOptional
+        )
+      }
+    })
+  }
+
+  it("rejects malformed contact-free handoff settings", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    saveProductDraft(draftTarget, form(), storage)
+    const key = getProductDraftStorageKey(draftTarget)!
+    const stored = JSON.parse(storage.getItem(key)!)
+    for (const setting of ["true", "false", 1, null]) {
+      stored.form.eventGuestContactOptional = setting
+      const raw = JSON.stringify(stored)
+      storage.setItem(key, raw)
+      expect(loadProductDraft(draftTarget, storage).draft).toBeNull()
+    }
+  })
+
   it("rejects retired event pickup drafts explicitly without deleting or reinterpreting them", () => {
     for (const version of [1, 2, 3, 4, 5, 6, 7]) {
       const storage = new MemoryStorage()
