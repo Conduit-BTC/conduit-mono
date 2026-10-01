@@ -119,6 +119,24 @@ test("variation measurements require explicit sharing and preserve independent a
   await large.getByLabel("Format", { exact: true }).click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
   await expect(publish).toBeEnabled()
+  const useTable = small.getByRole("checkbox", { name: "Use table" })
+  const variationPrice = small.locator("#product-variation-shipping-0")
+  await useTable.uncheck()
+  await variationPrice.fill("7")
+  await expect(publish).toBeDisabled()
+  await expect(dialog.locator("#product-variations-help")).toContainText(
+    "Small: Fixed variation prices cannot be combined with table shipping"
+  )
+  await dialog.locator("form").dispatchEvent("submit")
+  await expect(dialog).toBeVisible()
+  await expect(publish).toBeDisabled()
+  expect(
+    await readTestRelayEvents({ kinds: [30402], authors: [pubkey] })
+  ).toHaveLength(0)
+  await variationPrice.fill("")
+  await expect(publish).toBeEnabled()
+  await useTable.check()
+  await expect(publish).toBeEnabled()
   await shared.check()
   await expect(
     small.getByLabel("Shipping weight", { exact: true })

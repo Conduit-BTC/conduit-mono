@@ -98,6 +98,161 @@ const dependencies = {
 }
 
 describe("merchant shipping table authoring", () => {
+  test.each(["7", "0"])(
+    "rejects fixed variation charge %s under a table before publication planning",
+    (shippingCost) => {
+      const state = generateProductVariationRows({
+        ...createEmptyProductVariationForm(),
+        enabled: true,
+        axes: [createProductVariationAxis("Size", "Small", 0)],
+      })
+      state.rows[0] = {
+        ...state.rows[0]!,
+        inheritShipping: false,
+        shippingCost,
+      }
+      const restored = parseProductVariationFormState(
+        JSON.parse(JSON.stringify(state))
+      )!
+      const message =
+        "Small: Fixed variation prices cannot be combined with table shipping. Select Use table, clear the variation shipping price to coordinate after ordering, or change Shipping pricing to Fixed price per item."
+      expect(
+        getProductVariationFormError(restored, "USD", {
+          shippingPricingMode: "weight_table",
+          baseFormat: "physical",
+        })
+      ).toBe(message)
+      expect(() =>
+        buildProductFamilyChangePlan({
+          parentDTag: "one",
+          baseProduct: product,
+          variations: restored,
+          currency: "USD",
+          fulfillmentIntent: tableIntent,
+          authoringCountries: [],
+        })
+      ).toThrow(message)
+      expect(
+        getProductVariationFormError(restored, "USD", {
+          shippingPricingMode: "weight_table",
+          baseFormat: "physical",
+          preserveExistingFulfillment: true,
+        })
+      ).toBeNull()
+    }
+  )
+
+  test.each(["table", "coordinate", "digital"] as const)(
+    "recovers an unsupported override by choosing %s",
+    async (choice) => {
+      const state = generateProductVariationRows({
+        ...createEmptyProductVariationForm(),
+        enabled: true,
+        shareShippingMeasurements: true,
+        axes: [createProductVariationAxis("Size", "Small", 0)],
+      })
+      state.rows[0] = {
+        ...state.rows[0]!,
+        inheritShipping: choice === "table",
+        shippingCost: choice === "coordinate" ? "" : "7",
+        format: choice === "digital" ? "digital" : "inherit",
+      }
+      expect(
+        getProductVariationFormError(state, "USD", {
+          shippingPricingMode: "weight_table",
+          baseFormat: "physical",
+        })
+      ).toBeNull()
+      const plan = buildProductFamilyChangePlan({
+        parentDTag: "one",
+        baseProduct: product,
+        variations: state,
+        currency: "USD",
+        fulfillmentIntent: tableIntent,
+        authoringCountries: [],
+      })
+      const prepared = await prepareProductPublicationListings(
+        plan.publish,
+        { merchantPubkey: pubkey },
+        dependencies
+      )
+      const child = prepared.find(
+        ({ product }) => product.type === "variation"
+      )!
+      expect(child.fulfillmentIntent.kind).toBe(
+        choice === "table"
+          ? "weight_table"
+          : choice === "coordinate"
+            ? "coordinate_after_order"
+            : "digital"
+      )
+      const published = applyProductFulfillmentIntentForPublication({
+        product: child.product,
+        merchantPubkey: pubkey,
+        productDTag: child.dTag,
+        intent: child.fulfillmentIntent,
+      })
+      const signed = finalizeEvent(
+        {
+          ...buildProductListingEventDraft({
+            product: published,
+            dTag: child.dTag,
+          }),
+          created_at: 21,
+        },
+        secret
+      )
+      expect(
+        signed.tags.filter(([name]) => name === "shipping_option")
+      ).toEqual(
+        choice === "table"
+          ? [["shipping_option", tableIntent.policyCoordinate]]
+          : []
+      )
+    }
+  )
+
+  test("switching to fixed shipping keeps the explicit variation price and destinations", () => {
+    const state = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("Size", "Small", 0)],
+    })
+    state.rows[0] = {
+      ...state.rows[0]!,
+      inheritShipping: false,
+      shippingCost: "7",
+    }
+    expect(
+      getProductVariationFormError(state, "USD", {
+        shippingPricingMode: "fixed",
+        baseFormat: "physical",
+      })
+    ).toBeNull()
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "one",
+      baseProduct: product,
+      variations: state,
+      currency: "USD",
+      fulfillmentIntent: {
+        kind: "fixed_standard",
+        amount: 5,
+        currency: "USD",
+        countries: ["US"],
+      },
+      authoringCountries: ["US"],
+    })
+    expect(
+      plan.desired.find(({ product }) => product.type === "variation")!
+        .fulfillmentIntent
+    ).toEqual({
+      kind: "fixed_standard",
+      amount: 7,
+      currency: "USD",
+      countries: ["US"],
+    })
+  })
+
   test("round-trips editable domestic and international rate cards with exact minor-unit money", () => {
     expect(buildShippingPolicyFromDraft(shippingPolicyToDraft(policy))).toEqual(
       policy

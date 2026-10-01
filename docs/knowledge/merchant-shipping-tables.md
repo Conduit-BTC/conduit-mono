@@ -47,6 +47,8 @@ The versioned Conduit order-payload field `shippingPolicyQuotes` stores each gro
 
 Buyer destinations stay on the device until included in the existing encrypted order flow. They are excluded from query keys, public events, telemetry, logs, and remote quote requests. Table orders use private payment because the existing anonymous hosted authorization contract prices fixed per-item shipping. External signers, non-custodial payment, and the existing NIP-17/NIP-44 capability boundaries remain in place. Public NIP-44 remains v2. Existing v3 readiness planning remains visible; a future implementation requires public draft/client references and explicit signer and recipient capability detection.
 
+Physical variations in a table-priced family either use the table or leave shipping for coordination. An explicit fixed variation price is rejected before signing. Use fixed-price mode with country destinations to author fixed variation rates instead. Existing fulfillment remains preserved until explicitly changed.
+
 ## Validation boundary
 
 Focused calculation, publication, withdrawal, partial-read, revision, schema, rounding, pre-authorization, and persistence tests exercise the shared helpers and composed checkout. Merchant browser journeys use actual ephemeral Nostr signatures and an isolated local relay to publish rates and two products with independent currencies, switch metric and imperial units, customize a state or postal area, author per-product packing adjustments, recover the policy in new browser storage, revise it, and withdraw it at mobile and desktop widths. Market browser coverage checks combined cart and encrypted-order totals.
