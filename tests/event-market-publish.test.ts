@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
 import NDK, { type NDKEvent } from "@nostr-dev-kit/ndk"
 import {
@@ -592,7 +593,7 @@ describe("organizer event-market publishing", () => {
       user: async () => ({ pubkey: OTHER_PUBKEY }),
     } as never
     __setEventMarketTestOverrides({
-      getNdk: async () => ndk,
+      getAccountSigner: () => plainTestSigner(ndk.signer!),
     })
 
     await expect(publishOrganizerEventMarket(input())).rejects.toThrow(

@@ -9,6 +9,8 @@ import {
   EVENT_KINDS,
   getEventMarketPickupsByCoordinates,
   getNdk,
+  getAccountSigner,
+  type UnsignedNostrEvent,
   getProductEventMarketFulfillmentClaims,
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,
@@ -1067,10 +1069,10 @@ export async function signAndPublishProductWriteBundle(
     }
   }
   assertSignerSessionCurrent()
-  if (!ndk.signer) throw new Error("Signer not connected")
-  const signer = ndk.signer
+  const signer = getAccountSigner()
+  if (!signer) throw new Error("Signer not connected")
   assertSignerSessionCurrent()
-  const signerPubkey = (await signer.user()).pubkey
+  const signerPubkey = await signer.getPublicKey()
   assertSignerSessionCurrent()
   if (signerPubkey !== input.merchantPubkey) {
     throw new Error("Active signer does not match current merchant pubkey")
@@ -1122,7 +1124,12 @@ export async function signAndPublishProductWriteBundle(
     })
     await waitForSignerVisibility()
     assertSignerSessionCurrent()
-    await event.sign(signer)
+    event.pubkey = signerPubkey
+    event.created_at ??= Math.floor(Date.now() / 1000)
+    Object.assign(
+      event,
+      await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+    )
     const signed = event.rawEvent() as SignedPublicNostrEvent
     if (
       !isValidSignedPublicNostrEvent(signed) ||

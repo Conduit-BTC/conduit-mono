@@ -1,9 +1,9 @@
 import {
-  NDKNip07Signer,
-  NDKUser,
-  type NDKEncryptionScheme,
-  type NostrEvent,
-} from "@nostr-dev-kit/ndk"
+  NostrSignerError,
+  type NostrKeySigner,
+  type SignedNostrEvent,
+  type UnsignedNostrEvent,
+} from "./nostr-event-signer"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -59,40 +59,32 @@ function hasSameTags(a: string[][], b: string[][]): boolean {
 }
 
 /**
- * NDK's NIP-07 signer caches the account returned during initial connection
- * and later keeps only the signature returned by window.nostr.signEvent().
- * This wrapper binds every key operation to that initial account and validates
- * the complete signed event before NDK is allowed to accept its signature.
+ * Bind browser key operations to the connection account and validate their
+ * complete responses. SessionSigner owns authority and prompt serialization.
  */
-export class Nip07SessionSigner extends NDKNip07Signer {
+export class Nip07SessionSigner implements NostrKeySigner {
   private sessionPubkey: string | null = null
-  private sessionUser: NDKUser | null = null
-  private readyPromise: Promise<NDKUser> | null = null
-  private encryptionTail: Promise<void> = Promise.resolve()
+  private readyPromise: Promise<string> | null = null
   private invalidated = false
   private readonly onInvalidated?: Nip07SessionSignerOptions["onInvalidated"]
   private readonly readinessRetry: TransientNip07ReadinessRetryOptions
 
   constructor(options: Nip07SessionSignerOptions = {}) {
-    super()
     this.onInvalidated = options.onInvalidated
     this.readinessRetry = {
       retryDelaysMs: options.readinessRetryDelaysMs,
     }
   }
 
-  override get pubkey(): string {
+  get pubkey(): string {
+    this.assertAvailableSession()
     if (!this.sessionPubkey) throw new Error("Not ready")
     return this.sessionPubkey
   }
 
-  override get userSync(): NDKUser {
-    if (!this.sessionUser) throw new Error("User not ready")
-    return this.sessionUser
-  }
-
-  override async user(): Promise<NDKUser> {
-    this.readyPromise ??= this.blockUntilReady()
+  async getPublicKey(): Promise<string> {
+    this.assertAvailableSession()
+    this.readyPromise ??= this.initializeIdentity()
     try {
       return await this.readyPromise
     } catch (error) {
@@ -101,7 +93,7 @@ export class Nip07SessionSigner extends NDKNip07Signer {
     }
   }
 
-  override async blockUntilReady(): Promise<NDKUser> {
+  private async initializeIdentity(): Promise<string> {
     this.assertAvailableSession()
     const { pubkey } = await this.readReadyBridge()
     if (this.sessionPubkey && this.sessionPubkey !== pubkey) {
@@ -111,11 +103,10 @@ export class Nip07SessionSigner extends NDKNip07Signer {
       )
     }
     this.sessionPubkey = pubkey
-    this.sessionUser ??= new NDKUser({ pubkey })
-    return this.sessionUser
+    return pubkey
   }
 
-  override async sign(event: NostrEvent): Promise<string> {
+  async signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent> {
     const { bridge, pubkey: expectedPubkey } = await this.assertLiveIdentity()
     if (
       normalizePubkey(event.pubkey) !== expectedPubkey ||
@@ -179,76 +170,36 @@ export class Nip07SessionSigner extends NDKNip07Signer {
     }
 
     await this.assertLiveIdentity()
-    return signed.sig
+    return signed
   }
 
-  override async encrypt(
-    recipient: NDKUser,
+  async encryptNip44(peer: string, value: string): Promise<string> {
+    return this.keyOperation(peer, value, "nip44", "encrypt")
+  }
+
+  async decryptNip44(peer: string, value: string): Promise<string> {
+    return this.keyOperation(peer, value, "nip44", "decrypt")
+  }
+
+  async decryptLegacy(peer: string, value: string): Promise<string> {
+    return this.keyOperation(peer, value, "nip04", "decrypt")
+  }
+
+  private async keyOperation(
+    peer: string,
     value: string,
-    scheme?: NDKEncryptionScheme
+    scheme: "nip44" | "nip04",
+    operation: "encrypt" | "decrypt"
   ): Promise<string> {
-    return this.runEncryptionOperation(async () => {
-      const resolvedScheme = scheme ?? "nip04"
-      const { bridge } = await this.assertLiveIdentity()
-      const encryptionBridge = bridge[resolvedScheme]
-      if (typeof encryptionBridge?.encrypt !== "function") {
-        throw new Error(
-          `${resolvedScheme} encryption is not available from your browser extension`
-        )
-      }
-      const encrypted = await encryptionBridge.encrypt(recipient.pubkey, value)
-      if (!encrypted) throw new Error("Failed to encrypt")
-      await this.assertLiveIdentity()
-      return encrypted
-    })
-  }
-
-  override async decrypt(
-    sender: NDKUser,
-    value: string,
-    scheme?: NDKEncryptionScheme
-  ): Promise<string> {
-    return this.runEncryptionOperation(async () => {
-      const resolvedScheme = scheme ?? "nip04"
-      const { bridge } = await this.assertLiveIdentity()
-      const encryptionBridge = bridge[resolvedScheme]
-      if (typeof encryptionBridge?.decrypt !== "function") {
-        throw new Error(
-          `${resolvedScheme} decryption is not available from your browser extension`
-        )
-      }
-      const decrypted = await encryptionBridge.decrypt(sender.pubkey, value)
-      if (!decrypted) throw new Error("Failed to decrypt")
-      await this.assertLiveIdentity()
-      return decrypted
-    })
-  }
-
-  override async encryptionEnabled(
-    scheme?: NDKEncryptionScheme
-  ): Promise<NDKEncryptionScheme[]> {
-    this.assertAvailableSession()
-    const bridge = await withTransientNip07ReadinessRetry(async () => {
-      const currentBridge = this.getCurrentBridge()
-      if (!currentBridge) throw new Error("NIP-07 extension not available")
-      return currentBridge
-    }, this.readinessRetry)
-    const enabled: NDKEncryptionScheme[] = []
-    if (
-      (!scheme || scheme === "nip04") &&
-      typeof bridge?.nip04?.encrypt === "function" &&
-      typeof bridge.nip04.decrypt === "function"
-    ) {
-      enabled.push("nip04")
-    }
-    if (
-      (!scheme || scheme === "nip44") &&
-      typeof bridge?.nip44?.encrypt === "function" &&
-      typeof bridge.nip44.decrypt === "function"
-    ) {
-      enabled.push("nip44")
-    }
-    return enabled
+    const { bridge } = await this.assertLiveIdentity()
+    const lane = bridge[scheme]
+    if (typeof lane?.[operation] !== "function")
+      throw new NostrSignerError("unsupported_operation")
+    const result = await lane[operation](peer, value)
+    if (typeof result !== "string" || (operation === "encrypt" && !result))
+      throw new NostrSignerError("invalid_response")
+    await this.assertLiveIdentity()
+    return result
   }
 
   private assertAvailableSession(): void {
@@ -257,22 +208,6 @@ export class Nip07SessionSigner extends NDKNip07Signer {
         "identity_changed",
         "The signer session is no longer available. Reconnect the intended account and try again."
       )
-    }
-  }
-
-  private async runEncryptionOperation<T>(
-    operation: () => Promise<T>
-  ): Promise<T> {
-    const previous = this.encryptionTail
-    let release = () => {}
-    this.encryptionTail = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    await previous
-    try {
-      return await operation()
-    } finally {
-      release()
     }
   }
 
@@ -309,8 +244,7 @@ export class Nip07SessionSigner extends NDKNip07Signer {
   }> {
     this.assertAvailableSession()
 
-    const expectedPubkey =
-      this.sessionPubkey ?? normalizePubkey((await this.user()).pubkey)
+    const expectedPubkey = this.sessionPubkey ?? (await this.getPublicKey())
     if (!expectedPubkey) {
       return this.invalidate(
         "invalid_response",

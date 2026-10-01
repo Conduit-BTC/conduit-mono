@@ -14,7 +14,7 @@ import {
   getCachedMerchantConversationList,
   getDirectMessageConversationList,
   getMerchantConversationList,
-  getNdk,
+  getAccountSigner,
   getProfileName,
   markDirectMessageConversationRead,
   parseDirectMessageRumor,
@@ -362,8 +362,8 @@ function MessagesWorkspace() {
       ) {
         throw new Error("Reconnect your signer, then retry this message.")
       }
-      const ndk = getNdk()
-      if (!ndk.signer) {
+      const signer = getAccountSigner()
+      if (!signer) {
         throw new Error("Connect your signer to reply.")
       }
       const { selfCopyError } = await publishPrivateMessage({
@@ -372,7 +372,7 @@ function MessagesWorkspace() {
         accountPubkey: input.accountPubkey,
         authenticatedPubkey: input.accountPubkey,
         recipientPubkey: input.counterpartyPubkey,
-        signer: ndk.signer,
+        signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         signerInteraction: "external",
         shouldContinue: () =>

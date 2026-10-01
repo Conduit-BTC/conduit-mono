@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, NDKUser, nip19, type NDKSigner } from "@nostr-dev-kit/ndk"
@@ -5149,7 +5150,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: undefined }) as never,
+      getAccountSigner: () => plainTestSigner(undefined as never),
     })
 
     const listResult = await getBuyerConversationList({
@@ -5218,7 +5219,7 @@ describe("commerce gateway", () => {
     )
 
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: undefined }) as never,
+      getAccountSigner: () => plainTestSigner(undefined as never),
     })
 
     const asBuyer = await getCachedBuyerConversationList({
@@ -5258,7 +5259,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: undefined }) as never,
+      getAccountSigner: () => plainTestSigner(undefined as never),
     })
 
     const asBuyer = await getCachedBuyerConversationList({
@@ -5385,7 +5386,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: undefined }) as never,
+      getAccountSigner: () => plainTestSigner(undefined as never),
     })
 
     const result = await getBuyerConversationList({
@@ -5441,7 +5442,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -5532,7 +5533,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -5635,7 +5636,7 @@ describe("commerce gateway", () => {
     let cachedDirectCount = 0
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -5668,7 +5669,7 @@ describe("commerce gateway", () => {
     const recovery = await openCheckoutSparkRecoveryWrap({
       signedRecipientWrap: wrappedEvent,
       signer: {
-        user: async () => new NDKUser({ pubkey: MERCHANT_A_PUBKEY }),
+        getPublicKey: async () => MERCHANT_A_PUBKEY,
       } as NDKSigner,
       giftUnwrap: async () => rumor,
     })
@@ -5689,7 +5690,7 @@ describe("commerce gateway", () => {
     let unwrapCalls = 0
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -5761,7 +5762,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -5808,7 +5809,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -5849,7 +5850,7 @@ describe("commerce gateway", () => {
     })
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       resolveInboxRelayUrls: async () => merchantReadRelays,
       fetchEventsFanout: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
@@ -5917,7 +5918,7 @@ describe("commerce gateway", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
@@ -6683,9 +6684,9 @@ describe("commerce gateway", () => {
       | undefined
 
     __setCommerceTestOverrides({
-      getNdk: async () => {
+      getAccountSigner: () => {
         calledRequireNdk = true
-        return { signer: undefined } as never
+        return undefined
       },
       fetchEventsFanout: async (filter, options) => {
         seenFilterAuthors = filter.authors

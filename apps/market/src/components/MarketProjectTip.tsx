@@ -11,7 +11,6 @@ import {
   validateLightningInvoiceForPayment,
   type PreparedProjectTip,
 } from "@conduit/core"
-import { createNdkNostrEventSigner } from "@conduit/core/protocol/ndk-nostr-event-signer"
 import { ProjectTip, type ProjectTipPayResult } from "@conduit/ui"
 import { useWallets } from "../hooks/useWallets"
 import { prepareAnonymousProjectTip } from "../lib/project-tip"
@@ -59,11 +58,7 @@ export function MarketProjectTip({ className }: { className?: string }) {
     ) {
       return prepareProjectTip({
         amountSats,
-        signer: createNdkNostrEventSigner(
-          auth.signer,
-          auth.pubkey,
-          auth.method
-        ),
+        signer: auth.signer,
       })
     }
     return prepareAnonymousProjectTip(amountSats)

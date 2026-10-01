@@ -1,4 +1,4 @@
-import type { NDKSigner } from "@nostr-dev-kit/ndk"
+import type { NostrKeySigner } from "@conduit/core"
 import {
   createCheckoutSparkRecoveryPayload,
   parseCheckoutSparkRecoveryDeliveryProgress,
@@ -29,7 +29,7 @@ export type CheckoutSparkRecoverySigningIdentity =
   | {
       kind: "signed_in"
       pubkey: string
-      signer: NDKSigner
+      signer: NostrKeySigner
     }
 
 /** Guest order keys cannot authorize a separate wallet recovery rumor. */
