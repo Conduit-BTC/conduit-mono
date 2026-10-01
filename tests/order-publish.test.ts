@@ -982,9 +982,10 @@ describe("buyer order publishing", () => {
               stale: false,
               distributionRepairable: false,
             }),
-            giftWrapFn: (async (_rumor, recipient) => ({
-              id: `wrap-${recipient.pubkey}`,
-            })) as never,
+            giftWrapFn: (async (_rumor, recipient) =>
+              new NDKEvent(undefined, {
+                id: `wrap-${recipient.pubkey}`,
+              })) as never,
             publishFn: (async (_event, options) => {
               openedRelayUrls.push(...(options.exclusiveRelayUrls ?? []))
               return {
@@ -1207,7 +1208,9 @@ describe("buyer order publishing", () => {
             giftWrapFn: (async (rumor, recipient) => {
               publishedKinds.push(rumor.kind)
               wrappedRecipients.push(recipient.pubkey)
-              return { id: `wrap-${rumor.kind}-${recipient.pubkey}` } as never
+              return new NDKEvent(undefined, {
+                id: `wrap-${rumor.kind}-${recipient.pubkey}`,
+              }) as never
             }) as never,
             publishFn: (async (_event, options) => ({
               successfulRelayUrls: [...(options.exclusiveRelayUrls ?? [])],
@@ -1290,7 +1293,7 @@ describe("buyer order publishing", () => {
             publishFn: (async (event, options) => {
               wraps.push({
                 rumorKind: input.rumorKind,
-                event,
+                event: new NDKEvent(undefined, event),
                 recipients: [...(options.recipientPubkeys ?? [])],
               })
               return {

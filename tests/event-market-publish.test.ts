@@ -129,7 +129,7 @@ describe("organizer event-market publishing", () => {
       getNdk: connectedNdk,
       signDraft,
       publishWithPlanner: async (event: NDKEvent) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return publishResult(true)
       },
     })
@@ -285,7 +285,7 @@ describe("organizer event-market publishing", () => {
         getNdk: connectedNdk,
         signDraft,
         publishWithPlanner: async (event: NDKEvent) => {
-          published.push(event.rawEvent() as SignedPublicNostrEvent)
+          published.push(structuredClone(event))
           return publishResult(true)
         },
       })
@@ -378,7 +378,7 @@ describe("organizer event-market publishing", () => {
       },
       publishWithPlanner: async (event: NDKEvent) => {
         sequence.push("publish")
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return publishResult(true)
       },
     })
@@ -436,7 +436,7 @@ describe("organizer event-market publishing", () => {
       signDraft,
       publishWithPlanner: async (event: NDKEvent, options) => {
         forwardedAuthority.push(options.shouldContinue)
-        signedEvents.push(event.rawEvent() as SignedPublicNostrEvent)
+        signedEvents.push(structuredClone(event))
         return publishResult(true)
       },
     })
@@ -760,7 +760,7 @@ describe("organizer event-market publishing", () => {
     const retried: SignedPublicNostrEvent[] = []
     __setEventMarketTestOverrides({
       publishWithPlanner: async (event: NDKEvent) => {
-        retried.push(event.rawEvent() as SignedPublicNostrEvent)
+        retried.push(structuredClone(event))
         return publishResult(true)
       },
       signDraft: async () => {
@@ -805,7 +805,7 @@ describe("organizer event-market publishing", () => {
     __setEventMarketTestOverrides({
       getNdk: connectedNdk,
       publishWithPlanner: async (event: NDKEvent) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return publishResult(true)
       },
       signDraft: async () => {

@@ -1,4 +1,3 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   buildFixedShippingOptionEventDraft,
   buildProductDeletionEventDraft,
@@ -8,9 +7,7 @@ import {
   compileProductFulfillmentIntent,
   EVENT_KINDS,
   getEventMarketPickupsByCoordinates,
-  getNdk,
   getAccountSigner,
-  type UnsignedNostrEvent,
   getProductEventMarketFulfillmentClaims,
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,
@@ -76,7 +73,7 @@ export function isDeliverableMerchantProductEvent(
 }
 
 export async function deliverSignedProductEvent(
-  event: NDKEvent | SignedPublicNostrEvent,
+  event: SignedPublicNostrEvent,
   merchantPubkey: string,
   options: {
     extraRelayUrls?: readonly string[]
@@ -86,10 +83,7 @@ export async function deliverSignedProductEvent(
   } = {}
 ): Promise<PublishWithPlannerResult> {
   try {
-    const rawEvent =
-      event instanceof NDKEvent
-        ? (event.rawEvent() as SignedPublicNostrEvent)
-        : event
+    const rawEvent = event
     if (!isDeliverableMerchantProductEvent(rawEvent, merchantPubkey)) {
       throw new Error(
         "Expected a valid signed merchant product or deletion event"
@@ -99,14 +93,7 @@ export async function deliverSignedProductEvent(
       ?.trim()
       .toLowerCase()
 
-    let publishableEvent: NDKEvent
-    if (event instanceof NDKEvent) {
-      publishableEvent = event
-    } else {
-      publishableEvent = new NDKEvent(getNdk(), event)
-    }
-
-    const delivery = await publishWithPlanner(publishableEvent, {
+    const delivery = await publishWithPlanner(rawEvent, {
       intent: "commerce_author_event",
       authorPubkey: merchantPubkey,
       authenticatedPubkey:
@@ -119,7 +106,7 @@ export async function deliverSignedProductEvent(
       shouldContinue: options.shouldContinue,
     })
     if (rawEvent.kind === EVENT_KINDS.PRODUCT) {
-      await cacheSignedProductListingEvent(publishableEvent, {
+      await cacheSignedProductListingEvent(event, {
         sourceRelayUrls: delivery.successfulRelayUrls,
         persistence: "best_effort",
       })
@@ -135,7 +122,7 @@ function mergeRelayUrls(...groups: readonly (readonly string[])[]): string[] {
 }
 
 export async function deliverSignedProductEventBundle(
-  events: readonly (NDKEvent | SignedPublicNostrEvent)[],
+  events: readonly SignedPublicNostrEvent[],
   merchantPubkey: string,
   options: {
     authenticatedPubkey?: string | null
@@ -255,8 +242,8 @@ export interface ProductPublicationDependencies {
 }
 
 type SignedProductWrite = {
-  productEvent: NDKEvent
-  shippingEvent: NDKEvent | null
+  productEvent: SignedPublicNostrEvent
+  shippingEvent: SignedPublicNostrEvent | null
 }
 
 export type ProductSignerRequestKind = "shipping" | "product" | "deletion"
@@ -300,12 +287,12 @@ export function getProductSignerRequestCount(input: {
 
 export interface CanonicalProductPublishDependencies {
   publishShippingEvent: (
-    event: NDKEvent,
+    event: SignedPublicNostrEvent,
     merchantPubkey: string
   ) => Promise<PublishWithPlannerResult>
-  cacheEvent: (event: NDKEvent) => Promise<void>
+  cacheEvent: (event: SignedPublicNostrEvent) => Promise<void>
   deliverEvents: (
-    events: readonly NDKEvent[],
+    events: readonly SignedPublicNostrEvent[],
     merchantPubkey: string
   ) => Promise<PublishWithPlannerResult>
 }
@@ -724,9 +711,9 @@ export function resolvePublishedProductFulfillmentIntentForTarget(
 export async function publishCanonicalProductEvents(
   input: {
     writes: readonly SignedProductWrite[]
-    events: readonly NDKEvent[]
+    events: readonly SignedPublicNostrEvent[]
     merchantPubkey: string
-    onSignedLocal: (events: readonly NDKEvent[]) => Promise<void>
+    onSignedLocal: (events: readonly SignedPublicNostrEvent[]) => Promise<void>
   },
   dependencies: CanonicalProductPublishDependencies
 ): Promise<PublishWithPlannerResult> {
@@ -907,11 +894,13 @@ export function getCanonicalProductWriteFingerprint(
 }
 
 async function signProductWrite(
-  ndk: ReturnType<typeof getNdk>,
   merchantPubkey: string,
   listing: PreparedProductListingPublishTarget,
   now: number,
-  signEvent: (event: NDKEvent, kind: ProductSignerRequestKind) => Promise<void>
+  signEvent: (
+    event: SignedPublicNostrEvent,
+    kind: ProductSignerRequestKind
+  ) => Promise<void>
 ): Promise<SignedProductWrite> {
   if (listing.product.pubkey !== merchantPubkey) {
     throw new Error("Product pubkey does not match current merchant pubkey")
@@ -945,20 +934,36 @@ async function signProductWrite(
     dTag: listing.dTag,
     clientAppId: "merchant",
   })
-  const productEvent = new NDKEvent(ndk)
+  const productEvent: SignedPublicNostrEvent = {
+    id: "",
+    sig: "",
+    pubkey: merchantPubkey,
+    kind: 0,
+    created_at: createdAt,
+    tags: [],
+    content: "",
+  }
   productEvent.kind = productDraft.kind
   productEvent.created_at = createdAt
   productEvent.content = productDraft.content
   productEvent.tags = productDraft.tags
 
-  let shippingEvent: NDKEvent | null = null
+  let shippingEvent: SignedPublicNostrEvent | null = null
   if (listing.fulfillmentIntent.kind === "fixed_standard") {
     const shippingDraft = buildFixedShippingOptionEventDraft({
       productDTag: listing.dTag,
       intent: listing.fulfillmentIntent,
       clientAppId: "merchant",
     })
-    shippingEvent = new NDKEvent(ndk)
+    shippingEvent = {
+      id: "",
+      sig: "",
+      pubkey: merchantPubkey,
+      kind: 0,
+      created_at: createdAt,
+      tags: [],
+      content: "",
+    }
     shippingEvent.kind = shippingDraft.kind
     shippingEvent.created_at = createdAt
     shippingEvent.content = shippingDraft.content
@@ -988,7 +993,7 @@ export function buildProductRemovalDeletionTargets(
 }
 
 export interface SignedProductWriteBundle {
-  events: readonly NDKEvent[]
+  events: readonly SignedPublicNostrEvent[]
   deletionDeliveryJobId?: string
 }
 
@@ -1004,9 +1009,7 @@ export async function deliverSignedProductWriteBundle(
     throw new Error("Expected at most one signed product deletion event")
   }
   const deletionEvent = deletionEvents[0]
-  const rawDeletionEvent = deletionEvent
-    ? (deletionEvent.rawEvent() as SignedPublicNostrEvent)
-    : null
+  const rawDeletionEvent = deletionEvent ? deletionEvent : null
   if (
     (!!rawDeletionEvent || !!bundle.deletionDeliveryJobId) &&
     (!rawDeletionEvent ||
@@ -1052,7 +1055,7 @@ export async function signAndPublishProductWriteBundle(
     deletions?: readonly ProductDeletionPublishTarget[]
     onSignedLocal: (bundle: SignedProductWriteBundle) => Promise<void>
     onSignedEvent?: (
-      event: NDKEvent,
+      event: SignedPublicNostrEvent,
       kind: ProductSignerRequestKind
     ) => Promise<void>
     deletionDeliveryOptions?: DeliverQueuedProductDeletionOptions
@@ -1062,7 +1065,6 @@ export async function signAndPublishProductWriteBundle(
   },
   dependencies: Partial<ProductPublicationDependencies> = {}
 ): Promise<PublishWithPlannerResult> {
-  const ndk = getNdk()
   const assertSignerSessionCurrent = () => {
     if (input.shouldContinue?.() === false) {
       throw new Error("Product signer session changed.")
@@ -1112,7 +1114,7 @@ export async function signAndPublishProductWriteBundle(
     input.waitForSignerVisibility ?? waitForVisibleDocument
   let signerRequestCurrent = 0
   const signEvent = async (
-    event: NDKEvent,
+    event: SignedPublicNostrEvent,
     kind: ProductSignerRequestKind
   ): Promise<void> => {
     assertSignerSessionCurrent()
@@ -1128,9 +1130,15 @@ export async function signAndPublishProductWriteBundle(
     event.created_at ??= Math.floor(Date.now() / 1000)
     Object.assign(
       event,
-      await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+      await signer.signEvent({
+        kind: event.kind,
+        pubkey: event.pubkey,
+        created_at: event.created_at,
+        tags: event.tags,
+        content: event.content,
+      })
     )
-    const signed = event.rawEvent() as SignedPublicNostrEvent
+    const signed = event
     if (
       !isValidSignedPublicNostrEvent(signed) ||
       signed.pubkey !== signerPubkey
@@ -1144,18 +1152,26 @@ export async function signAndPublishProductWriteBundle(
   const writes: SignedProductWrite[] = []
   for (const listing of listings) {
     writes.push(
-      await signProductWrite(ndk, signerPubkey, listing, Date.now(), signEvent)
+      await signProductWrite(signerPubkey, listing, Date.now(), signEvent)
     )
   }
   const productEvents = writes.map((write) => write.productEvent)
-  const events: NDKEvent[] = [...productEvents]
+  const events: SignedPublicNostrEvent[] = [...productEvents]
   if ((input.deletions?.length ?? 0) > 0) {
     const draft = buildProductDeletionEventDraft({
       merchantPubkey: signerPubkey,
       targets: input.deletions ?? [],
       clientAppId: "merchant",
     })
-    const deletion = new NDKEvent(ndk)
+    const deletion: SignedPublicNostrEvent = {
+      id: "",
+      sig: "",
+      pubkey: signerPubkey,
+      kind: 0,
+      created_at: 0,
+      tags: [],
+      content: "",
+    }
     deletion.kind = draft.kind
     deletion.created_at = Math.floor(Date.now() / 1000)
     deletion.content = draft.content
@@ -1177,6 +1193,11 @@ export async function signAndPublishProductWriteBundle(
       accountPubkey: signerPubkey,
       deliveryMode: "critical",
       shouldContinue: input.shouldContinue,
+    }).catch((cause: unknown) => {
+      throw new Error(
+        "Fixed shipping was not acknowledged by a relay. Product publication was stopped.",
+        { cause }
+      )
     })
     if (delivery.successfulRelayUrls.length === 0) {
       throw new Error(
@@ -1209,7 +1230,7 @@ export async function signAndPublishProductWriteBundle(
     )
     const deliveryJob = await persistSignedProductDeletion(
       {
-        signedEvent: deletionEvent.rawEvent() as SignedPublicNostrEvent,
+        signedEvent: deletionEvent,
         currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
         currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
         currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,
@@ -1245,7 +1266,7 @@ export async function signAndPublishProductListing(input: {
   dTag: string
   previousEventCreatedAt?: number
   fulfillmentIntent: ProductPublicationFulfillmentIntent
-  onSignedLocal: (event: NDKEvent) => Promise<void>
+  onSignedLocal: (event: SignedPublicNostrEvent) => Promise<void>
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 }): Promise<PublishWithPlannerResult> {
   return signAndPublishProductWriteBundle({

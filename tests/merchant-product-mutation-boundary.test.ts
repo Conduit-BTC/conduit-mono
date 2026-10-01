@@ -1,3 +1,8 @@
+import {
+  fixtureWrite,
+  fixturePublisher,
+  resetFixturePublishers,
+} from "./helpers/plain-publisher"
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import {
@@ -233,7 +238,9 @@ function installEventPickupReadHarness(
     saturatedKinds?: readonly number[]
   } = {}
 ): void {
-  const relayUrls = harnessOptions.relayUrls ?? ["wss://pickup.example"]
+  const relayUrls = harnessOptions.relayUrls ?? [
+    "wss://pickup.fixture.conduit.market",
+  ]
   const retainedRows = harnessOptions.retainedRows ?? []
   __setEventMarketTestOverrides({
     getActiveOrderCollectionEvidencePins: async () => ({
@@ -356,20 +363,21 @@ async function attemptProductPublication(input: {
     putCachedProducts: async () => {},
   })
   __setRelayPublishTestOverrides({
+    publishSignedEventFrameToRelay: fixtureWrite,
     accountNetworkLocalStateRepository: { get: async () => undefined },
     planPublishRelays: async () => ({
       intent: "author_event",
-      primaryRelayUrls: ["wss://relay.example"],
+      primaryRelayUrls: ["wss://relay.fixture.conduit.market"],
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
     }),
   })
-  const publish = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+  const publish = spyOn(fixturePublisher, "publish").mockImplementation(
     async function (this: NDKEvent) {
       if (typeof this.kind === "number") {
         input.observed?.publishedKinds.push(this.kind)
       }
-      return new Set([{ url: "wss://relay.example/" }]) as never
+      return new Set([{ url: "wss://relay.fixture.conduit.market/" }]) as never
     }
   )
   const clock =
@@ -427,6 +435,7 @@ async function attemptPreservedPublication(input: {
 
 afterEach(() => {
   __resetCommerceTestOverrides()
+  resetFixturePublishers()
   __resetRelayPublishTestOverrides()
   __resetEventMarketTestOverrides()
   __resetShippingTestOverrides()
@@ -665,7 +674,7 @@ describe("merchant-owned product mutation boundary", () => {
             author,
             {
               pubkey: author,
-              readRelayUrls: ["wss://shipping.example"],
+              readRelayUrls: ["wss://shipping.fixture.conduit.market"],
               writeRelayUrls: [],
               eventCreatedAt: 1,
               cachedAt: 1,
@@ -1081,7 +1090,10 @@ describe("merchant-owned product mutation boundary", () => {
 
     installEventPickupReadHarness([pickup], {
       failedStatusKinds: [30406],
-      relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+      relayUrls: [
+        "wss://pickup-a.fixture.conduit.market",
+        "wss://pickup-b.fixture.conduit.market",
+      ],
     })
     const partialCoverage = {
       signerRequests: [] as ProductSignerRequestProgress[],
@@ -1133,14 +1145,20 @@ describe("merchant-owned product mutation boundary", () => {
         label: "pickup missing relay status",
         options: {
           omittedStatusKinds: [30406],
-          relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+          relayUrls: [
+            "wss://pickup-a.fixture.conduit.market",
+            "wss://pickup-b.fixture.conduit.market",
+          ],
         },
       },
       {
         label: "deletion missing relay status",
         options: {
           omittedStatusKinds: [5],
-          relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+          relayUrls: [
+            "wss://pickup-a.fixture.conduit.market",
+            "wss://pickup-b.fixture.conduit.market",
+          ],
         },
       },
       {
@@ -1328,7 +1346,10 @@ describe("merchant-owned product mutation boundary", () => {
         ...(deletionTarget === "e"
           ? {
               omittedStatusKinds: [5],
-              relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+              relayUrls: [
+                "wss://pickup-a.fixture.conduit.market",
+                "wss://pickup-b.fixture.conduit.market",
+              ],
             }
           : {}),
       })
@@ -1350,7 +1371,10 @@ describe("merchant-owned product mutation boundary", () => {
       __resetEventMarketTestOverrides()
       installEventPickupReadHarness([pickup], {
         failedStatusKinds: [30406],
-        relayUrls: ["wss://pickup-a.example", "wss://pickup-b.example"],
+        relayUrls: [
+          "wss://pickup-a.fixture.conduit.market",
+          "wss://pickup-b.fixture.conduit.market",
+        ],
         retainedRows,
       })
       const observed = {

@@ -35,6 +35,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/knowledge/signed-event-publication.md`: plain signed-event writer,
+  fixed relay targets, retry ownership, and per-relay delivery evidence
+
 - `docs/specs/event-markets.md`: organizer-authored calendar/collection,
   merchant- or organizer-operated pickup, private handoff receipts, catalog
   membership, and checkout provenance contract

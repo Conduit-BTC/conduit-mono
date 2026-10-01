@@ -1,3 +1,10 @@
+import {
+  fixtureWrite,
+  fixturePublisher,
+  plainFixtureEvent,
+  setFixturePublisher,
+  resetFixturePublishers,
+} from "./helpers/plain-publisher"
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import {
@@ -56,7 +63,7 @@ const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
 const NOW = 1_700_000_100_000
 const originalCommerceRelayUrls = [...config.commerceRelayUrls]
 const testCommerceFallbackRelays = [
-  "wss://merchant-test-fallback.example",
+  "wss://merchant-test-fallback.fixture.conduit.market",
   "wss://relay.primal.net",
 ]
 function addTestCommerceFallbackRelays(): void {
@@ -169,7 +176,7 @@ function makeSignedProductEvent(input: {
     dTag: input.dTag,
     clientAppId: "merchant",
   })
-  const event = new NDKEvent(
+  const event = plainFixtureEvent(
     undefined,
     finalizeEvent(
       {
@@ -181,13 +188,13 @@ function makeSignedProductEvent(input: {
       MERCHANT_SECRET
     )
   )
-  event.publish = (async (relaySet: unknown) => {
+  setFixturePublisher(event, (async (relaySet: unknown) => {
     const attemptedRelayUrls = [
       ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ?? []),
     ]
     expect(attemptedRelayUrls).toContain(`${input.acceptedRelayUrl}/`)
     return new Set([{ url: `${input.acceptedRelayUrl}/` }])
-  }) as never
+  }) as never)
   return event
 }
 
@@ -201,7 +208,7 @@ function makeSignedProductEventWithShippingTags(input: {
     dTag: input.dTag,
     clientAppId: "merchant",
   })
-  return new NDKEvent(
+  return plainFixtureEvent(
     undefined,
     finalizeEvent(
       {
@@ -260,6 +267,7 @@ async function readProductAfterCacheReload(
 beforeEach(() => {
   cachedProducts = []
   __resetCommerceTestOverrides()
+  resetFixturePublishers()
   __resetRelayPublishTestOverrides()
   __resetNdkTestState()
   __setCommerceTestOverrides({
@@ -277,6 +285,7 @@ beforeEach(() => {
     putCachedProductTombstones: async () => {},
   })
   __setRelayPublishTestOverrides({
+    publishSignedEventFrameToRelay: fixtureWrite,
     accountNetworkLocalStateRepository:
       allowAllAccountNetworkLocalStateRepository,
     planPublishRelays: async () => ({
@@ -291,6 +300,7 @@ beforeEach(() => {
 afterEach(() => {
   config.commerceRelayUrls = [...originalCommerceRelayUrls]
   __resetCommerceTestOverrides()
+  resetFixturePublishers()
   __resetRelayPublishTestOverrides()
   __resetNdkTestState()
 })
@@ -307,7 +317,7 @@ describe("merchant product event delivery", () => {
       },
       dTag,
     })
-    const event = new NDKEvent(
+    const event = plainFixtureEvent(
       undefined,
       finalizeEvent(
         {
@@ -335,7 +345,7 @@ describe("merchant product event delivery", () => {
   })
   it("preserves a signed legacy content location through cache reload and title editing", async () => {
     const dTag = "legacy-content-location"
-    const event = new NDKEvent(
+    const event = plainFixtureEvent(
       undefined,
       finalizeEvent(
         {
@@ -364,7 +374,7 @@ describe("merchant product event delivery", () => {
       dTag,
     })
     expect(edited.tags).toContainEqual(["location", "Legacy nearby town"])
-    const updated = new NDKEvent(
+    const updated = plainFixtureEvent(
       undefined,
       finalizeEvent(
         {
@@ -379,10 +389,11 @@ describe("merchant product event delivery", () => {
     expect(parseProductEvent(updated).location).toBe("Legacy nearby town")
   })
   it("routes product and shipping events through the commerce author intent", async () => {
-    const relayUrl = "wss://relay.example"
+    const relayUrl = "wss://relay.fixture.conduit.market"
     const intents: string[] = []
     setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
     __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: fixtureWrite,
       planPublishRelays: async (input) => {
         intents.push(input.intent)
         return {
@@ -393,7 +404,7 @@ describe("merchant product event delivery", () => {
         }
       },
     })
-    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
+    const publishSpy = spyOn(fixturePublisher, "publish").mockResolvedValue(
       new Set([{ url: `${relayUrl}/` }]) as never
     )
 
@@ -424,8 +435,9 @@ describe("merchant product event delivery", () => {
   })
 
   it("revalidates live account authority before product relay I/O", async () => {
-    const relayUrl = "wss://relay.example"
+    const relayUrl = "wss://relay.fixture.conduit.market"
     __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: fixtureWrite,
       accountNetworkLocalStateRepository:
         allowAllAccountNetworkLocalStateRepository,
       planPublishRelays: async () => ({
@@ -435,8 +447,11 @@ describe("merchant product event delivery", () => {
         parkedRelayUrls: [],
       }),
     })
-    const event = new NDKEvent(undefined, makeSignedEvent(EVENT_KINDS.PRODUCT))
-    const publish = spyOn(event, "publish").mockResolvedValue(
+    const event = plainFixtureEvent(
+      undefined,
+      makeSignedEvent(EVENT_KINDS.PRODUCT)
+    )
+    const publish = spyOn(fixturePublisher, "publish").mockResolvedValue(
       new Set([{ url: `${relayUrl}/` }]) as never
     )
 
@@ -576,7 +591,7 @@ describe("merchant product event delivery", () => {
       },
       dTag,
     })
-    const event = new NDKEvent(
+    const event = plainFixtureEvent(
       undefined,
       finalizeEvent(
         {
@@ -680,6 +695,7 @@ describe("merchant product event delivery", () => {
     const authenticatedPubkeys: Array<string | null | undefined> = []
     const relayUrl = config.commerceRelayUrls[1]!
     __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: fixtureWrite,
       planPublishRelays: async (input) => {
         authenticatedPubkeys.push(input.authenticatedPubkey)
         return {
@@ -885,14 +901,14 @@ describe("merchant product event delivery", () => {
         if (!listing) throw new Error("Expected a signed listing event")
         if (!deletion) throw new Error("Expected a signed deletion event")
         signedDeletionId = deletion.id
-        listing.publish = (async (relaySet: unknown) => {
+        setFixturePublisher(listing, (async (relaySet: unknown) => {
           const attemptedRelayUrls = [
             ...((relaySet as { relayUrls?: Set<string> | string[] })
               .relayUrls ?? []),
           ]
           return new Set(attemptedRelayUrls.map((url) => ({ url })))
-        }) as never
-        deletion.publish = (async () => new Set()) as never
+        }) as never)
+        setFixturePublisher(deletion, (async () => new Set()) as never)
       },
       deletionDeliveryOptions: {
         repository: beforeReload,
@@ -983,15 +999,16 @@ describe("merchant product event delivery", () => {
     } as NDKSigner
     setSigner(signer)
     __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: fixtureWrite,
       planPublishRelays: async () => ({
         intent: "author_event",
-        primaryRelayUrls: ["wss://relay.example"],
+        primaryRelayUrls: ["wss://relay.fixture.conduit.market"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
     })
-    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
-      new Set([{ url: "wss://relay.example/" }]) as never
+    const publishSpy = spyOn(fixturePublisher, "publish").mockResolvedValue(
+      new Set([{ url: "wss://relay.fixture.conduit.market/" }]) as never
     )
     let signerRequestsCompleteCalls = 0
     let signedKindsAtCompletion: number[] = []
@@ -1064,15 +1081,16 @@ describe("merchant product event delivery", () => {
       },
     } as NDKSigner)
     __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: fixtureWrite,
       planPublishRelays: async () => ({
         intent: "author_event",
-        primaryRelayUrls: ["wss://relay.example"],
+        primaryRelayUrls: ["wss://relay.fixture.conduit.market"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
     })
-    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
-      new Set([{ url: "wss://relay.example/" }]) as never
+    const publishSpy = spyOn(fixturePublisher, "publish").mockResolvedValue(
+      new Set([{ url: "wss://relay.fixture.conduit.market/" }]) as never
     )
 
     try {
@@ -1137,15 +1155,16 @@ describe("merchant product event delivery", () => {
     } as NDKSigner
     setSigner(failedSigner)
     __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: fixtureWrite,
       planPublishRelays: async () => ({
         intent: "author_event",
-        primaryRelayUrls: ["wss://relay.example"],
+        primaryRelayUrls: ["wss://relay.fixture.conduit.market"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
     })
-    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockResolvedValue(
-      new Set([{ url: "wss://relay.example/" }]) as never
+    const publishSpy = spyOn(fixturePublisher, "publish").mockResolvedValue(
+      new Set([{ url: "wss://relay.fixture.conduit.market/" }]) as never
     )
     const input = {
       merchantPubkey: MERCHANT_PUBKEY,
@@ -1212,18 +1231,21 @@ describe("merchant product event delivery", () => {
       },
     } as NDKSigner)
     __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: fixtureWrite,
       planPublishRelays: async () => ({
         intent: "author_event",
-        primaryRelayUrls: ["wss://relay.example"],
+        primaryRelayUrls: ["wss://relay.fixture.conduit.market"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
     })
     const publishedIds: string[] = []
-    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+    const publishSpy = spyOn(fixturePublisher, "publish").mockImplementation(
       async function (this: NDKEvent) {
         publishedIds.push(this.id)
-        return new Set([{ url: "wss://relay.example/" }]) as never
+        return new Set([
+          { url: "wss://relay.fixture.conduit.market/" },
+        ]) as never
       }
     )
 
@@ -1267,9 +1289,13 @@ describe("merchant product event delivery", () => {
     try {
       Object.assign(config, applyE2eRelayIsolation(config, [loopbackRelayUrl]))
       __setRelayPublishTestOverrides({
+        publishSignedEventFrameToRelay: fixtureWrite,
         planPublishRelays: async () => ({
           intent: "author_event",
-          primaryRelayUrls: ["wss://saved-public.example", loopbackRelayUrl],
+          primaryRelayUrls: [
+            "wss://saved-public.fixture.conduit.market",
+            loopbackRelayUrl,
+          ],
           broadcastRelayUrls: [],
           parkedRelayUrls: [],
         }),
@@ -1289,7 +1315,7 @@ describe("merchant product event delivery", () => {
           {
             eventId: "e".repeat(64),
             addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
-            sourceRelayUrls: ["wss://source-public.example"],
+            sourceRelayUrls: ["wss://source-public.fixture.conduit.market"],
           },
         ]),
         onSignedLocal: async (bundle) => {
@@ -1298,8 +1324,10 @@ describe("merchant product event delivery", () => {
             (event) => event.kind === EVENT_KINDS.PRODUCT
           )
           if (!listing) throw new Error("Expected a signed listing event")
-          listing.publish = (async () =>
-            new Set([{ url: `${loopbackRelayUrl}/` }])) as never
+          setFixturePublisher(
+            listing,
+            (async () => new Set([{ url: `${loopbackRelayUrl}/` }])) as never
+          )
         },
         deletionDeliveryOptions: {
           repository,
@@ -1406,14 +1434,15 @@ describe("merchant product event delivery", () => {
     let onSignedLocalCalls = 0
     setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
     __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: fixtureWrite,
       planPublishRelays: async () => ({
         intent: "author_event",
-        primaryRelayUrls: ["wss://relay.example"],
+        primaryRelayUrls: ["wss://relay.fixture.conduit.market"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
     })
-    const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+    const publishSpy = spyOn(fixturePublisher, "publish").mockImplementation(
       async function (this: NDKEvent) {
         publishAttempts.push(this.kind ?? -1)
         return new Set()
@@ -1456,7 +1485,10 @@ describe("merchant product event delivery", () => {
         })
       ).rejects.toThrow("Product publication was stopped.")
 
-      expect(publishAttempts).toEqual([EVENT_KINDS.SHIPPING_OPTION])
+      expect(publishAttempts).toHaveLength(3)
+      expect(
+        publishAttempts.every((kind) => kind === EVENT_KINDS.SHIPPING_OPTION)
+      ).toBe(true)
       expect(cachedProducts).toEqual([])
       expect(await repository.listUndelivered()).toEqual([])
       expect(onSignedLocalCalls).toBe(0)
@@ -1480,7 +1512,7 @@ describe("merchant product event delivery", () => {
     ).rejects.toThrow("exact signed merchant deletion")
 
     const otherMerchantPubkey = getPublicKey(OTHER_MERCHANT_SECRET)
-    const wrongMerchantDeletion = new NDKEvent(
+    const wrongMerchantDeletion = plainFixtureEvent(
       undefined,
       finalizeEvent(
         {
@@ -1518,7 +1550,7 @@ function publishResult(
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
     },
-    attemptedRelayUrls: ["wss://relay.example"],
+    attemptedRelayUrls: ["wss://relay.fixture.conduit.market"],
     successfulRelayUrls,
     failedRelayUrls: [],
     relayFailureMessages: {},
@@ -1577,14 +1609,14 @@ describe("canonical product publication ordering", () => {
     const dependencies: CanonicalProductPublishDependencies = {
       publishShippingEvent: async () => {
         calls.push("shipping_ack")
-        return publishResult(["wss://relay.example"])
+        return publishResult(["wss://relay.fixture.conduit.market"])
       },
       cacheEvent: async () => {
         calls.push("product_cache")
       },
       deliverEvents: async () => {
         calls.push("product_publish")
-        return publishResult(["wss://relay.example"])
+        return publishResult(["wss://relay.fixture.conduit.market"])
       },
     }
 
@@ -1628,7 +1660,7 @@ describe("canonical product publication ordering", () => {
       },
       deliverEvents: async () => {
         calls.push("product_publish")
-        return publishResult(["wss://relay.example"])
+        return publishResult(["wss://relay.fixture.conduit.market"])
       },
     }
 
@@ -1660,7 +1692,7 @@ describe("canonical product publication ordering", () => {
       },
       deliverEvents: async () => {
         calls.push("product_publish")
-        return publishResult(["wss://relay.example"])
+        return publishResult(["wss://relay.fixture.conduit.market"])
       },
     }
 
@@ -1722,7 +1754,7 @@ describe("canonical product publication ordering", () => {
       shippingOptionRefs: [
         {
           coordinate: pickupCoordinate,
-          relayHints: ["wss://relay.example"],
+          relayHints: ["wss://relay.fixture.conduit.market"],
         },
       ],
       canonicalShippingResolved: false,
@@ -1743,7 +1775,7 @@ describe("canonical product publication ordering", () => {
       shippingOptionRefs: [
         {
           coordinate: pickupCoordinate,
-          relayHints: ["wss://relay.example"],
+          relayHints: ["wss://relay.fixture.conduit.market"],
         },
       ],
       canonicalShippingResolved: false,

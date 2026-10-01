@@ -118,7 +118,7 @@ function setup(
     signDraft: async ({ draft, createdAt }) =>
       sign(draft.kind, draft.tags, createdAt),
     publishWithPlanner: async (event) => {
-      published.push(event.rawEvent() as SignedPublicNostrEvent)
+      published.push(structuredClone(event))
       return {
         plan: {
           intent: "author_event",

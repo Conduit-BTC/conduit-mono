@@ -698,7 +698,7 @@ export async function retryCheckoutSparkRecoveryDelivery(input: {
   if (pendingRelayUrls.length > 0) {
     try {
       recipientDelivery = await (input.publishFn ?? publishWithPlanner)(
-        new NDKEvent(getNdk(), input.record.signedRecipientWrap),
+        input.record.signedRecipientWrap,
         {
           intent: "recipient_event",
           authorPubkey: input.record.senderPubkey,

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -17,23 +16,20 @@ import {
   type ExactRelayWriteStatus,
 } from "@conduit/core"
 
-const FAST_RELAY = "wss://fast-progressive.example"
-const SLOW_RELAY = "wss://slow-progressive.example"
-const ERROR_RELAY = "wss://error-progressive.example"
+const FAST_RELAY = "wss://fast-progressive.fixture.conduit.market"
+const SLOW_RELAY = "wss://slow-progressive.fixture.conduit.market"
+const ERROR_RELAY = "wss://error-progressive.fixture.conduit.market"
 
-function giftWrapEvent(): NDKEvent {
+function giftWrapEvent() {
   const recipientPubkey = getPublicKey(generateSecretKey())
-  return new NDKEvent(
-    undefined,
-    finalizeEvent(
-      {
-        kind: EVENT_KINDS.GIFT_WRAP,
-        created_at: Math.floor(Date.now() / 1_000),
-        tags: [["p", recipientPubkey]],
-        content: "encrypted",
-      },
-      generateSecretKey()
-    )
+  return finalizeEvent(
+    {
+      kind: EVENT_KINDS.GIFT_WRAP,
+      created_at: Math.floor(Date.now() / 1_000),
+      tags: [["p", recipientPubkey]],
+      content: "encrypted",
+    },
+    generateSecretKey()
   )
 }
 
@@ -58,7 +54,7 @@ describe("progressive relay publishing", () => {
     const fast = deferred<ExactRelayWriteStatus>()
     const slow = deferred<ExactRelayWriteStatus>()
     const event = giftWrapEvent()
-    const signedBytes = JSON.stringify(event.rawEvent())
+    const signedBytes = JSON.stringify(event)
     const attempted: string[] = []
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async ({ relayUrl, signedEvent }) => {
@@ -85,7 +81,7 @@ describe("progressive relay publishing", () => {
     expect(accepted.successfulRelayUrls).toEqual([FAST_RELAY])
     expect(accepted.pendingRelayUrls).toEqual([SLOW_RELAY])
     expect(settlementComplete).toBe(false)
-    expect(JSON.stringify(event.rawEvent())).toBe(signedBytes)
+    expect(JSON.stringify(event)).toBe(signedBytes)
 
     slow.resolve("timed_out")
     const settled = await milestones.settled
@@ -95,12 +91,22 @@ describe("progressive relay publishing", () => {
     expect(settled.timedOutRelayUrls).toEqual([SLOW_RELAY])
     expect(settled.relayAttempts).toEqual(
       expect.arrayContaining([
-        { relayUrl: FAST_RELAY, attempt: 1, status: "acked" },
-        { relayUrl: SLOW_RELAY, attempt: 1, status: "timed_out" },
+        {
+          relayUrl: FAST_RELAY,
+          eventId: event.id,
+          attempt: 1,
+          status: "acked",
+        },
+        {
+          relayUrl: SLOW_RELAY,
+          eventId: event.id,
+          attempt: 1,
+          status: "timed_out",
+        },
       ])
     )
     expect(attempted.sort()).toEqual([FAST_RELAY, SLOW_RELAY].sort())
-    expect(JSON.stringify(event.rawEvent())).toBe(signedBytes)
+    expect(JSON.stringify(event)).toBe(signedBytes)
   })
 
   it("rejects foreground acceptance after zero ACKs and preserves every bounded outcome", async () => {

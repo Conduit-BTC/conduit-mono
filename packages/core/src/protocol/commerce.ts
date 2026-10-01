@@ -3226,12 +3226,16 @@ function filterDeletedProductRecords(
 }
 
 export async function cacheSignedProductListingEvent(
-  event: NDKEvent,
+  signedEvent: SignedPublicNostrEvent | NDKEvent,
   options: {
     sourceRelayUrls?: readonly string[]
     persistence?: "required" | "best_effort"
   } = {}
 ): Promise<CommerceProductRecord> {
+  const event =
+    signedEvent instanceof NDKEvent
+      ? signedEvent
+      : new NDKEvent(undefined, signedEvent)
   if (
     event.kind !== EVENT_KINDS.PRODUCT ||
     !event.id ||
@@ -3270,8 +3274,12 @@ export async function cacheSignedProductListingEvent(
 }
 
 export async function cacheSignedProductDeletionEvent(
-  event: NDKEvent
+  signedEvent: SignedPublicNostrEvent | NDKEvent
 ): Promise<CachedProductTombstone[]> {
+  const event =
+    signedEvent instanceof NDKEvent
+      ? signedEvent
+      : new NDKEvent(undefined, signedEvent)
   const tombstones = tombstonesFromDeletionEvent(event, {
     observedLocally: true,
   })

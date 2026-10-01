@@ -1416,19 +1416,16 @@ export async function retryEventMarketPrivateDelivery(input: {
   let recipientDelivery: PublishWithPlannerResult | null = null
   if (pendingRecipientRelayUrls.length > 0) {
     try {
-      recipientDelivery = await publish(
-        new NDKEvent(getNdk(), input.record.signedRecipientWrap),
-        {
-          intent: "recipient_event",
-          authorPubkey: input.record.senderPubkey,
-          authenticatedPubkey: authenticatedOwnerPubkey,
-          accountPubkey,
-          recipientPubkeys: [input.record.recipientPubkey],
-          exclusiveRelayUrls: pendingRecipientRelayUrls,
-          deliveryMode: "critical",
-          shouldContinue,
-        }
-      )
+      recipientDelivery = await publish(input.record.signedRecipientWrap, {
+        intent: "recipient_event",
+        authorPubkey: input.record.senderPubkey,
+        authenticatedPubkey: authenticatedOwnerPubkey,
+        accountPubkey,
+        recipientPubkeys: [input.record.recipientPubkey],
+        exclusiveRelayUrls: pendingRecipientRelayUrls,
+        deliveryMode: "critical",
+        shouldContinue,
+      })
     } catch (error) {
       if (shouldContinue?.() === false) throw error
       const partial = recoverEventMarketPartialPublishDiagnostics(error)
@@ -1477,22 +1474,19 @@ export async function retryEventMarketPrivateDelivery(input: {
       )
       if (pendingSelfRelayUrls.length > 0) {
         try {
-          selfDelivery = await publish(
-            new NDKEvent(getNdk(), input.record.signedSelfWrap),
-            {
-              intent: "recipient_event",
-              authorPubkey: input.record.senderPubkey,
-              authenticatedPubkey: authenticatedOwnerPubkey,
-              accountPubkey,
-              recipientPubkeys: [input.record.senderPubkey],
-              exclusiveRelayUrls: pendingSelfRelayUrls,
-              ownerSelectedRelayUrls: senderPlan.ownerSelectedRelayUrls.filter(
-                (relayUrl) => pendingSelfRelayUrls.includes(relayUrl)
-              ),
-              deliveryMode: "critical",
-              shouldContinue,
-            }
-          )
+          selfDelivery = await publish(input.record.signedSelfWrap, {
+            intent: "recipient_event",
+            authorPubkey: input.record.senderPubkey,
+            authenticatedPubkey: authenticatedOwnerPubkey,
+            accountPubkey,
+            recipientPubkeys: [input.record.senderPubkey],
+            exclusiveRelayUrls: pendingSelfRelayUrls,
+            ownerSelectedRelayUrls: senderPlan.ownerSelectedRelayUrls.filter(
+              (relayUrl) => pendingSelfRelayUrls.includes(relayUrl)
+            ),
+            deliveryMode: "critical",
+            shouldContinue,
+          })
         } catch (error) {
           if (shouldContinue?.() === false) throw error
           const partial = recoverEventMarketPartialPublishDiagnostics(error)

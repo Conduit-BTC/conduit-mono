@@ -89,7 +89,7 @@ const signer = plainTestSigner({
 } as unknown as NDKSigner)
 
 function wrap(id: string): NDKEvent {
-  return { id } as unknown as NDKEvent
+  return new NDKEvent(undefined, { id })
 }
 
 function rumor(kind: number, overrides: Partial<NDKEvent> = {}): NDKEvent {
@@ -2161,9 +2161,9 @@ describe("publishPrivateMessage", () => {
         },
         onNip17CompatibilityOutcome: (outcome) => outcomes.push(outcome),
         publishFn: (async (event, options) => {
-          expect(event).toBe(staged)
+          expect(JSON.stringify(event)).toBe(JSON.stringify(staged!.rawEvent()))
           expect(options.exclusiveRelayUrls).toEqual([target])
-          received = event
+          received = new NDKEvent(undefined, event)
           return { successfulRelayUrls: [target], failedRelayUrls: [] }
         }) as never,
       })

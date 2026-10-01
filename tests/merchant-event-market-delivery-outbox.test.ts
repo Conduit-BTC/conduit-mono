@@ -622,7 +622,7 @@ describe("merchant organizer delivery outbox", () => {
     __setEventMarketTestOverrides({
       getNdk: async () => new NDK(),
       publishWithPlanner: async (event) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return {
           plan: {
             intent: "author_event",
@@ -670,7 +670,7 @@ describe("merchant organizer delivery outbox", () => {
     __setEventMarketTestOverrides({
       getNdk: async () => new NDK(),
       publishWithPlanner: async (event) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         throw new Error("stale retry reached relay transport")
       },
     })

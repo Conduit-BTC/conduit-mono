@@ -7,7 +7,13 @@ import {
   type SignedPublicNostrEvent,
 } from "./signed-event"
 
-export type ExactRelayWriteStatus = "acked" | "rejected" | "timed_out"
+export type ExactRelayWriteStatus =
+  | "acked"
+  | "rejected"
+  | "timed_out"
+  | "auth_required"
+  | "cancelled"
+  | "policy_blocked"
 
 const MAX_RESPONSE_FRAMES = 64
 const MAX_RESPONSE_CHARS = 256 * 1024
@@ -61,6 +67,9 @@ export function publishSignedEventFrameToRelay(input: {
   relayUrl: string
   signedEvent: SignedPublicNostrEvent
   timeoutMs: number
+  signal?: AbortSignal
+  shouldContinue?: () => boolean
+  beforeSend?: () => Promise<boolean>
   /** Optional foreground-only NIP-42 capability for this exact relay write. */
   authorization?: ExactRelayWriteAuthorization
   createWebSocket?: (relayUrl: string) => WebSocket
@@ -70,6 +79,8 @@ export function publishSignedEventFrameToRelay(input: {
     : input.relayUrl
   if (!relayUrl) return Promise.resolve("timed_out")
 
+  if (input.signal?.aborted || input.shouldContinue?.() === false)
+    return Promise.resolve("cancelled")
   const eventId = input.signedEvent.id
   const frame = serializeEventFrame(input.signedEvent)
   const authorization = input.authorization
@@ -97,11 +108,15 @@ export function publishSignedEventFrameToRelay(input: {
     let authState: "idle" | "signing" | "sent" | "accepted" = "idle"
     const authAbortController = new AbortController()
 
+    const cancel = () => finish("cancelled")
+    let sessionFence: ReturnType<typeof setInterval> | undefined
     const finish = (status: ExactRelayWriteStatus) => {
       if (settled) return
       settled = true
       authAbortController.abort()
       clearTimeout(timeout)
+      clearInterval(sessionFence)
+      input.signal?.removeEventListener("abort", cancel)
       if (socket) {
         socket.onopen = null
         socket.onmessage = null
@@ -131,12 +146,34 @@ export function publishSignedEventFrameToRelay(input: {
       if (authState === "signing") authorization?.onSignerFailure?.()
       finish("timed_out")
     }, input.timeoutMs)
-    socket.onopen = () => {
-      try {
-        socket?.send(frame)
-      } catch {
-        finish("timed_out")
+    const sendFrame = () => {
+      const send = (eligible = true) => {
+        if (settled) return
+        if (input.signal?.aborted || input.shouldContinue?.() === false) {
+          finish("cancelled")
+          return
+        }
+        if (!eligible) {
+          finish("policy_blocked")
+          return
+        }
+        try {
+          socket?.send(frame)
+        } catch {
+          finish("timed_out")
+        }
       }
+      if (input.beforeSend)
+        void input.beforeSend().then(send, () => finish("timed_out"))
+      else send()
+    }
+    input.signal?.addEventListener("abort", cancel, { once: true })
+    if (input.shouldContinue)
+      sessionFence = setInterval(() => {
+        if (input.shouldContinue?.() === false) finish("cancelled")
+      }, 50)
+    socket.onopen = () => {
+      void sendFrame()
     }
     socket.onmessage = (message) => {
       if (typeof message.data !== "string") {
@@ -259,6 +296,10 @@ export function publishSignedEventFrameToRelay(input: {
         return
       }
 
+      if (input.signal?.aborted || input.shouldContinue?.() === false) {
+        finish("cancelled")
+        return
+      }
       if (parsed[0] !== "OK") return
       if (authEventId !== null && parsed[1] === authEventId) {
         if (parsed[2] === true && authState === "sent") {
@@ -267,11 +308,7 @@ export function publishSignedEventFrameToRelay(input: {
             return
           }
           authState = "accepted"
-          try {
-            socket?.send(frame)
-          } catch {
-            finish("timed_out")
-          }
+          void sendFrame()
           return
         }
         if (parsed[2] === false) {
@@ -301,7 +338,9 @@ export function publishSignedEventFrameToRelay(input: {
         // exact same EVENT frame can be retried on this socket.
         return
       }
-      if (NIP_01_DUPLICATE_REASON.test(reason)) {
+      if (NIP_42_AUTH_REQUIRED_REASON.test(reason)) {
+        finish("auth_required")
+      } else if (NIP_01_DUPLICATE_REASON.test(reason)) {
         finish("acked")
       } else if (NIP_01_REJECTION_REASON.test(reason)) {
         finish("rejected")

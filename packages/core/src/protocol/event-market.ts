@@ -7771,7 +7771,6 @@ async function signEventMarketDraft(input: {
     }
   }
 
-  const ndk = await (eventMarketTestOverrides.getNdk ?? getNdk)()
   assertEventMarketSignerCurrent(input.shouldContinue)
   const signer = (
     eventMarketTestOverrides.getAccountSigner ?? getAccountSigner
@@ -7783,18 +7782,21 @@ async function signEventMarketDraft(input: {
   if (signerPubkey !== input.organizerPubkey) {
     throw new Error("Active signer does not match this organizer.")
   }
-  const event = new NDKEvent(ndk)
-  event.kind = input.draft.kind
-  event.created_at = input.createdAt
-  event.content = input.draft.content
-  event.tags = input.draft.tags
+  const draft: UnsignedNostrEvent = {
+    kind: 0,
+    pubkey: "",
+    created_at: 0,
+    tags: [],
+    content: "",
+  }
+  draft.kind = input.draft.kind
+  draft.created_at = input.createdAt
+  draft.content = input.draft.content
+  draft.tags = input.draft.tags
   assertEventMarketSignerCurrent(input.shouldContinue)
-  event.pubkey = signerPubkey
-  Object.assign(
-    event,
-    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
-  )
-  const signed = event.rawEvent() as SignedPublicNostrEvent
+  draft.pubkey = signerPubkey
+  const event = await signer.signEvent(draft)
+  const signed = event
   if (
     !isValidSignedPublicNostrEvent(signed) ||
     signed.pubkey.toLowerCase() !== input.organizerPubkey
@@ -7809,14 +7811,22 @@ function classifyRecordDelivery(
 ): OrganizerEventMarketRecordDelivery {
   const rejectedRelayUrls: string[] = []
   const timedOutRelayUrls: string[] = []
+  const rejected = new Set(result.rejectedRelayUrls)
+  const timedOut = new Set(
+    result.relayAttempts
+      ?.filter((attempt) => attempt.status === "timed_out")
+      .map((attempt) => attempt.relayUrl)
+  )
   for (const relayUrl of result.failedRelayUrls) {
-    const failure = result.relayFailureMessages[relayUrl]?.toLowerCase() ?? ""
-    if (failure.includes("timeout") || failure.includes("timed out")) {
+    if (rejected.has(relayUrl)) rejectedRelayUrls.push(relayUrl)
+    else if (timedOut.has(relayUrl)) timedOutRelayUrls.push(relayUrl)
+    else if (
+      !result.relayAttempts &&
+      /timeout|timed out/i.test(result.relayFailureMessages[relayUrl] ?? "")
+    )
       timedOutRelayUrls.push(relayUrl)
-    } else {
-      rejectedRelayUrls.push(relayUrl)
-    }
   }
+
   return {
     attemptedRelayUrls: [...result.attemptedRelayUrls],
     successfulRelayUrls: [...result.successfulRelayUrls],
@@ -7854,8 +7864,7 @@ async function publishSignedEventMarketRecord(input: {
   ) {
     throw new Error("Refusing to publish invalid organizer event evidence.")
   }
-  const ndk = await (eventMarketTestOverrides.getNdk ?? getNdk)()
-  const event = new NDKEvent(ndk, input.signedEvent)
+  const event = input.signedEvent
   const publish =
     eventMarketTestOverrides.publishWithPlanner ?? publishWithPlanner
   const authenticatedPubkey = normalizePubkey(input.authenticatedPubkey)

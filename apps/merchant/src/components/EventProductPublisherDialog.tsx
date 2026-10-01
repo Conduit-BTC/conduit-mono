@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { SignedPublicNostrEvent } from "@conduit/core"
 import { Copy, Loader2, PackagePlus } from "lucide-react"
 import {
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
@@ -164,7 +164,9 @@ export function EventProductPublisherDialog({
   const [actionState, setActionState] =
     useState<SignedActionStatusState>("dirty")
   const [actionError, setActionError] = useState("")
-  const [signedEvent, setSignedEvent] = useState<NDKEvent | null>(null)
+  const [signedEvent, setSignedEvent] = useState<SignedPublicNostrEvent | null>(
+    null
+  )
   const [publishedCoordinate, setPublishedCoordinate] = useState<string | null>(
     null
   )
@@ -211,7 +213,9 @@ export function EventProductPublisherDialog({
     return { ownerPubkey: merchantPubkey, authGeneration }
   }
 
-  function productCoordinateFromSignedEvent(event: NDKEvent): string {
+  function productCoordinateFromSignedEvent(
+    event: SignedPublicNostrEvent
+  ): string {
     const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]
     if (!dTag) throw new Error("Signed product coordinate is unavailable.")
     return `30402:${merchantPubkey}:${dTag}`
@@ -387,7 +391,10 @@ export function EventProductPublisherDialog({
     },
   })
   const retryProductDeliveryMutation = useMutation({
-    mutationFn: async (input: { ownerPubkey: string; event: NDKEvent }) => {
+    mutationFn: async (input: {
+      ownerPubkey: string
+      event: SignedPublicNostrEvent
+    }) => {
       if (!isCurrentOwner(input.ownerPubkey)) {
         throw new Error("This signed product belongs to another account.")
       }

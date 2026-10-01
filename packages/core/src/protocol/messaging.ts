@@ -1569,7 +1569,7 @@ export async function publishPrivateMessage(
     })
     await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
     const milestones = await publishProgressiveFn(
-      wrappedToRecipient,
+      wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
       recipientPublishInput
     )
     const settledOutcome = milestones.settled.then(async (snapshot) => {
@@ -1662,28 +1662,32 @@ export async function publishPrivateMessage(
             )
           }
           try {
-            selfDelivery = await publishFn(wrappedToSelf, {
-              intent: "recipient_event",
-              authorPubkey: input.senderPubkey,
-              authenticatedPubkey: authenticatedOwnerPubkey,
-              recipientPubkeys: [input.senderPubkey],
-              exclusiveRelayUrls: currentSenderRoute.relayUrls,
-              ownerSelectedRelayUrls: currentSenderRoute.ownerSelectedRelayUrls,
-              shouldContinue: input.shouldContinue,
-              refreshRelayLists,
-              deliveryMode: "critical",
-              ...(accountPubkey
-                ? {
-                    accountPubkey,
-                    ...(input.accountNetworkLocalStateRepository
-                      ? {
-                          accountNetworkLocalStateRepository:
-                            input.accountNetworkLocalStateRepository,
-                        }
-                      : {}),
-                  }
-                : {}),
-            })
+            selfDelivery = await publishFn(
+              wrappedToSelf.rawEvent() as SignedPublicNostrEvent,
+              {
+                intent: "recipient_event",
+                authorPubkey: input.senderPubkey,
+                authenticatedPubkey: authenticatedOwnerPubkey,
+                recipientPubkeys: [input.senderPubkey],
+                exclusiveRelayUrls: currentSenderRoute.relayUrls,
+                ownerSelectedRelayUrls:
+                  currentSenderRoute.ownerSelectedRelayUrls,
+                shouldContinue: input.shouldContinue,
+                refreshRelayLists,
+                deliveryMode: "critical",
+                ...(accountPubkey
+                  ? {
+                      accountPubkey,
+                      ...(input.accountNetworkLocalStateRepository
+                        ? {
+                            accountNetworkLocalStateRepository:
+                              input.accountNetworkLocalStateRepository,
+                          }
+                        : {}),
+                    }
+                  : {}),
+              }
+            )
           } catch (error) {
             const partial = recoverPartialRelayPublishDiagnostics(error)
             if (!partial) throw error
@@ -1763,37 +1767,40 @@ export async function publishPrivateMessage(
     await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
   }
   try {
-    recipientDelivery = await publishFn(wrappedToRecipient, {
-      intent: "recipient_event",
-      authorPubkey: input.senderPubkey,
-      authenticatedPubkey: authenticatedOwnerPubkey,
-      recipientPubkeys: [input.recipientPubkey],
-      exclusiveRelayUrls: recipientRoute.relayUrls,
-      appRelayUrls:
-        recipientRoute.route === "compatibility_order"
-          ? recipientRoute.relayUrls
-          : [],
-      personalRelayUrls: [],
-      independentRelayUrls:
-        recipientRoute.route === "compatibility_order"
-          ? []
-          : recipientRoute.relayUrls,
-      shouldContinue: input.shouldContinue,
-      refreshRelayLists,
-      deliveryMode: "critical",
-      ...(relayAuthentication ? { relayAuthentication } : {}),
-      ...(accountPubkey
-        ? {
-            accountPubkey,
-            ...(input.accountNetworkLocalStateRepository
-              ? {
-                  accountNetworkLocalStateRepository:
-                    input.accountNetworkLocalStateRepository,
-                }
-              : {}),
-          }
-        : {}),
-    })
+    recipientDelivery = await publishFn(
+      wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
+      {
+        intent: "recipient_event",
+        authorPubkey: input.senderPubkey,
+        authenticatedPubkey: authenticatedOwnerPubkey,
+        recipientPubkeys: [input.recipientPubkey],
+        exclusiveRelayUrls: recipientRoute.relayUrls,
+        appRelayUrls:
+          recipientRoute.route === "compatibility_order"
+            ? recipientRoute.relayUrls
+            : [],
+        personalRelayUrls: [],
+        independentRelayUrls:
+          recipientRoute.route === "compatibility_order"
+            ? []
+            : recipientRoute.relayUrls,
+        shouldContinue: input.shouldContinue,
+        refreshRelayLists,
+        deliveryMode: "critical",
+        ...(relayAuthentication ? { relayAuthentication } : {}),
+        ...(accountPubkey
+          ? {
+              accountPubkey,
+              ...(input.accountNetworkLocalStateRepository
+                ? {
+                    accountNetworkLocalStateRepository:
+                      input.accountNetworkLocalStateRepository,
+                  }
+                : {}),
+            }
+          : {}),
+      }
+    )
   } catch (error) {
     if (preparedRecipientDelivery && input.onRecipientPublishSettled) {
       await input.onRecipientPublishSettled(
@@ -1874,37 +1881,40 @@ export async function publishPrivateMessage(
     } else {
       try {
         try {
-          selfDelivery = await publishFn(wrappedToSelf, {
-            intent: "recipient_event",
-            authorPubkey: input.senderPubkey,
-            authenticatedPubkey: authenticatedOwnerPubkey,
-            recipientPubkeys: [input.senderPubkey],
-            exclusiveRelayUrls: senderRoute.relayUrls,
-            appRelayUrls:
-              senderRoute.route === "compatibility_order"
-                ? senderRoute.relayUrls
-                : [],
-            personalRelayUrls: [],
-            independentRelayUrls:
-              senderRoute.route === "compatibility_order"
-                ? []
-                : senderRoute.relayUrls,
-            ownerSelectedRelayUrls: senderRoute.ownerSelectedRelayUrls,
-            shouldContinue: input.shouldContinue,
-            refreshRelayLists,
-            deliveryMode: "critical",
-            ...(accountPubkey
-              ? {
-                  accountPubkey,
-                  ...(input.accountNetworkLocalStateRepository
-                    ? {
-                        accountNetworkLocalStateRepository:
-                          input.accountNetworkLocalStateRepository,
-                      }
-                    : {}),
-                }
-              : {}),
-          })
+          selfDelivery = await publishFn(
+            wrappedToSelf.rawEvent() as SignedPublicNostrEvent,
+            {
+              intent: "recipient_event",
+              authorPubkey: input.senderPubkey,
+              authenticatedPubkey: authenticatedOwnerPubkey,
+              recipientPubkeys: [input.senderPubkey],
+              exclusiveRelayUrls: senderRoute.relayUrls,
+              appRelayUrls:
+                senderRoute.route === "compatibility_order"
+                  ? senderRoute.relayUrls
+                  : [],
+              personalRelayUrls: [],
+              independentRelayUrls:
+                senderRoute.route === "compatibility_order"
+                  ? []
+                  : senderRoute.relayUrls,
+              ownerSelectedRelayUrls: senderRoute.ownerSelectedRelayUrls,
+              shouldContinue: input.shouldContinue,
+              refreshRelayLists,
+              deliveryMode: "critical",
+              ...(accountPubkey
+                ? {
+                    accountPubkey,
+                    ...(input.accountNetworkLocalStateRepository
+                      ? {
+                          accountNetworkLocalStateRepository:
+                            input.accountNetworkLocalStateRepository,
+                        }
+                      : {}),
+                  }
+                : {}),
+            }
+          )
         } catch (error) {
           if (input.shouldContinue?.() === false) {
             selfCopyError = selfCopySessionChangedError
