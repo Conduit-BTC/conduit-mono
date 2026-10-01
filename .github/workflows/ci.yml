@@ -164,6 +164,14 @@ jobs:
       matrix:
         job: ${{ fromJSON(needs.smoke-changes.outputs.shards) }}
     runs-on: ubuntu-latest
+    # Keep this version aligned with the locked @playwright/test dependency.
+    # Preinstalled browsers/libraries avoid slow apt downloads on every shard.
+    container:
+      image: ${{ matrix.job.area != 'none' && 'mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e' || '' }}
+      options: --init --shm-size=1g
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
       - name: No browser smoke needed
@@ -205,20 +213,6 @@ jobs:
             --source-head-sha "$SOURCE_HEAD_SHA" \
             --base-sha "$BASE_SHA" \
             --tested-sha "$checkout_sha"
-      - name: Cache Playwright browsers
-        if: matrix.job.area != 'none'
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-      - name: Install Playwright system dependencies
-        if: matrix.job.area != 'none'
-        run: bunx playwright install-deps chromium webkit
-      - name: Install Playwright browsers
-        if: matrix.job.area != 'none'
-        run: bunx playwright install chromium webkit
       - name: Run ${{ matrix.job.id }} Playwright smoke tests
         if: matrix.job.area != 'none'
         env:
