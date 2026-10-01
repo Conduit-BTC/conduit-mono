@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
@@ -164,10 +165,10 @@ function installMerchantSession() {
 
 function setMerchantSigner(pubkey = MERCHANT) {
   __setCommerceTestOverrides({
-    getNdk: async () =>
-      ({
-        signer: { user: async () => new NDKUser({ pubkey }) } as NDKSigner,
-      }) as never,
+    getAccountSigner: () =>
+      plainTestSigner({
+        user: async () => new NDKUser({ pubkey }),
+      } as NDKSigner as never),
   })
 }
 
@@ -437,16 +438,14 @@ describe("Merchant checkout Spark recovery discovery", () => {
   it("does not turn an unexpected strict-inspection error into a clean empty result", async () => {
     let signerReads = 0
     __setCommerceTestOverrides({
-      getNdk: async () =>
-        ({
-          signer: {
-            user: async () => {
-              signerReads += 1
-              if (signerReads > 1) throw new Error("signer unavailable")
-              return new NDKUser({ pubkey: MERCHANT })
-            },
-          } as NDKSigner,
-        }) as never,
+      getAccountSigner: () =>
+        plainTestSigner({
+          user: async () => {
+            signerReads += 1
+            if (signerReads > 1) throw new Error("signer unavailable")
+            return new NDKUser({ pubkey: MERCHANT })
+          },
+        } as NDKSigner as never),
       resolveInboxRelayUrls: async () => [INBOX],
       readProtectedInbox: async () => protectedRead([signedWrap()]),
       giftUnwrap: async () => recoveryRumor(),

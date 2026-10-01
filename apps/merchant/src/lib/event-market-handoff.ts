@@ -1,4 +1,4 @@
-import type { NDKSigner } from "@nostr-dev-kit/ndk"
+import type { NostrKeySigner } from "@conduit/core"
 import {
   buildEventMarketFulfillmentRevocationPayload,
   buildEventMarketHandoffAckPayload,
@@ -1252,7 +1252,7 @@ export async function issueOrganizerReadyReceipt(input: {
   paymentAuthenticated: boolean
   authorizationConfirmed: boolean
   market: EventMarketResolution
-  signer: NDKSigner
+  signer: NostrKeySigner
   storage?: HandoffStorage | null
   transport?: EventMarketPrivateTransportOptions
 }): Promise<StoredEventMarketHandoffDelivery> {
@@ -1359,7 +1359,7 @@ export async function acknowledgeOrganizerHandoff(input: {
   claim: EventMarketOrganizerClaim
   market: EventMarketResolution
   merchandise: EventMarketReceiptMerchandiseResolution
-  signer: NDKSigner
+  signer: NostrKeySigner
   storage?: HandoffStorage | null
   transport?: EventMarketPrivateTransportOptions
 }): Promise<StoredEventMarketHandoffDelivery> {
@@ -1428,7 +1428,7 @@ export async function acknowledgeOrganizerHandoff(input: {
 export async function revokeOrganizerReadyReceipt(input: {
   merchantPubkey: string
   orderId: string
-  signer: NDKSigner
+  signer: NostrKeySigner
   giftUnwrap?: GiftUnwrapFn
   matchingAckReceiptIds: ReadonlySet<string>
   storage?: HandoffStorage | null

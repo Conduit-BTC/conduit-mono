@@ -1,4 +1,6 @@
 import { NDKEvent, nip19, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { getAccountSigner } from "./session-signer"
+import type { UnsignedNostrEvent } from "./nostr-event-signer"
 import { liveQuery } from "dexie"
 import { db, type CachedEventMarketEvidence } from "../db"
 import type { ProductSchema } from "../schemas"
@@ -2554,6 +2556,7 @@ interface EventMarketTestOverrides {
   getRelayListsDetailed?: typeof getRelayListsDetailed
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   getNdk?: () => ReturnType<typeof getNdk> | Promise<ReturnType<typeof getNdk>>
+  getAccountSigner?: typeof getAccountSigner
   publishWithPlanner?: typeof publishWithPlanner
   signDraft?: (input: {
     draft: EventMarketEventDraft
@@ -7770,9 +7773,12 @@ async function signEventMarketDraft(input: {
 
   const ndk = await (eventMarketTestOverrides.getNdk ?? getNdk)()
   assertEventMarketSignerCurrent(input.shouldContinue)
-  if (!ndk.signer) throw new Error("Signer not connected")
+  const signer = (
+    eventMarketTestOverrides.getAccountSigner ?? getAccountSigner
+  )()
+  if (!signer) throw new Error("Signer not connected")
   assertEventMarketSignerCurrent(input.shouldContinue)
-  const signerPubkey = normalizePubkey((await ndk.signer.user()).pubkey)
+  const signerPubkey = normalizePubkey(await signer.getPublicKey())
   assertEventMarketSignerCurrent(input.shouldContinue)
   if (signerPubkey !== input.organizerPubkey) {
     throw new Error("Active signer does not match this organizer.")
@@ -7783,7 +7789,11 @@ async function signEventMarketDraft(input: {
   event.content = input.draft.content
   event.tags = input.draft.tags
   assertEventMarketSignerCurrent(input.shouldContinue)
-  await event.sign(ndk.signer)
+  event.pubkey = signerPubkey
+  Object.assign(
+    event,
+    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+  )
   const signed = event.rawEvent() as SignedPublicNostrEvent
   if (
     !isValidSignedPublicNostrEvent(signed) ||

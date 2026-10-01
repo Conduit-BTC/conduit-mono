@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import Dexie from "dexie"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import { afterAll, describe, expect, it, spyOn } from "bun:test"
@@ -90,7 +91,7 @@ describe("Merchant shipping kind 30078 settings", () => {
   })
 
   it("signs a separate merchant settings address and recovers it on a fresh read", async () => {
-    const signer = NDKPrivateKeySigner.generate()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
     const pubkey = (await signer.user()).pubkey
     let published: NDKEvent | null = null
     const fetchEvents = (async () =>
@@ -176,7 +177,7 @@ describe("Merchant shipping kind 30078 settings", () => {
   })
 
   it("retains a signed revision across reload and refuses replacement after complete omission on another relay", async () => {
-    const signer = NDKPrivateKeySigner.generate()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
     const pubkey = (await signer.user()).pubkey
     const raw = await signedSettings(signer, 1_800_000_000)
     const observed = await fetchMerchantShippingSettings(pubkey, {
@@ -230,7 +231,7 @@ describe("Merchant shipping kind 30078 settings", () => {
   })
 
   it("preserves stronger evidence through stale and unavailable reads, then accepts a confirmed newer revision", async () => {
-    const signer = NDKPrivateKeySigner.generate()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
     const pubkey = (await signer.user()).pubkey
     const raw = await signedSettings(signer, 1_800_000_001)
     const read = (events: SignedPublicNostrEvent[]) =>
@@ -295,7 +296,7 @@ describe("Merchant shipping kind 30078 settings", () => {
   })
 
   it("keeps retained evidence account-scoped and rejects forged local evidence", async () => {
-    const signer = NDKPrivateKeySigner.generate()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
     const pubkey = (await signer.user()).pubkey
     const raw = await signedSettings(signer, 1_800_000_000)
     await fetchMerchantShippingSettings(pubkey, {
@@ -344,7 +345,7 @@ describe("Merchant shipping kind 30078 settings", () => {
       IDBKeyRange,
     })
     closedDb.close()
-    const signer = NDKPrivateKeySigner.generate()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
     const pubkey = (await signer.user()).pubkey
     const sign = spyOn(signer, "sign")
     let publishes = 0
@@ -392,7 +393,7 @@ describe("Merchant shipping kind 30078 settings", () => {
   })
 
   it("does not authorize a replacement when another read retains a revision during an empty lookup", async () => {
-    const signer = NDKPrivateKeySigner.generate()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
     const pubkey = (await signer.user()).pubkey
     const raw = await signedSettings(signer, 1_800_000_000)
     const fetchEvents = (async () => {
@@ -420,7 +421,7 @@ describe("Merchant shipping kind 30078 settings", () => {
   })
 
   it("does not replace settings on an incomplete read", async () => {
-    const signer = NDKPrivateKeySigner.generate()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
     const pubkey = (await signer.user()).pubkey
     const fetchEvents = (async () =>
       readResult([], "partial")) as typeof fetchSignedEventsFanoutDetailed

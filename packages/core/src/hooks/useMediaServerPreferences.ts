@@ -6,8 +6,8 @@ import {
   useRef,
   useState,
 } from "react"
-import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { useQuery } from "@tanstack/react-query"
+import type { AccountSigner } from "../protocol/nostr-event-signer"
 import {
   addMediaServerPreference,
   loadMediaServerDraft,
@@ -27,7 +27,6 @@ import {
   type MediaServerPublishOutcome,
   type MediaServerPublishResult,
 } from "../protocol/media-server-preferences"
-import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
 import { NostrSignerError } from "../protocol/nostr-event-signer"
 import { subscribeRelaySettingsChanges } from "../protocol/relay-settings"
 
@@ -80,7 +79,7 @@ export interface UseMediaServerPreferencesOptions {
   enabled?: boolean
   /** Explicit signed-in account; the requested preference owner is not proof. */
   authenticatedPubkey?: string | null
-  signer?: NDKSigner | null
+  signer?: AccountSigner | null
   authMethod?: "nip07" | "nip46" | null
   authGeneration?: number
   relayScope?: string | null
@@ -503,20 +502,10 @@ export function useMediaServerPreferences(
       result: null,
     })
     try {
-      let signerUser: { pubkey: string }
-      try {
-        signerUser = await options.signer.user()
-      } catch {
-        throw new NostrSignerError("unavailable")
-      }
-      if (signerUser.pubkey.trim().toLowerCase() !== normalizedOwner) {
+      const signer = options.signer
+      if (signer.pubkey !== normalizedOwner) {
         throw new NostrSignerError("authority_changed")
       }
-      const signer = createNdkNostrEventSigner(
-        options.signer,
-        normalizedOwner,
-        options.authMethod
-      )
       const result = await publishMediaServerPreferences({
         owner: normalizedOwner,
         serverUrls: activeDraft.serverUrls,

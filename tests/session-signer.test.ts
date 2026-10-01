@@ -1,5 +1,10 @@
+import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { describe, expect, it } from "bun:test"
 import { NDKUser, type NDKSigner, type NostrEvent } from "@nostr-dev-kit/ndk"
+import type {
+  NostrKeySigner,
+  UnsignedNostrEvent,
+} from "../packages/core/src/protocol/nostr-event-signer"
 import {
   SessionSigner,
   type SessionSignerError,
@@ -14,7 +19,8 @@ import {
   type AuthStorage,
 } from "../packages/core/src/protocol/remote-signer"
 
-const PUBKEY_A = "a".repeat(64)
+const PRIVATE_KEY = generateSecretKey()
+const PUBKEY_A = getPublicKey(PRIVATE_KEY)
 const PUBKEY_B = "b".repeat(64)
 
 function fakeSigner(
@@ -23,7 +29,7 @@ function fakeSigner(
     onSign?: () => Promise<string>
     onEncrypt?: () => Promise<string>
   } = {}
-): NDKSigner {
+): NDKSigner & NostrKeySigner {
   const pubkey = input.pubkey ?? PUBKEY_A
   const user = new NDKUser({ pubkey })
   return {
@@ -31,15 +37,26 @@ function fakeSigner(
     userSync: user,
     blockUntilReady: async () => user,
     user: async () => user,
-    sign: input.onSign ?? (async () => "1".repeat(128)),
+    sign: input.onSign ?? (async () => finalizeEvent(event(), PRIVATE_KEY).sig),
+    signEvent: async (draft: UnsignedNostrEvent) => ({
+      ...draft,
+      ...finalizeEvent(draft, PRIVATE_KEY),
+      sig: input.onSign
+        ? await input.onSign()
+        : finalizeEvent(draft, PRIVATE_KEY).sig,
+    }),
+    getPublicKey: async () => pubkey,
+    encryptNip44: input.onEncrypt ?? (async () => "ciphertext"),
+    decryptNip44: async () => "plaintext",
+    decryptLegacy: async () => "plaintext",
     encryptionEnabled: async () => ["nip44"],
     encrypt: input.onEncrypt ?? (async () => "ciphertext"),
     decrypt: async () => "plaintext",
     toPayload: () => "test",
-  } as NDKSigner
+  } as NDKSigner & NostrKeySigner
 }
 
-function event(pubkey = PUBKEY_A): NostrEvent {
+function event(pubkey = PUBKEY_A): UnsignedNostrEvent {
   return {
     pubkey,
     created_at: 1_700_000_000,
@@ -88,14 +105,21 @@ describe("session-bound external signer", () => {
       }),
       {
         expectedPubkey: PUBKEY_A,
+        revision: "test-claim",
+        authMethod: "nip07",
+        getCapabilities: () => ({
+          signEvent: true,
+          nip44: true,
+          nip04Decrypt: false,
+        }),
         hasAuthority: () => false,
         onInvalidated: (error) => invalidations.push(error),
       }
     )
 
-    await expect(signer.sign(event())).rejects.toThrow(
-      "session was replaced in another tab"
-    )
+    await expect(signer.signEvent(event())).rejects.toMatchObject({
+      code: "authority_changed",
+    })
     expect(signCalls).toBe(0)
     expect(invalidations.map((error) => error.code)).toEqual([
       "authority_changed",
@@ -118,16 +142,29 @@ describe("session-bound external signer", () => {
           })
         },
       }),
-      { expectedPubkey: PUBKEY_A, hasAuthority }
+      {
+        expectedPubkey: PUBKEY_A,
+        revision: "test-claim",
+        authMethod: "nip07",
+        getCapabilities: () => ({
+          signEvent: true,
+          nip44: true,
+          nip04Decrypt: false,
+        }),
+        hasAuthority,
+      }
     )
 
-    const inFlight = signer.sign(event())
+    const inFlight = signer.signEvent(event())
+    await Bun.sleep(0)
     const revocation = revokeAuthSessionAuthority(session, storage)
     resolveSignature?.("1".repeat(128))
 
     expect(revocation.freshRevisionPersisted).toBe(true)
-    await expect(inFlight).rejects.toThrow("session was replaced")
-    await expect(signer.sign(event())).rejects.toThrow("session was replaced")
+    await expect(inFlight).rejects.toMatchObject({ code: "authority_changed" })
+    await expect(signer.signEvent(event())).rejects.toMatchObject({
+      code: "authority_changed",
+    })
     expect(signCalls).toBe(1)
   })
 
@@ -142,13 +179,20 @@ describe("session-bound external signer", () => {
       }),
       {
         expectedPubkey: PUBKEY_A,
+        revision: "test-claim",
+        authMethod: "nip07",
+        getCapabilities: () => ({
+          signEvent: true,
+          nip44: true,
+          nip04Decrypt: false,
+        }),
         hasAuthority: () => hasAuthority,
       }
     )
 
-    await expect(signer.sign(event())).rejects.toThrow(
-      "session was replaced in another tab"
-    )
+    await expect(signer.signEvent(event())).rejects.toMatchObject({
+      code: "authority_changed",
+    })
   })
 
   it("rejects an event whose declared author differs from the session", async () => {
@@ -162,13 +206,20 @@ describe("session-bound external signer", () => {
       }),
       {
         expectedPubkey: PUBKEY_A,
+        revision: "test-claim",
+        authMethod: "nip07",
+        getCapabilities: () => ({
+          signEvent: true,
+          nip44: true,
+          nip04Decrypt: false,
+        }),
         hasAuthority: () => true,
       }
     )
 
-    await expect(signer.sign(event(PUBKEY_B))).rejects.toThrow(
-      "active signer does not match"
-    )
+    await expect(signer.signEvent(event(PUBKEY_B))).rejects.toMatchObject({
+      code: "authority_changed",
+    })
     expect(signCalls).toBe(0)
   })
 
@@ -183,29 +234,42 @@ describe("session-bound external signer", () => {
       }),
       {
         expectedPubkey: PUBKEY_A,
+        revision: "test-claim",
+        authMethod: "nip07",
+        getCapabilities: () => ({
+          signEvent: true,
+          nip44: true,
+          nip04Decrypt: false,
+        }),
         hasAuthority: () => false,
       }
     )
 
     await expect(
-      signer.encrypt(new NDKUser({ pubkey: PUBKEY_B }), "private", "nip44")
-    ).rejects.toThrow("session was replaced in another tab")
+      signer.encryptNip44(new NDKUser({ pubkey: PUBKEY_B }).pubkey, "private")
+    ).rejects.toMatchObject({ code: "authority_changed" })
     expect(encryptCalls).toBe(0)
   })
 
   it("delegates operations while identity and authority remain current", async () => {
     const signer = new SessionSigner(fakeSigner(), {
       expectedPubkey: PUBKEY_A,
+      revision: "test-claim",
+      authMethod: "nip07",
+      getCapabilities: () => ({
+        signEvent: true,
+        nip44: true,
+        nip04Decrypt: false,
+      }),
       hasAuthority: () => true,
     })
 
-    expect((await signer.user()).pubkey).toBe(PUBKEY_A)
-    expect(await signer.sign(event())).toBe("1".repeat(128))
+    expect(await signer.getPublicKey()).toBe(PUBKEY_A)
+    expect((await signer.signEvent(event())).sig).toHaveLength(128)
     expect(
-      await signer.encrypt(
-        new NDKUser({ pubkey: PUBKEY_B }),
-        "private",
-        "nip44"
+      await signer.encryptNip44(
+        new NDKUser({ pubkey: PUBKEY_B }).pubkey,
+        "private"
       )
     ).toBe("ciphertext")
   })
@@ -221,14 +285,22 @@ describe("session-bound external signer", () => {
       }),
       {
         expectedPubkey: PUBKEY_A,
+        revision: "test-claim",
+        authMethod: "nip07",
+        getCapabilities: () => ({
+          signEvent: true,
+          nip44: true,
+          nip04Decrypt: false,
+        }),
         hasAuthority: () => true,
       }
     )
 
-    const signing = signer.sign(event())
+    const signing = signer.signEvent(event())
+    await Bun.sleep(0)
     signer.invalidateLocal()
     resolveSignature?.("1".repeat(128))
 
-    await expect(signing).rejects.toThrow("session was replaced")
+    await expect(signing).rejects.toMatchObject({ code: "authority_changed" })
   })
 })

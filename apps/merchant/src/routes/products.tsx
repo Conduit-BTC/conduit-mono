@@ -23,6 +23,8 @@ import {
   getProductImageCandidates,
   getProductPriceDisplay,
   getNdk,
+  getAccountSigner,
+  type UnsignedNostrEvent,
   isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
@@ -1251,8 +1253,9 @@ async function deleteProduct(
   shouldContinue?: () => boolean
 ): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
   const ndk = getNdk()
-  if (!ndk.signer) throw new Error("Signer not connected")
-  const signerPubkey = (await ndk.signer.user()).pubkey
+  const signer = getAccountSigner()
+  if (!signer) throw new Error("Signer not connected")
+  const signerPubkey = await signer.getPublicKey()
   if (signerPubkey !== merchantPubkey) {
     throw new Error("Active signer does not match current merchant pubkey")
   }
@@ -1288,7 +1291,11 @@ async function deleteProduct(
 
   onSignerRequest?.({ kind: "deletion", current: 1, total: 1 })
   await waitForVisibleDocument()
-  await deletion.sign(ndk.signer)
+  deletion.pubkey = signerPubkey
+  Object.assign(
+    deletion,
+    await signer.signEvent(deletion.rawEvent() as UnsignedNostrEvent)
+  )
   const deliveryJob = await persistSignedProductDeletion({
     signedEvent: deletion.rawEvent(),
     currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,

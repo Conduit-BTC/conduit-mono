@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
@@ -423,13 +424,13 @@ function signedWrap(
   return new NDKEvent(undefined, raw)
 }
 
-const merchantSigner = {
+const merchantSigner = plainTestSigner({
   user: async () => ({ pubkey: MERCHANT }),
-} as unknown as NDKSigner
+} as unknown as NDKSigner)
 
-const organizerSigner = {
+const organizerSigner = plainTestSigner({
   user: async () => ({ pubkey: ORGANIZER }),
-} as unknown as NDKSigner
+} as unknown as NDKSigner)
 
 function successfulDelivery(relays: readonly string[]) {
   return {
@@ -1184,9 +1185,9 @@ describe("event-market private handoff delivery", () => {
     await expect(
       publishEventMarketReadyReceipt({
         ...common,
-        signer: {
+        signer: plainTestSigner({
           user: async () => ({ pubkey: ORGANIZER }),
-        } as unknown as NDKSigner,
+        } as unknown as NDKSigner),
         transport: {
           ...common.transport,
           accountNetworkLocalStateRepository:
@@ -2321,7 +2322,7 @@ describe("event-market organizer inbox readiness", () => {
     const seenPlans: string[][] = []
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (_filter, options) => {
         const relays = [...(options?.relayUrls ?? [])]
@@ -2359,7 +2360,7 @@ describe("event-market organizer inbox readiness", () => {
     const seenPlans: string[][] = []
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [
         otherLoopbackRelayUrl,
         isolatedRelayUrl,
@@ -2410,7 +2411,7 @@ describe("event-market organizer inbox readiness", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => {
         declarationCount += 1
         if (declarationCount === 2) releaseDeclarations()
@@ -2461,7 +2462,7 @@ describe("event-market organizer inbox readiness", () => {
     const unwrappedIds: string[] = []
 
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
         fetchCount += 1
@@ -2522,7 +2523,7 @@ describe("event-market organizer inbox readiness", () => {
     let firstSession = true
 
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
         events: [currentWrap],
@@ -2581,7 +2582,7 @@ describe("event-market organizer inbox readiness", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (_filter, options) => {
         if (options?.relayUrls?.[0] === oldRelay) {
@@ -2634,7 +2635,7 @@ describe("event-market organizer inbox readiness", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) => {
         requestedFilters.push({
@@ -2709,7 +2710,7 @@ describe("event-market organizer inbox readiness", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) => {
         const page = relayEvents
@@ -2781,7 +2782,7 @@ describe("event-market organizer inbox readiness", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) => {
         if (filter.limit === 400) primaryPageCount += 1
@@ -2859,7 +2860,7 @@ describe("event-market organizer inbox readiness", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) =>
         relayEvents
@@ -2940,7 +2941,7 @@ describe("event-market organizer inbox readiness", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [shortRelay, longRelay],
       fetchEventsFanout: async (filter, options) => {
         const relayUrl = options?.relayUrls?.[0]
@@ -3027,7 +3028,7 @@ describe("event-market organizer inbox readiness", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) =>
         relayEvents
@@ -3069,7 +3070,7 @@ describe("event-market organizer inbox readiness", () => {
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner as never),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanoutWithDiagnostics: async () => ({
         events: [readyWrap],
