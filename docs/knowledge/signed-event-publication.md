@@ -14,6 +14,9 @@ recovery. The transport snapshots the seven signed event fields and serializes
 one NIP-01 `EVENT` frame. Retries preserve the event ID, signature, tags, content
 and exact serialized frame; they never ask the signer for another event.
 Optional foreground NIP-42 authentication signs a separate kind-22242 event.
+A proactive challenge waits for the initial target-policy check to succeed.
+Policy is checked again around signer waits and before transmitting the AUTH
+proof, as well as before resending the original EVENT.
 
 An exact plan cannot widen on retry. Standard planning captures any existing
 configured fallback candidates before publication. Retries can remove targets

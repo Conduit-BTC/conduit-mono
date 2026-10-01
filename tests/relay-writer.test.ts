@@ -204,6 +204,140 @@ describe("exact relay writer", () => {
     expect(socket.closeCalls).toBe(1)
   })
 
+  it("blocks proactive AUTH until initial relay eligibility succeeds", async () => {
+    const socket = new WriterTestSocket()
+    let releaseEligibility!: (eligible: boolean) => void
+    const eligibility = new Promise<boolean>((resolve) => {
+      releaseEligibility = resolve
+    })
+    let signerCalls = 0
+    const signer = authSigner()
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://proactive-auth.conduit.market",
+      signedEvent: signedEvent(),
+      timeoutMs: 1_000,
+      beforeSend: () => eligibility,
+      authorization: {
+        expectedPubkey: AUTH_PUBKEY,
+        sessionScope: {},
+        signer: {
+          ...signer,
+          getPublicKey: async () => {
+            signerCalls += 1
+            return signer.getPublicKey()
+          },
+          signEvent: async (event) => {
+            signerCalls += 1
+            return signer.signEvent(event)
+          },
+        },
+      },
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+
+    socket.open()
+    socket.message(JSON.stringify(["AUTH", "proactive-challenge"]))
+    await nextTask()
+    const callsBeforeEligibility = signerCalls
+    const framesBeforeEligibility = socket.sentPayloads.length
+    releaseEligibility(false)
+
+    await expect(result).resolves.toBe("policy_blocked")
+    expect(callsBeforeEligibility).toBe(0)
+    expect(framesBeforeEligibility).toBe(0)
+    expect(signerCalls).toBe(0)
+    expect(socket.sentPayloads).toEqual([])
+    expect(socket.closeCalls).toBe(1)
+  })
+
+  it("rechecks relay policy after the foreground signer visibility wait", async () => {
+    const socket = new WriterTestSocket()
+    let releaseVisibility!: () => void
+    const visible = new Promise<void>((resolve) => {
+      releaseVisibility = resolve
+    })
+    let eligible = true
+    let signerCalls = 0
+    const signer = authSigner()
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://hidden-policy-auth.conduit.market",
+      signedEvent: signedEvent(),
+      timeoutMs: 1_000,
+      beforeSend: async () => eligible,
+      authorization: {
+        expectedPubkey: AUTH_PUBKEY,
+        sessionScope: {},
+        waitForSignerVisibility: async () => visible,
+        signer: {
+          ...signer,
+          getPublicKey: async () => {
+            signerCalls += 1
+            return signer.getPublicKey()
+          },
+        },
+      },
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+
+    socket.open()
+    await nextTask()
+    socket.message(JSON.stringify(["AUTH", "hidden-policy-challenge"]))
+    await nextTask()
+    eligible = false
+    releaseVisibility()
+
+    await expect(result).resolves.toBe("policy_blocked")
+    expect(signerCalls).toBe(0)
+    expect(socket.sentPayloads.map((frame) => JSON.parse(frame)[0])).toEqual([
+      "EVENT",
+    ])
+    expect(socket.closeCalls).toBe(1)
+  })
+
+  it("rechecks relay policy before transmitting a completed AUTH proof", async () => {
+    const socket = new WriterTestSocket()
+    let releaseSigning!: () => void
+    const signing = new Promise<void>((resolve) => {
+      releaseSigning = resolve
+    })
+    let eligible = true
+    let signerCalls = 0
+    const signer = authSigner()
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://revoked-policy-auth.conduit.market",
+      signedEvent: signedEvent(),
+      timeoutMs: 1_000,
+      beforeSend: async () => eligible,
+      authorization: {
+        expectedPubkey: AUTH_PUBKEY,
+        sessionScope: {},
+        signer: {
+          ...signer,
+          signEvent: async (event) => {
+            signerCalls += 1
+            await signing
+            return signer.signEvent(event)
+          },
+        },
+      },
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+
+    socket.open()
+    await nextTask()
+    socket.message(JSON.stringify(["AUTH", "revoked-policy-challenge"]))
+    await nextTask()
+    expect(signerCalls).toBe(1)
+    eligible = false
+    releaseSigning()
+
+    await expect(result).resolves.toBe("policy_blocked")
+    expect(socket.sentPayloads.map((frame) => JSON.parse(frame)[0])).toEqual([
+      "EVENT",
+    ])
+    expect(socket.closeCalls).toBe(1)
+  })
+
   it("authenticates once and retries the exact signed event on the same relay", async () => {
     const relayUrl = "wss://auth.nostr1.com/"
     const event = signedEvent()
@@ -530,12 +664,19 @@ describe("exact relay writer", () => {
       releaseFirstSignature = resolve
     })
     let signerCalls = 0
+    let markFirstSignerStarted!: () => void
+    const firstSignerStarted = new Promise<void>((resolve) => {
+      markFirstSignerStarted = resolve
+    })
     const signer = authSigner()
     const slowSigner: NostrEventSigner = {
       ...signer,
       signEvent: async (event) => {
         signerCalls += 1
-        if (signerCalls === 1) await firstSignature
+        if (signerCalls === 1) {
+          markFirstSignerStarted()
+          await firstSignature
+        }
         return await signer.signEvent(event)
       },
     }
@@ -554,9 +695,7 @@ describe("exact relay writer", () => {
     })
     firstSocket.open()
     firstSocket.message(JSON.stringify(["AUTH", "first-challenge"]))
-    for (let step = 0; step < 10 && signerCalls === 0; step += 1) {
-      await Promise.resolve()
-    }
+    await firstSignerStarted
     expect(signerCalls).toBe(1)
     await expect(firstResult).resolves.toBe("timed_out")
 

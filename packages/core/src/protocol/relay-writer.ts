@@ -114,6 +114,7 @@ export function publishSignedEventFrameToRelay(input: {
     let authChallenge: string | null = null
     let authEventId: string | null = null
     let authState: "idle" | "signing" | "sent" | "accepted" = "idle"
+    let initialEligibility: Promise<boolean> | null = null
     const authAbortController = new AbortController()
 
     const cancel = () => finish("cancelled")
@@ -154,15 +155,35 @@ export function publishSignedEventFrameToRelay(input: {
       if (authState === "signing") authorization?.onSignerFailure?.()
       finish("timed_out")
     }, input.timeoutMs)
+    const recheckEligibility = async (): Promise<boolean> => {
+      if (settled) return false
+      if (isCancelled()) {
+        finish("cancelled")
+        return false
+      }
+      let eligible: boolean
+      try {
+        eligible = await (input.beforeSend?.() ?? true)
+      } catch {
+        finish("timed_out")
+        return false
+      }
+      if (settled) return false
+      if (isCancelled()) {
+        finish("cancelled")
+        return false
+      }
+      if (!eligible) {
+        finish("policy_blocked")
+        return false
+      }
+      return true
+    }
     const sendFrame = () => {
-      const send = (eligible = true) => {
+      const send = () => {
         if (settled) return
         if (isCancelled()) {
           finish("cancelled")
-          return
-        }
-        if (!eligible) {
-          finish("policy_blocked")
           return
         }
         try {
@@ -171,9 +192,16 @@ export function publishSignedEventFrameToRelay(input: {
           finish("timed_out")
         }
       }
-      if (input.beforeSend)
-        void input.beforeSend().then(send, () => finish("timed_out"))
-      else send()
+      if (input.beforeSend) {
+        const eligibility = recheckEligibility()
+        initialEligibility ??= eligibility
+        void eligibility.then((eligible) => {
+          if (eligible) send()
+        })
+      } else {
+        initialEligibility ??= Promise.resolve(true)
+        send()
+      }
     }
     input.signal?.addEventListener("abort", cancel, { once: true })
     if (input.shouldContinue || authorization?.shouldContinue)
@@ -233,6 +261,9 @@ export function publishSignedEventFrameToRelay(input: {
           async () => {
             try {
               const signal = authAbortController.signal
+              // A proactive challenge cannot race the initial EVENT fence.
+              if (!initialEligibility || !(await initialEligibility)) return
+              if (!(await recheckEligibility())) return
               if (signal.aborted || settled) return
               if (isCancelled()) {
                 finish("cancelled")
@@ -244,6 +275,7 @@ export function publishSignedEventFrameToRelay(input: {
                 finish("cancelled")
                 return
               }
+              if (!(await recheckEligibility())) return
               const signerPubkey = (await authorization.signer.getPublicKey())
                 .trim()
                 .toLowerCase()
@@ -257,6 +289,7 @@ export function publishSignedEventFrameToRelay(input: {
                 finish("cancelled")
                 return
               }
+              if (!(await recheckEligibility())) return
               const createdAt = Math.floor(
                 (authorization.now?.() ?? Date.now()) / 1_000
               )
@@ -287,6 +320,7 @@ export function publishSignedEventFrameToRelay(input: {
                 finish("auth_required")
                 return
               }
+              if (!(await recheckEligibility())) return
               authEventId = signed.id
               authState = "sent"
               try {
