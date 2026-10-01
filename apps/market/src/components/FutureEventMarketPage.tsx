@@ -35,7 +35,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@conduit/ui"
-import { hasEventShippingChoice } from "../lib/event-fulfillment-choice"
+import {
+  hasEventShippingChoice,
+  readEventShippingProduct,
+} from "../lib/event-fulfillment-choice"
 import { useCart } from "../hooks/useCart"
 import { useMerchantIdentities } from "../hooks/useMerchantIdentities"
 import { useShopperPricing } from "../hooks/useShopperPricing"
@@ -87,6 +90,8 @@ function FutureEventProductCard({
   if (entry.resolution.state !== "candidate") return null
   const { product, merchant } = entry.resolution
   const activeProductId = selectedProductId || product.id
+  const canAdd =
+    choice === "shipping" ? hasEventShippingChoice(product) : canPurchase
   return (
     <ProductGridCard
       className="h-auto"
@@ -126,7 +131,7 @@ function FutureEventProductCard({
         })
       }
       onAddToCart={
-        canPurchase
+        canAdd
           ? async (selected) => {
               if (checking) return
               setChecking(true)
@@ -145,7 +150,7 @@ function FutureEventProductCard({
             }
           : undefined
       }
-      cartActionDisabled={checking || !canPurchase}
+      cartActionDisabled={checking || !canAdd}
       cartActionDisabledLabel={
         checking ? "Checking product…" : "Event pickup unavailable"
       }
@@ -312,7 +317,8 @@ export function FutureEventMarketPage({
     selected: Product,
     choice: EventFulfillmentSelection
   ): Promise<void> {
-    if (!canPurchase || !market || !shouldContinue()) return
+    if (!market || !shouldContinue()) return
+    if (choice === "event_market_pickup" && !canPurchase) return
     // Choose a purchasable variation on the existing detail surface. The
     // variable parent is a catalog entry and must never enter the cart.
     if (
@@ -320,6 +326,37 @@ export function FutureEventMarketPage({
       selected.id !== entry.productCoordinate
     ) {
       navigateToProduct(selected.id)
+      return
+    }
+    if (choice === "shipping") {
+      let product: Product
+      try {
+        product = await readEventShippingProduct({
+          productId: entry.productCoordinate,
+          merchantPubkey: selected.pubkey,
+          authenticatedPubkey,
+          expectedEventId: entry.resolution.revision.id,
+          shouldContinue,
+        })
+      } catch (cause) {
+        void query.refetch()
+        throw cause
+      }
+      await cart.addItem(
+        {
+          ...cartItemInputFromProductSelection(product, product, {
+            type: "shipping",
+          }),
+          eventMarketContext:
+            calendar && (!series || selectedDate)
+              ? {
+                  marketCoordinate: market.coordinate,
+                  calendarCoordinate: calendar.coordinate,
+                }
+              : undefined,
+        },
+        1
+      )
       return
     }
     const marketRead = await readEventMarketRoster({
@@ -360,10 +397,7 @@ export function FutureEventMarketPage({
         ...cartItemInputFromProductSelection(
           productRead.resolution.product,
           productRead.resolution.product,
-          choice === "shipping" &&
-            hasEventShippingChoice(productRead.resolution.product)
-            ? { type: "shipping" }
-            : fulfillment
+          fulfillment
         ),
         eventMarketContext: {
           marketCoordinate: fulfillment.market.coordinate,
@@ -514,10 +548,7 @@ export function FutureEventMarketPage({
       {market?.state === "closed" ? (
         <p>This Event Market is closed to new purchases.</p>
       ) : null}
-      {market && candidates.length === 0 && !query.isPending ? (
-        <p>No products found yet.</p>
-      ) : null}
-      {market && candidates.length > 0 ? (
+      {market ? (
         <section className="space-y-5" aria-label="Event products">
           <p className="text-sm text-[var(--text-secondary)]">
             Availability and participation are checked when you select a

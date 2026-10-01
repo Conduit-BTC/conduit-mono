@@ -40,7 +40,7 @@ describe("Market event product layout", () => {
     expect(event).toContain('className="h-auto"')
     expect(event).not.toContain('<details className="group/pickup')
     expect(event).not.toContain("Current pickup terms are being verified")
-    expect(event).toContain("cartActionDisabled={checking || !canPurchase}")
+    expect(event).toContain("cartActionDisabled={checking || !canAdd}")
   })
 
   it("allows floating variation panels outside the event catalog on hover-capable desktops", async () => {

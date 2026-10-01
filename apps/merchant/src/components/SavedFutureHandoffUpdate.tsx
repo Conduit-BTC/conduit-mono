@@ -23,7 +23,8 @@ export function SavedFutureHandoffUpdate({
   blocked: boolean
   onUpdated: () => void
 }) {
-  const { accountPubkey, authGeneration, isAuthGenerationCurrent } = useAuth()
+  const { accountPubkey, authGeneration, isExactDeliveryRetryCurrent } =
+    useAuth()
   const authority = useRef<{
     owner: string | null
     generation: number
@@ -44,12 +45,18 @@ export function SavedFutureHandoffUpdate({
   const [error, setError] = useState("")
 
   async function retry(): Promise<void> {
-    if (pending || blocked || accountPubkey !== organizerPubkey) return
+    if (
+      pending ||
+      blocked ||
+      accountPubkey !== organizerPubkey ||
+      !isExactDeliveryRetryCurrent(authGeneration, organizerPubkey)
+    )
+      return
     const shouldContinue = () =>
       authority.current?.owner === organizerPubkey &&
       authority.current.generation === authGeneration &&
       !authority.current.blocked &&
-      isAuthGenerationCurrent(authGeneration)
+      isExactDeliveryRetryCurrent(authGeneration, organizerPubkey)
     setPending(true)
     setStatus("")
     setError("")
@@ -102,7 +109,12 @@ export function SavedFutureHandoffUpdate({
       <Button
         type="button"
         variant="outline"
-        disabled={pending || blocked}
+        disabled={
+          pending ||
+          blocked ||
+          accountPubkey !== organizerPubkey ||
+          !isExactDeliveryRetryCurrent(authGeneration, organizerPubkey)
+        }
         onClick={() => void retry()}
       >
         Retry saved handoff update

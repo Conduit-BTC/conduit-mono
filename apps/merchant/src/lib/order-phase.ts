@@ -218,18 +218,16 @@ export function getMerchantOrderFulfillment(
   )
   if (futureFulfillments.length > 0) {
     const firstFuture = futureFulfillments[0]!
-    const coherent =
-      futureFulfillments.length === items.length &&
-      futureFulfillments.every(
-        (fulfillment) =>
-          fulfillment.market.coordinate === firstFuture.market.coordinate &&
-          fulfillment.market.eventId === firstFuture.market.eventId &&
-          fulfillment.grant.eventId === firstFuture.grant.eventId &&
-          fulfillment.calendar.eventId === firstFuture.calendar.eventId &&
-          fulfillment.mode === firstFuture.mode &&
-          fulfillment.assignment === firstFuture.assignment &&
-          fulfillment.merchantPubkey === firstFuture.merchantPubkey
-      )
+    const coherent = futureFulfillments.every(
+      (fulfillment) =>
+        fulfillment.market.coordinate === firstFuture.market.coordinate &&
+        fulfillment.market.eventId === firstFuture.market.eventId &&
+        fulfillment.grant.eventId === firstFuture.grant.eventId &&
+        fulfillment.calendar.eventId === firstFuture.calendar.eventId &&
+        fulfillment.mode === firstFuture.mode &&
+        fulfillment.assignment === firstFuture.assignment &&
+        fulfillment.merchantPubkey === firstFuture.merchantPubkey
+    )
     return coherent
       ? {
           mode: "pickup",

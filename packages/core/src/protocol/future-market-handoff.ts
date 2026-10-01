@@ -315,7 +315,10 @@ export function buildFutureMarketReadyReceipt(input: {
     throw new Error(
       "Payment and explicit physical release authority are required."
     )
-  const first = order.items[0]!.fulfillment
+  const pickupItems = order.items.filter(
+    (item) => item.fulfillment?.type === "event_market_pickup"
+  )
+  const first = pickupItems[0]?.fulfillment
   if (first?.type !== "event_market_pickup")
     throw new Error("Future Event Market fulfillment is required.")
   const claimRef = getFutureMarketClaimRef({
@@ -334,7 +337,7 @@ export function buildFutureMarketReadyReceipt(input: {
     market: first.market,
     calendar: first.calendar,
     grant: { eventId: first.grant.eventId, createdAt: first.grant.createdAt },
-    items: order.items.map((item) => {
+    items: pickupItems.map((item) => {
       if (item.fulfillment?.type !== "event_market_pickup")
         throw new Error(
           "Organizer release requires one exact future pickup order."
@@ -721,7 +724,10 @@ export async function readFutureMarketMerchantClaim(input: {
 }> {
   assertFutureMarketReadCurrent(input.shouldContinue)
   const order = orderSchema.parse(input.order)
-  const first = order.items[0]?.fulfillment
+  const pickupItems = order.items.filter(
+    (item) => item.fulfillment?.type === "event_market_pickup"
+  )
+  const first = pickupItems[0]?.fulfillment
   if (
     order.merchantPubkey !== input.merchantPubkey ||
     first?.type !== "event_market_pickup" ||
@@ -757,9 +763,9 @@ export async function readFutureMarketMerchantClaim(input: {
       receipt.market.eventId === first.market.eventId &&
       receipt.calendar.eventId === first.calendar.eventId &&
       receipt.grant.eventId === first.grant.eventId &&
-      receipt.items.length === order.items.length &&
+      receipt.items.length === pickupItems.length &&
       receipt.items.every((item, index) => {
-        const line = order.items[index]!
+        const line = pickupItems[index]!
         const fulfillment = line.fulfillment
         return (
           fulfillment?.type === "event_market_pickup" &&

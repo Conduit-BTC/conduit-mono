@@ -86,6 +86,7 @@ type RelayFilter = {
   since?: number
   until?: number
   limit?: number
+  search?: string
   [key: `#${string}`]: string[] | number[] | number | undefined
 }
 
@@ -141,6 +142,17 @@ function eventMatchesFilter(event: SignedEvent, filter: RelayFilter): boolean {
     return false
   }
   if (filter.kinds && !filter.kinds.includes(event.kind)) return false
+  if (
+    filter.search &&
+    ![
+      event.content,
+      ...event.tags.filter((tag) => tag[0] === "title").map((tag) => tag[1]),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(filter.search.toLowerCase())
+  )
+    return false
   if (typeof filter.since === "number" && event.created_at < filter.since) {
     return false
   }
@@ -2284,6 +2296,29 @@ test("organizer creates and closes one future Event Market without legacy event 
   ).toBeVisible()
   await page.getByRole("button", { name: "Reopen Event Market" }).click()
   await expect(page.getByText("Open for sales", { exact: true })).toBeVisible()
+  relay.rejectKind(31923, true)
+  await page.locator("#future-edit-title").fill("New Future Fair updated")
+  await page.getByRole("button", { name: "Save event details" }).click()
+  const retry = page.getByRole("button", { name: "Retry signed event details" })
+  await expect(retry).toBeEnabled()
+  const rejectedDate = uniquePublishedEvents(relay.publications)
+    .filter((event) => event.kind === 31923)
+    .at(-1)!
+  await page.reload()
+  await expect(retry).toBeEnabled()
+  const retryStart = relay.publications.length
+  relay.rejectKind(31923, false)
+  await retry.click()
+  await expect(retry).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Save event details" })
+  ).toBeEnabled()
+  const retries = relay.publications
+    .slice(retryStart)
+    .filter(({ event }) => event.kind === 31923)
+  expect(retries.length).toBeGreaterThan(0)
+  for (const { event } of retries)
+    expect(JSON.stringify(event) === JSON.stringify(rejectedDate)).toBe(true)
 })
 
 test("organizer generates weekly dates and publishes one signed series @merchant @commerce", async ({
@@ -2365,6 +2400,7 @@ test("organizer generates weekly dates and publishes one signed series @merchant
     page.getByRole("button", { name: "Save selected date" })
   ).toBeEnabled()
   await page.locator("#series-edit-title").fill("Weekly Future Fair updated")
+  relay.rejectKind(31923, true)
   await page.getByRole("button", { name: "Save selected date" }).click()
   await expect
     .poll(
@@ -2374,6 +2410,29 @@ test("organizer generates weekly dates and publishes one signed series @merchant
         ).length
     )
     .toBe(4)
+  const rejectedDate = uniquePublishedEvents(relay.publications)
+    .filter((event) => event.kind === 31923)
+    .at(-1)!
+  await expect(
+    page.getByRole("button", { name: "Resume publishing" })
+  ).toBeEnabled()
+  await page.reload()
+  const resumeDate = page.getByRole("button", { name: "Resume publishing" })
+  await expect(resumeDate).toBeEnabled()
+  const dateRetryStart = relay.publications.length
+  relay.rejectKind(31923, false)
+  await resumeDate.click()
+  await expect(resumeDate).toHaveCount(0)
+  const dateRetries = relay.publications
+    .slice(dateRetryStart)
+    .filter(({ event }) => event.kind === 31923)
+  expect(dateRetries.length).toBeGreaterThan(0)
+  for (const { event } of dateRetries)
+    expect(JSON.stringify(event) === JSON.stringify(rejectedDate)).toBe(true)
+  await expect(
+    page.getByRole("button", { name: "Save selected date" })
+  ).toBeEnabled()
+  relay.rejectKind(31924, true)
   await page.getByRole("button", { name: "Remove future date" }).click()
   await expect
     .poll(
@@ -2383,6 +2442,27 @@ test("organizer generates weekly dates and publishes one signed series @merchant
         ).length
     )
     .toBe(3)
+  const rejectedSchedule = uniquePublishedEvents(relay.publications)
+    .filter((event) => event.kind === 31924)
+    .at(-1)!
+  await expect(
+    page.getByRole("button", { name: "Resume publishing" })
+  ).toBeEnabled()
+  await page.reload()
+  const resumeSchedule = page.getByRole("button", { name: "Resume publishing" })
+  await expect(resumeSchedule).toBeEnabled()
+  const scheduleRetryStart = relay.publications.length
+  relay.rejectKind(31924, false)
+  await resumeSchedule.click()
+  await expect(resumeSchedule).toHaveCount(0)
+  const scheduleRetries = relay.publications
+    .slice(scheduleRetryStart)
+    .filter(({ event }) => event.kind === 31924)
+  expect(scheduleRetries.length).toBeGreaterThan(0)
+  for (const { event } of scheduleRetries)
+    expect(JSON.stringify(event) === JSON.stringify(rejectedSchedule)).toBe(
+      true
+    )
   expect(
     uniquePublishedEvents(relay.publications).filter(
       (event) => event.kind === 30409
@@ -2469,12 +2549,50 @@ test("event product chooses ordinary shipping and changes fulfillment in checkou
   })
   await gotoAs(page, marketUrl, `/events/${marketRef}`, "buyer")
   await expect(page.getByRole("heading", { name: "Choice soap" })).toBeVisible()
+  const search = page.getByRole("searchbox", {
+    name: "Search products or merchants",
+  })
+  await search.fill("no-matching-product")
+  await expect(page.getByRole("heading", { name: "Choice soap" })).toHaveCount(
+    0
+  )
+  await expect(search).toBeVisible()
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click()
+  await expect(search).toHaveValue("")
+  await expect(page.getByRole("heading", { name: "Choice soap" })).toBeVisible()
+  const closed = signEvent(ORGANIZER_SECRET, {
+    ...market,
+    created_at: createdAt + 1,
+    tags: market.tags
+      .map((tag) =>
+        tag[0] === "event_market" ? ["event_market", "2", "closed"] : tag
+      )
+      .concat([["prev", market.id]]),
+  })
+  relay.seed(closed)
+  await page.getByRole("button", { name: "Refresh event records" }).click()
+  await expect(
+    page.getByText("This Event Market is closed to new purchases.")
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Add", exact: true })
+  ).toHaveCount(0)
   await page.getByRole("button", { name: "Ship it", exact: true }).click()
   await expect(
     page.getByRole("button", { name: "Ship it", exact: true })
   ).toHaveAttribute("aria-pressed", "true")
+  await expect(
+    page.getByRole("button", { name: "Add", exact: true })
+  ).toBeEnabled()
   await page.getByRole("button", { name: "Add", exact: true }).click()
   await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      ...market,
+      created_at: createdAt + 2,
+      tags: market.tags.concat([["prev", closed.id]]),
+    })
+  )
   await page.goto(`${marketUrl}/checkout`)
   const take = page.getByRole("button", {
     name: "Take it at the event",

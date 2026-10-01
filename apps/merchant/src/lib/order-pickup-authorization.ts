@@ -36,7 +36,8 @@ export async function readVerifiedFutureEventMarketOrderEvidence(input: {
   if (
     first?.type !== "event_market_pickup" ||
     input.order.merchantPubkey !== input.merchantPubkey ||
-    future.length !== input.order.items.length
+    future.length !==
+      input.order.items.filter((item) => item.format === "physical").length
   )
     return { result: { status: "invalid", reason: "order" }, events: [] }
   const embedded = verifyEventMarketOrderEvidence({

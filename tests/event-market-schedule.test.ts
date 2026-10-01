@@ -10,6 +10,7 @@ import {
   resolveEventMarketOccurrence,
   resolveEventMarketSeries,
   publishFutureEventMarketSeries,
+  retryEventMarketCalendarDelivery,
   buildEventMarketRosterDraft,
   readEventMarketRoster,
 } from "@conduit/core"
@@ -54,6 +55,31 @@ function occurrence(dTag: string, createdAt: number) {
 }
 
 describe("finite Event Market schedule", () => {
+  it("retries a saved signed schedule without requesting a new signature", async () => {
+    const signed = master([first], 10)
+    const published: string[] = []
+    const result = await retryEventMarketCalendarDelivery(
+      {
+        organizerPubkey: organizer,
+        authenticatedPubkey: organizer,
+        signedEvent: signed,
+      },
+      {
+        publish: async (event) => {
+          published.push(event.id)
+          return {
+            plan: {} as never,
+            attemptedRelayUrls: ["wss://example.com"],
+            successfulRelayUrls: ["wss://example.com"],
+            failedRelayUrls: [],
+            relayFailureMessages: {},
+          }
+        },
+      }
+    )
+    expect(published).toEqual([signed.id])
+    expect(result.successfulRelayUrls).toEqual(["wss://example.com"])
+  })
   it("accepts one organizer-authored 31924 with unique full member coordinates", () => {
     const signed = master([first, second], 10)
     expect(parseEventMarketSeriesEvent(signed)).toMatchObject({

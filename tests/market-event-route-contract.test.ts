@@ -69,7 +69,7 @@ describe("Market event catalog route", () => {
     expect(page).toContain("readEventMarketProduct({")
     expect(page).toContain("createEventMarketPickupSnapshot({")
     expect(page.indexOf("readEventMarketProduct({")).toBeLessThan(
-      page.indexOf("await cart.addItem(")
+      page.lastIndexOf("await cart.addItem(")
     )
   })
 
@@ -81,9 +81,7 @@ describe("Market event catalog route", () => {
       "apps/market/src/components/CartEventFulfillmentChoice.tsx"
     ).text()
     expect(page).toContain('choice === "shipping"')
-    expect(page).toContain(
-      "hasEventShippingChoice(productRead.resolution.product)"
-    )
+    expect(page).toContain("readEventShippingProduct({")
     expect(page).toContain("eventMarketContext:")
     expect(page).toContain(
       "calendarCoordinate: fulfillment.calendar.coordinate"

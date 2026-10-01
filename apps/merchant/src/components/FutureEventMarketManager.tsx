@@ -18,6 +18,7 @@ import {
   readEventMarketRoster,
   retainSignedEventMarketEvidence,
   retryEventMarketAuthorizationDelivery,
+  retryEventMarketCalendarDelivery,
   retryEventMarketMerchantDecisionDelivery,
   retryEventMarketRosterDelivery,
   useAuth,
@@ -53,6 +54,7 @@ import {
   Textarea,
 } from "@conduit/ui"
 import { retainEventMarketMerchantDecision } from "../lib/event-market-merchant-decision"
+import { getSavedDateRecoveryAction } from "../lib/event-market-date-recovery"
 import { buildFutureEventQrSignSheets } from "../lib/event-signage"
 import { EventMessagesSetup } from "./EventMessagesSetup"
 import { EventQrPrintPreview } from "./EventQrPrintPreview"
@@ -394,7 +396,9 @@ function MarketLifecycleEditor({
 function SeriesDateManager({
   market,
   schedule,
+  calendarCoverage,
   scheduleCoverage,
+  canEdit,
   selectedOccurrence,
   onSelectOccurrence,
   authenticatedPubkey,
@@ -402,7 +406,9 @@ function SeriesDateManager({
 }: {
   market: ParsedEventMarketRoster
   schedule: Extract<EventMarketSchedule, { kind: "series" }>
+  calendarCoverage?: "complete" | "partial" | "stale" | "unavailable"
   scheduleCoverage?: "complete" | "partial" | "stale" | "unavailable"
+  canEdit: boolean
   selectedOccurrence?: string
   onSelectOccurrence?: (coordinate: string) => void
   authenticatedPubkey: string
@@ -527,9 +533,31 @@ function SeriesDateManager({
           (entry) =>
             entry.occurrence.coordinate === mutation.occurrenceCoordinate
         )
-        if (saved[0] && current?.occurrence.eventId === saved[0].id) {
+        const recovery = getSavedDateRecoveryAction({
+          savedEventId: saved[0]?.id ?? null,
+          observedEventId: current?.occurrence.eventId ?? null,
+          coverage: current?.coverage ?? "unavailable",
+          canEdit,
+        })
+        if (recovery === "already_live") {
           setStep("Signed date is already current.")
+        } else if (recovery === "retry_saved") {
+          setStep("Retrying saved date…")
+          const delivery = await retryEventMarketCalendarDelivery({
+            organizerPubkey: market.organizerPubkey,
+            authenticatedPubkey,
+            signedEvent: saved[0]!,
+            shouldContinue,
+          })
+          if (delivery.successfulRelayUrls.length === 0)
+            throw new Error(
+              "The signed date still needs a relay acknowledgment."
+            )
         } else {
+          if (recovery === "blocked")
+            throw new Error(
+              "Refresh current signed dates before continuing publication."
+            )
           setStep(saved[0] ? "Retrying saved date…" : "Signing date revision…")
           await publishFutureEventMarketOccurrenceRevision({
             marketCoordinate: market.coordinate,
@@ -589,9 +617,31 @@ function SeriesDateManager({
             event.kind === 31924 &&
             event.id !== mutation.expectedPreviousEventId
         )
-        if (savedSchedule && schedule.series.eventId === savedSchedule.id) {
+        const recovery = getSavedDateRecoveryAction({
+          savedEventId: savedSchedule?.id ?? null,
+          observedEventId: schedule.series.eventId,
+          coverage: calendarCoverage ?? "unavailable",
+          canEdit,
+        })
+        if (recovery === "already_live") {
           setStep("Signed schedule is already current.")
+        } else if (recovery === "retry_saved") {
+          setStep("Retrying saved schedule…")
+          const delivery = await retryEventMarketCalendarDelivery({
+            organizerPubkey: market.organizerPubkey,
+            authenticatedPubkey,
+            signedEvent: savedSchedule!,
+            shouldContinue,
+          })
+          if (delivery.successfulRelayUrls.length === 0)
+            throw new Error(
+              "The signed schedule still needs a relay acknowledgment."
+            )
         } else {
+          if (recovery === "blocked")
+            throw new Error(
+              "Refresh the current signed schedule before continuing publication."
+            )
           await publishFutureEventMarketSeries({
             organizerPubkey: market.organizerPubkey,
             authenticatedPubkey,
@@ -635,6 +685,7 @@ function SeriesDateManager({
   }
 
   function startMutation(mutation: FrozenSeriesMutation): void {
+    if (!canEdit) return
     try {
       setDeliveryOutcomes({})
       saveSeriesMutation(mutation)
@@ -735,6 +786,7 @@ function SeriesDateManager({
   }
 
   async function changeOpenState(): Promise<void> {
+    if (!canEdit) return
     setPending(true)
     setError("")
     try {
@@ -760,7 +812,7 @@ function SeriesDateManager({
   }
 
   const selectedFuture = !!chosen && chosen.occurrence.end > Date.now()
-  const editReady = selectedFuture && chosen?.coverage === "complete"
+  const editReady = canEdit && selectedFuture && chosen?.coverage === "complete"
   return (
     <Card>
       <CardHeader>
@@ -775,7 +827,7 @@ function SeriesDateManager({
         <Button
           type="button"
           variant="outline"
-          disabled={pending || !!pendingMutation}
+          disabled={!canEdit || pending || !!pendingMutation}
           onClick={() => void changeOpenState()}
         >
           {market.state === "open"
@@ -960,7 +1012,7 @@ function SeriesDateManager({
             or removed.
           </p>
         ) : null}
-        {seed ? (
+        {canEdit && seed ? (
           <div className="space-y-3 rounded-lg border border-[var(--border)] p-3">
             <h3 className="font-medium">Add date</h3>
             <div className="space-y-1">
@@ -1497,6 +1549,8 @@ export function FutureEventMarketManager({
   const [printOpen, setPrintOpen] = useState(false)
   const [retryingDecision, setRetryingDecision] = useState<string | null>(null)
   const [decisionError, setDecisionError] = useState("")
+  const [retryingCalendar, setRetryingCalendar] = useState(false)
+  const [calendarRetryError, setCalendarRetryError] = useState("")
   const query = useQuery({
     queryKey: [
       "future-market-manager",
@@ -1590,6 +1644,54 @@ export function FutureEventMarketManager({
       await query.refetch()
     } catch {
       await query.refetch()
+    }
+  }
+
+  async function retryCalendar(): Promise<void> {
+    if (!market || !calendar || !authenticatedPubkey || retryingCalendar) return
+    setRetryingCalendar(true)
+    setCalendarRetryError("")
+    try {
+      const shouldContinue = () => isAuthGenerationCurrent(authGeneration)
+      const current = await readEventMarketRoster({
+        reference: market.coordinate,
+        authenticatedPubkey,
+        shouldContinue,
+      })
+      if (
+        current.resolution.state !== "current" ||
+        current.resolution.market.eventId !== market.eventId ||
+        current.calendar?.eventId !== calendar.eventId ||
+        current.calendar.coordinate !== market.calendarCoordinate ||
+        !calendar.signedEvent ||
+        !current.retained
+      )
+        throw new Error(
+          "Signed event details changed. Refresh before retrying."
+        )
+      const recovery = getSavedDateRecoveryAction({
+        savedEventId: calendar.eventId,
+        observedEventId: current.calendar.eventId,
+        coverage: current.calendarCoverage ?? "unavailable",
+        canEdit: false,
+      })
+      if (recovery === "retry_saved") {
+        const delivery = await retryEventMarketCalendarDelivery({
+          organizerPubkey: market.organizerPubkey,
+          authenticatedPubkey,
+          signedEvent: calendar.signedEvent,
+          shouldContinue,
+        })
+        if (delivery.successfulRelayUrls.length === 0)
+          throw new Error(
+            "Signed event details still need a relay acknowledgment."
+          )
+      }
+      await query.refetch()
+    } catch (cause) {
+      setCalendarRetryError(errorText(cause))
+    } finally {
+      setRetryingCalendar(false)
     }
   }
 
@@ -1788,12 +1890,33 @@ export function FutureEventMarketManager({
               onChanged={() => void query.refetch()}
             />
           ) : null}
-          {canManage && authenticatedPubkey && series ? (
+          {!canManage &&
+          authenticatedPubkey === market.organizerPubkey &&
+          !series &&
+          calendar &&
+          result?.calendarCoverage !== "complete" ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={retryingCalendar}
+              onClick={() => void retryCalendar()}
+            >
+              Retry signed event details
+            </Button>
+          ) : null}
+          {calendarRetryError ? (
+            <p role="alert" className="text-sm text-[var(--destructive)]">
+              {calendarRetryError}
+            </p>
+          ) : null}
+          {authenticatedPubkey === market.organizerPubkey && series ? (
             <SeriesDateManager
               key={`${series.series.eventId}:${selectedOccurrence ?? "default"}`}
               market={market}
               schedule={series}
+              calendarCoverage={result?.calendarCoverage}
               scheduleCoverage={result?.scheduleCoverage}
+              canEdit={!!canManage}
               selectedOccurrence={selectedOccurrence}
               onSelectOccurrence={onSelectOccurrence}
               authenticatedPubkey={authenticatedPubkey}

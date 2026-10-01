@@ -20,6 +20,45 @@ export function hasEventShippingChoice(product: Product): boolean {
   )
 }
 
+/** Ordinary shipping uses exact listing evidence, independently of pickup authority. */
+export async function readEventShippingProduct(
+  input: {
+    productId: string
+    merchantPubkey: string
+    authenticatedPubkey: string | null
+    expectedEventId?: string
+    shouldContinue: () => boolean
+  },
+  readProducts: typeof getProductsByIds = getProductsByIds
+): Promise<Product> {
+  const result = await readProducts([input.productId], {
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+  })
+  const record = result.data.find(
+    (entry) => entry.addressId === input.productId
+  )
+  const diagnostic = result.diagnostics.find(
+    (entry) => entry.addressId === input.productId
+  )
+  if (
+    !input.shouldContinue() ||
+    result.meta.source !== "commerce" ||
+    !hasExactLiveProductAvailabilityEvidence(diagnostic, input.productId) ||
+    !record ||
+    record.product.pubkey !== input.merchantPubkey ||
+    !hasEventShippingChoice(record.product)
+  )
+    throw new Error(
+      "Current shipping terms could not be verified. Review the listing and try again."
+    )
+  if (input.expectedEventId && record.eventId !== input.expectedEventId)
+    throw new Error(
+      "Product details changed. Review the refreshed item before adding it."
+    )
+  return record.product
+}
+
 export async function prepareEventFulfillmentChoice(
   item: CartItem,
   choice: "shipping" | "event_market_pickup",
@@ -37,27 +76,12 @@ export async function prepareEventFulfillmentChoice(
   if (!context)
     throw new Error("Open the event catalog to choose this item's fulfillment.")
   if (choice === "shipping") {
-    const result = await getProductsByIds([item.productId], {
+    const product = await readEventShippingProduct({
+      productId: item.productId,
+      merchantPubkey: item.merchantPubkey,
       authenticatedPubkey,
       shouldContinue,
     })
-    const product = result.data.find(
-      (record) => record.addressId === item.productId
-    )?.product
-    if (
-      !shouldContinue() ||
-      result.meta.source !== "commerce" ||
-      !hasExactLiveProductAvailabilityEvidence(
-        result.diagnostics[0],
-        item.productId
-      ) ||
-      !product ||
-      product.pubkey !== item.merchantPubkey ||
-      !hasEventShippingChoice(product)
-    )
-      throw new Error(
-        "Current shipping terms could not be verified. Review the listing and try again."
-      )
     return {
       ...createCartItemFromProduct(product, { type: "shipping" }),
       eventMarketContext: context,

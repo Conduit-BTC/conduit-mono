@@ -672,9 +672,10 @@ describe("merchant order phase", () => {
     expect(
       getMerchantOrderFulfillment([digitalItem, orderItem()])
     ).toMatchObject({
-      mode: "unknown",
+      mode: "pickup",
       requiresShipping: false,
       hasPickupClaim: true,
+      futureMarket: pickupFulfillment,
     })
     expect(
       getMerchantOrderFulfillment([

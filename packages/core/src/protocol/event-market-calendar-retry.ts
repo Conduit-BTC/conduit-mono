@@ -1,5 +1,6 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { parseEventMarketCalendarEvent } from "./event-market"
+import { parseEventMarketSeriesEvent } from "./event-market-schedule"
 import { getNdk } from "./ndk"
 import { getAccountSigner } from "./session-signer"
 import {
@@ -38,7 +39,7 @@ const defaultDependencies: CalendarRetryDependencies = {
   },
 }
 
-/** Retry an exact saved NIP-52 calendar without signing another revision. */
+/** Retry an exact saved NIP-52 date or finite calendar without signing another revision. */
 export async function retryEventMarketCalendarDelivery(
   input: {
     organizerPubkey: string
@@ -49,10 +50,14 @@ export async function retryEventMarketCalendarDelivery(
   dependencies: CalendarRetryDependencies = defaultDependencies
 ): Promise<PublishWithPlannerResult> {
   const organizerPubkey = input.organizerPubkey.trim().toLowerCase()
-  const calendar = parseEventMarketCalendarEvent(input.signedEvent)
+  const calendar =
+    parseEventMarketCalendarEvent(input.signedEvent) ??
+    parseEventMarketSeriesEvent(input.signedEvent)
   if (
     !calendar ||
-    calendar.authorPubkey !== organizerPubkey ||
+    ("authorPubkey" in calendar
+      ? calendar.authorPubkey
+      : calendar.organizerPubkey) !== organizerPubkey ||
     input.authenticatedPubkey?.toLowerCase() !== organizerPubkey
   )
     throw new Error(

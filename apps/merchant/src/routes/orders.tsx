@@ -509,6 +509,7 @@ function OrdersWorkspace() {
     status,
     authGeneration,
     isAuthGenerationCurrent,
+    isExactDeliveryRetryCurrent,
     remoteSignerRecovery,
     signerReadiness,
     connect,
@@ -546,6 +547,13 @@ function OrdersWorkspace() {
       current.authGeneration === generation
     )
   }
+  const isCurrentOrderExactRetryOwner = (
+    ownerPubkey: string,
+    generation: number
+  ) =>
+    isCurrentOrderAccount(ownerPubkey) &&
+    orderAuthorityRef.current.authGeneration === generation &&
+    isExactDeliveryRetryCurrent(generation, ownerPubkey)
   const isCurrentOrderSigner = (ownerPubkey: string, generation: number) => {
     const current = orderAuthorityRef.current
     return (
@@ -2032,7 +2040,7 @@ function OrdersWorkspace() {
         if (
           !retryOwner ||
           record.senderPubkey !== retryOwner ||
-          !isCurrentOrderOwner(retryOwner, retryGeneration)
+          !isCurrentOrderExactRetryOwner(retryOwner, retryGeneration)
         )
           throw new Error("Exact handoff delivery belongs to another account.")
         // Journal loading verifies both signatures and exact recipient/self tags.
@@ -2050,9 +2058,9 @@ function OrdersWorkspace() {
           record: savedRecord,
           authenticatedOwnerPubkey: retryOwner,
           shouldContinue: () =>
-            isCurrentOrderOwner(retryOwner, retryGeneration),
+            isCurrentOrderExactRetryOwner(retryOwner, retryGeneration),
         })
-        if (!isCurrentOrderOwner(retryOwner, retryGeneration))
+        if (!isCurrentOrderExactRetryOwner(retryOwner, retryGeneration))
           throw new Error(
             "Exact handoff delivery belongs to a previous session."
           )
@@ -2061,7 +2069,7 @@ function OrdersWorkspace() {
         return { retryOwner, retryGeneration, delivery }
       }),
     onSuccess: ({ retryOwner, retryGeneration, delivery }) => {
-      if (isCurrentOrderOwner(retryOwner, retryGeneration))
+      if (isCurrentOrderExactRetryOwner(retryOwner, retryGeneration))
         flash(
           delivery.recipientDelivered && delivery.selfCopyDelivered
             ? "Exact signed handoff wraps delivered"

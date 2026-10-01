@@ -54,7 +54,7 @@ describe("Event Market private-delivery authority propagation", () => {
       orders.indexOf("const futureRevokeMutation")
     )
     expect(exactRetry).toMatch(
-      /retryFutureMarketPrivateDelivery\(\{[\s\S]{0,300}shouldContinue: \(\) =>\s+isCurrentOrderOwner\(retryOwner, retryGeneration\)/
+      /retryFutureMarketPrivateDelivery\(\{[\s\S]{0,300}shouldContinue: \(\) =>\s+isCurrentOrderExactRetryOwner\(retryOwner, retryGeneration\)/
     )
     expect(exactRetry).not.toContain("captureFreshOrderAuthority")
     expect(payment).toContain("authenticatedPubkey: input.authenticatedPubkey,")

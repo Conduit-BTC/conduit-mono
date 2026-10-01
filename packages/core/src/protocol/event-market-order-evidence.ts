@@ -51,7 +51,8 @@ export function verifyEventMarketOrderEvidence(input: {
   )
   if (
     future.length === 0 ||
-    future.length !== order.items.length ||
+    future.length !==
+      order.items.filter((item) => item.format === "physical").length ||
     future.some(
       (item) =>
         item.fulfillment.merchantPubkey !== order.merchantPubkey ||

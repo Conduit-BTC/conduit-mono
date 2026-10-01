@@ -60,7 +60,7 @@ describe("merchant order signer recovery", () => {
     expect(exactRetryBlock).toContain("retryFutureMarketPrivateDelivery({")
     expect(exactRetryBlock).toContain("record.senderPubkey !== retryOwner")
     expect(exactRetryBlock).toContain("authenticatedOwnerPubkey: retryOwner")
-    expect(exactRetryBlock).toContain("isCurrentOrderOwner")
+    expect(exactRetryBlock).toContain("isCurrentOrderExactRetryOwner")
     expect(exactRetryBlock).toContain(
       "loadFutureMarketPrivateDeliveries(retryOwner)"
     )
@@ -69,21 +69,25 @@ describe("merchant order signer recovery", () => {
     )
     expect(exactRetryBlock).toContain("record: savedRecord,")
     expect(exactRetryBlock).toMatch(
-      /shouldContinue: \(\) =>\s+isCurrentOrderOwner\(retryOwner, retryGeneration\)/
+      /shouldContinue: \(\) =>\s+isCurrentOrderExactRetryOwner\(retryOwner, retryGeneration\)/
     )
     expect(exactRetryBlock).toMatch(
-      /if \(!isCurrentOrderOwner\(retryOwner, retryGeneration\)\)[\s\S]{0,180}if \(delivery\.recipientDelivered && delivery\.selfCopyDelivered\)\s+archiveFutureMarketPrivateDelivery\(retryOwner, savedRecord\.rumorId\)/
+      /if \(!isCurrentOrderExactRetryOwner\(retryOwner, retryGeneration\)\)[\s\S]{0,180}if \(delivery\.recipientDelivered && delivery\.selfCopyDelivered\)\s+archiveFutureMarketPrivateDelivery\(retryOwner, savedRecord\.rumorId\)/
     )
     expect(exactRetryBlock).toMatch(
-      /onSuccess:[\s\S]{0,80}if \(isCurrentOrderOwner\(retryOwner, retryGeneration\)\)/
+      /onSuccess:[\s\S]{0,80}if \(isCurrentOrderExactRetryOwner\(retryOwner, retryGeneration\)\)/
     )
     const ownerPredicate = contents.slice(
-      contents.indexOf("const isCurrentOrderOwner ="),
+      contents.indexOf("const isCurrentOrderExactRetryOwner ="),
       contents.indexOf("const isCurrentOrderSigner =")
     )
     expect(ownerPredicate).toContain("isCurrentOrderAccount(ownerPubkey)")
-    expect(ownerPredicate).toContain("isAuthGenerationCurrent(generation)")
-    expect(ownerPredicate).toContain("current.authGeneration === generation")
+    expect(ownerPredicate).toContain(
+      "isExactDeliveryRetryCurrent(generation, ownerPubkey)"
+    )
+    expect(ownerPredicate).toContain(
+      "orderAuthorityRef.current.authGeneration === generation"
+    )
     for (const record of ["futureReadyRecord", "futureRevocationRecord"]) {
       expect(contents).toMatch(
         new RegExp(
