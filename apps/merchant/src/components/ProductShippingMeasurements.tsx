@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@conduit/ui"
+import { getUSGroundAdvantageWarnings } from "../lib/usGroundAdvantageWarnings"
 import type { ProductPublishFormValues } from "../lib/productForm"
 import { getProductShippingMeasurements } from "../lib/shippingPolicyForm"
 import {
@@ -58,6 +59,10 @@ export function ProductShippingMeasurements({
       parsed.shippingWeightGrams,
       parsed.shippingDimensionsCm
     )
+    if (form.shippingPricingMode === "weight_table")
+      warnings.push(
+        ...getUSGroundAdvantageWarnings(parsed.shippingDimensionsCm)
+      )
   } catch {
     // Publication validates incomplete drafts while every field remains editable.
   }
