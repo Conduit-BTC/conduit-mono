@@ -908,9 +908,11 @@ export interface OrderLifecycleItem {
  */
 export interface OrderLifecycle {
   orderId: string
-  /** Buyer-local claimed referral source; never authorizes payment or payout. */
+  /** Buyer-local source provenance; legacy field name. Never sent in order content or used for payment/payout. */
   claimedReferralSource?: {
-    partnerCode: string
+    sourceDomain?: string
+    sourceMethod?: "claimed" | "referrer" | "partner"
+    partnerCode?: string
     linkMode: "buy" | "cart"
   }
   buyerPubkey: string

@@ -1,8 +1,11 @@
-/** Public, reviewed source codes. Add a code only after assigning it to one account. */
+import { normalizeCheckoutSourceDomain } from "./checkout-source-domain"
+
+/** Reviewed public identifiers only. Activation requires manual domain-control verification. */
 export type CheckoutPartnerRegistration = {
   code: string
   account: string
   active: boolean
+  domains?: readonly string[]
 }
 
 export const checkoutPartnerRegistry: readonly CheckoutPartnerRegistration[] =
@@ -31,4 +34,29 @@ export function resolveCheckoutPartnerCode(
 ): string | null {
   if (!claim || !/^[a-z0-9][a-z0-9_-]{2,63}$/.test(claim)) return null
   return activeCheckoutPartnerCodes(registry).includes(claim) ? claim : null
+}
+
+/** A domain never inherits a different code supplied in the same fragment. */
+export function resolveCheckoutPartnerDomain(
+  domain: string | null,
+  registry: readonly CheckoutPartnerRegistration[] = checkoutPartnerRegistry
+): string | null {
+  if (
+    !domain ||
+    normalizeCheckoutSourceDomain(domain) !== domain ||
+    registry.length > 64
+  )
+    return null
+  const activeCodes = new Set(activeCheckoutPartnerCodes(registry))
+  const matches = registry.filter(
+    (entry) =>
+      activeCodes.has(entry.code) &&
+      entry.domains &&
+      entry.domains.length <= 8 &&
+      entry.domains.every(
+        (item) => normalizeCheckoutSourceDomain(item) === item
+      ) &&
+      entry.domains.includes(domain)
+  )
+  return matches.length === 1 ? matches[0]!.code : null
 }
