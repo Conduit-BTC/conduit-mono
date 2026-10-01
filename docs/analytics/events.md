@@ -40,7 +40,6 @@ Runtime telemetry events may only use these fields:
 - `partner_code` (registered public business source code only)
 - `source_domain` (reviewed active registrable domain or `other`, checkout counters only)
 - `source_method` (`claimed`, `referrer`, `partner`, or `none`)
-- `source_partner_status` (`active`, `unregistered`, or `none`)
 
 ## Retention and Redaction
 
@@ -280,7 +279,7 @@ Emitted when a buyer starts checkout from a cart. It may record auth-required
 vs ready status and cart composition buckets, but must not include buyer,
 merchant, product, or cart identifiers.
 
-<!-- telemetry-event: checkout_step_result properties=event_name,app,page_url,page_path,surface,step,mode,rail,status,latency_bucket,count_bucket,amount_bucket,product_type,time_bucket,partner_code,source_domain,source_method,source_partner_status -->
+<!-- telemetry-event: checkout_step_result properties=event_name,app,page_url,page_path,surface,step,mode,rail,status,latency_bucket,count_bucket,amount_bucket,product_type,time_bucket,partner_code,source_domain,source_method -->
 
 ### `checkout_step_result`
 
@@ -290,7 +289,7 @@ use enum and bucket properties plus the bounded checkout source exception
 below. `latency_bucket` measures one named step;
 it never includes an order, buyer, merchant, relay, or product identifier.
 
-<!-- telemetry-event: checkout_success properties=event_name,app,page_url,page_path,surface,mode,rail,status,count_bucket,amount_bucket,product_type,time_bucket,partner_code,source_domain,source_method,source_partner_status -->
+<!-- telemetry-event: checkout_success properties=event_name,app,page_url,page_path,surface,mode,rail,status,count_bucket,amount_bucket,product_type,time_bucket,partner_code,source_domain,source_method -->
 
 ### `checkout_success`
 
@@ -337,7 +336,7 @@ and no identifiers, relay URLs, payloads, errors, or free text.
   Event counts are aggregate attempts, not users, merchants, or orders. No
   identity may be reconstructed or correlated from these counters.
 
-<!-- telemetry-event: checkout_result properties=event_name,app,page_url,page_path,surface,mode,rail,network,status,count_bucket,amount_bucket,product_type,time_bucket,partner_code,source_domain,source_method,source_partner_status -->
+<!-- telemetry-event: checkout_result properties=event_name,app,page_url,page_path,surface,mode,rail,network,status,count_bucket,amount_bucket,product_type,time_bucket,partner_code,source_domain,source_method -->
 
 ### `checkout_result`
 
@@ -348,7 +347,7 @@ below, and must not contain invoice strings, order
 contents, item titles, buyer identity, merchant identity, or shipping/contact
 data.
 
-<!-- telemetry-event: checkout_handoff_result properties=event_name,app,page_url,page_path,surface,handoff_stage,mode,partner_code,source_domain,source_method,source_partner_status -->
+<!-- telemetry-event: checkout_handoff_result properties=event_name,app,page_url,page_path,surface,handoff_stage,mode,partner_code,source_domain,source_method -->
 
 ### `checkout_handoff_result`
 
@@ -371,15 +370,16 @@ checkout counters, never on general browsing or provider lifecycle events.
   Invalid, empty, or duplicate explicit values are ignored and suppress the
   fallback. `partner` preserves active legacy partner-code-only links. `none`
   means no usable source. These are source indicators, not ownership proof.
-- `source_partner_status=active` requires an exact, unique active domain mapping
-  when a domain is present; partner-only links use `active` for a recognized
-  legacy code. `unregistered` domains count only in the `other` bucket.
-  Missing source uses `none`. With an observed referrer, `partner_code` preserves
-  an explicit active legacy code when supplied, otherwise it uses the domain
-  mapping. Domain activation status stays independent: an unregistered observed
-  domain remains `unregistered` even alongside an active claimed code. With an
+- Derive activation status in reports from the validated fields: `source_domain=other`
+  means unregistered, a reviewed `source_domain` means active, and
+  `source_method=none` means none. A partner-only link with an active
+  `partner_code` means active. When a domain is present, its status takes
+  precedence over the code.
+  With an observed referrer, `partner_code` preserves an explicit active legacy
+  code when supplied, otherwise it uses the domain mapping. An unregistered
+  observed domain remains unregistered even alongside an active code. With an
   explicit `source=`, only its mapping determines the code. Both sanitizers
-  independently check domain status and active code membership; codes never
+  independently check reviewed domains and active code membership; codes never
   prove control of a referrer or grant it activation.
 - One Conduit-owned `normalizeCheckoutSourceDomain` wrapper rejects URL syntax,
   credentials, ports, paths, queries, fragments, IP literals, special/local

@@ -86,7 +86,6 @@ export const browserTelemetryPropertyNames = [
   "partner_code",
   "source_domain",
   "source_method",
-  "source_partner_status",
   "page_url",
   "page_path",
 ] as const
@@ -111,7 +110,6 @@ const timePropertyNames = ["time_bucket"] as const
 const checkoutSourcePropertyNames = [
   "source_domain",
   "source_method",
-  "source_partner_status",
   "partner_code",
 ] as const
 const sharedTelemetryApps = ["market", "merchant"] as const
@@ -490,7 +488,6 @@ const browserTelemetryLabelValues = {
   partner_code: [], // Exact active registry membership is checked below.
   source_domain: [], // Explicitly validated below; never free text.
   source_method: ["claimed", "referrer", "partner", "none"],
-  source_partner_status: ["active", "unregistered", "none"],
 } as const satisfies Record<
   BrowserTelemetryLabelPropertyName,
   readonly string[]

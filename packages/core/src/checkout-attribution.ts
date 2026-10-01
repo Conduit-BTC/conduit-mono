@@ -41,8 +41,7 @@ export function resolveCheckoutAttribution(
 export function checkoutAttributionTelemetryProperties(
   attribution?: CheckoutAttribution
 ): Record<string, string> {
-  if (!attribution)
-    return { source_method: "none", source_partner_status: "none" }
+  if (!attribution) return { source_method: "none" }
   const domain = attribution.sourceDomain
   const mappedPartner = domain ? resolveCheckoutPartnerDomain(domain) : null
   const partnerCode =
@@ -51,9 +50,6 @@ export function checkoutAttributionTelemetryProperties(
       : (resolveCheckoutPartnerCode(attribution.partnerCode) ?? mappedPartner)
   return {
     source_method: attribution.sourceMethod,
-    source_partner_status: (domain ? mappedPartner : partnerCode)
-      ? "active"
-      : "unregistered",
     ...(domain
       ? {
           source_domain: mappedPartner ? domain : "other",
@@ -63,22 +59,18 @@ export function checkoutAttributionTelemetryProperties(
   }
 }
 
-/** Client and ingest independently reject inconsistent or forged activation labels. */
+/** Client and ingest independently reject inconsistent or unreviewed attribution fields. */
 export function hasValidCheckoutAttributionTelemetry(
   properties: Readonly<Record<string, unknown>>
 ): boolean {
   const domain = properties.source_domain
   const method = properties.source_method
-  const status = properties.source_partner_status
   const code = properties.partner_code
-  if (domain === undefined && method === undefined && status === undefined)
-    return true // Existing funnel/partner-only contracts.
-  if (method === "none")
-    return status === "none" && domain === undefined && code === undefined
+  if (domain === undefined && method === undefined) return true // Existing funnel/partner-only contracts.
+  if (method === "none") return domain === undefined && code === undefined
   if (method === "partner")
     return (
       domain === undefined &&
-      status === "active" &&
       typeof code === "string" &&
       resolveCheckoutPartnerCode(code) === code
     )
@@ -91,7 +83,6 @@ export function hasValidCheckoutAttributionTelemetry(
     return false
   const mapped =
     domain === "other" ? null : resolveCheckoutPartnerDomain(domain as string)
-  if (status !== (mapped ? "active" : "unregistered")) return false
   if (!mapped && domain !== "other") return false
   if (method === "claimed") return code === (mapped ?? undefined)
   // An observed domain never upgrades an explicit legacy code to domain approval.

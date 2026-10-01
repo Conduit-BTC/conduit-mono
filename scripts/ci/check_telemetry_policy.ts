@@ -32,7 +32,6 @@ export const allowedTelemetryProperties = new Set([
   "partner_code",
   "source_domain",
   "source_method",
-  "source_partner_status",
 ])
 
 const gmvTelemetryEventName = "commerce_gmv_estimated"
@@ -231,12 +230,7 @@ export function validateTelemetryEvents(
 
     for (const property of event.properties) {
       if (
-        [
-          "source_domain",
-          "source_method",
-          "source_partner_status",
-          "partner_code",
-        ].includes(property) &&
+        ["source_domain", "source_method", "partner_code"].includes(property) &&
         ![
           "checkout_handoff_result",
           "checkout_step_result",

@@ -198,16 +198,3 @@ merged, and released first. Production source telemetry is restricted to the
 official Market host and is deliberately disabled on previews and localhost.
 Use local tests and the ingest-proxy sanitizer tests for privacy verification;
 a preview does not produce an official-host attribution report.
-
-## Implementation acceptance and evidence
-
-| ID        | Criterion                                                                                                    | Automated coverage                                 | Remaining manual validation                              |
-| --------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | -------------------------------------------------------- |
-| SOURCE-01 | Unregistered buy/cart links preserve exact products and quantities                                           | Source parser and Chromium handoff tests           | Candidate preview with public signed listings            |
-| SOURCE-02 | Explicit claim wins; referrer fallback and missing/invalid sources never block checkout                      | Source parser, staging and Chromium scenarios      | Chrome/Safari referrer-policy differences                |
-| SOURCE-03 | PSL, hosted-domain, IDNA, malformed URL/IP/local input and subdomain bounds                                  | Domain and telemetry tests                         | Review pinned suffix data on dependency updates          |
-| SOURCE-04 | Legacy partner links with referrers and unique active domain mapping                                         | Registry and client/proxy tests                    | Maintainer domain-control verification before activation |
-| SOURCE-05 | Exact purchase/session/quantity binding, off-checkout account changes, reload, conflicts, retries and expiry | Referral, order staging and Chromium handoff tests | External-signer account switches on preview              |
-| SOURCE-06 | Capture then scrub then emit; no attribution identifiers or content through ingest                           | Staging, client/proxy, policy and Chromium tests   | Official-host aggregate report after release             |
-| SOURCE-07 | Optional telemetry, GPC, official-host restrictions and reviewed-domain-only labels                          | Client/proxy and policy tests                      | Deployment configuration review                          |
-| SOURCE-08 | Public email request, manual verification and activation; no payout promises                                 | Developer guide contract test                      | Maintainer review and private follow-up                  |

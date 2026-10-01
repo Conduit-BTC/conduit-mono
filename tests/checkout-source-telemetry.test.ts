@@ -38,7 +38,6 @@ const properties = (extra: Record<string, unknown> = {}) => ({
   handoff_stage: "arrival",
   source_domain: "other",
   source_method: "claimed",
-  source_partner_status: "unregistered",
   ...extra,
 })
 const event = (extra: Record<string, unknown> = {}) => ({
@@ -61,7 +60,6 @@ const client = (extra: Record<string, unknown> = {}) =>
       handoff_stage: "arrival",
       source_domain: "other",
       source_method: "claimed",
-      source_partner_status: "unregistered",
       ...extra,
     } as Record<string, string>,
   })
@@ -139,7 +137,6 @@ describe("checkout domain telemetry pipeline", () => {
       expect(client({ source_method: method })).toMatchObject({
         source_domain: "other",
         source_method: method,
-        source_partner_status: "unregistered",
       })
       const sanitized = sanitizePostHogCaptureEvent({
         ...event({
@@ -189,13 +186,11 @@ describe("checkout domain telemetry pipeline", () => {
     expect(checkoutAttributionTelemetryProperties(attribution)).toEqual({
       source_domain: "example.com",
       source_method: "claimed",
-      source_partner_status: "active",
       partner_code: "project_a",
     })
     const active = rebuild(
       event({
         source_domain: "example.com",
-        source_partner_status: "active",
         partner_code: "project_a",
       })
     )
@@ -203,21 +198,18 @@ describe("checkout domain telemetry pipeline", () => {
     expect(
       client({
         source_domain: "example.com",
-        source_partner_status: "active",
         partner_code: "project_a",
       })
     ).not.toBeNull()
     const legacy = resolveCheckoutAttribution({ partner: "project_a" })
     expect(checkoutAttributionTelemetryProperties(legacy)).toEqual({
       source_method: "partner",
-      source_partner_status: "active",
       partner_code: "project_a",
     })
     registry[0]!.active = false
     expect(checkoutAttributionTelemetryProperties(attribution)).toEqual({
       source_domain: "other",
       source_method: "claimed",
-      source_partner_status: "unregistered",
     })
     expect(resolveCheckoutAttribution({ partner: "project_a" })).toBeUndefined()
     expect(
@@ -228,7 +220,6 @@ describe("checkout domain telemetry pipeline", () => {
     const inactive = rebuild(
       event({
         source_domain: "example.com",
-        source_partner_status: "active",
         partner_code: "project_a",
       })
     )
@@ -252,10 +243,10 @@ describe("checkout domain telemetry pipeline", () => {
       buy: product,
       partner: "legacy_a",
     }).toString()
-    for (const [referrer, expectedDomain, status] of [
-      ["https://unknown.co.uk/", "other", "unregistered"],
-      ["https://approved.com/", "approved.com", "active"],
-      ["https://deadbeefdeadbeef.com/", "other", "unregistered"],
+    for (const [referrer, expectedDomain] of [
+      ["https://unknown.co.uk/", "other"],
+      ["https://approved.com/", "approved.com"],
+      ["https://deadbeefdeadbeef.com/", "other"],
     ]) {
       const parsed = parseCheckoutIntentFragment(fragment, referrer)
       expect(parsed.status).toBe("valid")
@@ -267,7 +258,6 @@ describe("checkout domain telemetry pipeline", () => {
       expect(source).toEqual({
         source_method: "referrer",
         source_domain: expectedDomain,
-        source_partner_status: status,
         partner_code: "legacy_a",
       })
       expect(client(source)).not.toBeNull()
@@ -276,17 +266,10 @@ describe("checkout domain telemetry pipeline", () => {
       if (rebuilt.ok) {
         expect(rebuilt.events).toHaveLength(1)
         expect(rebuilt.events[0]?.properties?.partner_code).toBe("legacy_a")
-        expect(rebuilt.events[0]?.properties?.source_partner_status).toBe(
-          status
+        expect(rebuilt.events[0]?.properties?.source_domain).toBe(
+          expectedDomain
         )
       }
-      expect(
-        client({
-          ...source,
-          source_partner_status:
-            status === "active" ? "unregistered" : "active",
-        })
-      ).toBeNull()
       expect(
         client({ ...source, partner_code: "unregistered_code" })
       ).toBeNull()
@@ -301,7 +284,7 @@ describe("checkout domain telemetry pipeline", () => {
       resolveCheckoutAttribution(explicit.intent)
     )
     expect(explicitSource.partner_code).toBeUndefined()
-    expect(explicitSource.source_partner_status).toBe("unregistered")
+    expect(explicitSource.source_domain).toBe("other")
     expect(client({ ...explicitSource, partner_code: "legacy_a" })).toBeNull()
     registry[0]!.active = false
     const observed = parseCheckoutIntentFragment(
@@ -315,7 +298,7 @@ describe("checkout domain telemetry pipeline", () => {
     )
   })
 
-  it("rejects URLs, subdomains, free text and forged status through both validators", () => {
+  it("rejects URLs, subdomains, free text and forged attribution through both validators", () => {
     for (const extra of [
       { source_domain: "example.com" },
       { source_domain: "project.github.io" },
@@ -328,11 +311,9 @@ describe("checkout domain telemetry pipeline", () => {
       { source_domain: "deadbeefdeadbeef.com" },
       { source_domain: "12345678.com" },
       { source_method: "browser_url" },
-      { source_partner_status: "active" },
       { source_method: "partner" },
       { source_method: "none" },
       { partner_code: "unknown_code" },
-      { source_domain: "other", source_partner_status: "active" },
       { source_url: "https://example.com/private" },
       { product: "sensitive-product" },
       { invoice: "sensitive-invoice" },
@@ -345,13 +326,11 @@ describe("checkout domain telemetry pipeline", () => {
     const missing = client({
       source_domain: undefined,
       source_method: "none",
-      source_partner_status: "none",
     })
     // Explicit undefined is rejected rather than becoming a property; builders omit it.
     expect(missing).toBeNull()
     expect(checkoutAttributionTelemetryProperties()).toEqual({
       source_method: "none",
-      source_partner_status: "none",
     })
   })
 

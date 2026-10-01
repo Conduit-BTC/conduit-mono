@@ -27,7 +27,5 @@ describe("public partner activation instructions", () => {
       "measured checkout arrivals and outcomes",
     ])
       expect(guide.includes(text)).toBe(true)
-    for (let index = 1; index <= 8; index++)
-      expect(guide.includes(`SOURCE-0${index}`)).toBe(true)
   })
 })
