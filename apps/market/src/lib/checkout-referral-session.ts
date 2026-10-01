@@ -1,3 +1,5 @@
+import { generateId } from "@conduit/core"
+
 import { clearCheckoutReferral } from "./checkout-referral"
 
 const KEY = "conduit:checkout-referral-session:v1"
@@ -41,14 +43,14 @@ export function createCheckoutReferralSessionFence() {
           current.generation !== authGeneration &&
           (accountPubkey !== null || pending || current.pending))
       let fence: Fence = changed
-        ? { identity: accountPubkey, token: crypto.randomUUID() }
+        ? { identity: accountPubkey, token: generateId() }
         : previous!
       if (!current || changed) {
         try {
           window.sessionStorage.setItem(KEY, JSON.stringify(fence))
         } catch {
           // A reload must not trust a stored fence that cannot be rotated.
-          fence = { identity: accountPubkey, token: crypto.randomUUID() }
+          fence = { identity: accountPubkey, token: generateId() }
           clearCheckoutReferral()
         }
       }

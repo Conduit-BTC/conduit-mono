@@ -234,6 +234,47 @@ describe("checkout source staging and buyer-local purchase", () => {
     expect(getStagedCheckoutIntent()).toBeNull()
   })
 
+  it.each([false, true])(
+    "preserves account fencing without randomUUID when storage is blocked: %s",
+    (storageBlocked) => {
+      const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID")
+      Object.defineProperty(crypto, "randomUUID", {
+        configurable: true,
+        value: undefined,
+      })
+      try {
+        if (storageBlocked)
+          window.sessionStorage.setItem = () => {
+            throw new Error("Storage blocked")
+          }
+        const fence = createCheckoutReferralSessionFence()
+        fence.synchronize({
+          accountPubkey: null,
+          authGeneration: 0,
+          pending: false,
+        })
+        const guestScope = fence.getScope(null, 0)!
+        expect(guestScope).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+        )
+        bindCheckoutReferral(intent, merchant, "purchase", guestScope)
+        if (!storageBlocked) expect(claim([item], guestScope)).toBeDefined()
+        fence.synchronize({
+          accountPubkey: merchant,
+          authGeneration: 1,
+          pending: false,
+        })
+        expect(fence.getScope(merchant, 1)).toBeDefined()
+        expect(fence.getScope(merchant, 1)).not.toBe(guestScope)
+        expect(fence.getScope(null, 0)).toBeUndefined()
+        expect(claim([item], guestScope)).toBeUndefined()
+      } finally {
+        if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor)
+        else Reflect.deleteProperty(crypto, "randomUUID")
+      }
+    }
+  )
+
   it("invalidates sources on off-checkout account transitions before a generation-reset reload", () => {
     const fence = createCheckoutReferralSessionFence()
     fence.synchronize({
