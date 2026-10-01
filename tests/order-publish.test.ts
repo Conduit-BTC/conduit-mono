@@ -385,8 +385,14 @@ describe("buyer order publishing", () => {
     )
   })
 
-  for (const identityKind of ["signed_in", "guest_ephemeral"] as const) {
-    it(`adopts durable first-ACK delivery and lazy recovery for ${identityKind}`, async () => {
+  for (const [identityKind, terminalStatus] of (
+    ["signed_in", "guest_ephemeral"] as const
+  ).flatMap((identityKind) =>
+    (
+      ["timed_out", "auth_required", "cancelled", "policy_blocked"] as const
+    ).map((status) => [identityKind, status] as const)
+  )) {
+    it(`adopts durable first-ACK delivery and lazy recovery for ${identityKind}: ${terminalStatus}`, async () => {
       const buyerPubkey =
         identityKind === "signed_in"
           ? "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -475,6 +481,11 @@ describe("buyer order publishing", () => {
       }
       const settled = {
         ...accepted,
+        attemptedRelayUrls:
+          terminalStatus === "policy_blocked" ? [relayA] : [relayA, relayB],
+        relayAttempts: [
+          { relayUrl: relayB, attempt: 1, status: terminalStatus },
+        ],
         failedRelayUrls: [relayB],
         relayFailureMessages: {
           [relayB]: "No acknowledgement before timeout",
@@ -634,7 +645,7 @@ describe("buyer order publishing", () => {
         releaseLease: true,
         outcomes: [
           { relayUrl: relayA, status: "acked" },
-          { relayUrl: relayB, status: "timed_out" },
+          { relayUrl: relayB, status: terminalStatus },
         ],
       })
     })

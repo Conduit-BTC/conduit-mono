@@ -6,6 +6,7 @@ import {
 } from "nostr-tools/pure"
 import { applyE2eRelayIsolation, config } from "@conduit/core"
 import { publishSignedEventFrameToRelay } from "../packages/core/src/protocol/relay-writer"
+import { createAccountIdentityScope } from "../packages/core/src/protocol/session"
 import { waitForVisibleDocument } from "../packages/core/src/protocol/interactive-signer"
 import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
 
@@ -721,3 +722,62 @@ describe("exact relay writer", () => {
     expect(signerCalls).toBe(1)
   })
 })
+
+for (const kind of [30409, 1059]) {
+  for (const boundary of ["before_connect", "before_send"] as const) {
+    it(`fences saved kind-${kind} retry on account switch ${boundary}`, async () => {
+      const event = finalizeEvent(
+        { kind, created_at: 1_700_000_000, tags: [], content: "saved" },
+        SECRET
+      )
+      const owner = getPublicKey(SECRET)
+      const scope = createAccountIdentityScope(owner)
+      const shouldContinue = () => scope.isCurrent(owner)
+      const socket = new WriterTestSocket()
+      let opened = 0
+      if (boundary === "before_connect") scope.setPubkey(null)
+      const result = publishSignedEventFrameToRelay({
+        relayUrl: "wss://account-fence.conduit.market",
+        signedEvent: event,
+        shouldContinue,
+        timeoutMs: 100,
+        createWebSocket: () => {
+          opened += 1
+          return socket as unknown as WebSocket
+        },
+      })
+      if (boundary === "before_send") {
+        scope.setPubkey(AUTH_PUBKEY)
+        socket.open()
+      }
+      expect(await result).toBe("cancelled")
+      expect(socket.sentPayloads).toEqual([])
+      expect(opened).toBe(boundary === "before_connect" ? 0 : 1)
+    })
+  }
+  it(`keeps saved kind-${kind} retry alive across same-account panel navigation`, async () => {
+    const event = finalizeEvent(
+      { kind, created_at: 1_700_000_000, tags: [], content: "saved" },
+      SECRET
+    )
+    const owner = getPublicKey(SECRET)
+    const scope = createAccountIdentityScope(owner)
+    const shouldContinue = () => scope.isCurrent(owner)
+    const socket = new WriterTestSocket()
+    socket.onSend = () =>
+      socket.message(JSON.stringify(["OK", event.id, true, ""]))
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://account-fence.conduit.market",
+      signedEvent: event,
+      shouldContinue,
+      timeoutMs: 100,
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+    scope.setPubkey(owner)
+    socket.open()
+    expect(await result).toBe("acked")
+    expect(socket.sentPayloads.map((payload) => JSON.parse(payload))).toEqual([
+      ["EVENT", structuredClone(event)],
+    ])
+  })
+}

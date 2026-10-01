@@ -218,9 +218,22 @@ describe("merchant organizer event market route", () => {
       "isCurrentFreshAuthority(input.ownerPubkey, input.authGeneration)"
     )
     expect(route).toContain("authenticatedPubkey: null,")
-    expect(route).toContain(
-      "getActiveRelaySettingsScope() ===\n          getAccountRelayScope(input.ownerPubkey)"
+    expect(
+      route.match(/isAccountIdentityCurrent\(input.ownerPubkey\)/g)
+    ).toHaveLength(2)
+    const auth = await Bun.file(
+      "packages/core/src/context/AuthContext.tsx"
+    ).text()
+    expect(auth).toContain("accountIdentity.setPubkey(pubkey)")
+    expect(auth.indexOf("accountIdentity.setPubkey(pubkey)")).toBeLessThan(
+      auth.indexOf("setAccountPubkeyState(pubkey)")
     )
+    expect(auth).toContain("isAccountIdentityCurrent,")
+    const disconnect = auth.slice(auth.indexOf("  const disconnect ="))
+    expect(disconnect.indexOf("accountIdentity.setPubkey(null)")).toBeLessThan(
+      disconnect.indexOf("await withBrowserAuthOperationLock")
+    )
+    expect(route).not.toContain("getActiveRelaySettingsScope")
     expect(adapter).toContain("...(signal ? { signal } : {})")
     expect(adapter).toContain("...(shouldContinue ? { shouldContinue } : {})")
     expect(handoff).toContain("shouldContinue: input.shouldContinue")

@@ -50,8 +50,6 @@ describe("event-market private-delivery authority propagation", () => {
     expect(events).toMatch(
       /transport: \{\s*authenticatedPubkey: input\.ownerPubkey,\s*shouldContinue: \(\) =>\s*isCurrentFreshAuthority\(input\.ownerPubkey, input\.authGeneration\)/
     )
-    expect(events).toContain(
-      "getActiveRelaySettingsScope() ===\n            getAccountRelayScope(input.ownerPubkey)"
-    )
+    expect(events).toContain("isAccountIdentityCurrent(input.ownerPubkey)")
   })
 })

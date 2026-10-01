@@ -187,17 +187,17 @@ describe("composed plain signed-event target plan", () => {
         cancellation.abort()
         const error = (await errorPromise) as {
           diagnostics: {
-            relayAttempts: Array<{ status: string; eventId: string }>
+            relayAttempts: Array<{ status: string }>
           }
         }
         expect(error.diagnostics.relayAttempts).toEqual([
           {
             relayUrl: target,
-            eventId: signed.id,
             attempt: 1,
             status: "cancelled",
           },
         ])
+        expect(JSON.stringify(error.diagnostics)).not.toContain(signed.id)
         expect(relay.frames).toHaveLength(1)
         await relay.stop()
         expect(relay.counts).toEqual({ opened: 1, closed: 1 })

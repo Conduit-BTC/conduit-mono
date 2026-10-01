@@ -30,6 +30,9 @@ relay.
 Read connections and NDK resets do not own write sockets. Every write socket
 closes on a terminal outcome, deadline or account cancellation. Account
 cancellation after sending cannot retract an event already received by a relay.
+Saved signed retries use provider-owned account identity updated synchronously,
+including revocation before disconnect cleanup. They do not depend on delayed
+relay-settings effects, panel mounting or fresh signer readiness.
 
 ## Delivery evidence
 
@@ -50,7 +53,14 @@ of the original signed event.
 Earlier acknowledgements remain positive delivery evidence across retries.
 Attempt history preserves other earlier outcomes; absence of an ACK never
 proves absence from a relay. Diagnostics contain statuses and relay URLs, never
-relay response text or event content.
+relay response text, event content or event/identity identifiers. The diagnostic
+error boundary removes event IDs from attempts; local domain delivery records
+retain their signed-event identity separately.
+
+Order checkpoints project typed attempt outcomes rather than legacy URL buckets.
+Planned targets blocked before socket I/O are recorded as `policy_blocked`, and
+those targets are excluded from exact saved-order retries. Authentication and
+cancellation outcomes remain distinct from transport timeouts.
 
 Progressive recipient publication exposes separate `accepted` and `settled`
 transport promises: the first relay ACK and the complete bounded relay result.

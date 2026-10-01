@@ -24,6 +24,7 @@ import {
   EVENT_KINDS,
   planPublishRelays,
   publishSignedEventToRelay,
+  RelayPublishDiagnosticsError,
   publishWithPlanner,
   setActiveRelaySettingsScope,
   type PublishWithPlannerInput,
@@ -2081,6 +2082,33 @@ describe("planPublishRelays", () => {
     ])
   })
 
+  it("redacts attempt identifiers from a failed private gift-wrap publication", async () => {
+    const relayUrl = "wss://private-diagnostic.fixture.conduit.market"
+    const fixture = authenticatedPublishInput([relayUrl])
+    __resetRelayPublishTestOverrides()
+    const wire = installRelayPublishWebSocket({
+      accepted: false,
+      reason: "blocked: fixture",
+    })
+    try {
+      const error = await publishWithPlanner(
+        fixture.event,
+        fixture.input
+      ).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(RelayPublishDiagnosticsError)
+      const diagnostics = (error as RelayPublishDiagnosticsError).diagnostics
+      expect(diagnostics.relayAttempts).toEqual([
+        { relayUrl, attempt: 1, status: "rejected" },
+      ])
+      expect(JSON.stringify(diagnostics)).not.toContain(fixture.event.id)
+      expect(JSON.stringify(diagnostics)).not.toContain(AUTHOR_PUBKEY)
+      expect(JSON.stringify(diagnostics)).not.toContain(OTHER_AUTHOR_PUBKEY)
+      expect(wire.sentEvents[0]?.id).toBe(fixture.event.id)
+    } finally {
+      wire.restore()
+    }
+  })
+
   it("includes relay failure reasons in publish diagnostics", async () => {
     const primaryRelay = "wss://configured-write.conduit.market"
     const fakeEvent = signedTestEvent({
@@ -2537,4 +2565,42 @@ describe("planPublishRelays", () => {
     ).rejects.toThrow("without an approved relay target")
     expect(publishCalls).toBe(0)
   })
+})
+
+it("removes private event IDs at every diagnostic error construction boundary", () => {
+  const eventId = "e".repeat(64)
+  const result = {
+    plan: {
+      intent: "recipient_event" as const,
+      primaryRelayUrls: ["wss://private.conduit.market"],
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+    },
+    attemptedRelayUrls: ["wss://private.conduit.market"],
+    successfulRelayUrls: [],
+    failedRelayUrls: ["wss://private.conduit.market"],
+    relayFailureMessages: {},
+    relayAttempts: [
+      {
+        relayUrl: "wss://private.conduit.market",
+        eventId,
+        attempt: 2,
+        status: "auth_required" as const,
+      },
+    ],
+  }
+  const error = new RelayPublishDiagnosticsError(
+    "Private delivery failed",
+    result,
+    undefined
+  )
+  expect(error.diagnostics.relayAttempts).toEqual([
+    {
+      relayUrl: "wss://private.conduit.market",
+      attempt: 2,
+      status: "auth_required",
+    },
+  ])
+  expect(JSON.stringify(error.diagnostics)).not.toContain(eventId)
+  expect(result.relayAttempts[0].eventId).toBe(eventId)
 })

@@ -160,6 +160,33 @@ export interface ProgressiveRelayPublishAttempt {
   status: ProgressiveRelayPublishStatus
 }
 
+/** Preserve typed outcomes when projecting transport evidence into checkpoints. */
+export function getRelayPublishTargetStatus(
+  delivery: PublishWithPlannerResult,
+  relayUrl: string
+): ProgressiveRelayPublishStatus | "pending" {
+  if (delivery.successfulRelayUrls.includes(relayUrl)) return "acked"
+  const attempts = delivery.relayAttempts?.filter(
+    (attempt) => attempt.relayUrl === relayUrl
+  )
+  if (attempts?.some((attempt) => attempt.status === "acked")) return "acked"
+  if (
+    "pendingRelayUrls" in delivery &&
+    (delivery.pendingRelayUrls as string[]).includes(relayUrl)
+  )
+    return "pending"
+  const latest = attempts?.at(-1)
+  if (latest) return latest.status
+  if (
+    delivery.rejectedRelayUrls?.includes(relayUrl) ||
+    /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
+      delivery.relayFailureMessages[relayUrl]?.trim() ?? ""
+    )
+  )
+    return "rejected"
+  return "timed_out"
+}
+
 export interface ProgressivePublishSnapshot extends PublishWithPlannerResult {
   /** Relays whose current bounded attempt has not reached an outcome yet. */
   pendingRelayUrls: string[]
@@ -195,7 +222,20 @@ export class RelayPublishDiagnosticsError extends Error {
   ) {
     super(message)
     this.name = "RelayPublishDiagnosticsError"
-    this.diagnostics = diagnostics
+    this.diagnostics = {
+      ...diagnostics,
+      ...(diagnostics.relayAttempts
+        ? {
+            relayAttempts: diagnostics.relayAttempts.map(
+              ({ relayUrl, attempt, status }) => ({
+                relayUrl,
+                attempt,
+                status,
+              })
+            ),
+          }
+        : {}),
+    }
     this.cause = cause
   }
 }

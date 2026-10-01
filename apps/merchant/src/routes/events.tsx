@@ -9,8 +9,6 @@ import {
 } from "@tanstack/react-query"
 import {
   getAccountSigner,
-  getAccountRelayScope,
-  getActiveRelaySettingsScope,
   readEventMarketReadyReceipts,
   useAuth,
   useConduitSession,
@@ -420,6 +418,7 @@ export function MyEventsPanel({
     status: authStatus,
     authGeneration,
     isAuthGenerationCurrent,
+    isAccountIdentityCurrent,
     remoteSignerRecovery,
     signerReadiness,
     connect,
@@ -1060,9 +1059,7 @@ export function MyEventsPanel({
         organizerPubkey: input.ownerPubkey,
         authenticatedPubkey: null,
         // Signed delivery follows the account, independently of this event panel.
-        shouldContinue: () =>
-          getActiveRelaySettingsScope() ===
-          getAccountRelayScope(input.ownerPubkey),
+        shouldContinue: () => isAccountIdentityCurrent(input.ownerPubkey),
         reference: input.reference,
         record: input.record,
       }),
@@ -1271,9 +1268,7 @@ export function MyEventsPanel({
         transport: {
           authenticatedPubkey: null,
           // Signed delivery follows the account, independently of this event panel.
-          shouldContinue: () =>
-            getActiveRelaySettingsScope() ===
-            getAccountRelayScope(input.ownerPubkey),
+          shouldContinue: () => isAccountIdentityCurrent(input.ownerPubkey),
         },
       }),
     onSuccess: async (_delivery, input) => {

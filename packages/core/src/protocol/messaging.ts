@@ -51,6 +51,7 @@ import {
   type ResolveInboxDeclarationOptions,
 } from "./private-message-routing"
 import {
+  getRelayPublishTargetStatus,
   publishWithPlanner,
   publishWithPlannerProgressive,
   RelayPublishDiagnosticsError,
@@ -2040,30 +2041,15 @@ function buildOrderRelayDeliveryRecord(input: {
   if (!isValidSignedPublicNostrEvent(signedRecipientWrap)) return undefined
 
   const now = Date.now()
-  const successful = new Set(input.recipientDelivery.successfulRelayUrls ?? [])
-  const pending = new Set(
-    "pendingRelayUrls" in input.recipientDelivery
-      ? input.recipientDelivery.pendingRelayUrls
-      : []
-  )
-  const rejectedRelayUrls = new Set(
-    input.recipientDelivery.rejectedRelayUrls ?? []
-  )
-  const failures = input.recipientDelivery.relayFailureMessages ?? {}
   const relayDelivery = input.recipientRoute.relayUrls.map((relayUrl) => {
-    const acked = successful.has(relayUrl)
-    const rejected =
-      rejectedRelayUrls.has(relayUrl) ||
-      /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
-        failures[relayUrl]?.trim() ?? ""
-      )
-    const status: OrderRelayDeliveryStatus = acked
-      ? "acked"
-      : pending.has(relayUrl)
-        ? "pending"
-        : rejected
-          ? "rejected"
-          : "timed_out"
+    const outcome = getRelayPublishTargetStatus(
+      input.recipientDelivery,
+      relayUrl
+    )
+    const status: OrderRelayDeliveryStatus =
+      outcome === "error" ? "timed_out" : outcome
+    const acked = status === "acked"
+    const rejected = status === "rejected"
     return {
       relayUrl,
       source: input.recipientRoute.relaySources[relayUrl] ?? "declared",
@@ -2072,9 +2058,7 @@ function buildOrderRelayDeliveryRecord(input: {
       lastAttemptAt: now,
       ...(acked ? { acknowledgedAt: now } : {}),
       ...(rejected ? { rejectedAt: now } : {}),
-      ...(!acked && !rejected && !pending.has(relayUrl)
-        ? { timedOutAt: now }
-        : {}),
+      ...(status === "timed_out" ? { timedOutAt: now } : {}),
     }
   })
 
@@ -2091,9 +2075,12 @@ function buildOrderRelayDeliveryRecord(input: {
     relayDelivery,
     deliveryAttemptCount: 1,
     retryCount: 0,
-    nextRetryAt: relayDelivery.every((delivery) => delivery.status === "acked")
-      ? undefined
-      : now + 15_000,
+    nextRetryAt: relayDelivery.some(
+      (delivery) =>
+        delivery.status !== "acked" && delivery.status !== "policy_blocked"
+    )
+      ? now + 15_000
+      : undefined,
     createdAt: now,
     updatedAt: now,
     expiresAt: now + ORDER_RELAY_RETRY_RETENTION_MS,
