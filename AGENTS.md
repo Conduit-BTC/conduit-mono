@@ -106,3 +106,8 @@ Read only the rows the change actually touches. A route can cross several rows.
 - Agent code-changing workflows require maintainer intent and a risk gate.
   High-risk work requires human-owned planning. Agent output never authorizes
   merge, release, or production changes.
+- The isolated automated review boundary is configured and validated. Read
+  [`Agent Automation Boundary`](docs/knowledge/agent-automation-boundary.md)
+  before changing it. Report missing reviews to a maintainer; never restore
+  account credentials or auth-refresh jobs in public workflows. Describe the
+  boundary without naming or linking its private repository or secret locations.

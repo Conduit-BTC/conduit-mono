@@ -18,14 +18,21 @@ are detected and remediated automatically.
 - Public CI enforces telemetry policy and smoke-test contracts. These checks
   are evidence about a candidate, not production detection or release approval.
 
+Maintainers have configured the isolated review boundary and validated live
+inline review delivery. Report missing or delayed reviews to a maintainer.
+Do not add account credentials, review App private keys, or auth-refresh jobs
+to this repository to restore service. Scheduled availability and credential
+health require separate operational checks.
+
 Intake, review, implementation, and release remain separate responsibilities.
 An automated review does not prove that an incident became a ticket, an
 implemented PR, an approved preview, or a release.
 
 ## Review requests
 
-Automatic review applies to open, non-draft, same-repository PRs targeting
-`main`, excluding dependency-bot PRs and PRs labeled `DO NOT MERGE`.
+When maintainers enable polling, automatic review applies to open, non-draft,
+same-repository PRs targeting `main`, excluding dependency-bot PRs and PRs
+labeled `DO NOT MERGE`.
 Each new head receives a correctness pass. A clean pass can start one automatic
 Ponytail simplicity review per PR. New heads do not rearm that simplicity pass,
 including after a failed attempt.
@@ -36,9 +43,11 @@ commands in conversation comments or inline review comments. The reviewer polls
 for requests, so delivery is delayed and schedules can be delayed or dropped.
 These commands do not change code, approve a PR, or determine mergeability.
 
-The model receives immutable source snapshots and has no GitHub token. Trusted
-delivery code validates changed-line anchors and rechecks the PR's base and
-head before submitting a `COMMENT` review. Actionable findings appear only as
+The model receives immutable source snapshots and has no GitHub token or
+account credential. Candidate source and instructions are untrusted review
+data. Candidate code must not run where account credentials are available.
+Trusted delivery code validates changed-line anchors and rechecks the PR's base
+and head before submitting a `COMMENT` review. Actionable findings appear only as
 inline review conversations. Malformed or stale results cannot produce a clean
 handoff. Model findings remain untrusted advice; human review is required.
 
@@ -50,8 +59,10 @@ is retired and must not become a required branch-protection check.
 Public workflows may contain sanitized gates, review instructions, test
 contracts, and aggregate smoke results. Private prompts, tracker and
 dashboard links, telemetry backend details, credentials, and release
-coordination belong outside this public repository. Agent inputs, logs,
-comments, artifacts, and telemetry must follow
+coordination belong outside this public repository. Public docs, PRs, comments,
+and agent guidance may describe the review boundary, but must not name or link
+the private runner repository or reveal secret locations and recovery commands.
+Agent inputs, logs, comments, artifacts, and telemetry must follow
 [`docs/analytics/events.md`](../analytics/events.md). They must exclude
 pubkeys, npubs, nsecs, invoices, payment hashes, NWC URIs, signer codes,
 wallet recovery material, order and message contents, addresses, contact
