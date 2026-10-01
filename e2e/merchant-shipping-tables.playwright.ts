@@ -139,6 +139,133 @@ for (const [viewportName, width, height] of [
   ["mobile", 375, 812],
   ["desktop", 1440, 1000],
 ] as const) {
+  test(`merchant reviews and publishes the US starter on ${viewportName} @merchant`, async ({
+    page,
+    browser,
+  }, testInfo) => {
+    test.setTimeout(180_000)
+    page.setDefaultTimeout(25_000)
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    await installTestSigner(page, pubkey, { secretKey })
+    await page.setViewportSize({ width, height })
+    await page.goto(`${merchantUrl}/shipping`)
+    await chooseCountry(page, "Origin country", "United States")
+    await page
+      .getByRole("button", { name: "Use US starter", exact: true })
+      .click()
+    const dialog = page.getByRole("dialog", { name: "US domestic starter" })
+    await dialog.getByLabel("Origin ZIP", { exact: true }).fill("94107")
+    await dialog
+      .getByLabel("Preview destination ZIP", { exact: true })
+      .fill("94103")
+    await expect(dialog.getByRole("status")).toHaveText(
+      "Destination uses nearby prices."
+    )
+    await dialog
+      .getByLabel("Preview destination ZIP", { exact: true })
+      .fill("10001")
+    await expect(dialog.getByRole("status")).toHaveText(
+      "Destination uses farther prices."
+    )
+    await dialog.getByLabel("Nearby up to 1 lb", { exact: true }).fill("13")
+    await dialog.getByLabel("Farther up to 2 lb", { exact: true }).fill("21")
+    await page.screenshot({
+      path: testInfo.outputPath(`us-starter-${viewportName}.png`),
+      fullPage: true,
+    })
+    await dialog.getByRole("button", { name: "Apply starter to draft" }).click()
+    await expect(dialog).not.toBeVisible()
+    const domestic = page.getByRole("region", { name: "Domestic rates" })
+    await expect(domestic.getByLabel("Domestic area to edit")).toBeVisible()
+    const editedPrefix = await domestic
+      .getByLabel("Postal prefix", { exact: true })
+      .inputValue()
+    await domestic.getByLabel("Shipping price").nth(2).fill("22")
+    await page.getByText("Preview a basket", { exact: true }).click()
+    await chooseCountry(page, "Preview destination", "United States")
+    await page.getByLabel("Preview postal code").fill("94103")
+    await expect(
+      page.getByText("Combined shipping: 14 USD", { exact: true })
+    ).toBeVisible()
+    await page.getByLabel("Preview postal code").fill("10001")
+    await expect(
+      page.getByText("Combined shipping: 21 USD", { exact: true })
+    ).toBeVisible()
+    await page
+      .getByLabel("Preview postal code")
+      .fill(editedPrefix.padEnd(5, "0"))
+    await expect(
+      page.getByText("Combined shipping: 22 USD", { exact: true })
+    ).toBeVisible()
+    await page.getByLabel("Preview postal code").fill("96799")
+    await expect(
+      page.getByText(/This basket needs merchant coordination/)
+    ).toBeVisible()
+    await page.getByLabel("Preview postal code").fill("10001")
+    const publish = page.getByRole("button", {
+      name: "Publish shipping rates",
+      exact: true,
+    })
+    await expect(publish).toBeEnabled({ timeout: 20_000 })
+    await publish.click()
+    await expect(page.getByText(/Shipping rates published\./)).toBeVisible({
+      timeout: 20_000,
+    })
+    const events = await readTestRelayEvents({
+      kinds: [30406],
+      authors: [pubkey],
+      "#d": ["conduit-shipping-policy"],
+    })
+    expect(events).toHaveLength(1)
+    const policy = JSON.parse(
+      events[0]!.tags.find((tag) => tag[0] === "conduit_shipping_table")![2]!
+    )
+    expect(policy.version).toBe(2)
+    expect(JSON.stringify(policy)).not.toContain("94107")
+    expect(policy.domestic.rules.length).toBeGreaterThan(8)
+    const near = policy.domestic.rules
+      .filter((rule: { postalPrefix: string }) =>
+        "94103".startsWith(rule.postalPrefix)
+      )
+      .sort(
+        (a: { postalPrefix: string }, b: { postalPrefix: string }) =>
+          b.postalPrefix.length - a.postalPrefix.length
+      )[0]
+    expect(near.bands[1].priceMinor).toBe(1300)
+    expect(
+      policy.domestic.rules.find(
+        (rule: { postalPrefix: string }) => rule.postalPrefix === editedPrefix
+      ).bands[2].priceMinor
+    ).toBe(2200)
+    const context = await browser.newContext({ viewport: { width, height } })
+    const restored = await context.newPage()
+    await installTestSigner(restored, pubkey, { secretKey })
+    await restored.goto(`${merchantUrl}/shipping`)
+    await expect(restored.getByLabel("Domestic area to edit")).toBeVisible({
+      timeout: 20_000,
+    })
+    await restored
+      .getByRole("button", { name: "Use US starter", exact: true })
+      .click()
+    await expect(
+      restored.getByLabel("Origin ZIP", { exact: true })
+    ).toHaveValue("")
+    await restored.getByRole("button", { name: "Close", exact: true }).click()
+    expect(
+      await readTestRelayEvents({
+        kinds: [30406],
+        authors: [pubkey],
+        "#d": ["conduit-shipping-policy"],
+      })
+    ).toHaveLength(1)
+    await restored.screenshot({
+      path: testInfo.outputPath(`us-starter-restored-${viewportName}.png`),
+      fullPage: true,
+    })
+    await context.close()
+  })
   test(`merchant publishes, recovers and withdraws custom weight tables on ${viewportName} @merchant`, async ({
     page,
     browser,
