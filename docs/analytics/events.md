@@ -38,6 +38,8 @@ Runtime telemetry events may only use these fields:
 - `block_reason`
 - `handoff_stage`
 - `partner_code` (registered public business source code only)
+- `source_domain` (reviewed active registrable domain or `other`, checkout counters only)
+- `source_method` (`claimed`, `referrer`, `partner`, or `none`)
 
 ## Retention and Redaction
 
@@ -181,7 +183,8 @@ timing, Web Vitals attribution, heatmaps, and session recording disabled.
 Session storage is the only allowed PostHog persistence mechanism; cookies and
 localStorage remain prohibited. The SDK must bootstrap with the shared static
 browser-service identity rather than generating a device identifier, and it
-must not retain campaign parameters or referrer data.
+must not retain campaign parameters or full referrer data. The bounded checkout
+source exception below permits only a canonical registrable domain.
 
 Browser ingestion is routed through the origin-restricted
 `e.conduit.market` Worker. The proxy accepts only PostHog event-ingestion paths
@@ -276,16 +279,17 @@ Emitted when a buyer starts checkout from a cart. It may record auth-required
 vs ready status and cart composition buckets, but must not include buyer,
 merchant, product, or cart identifiers.
 
-<!-- telemetry-event: checkout_step_result properties=event_name,app,page_url,page_path,surface,step,mode,rail,status,latency_bucket,count_bucket,amount_bucket,product_type,time_bucket -->
+<!-- telemetry-event: checkout_step_result properties=event_name,app,page_url,page_path,surface,step,mode,rail,status,latency_bucket,count_bucket,amount_bucket,product_type,time_bucket,partner_code,source_domain,source_method -->
 
 ### `checkout_step_result`
 
 Emitted for aggregate checkout step outcomes such as shipping validation,
 order submission, direct payment, manual fallback, or payment failure. It must
-use enum and bucket properties only. `latency_bucket` measures one named step;
+use enum and bucket properties plus the bounded checkout source exception
+below. `latency_bucket` measures one named step;
 it never includes an order, buyer, merchant, relay, or product identifier.
 
-<!-- telemetry-event: checkout_success properties=event_name,app,page_url,page_path,surface,mode,rail,status,count_bucket,amount_bucket,product_type,time_bucket -->
+<!-- telemetry-event: checkout_success properties=event_name,app,page_url,page_path,surface,mode,rail,status,count_bucket,amount_bucket,product_type,time_bucket,partner_code,source_domain,source_method -->
 
 ### `checkout_success`
 
@@ -332,27 +336,106 @@ and no identifiers, relay URLs, payloads, errors, or free text.
   Event counts are aggregate attempts, not users, merchants, or orders. No
   identity may be reconstructed or correlated from these counters.
 
-<!-- telemetry-event: checkout_result properties=event_name,app,page_url,page_path,surface,mode,rail,network,status,count_bucket,amount_bucket,product_type,time_bucket -->
+<!-- telemetry-event: checkout_result properties=event_name,app,page_url,page_path,surface,mode,rail,network,status,count_bucket,amount_bucket,product_type,time_bucket,partner_code,source_domain,source_method -->
 
 ### `checkout_result`
 
 Emitted as an aggregate operational counter for terminal checkout success,
 failure, blocked direct-payment, or degraded local tracking outcomes. It must
-use enum and bucket properties only and must not contain invoice strings, order
+use enum and bucket properties plus the bounded checkout source exception
+below, and must not contain invoice strings, order
 contents, item titles, buyer identity, merchant identity, or shipping/contact
 data.
 
-<!-- telemetry-event: checkout_handoff_result properties=event_name,app,page_url,page_path,surface,handoff_stage,mode,partner_code -->
+<!-- telemetry-event: checkout_handoff_result properties=event_name,app,page_url,page_path,surface,handoff_stage,mode,partner_code,source_domain,source_method -->
 
 ### `checkout_handoff_result`
 
-Market counts a checkout link landing and finite handoff stages. `partner_code`
-is optional and accepted only when the code is active in the shared, bounded
-registry. It is a claimed public business source, never a shopper, click, order,
-or payout identifier. A copied link can claim another source. Browser telemetry
-is optional, so these counts are measured Market arrivals and outcomes, not
-complete partner clicks, settled orders, or GMV. No fragment, product reference,
-cart contents, merchant key, invoice, or payment content is sent.
+Market counts measured checkout arrivals and finite handoff stages. Optional
+source properties also accompany the existing `checkout_step_result`,
+`checkout_success`, and `checkout_result` outcomes for the exact imported
+purchase and buyer session. These are measured checkout arrivals and outcomes,
+not unique visitors, settled sales, complete partner clicks, GMV, or payout
+accounting. An order-submitted result describes the existing bounded relay
+acceptance checkpoint; it does not establish merchant receipt or settlement.
+
+Source-specific telemetry requires a reviewed active partner mapping. Unknown
+claimed and referrer domains stay in the buyer-local purchase provenance; every
+unregistered domain emits only the fixed `other` bucket. `partner_code` remains
+an exact active registry allowlist. Source fields are allowed only on these four
+checkout counters, never on general browsing or provider lifecycle events.
+
+- `source_method=claimed` means an explicit domain in `source=`; `referrer`
+  means an observed browser referring domain when `source` was absent.
+  Invalid, empty, or duplicate explicit values are ignored and suppress the
+  fallback. `partner` preserves active legacy partner-code-only links. `none`
+  means no usable source. These are source indicators, not ownership proof.
+- Derive activation status in reports from the validated fields: `source_domain=other`
+  means unregistered, a reviewed `source_domain` means active, and
+  `source_method=none` means none. A partner-only link with an active
+  `partner_code` means active. When a domain is present, its status takes
+  precedence over the code.
+  With an observed referrer, `partner_code` preserves an explicit active legacy
+  code when supplied, otherwise it uses the domain mapping. An unregistered
+  observed domain remains unregistered even alongside an active code. With an
+  explicit `source=`, only its mapping determines the code. Both sanitizers
+  independently check reviewed domains and active code membership; codes never
+  prove control of a referrer or grant it activation.
+- One Conduit-owned `normalizeCheckoutSourceDomain` wrapper rejects URL syntax,
+  credentials, ports, paths, queries, fragments, IP literals, special/local
+  hosts and unknown suffixes. It uses WHATWG IDNA conversion and pinned `tldts`
+  PSL data. Both ICANN and private suffixes participate: `foo.example.co.uk`
+  becomes `example.co.uk`; `shop.project.github.io` becomes `project.github.io`.
+  Bare suffixes are rejected. This recognizes publicly delegated syntax; it
+  does not probe DNS reachability, verify control, or authenticate a referrer.
+- Subdomains collapse before local capture. Only canonical domains with a unique
+  reviewed active registry mapping may be emitted as distinct labels. Unknown,
+  inactive, ambiguous, and generated hosted-tenant domains emit `other`.
+  Both client and ingest reject raw unregistered domain labels independently,
+  including requests that bypass the client. No isolate lifecycle or hourly
+  budget can admit an unreviewed domain. The reviewed registry allows at most
+  64 active codes and eight canonical domains per entry.
+- Attribution counters strip browser session/pageview IDs and per-event UUIDs
+  in both client and ingest. The proxy also removes offsets and rounds supplied
+  event timestamps to the UTC hour. Events use the shared static service
+  identity and no person profiles. Do not join these counters to browser
+  session metrics or attempt to identify shoppers.
+- Only a normalized domain escapes the local referrer extraction boundary;
+  only a reviewed active domain or `other` reaches telemetry. No full
+  referrer URL, fragment, path, query, product reference, order contents,
+  merchant/buyer key, invoice, payment detail, visitor identifier, IP, or
+  fingerprint is collected. Existing coarse checkout outcome classes and
+  buckets retain their meanings; they do not become payment accounting.
+- Attribution is captured before fragment scrubbing and provider initialization.
+  Emission occurs after scrubbing. The temporary purchase binding lasts at most
+  30 minutes from arrival, including retries. It requires exact product lines,
+  quantities, merchant, purchase, and buyer session. Keeping the existing cart,
+  a mismatch, account/session change, or expiry clears that binding. Market's
+  global auth boundary rotates a tab-local session fence and clears provenance
+  on account transitions even away from checkout. Same-identity saved signer
+  restoration can reuse the persisted fence despite a reset process counter;
+  the fence never enters telemetry or supplies account/payment authority. The
+  exact order snapshot retains local provenance for retries, under the existing
+  order lifecycle retention. It is not included in the encrypted order content,
+  public Nostr events, or payment authority.
+- Browser telemetry stays optional, respects Global Privacy Control, and source
+  counters emit only on the official Market host. The ingest proxy rejects
+  nonofficial origins and drops browser requests with `Sec-GPC: 1`. Preview
+  testing does not create official-host attribution reports. Missing referrers,
+  telemetry blockers, configuration, and abuse bounds are accepted gaps.
+
+Release the domain-aware ingest contract before clients emit the new source
+fields. An older proxy drops these events safely, creating a measurement gap;
+checkout still works. Production enablement requires maintainer privacy review
+and deployment configuration checks. Local and preview evidence is not
+production-report evidence.
+
+Maintainers activate the public domain-to-partner registry only after manual
+review and domain-control verification. Private contact information, evidence,
+correspondence, and commercial terms stay outside this repository. Activation
+creates no commission agreement, payout entitlement, or retroactive promise.
+The public request process is in
+[Checkout with Conduit](../knowledge/checkout-with-conduit.md#request-partner-activation).
 
 <!-- telemetry-event: wallet_connect_result properties=event_name,app,page_url,page_path,rail,method,status,latency_bucket,count,time_bucket -->
 
