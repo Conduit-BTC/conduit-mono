@@ -17,7 +17,7 @@ import {
   deriveProtectedReadPresentationState,
   formatNpub,
   formatEventMarketPickupDate,
-  getNdk,
+  getAccountSigner,
   getCachedMerchantConversationList,
   getCachedMerchantStorefront,
   getCurrencyAmountStep,
@@ -1087,7 +1087,7 @@ function OrdersWorkspace() {
         isCurrentOrderOwner(pubkey, authGeneration)
       if (!shouldContinue())
         throw new DOMException("Order account changed.", "AbortError")
-      const signer = getNdk().signer
+      const signer = getAccountSigner()
       if (!signer || !pubkey || !futureHasRelease)
         throw new Error("Merchant recovery signer is unavailable.")
       const receipt =
@@ -1984,7 +1984,7 @@ function OrdersWorkspace() {
           !isCurrentOrderAction(authority)
         )
           throw new Error("Exact signed order terms could not be verified.")
-        const signer = getNdk().signer
+        const signer = getAccountSigner()
         if (!signer) throw new Error("Merchant signer is not connected.")
         const delivery = await publishFutureMarketReadyReceipt({
           order: selectedOrder,
@@ -2092,7 +2092,7 @@ function OrdersWorkspace() {
           throw new Error(
             "Organizer handoff evidence is unavailable or already handed out."
           )
-        const signer = getNdk().signer
+        const signer = getAccountSigner()
         if (!signer) throw new Error("Merchant signer is not connected.")
         const delivery = await publishFutureMarketRevocation({
           readyRecord: futureReadyRecord,

@@ -1,5 +1,11 @@
-import { NDKPrivateKeySigner, type NDKSigner } from "@nostr-dev-kit/ndk"
-import { EVENT_KINDS, GUEST_ORDER_LOCAL_RETENTION_MS } from "@conduit/core"
+import { bytesToHex, hexToBytes } from "nostr-tools/utils"
+import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
+import { v2 } from "nostr-tools/nip44"
+import {
+  EVENT_KINDS,
+  GUEST_ORDER_LOCAL_RETENTION_MS,
+  type NostrKeySigner,
+} from "@conduit/core"
 
 const GUEST_ORDER_SIGNER_STORAGE_KEY = "conduit:guest-order-signers:v1"
 export const GUEST_ORDER_SESSION_TTL_MS = GUEST_ORDER_LOCAL_RETENTION_MS
@@ -11,7 +17,7 @@ export interface GuestOrderSigningIdentity {
   createdAt: number
   expiresAt: number
   pubkey: string
-  signer: NDKSigner
+  signer: NostrKeySigner
 }
 
 type StoredGuestOrderSigner = {
@@ -137,11 +143,12 @@ export function pruneExpiredSessionGuestOrderSigningIdentities(
 }
 
 function createEphemeralOrderSigner(
-  privateSigner: NDKPrivateKeySigner,
+  secret: Uint8Array,
   orderId: string,
   merchantPubkey: string,
   expiresAt: number
-): NDKSigner {
+): NostrKeySigner {
+  const pubkey = getPublicKey(secret)
   const assertActive = () => {
     if (Date.now() >= expiresAt) {
       throw new Error("Guest order session has expired.")
@@ -149,15 +156,16 @@ function createEphemeralOrderSigner(
   }
   return {
     get pubkey() {
-      return privateSigner.pubkey
+      return pubkey
     },
-    blockUntilReady: () => privateSigner.blockUntilReady(),
-    user: () => privateSigner.user(),
-    get userSync() {
-      return privateSigner.userSync
-    },
-    sign: (event) => {
+    getPublicKey: async () => {
       assertActive()
+      return pubkey
+    },
+    signEvent: async (event) => {
+      assertActive()
+      if (event.pubkey !== pubkey)
+        throw new Error("Guest signer cannot sign outside its order scope.")
       if (event.kind === EVENT_KINDS.ORDER) {
         const eventOrderId = event.tags.find((tag) => tag[0] === "order")?.[1]
         const recipient = event.tags.find((tag) => tag[0] === "p")?.[1]
@@ -172,33 +180,30 @@ function createEphemeralOrderSigner(
       } else if (event.kind !== EVENT_KINDS.SEAL) {
         throw new Error("Guest signer can only sign private order envelopes.")
       }
-      return privateSigner.sign(event)
+      return finalizeEvent(event, secret)
     },
-    encryptionEnabled: (scheme) => privateSigner.encryptionEnabled(scheme),
-    encrypt: (recipient, value, scheme) => {
+    encryptNip44: async (recipient, value) => {
       assertActive()
-      return privateSigner.encrypt(recipient, value, scheme)
+      return v2.encrypt(value, v2.utils.getConversationKey(secret, recipient))
     },
-    decrypt: async () => {
+    decryptNip44: async () => {
       throw new Error("Guest order signer cannot decrypt inbound messages.")
     },
-    toPayload: () => {
-      throw new Error(
-        "Guest order signer is ephemeral and cannot be serialized."
-      )
+    decryptLegacy: async () => {
+      throw new Error("Guest order signer cannot decrypt inbound messages.")
     },
   }
 }
 
 function createGuestOrderSigningIdentityFromPrivateSigner(
-  privateSigner: NDKPrivateKeySigner,
+  secret: Uint8Array,
   orderId: string,
   merchantPubkey: string,
   createdAt: number
 ): GuestOrderSigningIdentity {
   const expiresAt = createdAt + GUEST_ORDER_SESSION_TTL_MS
   const signer = createEphemeralOrderSigner(
-    privateSigner,
+    secret,
     orderId,
     merchantPubkey,
     expiresAt
@@ -218,8 +223,7 @@ function createGuestOrderSigningIdentityFromPrivateSigner(
 export function createGuestOrderSigningIdentity(
   orderId: string,
   merchantPubkey: string,
-  generateSigner: () => NDKPrivateKeySigner = () =>
-    NDKPrivateKeySigner.generate()
+  generateSigner: () => Uint8Array = generateSecretKey
 ): GuestOrderSigningIdentity {
   return createGuestOrderSigningIdentityFromPrivateSigner(
     generateSigner(),
@@ -235,14 +239,13 @@ export function createSessionGuestOrderSigningIdentity(
   options: {
     storage?: SessionStorageLike | null
     nowMs?: number
-    generateSigner?: () => NDKPrivateKeySigner
+    generateSigner?: () => Uint8Array
   } = {}
 ): GuestOrderSigningIdentity {
   const nowMs = options.nowMs ?? Date.now()
-  const privateSigner =
-    options.generateSigner?.() ?? NDKPrivateKeySigner.generate()
+  const secret = options.generateSigner?.() ?? generateSecretKey()
   const identity = createGuestOrderSigningIdentityFromPrivateSigner(
-    privateSigner,
+    secret,
     orderId,
     merchantPubkey,
     nowMs
@@ -253,7 +256,7 @@ export function createSessionGuestOrderSigningIdentity(
   )
   registry[orderId] = {
     pubkey: identity.pubkey,
-    privateKey: privateSigner.privateKey,
+    privateKey: bytesToHex(secret),
     merchantPubkey,
     createdAt: nowMs,
   }
@@ -270,13 +273,13 @@ export function getSessionGuestOrderSigningIdentity(
   const stored = readGuestOrderSignerRegistry(storage)[orderId]
   if (!stored?.merchantPubkey) return null
   try {
-    const privateSigner = new NDKPrivateKeySigner(stored.privateKey)
-    if (privateSigner.pubkey !== stored.pubkey) {
+    const secret = hexToBytes(stored.privateKey)
+    if (getPublicKey(secret) !== stored.pubkey) {
       clearSessionGuestOrderSigningIdentity(orderId, storage)
       return null
     }
     return createGuestOrderSigningIdentityFromPrivateSigner(
-      privateSigner,
+      secret,
       orderId,
       stored.merchantPubkey,
       stored.createdAt

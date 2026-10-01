@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { NostrKeySigner } from "@conduit/core"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -24,7 +25,7 @@ import {
 const organizer = getPublicKey(generateSecretKey())
 const merchant = getPublicKey(generateSecretKey())
 const marketCoordinate = `30409:${organizer}:fair`
-const signer = {} as NDKSigner
+const signer = {} as NostrKeySigner
 function payload(
   action: EventMarketEnrollmentPayload["action"] = "request",
   createdAt = 100

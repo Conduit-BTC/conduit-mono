@@ -89,7 +89,8 @@ describe("generic Market event fulfillment", () => {
     expect(event).toContain(
       "onSelectedProductChange={(selected) => setSelectedProductId(selected.id)}"
     )
-    expect(event).toContain("if (selected.id !== entry.productCoordinate)")
+    expect(event).toContain('selected.type === "variable" ||')
+    expect(event).toContain("selected.id !== entry.productCoordinate")
     expect(event).toContain("navigateToProduct(selected.id)")
     expect(event).toContain(
       "productRead.resolution.revision.id !== entry.resolution.revision.id"

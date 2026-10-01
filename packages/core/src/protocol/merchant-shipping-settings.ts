@@ -1,4 +1,6 @@
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { AccountSigner, UnsignedNostrEvent } from "./nostr-event-signer"
+import { getAccountSigner } from "./session-signer"
 import { config } from "../config"
 import { db, type ConduitDB } from "../db"
 import { SHIPPING_COUNTRIES } from "./countries"
@@ -396,15 +398,15 @@ export async function publishMerchantShippingSettings(input: {
   settings: MerchantShippingSettings
   acceptedRevision?: MerchantShippingRevision | null
   dependencies?: MerchantShippingReadDependencies & {
-    signer?: NDKSigner
+    signer?: AccountSigner
     publishEvent?: typeof publishWithPlanner
     now?: () => number
   }
 }): Promise<MerchantShippingRevision> {
   const owner = ownerPubkey(input.pubkey)
   const ndk = getNdk()
-  const signer = input.dependencies?.signer ?? ndk.signer
-  if (!signer || (await signer.user()).pubkey.toLowerCase() !== owner)
+  const signer = input.dependencies?.signer ?? getAccountSigner()
+  if (!signer || (await signer.getPublicKey()).toLowerCase() !== owner)
     throw new Error(
       "Connect the matching merchant signer before saving shipping settings"
     )
@@ -452,7 +454,10 @@ export async function publishMerchantShippingSettings(input: {
   event.created_at = createdAt
   event.tags = [["d", MERCHANT_SHIPPING_SETTINGS_D_TAG]]
   event.content = serializeMerchantShippingSettings(input.settings)
-  await event.sign(signer)
+  Object.assign(
+    event,
+    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+  )
   await (input.dependencies?.publishEvent ?? publishWithPlanner)(event, {
     intent: "author_event",
     authorPubkey: owner,

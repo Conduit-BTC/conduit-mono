@@ -1,4 +1,9 @@
 import {
+  plainTestSigner,
+  setTestAccountSigner as setSigner,
+  removeTestAccountSigner as removeSigner,
+} from "./helpers/plain-signer"
+import {
   giftWrap,
   NDKEvent,
   NDKPrivateKeySigner,
@@ -17,8 +22,6 @@ import {
   canCompleteFutureMarketHandoff,
   readFutureMarketMerchantClaim,
   publishFutureMarketReadyReceipt,
-  removeSigner,
-  setSigner,
   getNdk,
   __setCommerceTestOverrides,
   buildFutureMarketPrivateRumor,
@@ -718,10 +721,8 @@ describe("future Event Market private physical handoff", () => {
       const setRead = () =>
         __setCommerceTestOverrides({
           allowMissingProtectedReadAuthorization: true,
-          getNdk: async () =>
-            ({
-              signer: { user: async () => ({ pubkey: principal }) },
-            }) as never,
+          getAccountSigner: () =>
+            ({ getPublicKey: async () => principal }) as never,
           resolveInboxRelayUrls: async () => ["wss://future.inbox.test"],
           fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
             events: rumors.map(
@@ -1038,7 +1039,7 @@ describe("future Event Market private physical handoff", () => {
     }
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer }) as never,
+      getAccountSigner: () => plainTestSigner(signer as never),
       resolveInboxRelayUrls: async () => ["wss://fresh.inbox.test"],
       fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
         events: [
@@ -1074,7 +1075,7 @@ describe("future Event Market private physical handoff", () => {
         signedOrderEvidence: evidence,
         paymentAuthenticated: true,
         releaseConfirmed: true,
-        signer: signer as never,
+        signer: plainTestSigner(signer as never),
         persistExactWraps: () => {},
       })
     ).rejects.toThrow("already exists")
@@ -1134,7 +1135,7 @@ describe("future Event Market private physical handoff", () => {
       const setRead = (available: boolean) =>
         __setCommerceTestOverrides({
           allowMissingProtectedReadAuthorization: true,
-          getNdk: async () => ({ signer }) as never,
+          getAccountSigner: () => plainTestSigner(signer as never),
           resolveInboxRelayUrls: async () => ["wss://restart.inbox.test"],
           fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
             events: available ? [selfWrap] : [],
@@ -1168,7 +1169,7 @@ describe("future Event Market private physical handoff", () => {
           signedOrderEvidence: evidence,
           paymentAuthenticated: true,
           releaseConfirmed: true,
-          signer,
+          signer: plainTestSigner(signer as never),
           persistExactWraps: () => {},
         })
       ).rejects.toThrow("already exists")

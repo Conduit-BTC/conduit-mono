@@ -40,7 +40,7 @@ const contracts = [
       },
     ],
     guards: [
-      "\\(await ndk\\.signer\\.user\\(\\)\\)\\.pubkey\\.toLowerCase\\(\\) !== organizerPubkey",
+      "\\(await signer\\.getPublicKey\\(\\)\\)\\.toLowerCase\\(\\) !== organizerPubkey",
     ],
   },
   {

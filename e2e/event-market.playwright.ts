@@ -1634,15 +1634,16 @@ test("Event Market variable products select a purchasable variation before check
       fulfillment?: { type: string; market?: { coordinate: string } }
     }>
   }
-  expect(order.items).toHaveLength(1)
-  expect(order.items[0]?.productId).toBe(eventCoordinate(candle))
-  expect(order.items[0]?.selectedSpecifications).toEqual([
-    { key: "Size", value: "Large" },
-  ])
+  expect(order.items.length === 1).toBe(true)
+  expect(order.items[0]?.productId === eventCoordinate(candle)).toBe(true)
+  expect(
+    JSON.stringify(order.items[0]?.selectedSpecifications) ===
+      JSON.stringify([{ key: "Size", value: "Large" }])
+  ).toBe(true)
   expect(order.items[0]?.fulfillment?.type).toBe("event_market_pickup")
-  expect(order.items[0]?.fulfillment?.market?.coordinate).toBe(
-    eventCoordinate(market)
-  )
+  expect(
+    order.items[0]?.fulfillment?.market?.coordinate === eventCoordinate(market)
+  ).toBe(true)
 })
 
 test("two future market products form one order and one private organizer release @market @merchant", async ({
@@ -1796,9 +1797,9 @@ test("two future market products form one order and one private organizer releas
       (item) => item.fulfillment?.type === "event_market_pickup"
     )
   ).toBe(true)
-  expect(order.items[0]?.fulfillment?.market?.coordinate).toBe(
-    eventCoordinate(market)
-  )
+  expect(
+    order.items[0]?.fulfillment?.market?.coordinate === eventCoordinate(market)
+  ).toBe(true)
   const buyerPickup = page.getByTestId("future-market-order-pickup")
   await expect(buyerPickup).toBeVisible()
   await expect(buyerPickup.getByText("Pickup Desk")).toBeVisible()

@@ -22,6 +22,7 @@ import {
   formatNpub,
   formatPubkey,
   getNdk,
+  getAccountSigner,
   getOrderLifecycle,
   getProductImageCandidates,
   getOrderPublicZapSigner,
@@ -1616,7 +1617,7 @@ function OrderDetail({
       if (!signerReady) throw new Error("Reconnect your signer to send.")
       if (!replyText.trim()) throw new Error("Message is required")
       const ndk = getNdk()
-      if (!ndk.signer) throw new Error("Signer not connected")
+      if (!getAccountSigner()) throw new Error("Signer not connected")
 
       const rumor = new NDKEvent(ndk)
       rumor.kind = EVENT_KINDS.ORDER

@@ -14,16 +14,16 @@ import {
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 const merchantTrustHarnessUrl = "/src/test-fixtures/merchant-trust-harness.tsx"
-const ndkModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/ndk.ts`
+const ndkModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/session-signer.ts`
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
 async function hasActiveNdkSigner(page: Page): Promise<boolean> {
   return page.evaluate(async (url) => {
     const module = (await import(/* @vite-ignore */ url)) as {
-      getNdk: () => { signer?: unknown }
+      getAccountSigner: () => unknown
     }
-    return !!module.getNdk().signer
+    return !!module.getAccountSigner()
   }, ndkModuleUrl)
 }
 

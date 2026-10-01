@@ -1,6 +1,7 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { parseEventMarketCalendarEvent } from "./event-market"
 import { getNdk } from "./ndk"
+import { getAccountSigner } from "./session-signer"
 import {
   publishWithPlanner,
   type PublishWithPlannerResult,
@@ -18,9 +19,10 @@ interface CalendarRetryDependencies {
 const defaultDependencies: CalendarRetryDependencies = {
   publish: async (signedEvent, organizerPubkey, shouldContinue) => {
     const ndk = await getNdk()
+    const signer = getAccountSigner()
     if (
-      !ndk.signer ||
-      (await ndk.signer.user()).pubkey.toLowerCase() !== organizerPubkey
+      !signer ||
+      (await signer.getPublicKey()).toLowerCase() !== organizerPubkey
     )
       throw new Error("Active signer does not match the organizer.")
     if (shouldContinue?.() === false)

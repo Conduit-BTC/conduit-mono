@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
@@ -180,7 +181,7 @@ describe("future organizer exact merchandise", () => {
           organizerPubkey: ORGANIZER,
           authenticatedPubkey: ORGANIZER,
           physicalReleaseConfirmed: true,
-          signer,
+          signer: plainTestSigner(signer),
           claim: {
             state: "ready_for_pickup",
             receipt: {
@@ -286,8 +287,8 @@ describe("future organizer exact merchandise", () => {
     const rumor = buildFutureMarketPrivateRumor(payload)
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () =>
-        ({ signer: { user: async () => ({ pubkey: ORGANIZER }) } }) as never,
+      getAccountSigner: () =>
+        ({ getPublicKey: async () => ORGANIZER }) as never,
       resolveInboxRelayUrls: async () => ["wss://future.embedded.inbox.test"],
       fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
         events: [
@@ -328,7 +329,7 @@ describe("future organizer exact merchandise", () => {
         authenticatedPubkey: ORGANIZER,
         claim: read.claims[0]!,
         physicalReleaseConfirmed: true,
-        signer,
+        signer: plainTestSigner(signer),
         persistExactWraps: () => {},
       })
     ).rejects.toThrow("Reached ACK delivery ownership check")
@@ -698,7 +699,7 @@ describe("future organizer exact merchandise", () => {
             },
           },
           physicalReleaseConfirmed: true,
-          signer,
+          signer: plainTestSigner(signer),
           persistExactWraps: () => {
             persistedWraps += 1
           },

@@ -1,3 +1,8 @@
+import { getAccountSigner } from "../packages/core/src/protocol/session-signer"
+import {
+  setTestAccountSigner as setSigner,
+  removeTestAccountSigner as removeSigner,
+} from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
@@ -26,8 +31,6 @@ import {
   getNdk,
   refreshNdkRelaySettingsWhenIdle,
   refreshNdkRelaySettings,
-  removeSigner,
-  setSigner,
 } from "../packages/core/src/protocol/ndk"
 import {
   emptyAccountNetworkLocalState,
@@ -1501,6 +1504,7 @@ describe("planPublishRelays", () => {
     })
     const ndk = getNdk()
     const signer = {
+      pubkey: AUTHOR_PUBKEY,
       user: async () => ndk.getUser({ pubkey: AUTHOR_PUBKEY }),
     } as NDKSigner
     const signerLease = setSigner(signer)
@@ -1516,7 +1520,8 @@ describe("planPublishRelays", () => {
       expect(event.ndk).toBe(ndk)
       refreshNdkRelaySettingsWhenIdle(`account:${AUTHOR_PUBKEY}`)
       expect(getNdk()).toBe(ndk)
-      expect(ndk.signer).toBe(signer)
+      expect(getAccountSigner()).toBe(signerLease)
+      expect(ndk.signer).toBeUndefined()
 
       releasePublish()
       await expect(publishing).resolves.toMatchObject({

@@ -42,6 +42,7 @@ import {
   getCachedDirectMessageConversationList,
   getDirectMessageConversationList,
   getNdk,
+  getAccountSigner,
   formatPubkey,
   markDirectMessageConversationRead,
   normalizePubkey,
@@ -541,7 +542,8 @@ function MessagesWorkspace() {
       }
 
       const ndk = getNdk()
-      if (!ndk.signer) throw new Error("Signer not connected")
+      const signer = getAccountSigner()
+      if (!signer) throw new Error("Signer not connected")
 
       const rumor = new NDKEvent(ndk)
       rumor.kind = EVENT_KINDS.ORDER
@@ -570,7 +572,7 @@ function MessagesWorkspace() {
         accountPubkey: input.accountPubkey,
         authenticatedPubkey: input.accountPubkey,
         recipientPubkey: input.merchantPubkey,
-        signer: ndk.signer,
+        signer,
         rumorKind: EVENT_KINDS.ORDER,
         signerInteraction: "external",
         shouldContinue: () =>
@@ -807,8 +809,8 @@ function MessagesWorkspace() {
         throw new Error("Reconnect your signer, then retry this message.")
       }
 
-      const ndk = getNdk()
-      if (!ndk.signer) throw new Error("Signer not connected")
+      const signer = getAccountSigner()
+      if (!signer) throw new Error("Signer not connected")
 
       const { selfCopyError } = await publishPrivateMessage({
         rumor: input.rumor,
@@ -816,7 +818,7 @@ function MessagesWorkspace() {
         accountPubkey: input.accountPubkey,
         authenticatedPubkey: input.accountPubkey,
         recipientPubkey: input.counterpartyPubkey,
-        signer: ndk.signer,
+        signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
         signerInteraction: "external",
         shouldContinue: () =>

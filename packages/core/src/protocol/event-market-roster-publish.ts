@@ -27,6 +27,8 @@ import {
 import { waitForVisibleDocument } from "./interactive-signer"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
+import { getAccountSigner } from "./session-signer"
+import type { UnsignedNostrEvent } from "./nostr-event-signer"
 import {
   publishWithPlanner,
   type PublishWithPlannerResult,
@@ -62,8 +64,9 @@ async function signRoster(input: {
   if (input.shouldContinue?.() === false)
     throw new Error("Organizer session changed.")
   const ndk = await getNdk()
-  if (!ndk.signer) throw new Error("Organizer signer is not connected.")
-  const signerPubkey = (await ndk.signer.user()).pubkey.toLowerCase()
+  const signer = getAccountSigner()
+  if (!signer) throw new Error("Organizer signer is not connected.")
+  const signerPubkey = (await signer.getPublicKey()).toLowerCase()
   if (signerPubkey !== input.organizerPubkey) {
     throw new Error("Active signer does not match the organizer.")
   }
@@ -74,7 +77,11 @@ async function signRoster(input: {
   event.created_at = input.createdAt
   if (input.shouldContinue?.() === false)
     throw new Error("Organizer session changed.")
-  await event.sign(ndk.signer)
+  event.pubkey = signerPubkey
+  Object.assign(
+    event,
+    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+  )
   const signed = event.rawEvent() as SignedPublicNostrEvent
   if (
     !isValidSignedPublicNostrEvent(signed) ||

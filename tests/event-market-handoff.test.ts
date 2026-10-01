@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
@@ -220,7 +221,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
     const seenPlans: string[][] = []
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (_filter, options) => {
         const relays = [...(options?.relayUrls ?? [])]
@@ -258,7 +259,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
     const seenPlans: string[][] = []
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [
         otherLoopbackRelayUrl,
         isolatedRelayUrl,
@@ -309,7 +310,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => {
         declarationCount += 1
         if (declarationCount === 2) releaseDeclarations()
@@ -360,7 +361,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
     const unwrappedIds: string[] = []
 
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
         fetchCount += 1
@@ -421,7 +422,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
     let firstSession = true
 
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
         events: [currentWrap],
@@ -480,7 +481,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (_filter, options) => {
         if (options?.relayUrls?.[0] === oldRelay) {
@@ -533,7 +534,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) => {
         requestedFilters.push({
@@ -608,7 +609,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) => {
         const page = relayEvents
@@ -680,7 +681,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) => {
         if (filter.limit === 400) primaryPageCount += 1
@@ -758,7 +759,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) =>
         relayEvents
@@ -839,7 +840,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [shortRelay, longRelay],
       fetchEventsFanout: async (filter, options) => {
         const relayUrl = options?.relayUrls?.[0]
@@ -926,7 +927,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanout: async (filter) =>
         relayEvents
@@ -968,7 +969,7 @@ describe("current Event Market private inbox authority and bounded scanning", ()
 
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: organizerSigner }) as never,
+      getAccountSigner: () => plainTestSigner(organizerSigner),
       resolveInboxRelayUrls: async () => [declaredRelay],
       fetchEventsFanoutWithDiagnostics: async () => ({
         events: [readyWrap],

@@ -1,4 +1,6 @@
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { NostrKeySigner } from "./nostr-event-signer"
+import { getAccountSigner } from "./session-signer"
 import { z } from "zod"
 import {
   getDirectMessageConversationList,
@@ -251,7 +253,7 @@ export async function publishEventMarketEnrollment(
   input: {
     payload: EventMarketEnrollmentPayload
     authenticatedPubkey: string
-    signer: NDKSigner
+    signer: NostrKeySigner
     shouldContinue?: () => boolean
     persistence?: EnrollmentStorage
   },
@@ -326,7 +328,7 @@ export async function retryEventMarketEnrollmentDelivery(
     record: EventMarketEnrollmentDelivery
     authenticatedPubkey: string
     shouldContinue?: () => boolean
-    signer?: NDKSigner
+    signer?: NostrKeySigner
     persistence?: EnrollmentStorage
   },
   dependencies: EnrollmentDeliveryDependencies = defaultDeliveryDependencies
@@ -338,7 +340,7 @@ export async function retryEventMarketEnrollmentDelivery(
     input.shouldContinue?.() === false
   )
     throw new Error("Saved participation belongs to another signer.")
-  const signer = input.signer ?? getNdk().signer
+  const signer = input.signer ?? getAccountSigner()
   if (!signer)
     throw new Error("Connect the saved participation sender's signer.")
   const recovered = await dependencies.unwrap(

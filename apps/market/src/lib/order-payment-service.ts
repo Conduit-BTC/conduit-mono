@@ -1,4 +1,4 @@
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   bindMerchantInvoiceForPayment,
   buildLightningPaymentProofMessage,
@@ -19,6 +19,9 @@ import {
   getAnonZapDraftTag,
   getOrderPublicZapSigner,
   getNdk,
+  getAccountSigner,
+  type AccountSigner,
+  type UnsignedNostrEvent,
   getOrderLifecycle,
   getOrderLifecyclePaymentAdmission,
   loadSelectedProfileContext,
@@ -92,10 +95,10 @@ export function getLifecyclePaymentProofAction(
 export async function signShopperCheckoutZapRequest(
   draft: CheckoutZapRequestDraft,
   expectedBuyerPubkeyInput: string,
-  signer: NDKSigner
+  signer: AccountSigner
 ): Promise<SignedCheckoutZapRequest> {
   const expectedBuyerPubkey = normalizePubkey(expectedBuyerPubkeyInput)
-  const signerPubkey = normalizePubkey((await signer.user()).pubkey)
+  const signerPubkey = normalizePubkey(await signer.getPublicKey())
   if (!expectedBuyerPubkey || signerPubkey !== expectedBuyerPubkey) {
     throw new Error(
       "The connected signer does not match this checkout account. No public zap was requested."
@@ -107,7 +110,11 @@ export async function signShopperCheckoutZapRequest(
   zapRequest.created_at = draft.createdAt
   zapRequest.content = draft.content
   zapRequest.tags = draft.tags
-  await zapRequest.sign(signer)
+  zapRequest.pubkey = expectedBuyerPubkey
+  Object.assign(
+    zapRequest,
+    await signer.signEvent(zapRequest.rawEvent() as UnsignedNostrEvent)
+  )
   const rawEvent = zapRequest.rawEvent() as SignedPublicNostrEvent
   if (
     rawEvent.pubkey !== expectedBuyerPubkey ||
@@ -1844,11 +1851,12 @@ async function runOrderPaymentInternal(
               if (publicZapSigner !== "shopper") {
                 throw new Error("Public zap signer was not selected.")
               }
-              if (!ndk.signer) throw new Error("Signer not connected")
+              const signer = getAccountSigner()
+              if (!signer) throw new Error("Signer not connected")
               const signed = await signShopperCheckoutZapRequest(
                 draft,
                 ctx.buyerPubkey,
-                ndk.signer
+                signer
               )
               await assertPaymentAuthority()
               return signed

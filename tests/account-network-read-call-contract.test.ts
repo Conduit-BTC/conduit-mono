@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 
@@ -627,7 +628,7 @@ describe("account network read call contract", () => {
     )
     __setCommerceTestOverrides({
       accountNetworkLocalStateRepository: repository,
-      getNdk: async () => ({ signer: {} as NDKSigner }) as never,
+      getAccountSigner: () => plainTestSigner({} as NDKSigner as never),
       resolveInboxRelayUrls: async () => [RELAY_URL],
       fetchEventsFanoutWithDiagnostics: async (filter, options = {}) => {
         calls.push(options)

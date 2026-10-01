@@ -29,7 +29,7 @@ describe("future market private read cancellation", () => {
   it("rejects a cancelled organizer read before invoking the signer", async () => {
     let signerReads = 0
     __setCommerceTestOverrides({
-      getNdk: async () => {
+      getAccountSigner: () => {
         signerReads += 1
         return {} as never
       },
@@ -48,7 +48,7 @@ describe("future market private read cancellation", () => {
     let declarationReads = 0
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => ({}) as never,
       resolveInboxRelayUrls: async () => {
         declarationReads += 1
         live = false

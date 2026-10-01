@@ -9,6 +9,8 @@ import { readEventMarketAuthorization } from "./event-market-authorization-read"
 import { waitForVisibleDocument } from "./interactive-signer"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
+import { getAccountSigner } from "./session-signer"
+import type { UnsignedNostrEvent } from "./nostr-event-signer"
 import {
   publishWithPlanner,
   type PublishWithPlannerResult,
@@ -39,8 +41,9 @@ async function sign(
   if (input.shouldContinue?.() === false)
     throw new Error("Organizer session changed.")
   const ndk = await getNdk()
-  if (!ndk.signer) throw new Error("Organizer signer is not connected.")
-  if ((await ndk.signer.user()).pubkey.toLowerCase() !== input.organizerPubkey)
+  const signer = getAccountSigner()
+  if (!signer) throw new Error("Organizer signer is not connected.")
+  if ((await signer.getPublicKey()).toLowerCase() !== input.organizerPubkey)
     throw new Error("Active signer does not match the organizer.")
   const event = new NDKEvent(ndk)
   event.kind = input.draft.kind
@@ -49,7 +52,11 @@ async function sign(
   event.created_at = input.createdAt
   if (input.shouldContinue?.() === false)
     throw new Error("Organizer session changed.")
-  await event.sign(ndk.signer)
+  event.pubkey = input.organizerPubkey
+  Object.assign(
+    event,
+    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
+  )
   const signed = event.rawEvent() as SignedPublicNostrEvent
   if (
     !isValidSignedPublicNostrEvent(signed) ||

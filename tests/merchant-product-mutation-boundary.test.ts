@@ -1,3 +1,4 @@
+import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
@@ -11,7 +12,6 @@ import {
   buildProductListingEventDraft,
   getProductShippingOptionAddress,
   getShippingOptionsByCoordinates,
-  setSigner,
   type CommerceProductRecord,
   type OrderSummary,
   type ParsedShippingOption,

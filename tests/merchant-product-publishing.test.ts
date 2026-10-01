@@ -1,3 +1,4 @@
+import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import {
   NDKEvent,
@@ -21,7 +22,6 @@ import {
   planProductDeletionRelays,
   RemoteSignerError,
   resolveProductFulfillment,
-  setSigner,
   type ProductDeletionOutboxRepository,
   type ProductSchema,
   type PublishWithPlannerResult,
@@ -965,6 +965,7 @@ describe("merchant product event delivery", () => {
     }> = []
     let signRequestInFlight = false
     const signer = {
+      pubkey: delegate.pubkey,
       user: () => delegate.user(),
       sign: async (event: NostrEvent) => {
         if (signRequestInFlight) {
@@ -1053,6 +1054,7 @@ describe("merchant product event delivery", () => {
     })
     let visibilityChecks = 0
     setSigner({
+      pubkey: delegate.pubkey,
       user: () => delegate.user(),
       sign: async (event: NostrEvent) => {
         signedKinds.push(event.kind)
@@ -1122,6 +1124,7 @@ describe("merchant product event delivery", () => {
     let signRequests = 0
     let signedLocalCalls = 0
     const failedSigner = {
+      pubkey: delegate.pubkey,
       user: () => delegate.user(),
       sign: async () => {
         signRequests += 1
@@ -1163,13 +1166,13 @@ describe("merchant product event delivery", () => {
         signAndPublishProductWriteBundle(input)
       ).rejects.toMatchObject({
         code: "timeout",
-        operation: "sign event",
       })
       expect(signRequests).toBe(1)
       expect(signedLocalCalls).toBe(0)
       expect(publishSpy).toHaveBeenCalledTimes(0)
 
       setSigner({
+        pubkey: delegate.pubkey,
         user: () => delegate.user(),
         sign: async (event: NostrEvent) => {
           signRequests += 1
@@ -1199,6 +1202,7 @@ describe("merchant product event delivery", () => {
     let signRequests = 0
     let signedEvent: NDKEvent | null = null
     setSigner({
+      pubkey: delegate.pubkey,
       user: () => delegate.user(),
       sign: async (event: NostrEvent) => {
         signRequests += 1

@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
-  getNdk,
+  getAccountSigner,
   PrivateMessageRelayReadinessError,
   loadEventMarketEnrollmentDelivery,
   publishEventMarketEnrollment,
@@ -61,7 +61,7 @@ export function useEventMarketEnrollment(
     setBusy(true)
     setError("")
     try {
-      const signer = getNdk().signer
+      const signer = getAccountSigner()
       if (!signer)
         throw new Error("Connect your signer before sending participation.")
       await publishEventMarketEnrollment({

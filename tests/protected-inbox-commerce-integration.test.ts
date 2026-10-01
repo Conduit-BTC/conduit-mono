@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 import {
@@ -256,7 +257,7 @@ describe("Market and Merchant protected inbox integration", () => {
   it("keeps both account roles working on relays that do not challenge", async () => {
     challengeAuthentication = false
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       resolveInboxRelayUrls: async () => [RELAY_URL],
       getCachedOrderMessages: async () => [],
       putCachedOrderMessages: async () => undefined,
@@ -298,7 +299,7 @@ describe("Market and Merchant protected inbox integration", () => {
   it("authenticates the actual shared kind-1059 path for both account roles", async () => {
     const persistedRows: CachedOrderMessage[] = []
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       resolveInboxRelayUrls: async () => [RELAY_URL],
       getCachedOrderMessages: async () => [],
       putCachedOrderMessages: async (rows) => persistedRows.push(...rows),
@@ -346,7 +347,7 @@ describe("Market and Merchant protected inbox integration", () => {
   it("keeps cached orders visible when every relay rejects authentication", async () => {
     rejectAuthentication = true
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       resolveInboxRelayUrls: async () => [RELAY_URL],
       getCachedOrderMessages: async () => [cachedOrderRow()],
       putCachedOrderMessages: async () => undefined,
@@ -384,7 +385,7 @@ describe("Market and Merchant protected inbox integration", () => {
     })
     const written: CachedOrderMessage[] = []
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       resolveInboxRelayUrls: async () => [RELAY_URL],
       getCachedOrderMessages: async () => [],
       putCachedOrderMessages: async (rows) => written.push(...rows),
@@ -426,7 +427,7 @@ describe("Market and Merchant protected inbox integration", () => {
     })
     let committed = false
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       resolveInboxRelayUrls: async () => [RELAY_URL],
       getCachedOrderMessages: async () => [],
       getCachedDirectMessages: async () => [],
@@ -475,14 +476,12 @@ describe("Market and Merchant protected inbox integration", () => {
     })
     const written: unknown[] = []
     __setCommerceTestOverrides({
-      getNdk: async () =>
+      getAccountSigner: () =>
         ({
-          signer: {
-            decrypt: async () => {
-              decryptStarted()
-              await decryptGate
-              return "legacy plaintext"
-            },
+          decryptLegacy: async () => {
+            decryptStarted()
+            await decryptGate
+            return "legacy plaintext"
           },
         }) as never,
       readProtectedInbox: async () => emptyProtectedRead(),
@@ -518,8 +517,8 @@ describe("Market and Merchant protected inbox integration", () => {
     })
     let committed = false
     __setCommerceTestOverrides({
-      getNdk: async () =>
-        ({ signer: { decrypt: async () => "legacy plaintext" } }) as never,
+      getAccountSigner: () =>
+        ({ decryptLegacy: async () => "legacy plaintext" }) as never,
       readProtectedInbox: async () => emptyProtectedRead(),
       fetchEventsFanout: async (filter) =>
         filter.kinds?.includes(4) ? ([legacyDirectMessage()] as never) : [],
@@ -548,7 +547,7 @@ describe("Market and Merchant protected inbox integration", () => {
   it("refuses cached order plaintext when no current protected lease exists", async () => {
     let cachedReads = 0
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       getCachedOrderMessages: async () => {
         cachedReads += 1
         return [cachedOrderRow()]
@@ -573,7 +572,7 @@ describe("Market and Merchant protected inbox integration", () => {
       releaseCache = resolve
     })
     __setCommerceTestOverrides({
-      getNdk: async () => ({ signer: {} }) as never,
+      getAccountSigner: () => plainTestSigner({} as never),
       getCachedDirectMessages: async () => {
         cacheStarted()
         await cacheGate

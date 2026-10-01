@@ -14,10 +14,9 @@ import {
   toReviewedMediaServerEvidence,
   type MediaServerPreferencesStorage,
 } from "../packages/core/src/protocol/media-server-preferences"
-import { createNdkNostrEventSigner } from "../packages/core/src/protocol/ndk-nostr-event-signer"
 import { Nip07SessionSigner } from "../packages/core/src/protocol/nip07-signer"
 import {
-  NdkBunkerSignerAdapter,
+  RemoteSessionSigner,
   type RemoteBunkerSigner,
 } from "../packages/core/src/protocol/remote-signer"
 import { SessionSigner } from "../packages/core/src/protocol/session-signer"
@@ -135,13 +134,20 @@ describe("kind 10063 external-signer integration", () => {
     })
     try {
       const nip07 = new Nip07SessionSigner()
-      await nip07.blockUntilReady()
+      await nip07.getPublicKey()
       const session = new SessionSigner(nip07, {
         expectedPubkey: PUBKEY,
+        revision: "test-claim",
+        authMethod: "nip07",
+        getCapabilities: () => ({
+          signEvent: true,
+          nip44: true,
+          nip04Decrypt: false,
+        }),
         hasAuthority: () => true,
       })
       const signed = await publishWithExternalSigner(
-        createNdkNostrEventSigner(session, PUBKEY, "nip07"),
+        session,
         new MemoryStorage()
       )
       expect(verifyEvent(signed)).toBe(true)
@@ -171,15 +177,19 @@ describe("kind 10063 external-signer integration", () => {
         ),
       close: async () => undefined,
     } as unknown as RemoteBunkerSigner
-    const nip46 = new NdkBunkerSignerAdapter(bunkerSigner, PUBKEY)
+    const nip46 = new RemoteSessionSigner(bunkerSigner, PUBKEY)
     const session = new SessionSigner(nip46, {
       expectedPubkey: PUBKEY,
+      revision: "test-claim",
+      authMethod: "nip46",
+      getCapabilities: () => ({
+        signEvent: true,
+        nip44: true,
+        nip04Decrypt: false,
+      }),
       hasAuthority: () => true,
     })
-    const signed = await publishWithExternalSigner(
-      createNdkNostrEventSigner(session, PUBKEY, "nip46"),
-      new MemoryStorage()
-    )
+    const signed = await publishWithExternalSigner(session, new MemoryStorage())
     expect(verifyEvent(signed)).toBe(true)
     expect(signed.kind).toBe(BLOSSOM_SERVER_LIST_KIND)
     expect(signed.tags).toEqual([["server", "https://media.conduit.market"]])

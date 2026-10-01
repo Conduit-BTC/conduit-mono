@@ -1,10 +1,7 @@
 import { liveQuery } from "dexie"
-import {
-  NDKEvent,
-  giftUnwrap,
-  type NDKFilter,
-  type NDKSigner,
-} from "@nostr-dev-kit/ndk"
+import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import type { NostrKeySigner } from "./nostr-event-signer"
+import { getAccountSigner } from "./session-signer"
 import {
   db,
   type CachedOrderMessage,
@@ -38,7 +35,6 @@ import {
   fetchEventsFanoutProgressive,
   fetchEventsFanoutWithDiagnostics,
   getEventSourceRelayUrls,
-  getNdk,
   mergeEventSourceRelayUrls,
 } from "./ndk"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
@@ -61,7 +57,7 @@ import {
 } from "./orders"
 import {
   __resetInboxRelayCache,
-  createNdkLegacyDmDecrypt,
+  createLegacyDmDecrypt,
   decryptLegacyDirectMessage,
   getOrderCompanionNotificationIdentity,
   parseDirectMessageRumor,
@@ -531,7 +527,7 @@ type CommerceTestOverrides = {
   fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
   readLatestFollowLists?: typeof readLatestFollowLists
-  getNdk?: () => ReturnType<typeof getNdk> | Promise<ReturnType<typeof getNdk>>
+  getAccountSigner?: () => NostrKeySigner | undefined
   readProtectedInbox?: (
     options: ReadProtectedInboxOptions
   ) => ReturnType<typeof readProtectedInbox>
@@ -539,8 +535,8 @@ type CommerceTestOverrides = {
   ownerRelayListEvidenceRepository?: OwnerRelayListEvidenceRepository
   giftUnwrap?: (
     event: NDKEvent,
-    signer: NDKSigner
-  ) => Promise<Awaited<ReturnType<typeof giftUnwrap>> | null>
+    signer: NostrKeySigner
+  ) => Promise<NDKEvent | null>
   now?: () => number
   getCachedProducts?: (
     merchantPubkey?: string,
@@ -1232,17 +1228,11 @@ async function runFetchEventsFanoutDetailed(
   }
 }
 
-async function runGetNdk(): Promise<ReturnType<typeof getNdk>> {
-  const impl = testOverrides.getNdk ?? getNdk
-  return await impl()
-}
-
 /**
- * NDK remains an envelope/signer edge, but protected reads must not connect
- * its relay pool merely to reach the active signer.
+ * Account key authority is independent of relay client lifetime.
  */
-async function resolveEnvelopeSigner(): Promise<NDKSigner | undefined> {
-  return (await runGetNdk()).signer
+async function resolveEnvelopeSigner(): Promise<NostrKeySigner | undefined> {
+  return (testOverrides.getAccountSigner ?? getAccountSigner)()
 }
 
 function unavailableInboxStatus(
@@ -8136,7 +8126,7 @@ function retainBoundedEventMarketFailure(
 async function advanceEventMarketPrivateMessageScan(input: {
   principalPubkey: string
   relayUrls: readonly string[]
-  signer: NDKSigner
+  signer: NostrKeySigner
   declaration: Awaited<ReturnType<typeof resolvePrincipalInboxDeclaration>>
   authorization: ProtectedReadAuthorization | null
 }): Promise<EventMarketPrivateMessageListResult> {
@@ -8680,7 +8670,7 @@ function retryLegacyDms(
 
 async function runLegacyDmSync(
   principalPubkey: string,
-  signer: NDKSigner,
+  signer: NostrKeySigner,
   authorization: ProtectedReadAuthorization | null,
   sessionPrincipalKey: string
 ): Promise<LegacyDmSyncResult> {
@@ -8765,7 +8755,7 @@ async function runLegacyDmSync(
     })
   }
 
-  const decrypt = createNdkLegacyDmDecrypt(signer)
+  const decrypt = createLegacyDmDecrypt(signer)
   const messages: ParsedDirectMessage[] = []
   for (let index = 0; index < candidates.size; index += 5) {
     const batch = Array.from(candidates.values()).slice(index, index + 5)
@@ -8824,7 +8814,7 @@ async function runLegacyDmSync(
 
 async function syncLegacyDms(
   principalPubkey: string,
-  signer: NDKSigner,
+  signer: NostrKeySigner,
   authorization: ProtectedReadAuthorization | null
 ): Promise<LegacyDmSyncResult> {
   const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
@@ -8874,7 +8864,7 @@ function retryWraps(
 
 async function runPrivateMessageInboxSync(
   principalPubkey: string,
-  signer: NDKSigner,
+  signer: NostrKeySigner,
   authorization: ProtectedReadAuthorization | null
 ): Promise<PrivateInboxSyncResult> {
   const [cachedOrders, cachedDirect, fetched] = await Promise.all([
@@ -9094,7 +9084,7 @@ async function runPrivateMessageInboxSync(
 
 async function syncPrivateMessageInbox(
   principalPubkey: string,
-  signer: NDKSigner,
+  signer: NostrKeySigner,
   authorization: ProtectedReadAuthorization | null
 ): Promise<PrivateInboxSyncResult> {
   const syncKey = `${authorization?.sessionScope ?? "legacy-test"}:${principalPubkey}`
@@ -9705,7 +9695,7 @@ async function inspectMerchantCheckoutSparkRecoveries(
     throw new Error("Connect your Nostr signer to view checkout recoveries.")
   }
   const principal = principalPubkey.trim().toLowerCase()
-  if ((await signer.user()).pubkey?.trim().toLowerCase() !== principal) {
+  if ((await signer.getPublicKey()).trim().toLowerCase() !== principal) {
     throw new ProtectedInboxAuthorityChangedError()
   }
   assertInboxSyncAuthority(authorization)
@@ -9937,7 +9927,7 @@ export async function withMerchantCheckoutSparkRecovery(
   const principal = principalPubkey.trim().toLowerCase()
   if (
     !signer ||
-    (await signer.user()).pubkey?.trim().toLowerCase() !== principal
+    (await signer.getPublicKey()).trim().toLowerCase() !== principal
   ) {
     throw new ProtectedInboxAuthorityChangedError()
   }

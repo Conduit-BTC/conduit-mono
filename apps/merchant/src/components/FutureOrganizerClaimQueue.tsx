@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import {
   archiveFutureMarketPrivateDelivery,
   formatEventMarketPickupClaimCode,
-  getNdk,
+  getAccountSigner,
   getFutureMarketReceiptMerchandise,
   isVerifiedEventMarketReceiptMerchandiseResolution,
   loadFutureMarketPrivateDeliveries,
@@ -152,14 +152,14 @@ function ClaimCard({
     setDeliveryStatus("")
     try {
       const shouldContinue = () => isAuthGenerationCurrent(authGeneration)
-      const ndk = getNdk()
-      if (!ndk.signer)
+      const signer = getAccountSigner()
+      if (!signer)
         throw new Error("Connect the organizer signer to confirm handoff.")
       const delivery = await publishFutureMarketHandoffAck({
         organizerPubkey,
         claim,
         physicalReleaseConfirmed: true,
-        signer: ndk.signer,
+        signer,
         authenticatedPubkey: organizerPubkey,
         shouldContinue,
         persistExactWraps: (record) =>

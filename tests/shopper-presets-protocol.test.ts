@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { describe, expect, it } from "bun:test"
 import NDK, {
   NDKEvent,
@@ -54,7 +55,7 @@ function presetDocument(): ShopperPresetsDocument {
 }
 
 async function signerFixture() {
-  const signer = NDKPrivateKeySigner.generate()
+  const signer = plainTestSigner(NDKPrivateKeySigner.generate())
   const user = await signer.user()
   const ndk = new NDK({ explicitRelayUrls: [] })
   ndk.signer = signer
@@ -433,7 +434,7 @@ describe("NIP-78 shopper presets", () => {
     const { signer: realSigner, pubkey, ndk } = await signerFixture()
     let signerContent = ""
     let encryptionCalled = false
-    const signer = {
+    const signer = plainTestSigner({
       user: () => realSigner.user(),
       sign: async (event: NDKEvent) => {
         signerContent = event.content
@@ -447,7 +448,7 @@ describe("NIP-78 shopper presets", () => {
         encryptionCalled = true
         throw new Error("Signer decryption must not be called")
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
     ndk.signer = signer
     let published: NDKEvent | null = null
     const shouldContinue = () => true
@@ -528,7 +529,7 @@ describe("NIP-78 shopper presets", () => {
   it("does not repeat preset signing after an ambiguous bridge error", async () => {
     const { signer: delegate, pubkey, ndk } = await signerFixture()
     let signCalls = 0
-    const signer = {
+    const signer = plainTestSigner({
       user: () => delegate.user(),
       sign: async () => {
         signCalls += 1
@@ -536,7 +537,7 @@ describe("NIP-78 shopper presets", () => {
           "The message port closed before a response was received."
         )
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
     ndk.signer = signer
 
     await expect(
@@ -1203,13 +1204,13 @@ describe("NIP-78 shopper presets", () => {
     const { signer: realSigner, pubkey, ndk } = await signerFixture()
     let signed = false
     let published = false
-    const signer = {
+    const signer = plainTestSigner({
       user: () => realSigner.user(),
       sign: async () => {
         signed = true
         throw new Error("The signer must not be called")
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
 
     await expect(
       publishShopperPresets({
@@ -1261,13 +1262,13 @@ describe("NIP-78 shopper presets", () => {
     })
     let signed = false
     let published = false
-    const signer = {
+    const signer = plainTestSigner({
       user: () => realSigner.user(),
       sign: async () => {
         signed = true
         throw new Error("The signer must not be called")
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
 
     await expect(
       publishShopperPresets({
@@ -1310,13 +1311,13 @@ describe("NIP-78 shopper presets", () => {
     const { signer: realSigner, pubkey, ndk } = await signerFixture()
     let signed = false
     let published = false
-    const signer = {
+    const signer = plainTestSigner({
       user: () => realSigner.user(),
       sign: async () => {
         signed = true
         throw new Error("The signer must not be called")
       },
-    } as unknown as NDKSigner
+    } as unknown as NDKSigner)
 
     await expect(
       publishShopperPresets({

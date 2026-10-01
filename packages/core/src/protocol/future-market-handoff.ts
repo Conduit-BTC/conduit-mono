@@ -1,4 +1,6 @@
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { NostrKeySigner } from "./nostr-event-signer"
+import { getAccountSigner } from "./session-signer"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -662,7 +664,7 @@ async function retainFutureMessages(
   const stored: Record<string, SignedPublicNostrEvent> = JSON.parse(
     storage?.getItem(key) ?? "{}"
   )
-  const signer = getNdk().signer
+  const signer = getAccountSigner()
   for (const [id, wrap] of Object.entries(stored)) {
     if (retained.has(id)) continue
     if (
@@ -674,12 +676,12 @@ async function retainFutureMessages(
       throw new Error(
         "Stored authenticated handoff recovery evidence is invalid."
       )
-    if (!signer || (await signer.user()).pubkey !== owner)
+    if (!signer || (await signer.getPublicKey()) !== owner)
       throw new Error(
         "Connect the account signer to recover private handoff evidence."
       )
     assertFutureMarketReadCurrent(shouldContinue)
-    if (getNdk().signer !== signer)
+    if (getAccountSigner() !== signer)
       throw new Error(
         "The account signer changed during private handoff recovery."
       )
@@ -781,7 +783,7 @@ export async function readFutureMarketMerchantClaim(input: {
 /** Persist signed exact wraps before any relay publish; retry never re-signs. */
 async function publishFutureMarketPrivatePayload(input: {
   payload: FutureMarketPrivatePayload
-  signer: NDKSigner
+  signer: NostrKeySigner
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
   orderCorrelationRef?: string
@@ -847,7 +849,7 @@ export async function publishFutureMarketReadyReceipt(input: {
   signedOrderEvidence: readonly SignedPublicNostrEvent[]
   paymentAuthenticated: boolean
   releaseConfirmed: boolean
-  signer: NDKSigner
+  signer: NostrKeySigner
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
   persistExactWraps: (
@@ -892,7 +894,7 @@ export async function publishFutureMarketHandoffAck(input: {
   organizerPubkey: string
   claim: FutureMarketOrganizerClaim
   physicalReleaseConfirmed: boolean
-  signer: NDKSigner
+  signer: NostrKeySigner
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
   persistExactWraps: (
@@ -988,12 +990,12 @@ export function parseFutureMarketPrivateDeliveryRecord(
 /** Recover the merchant's encrypted self-copy before revoking its exact release. */
 export async function recoverFutureMarketReadyReceipt(input: {
   record: FutureMarketPrivateDeliveryRecord
-  signer: NDKSigner
+  signer: NostrKeySigner
 }): Promise<FutureMarketReadyReceiptSchema> {
   const record = parseFutureMarketPrivateDeliveryRecord(input.record)
   if (
     record.type !== "future_market_ready" ||
-    (await input.signer.user()).pubkey !== record.senderPubkey
+    (await input.signer.getPublicKey()) !== record.senderPubkey
   )
     throw new Error("Merchant ready receipt recovery authority is invalid.")
   const outcome = await unwrapGiftWrap(
@@ -1024,7 +1026,7 @@ export async function recoverFutureMarketReadyReceipt(input: {
 export async function publishFutureMarketRevocation(input: {
   readyRecord?: FutureMarketPrivateDeliveryRecord
   recoveredClaim?: FutureMarketOrganizerClaim
-  signer: NDKSigner
+  signer: NostrKeySigner
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
   persistExactWraps: (
@@ -1042,7 +1044,7 @@ export async function publishFutureMarketRevocation(input: {
   if (
     !receipt ||
     !readyReceiptId ||
-    (await input.signer.user()).pubkey !== receipt.merchantPubkey ||
+    (await input.signer.getPublicKey()) !== receipt.merchantPubkey ||
     (input.recoveredClaim && input.recoveredClaim.state !== "ready_for_pickup")
   )
     throw new Error(

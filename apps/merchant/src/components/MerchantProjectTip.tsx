@@ -13,7 +13,6 @@ import {
   validateLightningInvoiceForPayment,
   type PreparedProjectTip,
 } from "@conduit/core"
-import { createNdkNostrEventSigner } from "@conduit/core/protocol/ndk-nostr-event-signer"
 import { ProjectTip, type ProjectTipPayResult } from "@conduit/ui"
 import { useNwcConnection } from "../hooks/useNwcConnection"
 import { classifyMerchantTipPaymentError } from "../lib/project-tip-payment"
@@ -37,7 +36,7 @@ export function MerchantProjectTip({ className }: { className?: string }) {
     }
     return prepareProjectTip({
       amountSats,
-      signer: createNdkNostrEventSigner(auth.signer, auth.pubkey, auth.method),
+      signer: auth.signer,
     })
   }
 

@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { describe, expect, it } from "bun:test"
 import { type NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
@@ -286,7 +287,7 @@ describe("shopper zap signing authority", () => {
   }
 
   it("returns a cryptographically valid request from the expected shopper", async () => {
-    const signer = NDKPrivateKeySigner.generate()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
     const shopper = await signer.user()
 
     const signed = await signShopperCheckoutZapRequest(
@@ -300,8 +301,8 @@ describe("shopper zap signing authority", () => {
   })
 
   it("rejects a checkout account mismatch before signing", async () => {
-    const signer = NDKPrivateKeySigner.generate()
-    const other = await NDKPrivateKeySigner.generate().user()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
+    const other = await plainTestSigner(NDKPrivateKeySigner.generate()).user()
 
     await expect(
       signShopperCheckoutZapRequest(draft, other.pubkey, signer)
@@ -309,26 +310,30 @@ describe("shopper zap signing authority", () => {
   })
 
   it("rejects an invalid signature returned for the expected shopper", async () => {
-    const signer = NDKPrivateKeySigner.generate()
+    const signer = plainTestSigner(NDKPrivateKeySigner.generate())
     const shopper = await signer.user()
 
     await expect(
       signShopperCheckoutZapRequest(draft, shopper.pubkey, {
-        user: async () => shopper,
-        sign: async () => "0".repeat(128),
+        getPublicKey: async () => shopper.pubkey,
+        signEvent: async (draft) => ({
+          ...draft,
+          id: "0".repeat(64),
+          sig: "0".repeat(128),
+        }),
       } as never)
     ).rejects.toThrow("invalid public zap request")
   })
 
   it("does not repeat shopper zap signing after an ambiguous bridge error", async () => {
-    const delegate = NDKPrivateKeySigner.generate()
+    const delegate = plainTestSigner(NDKPrivateKeySigner.generate())
     const shopper = await delegate.user()
     let signCalls = 0
 
     await expect(
       signShopperCheckoutZapRequest(draft, shopper.pubkey, {
-        user: async () => shopper,
-        sign: async () => {
+        getPublicKey: async () => shopper.pubkey,
+        signEvent: async () => {
           signCalls += 1
           throw new Error(
             "The message port closed before a response was received."

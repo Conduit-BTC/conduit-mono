@@ -1,10 +1,11 @@
+import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
+import { getEventHash } from "nostr-tools"
+import { createWrap } from "nostr-tools/nip59"
 import {
-  giftUnwrap,
-  giftWrap,
-  NDKEvent,
-  NDKUser,
-  type NDKSigner,
-} from "@nostr-dev-kit/ndk"
+  NostrSignerError,
+  type NostrKeySigner,
+  type UnsignedNostrEvent,
+} from "./nostr-event-signer"
 import { buildMerchantOrderReviewUrl } from "../app-links"
 import type {
   OrderDeliveryRoute,
@@ -62,7 +63,6 @@ import {
   normalizeSecureOrIsolatedE2eRelayUrls,
 } from "./relay-settings"
 import { waitForVisibleDocument } from "./interactive-signer"
-import { createNdkNostrEventSigner } from "./ndk-nostr-event-signer"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -417,17 +417,94 @@ export type UnwrapOutcome =
 /** Injectable unwrap implementation (tests / capability overrides). */
 export type GiftUnwrapFn = (
   event: NDKEvent,
-  signer: NDKSigner
+  signer: NostrKeySigner
 ) => Promise<NDKEvent | null>
 
 export interface UnwrapGiftWrapOptions {
   timeoutMs?: number
-  /** Replace the default nip44→nip04 attempt (used by tests). */
+  /** Replace NIP-44 envelope verification and decryption (used by tests). */
   giftUnwrap?: GiftUnwrapFn
 }
 
 const DEFAULT_UNWRAP_TIMEOUT_MS = 8_000
 const UNWRAP_TIMEOUT = Symbol("unwrap_timeout")
+
+/** NIP-59 construction with plain key operations, independent of relay clients. */
+export async function wrapPrivateMessage(
+  event: NDKEvent,
+  recipient: { pubkey: string },
+  signer: NostrKeySigner,
+  params: { rumorKind?: number } = {}
+): Promise<NDKEvent> {
+  const pubkey = await signer.getPublicKey()
+  if (event.pubkey && event.pubkey !== pubkey)
+    throw new NostrSignerError("authority_changed")
+  const rumor: UnsignedNostrEvent = {
+    pubkey,
+    kind: params.rumorKind ?? event.kind ?? EVENT_KINDS.DIRECT_MESSAGE,
+    created_at: event.created_at ?? Math.floor(Date.now() / 1000),
+    tags: event.tags.map((tag) => [...tag]),
+    content: event.content,
+  }
+  const seal = await signer.signEvent({
+    pubkey,
+    kind: EVENT_KINDS.SEAL,
+    created_at: Math.round(Date.now() / 1000 - Math.random() * 100_000),
+    tags: [],
+    content: await signer.encryptNip44(
+      recipient.pubkey,
+      JSON.stringify({ ...rumor, id: getEventHash(rumor) })
+    ),
+  })
+  if (!isValidSignedPublicNostrEvent(seal) || seal.pubkey !== pubkey)
+    throw new NostrSignerError("invalid_response")
+  return new NDKEvent(event.ndk, createWrap(seal, recipient.pubkey))
+}
+
+/** Validate both envelopes and the unsigned rumor before returning private data. */
+export async function unwrapPrivateMessageEnvelope(
+  event: NDKEvent,
+  signer: NostrKeySigner
+): Promise<NDKEvent> {
+  const wrap = event.rawEvent()
+  const pubkey = await signer.getPublicKey()
+  if (
+    !isValidSignedPublicNostrEvent(wrap as SignedPublicNostrEvent) ||
+    wrap.kind !== EVENT_KINDS.GIFT_WRAP ||
+    !wrap.tags.some((tag) => tag[0] === "p" && tag[1] === pubkey)
+  )
+    throw new NostrSignerError("invalid_response")
+  let seal: SignedPublicNostrEvent
+  try {
+    seal = JSON.parse(
+      await signer.decryptNip44(wrap.pubkey, wrap.content)
+    ) as SignedPublicNostrEvent
+  } catch (error) {
+    if (error instanceof SyntaxError)
+      throw new NostrSignerError("invalid_response")
+    throw error
+  }
+  if (
+    !isValidSignedPublicNostrEvent(seal) ||
+    seal.kind !== EVENT_KINDS.SEAL ||
+    seal.tags.length !== 0
+  )
+    throw new NostrSignerError("invalid_response")
+  let rumor: UnsignedNostrEvent & { id: string; sig?: string }
+  const plaintext = await signer.decryptNip44(seal.pubkey, seal.content)
+  try {
+    rumor = JSON.parse(plaintext) as typeof rumor
+    if (
+      "sig" in rumor ||
+      rumor.pubkey !== seal.pubkey ||
+      rumor.id !== getEventHash(rumor)
+    )
+      throw new NostrSignerError("invalid_response")
+  } catch {
+    throw new NostrSignerError("invalid_response")
+  }
+  return new NDKEvent(event.ndk, rumor)
+}
 const LEGACY_ORDER_MESSAGE_TYPES = new Set([
   "order",
   "payment_request",
@@ -517,7 +594,7 @@ export function classifyPrivateMessageKind(
  */
 export async function unwrapGiftWrap(
   event: NDKEvent,
-  signer: NDKSigner,
+  signer: NostrKeySigner,
   options: UnwrapGiftWrapOptions = {}
 ): Promise<UnwrapOutcome> {
   const wrapId = event.id
@@ -538,7 +615,7 @@ export async function unwrapGiftWrap(
 
     try {
       return {
-        rumor: await giftUnwrap(event, undefined, signer, "nip44"),
+        rumor: await unwrapPrivateMessageEnvelope(event, signer),
         reason: null,
       }
     } catch {
@@ -588,7 +665,7 @@ export async function unwrapGiftWrap(
 /** Unwrap a batch of gift wraps, capping concurrency per chunk. */
 export async function unwrapGiftWraps(
   events: NDKEvent[],
-  signer: NDKSigner,
+  signer: NostrKeySigner,
   options: UnwrapGiftWrapOptions = {},
   batchSize = 5
 ): Promise<UnwrapOutcome[]> {
@@ -665,13 +742,9 @@ export type LegacyDmDecrypt = (
   ciphertext: string
 ) => Promise<string>
 
-export function createNdkLegacyDmDecrypt(signer: NDKSigner): LegacyDmDecrypt {
+export function createLegacyDmDecrypt(signer: NostrKeySigner): LegacyDmDecrypt {
   return async (counterpartyPubkey, ciphertext) =>
-    await signer.decrypt(
-      new NDKUser({ pubkey: counterpartyPubkey }),
-      ciphertext,
-      "nip04"
-    )
+    await signer.decryptLegacy(counterpartyPubkey, ciphertext)
 }
 
 export async function decryptLegacyDirectMessage(
@@ -776,7 +849,7 @@ export interface PublishPrivateMessageInput {
   >
   /** Live caller authority for recipient and sender declaration reads. */
   shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
-  signer: NDKSigner
+  signer: NostrKeySigner
   rumorKind: typeof EVENT_KINDS.DIRECT_MESSAGE | typeof EVENT_KINDS.ORDER
   /** Wrap a sender self-copy for local recovery. Default true. */
   selfCopy?: boolean
@@ -787,7 +860,7 @@ export interface PublishPrivateMessageInput {
   relayAuthMethod?: "nip07" | "nip46"
   /** Controlled visibility seam for interactive external signer workflows. */
   waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
-  giftWrapFn?: typeof giftWrap
+  giftWrapFn?: typeof wrapPrivateMessage
   /**
    * Durable exact-retry seam. Runs after wrapping and before the first relay
    * write; callers may persist the signed ciphertext wraps, never plaintext.
@@ -881,10 +954,10 @@ function assertPrivateMessageSignerSessionCurrent(
 }
 
 function createInteractionGatedSigner(
-  signer: NDKSigner,
+  signer: NostrKeySigner,
   waitForSignerVisibility: (() => Promise<void>) | undefined,
   shouldContinue: (() => boolean) | undefined
-): NDKSigner {
+): NostrKeySigner {
   const beforeSignerOperation = async () => {
     assertPrivateMessageSignerSessionCurrent(shouldContinue)
     await waitForSignerVisibility?.()
@@ -896,26 +969,26 @@ function createInteractionGatedSigner(
 
   return new Proxy(signer, {
     get(target, property) {
-      if (property === "user") {
-        return async (...args: Parameters<NDKSigner["user"]>) => {
+      if (property === "getPublicKey") {
+        return async (...args: Parameters<NostrKeySigner["getPublicKey"]>) => {
           await beforeSignerOperation()
-          const result = await target.user(...args)
+          const result = await target.getPublicKey(...args)
           afterSignerOperation()
           return result
         }
       }
-      if (property === "sign") {
-        return async (...args: Parameters<NDKSigner["sign"]>) => {
+      if (property === "signEvent") {
+        return async (...args: Parameters<NostrKeySigner["signEvent"]>) => {
           await beforeSignerOperation()
-          const result = await target.sign(...args)
+          const result = await target.signEvent(...args)
           afterSignerOperation()
           return result
         }
       }
-      if (property === "encrypt") {
-        return async (...args: Parameters<NDKSigner["encrypt"]>) => {
+      if (property === "encryptNip44") {
+        return async (...args: Parameters<NostrKeySigner["encryptNip44"]>) => {
           await beforeSignerOperation()
-          const result = await target.encrypt(...args)
+          const result = await target.encryptNip44(...args)
           afterSignerOperation()
           return result
         }
@@ -1161,7 +1234,7 @@ export async function publishPrivateMessage(
     throw new Error("Private message rumor author does not match sender")
   }
   assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
-  const signerPubkey = (await input.signer.user()).pubkey.trim().toLowerCase()
+  const signerPubkey = (await input.signer.getPublicKey()).trim().toLowerCase()
   assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   if (signerPubkey !== senderPubkey) {
     throw new Error("Private message signer does not match sender")
@@ -1187,7 +1260,7 @@ export async function publishPrivateMessage(
     )
   }
 
-  const giftWrapFn = input.giftWrapFn ?? giftWrap
+  const giftWrapFn = input.giftWrapFn ?? wrapPrivateMessage
   const selfCopy = input.selfCopy ?? true
   const refreshRelayLists = input.refreshRelayLists ?? true
   const wrapParams = { rumorKind: input.rumorKind }
@@ -1385,8 +1458,7 @@ export async function publishPrivateMessage(
     typeof selectPrivateMessageDeliveryRoute
   > | null = progressiveRecipientDelivery ? null : await resolveSenderRoute()
 
-  // NDK's giftWrap builds and encrypts the seal from rumor.ndk. Attach the
-  // shared instance before wrapping; attaching only at publish time is too late.
+  // The envelope's event context carries no account key authority.
   input.rumor.ndk ??= getNdk()
   const externalSignerInteraction =
     (input.signerInteraction ?? "background_external") === "external"
@@ -1406,14 +1478,11 @@ export async function publishPrivateMessage(
   const relayAuthentication =
     externalSignerInteraction &&
     authenticatedOwnerPubkey &&
-    input.relayAuthMethod
+    input.relayAuthMethod &&
+    input.signer.authMethod === input.relayAuthMethod
       ? {
           expectedPubkey: authenticatedOwnerPubkey,
-          signer: createNdkNostrEventSigner(
-            input.signer,
-            authenticatedOwnerPubkey,
-            input.relayAuthMethod
-          ),
+          signer: input.signer,
           sessionScope: input.signer,
           waitForSignerVisibility,
         }
