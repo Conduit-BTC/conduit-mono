@@ -454,7 +454,14 @@ export async function fetchMerchantShippingPolicy(
   if (latest)
     return {
       state: "unavailable",
-      reason: "invalid_policy",
+      reason:
+        new Set(
+          events
+            .filter((event) => event.created_at === latest.created_at)
+            .map((event) => event.id)
+        ).size > 1
+          ? "conflicting"
+          : "invalid_policy",
       coverageComplete,
       revision,
     }

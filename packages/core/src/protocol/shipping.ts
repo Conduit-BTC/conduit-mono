@@ -1796,10 +1796,9 @@ export function selectLatestShippingOptions(
     const newest = candidates.filter(
       (candidate) => (candidate.created_at ?? 0) === newestCreatedAt
     )
-    if (
-      new Set(newest.map((candidate) => candidate.id)).size !== 1 &&
-      !coordinate.endsWith(`:${MERCHANT_SHIPPING_POLICY_D_TAG}`)
-    ) {
+    // Payment terms need an unambiguous revision. A relay's NIP-01 ID
+    // tie-break must not erase a known conflict in the retained frontier.
+    if (new Set(newest.map((candidate) => candidate.id)).size !== 1) {
       continue
     }
     const event = [...newest].sort((a, b) => a.id.localeCompare(b.id))[0]!

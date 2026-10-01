@@ -946,19 +946,18 @@ describe("shipping policy read evidence", () => {
     })
   })
 
-  it("uses NIP-01 lowest id tie and ignores foreign-author deletion", () => {
+  it("rejects same-timestamp conflicts while accepting duplicate evidence and ignoring foreign-author deletion", () => {
     const first = signedPolicy(policy, 10)
     const second = signedPolicy({ ...policy, handlingMinor: 0 }, 10)
-    const expected = [first, second].sort((a, b) =>
-      a.id.localeCompare(b.id)
-    )[0]!
     const foreign = finalizeEvent(
       { kind: 5, created_at: 11, content: "", tags: [["a", coordinate]] },
       generateSecretKey()
     )
+    expect(selectLatestShippingOptions([first, second], [foreign])).toEqual([])
+    expect(selectLatestShippingOptions([second, first])).toEqual([])
     expect(
-      selectLatestShippingOptions([first, second], [foreign])[0]?.eventId
-    ).toBe(expected.id)
+      selectLatestShippingOptions([first, first], [foreign])[0]?.eventId
+    ).toBe(first.id)
   })
 })
 

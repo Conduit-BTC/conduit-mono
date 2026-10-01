@@ -9,6 +9,7 @@ import {
   __resetShippingTestOverrides,
   __setShippingTestOverrides,
   buildShippingPolicyEventDraft,
+  fetchMerchantShippingPolicy,
   getMerchantShippingPolicyCoordinate,
   getShippingOptionsByCoordinates,
   parseProductEvent,
@@ -48,10 +49,10 @@ const policy: ShippingPolicy = {
   },
   international: null,
 }
-const policyEvent = (created_at = 1) =>
+const policyEvent = (created_at = 1, terms: ShippingPolicy = policy) =>
   finalizeEvent(
     {
-      ...buildShippingPolicyEventDraft({ policy }),
+      ...buildShippingPolicyEventDraft({ policy: terms }),
       created_at,
     },
     secret
@@ -84,8 +85,8 @@ const listing = {
   },
 }
 
-function reader() {
-  const frontiers = new Map<string, CachedShippingOptionFrontier>()
+function reader(frontiers = new Map<string, CachedShippingOptionFrontier>()) {
+  let observedPolicyEvents = [policyEvent()]
   let mode:
     | "live"
     | "unavailable"
@@ -126,7 +127,9 @@ function reader() {
           mode === "complete_empty" ||
           mode === "withdrawn"
           ? []
-          : [policyEvent(mode === "older" ? 0 : 1)]
+          : mode === "older"
+            ? [policyEvent(0)]
+            : observedPolicyEvents
         : mode === "withdrawn" && filter["#a"]
           ? [
               finalizeEvent(
@@ -161,6 +164,10 @@ function reader() {
     },
   })
   return {
+    frontiers,
+    setEvents: (events: typeof observedPolicyEvents) => {
+      observedPolicyEvents = events
+    },
     setMode: (next: typeof mode) => {
       mode = next
     },
@@ -176,6 +183,104 @@ const resolveProductFulfillment = async (current: Product) => ({
 afterEach(() => __resetShippingTestOverrides())
 
 describe("current policy evidence at commerce action gates", () => {
+  for (const mode of ["live", "partial_live"] as const) {
+    it(`blocks conflicting policy revisions through ${mode}, subset reads and restart until a newer revision`, async () => {
+      let source = reader()
+      const first = policyEvent()
+      const otherTerms: ShippingPolicy = {
+        ...policy,
+        domestic: {
+          rules: [
+            {
+              country: "US",
+              bands: [{ maxWeightGrams: 1000, priceMinor: 900 }],
+            },
+          ],
+        },
+      }
+      const second = policyEvent(1, otherTerms)
+      const reviewed = prepareCartFulfillment(
+        [raw],
+        await source.read(),
+        destination
+      ).items
+      expect(reviewed[0]!.shippingPolicyQuote?.amountSats).toBe(100)
+      source.setMode(mode)
+      source.setEvents([first, second])
+      expect(await source.read()).toEqual([])
+      expect(source.frontiers.get(coordinate)?.signedEvents).toHaveLength(2)
+      expect(await fetchMerchantShippingPolicy(merchant)).toMatchObject({
+        state: "unavailable",
+        reason: "conflicting",
+        coverageComplete: mode === "live",
+      })
+      const conflicted = prepareCartFulfillment(
+        [raw],
+        await source.read(),
+        destination
+      ).items
+      expect(conflicted[0]!.shippingPolicyQuote).toBeUndefined()
+      expect(getCartShippingOptionsAvailable(conflicted)).toBe(false)
+      await expect(
+        authorizeCurrentCheckoutItems({
+          mode: "direct_payment",
+          rawItems: [raw],
+          reviewedItems: reviewed,
+          refreshedProducts: [product],
+          destination,
+          readShippingOptions: source.read,
+          resolveProductFulfillment,
+          authorizePickupHandlers: async () => {},
+        })
+      ).resolves.toEqual({ status: "changed" })
+      await expect(
+        prepareProductPublicationListings(
+          [listing],
+          { merchantPubkey: merchant },
+          {
+            getShippingOptions: source.read,
+            getEventMarketPickups: async () => [],
+          }
+        )
+      ).rejects.toThrow("could not be verified")
+      for (const subset of [[first], [second], []]) {
+        source.setEvents(subset)
+        expect(await source.read()).toEqual([])
+      }
+      source.setMode("unavailable")
+      expect(await fetchMerchantShippingPolicy(merchant)).toMatchObject({
+        state: "unavailable",
+        reason: "conflicting",
+        coverageComplete: false,
+      })
+      const retained = source.frontiers
+      __resetShippingTestOverrides()
+      source = reader(retained)
+      source.setEvents([first])
+      expect(await source.read()).toEqual([])
+      source.setMode("partial_live")
+      const newer = policyEvent(2, otherTerms)
+      source.setEvents([first, second, newer])
+      const recovered = await source.read()
+      expect(recovered).toHaveLength(1)
+      expect(recovered[0]?.eventId).toBe(newer.id)
+      expect(source.frontiers.get(coordinate)?.signedEvents).toHaveLength(1)
+      const ready = prepareCartFulfillment([raw], recovered, destination).items
+      expect(ready[0]!.shippingPolicyQuote?.amountSats).toBe(900)
+      await expect(
+        authorizeCurrentCheckoutItems({
+          mode: "direct_payment",
+          rawItems: [raw],
+          reviewedItems: ready,
+          refreshedProducts: [product],
+          destination,
+          readShippingOptions: source.read,
+          resolveProductFulfillment,
+          authorizePickupHandlers: async () => {},
+        })
+      ).resolves.toMatchObject({ status: "ok" })
+    })
+  }
   for (const mode of [
     "unavailable",
     "partial_empty",
