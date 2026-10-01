@@ -41,6 +41,9 @@ per-relay outcomes. Outcomes retain the event ID and attempt number:
 - `policy_blocked`: live target policy prevents delivery.
 - `error`: the executor failed before a usable relay outcome.
 
+Rejection of a separate NIP-42 AUTH event is authorization failure, not rejection
+of the original signed event.
+
 Earlier acknowledgements remain positive delivery evidence across retries.
 Attempt history preserves other earlier outcomes; absence of an ACK never
 proves absence from a relay. Diagnostics contain statuses and relay URLs, never

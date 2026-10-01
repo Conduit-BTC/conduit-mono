@@ -9,6 +9,8 @@ import {
 } from "@tanstack/react-query"
 import {
   getAccountSigner,
+  getAccountRelayScope,
+  getActiveRelaySettingsScope,
   readEventMarketReadyReceipts,
   useAuth,
   useConduitSession,
@@ -1057,7 +1059,10 @@ export function MyEventsPanel({
       retryMerchantOrganizerRecord({
         organizerPubkey: input.ownerPubkey,
         authenticatedPubkey: null,
-        shouldContinue: () => isCurrentOwner(input.ownerPubkey),
+        // Signed delivery follows the account, independently of this event panel.
+        shouldContinue: () =>
+          getActiveRelaySettingsScope() ===
+          getAccountRelayScope(input.ownerPubkey),
         reference: input.reference,
         record: input.record,
       }),
@@ -1265,7 +1270,10 @@ export function MyEventsPanel({
         delivery: input.delivery,
         transport: {
           authenticatedPubkey: null,
-          shouldContinue: () => isCurrentOwner(input.ownerPubkey),
+          // Signed delivery follows the account, independently of this event panel.
+          shouldContinue: () =>
+            getActiveRelaySettingsScope() ===
+            getAccountRelayScope(input.ownerPubkey),
         },
       }),
     onSuccess: async (_delivery, input) => {

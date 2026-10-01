@@ -252,28 +252,39 @@ describe("composed plain signed-event target plan", () => {
     }
   })
 
-  it("cancels an already-sent event without converting cancellation into timeout", async () => {
-    const relay = controlledRelays()
-    const cancellation = new AbortController()
-    try {
-      const resultPromise = publishSignedEventPlan({
-        event: event(),
-        relayUrls: ["wss://stall.fixture.conduit.market"],
-        timeoutMs: 1_000,
-        requiredRelayCount: 1,
-        signal: cancellation.signal,
-      })
-      while (relay.frames.length === 0)
-        await new Promise((resolve) => setTimeout(resolve, 1))
-      cancellation.abort()
-      const result = await resultPromise
-      expect(result.relayAttempts[0]?.status).toBe("cancelled")
-      expect(result.successfulRelayUrls).toEqual([])
-      expect(result.attemptedRelayUrls).toEqual([
-        "wss://stall.fixture.conduit.market",
-      ])
-    } finally {
-      await relay.stop()
+  it("cancels an already-sent event on abort or account change without inventing a timeout", async () => {
+    for (const fence of ["abort", "account"] as const) {
+      const relay = controlledRelays()
+      const cancellation = new AbortController()
+      const signed = event()
+      let activeAccount: string | null = signed.pubkey
+      try {
+        const resultPromise = publishSignedEventPlan({
+          event: signed,
+          relayUrls: ["wss://stall.fixture.conduit.market"],
+          timeoutMs: 1_000,
+          requiredRelayCount: 1,
+          accountPubkey: signed.pubkey,
+          accountNetworkLocalStateRepository: { get: async () => undefined },
+          shouldContinue: () => activeAccount === signed.pubkey,
+          signal: cancellation.signal,
+        })
+        while (relay.frames.length === 0)
+          await new Promise((resolve) => setTimeout(resolve, 1))
+        if (fence === "abort") cancellation.abort()
+        else activeAccount = null
+        const result = await resultPromise
+        expect(result.relayAttempts[0]?.status).toBe("cancelled")
+        expect(result.successfulRelayUrls).toEqual([])
+        expect(result.attemptedRelayUrls).toEqual([
+          "wss://stall.fixture.conduit.market",
+        ])
+        expect(relay.frames).toHaveLength(1)
+        await relay.stop()
+        expect(relay.counts).toEqual({ opened: 1, closed: 1 })
+      } finally {
+        await relay.stop()
+      }
     }
   })
 

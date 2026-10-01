@@ -294,6 +294,36 @@ describe("exact relay writer", () => {
     expect(socket.closeCalls).toBe(1)
   })
 
+  it("distinguishes AUTH rejection from rejection of the original event", async () => {
+    const socket = new WriterTestSocket()
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://auth.nostr1.com/",
+      signedEvent: signedEvent(),
+      timeoutMs: 100,
+      authorization: {
+        expectedPubkey: AUTH_PUBKEY,
+        signer: authSigner(),
+        sessionScope: {},
+      },
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+    socket.open()
+    socket.message(JSON.stringify(["AUTH", "rejected-auth-challenge"]))
+    await nextTask()
+    const [, authEvent] = JSON.parse(socket.sentPayloads[1]!)
+    socket.message(
+      JSON.stringify([
+        "OK",
+        authEvent.id,
+        false,
+        "restricted: synthetic auth denial",
+      ])
+    )
+    await expect(result).resolves.toBe("auth_required")
+    expect(socket.sentPayloads).toHaveLength(2)
+    expect(socket.closeCalls).toBe(1)
+  })
+
   it("does not sign a superseding challenge on one write connection", async () => {
     const socket = new WriterTestSocket()
     let signerCalls = 0
@@ -352,9 +382,9 @@ describe("exact relay writer", () => {
     socket.open()
     socket.message(JSON.stringify(["AUTH", "challenge-1"]))
 
-    await expect(result).resolves.toBe("timed_out")
+    await expect(result).resolves.toBe("cancelled")
     expect(signerCalls).toBe(0)
-    expect(socket.closeCalls).toBe(1)
+    expect(socket.closeCalls).toBe(0)
   })
 
   it("reports a signer-level auth failure to the enclosing publish attempt", async () => {
@@ -383,7 +413,7 @@ describe("exact relay writer", () => {
     socket.open()
     socket.message(JSON.stringify(["AUTH", "denied-challenge"]))
 
-    await expect(result).resolves.toBe("timed_out")
+    await expect(result).resolves.toBe("auth_required")
     expect(signerFailures).toBe(1)
     expect(socket.closeCalls).toBe(1)
   })
@@ -438,7 +468,7 @@ describe("exact relay writer", () => {
     socket.open()
     socket.message(JSON.stringify(["AUTH", "challenge-1"]))
 
-    await expect(result).resolves.toBe("timed_out")
+    await expect(result).resolves.toBe("auth_required")
     expect(socket.sentPayloads).toHaveLength(1)
     expect(socket.closeCalls).toBe(1)
   })

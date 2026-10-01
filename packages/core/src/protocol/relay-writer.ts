@@ -79,11 +79,19 @@ export function publishSignedEventFrameToRelay(input: {
     : input.relayUrl
   if (!relayUrl) return Promise.resolve("timed_out")
 
-  if (input.signal?.aborted || input.shouldContinue?.() === false)
+  if (
+    input.signal?.aborted ||
+    input.shouldContinue?.() === false ||
+    input.authorization?.shouldContinue?.() === false
+  )
     return Promise.resolve("cancelled")
   const eventId = input.signedEvent.id
   const frame = serializeEventFrame(input.signedEvent)
   const authorization = input.authorization
+  const isCancelled = () =>
+    input.signal?.aborted ||
+    input.shouldContinue?.() === false ||
+    authorization?.shouldContinue?.() === false
   const expectedAuthPubkey = authorization
     ? normalizeExpectedPubkey(authorization.expectedPubkey)
     : null
@@ -149,7 +157,7 @@ export function publishSignedEventFrameToRelay(input: {
     const sendFrame = () => {
       const send = (eligible = true) => {
         if (settled) return
-        if (input.signal?.aborted || input.shouldContinue?.() === false) {
+        if (isCancelled()) {
           finish("cancelled")
           return
         }
@@ -168,14 +176,18 @@ export function publishSignedEventFrameToRelay(input: {
       else send()
     }
     input.signal?.addEventListener("abort", cancel, { once: true })
-    if (input.shouldContinue)
+    if (input.shouldContinue || authorization?.shouldContinue)
       sessionFence = setInterval(() => {
-        if (input.shouldContinue?.() === false) finish("cancelled")
+        if (isCancelled()) finish("cancelled")
       }, 50)
     socket.onopen = () => {
       void sendFrame()
     }
     socket.onmessage = (message) => {
+      if (isCancelled()) {
+        finish("cancelled")
+        return
+      }
       if (typeof message.data !== "string") {
         finish("timed_out")
         return
@@ -221,20 +233,15 @@ export function publishSignedEventFrameToRelay(input: {
           async () => {
             try {
               const signal = authAbortController.signal
-              if (
-                signal.aborted ||
-                authorization.shouldContinue?.() === false
-              ) {
-                finish("timed_out")
+              if (signal.aborted || settled) return
+              if (isCancelled()) {
+                finish("cancelled")
                 return
               }
               await authorization.waitForSignerVisibility?.(signal)
-              if (
-                signal.aborted ||
-                settled ||
-                authorization.shouldContinue?.() === false
-              ) {
-                finish("timed_out")
+              if (signal.aborted || settled) return
+              if (isCancelled()) {
+                finish("cancelled")
                 return
               }
               const signerPubkey = (await authorization.signer.getPublicKey())
@@ -242,11 +249,12 @@ export function publishSignedEventFrameToRelay(input: {
                 .toLowerCase()
               if (signerPubkey !== expectedAuthPubkey) {
                 authorization.onSignerFailure?.()
-                finish("timed_out")
+                finish(isCancelled() ? "cancelled" : "auth_required")
                 return
               }
-              if (signal.aborted || settled) {
-                finish("timed_out")
+              if (signal.aborted || settled) return
+              if (isCancelled()) {
+                finish("cancelled")
                 return
               }
               const createdAt = Math.floor(
@@ -269,14 +277,14 @@ export function publishSignedEventFrameToRelay(input: {
                 challenge,
                 createdAt,
               })
-              if (!exactAuthEvent) authorization.onSignerFailure?.()
-              if (
-                signal.aborted ||
-                settled ||
-                authorization.shouldContinue?.() === false ||
-                !exactAuthEvent
-              ) {
-                finish("timed_out")
+              if (signal.aborted || settled) return
+              if (isCancelled()) {
+                finish("cancelled")
+                return
+              }
+              if (!exactAuthEvent) {
+                authorization.onSignerFailure?.()
+                finish("auth_required")
                 return
               }
               authEventId = signed.id
@@ -288,23 +296,24 @@ export function publishSignedEventFrameToRelay(input: {
                 return
               }
             } catch {
+              if (settled) return
               authorization.onSignerFailure?.()
-              finish("timed_out")
+              finish(isCancelled() ? "cancelled" : "auth_required")
             }
           }
         )
         return
       }
 
-      if (input.signal?.aborted || input.shouldContinue?.() === false) {
+      if (isCancelled()) {
         finish("cancelled")
         return
       }
       if (parsed[0] !== "OK") return
       if (authEventId !== null && parsed[1] === authEventId) {
         if (parsed[2] === true && authState === "sent") {
-          if (authorization?.shouldContinue?.() === false) {
-            finish("timed_out")
+          if (isCancelled()) {
+            finish("cancelled")
             return
           }
           authState = "accepted"
@@ -312,10 +321,8 @@ export function publishSignedEventFrameToRelay(input: {
           return
         }
         if (parsed[2] === false) {
-          const reason = typeof parsed[3] === "string" ? parsed[3].trim() : ""
-          finish(
-            NIP_01_REJECTION_REASON.test(reason) ? "rejected" : "timed_out"
-          )
+          // This OK rejects the AUTH event, not the original EVENT.
+          finish("auth_required")
         }
         return
       }
