@@ -5,7 +5,7 @@ import { finalizeEvent, getPublicKey, type VerifiedEvent } from "nostr-tools"
 import {
   AUTH_REVISION_STORAGE_KEY,
   AUTH_STORAGE_KEY,
-  NdkBunkerSignerAdapter,
+  RemoteSessionSigner,
   RemoteSignerError,
   bumpAuthRevision,
   claimAuthRevision,
@@ -804,10 +804,9 @@ describe("remote signer lifecycle", () => {
     expect(keyVault.values.has(connection.session.clientKeyId)).toBe(false)
     expect(logoutCalls).toBe(1)
     await expect(
-      connection.signer.encrypt(
-        new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "payload",
-        "nip44"
+      connection.signer.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "payload"
       )
     ).rejects.toThrow("session is unavailable")
   })
@@ -848,10 +847,9 @@ describe("remote signer lifecycle", () => {
     expect(logoutCalls).toBe(0)
     expect(closeCalls).toBe(1)
     await expect(
-      connection.signer.encrypt(
-        new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "payload",
-        "nip44"
+      connection.signer.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "payload"
       )
     ).rejects.toThrow("session is unavailable")
   })
@@ -902,10 +900,9 @@ describe("remote signer lifecycle", () => {
     expect(keyVault.values.has(connection.session.clientKeyId)).toBe(true)
     expect(logoutCalls).toBe(1)
     await expect(
-      connection.signer.encrypt(
-        new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "payload",
-        "nip44"
+      connection.signer.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "payload"
       )
     ).rejects.toThrow("session is unavailable")
   })
@@ -1843,10 +1840,9 @@ describe("remote signer lifecycle", () => {
     const savedMetadata = storage.getItem(AUTH_STORAGE_KEY)
 
     await expect(
-      connection.signer.encrypt(
-        new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "plaintext",
-        "nip44"
+      connection.signer.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "plaintext"
       )
     ).rejects.toMatchObject({ code: "timeout" })
 
@@ -1871,7 +1867,7 @@ describe("remote signer lifecycle", () => {
     )
     expect(signCalls).toBe(0)
 
-    await restored.signer.sign({
+    await restored.signer.signEvent({
       pubkey: USER_PUBKEY,
       kind: 1,
       content: "explicit retry",
@@ -1965,10 +1961,10 @@ describe("remote signer lifecycle", () => {
   })
 })
 
-describe("NDK remote signer adapter", () => {
+describe("plain remote session signer", () => {
   it("advertises NIP-44 encryption and retains NIP-04 decrypt only", async () => {
     let nip04EncryptCalls = 0
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip04Encrypt: async () => {
           nip04EncryptCalls += 1
@@ -1979,30 +1975,30 @@ describe("NDK remote signer adapter", () => {
     )
     const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
 
-    expect(await adapter.encryptionEnabled()).toEqual(["nip44"])
-    expect(await adapter.encryptionEnabled("nip44")).toEqual(["nip44"])
-    expect(await adapter.encryptionEnabled("nip04")).toEqual([])
-    expect(await adapter.encrypt(peer, "hello", "nip44")).toBe("44:hello")
-    expect(await adapter.decrypt(peer, "44:hello", "nip44")).toBe("hello")
-    await expect(adapter.encrypt(peer, "hello", "nip04")).rejects.toMatchObject(
-      { code: "unsupported", operation: "nip04 encrypt" }
-    )
+    expect(await adapter.encryptNip44(peer.pubkey, "hello")).toBe("44:hello")
+    expect(await adapter.decryptNip44(peer.pubkey, "44:hello")).toBe("hello")
+    expect("encryptLegacy" in adapter).toBe(false)
+    expect(adapter.capabilities).toEqual({
+      signEvent: true,
+      nip44: true,
+      nip04Decrypt: true,
+    })
     expect(nip04EncryptCalls).toBe(0)
-    expect(await adapter.decrypt(peer, "04:hello", "nip04")).toBe("hello")
-    const signature = await adapter.sign({
+    expect(await adapter.decryptLegacy(peer.pubkey, "04:hello")).toBe("hello")
+    const signature = await adapter.signEvent({
       pubkey: USER_PUBKEY,
       kind: 1,
       content: "",
       tags: [],
       created_at: 1,
     })
-    expect(signature).toHaveLength(128)
-    expect((await adapter.user()).pubkey).toBe(USER_PUBKEY)
+    expect(signature.sig).toHaveLength(128)
+    expect(await adapter.getPublicKey()).toBe(USER_PUBKEY)
   })
 
   it("applies per-operation timeouts", async () => {
     let closeCalls = 0
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip44Encrypt: () => new Promise(() => undefined),
         close: async () => {
@@ -2013,11 +2009,17 @@ describe("NDK remote signer adapter", () => {
       { timeoutMs: 1 }
     )
     await expect(
-      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "hello", "nip44")
+      adapter.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "hello"
+      )
     ).rejects.toMatchObject({ code: "timeout", operation: "nip44 encrypt" })
     expect(closeCalls).toBe(1)
     await expect(
-      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "again", "nip44")
+      adapter.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "again"
+      )
     ).rejects.toMatchObject({ code: "unavailable" })
   })
 
@@ -2025,7 +2027,7 @@ describe("NDK remote signer adapter", () => {
     let encryptCalls = 0
     let closeCalls = 0
     const transitions: RemoteSignerAdapterInvalidation[] = []
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip44Encrypt: () => {
           encryptCalls += 1
@@ -2044,10 +2046,9 @@ describe("NDK remote signer adapter", () => {
 
     let causalError: RemoteSignerError | null = null
     try {
-      await adapter.encrypt(
-        new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "hello",
-        "nip44"
+      await adapter.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "hello"
       )
     } catch (error) {
       if (error instanceof RemoteSignerError) causalError = error
@@ -2066,7 +2067,10 @@ describe("NDK remote signer adapter", () => {
     })
 
     await expect(
-      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "again", "nip44")
+      adapter.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "again"
+      )
     ).rejects.toMatchObject({ code: "unavailable", cause: causalError })
     expect(encryptCalls).toBe(1)
     expect(closeCalls).toBe(1)
@@ -2076,7 +2080,7 @@ describe("NDK remote signer adapter", () => {
   it("immediately invalidates a transport that is already unavailable", async () => {
     let closeCalls = 0
     const transitions: RemoteSignerAdapterInvalidation[] = []
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip44Encrypt: async () => {
           throw new Nip46TransportError("unavailable", "relay unavailable")
@@ -2092,7 +2096,10 @@ describe("NDK remote signer adapter", () => {
     )
 
     await expect(
-      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "hello", "nip44")
+      adapter.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "hello"
+      )
     ).rejects.toMatchObject({ code: "unavailable" })
     expect(transitions).toHaveLength(1)
     expect(transitions[0]).toMatchObject({
@@ -2105,7 +2112,7 @@ describe("NDK remote signer adapter", () => {
   it("does not invalidate the session for rejection or unsupported permission", async () => {
     const transitions: RemoteSignerAdapterInvalidation[] = []
     let calls = 0
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip44Encrypt: async () => {
           calls += 1
@@ -2125,35 +2132,35 @@ describe("NDK remote signer adapter", () => {
     )
     const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
 
-    await expect(adapter.encrypt(peer, "first", "nip44")).rejects.toMatchObject(
-      {
-        code: "rejected",
-      }
-    )
     await expect(
-      adapter.encrypt(peer, "second", "nip44")
+      adapter.encryptNip44(peer.pubkey, "first")
+    ).rejects.toMatchObject({
+      code: "rejected",
+    })
+    await expect(
+      adapter.encryptNip44(peer.pubkey, "second")
     ).rejects.toMatchObject({
       code: "unsupported",
     })
-    await expect(adapter.encrypt(peer, "third", "nip44")).resolves.toBe(
+    await expect(adapter.encryptNip44(peer.pubkey, "third")).resolves.toBe(
       "ciphertext"
     )
     expect(transitions).toEqual([])
   })
 
   it("blocks operations while a resume identity check is in progress", async () => {
-    const adapter = new NdkBunkerSignerAdapter(fakeSigner(), USER_PUBKEY)
+    const adapter = new RemoteSessionSigner(fakeSigner(), USER_PUBKEY)
     const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
 
     expect(adapter.beginVerification()).toBe(true)
     expect(adapter.beginVerification()).toBe(true)
     await expect(
-      adapter.encrypt(peer, "blocked", "nip44")
+      adapter.encryptNip44(peer.pubkey, "blocked")
     ).rejects.toMatchObject({
       code: "unavailable",
     })
     expect(adapter.completeVerification()).toBe(true)
-    await expect(adapter.encrypt(peer, "ready", "nip44")).resolves.toBe(
+    await expect(adapter.encryptNip44(peer.pubkey, "ready")).resolves.toBe(
       "44:ready"
     )
   })
@@ -2172,16 +2179,16 @@ describe("NDK remote signer adapter", () => {
         return `44:${value}`
       },
     })
-    const adapter = new NdkBunkerSignerAdapter(bunkerSigner, USER_PUBKEY)
+    const adapter = new RemoteSessionSigner(bunkerSigner, USER_PUBKEY)
     const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
-    const approved = adapter.encrypt(peer, "approved", "nip44")
+    const approved = adapter.encryptNip44(peer.pubkey, "approved")
 
     expect(adapter.hasPendingRequests()).toBe(true)
     expect(adapter.beginDraining()).toBe(true)
     const idle = adapter.whenIdle()
 
     await expect(
-      adapter.encrypt(peer, "blocked-after-boundary", "nip44")
+      adapter.encryptNip44(peer.pubkey, "blocked-after-boundary")
     ).rejects.toMatchObject({ code: "unavailable" })
     expect(encryptCalls).toBe(1)
 
@@ -2201,7 +2208,7 @@ describe("NDK remote signer adapter", () => {
     })
     expect(adapter.completeVerification()).toBe(true)
 
-    await expect(adapter.encrypt(peer, "reviewed", "nip44")).resolves.toBe(
+    await expect(adapter.encryptNip44(peer.pubkey, "reviewed")).resolves.toBe(
       "44:reviewed"
     )
     expect(encryptCalls).toBe(2)
@@ -2211,7 +2218,7 @@ describe("NDK remote signer adapter", () => {
     let rejectFirst: ((error: Nip46TransportError) => void) | undefined
     let calls = 0
     const transitions: RemoteSignerAdapterInvalidation[] = []
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip44Encrypt: async () => {
           calls += 1
@@ -2229,7 +2236,7 @@ describe("NDK remote signer adapter", () => {
       }
     )
     const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
-    const inFlight = adapter.encrypt(peer, "ambiguous", "nip44")
+    const inFlight = adapter.encryptNip44(peer.pubkey, "ambiguous")
 
     expect(adapter.beginVerification()).toBe(true)
     rejectFirst?.(
@@ -2241,7 +2248,7 @@ describe("NDK remote signer adapter", () => {
     await expect(inFlight).rejects.toMatchObject({ code: "unavailable" })
     expect(transitions).toEqual([])
     expect(adapter.completeVerification()).toBe(true)
-    await expect(adapter.encrypt(peer, "reviewed", "nip44")).resolves.toBe(
+    await expect(adapter.encryptNip44(peer.pubkey, "reviewed")).resolves.toBe(
       "ciphertext"
     )
   })
@@ -2250,7 +2257,7 @@ describe("NDK remote signer adapter", () => {
     let resolveFirst: ((result: string) => void) | undefined
     let calls = 0
     const transitions: RemoteSignerAdapterInvalidation[] = []
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip44Encrypt: async () => {
           calls += 1
@@ -2268,7 +2275,7 @@ describe("NDK remote signer adapter", () => {
       }
     )
     const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
-    const inFlight = adapter.encrypt(peer, "old", "nip44")
+    const inFlight = adapter.encryptNip44(peer.pubkey, "old")
 
     expect(adapter.beginVerification()).toBe(true)
     expect(adapter.completeVerification()).toBe(true)
@@ -2276,13 +2283,15 @@ describe("NDK remote signer adapter", () => {
 
     await expect(inFlight).rejects.toMatchObject({ code: "unavailable" })
     expect(transitions).toEqual([])
-    await expect(adapter.encrypt(peer, "new", "nip44")).resolves.toBe("fresh")
+    await expect(adapter.encryptNip44(peer.pubkey, "new")).resolves.toBe(
+      "fresh"
+    )
   })
 
   it("closes and emits only once when concurrent requests time out", async () => {
     let closeCalls = 0
     const transitions: RemoteSignerAdapterInvalidation[] = []
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip44Encrypt: () => new Promise(() => undefined),
         nip44Decrypt: () => new Promise(() => undefined),
@@ -2299,8 +2308,8 @@ describe("NDK remote signer adapter", () => {
     const peer = new NDKUser({ pubkey: OTHER_PUBKEY })
 
     const results = await Promise.allSettled([
-      adapter.encrypt(peer, "plaintext", "nip44"),
-      adapter.decrypt(peer, "ciphertext", "nip44"),
+      adapter.encryptNip44(peer.pubkey, "plaintext"),
+      adapter.decryptNip44(peer.pubkey, "ciphertext"),
     ])
 
     expect(results.map((result) => result.status)).toEqual([
@@ -2314,7 +2323,7 @@ describe("NDK remote signer adapter", () => {
   it("does not emit a stale failure after manual disposal", async () => {
     let closeCalls = 0
     const transitions: RemoteSignerAdapterInvalidation[] = []
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip44Encrypt: () => new Promise(() => undefined),
         close: async () => {
@@ -2328,10 +2337,9 @@ describe("NDK remote signer adapter", () => {
       }
     )
 
-    const request = adapter.encrypt(
-      new NDKUser({ pubkey: OTHER_PUBKEY }),
-      "plaintext",
-      "nip44"
+    const request = adapter.encryptNip44(
+      new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+      "plaintext"
     )
     adapter.invalidate()
 
@@ -2341,7 +2349,7 @@ describe("NDK remote signer adapter", () => {
   })
 
   it("does not let a lifecycle callback replace the causal error", async () => {
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         nip44Encrypt: () => new Promise(() => undefined),
       }),
@@ -2355,10 +2363,9 @@ describe("NDK remote signer adapter", () => {
     )
 
     await expect(
-      adapter.encrypt(
-        new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "plaintext",
-        "nip44"
+      adapter.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "plaintext"
       )
     ).rejects.toMatchObject({
       code: "timeout",
@@ -2370,7 +2377,7 @@ describe("NDK remote signer adapter", () => {
     let encryptCalls = 0
     let closeCalls = 0
     const transitions: RemoteSignerAdapterInvalidation[] = []
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         signEvent: async (event) =>
           ({
@@ -2395,7 +2402,7 @@ describe("NDK remote signer adapter", () => {
     )
 
     await expect(
-      adapter.sign({
+      adapter.signEvent({
         pubkey: USER_PUBKEY,
         kind: 1,
         content: "original",
@@ -2404,7 +2411,10 @@ describe("NDK remote signer adapter", () => {
       })
     ).rejects.toMatchObject({ code: "invalid_response" })
     await expect(
-      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "secret", "nip44")
+      adapter.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "secret"
+      )
     ).rejects.toMatchObject({ code: "unavailable" })
     expect(encryptCalls).toBe(0)
     expect(closeCalls).toBe(1)
@@ -2417,7 +2427,7 @@ describe("NDK remote signer adapter", () => {
 
   it("rejects a signer that mutates submitted tags in place", async () => {
     const tags = [["subject", "original"]]
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         signEvent: async (event) => {
           event.tags[0]![1] = "changed"
@@ -2428,7 +2438,7 @@ describe("NDK remote signer adapter", () => {
     )
 
     await expect(
-      adapter.sign({
+      adapter.signEvent({
         pubkey: USER_PUBKEY,
         kind: 1,
         content: "original",
@@ -2442,7 +2452,7 @@ describe("NDK remote signer adapter", () => {
   it("invalidates the adapter when the remote signer changes accounts", async () => {
     let decryptCalls = 0
     const transitions: RemoteSignerAdapterInvalidation[] = []
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         signEvent: async (event) =>
           ({
@@ -2463,7 +2473,7 @@ describe("NDK remote signer adapter", () => {
     )
 
     await expect(
-      adapter.sign({
+      adapter.signEvent({
         pubkey: USER_PUBKEY,
         kind: 1,
         content: "original",
@@ -2472,10 +2482,9 @@ describe("NDK remote signer adapter", () => {
       })
     ).rejects.toMatchObject({ code: "session_identity_mismatch" })
     await expect(
-      adapter.decrypt(
-        new NDKUser({ pubkey: OTHER_PUBKEY }),
-        "ciphertext",
-        "nip44"
+      adapter.decryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "ciphertext"
       )
     ).rejects.toMatchObject({ code: "unavailable" })
     expect(decryptCalls).toBe(0)
@@ -2489,7 +2498,7 @@ describe("NDK remote signer adapter", () => {
   it("rejects an invalid signature over an unchanged remote event", async () => {
     let encryptCalls = 0
     const transitions: RemoteSignerAdapterInvalidation[] = []
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({
         signEvent: async (event) => ({
           ...finalizeEvent(event, USER_SECRET),
@@ -2507,7 +2516,7 @@ describe("NDK remote signer adapter", () => {
     )
 
     await expect(
-      adapter.sign({
+      adapter.signEvent({
         pubkey: USER_PUBKEY,
         kind: 1,
         content: "original",
@@ -2516,7 +2525,10 @@ describe("NDK remote signer adapter", () => {
       })
     ).rejects.toMatchObject({ code: "invalid_response" })
     await expect(
-      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "secret", "nip44")
+      adapter.encryptNip44(
+        new NDKUser({ pubkey: OTHER_PUBKEY }).pubkey,
+        "secret"
+      )
     ).rejects.toMatchObject({ code: "unavailable" })
     expect(encryptCalls).toBe(0)
     expect(transitions[0]).toMatchObject({
@@ -2531,11 +2543,11 @@ describe("NDK remote signer adapter", () => {
     const signed = new Promise<VerifiedEvent>((resolve) => {
       resolveSigned = resolve
     })
-    const adapter = new NdkBunkerSignerAdapter(
+    const adapter = new RemoteSessionSigner(
       fakeSigner({ signEvent: () => signed }),
       USER_PUBKEY
     )
-    const request = adapter.sign({
+    const request = adapter.signEvent({
       pubkey: USER_PUBKEY,
       kind: 1,
       content: "",
@@ -2564,7 +2576,7 @@ describe("remote signer resume verification", () => {
     return {
       session: session(),
       bunkerSigner,
-      signer: new NdkBunkerSignerAdapter(bunkerSigner, USER_PUBKEY),
+      signer: new RemoteSessionSigner(bunkerSigner, USER_PUBKEY),
       clientPrivateKey: CLIENT_PRIVATE_KEY_HEX,
       clientKeyAlreadyPersisted: true,
     }

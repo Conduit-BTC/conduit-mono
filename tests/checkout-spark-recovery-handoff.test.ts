@@ -1,3 +1,4 @@
+import { plainTestSigner } from "./helpers/plain-signer"
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
@@ -22,7 +23,7 @@ import {
 } from "../apps/market/src/lib/checkout-spark-recovery-handoff"
 import { createGuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
 
-const BUYER_SIGNER = NDKPrivateKeySigner.generate()
+const BUYER_SIGNER = plainTestSigner(NDKPrivateKeySigner.generate())
 const MERCHANT = getPublicKey(generateSecretKey())
 const WRAP_SECRET = generateSecretKey()
 const CREATED_AT = 1_800_000_000_000

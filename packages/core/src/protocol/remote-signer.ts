@@ -1,9 +1,9 @@
-import {
-  NDKUser,
-  type NDKEncryptionScheme,
-  type NDKSigner,
-  type NostrEvent,
-} from "@nostr-dev-kit/ndk"
+import type {
+  AccountSignerCapabilities,
+  NostrKeySigner,
+  SignedNostrEvent,
+  UnsignedNostrEvent,
+} from "./nostr-event-signer"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
 import { generateSecretKey, getPublicKey } from "nostr-tools"
@@ -184,21 +184,21 @@ export type RemoteSignerAdapterInvalidation =
   | Readonly<{
       type: "permanently_unusable"
       reason: "request_timeout"
-      source: NdkBunkerSignerAdapter
+      source: RemoteSessionSigner
       sessionDisposition: "retain_for_restore"
       error: RemoteSignerError
     }>
   | Readonly<{
       type: "permanently_unusable"
       reason: "transport_unavailable"
-      source: NdkBunkerSignerAdapter
+      source: RemoteSessionSigner
       sessionDisposition: "retain_for_restore"
       error: RemoteSignerError
     }>
   | Readonly<{
       type: "permanently_unusable"
       reason: "integrity_failure"
-      source: NdkBunkerSignerAdapter
+      source: RemoteSessionSigner
       sessionDisposition: "discard"
       error: RemoteSignerError
     }>
@@ -225,7 +225,7 @@ export interface PairNostrConnectSignerOptions extends PairRemoteSignerOptions {
 export interface RemoteSignerConnection {
   session: Nip46AuthSession
   bunkerSigner: RemoteBunkerSigner
-  signer: NdkBunkerSignerAdapter
+  signer: RemoteSessionSigner
   clientPrivateKey: string
   clientKeyAlreadyPersisted: boolean
   previousBunkerSigner?: RemoteBunkerSigner
@@ -1289,7 +1289,7 @@ function createRemoteSignerConnection(
     createdAt: now,
     updatedAt: now,
   }
-  const signer = new NdkBunkerSignerAdapter(bunkerSigner, userPubkey, options)
+  const signer = new RemoteSessionSigner(bunkerSigner, userPubkey, options)
   // A transport can close after the last identity response settles but before
   // the adapter subscribes to lifecycle failures. Never install that gap as a
   // connected session.
@@ -1778,9 +1778,8 @@ export async function logoutRemoteSigner(
   }
 }
 
-export class NdkBunkerSignerAdapter implements NDKSigner {
+export class RemoteSessionSigner implements NostrKeySigner {
   readonly pubkey: string
-  private readonly ndkUser: NDKUser
   private removeTransportFailureListener: (() => void) | null = null
   private verificationGeneration = 0
   private activeRequestCount = 0
@@ -1802,7 +1801,6 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
     private readonly options: RemoteSignerOptions = {}
   ) {
     this.pubkey = requireUserPubkey(userPubkey, "adapter setup")
-    this.ndkUser = new NDKUser({ pubkey: this.pubkey })
     this.removeTransportFailureListener =
       this.bunkerSigner.onLifecycleFailure?.((failure) => {
         const error = classifyRemoteSignerError(failure, "transport lifecycle")
@@ -1810,16 +1808,14 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
       }) ?? null
   }
 
-  get userSync(): NDKUser {
-    return this.ndkUser
+  get capabilities(): AccountSignerCapabilities {
+    const ready = this.lifecycle.state === "active"
+    return { signEvent: ready, nip44: ready, nip04Decrypt: ready }
   }
 
-  async blockUntilReady(): Promise<NDKUser> {
-    return this.ndkUser
-  }
-
-  async user(): Promise<NDKUser> {
-    return this.ndkUser
+  async getPublicKey(): Promise<string> {
+    this.assertUsable()
+    return this.pubkey
   }
 
   invalidate(): void {
@@ -2060,7 +2056,7 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
     }
   }
 
-  async sign(event: NostrEvent): Promise<string> {
+  async signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent> {
     const { kind, created_at: createdAt } = event
     if (
       kind === undefined ||
@@ -2087,20 +2083,14 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
       )
       assertRequestCurrent()
       if (
-        signed.pubkey !== this.pubkey ||
-        signed.kind !== kind ||
-        signed.created_at !== createdAt ||
-        signed.content !== expectedContent ||
-        JSON.stringify(signed.tags) !== JSON.stringify(expectedTags)
+        signed &&
+        typeof signed.pubkey === "string" &&
+        signed.pubkey !== this.pubkey
       ) {
         return this.rejectSignerIntegrityFailure(
           new RemoteSignerError(
-            signed.pubkey !== this.pubkey
-              ? "session_identity_mismatch"
-              : "invalid_response",
-            signed.pubkey !== this.pubkey
-              ? "The remote signer signed with a different account. Sign in again."
-              : "The remote signer returned a changed event. The signature was not accepted.",
+            "session_identity_mismatch",
+            "The remote signer signed with a different account. Sign in again.",
             { operation: "sign event" }
           )
         )
@@ -2109,12 +2099,26 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
         return this.rejectSignerIntegrityFailure(
           new RemoteSignerError(
             "invalid_response",
-            "The remote signer returned an invalid signature. The event was not accepted.",
+            "The remote signer returned invalid event evidence.",
             { operation: "sign event" }
           )
         )
       }
-      return signed.sig
+      if (
+        signed.kind !== kind ||
+        signed.created_at !== createdAt ||
+        signed.content !== expectedContent ||
+        JSON.stringify(signed.tags) !== JSON.stringify(expectedTags)
+      ) {
+        return this.rejectSignerIntegrityFailure(
+          new RemoteSignerError(
+            "invalid_response",
+            "The remote signer returned a changed event. The signature was not accepted.",
+            { operation: "sign event" }
+          )
+        )
+      }
+      return signed
     })
   }
 
@@ -2125,46 +2129,21 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
     throw error
   }
 
-  async encryptionEnabled(
-    scheme?: NDKEncryptionScheme
-  ): Promise<NDKEncryptionScheme[]> {
-    if (scheme === "nip04") return []
-    return ["nip44"]
-  }
-
-  async encrypt(
-    recipient: NDKUser,
-    value: string,
-    scheme: NDKEncryptionScheme = "nip04"
-  ): Promise<string> {
-    if (scheme === "nip04") {
-      throw new RemoteSignerError(
-        "unsupported",
-        "This remote signer connection does not request NIP-04 encryption permission.",
-        { operation: "nip04 encrypt" }
-      )
-    }
-    return this.request(`${scheme} encrypt`, (signal) =>
-      this.bunkerSigner.nip44Encrypt(recipient.pubkey, value, { signal })
+  async encryptNip44(peer: string, value: string): Promise<string> {
+    return this.request("nip44 encrypt", (signal) =>
+      this.bunkerSigner.nip44Encrypt(peer, value, { signal })
     )
   }
 
-  async decrypt(
-    sender: NDKUser,
-    value: string,
-    scheme: NDKEncryptionScheme = "nip04"
-  ): Promise<string> {
-    return this.request(`${scheme} decrypt`, (signal) =>
-      scheme === "nip44"
-        ? this.bunkerSigner.nip44Decrypt(sender.pubkey, value, { signal })
-        : this.bunkerSigner.nip04Decrypt(sender.pubkey, value, { signal })
+  async decryptNip44(peer: string, value: string): Promise<string> {
+    return this.request("nip44 decrypt", (signal) =>
+      this.bunkerSigner.nip44Decrypt(peer, value, { signal })
     )
   }
 
-  toPayload(): string {
-    throw new RemoteSignerError(
-      "unavailable",
-      "Use the versioned Conduit auth session helpers to persist this signer."
+  async decryptLegacy(peer: string, value: string): Promise<string> {
+    return this.request("nip04 decrypt", (signal) =>
+      this.bunkerSigner.nip04Decrypt(peer, value, { signal })
     )
   }
 }

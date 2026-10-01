@@ -6,10 +6,9 @@ import {
   useRef,
   useState,
 } from "react"
-import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { useQuery } from "@tanstack/react-query"
+import type { AccountSigner } from "../protocol/nostr-event-signer"
 import { useAuth, type AuthMethod } from "../context/AuthContext"
-import { createNdkNostrEventSigner } from "../protocol/ndk-nostr-event-signer"
 import {
   readMediaServerPreferences,
   toReviewedMediaServerEvidence,
@@ -61,7 +60,7 @@ const PRODUCT_IMAGE_FALLBACK_CLAIM_PREFIX =
 interface ProductImageUploadAuthoritySnapshot {
   generation: number
   owner: string | null
-  signer: NDKSigner | null
+  signer: AccountSigner | null
   method: AuthMethod | null
   reviewedMediaServerEvidenceKey: string | null
   isGenerationCurrent: (generation: number) => boolean
@@ -437,11 +436,7 @@ export function useProductImageUpload(): ProductImageUploadController {
           prepared,
           target: request.target,
           expectedPubkey: activeOwner,
-          signer: createNdkNostrEventSigner(
-            activeSigner,
-            activeOwner,
-            activeMethod
-          ),
+          signer: activeSigner,
           shouldContinue: uploadAuthorityIsCurrent,
           signal: request.signal,
           onPhase: (phase) => {

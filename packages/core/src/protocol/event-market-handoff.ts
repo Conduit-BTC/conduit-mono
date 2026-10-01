@@ -1,4 +1,5 @@
-import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { NostrKeySigner } from "./nostr-event-signer"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -945,7 +946,7 @@ export function parseEventMarketPrivateDeliveryProgress(
 /** Recover and authorize revocation from the signed sender self-copy only. */
 export async function authorizeEventMarketFulfillmentRevocation(input: {
   deliveryRecord: EventMarketPrivateDeliveryRecord
-  signer: NDKSigner
+  signer: NostrKeySigner
   giftUnwrap?: GiftUnwrapFn
 }): Promise<EventMarketFulfillmentRevocationAuthorization> {
   const record = input.deliveryRecord
@@ -956,7 +957,7 @@ export async function authorizeEventMarketFulfillmentRevocation(input: {
   ) {
     throw new Error("Recoverable ready receipt self-copy is required.")
   }
-  const signerPubkey = (await input.signer.user()).pubkey.toLowerCase()
+  const signerPubkey = (await input.signer.getPublicKey()).toLowerCase()
   if (signerPubkey !== record.senderPubkey.toLowerCase()) {
     throw new Error("Ready receipt recovery signer does not match sender.")
   }
@@ -1059,7 +1060,7 @@ function persistPreparedWraps(
 async function publishEventMarketPrivatePayload(input: {
   payload: EventMarketPrivatePayload
   rumor: NDKEvent
-  signer: NDKSigner
+  signer: NostrKeySigner
   persistExactWraps: PersistEventMarketPrivateWraps
   orderCorrelationRef?: string
   transport?: EventMarketPrivateTransportOptions
@@ -1121,7 +1122,7 @@ async function publishEventMarketPrivatePayload(input: {
 }
 
 export interface PublishEventMarketReadyReceiptInput extends ValidateEventMarketReadyReceiptInput {
-  signer: NDKSigner
+  signer: NostrKeySigner
   persistExactWraps: PersistEventMarketPrivateWraps
   transport?: EventMarketPrivateTransportOptions
 }
@@ -1167,7 +1168,7 @@ function assertScopedToReadyReceipt(
 export interface PublishEventMarketFulfillmentRevocationInput {
   payload: EventMarketFulfillmentRevocationSchema
   authorization: EventMarketFulfillmentRevocationAuthorization
-  signer: NDKSigner
+  signer: NostrKeySigner
   persistExactWraps: PersistEventMarketPrivateWraps
   transport?: EventMarketPrivateTransportOptions
 }
@@ -1193,7 +1194,7 @@ export async function publishEventMarketFulfillmentRevocation(
 export interface PublishEventMarketHandoffAckInput {
   payload: EventMarketHandoffAckSchema
   authorization: EventMarketHandoffAckAuthorization
-  signer: NDKSigner
+  signer: NostrKeySigner
   persistExactWraps: PersistEventMarketPrivateWraps
   transport?: EventMarketPrivateTransportOptions
 }
