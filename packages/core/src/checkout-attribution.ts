@@ -1,7 +1,4 @@
-import {
-  isBoundedCheckoutSourceDomain,
-  normalizeCheckoutSourceDomain,
-} from "./checkout-source-domain"
+import { normalizeCheckoutSourceDomain } from "./checkout-source-domain"
 import {
   resolveCheckoutPartnerCode,
   resolveCheckoutPartnerDomain,
@@ -59,10 +56,7 @@ export function checkoutAttributionTelemetryProperties(
       : "unregistered",
     ...(domain
       ? {
-          source_domain:
-            mappedPartner || isBoundedCheckoutSourceDomain(domain)
-              ? domain
-              : "other",
+          source_domain: mappedPartner ? domain : "other",
         }
       : {}),
     ...(partnerCode ? { partner_code: partnerCode } : {}),
@@ -98,12 +92,7 @@ export function hasValidCheckoutAttributionTelemetry(
   const mapped =
     domain === "other" ? null : resolveCheckoutPartnerDomain(domain as string)
   if (status !== (mapped ? "active" : "unregistered")) return false
-  if (
-    !mapped &&
-    domain !== "other" &&
-    !isBoundedCheckoutSourceDomain(domain as string)
-  )
-    return false
+  if (!mapped && domain !== "other") return false
   if (method === "claimed") return code === (mapped ?? undefined)
   // An observed domain never upgrades an explicit legacy code to domain approval.
   return code === undefined

@@ -14,7 +14,6 @@ import {
   handlePostHogProxyRequest,
   rebuildPostHogIngestPayload,
 } from "../apps/posthog-proxy/src"
-import { createCheckoutSourceBudget } from "../apps/posthog-proxy/src/checkout-source-budget"
 import {
   validateTelemetryEvents,
   validateTelemetrySourceUsage,
@@ -37,7 +36,7 @@ const properties = (extra: Record<string, unknown> = {}) => ({
   surface: "checkout",
   mode: "buy",
   handoff_stage: "arrival",
-  source_domain: "example.com",
+  source_domain: "other",
   source_method: "claimed",
   source_partner_status: "unregistered",
   ...extra,
@@ -60,7 +59,7 @@ const client = (extra: Record<string, unknown> = {}) =>
       surface: "checkout",
       mode: "buy",
       handoff_stage: "arrival",
-      source_domain: "example.com",
+      source_domain: "other",
       source_method: "claimed",
       source_partner_status: "unregistered",
       ...extra,
@@ -68,10 +67,77 @@ const client = (extra: Record<string, unknown> = {}) =>
   })
 
 describe("checkout domain telemetry pipeline", () => {
-  it("includes unknown domains and finite methods without identifiers through client and ingest", () => {
+  it("keeps unknown claimed and referrer domains local across every checkout counter", () => {
+    const outcome = {
+      mode: "buy",
+      rail: "none",
+      status: "success",
+      count_bucket: "1",
+      amount_bucket: "unknown",
+      product_type: "unknown",
+    }
+    const counters = [
+      ["checkout_handoff_result", { mode: "buy", handoff_stage: "arrival" }],
+      ["checkout_step_result", { ...outcome, step: "order_submit" }],
+      ["checkout_success", outcome],
+      ["checkout_result", { ...outcome, network: "browser" }],
+    ] as const
+    for (const method of ["claimed", "referrer"] as const) {
+      const attribution = resolveCheckoutAttribution({
+        source: { domain: "private-business.com", method },
+      })
+      expect(attribution?.sourceDomain).toBe("private-business.com")
+      const source = checkoutAttributionTelemetryProperties(attribution)
+      expect(source.source_domain).toBe("other")
+      for (const [eventName, extra] of counters) {
+        const sanitized = sanitizeTelemetryEventProperties({
+          app: "market",
+          eventName,
+          properties: { surface: "checkout", ...extra, ...source },
+        })
+        expect(sanitized).not.toBeNull()
+        const rebuilt = rebuild({
+          event: eventName,
+          properties: {
+            token,
+            app: "market",
+            event_name: eventName,
+            page_path: "/checkout",
+            page_url: `${origin.origin}/checkout`,
+            ...sanitized,
+          },
+        })
+        expect(rebuilt.ok).toBe(true)
+        if (rebuilt.ok) {
+          expect(rebuilt.events).toHaveLength(1)
+          expect(JSON.stringify(rebuilt.events)).not.toContain(
+            "private-business.com"
+          )
+        }
+        const bypass = rebuild({
+          event: eventName,
+          properties: {
+            token,
+            app: "market",
+            event_name: eventName,
+            page_path: "/checkout",
+            page_url: `${origin.origin}/checkout`,
+            surface: "checkout",
+            ...extra,
+            ...source,
+            source_domain: "private-business.com",
+          },
+        })
+        expect(bypass.ok).toBe(true)
+        if (bypass.ok) expect(bypass.events).toHaveLength(0)
+      }
+    }
+  })
+
+  it("buckets unknown domains and preserves finite methods without identifiers through client and ingest", () => {
     for (const method of ["claimed", "referrer"]) {
       expect(client({ source_method: method })).toMatchObject({
-        source_domain: "example.com",
+        source_domain: "other",
         source_method: method,
         source_partner_status: "unregistered",
       })
@@ -84,7 +150,7 @@ describe("checkout domain telemetry pipeline", () => {
         }),
         timestamp: new Date("2026-09-30T20:21:31.123Z"),
       })
-      expect(sanitized?.properties?.source_domain).toBe("example.com")
+      expect(sanitized?.properties?.source_domain).toBe("other")
       expect(sanitized?.uuid).toBeUndefined()
       expect(sanitized?.properties?.$session_id).toBeUndefined()
       expect(sanitized?.properties?.$pageview_id).toBeUndefined()
@@ -127,11 +193,19 @@ describe("checkout domain telemetry pipeline", () => {
       partner_code: "project_a",
     })
     const active = rebuild(
-      event({ source_partner_status: "active", partner_code: "project_a" })
+      event({
+        source_domain: "example.com",
+        source_partner_status: "active",
+        partner_code: "project_a",
+      })
     )
     if (active.ok) expect(active.events).toHaveLength(1)
     expect(
-      client({ source_partner_status: "active", partner_code: "project_a" })
+      client({
+        source_domain: "example.com",
+        source_partner_status: "active",
+        partner_code: "project_a",
+      })
     ).not.toBeNull()
     const legacy = resolveCheckoutAttribution({ partner: "project_a" })
     expect(checkoutAttributionTelemetryProperties(legacy)).toEqual({
@@ -140,6 +214,11 @@ describe("checkout domain telemetry pipeline", () => {
       partner_code: "project_a",
     })
     registry[0]!.active = false
+    expect(checkoutAttributionTelemetryProperties(attribution)).toEqual({
+      source_domain: "other",
+      source_method: "claimed",
+      source_partner_status: "unregistered",
+    })
     expect(resolveCheckoutAttribution({ partner: "project_a" })).toBeUndefined()
     expect(
       resolveCheckoutAttribution({
@@ -147,7 +226,11 @@ describe("checkout domain telemetry pipeline", () => {
       })?.partnerCode
     ).toBeUndefined()
     const inactive = rebuild(
-      event({ source_partner_status: "active", partner_code: "project_a" })
+      event({
+        source_domain: "example.com",
+        source_partner_status: "active",
+        partner_code: "project_a",
+      })
     )
     if (inactive.ok) expect(inactive.events).toHaveLength(0)
   })
@@ -170,7 +253,7 @@ describe("checkout domain telemetry pipeline", () => {
       partner: "legacy_a",
     }).toString()
     for (const [referrer, expectedDomain, status] of [
-      ["https://unknown.co.uk/", "unknown.co.uk", "unregistered"],
+      ["https://unknown.co.uk/", "other", "unregistered"],
       ["https://approved.com/", "approved.com", "active"],
       ["https://deadbeefdeadbeef.com/", "other", "unregistered"],
     ]) {
@@ -234,6 +317,8 @@ describe("checkout domain telemetry pipeline", () => {
 
   it("rejects URLs, subdomains, free text and forged status through both validators", () => {
     for (const extra of [
+      { source_domain: "example.com" },
+      { source_domain: "project.github.io" },
       { source_domain: "https://example.com/private?token=secret" },
       { source_domain: "user123.example.com" },
       { source_domain: "BÜCHER.DE" },
@@ -270,53 +355,14 @@ describe("checkout domain telemetry pipeline", () => {
     })
   })
 
-  it("bounds generated registrable hosted domains and buckets identifier-like names", () => {
-    const budget = createCheckoutSourceBudget(2)
-    const first = properties({ source_domain: "one.github.io" })
-    const second = properties({ source_domain: "two.github.io" })
-    const third = properties({ source_domain: "three.github.io" })
-    budget(first, 100)
-    budget(second, 100)
-    budget(third, 100)
-    expect(first.source_domain).toBe("one.github.io")
-    expect(second.source_domain).toBe("two.github.io")
-    expect(third.source_domain).toBe("other")
-    const repeat = properties({ source_domain: "one.github.io" })
-    budget(repeat, 100)
-    expect(repeat.source_domain).toBe("one.github.io")
-    const nextHour = properties({ source_domain: "three.github.io" })
-    budget(nextHour, 3_600_000)
-    expect(nextHour.source_domain).toBe("three.github.io")
-    expect(
-      checkoutAttributionTelemetryProperties({
-        sourceDomain: "deadbeefdeadbeef.com",
-        sourceMethod: "claimed",
-      }).source_domain
-    ).toBe("other")
-    expect(
-      checkoutAttributionTelemetryProperties({
-        sourceDomain: `${"a".repeat(48)}.${"b".repeat(48)}.com`,
-        sourceMethod: "claimed",
-      }).source_domain
-    ).toBe("other")
-  })
-
-  it("enforces a finite new-domain budget across actual ingest requests", () => {
-    let other = 0
-    const retained = new Set<string>()
+  it("rejects every unreviewed hosted-domain label across repeated ingest requests", () => {
     for (let index = 0; index < 70; index++) {
-      const result = rebuild(
-        event({ source_domain: `project-${index}.github.io` })
-      )
-      if (result.ok) {
-        const domain = (result.events[0]?.properties as Record<string, unknown>)
-          ?.source_domain
-        if (domain === "other") other++
-        else if (typeof domain === "string") retained.add(domain)
-      }
+      const domain = `project-${index}.github.io`
+      expect(client({ source_domain: domain })).toBeNull()
+      const result = rebuild(event({ source_domain: domain }))
+      expect(result.ok).toBe(true)
+      if (result.ok) expect(result.events).toHaveLength(0)
     }
-    expect(retained.size).toBeLessThanOrEqual(64)
-    expect(other).toBeGreaterThan(0)
   })
 
   it("drops GPC and nonofficial-origin ingest without forwarding referrer or identifiers", async () => {
@@ -325,7 +371,10 @@ describe("checkout domain telemetry pipeline", () => {
       forwarded = await request.text()
       return new Response("ok")
     }
-    const request = (headers: Record<string, string>) =>
+    const request = (
+      headers: Record<string, string>,
+      extra: Record<string, unknown> = {}
+    ) =>
       new Request("https://e.conduit.market/e", {
         method: "POST",
         headers: {
@@ -333,7 +382,7 @@ describe("checkout domain telemetry pipeline", () => {
           "content-type": "application/json",
           ...headers,
         },
-        body: JSON.stringify(event()),
+        body: JSON.stringify(event(extra)),
       })
     expect(
       (await handlePostHogProxyRequest(request({ "sec-gpc": "1" }), fetcher))
@@ -350,10 +399,17 @@ describe("checkout domain telemetry pipeline", () => {
     ).toBe(403)
     expect(forwarded).toBe("")
     await handlePostHogProxyRequest(request({}), fetcher)
-    // Domain budget may bucket this label after previous test; the counter remains.
+    // Only the fixed bucket reaches the provider; the original domain stays local.
     expect(forwarded.includes('"source_method":"claimed"')).toBe(true)
+    expect(forwarded.includes('"source_domain":"other"')).toBe(true)
     expect(forwarded.includes(uuid)).toBe(false)
     expect(forwarded.includes("referrer")).toBe(false)
+    forwarded = ""
+    await handlePostHogProxyRequest(
+      request({}, { source_domain: "private-business.com" }),
+      fetcher
+    )
+    expect(forwarded).toBe("")
   })
 
   it("keeps attribution restricted to the four checkout counter contracts", () => {

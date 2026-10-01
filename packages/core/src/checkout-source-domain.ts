@@ -55,13 +55,3 @@ export function checkoutSourceFromReferrer(value: string): string | null {
     return null
   }
 }
-
-/** Extra bounds for unreviewed telemetry dimensions, not domain-control evidence. */
-export function isBoundedCheckoutSourceDomain(domain: string): boolean {
-  return (
-    domain.length <= 96 &&
-    !domain
-      .split(".")
-      .some((label) => /[a-f0-9]{16,}|[0-9]{8,}|[a-z0-9]{32,}/i.test(label))
-  )
-}

@@ -15,9 +15,10 @@ https://shop.conduit.market/checkout#cart=<URLSearchParams-encoded-JSON>&source=
 ```
 
 The optional `source=<domain>` parameter works with both forms. Developers can
-integrate and receive domain-based source attribution before registering or
-requesting approval. If `source` is absent, Market uses the browser's referring
-domain when available. An explicit source is a **claim**; a browser referrer is
+integrate before registering or requesting approval. Unknown source domains
+stay local and contribute only to the aggregate `other` telemetry bucket;
+source-specific reports require a reviewed active partner mapping. If `source`
+is absent, Market uses the browser's referring domain when available. An explicit source is a **claim**; a browser referrer is
 an **observation**. Neither verifies domain control or establishes payment
 entitlement. An invalid explicit source is ignored without blocking checkout
 and does not fall back to the referrer.
@@ -26,10 +27,10 @@ Domains are lowercased and internationalized names become ASCII IDNA names.
 Only a domain is accepted: no URL, path, query, fragment, credentials, port,
 IP address, or local/private host. Public suffix rules reduce subdomains to the
 registrable domain, including private hosted-domain suffixes: for example,
-`shop.project.github.io` becomes `project.github.io`. Attribution is bounded;
-malformed values are ignored, and valid domains beyond telemetry bounds count
-as `other`. Unknown domains remain measurable, subject to the privacy
-and abuse limits in [the analytics contract](../analytics/events.md).
+`shop.project.github.io` becomes `project.github.io`. Malformed values are
+ignored. Every unregistered domain counts only as `other`, regardless of its
+syntax or length. Both client and ingest reject raw unregistered domain
+labels under [the analytics contract](../analytics/events.md).
 
 Existing `partner=<assigned-code>` links remain compatible. Active registered
 codes remain claimed partner attribution when an automatic browser referrer is
@@ -185,8 +186,8 @@ sent in public Nostr events or to the merchant as order content.
 
 Reports describe **measured checkout arrivals and outcomes**. They are not
 unique visitors, settled sales, or payout accounting. Optional telemetry,
-Global Privacy Control, missing browser referrers, blockers, and abuse bounds
-leave accepted measurement gaps. No full referrer URL, fragment, path, query,
+Global Privacy Control, missing browser referrers, blockers, and unknown-source
+bucketing leave accepted measurement gaps. No full referrer URL, fragment, path, query,
 visitor identifier, product reference, order content, or payment detail is
 included in source reports.
 
@@ -208,5 +209,5 @@ a preview does not produce an official-host attribution report.
 | SOURCE-04 | Legacy partner links with referrers and unique active domain mapping                                         | Registry and client/proxy tests                    | Maintainer domain-control verification before activation |
 | SOURCE-05 | Exact purchase/session/quantity binding, off-checkout account changes, reload, conflicts, retries and expiry | Referral, order staging and Chromium handoff tests | External-signer account switches on preview              |
 | SOURCE-06 | Capture then scrub then emit; no attribution identifiers or content through ingest                           | Staging, client/proxy, policy and Chromium tests   | Official-host aggregate report after release             |
-| SOURCE-07 | Optional telemetry, GPC, official-host restrictions and finite abuse bounds                                  | Client/proxy, policy and source-budget tests       | Deployment configuration review                          |
+| SOURCE-07 | Optional telemetry, GPC, official-host restrictions and reviewed-domain-only labels                          | Client/proxy and policy tests                      | Deployment configuration review                          |
 | SOURCE-08 | Public email request, manual verification and activation; no payout promises                                 | Developer guide contract test                      | Maintainer review and private follow-up                  |

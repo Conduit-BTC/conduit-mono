@@ -38,7 +38,7 @@ Runtime telemetry events may only use these fields:
 - `block_reason`
 - `handoff_stage`
 - `partner_code` (registered public business source code only)
-- `source_domain` (canonical registrable domain or `other`, checkout counters only)
+- `source_domain` (reviewed active registrable domain or `other`, checkout counters only)
 - `source_method` (`claimed`, `referrer`, `partner`, or `none`)
 - `source_partner_status` (`active`, `unregistered`, or `none`)
 
@@ -360,9 +360,10 @@ not unique visitors, settled sales, complete partner clicks, GMV, or payout
 accounting. An order-submitted result describes the existing bounded relay
 acceptance checkpoint; it does not establish merchant receipt or settlement.
 
-This explicitly expands the former **registered-partner-code-only** policy:
-unregistered public domains may now be measured. `partner_code` remains an
-exact active registry allowlist. Source fields are allowed only on these four
+Source-specific telemetry requires a reviewed active partner mapping. Unknown
+claimed and referrer domains stay in the buyer-local purchase provenance; every
+unregistered domain emits only the fixed `other` bucket. `partner_code` remains
+an exact active registry allowlist. Source fields are allowed only on these four
 checkout counters, never on general browsing or provider lifecycle events.
 
 - `source_method=claimed` means an explicit domain in `source=`; `referrer`
@@ -372,7 +373,7 @@ checkout counters, never on general browsing or provider lifecycle events.
   means no usable source. These are source indicators, not ownership proof.
 - `source_partner_status=active` requires an exact, unique active domain mapping
   when a domain is present; partner-only links use `active` for a recognized
-  legacy code. `unregistered` domains remain measurable without activation.
+  legacy code. `unregistered` domains count only in the `other` bucket.
   Missing source uses `none`. With an observed referrer, `partner_code` preserves
   an explicit active legacy code when supplied, otherwise it uses the domain
   mapping. Domain activation status stays independent: an unregistered observed
@@ -387,22 +388,20 @@ checkout counters, never on general browsing or provider lifecycle events.
   becomes `example.co.uk`; `shop.project.github.io` becomes `project.github.io`.
   Bare suffixes are rejected. This recognizes publicly delegated syntax; it
   does not probe DNS reachability, verify control, or authenticate a referrer.
-- Arbitrary/generated subdomains collapse before capture or emission.
-  Unreviewed telemetry labels are at most 96 ASCII characters and exclude
-  contiguous hex runs of 16+, digit runs of 8+, or alphanumeric runs of 32+.
-  Valid domains outside these measurement bounds are grouped as `other`.
-  The proxy accepts at most 64 new unregistered domain labels per UTC hour per
-  Worker isolate; further labels count as `other`. Existing labels and active
-  reviewed mappings retain their labels. This is an in-memory abuse bound, not
-  a global durable quota: isolate restarts and scaling may reset/partition it.
-  Generated hosted tenants are subject to the same bound. The reviewed registry
-  allows at most 64 active codes and eight canonical domains per entry.
+- Subdomains collapse before local capture. Only canonical domains with a unique
+  reviewed active registry mapping may be emitted as distinct labels. Unknown,
+  inactive, ambiguous, and generated hosted-tenant domains emit `other`.
+  Both client and ingest reject raw unregistered domain labels independently,
+  including requests that bypass the client. No isolate lifecycle or hourly
+  budget can admit an unreviewed domain. The reviewed registry allows at most
+  64 active codes and eight canonical domains per entry.
 - Attribution counters strip browser session/pageview IDs and per-event UUIDs
   in both client and ingest. The proxy also removes offsets and rounds supplied
   event timestamps to the UTC hour. Events use the shared static service
   identity and no person profiles. Do not join these counters to browser
   session metrics or attempt to identify shoppers.
-- Only a normalized domain escapes the referrer extraction boundary. No full
+- Only a normalized domain escapes the local referrer extraction boundary;
+  only a reviewed active domain or `other` reaches telemetry. No full
   referrer URL, fragment, path, query, product reference, order contents,
   merchant/buyer key, invoice, payment detail, visitor identifier, IP, or
   fingerprint is collected. Existing coarse checkout outcome classes and

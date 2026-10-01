@@ -13,10 +13,6 @@ import {
   encodeProductNaddr,
 } from "@conduit/core/protocol/product-reference"
 
-import { createCheckoutSourceBudget } from "./checkout-source-budget"
-
-const applyCheckoutSourceBudget = createCheckoutSourceBudget()
-
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
 const MAX_INGEST_BODY_BYTES = 1024 * 1024
 const MAX_GMV_BODY_BYTES = 512
@@ -584,7 +580,6 @@ function rebuildIngestEventProperties(
     return null
   }
 
-  applyCheckoutSourceBudget(rebuilt)
   return rebuilt
 }
 

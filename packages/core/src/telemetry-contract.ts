@@ -4,10 +4,7 @@
  * (`apps/posthog-proxy`). Imports must stay pure so edge bundles do not pull app or protocol code.
  */
 import { hasValidCheckoutAttributionTelemetry } from "./checkout-attribution"
-import {
-  isBoundedCheckoutSourceDomain,
-  normalizeCheckoutSourceDomain,
-} from "./checkout-source-domain"
+import { normalizeCheckoutSourceDomain } from "./checkout-source-domain"
 import {
   resolveCheckoutPartnerCode,
   resolveCheckoutPartnerDomain,
@@ -515,8 +512,7 @@ export function isAllowedBrowserTelemetryLabelValue(
     return (
       value === "other" ||
       (normalizeCheckoutSourceDomain(value) === value &&
-        (isBoundedCheckoutSourceDomain(value) ||
-          resolveCheckoutPartnerDomain(value) !== null))
+        resolveCheckoutPartnerDomain(value) !== null)
     )
   }
   const allowedValues = (
