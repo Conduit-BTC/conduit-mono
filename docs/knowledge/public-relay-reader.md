@@ -30,6 +30,13 @@ continues to stop domain/cache updates. `PublicRelayReadCancelledError.result`
 retains already verified events, completed sources and cancelled in-flight
 sources. Queued work cannot open a socket after cancellation.
 
+The generic public executor projects source URLs back to their stable requested
+relay indices and emits verified event/duplicate and malformed/unusable counts
+as each source finishes. Connection timeouts keep their connect phase. The
+strict Event Market gift-wrap scan uses the protected inbox reader with bounded
+`since`/`until` pagination; its account authority, declared targets, timestamp
+boundary checks and partial-coverage policy remain separate from public reads.
+
 Events-only and diagnostic projections, and per-source progressive callbacks,
 all use the same detailed executor. Catalog discovery remains progressive;
 replacement-sensitive reads retain explicit plans and frontier/deletion policy.

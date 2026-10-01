@@ -7767,6 +7767,60 @@ function retainInboxEvents(
  * Resource exhaustion and stitched multi-call scans stay partial instead of
  * becoming false negative evidence.
  */
+/** Keep strict gift-wrap paging on the authorized protected transport. */
+async function readEventMarketInboxPage(
+  principalPubkey: string,
+  relayUrl: string,
+  filter: Pick<Filter, "since" | "until"> & { limit: number },
+  authorization: ProtectedReadAuthorization | null
+): Promise<Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>> {
+  // Existing wire fixtures own their complete test transport. Production never
+  // dispatches an inbox filter through a public reader.
+  if (
+    testOverrides.fetchPublicEventsWithDiagnostics ||
+    testOverrides.fetchPublicEvents
+  ) {
+    return await runFetchEventsFanoutWithDiagnostics(
+      { kinds: [EVENT_KINDS.GIFT_WRAP], "#p": [principalPubkey], ...filter },
+      {
+        relayUrls: [relayUrl],
+        ownerSelectedRelayUrls: [relayUrl],
+        accountPubkey: principalPubkey,
+        authenticatedPubkey: principalPubkey,
+        accountNetworkLocalStateRepository:
+          testOverrides.accountNetworkLocalStateRepository,
+        shouldContinue: authorization
+          ? () => hasProtectedReadAuthority(authorization)
+          : undefined,
+        connectTimeoutMs: 4000,
+        fetchTimeoutMs: 12000,
+      }
+    )
+  }
+  const result = await (testOverrides.readProtectedInbox ?? readProtectedInbox)(
+    {
+      principalPubkey,
+      relayUrls: [relayUrl],
+      ownerSelectedRelayUrls: [relayUrl],
+      authorization,
+      limit: filter.limit,
+      since: filter.since,
+      until: filter.until,
+      accountNetworkLocalStateRepository:
+        testOverrides.accountNetworkLocalStateRepository,
+      connectTimeoutMs: 4000,
+      queryTimeoutMs: 12000,
+    }
+  )
+  return {
+    events: result.events,
+    attemptedRelayUrls: result.relayResult.attemptedCount > 0 ? [relayUrl] : [],
+    successfulRelayUrls: result.coverage === "unavailable" ? [] : [relayUrl],
+    failedRelayUrls: result.coverage === "complete" ? [] : [relayUrl],
+    cappedRelayUrls: result.events.length >= filter.limit ? [relayUrl] : [],
+  }
+}
+
 async function readEventMarketInboxRelay(
   principalPubkey: string,
   relayUrl: string,
@@ -7775,9 +7829,6 @@ async function readEventMarketInboxRelay(
 ): Promise<EventMarketInboxRelayRead> {
   const retained = new Map<string, SignedPublicNostrEvent>()
   let successful = false
-  const shouldContinue = authorization
-    ? () => hasProtectedReadAuthority(authorization)
-    : undefined
 
   for (
     let pageIndex = 0;
@@ -7785,24 +7836,14 @@ async function readEventMarketInboxRelay(
     pageIndex += 1
   ) {
     assertInboxSyncAuthority(authorization)
-    const page = await runFetchEventsFanoutWithDiagnostics(
+    const page = await readEventMarketInboxPage(
+      principalPubkey,
+      relayUrl,
       {
-        kinds: [EVENT_KINDS.GIFT_WRAP],
-        "#p": [principalPubkey],
         limit: EVENT_MARKET_HANDOFF_PAGE_LIMIT,
         ...(scan.until === undefined ? {} : { until: scan.until }),
       },
-      {
-        relayUrls: [relayUrl],
-        ownerSelectedRelayUrls: [relayUrl],
-        accountPubkey: principalPubkey,
-        authenticatedPubkey: principalPubkey,
-        accountNetworkLocalStateRepository:
-          testOverrides.accountNetworkLocalStateRepository,
-        shouldContinue,
-        connectTimeoutMs: 4_000,
-        fetchTimeoutMs: 12_000,
-      }
+      authorization
     )
     assertInboxSyncAuthority(authorization)
     retainInboxEvents(retained, page.events)
@@ -7847,25 +7888,15 @@ async function readEventMarketInboxRelay(
     }
     const boundaryCreatedAt = Math.min(...createdAts)
     assertInboxSyncAuthority(authorization)
-    const boundary = await runFetchEventsFanoutWithDiagnostics(
+    const boundary = await readEventMarketInboxPage(
+      principalPubkey,
+      relayUrl,
       {
-        kinds: [EVENT_KINDS.GIFT_WRAP],
-        "#p": [principalPubkey],
         since: boundaryCreatedAt,
         until: boundaryCreatedAt,
         limit: EVENT_MARKET_HANDOFF_BOUNDARY_LIMIT,
       },
-      {
-        relayUrls: [relayUrl],
-        ownerSelectedRelayUrls: [relayUrl],
-        accountPubkey: principalPubkey,
-        authenticatedPubkey: principalPubkey,
-        accountNetworkLocalStateRepository:
-          testOverrides.accountNetworkLocalStateRepository,
-        shouldContinue,
-        connectTimeoutMs: 4_000,
-        fetchTimeoutMs: 12_000,
-      }
+      authorization
     )
     assertInboxSyncAuthority(authorization)
     retainInboxEvents(retained, boundary.events)

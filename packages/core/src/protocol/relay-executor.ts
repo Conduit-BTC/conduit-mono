@@ -4,6 +4,7 @@ import {
   PublicRelayReadCancelledError,
   type SignedEventRelayReadResult,
   type PublicRelayReadSocketScope,
+  type PublicRelayReadSourceStatus,
 } from "./relay-reader"
 import {
   isExactRelayAuthEvent,
@@ -1175,6 +1176,75 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
     observe: (value: RelayObservation) => void
   ): Promise<Omit<RelayQueryResult, "observations">> {
     const relayUrls = uniqueNormalizedRelayUrls(request.relayUrls)
+    const observedSources = new Set<string>()
+    const seenEventIds = new Set<string>()
+    const sourceCounts = new Map<
+      string,
+      { eventCount: number; duplicateCount: number }
+    >()
+    const observeSource = (
+      source: PublicRelayReadSourceStatus,
+      events: SignedNostrEvent[] = [],
+      retainedDuplicateCount = 0
+    ) => {
+      if (observedSources.has(source.relayUrl)) return
+      observedSources.add(source.relayUrl)
+      const relayIndex = relayUrls.indexOf(source.relayUrl)
+      if (relayIndex < 0)
+        throw new Error("Public source is outside the requested relay plan.")
+      let eventCount = 0,
+        duplicateCount = 0
+      for (const event of events) {
+        if (seenEventIds.has(event.id)) {
+          duplicateCount += 1
+          observe({ type: "duplicate", relayIndex })
+        } else {
+          seenEventIds.add(event.id)
+          eventCount += 1
+          observe({ type: "event", relayIndex })
+        }
+      }
+      for (let i = 0; i < retainedDuplicateCount; i += 1) {
+        duplicateCount += 1
+        observe({ type: "duplicate", relayIndex })
+      }
+      sourceCounts.set(source.relayUrl, { eventCount, duplicateCount })
+      for (
+        let i = 0;
+        i <
+        (source.malformedEventCount ?? 0) + (source.rejectedEventCount ?? 0);
+        i += 1
+      )
+        observe({ type: "malformed", relayIndex })
+      for (let i = 0; i < (source.unusableEventCount ?? 0); i += 1)
+        observe({ type: "unusable", relayIndex })
+      if (source.eoseReceived) observe({ type: "eose", relayIndex })
+      if (source.outcome === "connect_timeout") {
+        observe({ type: "connection", relayIndex, state: "failed" })
+        observe({ type: "timeout", relayIndex, phase: "connect" })
+      }
+      if (source.outcome === "timeout")
+        observe({ type: "timeout", relayIndex, phase: "query" })
+      if (source.outcome === "cancelled") observe({ type: "abort", relayIndex })
+      if (source.outcome === "disconnected")
+        observe({ type: "connection", relayIndex, state: "closed" })
+      if (
+        source.outcome === "closed" ||
+        source.outcome === "auth_required" ||
+        source.outcome === "rejected"
+      ) {
+        observe({
+          type: "closed",
+          relayIndex,
+          code:
+            source.outcome === "closed"
+              ? "other"
+              : source.outcome === "auth_required"
+                ? "auth_required"
+                : "restricted",
+        })
+      }
+    }
     let read: SignedEventRelayReadResult
     try {
       read = await fetchSignedEventsFanoutDetailed(request.filters, {
@@ -1187,6 +1257,13 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
         maxFramesPerRelay: options.maxFramesPerRelay,
         maxEventsPerRelay: options.maxEventsPerRelay,
         maxBytesPerRelay: options.maxBytesPerRelay,
+        onRelayProgress: (progress) => {
+          const source = progress.result?.relays.find(
+            (entry) => entry.relayUrl === progress.relayUrl
+          )
+          if (!source) throw new Error("Missing public relay outcome.")
+          observeSource(source, progress.events)
+        },
         onConnection: (url) =>
           observe({
             type: "connection",
@@ -1198,56 +1275,61 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
       if (!(error instanceof PublicRelayReadCancelledError)) throw error
       read = error.result as SignedEventRelayReadResult
     }
-    const relays: RelaySourceResult[] = read.relays.map(
-      (source, relayIndex) => {
-        const malformedCount =
-          (source.malformedEventCount ?? 0) + (source.rejectedEventCount ?? 0)
-        const unusableCount = source.unusableEventCount ?? 0
-        const failure: RelayFailureCode | undefined =
+    const relays: RelaySourceResult[] = read.relays.map((source) => {
+      const relayIndex = relayUrls.indexOf(source.relayUrl)
+      // Cancellation can retain verified source evidence before its progress
+      // callback runs. Reconstruct that source's observations from the snapshot.
+      observeSource(
+        source,
+        read.events.filter((event) =>
+          read.eventSourceRelayUrls?.[event.id]?.includes(source.relayUrl)
+        ),
+        source.duplicateEventCount ?? 0
+      )
+      const counts = sourceCounts.get(source.relayUrl)!
+      const malformedCount =
+        (source.malformedEventCount ?? 0) + (source.rejectedEventCount ?? 0)
+      const unusableCount = source.unusableEventCount ?? 0
+      const failure: RelayFailureCode | undefined =
+        source.outcome === "cancelled"
+          ? "aborted"
+          : source.outcome === "auth_required"
+            ? "missing_challenge"
+            : source.outcome === "rejected"
+              ? "subscription_rejected"
+              : source.outcome === "timeout"
+                ? "query_timed_out"
+                : source.outcome === "malformed" ||
+                    source.outcome === "verification_failed" ||
+                    unusableCount > 0
+                  ? "protocol_invalid"
+                  : source.outcome === "resource_limit"
+                    ? "protocol_limit_exceeded"
+                    : source.status === "success"
+                      ? undefined
+                      : "transport_unavailable"
+      return {
+        relayIndex,
+        status:
           source.outcome === "cancelled"
             ? "aborted"
-            : source.outcome === "auth_required"
-              ? "missing_challenge"
-              : source.outcome === "rejected"
-                ? "subscription_rejected"
-                : source.outcome === "timeout"
-                  ? "query_timed_out"
-                  : source.outcome === "malformed" ||
-                      source.outcome === "verification_failed" ||
-                      unusableCount > 0
-                    ? "protocol_invalid"
-                    : source.outcome === "resource_limit"
-                      ? "protocol_limit_exceeded"
-                      : source.status === "success"
-                        ? undefined
-                        : "transport_unavailable"
-        if (source.eoseReceived) observe({ type: "eose", relayIndex })
-        if (source.outcome === "timeout")
-          observe({ type: "timeout", relayIndex, phase: "query" })
-        if (source.outcome === "cancelled")
-          observe({ type: "abort", relayIndex })
-        return {
-          relayIndex,
-          status:
-            source.outcome === "cancelled"
-              ? "aborted"
-              : failure
-                ? source.eventCount > 0
-                  ? "partial"
-                  : "failed"
-                : "success",
-          auth:
-            source.outcome === "auth_required"
-              ? "authentication_required"
-              : "not_challenged",
-          eventCount: source.eventCount - (source.duplicateEventCount ?? 0),
-          duplicateCount: source.duplicateEventCount ?? 0,
-          malformedCount,
-          unusableCount,
-          ...(failure ? { failure } : {}),
-        }
+            : failure
+              ? source.eventCount > 0
+                ? "partial"
+                : "failed"
+              : "success",
+        auth:
+          source.outcome === "auth_required"
+            ? "authentication_required"
+            : "not_challenged",
+        eventCount: counts.eventCount,
+        duplicateCount: counts.duplicateCount,
+        malformedCount,
+        unusableCount,
+        ...(failure ? { failure } : {}),
       }
-    )
+    })
+    relays.sort((left, right) => left.relayIndex - right.relayIndex)
     const completedCount = relays.filter(
       (source) => source.status === "success"
     ).length
