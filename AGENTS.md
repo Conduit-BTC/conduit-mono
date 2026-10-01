@@ -40,6 +40,14 @@ Do not assume contributors have personal or machine-level agent rules.
 | Dependencies, CI, PR, preview, or release                                                                                                  | [`CONTRIBUTING.md`](CONTRIBUTING.md), affected workflow/configuration, and release guidance there; inspect current gates before claiming status                                                                                                                                                   |
 | Agent intake, dispatch, review, or hardening                                                                                               | [`docs/knowledge/agent-automation-boundary.md`](docs/knowledge/agent-automation-boundary.md), affected workflows, and `CONTRIBUTING.md` for PR evidence                                                                                                                                           |
 
+For public listing, profile, relay-declaration, deletion, or NIP-19 debugging,
+read [the repo-local Deed skill](.agents/skills/deed-debug/SKILL.md) when an
+independent relay or signature observation would help. Check
+`bun run nostr:debug doctor` first; setup and limits are in
+[the debugging guide](docs/knowledge/deed-debugging.md). Keep raw captures in
+ignored `context/` and reports content-free. Use the existing protected-read,
+signer, and payment smoke tools for those flows.
+
 For commerce interoperability, start with [Open Markets in Conduit](docs/OPEN_MARKETS.md)
 for the implementation map, compatibility differences, and proposal dependencies.
 

@@ -18,6 +18,14 @@
 3. Read [AGENTS.md](AGENTS.md) for repository safeguards and task-specific
    reading. Use [docs/README.md](docs/README.md) to find deeper guidance.
 
+## Optional Public Nostr Debugging
+
+Run `bun run nostr:debug:setup` to install the checksum-verified, pinned Deed
+executable into this checkout's ignored `context/` directory. Then run
+`bun run nostr:debug doctor` or `bun run nostr:debug --help`. It is optional and
+is not included in app builds. See [the debugging guide](docs/knowledge/deed-debugging.md)
+for public-event queries, local captures, limits, and the repo-local agent skill.
+
 ## Development Workflow
 
 ### Branches

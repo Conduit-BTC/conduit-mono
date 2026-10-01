@@ -51,6 +51,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### QA Runbooks
 
+- `docs/knowledge/deed-debugging.md`: optional pinned Deed CLI, public Nostr
+  debugging commands, repo-local skill, and content-free evidence boundaries
+
 - `docs/knowledge/checkout-with-conduit.md`: public V1 product/cart link format,
   validation limits, relay hints, and checkout authority.
 - `docs/knowledge/product-search-ranking.md`: ranked product search, scoped
