@@ -107,7 +107,7 @@ describe("Merchant organizer event discovery evidence", () => {
       },
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => {
         observed.push(options)
         return { events: [], relays: [], eventsVerified: true }
       },

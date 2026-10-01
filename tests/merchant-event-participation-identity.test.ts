@@ -56,7 +56,7 @@ describe("merchant event participation identity", () => {
     const merchantPubkey = "a".repeat(64)
     const cachedMerchantPubkey = "b".repeat(64)
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
       loadCached: async () => undefined,
       putCached: async () => {},
     })
@@ -69,7 +69,7 @@ describe("merchant event participation identity", () => {
             : undefined
         ),
       // Ordinary relay failures resolve to an empty event set, not an Error.
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
     const { data: profiles } = await getProfiles({
       pubkeys: [merchantPubkey, cachedMerchantPubkey],

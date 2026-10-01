@@ -27,11 +27,11 @@ import {
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
-  __resetNdkTestState,
   getNdk,
   refreshNdkRelaySettingsWhenIdle,
   refreshNdkRelaySettings,
 } from "../packages/core/src/protocol/ndk"
+import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
 import {
   emptyAccountNetworkLocalState,
   type AccountNetworkLocalStateRepository,

@@ -1,3 +1,4 @@
+import type { Filter } from "nostr-tools"
 /**
  * Kind-30406 shipping option protocol helpers.
  *
@@ -6,7 +7,6 @@
  * The canonical fixed-shipping writer publishes one complete, product-scoped
  * Gamma kind-30406 before its referencing kind-30402.
  */
-import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import {
   db,
   type CachedProductTombstone,
@@ -22,12 +22,12 @@ import {
 import type { ProductSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
 import {
-  fetchEventsFanout,
-  fetchEventsFanoutDetailed,
+  fetchPublicEvents,
+  fetchSignedEventsFanoutDetailed,
   getEventSourceRelayUrls,
-  type FetchEventsFanoutOptions,
-  type FetchEventsFanoutResult,
-} from "./ndk"
+  type PublicRelayReadOptions,
+  type PublicRelayReadResult,
+} from "./relay-reader"
 import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
@@ -65,8 +65,8 @@ export interface ShippingDeletionFallbackStorage {
 }
 
 export interface ShippingTestOverrides {
-  fetchEventsFanout?: typeof fetchEventsFanout
-  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
+  fetchPublicEvents?: typeof fetchPublicEvents
+  fetchSignedEventsFanoutDetailed?: typeof fetchSignedEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   getCachedDeletionTombstones?: (
@@ -484,7 +484,7 @@ export function resolveCartShippingCost(
 // ---------------------------------------------------------------------------
 
 export function parseShippingOptionEvent(
-  event: Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">
+  event: Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">
 ): ParsedShippingOption | null {
   const tags = event.tags ?? []
 
@@ -676,12 +676,12 @@ function validateCachedShippingOptionFrontier(
 }
 
 function observedShippingOptionEvents(
-  events: readonly NDKEvent[],
+  events: readonly SignedPublicNostrEvent[],
   coordinates: ReadonlySet<string>
 ): SignedPublicNostrEvent[] {
   const observed = new Map<string, SignedPublicNostrEvent>()
   for (const event of events) {
-    const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+    const rawEvent = event
     const address = getShippingEventCoordinate(rawEvent)
     if (
       rawEvent.kind !== EVENT_KINDS.SHIPPING_OPTION ||
@@ -802,9 +802,9 @@ function rememberVolatileShippingOptionFrontiers(
 
 async function mergeObservedShippingOptionFrontiers(
   coordinates: readonly string[],
-  observedEvents: readonly NDKEvent[]
+  observedEvents: readonly SignedPublicNostrEvent[]
 ): Promise<{
-  shippingEvents: NDKEvent[]
+  shippingEvents: SignedPublicNostrEvent[]
   retainedEventIds: string[]
 }> {
   const requested = new Set(coordinates)
@@ -910,16 +910,16 @@ async function mergeObservedShippingOptionFrontiers(
     }
     // The retained frontier is only an authority gate. Pricing always comes
     // from the complete, currently verified relay observation.
-    return liveEvents.map((event) => new NDKEvent(undefined, event))
+    return liveEvents.map((event) => event)
   })
 
   return { shippingEvents, retainedEventIds }
 }
 
 function shippingTombstonesFromDeletionEvent(
-  event: NDKEvent
+  event: SignedPublicNostrEvent
 ): CachedProductTombstone[] {
-  const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+  const rawEvent = event
   if (
     event.kind !== EVENT_KINDS.DELETION ||
     !isValidSignedPublicNostrEvent(rawEvent)
@@ -994,10 +994,7 @@ function parseShippingDeletionFallbackEvent(
     throw new Error("Invalid fixed shipping deletion fallback")
   }
   const cloned = cloneSignedEvent(event)
-  if (
-    shippingTombstonesFromDeletionEvent(new NDKEvent(undefined, cloned))
-      .length === 0
-  ) {
+  if (shippingTombstonesFromDeletionEvent(cloned).length === 0) {
     throw new Error("Invalid fixed shipping deletion fallback")
   }
   return cloned
@@ -1223,7 +1220,7 @@ async function loadCachedShippingTombstones(
   const fallback = loadShippingDeletionFallback()
   const fallbackEvents = fallback.events
   const fallbackRows = fallbackEvents.flatMap((event) =>
-    shippingTombstonesFromDeletionEvent(new NDKEvent(undefined, event))
+    shippingTombstonesFromDeletionEvent(event)
   )
   if (fallbackRows.length > 0) {
     try {
@@ -1264,9 +1261,7 @@ function isValidCachedShippingTombstone(row: CachedProductTombstone): boolean {
     return false
   }
   try {
-    return shippingTombstonesFromDeletionEvent(
-      new NDKEvent(undefined, row.signedEvent)
-    ).some(
+    return shippingTombstonesFromDeletionEvent(row.signedEvent).some(
       (derived) =>
         derived.id === row.id &&
         derived.pubkey === row.pubkey &&
@@ -1311,9 +1306,7 @@ async function persistPrimaryShippingTombstones(
   // key can be removed so a multi-target withdrawal cannot be partially lost.
   const rowsToPersist = selectShippingTombstoneUpdates(
     [
-      ...events.flatMap((event) =>
-        shippingTombstonesFromDeletionEvent(new NDKEvent(undefined, event))
-      ),
+      ...events.flatMap((event) => shippingTombstonesFromDeletionEvent(event)),
       ...rows,
     ],
     []
@@ -1421,7 +1414,7 @@ async function flushVolatileShippingTombstones(): Promise<boolean> {
 }
 
 async function rememberObservedShippingDeletionEvidence(
-  observedDeletionEvents: readonly NDKEvent[],
+  observedDeletionEvents: readonly SignedPublicNostrEvent[],
   targetIds: readonly string[]
 ): Promise<CachedProductTombstone[]> {
   const targetIdSet = new Set(targetIds)
@@ -1455,9 +1448,7 @@ function signedDeletionEventsFromShippingTombstones(
     }
     const signedEvent = row.signedEvent
     if (!isValidSignedPublicNostrEvent(signedEvent)) continue
-    const validatedRows = shippingTombstonesFromDeletionEvent(
-      new NDKEvent(undefined, signedEvent)
-    )
+    const validatedRows = shippingTombstonesFromDeletionEvent(signedEvent)
     if (!validatedRows.some((validated) => validated.id === row.id)) continue
     events.set(signedEvent.id, cloneSignedEvent(signedEvent))
   }
@@ -1485,19 +1476,20 @@ async function getMergedShippingDeletionEvidence(
 }
 
 async function runShippingFetchEventsFanoutDetailed(
-  filter: NDKFilter,
-  options: Parameters<typeof fetchEventsFanoutDetailed>[1]
-): Promise<FetchEventsFanoutResult> {
+  filter: Filter,
+  options: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
+): Promise<PublicRelayReadResult> {
   const impl =
-    shippingTestOverrides.fetchEventsFanoutDetailed ?? fetchEventsFanoutDetailed
+    shippingTestOverrides.fetchSignedEventsFanoutDetailed ??
+    fetchSignedEventsFanoutDetailed
   return await impl(filter, options)
 }
 
 async function runShippingFetchEventsFanout(
-  filter: NDKFilter,
-  options: Parameters<typeof fetchEventsFanout>[1]
-): Promise<NDKEvent[]> {
-  const impl = shippingTestOverrides.fetchEventsFanout ?? fetchEventsFanout
+  filter: Filter,
+  options: Parameters<typeof fetchPublicEvents>[1]
+): Promise<SignedPublicNostrEvent[]> {
+  const impl = shippingTestOverrides.fetchPublicEvents ?? fetchPublicEvents
   return await impl(filter, options)
 }
 
@@ -1507,9 +1499,9 @@ export interface ShippingOptionReadOptions {
   /** Active authenticated account; requested merchant authors grant no authority. */
   authenticatedPubkey?: string | null
   /** Injectable durable policy reader for deterministic boundary tests. */
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   /** Live caller authority, rechecked immediately before final relay I/O. */
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   /** Cancel obsolete account-scoped reads when their caller is replaced. */
   signal?: AbortSignal
 }
@@ -1680,7 +1672,7 @@ export async function getShippingOptions(
   const executableIndependentRelayUrls = (
     readPlan.independentRelayUrls ?? []
   ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
-  const filter: NDKFilter = {
+  const filter: Filter = {
     kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
     authors: [merchantPubkey],
   }
@@ -1708,15 +1700,18 @@ export async function getShippingOptions(
 }
 
 export function selectLatestShippingOptions(
-  events: readonly Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">[],
+  events: readonly Pick<
+    SignedPublicNostrEvent,
+    "id" | "pubkey" | "tags" | "created_at"
+  >[],
   deletionEvents: readonly Pick<
-    NDKEvent,
+    SignedPublicNostrEvent,
     "id" | "pubkey" | "tags" | "created_at"
   >[] = []
 ): ParsedShippingOption[] {
   const candidatesByCoordinate = new Map<
     string,
-    Array<Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">>
+    Array<Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">>
   >()
   for (const event of events) {
     const dTag = event.tags?.find((tag) => tag[0] === "d")?.[1]?.trim()
@@ -1800,10 +1795,10 @@ export function buildShippingOptionReadBatches(
 }
 
 function requireCompleteShippingRead(
-  result: FetchEventsFanoutResult,
+  result: PublicRelayReadResult,
   relayUrls: readonly string[],
   queryLimit: number
-): NDKEvent[] {
+): SignedPublicNostrEvent[] {
   const relayStatuses = new Map(
     result.relays.map((relay) => [relay.relayUrl, relay])
   )

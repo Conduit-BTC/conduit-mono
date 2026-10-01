@@ -19,7 +19,7 @@ import {
   type OrganizerEventMarketsReadResult,
   type CachedEventMarketEvidence,
   type EventMarketResolution,
-  type FetchEventsFanoutResult,
+  type PublicRelayReadResult,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 
@@ -90,7 +90,7 @@ function rows(events: SignedPublicNostrEvent[]): CachedEventMarketEvidence[] {
   }))
 }
 
-function result(events: SignedPublicNostrEvent[]): FetchEventsFanoutResult {
+function result(events: SignedPublicNostrEvent[]): PublicRelayReadResult {
   return {
     events: events.map((event) => new NDKEvent(undefined, event)),
     relays: [{ relayUrl: relay, status: "success", eventCount: events.length }],
@@ -115,7 +115,7 @@ function install(cached: SignedPublicNostrEvent[] = []) {
           },
         ])
       ),
-    fetchEventsFanoutDetailed: async () => result([]),
+    fetchSignedEventsFanoutDetailed: async () => result([]),
   })
 }
 
@@ -128,7 +128,7 @@ describe("event market progressive browsing", () => {
       getRelayLists: async () => {
         throw new Error("cache read started relay discovery")
       },
-      fetchEventsFanoutDetailed: async () => {
+      fetchSignedEventsFanoutDetailed: async () => {
         throw new Error("cache read started relay I/O")
       },
     })
@@ -171,7 +171,7 @@ describe("event market progressive browsing", () => {
       200
     )
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION))
           return result([])
         options?.onProgress?.(result(events))
@@ -217,7 +217,7 @@ describe("event market progressive browsing", () => {
     )
     __setEventMarketTestOverrides({
       loadCachedEvidence: () => cache.promise,
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION))
           return result([])
         options?.onProgress?.(result([...events, deletion]))
@@ -256,7 +256,7 @@ describe("event market progressive browsing", () => {
     )
     const snapshots: EventMarketResolution[] = []
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION))
           return result([])
         options?.onProgress?.(result(events))
@@ -328,7 +328,7 @@ describe("event market progressive browsing", () => {
     const productFrontier = deferred()
     let pickupPending = false
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (filter) => {
+      fetchSignedEventsFanoutDetailed: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION))
           return result(events)
         if (filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION)) {
@@ -365,7 +365,7 @@ describe("event market progressive browsing", () => {
     let participationReads = 0
     let broadOrganizerReads = 0
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (filter) => {
+      fetchSignedEventsFanoutDetailed: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION)) {
           if (!filter["#d"]) broadOrganizerReads += 1
           return result([events[2]!])
@@ -564,7 +564,7 @@ describe("event market progressive browsing", () => {
     )
     install([...records, withdrawal, foreignDeletion])
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (filter) => {
+      fetchSignedEventsFanoutDetailed: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION))
           return result(records)
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT))
@@ -595,7 +595,7 @@ describe("event market progressive browsing", () => {
       let current = true
       const snapshots: EventMarketResolution[] = []
       __setEventMarketTestOverrides({
-        fetchEventsFanoutDetailed: async (filter, options) => {
+        fetchSignedEventsFanoutDetailed: async (filter, options) => {
           if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT_COLLECTION))
             return result([])
           options?.onProgress?.(result(graph()))
@@ -631,7 +631,7 @@ describe("organizer timeline progressive headers", () => {
       getRelayLists: async () => {
         throw new Error("cache started relay discovery")
       },
-      fetchEventsFanoutDetailed: async () => {
+      fetchSignedEventsFanoutDetailed: async () => {
         throw new Error("cache started relay I/O")
       },
     })
@@ -688,10 +688,10 @@ describe("organizer timeline progressive headers", () => {
   it("emits a browse-only signed header while pickup checks are held", async () => {
     install()
     const pickupStarted = deferred()
-    const releasePickup = deferred<FetchEventsFanoutResult>()
+    const releasePickup = deferred<PublicRelayReadResult>()
     const snapshots: OrganizerEventMarketsReadResult[] = []
     __setEventMarketTestOverrides({
-      fetchEventsFanoutDetailed: async (filter) => {
+      fetchSignedEventsFanoutDetailed: async (filter) => {
         if (
           filter.kinds?.includes(EVENT_KINDS.SHIPPING_OPTION) &&
           filter["#d"]

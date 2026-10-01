@@ -1,3 +1,4 @@
+import type { Filter } from "nostr-tools"
 /**
  * Cache-first public evidence for the shopper on a selected incoming order.
  *
@@ -5,7 +6,6 @@
  * Relay results and cached projections are bounded evidence, not global truth.
  */
 
-import type { NDKFilter } from "@nostr-dev-kit/ndk"
 import {
   db,
   pruneShopperTrustSnapshots,
@@ -21,11 +21,11 @@ import {
   validateZapInvoiceDescriptionBinding,
 } from "./lightning"
 import {
-  fetchEventsFanoutDetailed,
-  type FetchEventsFanoutOptions,
-  type FetchEventsFanoutResult,
-  verifySignedPublicNostrEvents,
-} from "./ndk"
+  fetchSignedEventsFanoutDetailed,
+  type PublicRelayReadOptions,
+  type PublicRelayReadResult,
+  verifySignedEvents,
+} from "./relay-reader"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
@@ -124,9 +124,9 @@ export interface ShopperTrustEvidenceCache {
 }
 
 export type ShopperTrustFetchEvents = (
-  filter: NDKFilter,
-  options?: FetchEventsFanoutOptions
-) => Promise<FetchEventsFanoutResult>
+  filter: Filter,
+  options?: PublicRelayReadOptions
+) => Promise<PublicRelayReadResult>
 
 export type ShopperTrustResolveRelayLists = typeof getRelayLists
 
@@ -139,7 +139,7 @@ export interface GetShopperTrustEvidenceOptions {
   resolveRelayLists?: ShopperTrustResolveRelayLists
   /** Explicit signed-in account whose whole-relay exclusions gate final I/O. */
   authenticatedPubkey?: string | null
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   /** Injectable durable owner-authority reader for deterministic tests. */
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
   /** Override the public fallback portion of the relay plan (test seam). */
@@ -147,7 +147,7 @@ export interface GetShopperTrustEvidenceOptions {
   /** Cancel obsolete reads when the selected order changes. */
   signal?: AbortSignal
   /** Live account authority, rechecked before final relay I/O and projection. */
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   /** Bypass aggregate freshness for an explicit user or relay-scope refresh. */
   forceRefresh?: boolean
 }
@@ -250,24 +250,8 @@ function mergeCoverage(
   }
 }
 
-function getEventCandidate(value: unknown): unknown {
-  if (
-    value &&
-    typeof value === "object" &&
-    "rawEvent" in value &&
-    typeof (value as { rawEvent?: unknown }).rawEvent === "function"
-  ) {
-    try {
-      return (value as { rawEvent: () => unknown }).rawEvent()
-    } catch {
-      return null
-    }
-  }
-  return value
-}
-
 function toSignedEventCandidate(value: unknown): SignedPublicNostrEvent | null {
-  const candidate = getEventCandidate(value)
+  const candidate = value
   if (!candidate || typeof candidate !== "object") return null
 
   const event = candidate as Partial<SignedPublicNostrEvent>
@@ -302,7 +286,7 @@ function dedupeEventCandidates(
 }
 
 function coverageFromRead(
-  result: FetchEventsFanoutResult,
+  result: PublicRelayReadResult,
   plannedRelayUrls: readonly string[],
   truncated = false
 ): ShopperTrustCoverage {
@@ -350,7 +334,7 @@ function isWithinFutureTolerance(
 
 async function safeRead(
   fetchEvents: ShopperTrustFetchEvents,
-  filter: NDKFilter,
+  filter: Filter,
   relayUrls: string[],
   truncated = false,
   signal?: AbortSignal,
@@ -370,7 +354,7 @@ async function safeRead(
     })
     throwIfTrustAborted(signal, shouldContinue)
     const usesVerifiedFanout =
-      fetchEvents === fetchEventsFanoutDetailed &&
+      fetchEvents === fetchSignedEventsFanoutDetailed &&
       result.eventsVerified === true
     const boundedResultEvents = usesVerifiedFanout
       ? result.events
@@ -378,7 +362,7 @@ async function safeRead(
     const candidates = dedupeEventCandidates(boundedResultEvents)
     const verification = usesVerifiedFanout
       ? { events: candidates, truncated: false }
-      : await verifySignedPublicNostrEvents(candidates, {
+      : await verifySignedEvents(candidates, {
           signal,
           maxEvents: FALLBACK_EVENT_VERIFICATION_CAP,
         })
@@ -838,7 +822,7 @@ async function countZaps(
       candidates.map((candidate) => [candidate.request.id, candidate.request])
     ).values(),
   ]
-  const verification = await verifySignedPublicNostrEvents(uniqueRequests, {
+  const verification = await verifySignedEvents(uniqueRequests, {
     signal,
     maxEvents: EMBEDDED_ZAP_REQUEST_VERIFICATION_CAP,
   })
@@ -964,7 +948,7 @@ async function resolveRelayUrls(
   baseRelayUrlsOverride?: readonly string[],
   accountPubkey?: string | null,
   ownerRelayAuthority?: ShopperTrustOwnerRelayAuthority | null,
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"],
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"],
   signal?: AbortSignal,
   shouldContinue?: () => boolean
 ): Promise<{
@@ -1117,7 +1101,7 @@ async function resolveAuthorReadRelayPlan(
   resolveRelayLists: ShopperTrustResolveRelayLists,
   accountPubkey?: string | null,
   ownerRelayAuthority?: ShopperTrustOwnerRelayAuthority | null,
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"],
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"],
   signal?: AbortSignal,
   shouldContinue?: () => boolean
 ): Promise<{
@@ -1336,7 +1320,7 @@ export async function getShopperTrustEvidence(
     initialRelayPlan.independentRelayUrls
   )
   throwIfTrustAborted(signal, shouldContinue)
-  const baseFetchEvents = options.fetchEvents ?? fetchEventsFanoutDetailed
+  const baseFetchEvents = options.fetchEvents ?? fetchSignedEventsFanoutDetailed
   const fetchEvents: ShopperTrustFetchEvents = async (
     filter,
     readOptions = {}

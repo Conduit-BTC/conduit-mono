@@ -83,7 +83,7 @@ function setup(
     getRelayLists: async () => new Map(),
     loadCachedEvidence: async () => [],
     persistCachedEvidence: async () => undefined,
-    fetchEventsFanoutDetailed: async (rawFilter, options) => {
+    fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
       const filter = rawFilter as NDKFilter
       const matched = events.filter(
         (event) =>

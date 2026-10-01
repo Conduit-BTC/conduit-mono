@@ -76,7 +76,7 @@ beforeEach(() => {
   __setCommerceTestOverrides({
     now: () => 500_000,
     getRelayLists: async () => new Map(),
-    fetchEventsFanout: async () => [],
+    fetchPublicEvents: async () => [],
     getCachedProductTombstones: async () => [],
     getCachedProducts: async () => rows,
     putCachedProducts: async (updates) => {

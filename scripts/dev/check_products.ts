@@ -1,5 +1,7 @@
-import NDK from "@nostr-dev-kit/ndk"
-import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
+import {
+  fetchSignedEventsFanoutDetailed,
+  closePublicRelayConnections,
+} from "../../packages/core/src/protocol/relay-reader"
 
 function parseRelayUrls(): string[] {
   const raw =
@@ -16,7 +18,7 @@ function parseRelayUrls(): string[] {
 
   if (urls.length === 0) {
     throw new Error(
-      "No relay URLs provided. Set CHECK_RELAY_URLS (comma-separated), e.g. CHECK_RELAY_URLS=ws://127.0.0.1:7777"
+      "No relay URLs provided. Set CHECK_RELAY_URLS (comma-separated), e.g. CHECK_RELAY_URLS=wss://relay.conduit.market"
     )
   }
 
@@ -53,12 +55,12 @@ async function main() {
     200
   )
 
-  const ndk = new NDK({ explicitRelayUrls: relayUrls })
-  await ndk.connect(3000)
-
-  const filter: NDKFilter = { kinds: [30402], limit }
-  const events = await ndk.fetchEvents(filter)
-  const list = Array.from(events) as NDKEvent[]
+  const result = await fetchSignedEventsFanoutDetailed(
+    { kinds: [30402], limit },
+    { relayUrls }
+  )
+  const list = result.events
+  closePublicRelayConnections()
 
   console.log(`Relays: ${relayUrls.join(", ")}`)
   console.log(`Fetched kind 30402 listings: ${list.length} (limit=${limit})`)

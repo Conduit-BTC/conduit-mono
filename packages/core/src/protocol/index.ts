@@ -91,17 +91,22 @@ export * from "./media-server-preferences"
 export * from "./product-image-upload"
 export {
   getNdk,
-  fetchEventsFanout,
-  fetchEventsFanoutDetailed,
-  fetchEventsFanoutProgressive,
-  verifySignedPublicNostrEvents,
   disconnectNdk,
   refreshNdkRelaySettings,
   refreshNdkRelaySettingsWhenIdle,
-  __resetNdkTestState,
-  __setNdkVerifyTimeoutMsForTests,
-  type FetchEventsFanoutResult,
-  type FetchEventsRelayStatus,
-  type VerifySignedPublicNostrEventsOptions,
-  type VerifySignedPublicNostrEventsResult,
 } from "./ndk"
+export {
+  fetchPublicEvents,
+  fetchSignedEventsFanoutDetailed,
+  fetchPublicEventsProgressive,
+  verifySignedEvents,
+  __resetPublicReaderTestState,
+  __setPublicReaderVerifyTimeoutMsForTests,
+  type PublicRelayReadResult,
+  type PublicRelayReadSourceStatus,
+} from "./relay-reader"
+
+export type {
+  VerifySignedPublicNostrEventsOptions,
+  VerifySignedPublicNostrEventsResult,
+} from "./relay-reader"

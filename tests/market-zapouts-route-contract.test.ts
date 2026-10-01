@@ -7,7 +7,7 @@ describe("Market zapouts route contract", () => {
 
     expect(route).toContain('createFileRoute("/zapouts")')
     expect(route).toContain("EVENT_KINDS.ZAP_RECEIPT")
-    expect(route).toContain("fetchEventsFanoutDetailed")
+    expect(route).toContain("fetchSignedEventsFanoutDetailed")
     expect(route).toContain('fetch("/api/anon-zap-config"')
     expect(route).toContain("config.zapRelayUrls")
     expect(route).toContain("parseOmfZapoutReceipt")

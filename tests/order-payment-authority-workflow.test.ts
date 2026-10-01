@@ -18,7 +18,7 @@ import {
   type OrderLifecycle,
 } from "@conduit/core"
 import { db } from "../packages/core/src/db"
-import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
+import { __resetPublicReaderTestState } from "../packages/core/src/protocol/relay-reader"
 import {
   runOrderPayment,
   type OrderPaymentContext,
@@ -182,7 +182,7 @@ function dependencies(): Partial<OrderPaymentDependencies> {
 beforeEach(() => {
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
   invoiceCreatedAt = Math.floor(Date.now() / 1_000)
   profile = undefined
   profileEvents = []
@@ -234,7 +234,7 @@ beforeEach(() => {
   __setRelayListTestOverrides({
     loadCached: async () => undefined,
     putCached: async () => {},
-    fetchEventsFanout: async () => [],
+    fetchPublicEvents: async () => [],
   })
   __setCommerceTestOverrides({
     getCachedProducts: async () => [],
@@ -245,7 +245,7 @@ beforeEach(() => {
         throw new Error("Synthetic profile persistence failure")
       profile = rows.find((row) => row.pubkey === MERCHANT) ?? profile
     },
-    fetchEventsFanoutWithDiagnostics: async () => {
+    fetchPublicEventsWithDiagnostics: async () => {
       if (networkFails) throw new Error("Synthetic profile network outage")
       return {
         events: profileEvents,
@@ -270,7 +270,7 @@ afterEach(() => {
   db.transaction = originalTransaction
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
 })
 
 describe("executor profile authority workflow", () => {

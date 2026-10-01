@@ -1,4 +1,4 @@
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { SignedPublicNostrEvent } from "./signed-event"
 import {
   canonicalizeProductPrice,
   normalizeCurrencyCode,
@@ -1012,7 +1012,10 @@ export function normalizeProductSummaryForDisplay(
  *   NIP-99/Open Markets tags and Markdown content.
  */
 export function parseProductEvent(
-  event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
+  event: Pick<
+    SignedPublicNostrEvent,
+    "content" | "pubkey" | "created_at" | "tags" | "id"
+  >
 ): ProductSchema {
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")

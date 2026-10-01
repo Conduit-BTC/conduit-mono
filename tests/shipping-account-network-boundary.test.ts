@@ -5,7 +5,7 @@ import {
   emptyAccountNetworkLocalState,
   type AccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
-import type { FetchEventsFanoutOptions } from "../packages/core/src/protocol/ndk"
+import type { PublicRelayReadOptions } from "../packages/core/src/protocol/ndk"
 import type {
   RelayListLookupOptions,
   RelayList,
@@ -50,7 +50,7 @@ function relayList(pubkey: string): RelayList {
   }
 }
 
-function successfulEmptyRead(options: FetchEventsFanoutOptions = {}) {
+function successfulEmptyRead(options: PublicRelayReadOptions = {}) {
   return {
     events: [],
     relays: (options.relayUrls ?? []).map((relayUrl) => ({
@@ -69,13 +69,13 @@ afterEach(() => {
 describe("shipping account network boundary", () => {
   it("removes excluded relays only at account-scoped final I/O", async () => {
     const relayListCalls: RelayListLookupOptions[] = []
-    const finalReadCalls: FetchEventsFanoutOptions[] = []
+    const finalReadCalls: PublicRelayReadOptions[] = []
     __setShippingTestOverrides({
       getRelayLists: async (pubkeys, options = {}) => {
         relayListCalls.push(options)
         return new Map(pubkeys.map((pubkey) => [pubkey, relayList(pubkey)]))
       },
-      fetchEventsFanoutDetailed: async (_filter, options = {}) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options = {}) => {
         finalReadCalls.push(options)
         return successfulEmptyRead(options)
       },
@@ -117,21 +117,21 @@ describe("shipping account network boundary", () => {
 
   it("threads the account policy through the retained author-wide reader", async () => {
     const relayListCalls: RelayListLookupOptions[] = []
-    const broadReadCalls: FetchEventsFanoutOptions[] = []
-    const exactReadCalls: FetchEventsFanoutOptions[] = []
+    const broadReadCalls: PublicRelayReadOptions[] = []
+    const exactReadCalls: PublicRelayReadOptions[] = []
     __setShippingTestOverrides({
       getRelayLists: async (pubkeys, options = {}) => {
         relayListCalls.push(options)
         return new Map(pubkeys.map((pubkey) => [pubkey, relayList(pubkey)]))
       },
-      fetchEventsFanout: async (_filter, options = {}) => {
+      fetchPublicEvents: async (_filter, options = {}) => {
         broadReadCalls.push(options)
         const event = new NDKEvent()
         event.pubkey = MERCHANT
         event.tags = [["d", "standard"]]
         return [event]
       },
-      fetchEventsFanoutDetailed: async (_filter, options = {}) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options = {}) => {
         exactReadCalls.push(options)
         return successfulEmptyRead(options)
       },
@@ -166,7 +166,7 @@ describe("shipping account network boundary", () => {
 
   it("admits only the exact authenticated owner's selected ws relay", async () => {
     const relayListCalls: RelayListLookupOptions[] = []
-    const finalReadCalls: FetchEventsFanoutOptions[] = []
+    const finalReadCalls: PublicRelayReadOptions[] = []
     let authorityReads = 0
     __setShippingTestOverrides({
       readAccountRelaySettingsPlanningSnapshot: async () => {
@@ -213,7 +213,7 @@ describe("shipping account network boundary", () => {
           ])
         )
       },
-      fetchEventsFanoutDetailed: async (_filter, options = {}) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options = {}) => {
         finalReadCalls.push(options)
         return successfulEmptyRead(options)
       },
@@ -269,7 +269,7 @@ describe("shipping account network boundary", () => {
 
   it("threads live caller authority through relay-list and final shipping reads", async () => {
     const relayListCalls: RelayListLookupOptions[] = []
-    const finalReadCalls: FetchEventsFanoutOptions[] = []
+    const finalReadCalls: PublicRelayReadOptions[] = []
     const controller = new AbortController()
     const shouldContinue = () => true
     __setShippingTestOverrides({
@@ -277,7 +277,7 @@ describe("shipping account network boundary", () => {
         relayListCalls.push(options)
         return new Map(pubkeys.map((pubkey) => [pubkey, relayList(pubkey)]))
       },
-      fetchEventsFanoutDetailed: async (_filter, options = {}) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options = {}) => {
         finalReadCalls.push(options)
         return successfulEmptyRead(options)
       },

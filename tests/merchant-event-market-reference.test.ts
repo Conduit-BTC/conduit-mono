@@ -16,7 +16,7 @@ import {
   EVENT_KINDS,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 import {
   organizerEventMarketReferenceWithDeliveryRelayHints,
   organizerEventMarketReferencesMatch,
@@ -157,7 +157,7 @@ describe("merchant organizer event-market references", () => {
     const readPlans: string[][] = []
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => {
         const relayUrls = [...(options.relayUrls ?? [])]
         readPlans.push(relayUrls)
         return {
@@ -299,7 +299,7 @@ describe("merchant organizer event-market references", () => {
     let requirePathRelays = false
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const relayUrls = [...(options.relayUrls ?? [])]
         readPlans.push(relayUrls)
         const filter = rawFilter as NDKFilter
@@ -411,7 +411,7 @@ describe("merchant organizer event-market references", () => {
             },
           ],
         ]),
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         readPlans.push([...(options.relayUrls ?? [])])
         const filter = rawFilter as NDKFilter
         const events = graph.filter((event) => {
@@ -485,7 +485,7 @@ describe("merchant organizer event-market references", () => {
     )
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: [collection, deletion].map((event) => {
           const ndkEvent = new NDKEvent(undefined, event)
           attachEventSourceRelayUrl(ndkEvent, HINT_RELAY)
@@ -543,7 +543,7 @@ describe("merchant organizer event-market references", () => {
     )
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: [deletion].map((event) => {
           const ndkEvent = new NDKEvent(undefined, event)
           attachEventSourceRelayUrl(ndkEvent, HINT_RELAY)
@@ -632,7 +632,7 @@ describe("merchant organizer event-market references", () => {
     const graph = [calendar, oldCollection, tombstone, newCollection]
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: graph.map((event) => {
           const ndkEvent = new NDKEvent(undefined, event)
           attachEventSourceRelayUrl(ndkEvent, HINT_RELAY)
@@ -707,7 +707,7 @@ describe("merchant organizer event-market references", () => {
     ]
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const relayUrls = boundedRelayUrls(options)
         readPlans.push(relayUrls)
         const events = relayUrls.includes(FALLBACK_RELAY)
@@ -788,7 +788,7 @@ describe("merchant organizer event-market references", () => {
     ]
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         readPlans.push([...(options.relayUrls ?? [])])
         const filter = rawFilter as NDKFilter
         const events = graph
@@ -872,7 +872,7 @@ describe("merchant organizer event-market references", () => {
     ]
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const relayUrls = boundedRelayUrls(options)
         readPlans.push(relayUrls)
         const filter = rawFilter as NDKFilter
@@ -968,7 +968,7 @@ describe("merchant organizer event-market references", () => {
             },
           ],
         ]),
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const relayUrls = boundedRelayUrls(options)
         readPlans.push(relayUrls)
         const filter = rawFilter as NDKFilter
@@ -1108,7 +1108,7 @@ describe("merchant organizer event-market references", () => {
     ]
     __setEventMarketTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: async (rawFilter, options) => {
+      fetchSignedEventsFanoutDetailed: async (rawFilter, options) => {
         const relayUrls = [...(options.relayUrls ?? [])]
         readPlans.push(relayUrls)
         const portablePlanReady =

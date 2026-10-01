@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   __aggregateSocialCounts,
-  __resetNdkTestState,
+  __resetPublicReaderTestState,
   __socialHydratorTestHooks,
   getProductSocialSummary,
 } from "@conduit/core"
@@ -68,7 +68,7 @@ describe("aggregateSocialCounts", () => {
 describe("getProductSocialSummary", () => {
   const originalWebSocket = globalThis.WebSocket
   beforeEach(() => {
-    __resetNdkTestState()
+    __resetPublicReaderTestState()
     class EmptyRelayWebSocket {
       static CONNECTING = 0
       static OPEN = 1
@@ -109,7 +109,7 @@ describe("getProductSocialSummary", () => {
   })
 
   afterEach(() => {
-    __resetNdkTestState()
+    __resetPublicReaderTestState()
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       writable: true,

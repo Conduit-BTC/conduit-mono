@@ -20,7 +20,7 @@ import {
   resolveEventMarketEvidence,
   type CachedProduct,
   type CachedProductTombstone,
-  type FetchEventsFanoutResult,
+  type PublicRelayReadResult,
 } from "@conduit/core"
 import {
   eventCatalogQueryIdentity,
@@ -135,7 +135,7 @@ async function fixture(
       productPlanReads++
       return options.holdProductPlan ? productPlan.promise : new Map()
     },
-    fetchEventsFanout: async (filter) => {
+    fetchPublicEvents: async (filter) => {
       if (!networkOnly || !filter.kinds?.includes(30402)) return []
       productNetworkReads++
       if (networkOnly === "missing-first" && productNetworkReads === 1)
@@ -242,9 +242,9 @@ async function fixture(
   unscopedAuthorCacheReads = 0
   cacheGate = deferred()
   const plan = deferred<Map<string, never>>()
-  const network = deferred<FetchEventsFanoutResult>()
+  const network = deferred<PublicRelayReadResult>()
   const networkStarted = deferred()
-  let relayProgress: ((result: FetchEventsFanoutResult) => void) | undefined
+  let relayProgress: ((result: PublicRelayReadResult) => void) | undefined
   __setEventMarketTestOverrides({
     loadCachedEvidence: async () =>
       graph.map((event) => ({
@@ -257,7 +257,7 @@ async function fixture(
       })),
     persistCachedEvidence: async () => {},
     getRelayLists: () => plan.promise,
-    fetchEventsFanoutDetailed: async (_filter, options) => {
+    fetchSignedEventsFanoutDetailed: async (_filter, options) => {
       relayProgress = options?.onProgress
       networkStarted.resolve()
       return network.promise

@@ -485,7 +485,7 @@ describe("Market and Merchant protected inbox integration", () => {
           },
         }) as never,
       readProtectedInbox: async () => emptyProtectedRead(),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(4) ? ([legacyDirectMessage()] as never) : [],
       getCachedOrderMessages: async () => [],
       putCachedOrderMessages: async () => undefined,
@@ -520,7 +520,7 @@ describe("Market and Merchant protected inbox integration", () => {
       getAccountSigner: () =>
         ({ decryptLegacy: async () => "legacy plaintext" }) as never,
       readProtectedInbox: async () => emptyProtectedRead(),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(4) ? ([legacyDirectMessage()] as never) : [],
       getCachedOrderMessages: async () => [],
       putCachedOrderMessages: async () => undefined,

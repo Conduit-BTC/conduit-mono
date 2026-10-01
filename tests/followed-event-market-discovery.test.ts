@@ -724,7 +724,7 @@ describe("organizer event-market read coverage", () => {
       }),
       loadCachedEvidence: async () => [],
       persistCachedEvidence: async () => undefined,
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: [],
         relays: (options.relayUrls ?? []).map((relayUrl) => ({
           relayUrl,
@@ -870,7 +870,7 @@ describe("organizer event-market read coverage", () => {
           ])
         )
       },
-      fetchEventsFanoutDetailed: async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => {
         const relayUrls = boundedRelayUrls(options)
         observedRelaySets.push(relayUrls)
         const events = relayUrls.includes(organizerRelayUrls[2]!)

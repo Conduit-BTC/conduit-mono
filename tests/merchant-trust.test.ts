@@ -5,7 +5,7 @@ import { nip19 } from "nostr-tools"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetFollowListTestState,
-  __resetNdkTestState,
+  __resetPublicReaderTestState,
   __resetRelayHealth,
   __setFollowListTestOverrides,
   buildMerchantTrustSocialSummary,
@@ -865,7 +865,7 @@ describe("NIP-02 merchant trust helpers", () => {
       writable: true,
       value: undefined,
     })
-    __resetNdkTestState()
+    __resetPublicReaderTestState()
 
     try {
       const read = await readLatestFollowLists(
@@ -890,7 +890,7 @@ describe("NIP-02 merchant trust helpers", () => {
       expect(
         read.authors[0]?.relays.some(
           (relay) =>
-            relay.status === "success" &&
+            relay.status === "partial" &&
             relay.eventCount === 0 &&
             relay.rejectedEventCount === 1
         )
@@ -907,7 +907,7 @@ describe("NIP-02 merchant trust helpers", () => {
       ).toThrow("completed the read")
     } finally {
       disconnectNdk()
-      __resetNdkTestState()
+      __resetPublicReaderTestState()
       Object.defineProperty(globalThis, "WebSocket", {
         configurable: true,
         writable: true,

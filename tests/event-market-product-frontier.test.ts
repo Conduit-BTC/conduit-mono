@@ -9,7 +9,7 @@ import { matchFilter, type Filter } from "nostr-tools"
 
 import {
   __resetEventMarketTestOverrides,
-  __resetNdkTestState,
+  __resetPublicReaderTestState,
   __resetRelayHealth,
   __setEventMarketTestOverrides,
   buildEventMarketCalendarDraft,
@@ -225,7 +225,7 @@ function installReadHarness(
           },
         ],
       ]),
-    fetchEventsFanoutDetailed: async (filter, options) => {
+    fetchSignedEventsFanoutDetailed: async (filter, options) => {
       const relayUrls = options.relayUrls ?? []
       const result = await fetchResult(filter as TagFilter, relayUrls, options)
       const admittedRelayUrls = result.admittedRelayUrls ?? relayUrls
@@ -333,7 +333,7 @@ function installProductionReadHarness(
 
   return {
     restore: () => {
-      __resetNdkTestState()
+      __resetPublicReaderTestState()
       if (originalDescriptor) {
         Object.defineProperty(globalThis, "WebSocket", originalDescriptor)
       } else {
@@ -421,7 +421,7 @@ async function resolveDeletionStarvationCase(
 beforeEach(() => __resetRelayHealth())
 
 afterEach(() => {
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
   __resetEventMarketTestOverrides()
   __resetRelayHealth()
 })
