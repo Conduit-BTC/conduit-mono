@@ -219,7 +219,7 @@ describe("merchant organizer event market route", () => {
     )
     expect(route).toContain("authenticatedPubkey: null,")
     expect(route).toContain(
-      "shouldContinue: () => isCurrentOwner(input.ownerPubkey)"
+      "getActiveRelaySettingsScope() ===\n          getAccountRelayScope(input.ownerPubkey)"
     )
     expect(adapter).toContain("...(signal ? { signal } : {})")
     expect(adapter).toContain("...(shouldContinue ? { shouldContinue } : {})")

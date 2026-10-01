@@ -51,7 +51,7 @@ describe("event-market private-delivery authority propagation", () => {
       /transport: \{\s*authenticatedPubkey: input\.ownerPubkey,\s*shouldContinue: \(\) =>\s*isCurrentFreshAuthority\(input\.ownerPubkey, input\.authGeneration\)/
     )
     expect(events).toContain(
-      "authenticatedPubkey: null,\n          shouldContinue: () => isCurrentOwner(input.ownerPubkey)"
+      "getActiveRelaySettingsScope() ===\n            getAccountRelayScope(input.ownerPubkey)"
     )
   })
 })
