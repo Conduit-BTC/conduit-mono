@@ -261,6 +261,9 @@ function canonicalSettledState(
   state: CheckoutSparkSettledReconciliation
 ): CheckoutSparkSettledReconciliation {
   try {
+    // Buyer handoff/progress retain their original v3-state wire contract.
+    // Merchant renewal is carried only by the separate Merchant progress v2.
+    if (state.schemaVersion !== 3) throw new Error("unsupported buyer state")
     const plan = restoreCheckoutSparkSettledPlan(state.plan)
     const restored = restoreCheckoutSparkSettledReconciliation(state)
     if (JSON.stringify(restored.plan) !== JSON.stringify(plan)) {

@@ -7,9 +7,18 @@ import {
 } from "./checkout-spark-merchant-settlement"
 import {
   deriveCheckoutSparkSettledTransferId,
+  deriveCheckoutSparkSettledRenewalTransferId,
+  getCheckoutSparkSettledLegGeneration,
   restoreCheckoutSparkSettledPlan,
+  restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledPlan,
+  type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
+import {
+  restoreCheckoutSparkRetiredSettlementSummary,
+  validateCheckoutSparkRetiredSettlementRecord,
+  type CheckoutSparkRetiredSettlementSummary,
+} from "./checkout-spark-retired-settlement"
 import {
   buildDirectMessageRumor,
   publishPrivateMessage,
@@ -147,9 +156,13 @@ function notificationId(
 }
 
 /** Buyer claims and unbound provider-paid rows never authorize a notice. */
+export type CheckoutSparkSupplierNotificationGenerationBinding =
+  CheckoutSparkSettledReconciliation | CheckoutSparkRetiredSettlementSummary
+
 export function getCheckoutSparkSupplierNotifications(
   inputPlan: CheckoutSparkSettledPlan,
-  inputSettlement: CheckoutSparkMerchantSettlementRecord
+  inputSettlement: CheckoutSparkMerchantSettlementRecord,
+  generationBinding?: CheckoutSparkSupplierNotificationGenerationBinding
 ): CheckoutSparkSupplierNotification[] {
   const plan = restoreCheckoutSparkSettledPlan(inputPlan)
   const settlement = restoreCheckoutSparkMerchantSettlementRecord(
@@ -163,11 +176,47 @@ export function getCheckoutSparkSupplierNotifications(
       (leg) => leg.legId === recipient.legId
     )
     if (!paid || paid.recipientVerified !== true) return []
-    if (
-      paid.transferId !==
-      deriveCheckoutSparkSettledTransferId(plan, recipient.legId)
+    const originalId = deriveCheckoutSparkSettledTransferId(
+      plan,
+      recipient.legId
     )
-      invalid()
+    if (paid.transferId !== originalId) {
+      if (!generationBinding) invalid()
+      if ("plan" in generationBinding) {
+        const state =
+          restoreCheckoutSparkSettledReconciliation(generationBinding)
+        const leg = state.legs.find((item) => item.legId === recipient.legId)
+        if (
+          state.plan.planDigest !== plan.planDigest ||
+          !leg?.intent ||
+          leg.intent.transferId !== paid.transferId ||
+          leg.allocationSats !== paid.allocationSats ||
+          (paid.transferId !== originalId &&
+            getCheckoutSparkSettledLegGeneration(leg) !== 1)
+        )
+          invalid()
+      } else {
+        const summary =
+          restoreCheckoutSparkRetiredSettlementSummary(generationBinding)
+        validateCheckoutSparkRetiredSettlementRecord(summary, settlement)
+        const leg = summary.legs.find((item) => item.legId === recipient.legId)
+        if (
+          summary.planDigest !== plan.planDigest ||
+          summary.checkoutId !== plan.checkoutId ||
+          summary.merchantPubkey !== plan.merchantPubkey ||
+          !leg ||
+          leg.transferId !== paid.transferId ||
+          (paid.transferId !== originalId && leg.generation !== 1)
+        )
+          invalid()
+      }
+      if (
+        paid.transferId !== originalId &&
+        paid.transferId !==
+          deriveCheckoutSparkSettledRenewalTransferId(plan, recipient.legId)
+      )
+        invalid()
+    }
     const notification = {
       merchantPubkey: plan.merchantPubkey,
       supplierPubkey: recipient.recipientId,
@@ -270,6 +319,7 @@ function boundStored(
 export interface PublishCheckoutSparkSupplierNotificationInput {
   plan: CheckoutSparkSettledPlan
   settlement: CheckoutSparkMerchantSettlementRecord
+  generationBinding?: CheckoutSparkSupplierNotificationGenerationBinding
   supplierLegId: string
   signer: NostrKeySigner
   store: CheckoutSparkSupplierNotificationStore
@@ -288,7 +338,8 @@ export async function publishCheckoutSparkSupplierPaymentNotification(
 ): Promise<"not_eligible" | "pending" | "relay_accepted"> {
   const notification = getCheckoutSparkSupplierNotifications(
     input.plan,
-    input.settlement
+    input.settlement,
+    input.generationBinding
   ).find((item) => item.legId === input.supplierLegId)
   if (!notification) return "not_eligible"
   return publishRetainedCheckoutSparkSupplierNotification({

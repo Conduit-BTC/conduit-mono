@@ -479,7 +479,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       setAutomaticPayouts(enabled)
       setNotice(
         enabled
-          ? "Payment processing has resumed. Keep Orders open while it finishes."
+          ? "Payment processing has resumed. Keep Orders open; unresolved payouts remain held until verified."
           : "Payment processing is paused. A payment already sent may still finish."
       )
     } catch {

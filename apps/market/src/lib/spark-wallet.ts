@@ -5,6 +5,8 @@ import {
   isAmountlessLightningInvoice,
   normalizeLightningInvoice,
   type CheckoutSparkNativeRetirementReader,
+  type SparkCheckoutLightningReturnedInspection,
+  type SparkCheckoutLightningReturnedInspectionInput,
   type WalletPaymentFeeApproval,
 } from "@conduit/core"
 
@@ -242,6 +244,11 @@ export interface SparkSdkClient {
   reconcileLightningSend?(
     request: SparkLightningSendReconciliationInput
   ): Promise<SparkLightningSendReconciliation>
+  /** Explicit renewal inspection; may recover native wallet keyshares. */
+  inspectCheckoutLightningReturnedAttempt?(
+    request: SparkCheckoutLightningReturnedInspectionInput,
+    assertCurrent?: () => void
+  ): Promise<SparkCheckoutLightningReturnedInspection>
   preflightCheckoutLightningObligation?(
     request: SparkCheckoutLightningObligationInput
   ): Promise<SparkCheckoutLightningObligationPreflight>
@@ -1238,6 +1245,25 @@ export class SparkWalletManager {
       throw new Error("This Spark adapter cannot preflight a checkout leg.")
     }
     return client.preflightCheckoutLightningObligation(request)
+  }
+
+  /** Explicit native renewal inspection; not a passive history/preview read. */
+  async inspectCheckoutLightningReturnedAttempt(
+    walletId: string,
+    request: SparkCheckoutLightningReturnedInspectionInput,
+    assertCurrent?: () => void
+  ): Promise<SparkCheckoutLightningReturnedInspection> {
+    if (request.network !== this.#factory.network) {
+      return { status: "conflicting" }
+    }
+    const client = this.#getClient(walletId)
+    if (!client.inspectCheckoutLightningReturnedAttempt) {
+      return { status: "unavailable" }
+    }
+    return client.inspectCheckoutLightningReturnedAttempt(
+      request,
+      assertCurrent
+    )
   }
 
   /** Read-only exact-invoice estimate before a separate per-leg cap is frozen. */

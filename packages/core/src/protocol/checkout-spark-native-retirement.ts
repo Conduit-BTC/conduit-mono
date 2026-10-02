@@ -2,8 +2,12 @@ import type {
   CheckoutSparkNetwork,
   CheckoutSparkRetirementEvidence,
 } from "./checkout-spark-reconciliation"
+import {
+  assertCheckoutSparkSettledClosedReturnedProof,
+  type CheckoutSparkSettledClosedReturnedProof,
+} from "./checkout-spark-settled-returned"
 
-/** Pinned Spark 0.11 protobuf values, including internal swap transfer types. */
+/** Pinned Spark protobuf values, including internal swap transfer types. */
 type NativeTransferType = 0 | 1 | 2 | 3 | 4 | 5 | 30 | 40
 const TRANSFER_TYPES: NativeTransferType[] = [0, 1, 2, 3, 4, 5, 30, 40]
 const PAGE_SIZE = 100
@@ -52,6 +56,8 @@ export interface CollectCheckoutSparkNativeRetirementEvidenceInput {
   stateUpdatedAt: number
   /** Exact funding + every payout, already independently verified successful. */
   expectedTransferIds: readonly string[]
+  /** Separate fresh terminal-only proof for each exact archived returned ID. */
+  closedReturnedProofs?: readonly CheckoutSparkSettledClosedReturnedProof[]
   now: () => number
   assertCurrent?: () => void
 }
@@ -67,7 +73,8 @@ async function guardedRead<T>(
 }
 
 async function readCompleteHistory(
-  input: CollectCheckoutSparkNativeRetirementEvidenceInput
+  input: CollectCheckoutSparkNativeRetirementEvidenceInput,
+  closedReturns: ReadonlyMap<string, number>
 ): Promise<NativeTransfer[] | null> {
   const history: NativeTransfer[] = []
   let offset = 0
@@ -95,7 +102,11 @@ async function readCompleteHistory(
       result.transfers.some(
         (transfer) =>
           !transfer ||
-          transfer.status !== 5 ||
+          (closedReturns.has(transfer.id)
+            ? transfer.type !== 0 ||
+              ![6, 7].includes(transfer.status) ||
+              transfer.totalValue !== closedReturns.get(transfer.id)
+            : transfer.status !== 5) ||
           !TRANSFER_TYPES.includes(transfer.type as NativeTransferType) ||
           transfer.network !== (input.network === "mainnet" ? 1 : 2) ||
           !isIdentifier(transfer.id) ||
@@ -121,6 +132,9 @@ async function readCompleteHistory(
     new Set(history.map((transfer) => transfer.id)).size !== history.length ||
     input.expectedTransferIds.some(
       (id) => !history.some((transfer) => transfer.id === id)
+    ) ||
+    [...closedReturns.keys()].some(
+      (id) => !history.some((transfer) => transfer.id === id)
     )
   )
     return null
@@ -128,7 +142,7 @@ async function readCompleteHistory(
 }
 
 /**
- * Success-only terminal observation, never proof of the expected payments by
+ * Terminal observation, never proof of the expected payments by
  * itself. The caller first proves the exact funding/payout amounts and owners.
  * Two complete equal scans reject observed pagination races; neither a scan
  * nor zero funds proves the absence of future activity. Truncation, ambiguity,
@@ -153,14 +167,38 @@ export async function collectCheckoutSparkNativeRetirementEvidence(
     )
       return null
     input = { ...input, expectedTransferIds: [...input.expectedTransferIds] }
+    const closedProofs = [...(input.closedReturnedProofs ?? [])]
+    if (closedProofs.length > PAGE_SIZE * MAX_PAGES) return null
+    const closedReturns = new Map<string, number>()
+    const requireFreshClosedReturns = () => {
+      const observed = new Map<string, number>()
+      for (const proof of closedProofs) {
+        const closure = assertCheckoutSparkSettledClosedReturnedProof(proof, {
+          walletId: input.walletId,
+          network: input.network,
+          nowMs: input.now(),
+        })
+        if (
+          observed.has(closure.transferId) ||
+          input.expectedTransferIds.includes(closure.transferId)
+        )
+          throw new Error(
+            "Checkout Spark returned retirement scope is invalid."
+          )
+        observed.set(closure.transferId, closure.debitedSats)
+      }
+      return observed
+    }
+    for (const [id, debit] of requireFreshClosedReturns())
+      closedReturns.set(id, debit)
     input.assertCurrent?.()
     const startedAt = input.now()
     if (!Number.isSafeInteger(startedAt) || startedAt < input.stateUpdatedAt)
       return null
     const reader = input.authenticatedReader
-    const first = await readCompleteHistory(input)
+    const first = await readCompleteHistory(input, closedReturns)
     if (!first) return null
-    const second = await readCompleteHistory(input)
+    const second = await readCompleteHistory(input, closedReturns)
     if (!second || JSON.stringify(first) !== JSON.stringify(second)) return null
     const available = await guardedRead(input, () =>
       reader.getAvailableBalance(input.sparkAddress)
@@ -186,6 +224,7 @@ export async function collectCheckoutSparkNativeRetirementEvidence(
     )
       return null
     input.assertCurrent?.()
+    requireFreshClosedReturns()
     return {
       walletId: input.walletId,
       network: input.network,

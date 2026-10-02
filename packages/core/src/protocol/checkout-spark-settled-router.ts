@@ -1,6 +1,13 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
+  assertCheckoutSparkSettledReturnedProof,
+  restoreCheckoutSparkSettledReturnClosure,
+  type CheckoutSparkSettledReturnedProof,
+  type CheckoutSparkSettledReturnClosure,
+} from "./checkout-spark-settled-returned"
+import { checkoutSparkProviderSendWindowEndsAt } from "./checkout-spark-invoice-expiry"
+import {
   assertCheckoutSparkMerchantPayoutRecipient,
   freezeCheckoutSparkCommerceQuote,
   type CheckoutSparkCommerceQuote,
@@ -135,10 +142,22 @@ export interface CheckoutSparkSettledLegProgress {
   readonly observedAt: number | null
   readonly finalFeeSats: number | null
   readonly finalDebitSats: number | null
+  readonly generation?: 0 | 1
+  readonly closedGenerations?: readonly CheckoutSparkSettledClosedGeneration[]
+}
+
+export interface CheckoutSparkSettledClosedGeneration {
+  readonly generation: 0
+  readonly intent: CheckoutSparkSettledLegIntentInput
+  readonly status: Exclude<CheckoutSparkSettledLegStatus, "unprepared" | "paid">
+  readonly observedAt: number
+  readonly finalFeeSats: null
+  readonly finalDebitSats: null
+  readonly closure: CheckoutSparkSettledReturnClosure
 }
 
 export interface CheckoutSparkSettledReconciliation {
-  readonly schemaVersion: 3
+  readonly schemaVersion: 3 | 4
   readonly plan: CheckoutSparkSettledPlan
   /** Exact invoice-attributed credit; never a wallet-balance inference. */
   readonly credit: CheckoutSparkSettledCreditEvidence | null
@@ -563,6 +582,35 @@ export function deriveCheckoutSparkSettledTransferId(
   return uuidFromDigest(digest([TRANSFER_DOMAIN, canonical.planDigest, legId]))
 }
 
+/** One bounded successor; generation zero retains its historical identity. */
+export function deriveCheckoutSparkSettledRenewalTransferId(
+  plan: CheckoutSparkSettledPlan,
+  legId: string
+): string {
+  const parent = deriveCheckoutSparkSettledTransferId(plan, legId)
+  return uuidFromDigest(
+    digest([
+      "conduit:checkout-spark-settled-transfer-generation:v1",
+      plan.planDigest,
+      legId,
+      1,
+      parent,
+    ])
+  )
+}
+
+export function getCheckoutSparkSettledLegGeneration(
+  leg: CheckoutSparkSettledLegProgress
+): 0 | 1 {
+  return leg.generation ?? 0
+}
+
+export function getCheckoutSparkSettledClosedGeneration(
+  leg: CheckoutSparkSettledLegProgress
+): CheckoutSparkSettledClosedGeneration | null {
+  return leg.closedGenerations?.[0] ?? null
+}
+
 /** Internal stale-review check only; never display or log this fingerprint. */
 export function fingerprintCheckoutSparkSettledLegIntent(
   intent: CheckoutSparkSettledLegIntentInput
@@ -639,6 +687,19 @@ function freezeState(
         Object.freeze({
           ...leg,
           intent: leg.intent ? Object.freeze({ ...leg.intent }) : null,
+          ...(leg.closedGenerations
+            ? {
+                closedGenerations: Object.freeze(
+                  leg.closedGenerations.map((entry) =>
+                    Object.freeze({
+                      ...entry,
+                      intent: Object.freeze({ ...entry.intent }),
+                      closure: Object.freeze({ ...entry.closure }),
+                    })
+                  )
+                ),
+              }
+            : {}),
         })
       )
     ),
@@ -669,7 +730,7 @@ export function createCheckoutSparkSettledReconciliation(
 export function restoreCheckoutSparkSettledReconciliation(
   state: CheckoutSparkSettledReconciliation
 ): CheckoutSparkSettledReconciliation {
-  if (state.schemaVersion !== 3) {
+  if (state.schemaVersion !== 3 && state.schemaVersion !== 4) {
     throw new Error("Checkout Spark settled state version is invalid.")
   }
   const plan = restoreCheckoutSparkSettledPlan(state.plan)
@@ -689,6 +750,18 @@ export function restoreCheckoutSparkSettledReconciliation(
   }
   const legs = state.legs.map((leg, position) => {
     const baseline = expected[position]!
+    const generation = getCheckoutSparkSettledLegGeneration(leg)
+    if (
+      (state.schemaVersion === 3 &&
+        (Object.hasOwn(leg, "generation") ||
+          Object.hasOwn(leg, "closedGenerations"))) ||
+      (state.schemaVersion === 4 &&
+        (![0, 1].includes(leg.generation!) ||
+          !Array.isArray(leg.closedGenerations) ||
+          leg.closedGenerations.length !== generation))
+    ) {
+      throw new Error("Checkout Spark settled generation is invalid.")
+    }
     if (
       leg.legId !== baseline.legId ||
       leg.allocationSats !== baseline.allocationSats
@@ -704,12 +777,63 @@ export function restoreCheckoutSparkSettledReconciliation(
       ) {
         throw new Error("Checkout Spark settled empty leg is invalid.")
       }
-      return baseline
+      if (generation !== 0)
+        throw new Error("Checkout Spark renewed leg lacks its intent.")
+      return state.schemaVersion === 4
+        ? { ...baseline, generation: 0 as const, closedGenerations: [] }
+        : baseline
     }
     if (!credit || baseline.allocationSats === null) {
       throw new Error("Checkout Spark settled leg lacks exact credit.")
     }
-    const intent = normalizeIntent(plan, baseline, leg.intent)
+    const intent = normalizeIntent(plan, baseline, leg.intent, generation)
+    let closed: CheckoutSparkSettledClosedGeneration | null = null
+    if (generation === 1) {
+      const entry = leg.closedGenerations![0]!
+      const keys = [
+        "generation",
+        "intent",
+        "status",
+        "observedAt",
+        "finalFeeSats",
+        "finalDebitSats",
+        "closure",
+      ]
+      if (
+        Object.keys(entry).length !== keys.length ||
+        keys.some((key) => !Object.hasOwn(entry, key)) ||
+        entry.generation !== 0 ||
+        ![
+          "prepared",
+          "submitted",
+          "ambiguous",
+          "lookup_unavailable",
+          "conflicting_evidence",
+          "terminal_failure",
+        ].includes(entry.status) ||
+        entry.finalFeeSats !== null ||
+        entry.finalDebitSats !== null
+      )
+        throw new Error("Checkout Spark closed generation is invalid.")
+      const oldIntent = normalizeIntent(plan, baseline, entry.intent)
+      const closure = restoreCheckoutSparkSettledReturnClosure(entry.closure, {
+        plan,
+        intent: oldIntent,
+      })
+      if (
+        !Number.isSafeInteger(entry.observedAt) ||
+        entry.observedAt < oldIntent.preparedAt ||
+        closure.observedAt < entry.observedAt ||
+        closure.observedAt > intent.preparedAt ||
+        intent.preparedAt < plan.takeoverAt ||
+        intent.paymentHash === oldIntent.paymentHash ||
+        intent.paymentRequest === oldIntent.paymentRequest ||
+        (checkoutSparkProviderSendWindowEndsAt(oldIntent.paymentRequest) ??
+          Infinity) > intent.preparedAt
+      )
+        throw new Error("Checkout Spark renewal progression is invalid.")
+      closed = { ...entry, intent: oldIntent, closure }
+    }
     if (
       leg.status === "unprepared" ||
       leg.observedAt === null ||
@@ -739,8 +863,35 @@ export function restoreCheckoutSparkSettledReconciliation(
     } else if (leg.finalFeeSats !== null || leg.finalDebitSats !== null) {
       throw new Error("Checkout Spark unconfirmed fee is invalid.")
     }
-    return Object.freeze({ ...leg, intent })
+    return Object.freeze({
+      ...leg,
+      intent,
+      ...(state.schemaVersion === 4
+        ? { generation, closedGenerations: closed ? [closed] : [] }
+        : {}),
+    })
   })
+  if (
+    state.schemaVersion === 4 &&
+    !legs.some((leg) => getCheckoutSparkSettledLegGeneration(leg) === 1)
+  ) {
+    throw new Error("Checkout Spark renewed state lacks a closed generation.")
+  }
+  const cumulativeDebitSats = legs.reduce((total, leg) => {
+    const historical = (leg.closedGenerations ?? []).reduce(
+      (sum, entry) => sum + entry.closure.netDebitSats,
+      0
+    )
+    const debit = historical + (leg.finalDebitSats ?? 0)
+    if (!Number.isSafeInteger(debit) || debit > (leg.allocationSats ?? 0))
+      throw new Error("Checkout Spark cumulative debit exceeds its allocation.")
+    return total + debit
+  }, 0)
+  if (
+    !Number.isSafeInteger(cumulativeDebitSats) ||
+    cumulativeDebitSats > (credit?.creditedSats ?? 0)
+  )
+    throw new Error("Checkout Spark cumulative debit exceeds its credit.")
   const latest = Math.max(
     plan.createdAt,
     credit?.observedAt ?? plan.createdAt,
@@ -750,7 +901,7 @@ export function restoreCheckoutSparkSettledReconciliation(
     throw new Error("Checkout Spark settled state timestamp is stale.")
   }
   return freezeState({
-    schemaVersion: 3,
+    schemaVersion: state.schemaVersion,
     plan,
     credit,
     legs,
@@ -828,12 +979,15 @@ export function recordCheckoutSparkSettledCredit(
 function normalizeIntent(
   plan: CheckoutSparkSettledPlan,
   leg: CheckoutSparkSettledLegProgress,
-  input: CheckoutSparkSettledLegIntentInput
+  input: CheckoutSparkSettledLegIntentInput,
+  generation: 0 | 1 = 0
 ): CheckoutSparkSettledLegIntentInput {
   if (
     input.legId !== leg.legId ||
     input.transferId !==
-      deriveCheckoutSparkSettledTransferId(plan, leg.legId) ||
+      (generation === 0
+        ? deriveCheckoutSparkSettledTransferId(plan, leg.legId)
+        : deriveCheckoutSparkSettledRenewalTransferId(plan, leg.legId)) ||
     leg.allocationSats === null
   ) {
     throw new Error("Checkout Spark settled intent is out of scope.")
@@ -877,7 +1031,12 @@ export function prepareCheckoutSparkSettledLeg(
     throw new Error("Checkout Spark settled leg is not funded.")
   }
   const leg = current.legs[position]!
-  const intent = normalizeIntent(current.plan, leg, input)
+  const intent = normalizeIntent(
+    current.plan,
+    leg,
+    input,
+    getCheckoutSparkSettledLegGeneration(leg)
+  )
   if (leg.intent) {
     if (JSON.stringify(leg.intent) !== JSON.stringify(intent)) {
       throw new Error("Checkout Spark settled intent cannot be replaced.")
@@ -901,6 +1060,91 @@ export function prepareCheckoutSparkSettledLeg(
     ...current,
     legs,
     updatedAt: Math.max(current.updatedAt, intent.preparedAt),
+  })
+}
+
+/** Advance only after exact positive full return; never reset the old attempt. */
+export function renewCheckoutSparkSettledLeg(
+  state: CheckoutSparkSettledReconciliation,
+  input: {
+    legId: string
+    intent: CheckoutSparkSettledLegIntentInput
+    proof: CheckoutSparkSettledReturnedProof
+    nowMs: number
+  }
+): CheckoutSparkSettledReconciliation {
+  const current = restoreCheckoutSparkSettledReconciliation(state)
+  const leg = current.legs.find((item) => item.legId === input.legId)
+  const recipient = current.plan.recipients.find(
+    (item) => item.legId === input.legId
+  )
+  if (
+    !current.credit ||
+    !leg?.intent ||
+    !recipient ||
+    leg.allocationSats === null ||
+    leg.status === "paid" ||
+    getCheckoutSparkSettledLegGeneration(leg) !== 0 ||
+    !Number.isSafeInteger(input.nowMs) ||
+    input.nowMs < current.plan.takeoverAt ||
+    input.nowMs < current.updatedAt ||
+    input.intent.preparedAt !== input.nowMs ||
+    (checkoutSparkProviderSendWindowEndsAt(leg.intent.paymentRequest) ??
+      Infinity) > input.nowMs
+  )
+    throw new Error("Checkout Spark payout cannot be renewed.")
+  const protectedSats = current.legs.reduce(
+    (sum, item) =>
+      sum + (item.status === "paid" ? 0 : (item.allocationSats ?? 0)),
+    0
+  )
+  const closure = assertCheckoutSparkSettledReturnedProof(input.proof, {
+    plan: current.plan,
+    target: {
+      walletId: current.plan.walletId,
+      network: current.plan.network,
+      legId: leg.legId,
+      recipientId: recipient.recipientId,
+      allocationSats: leg.allocationSats,
+      unpaidAllocationSats: protectedSats,
+      intent: leg.intent,
+    },
+    nowMs: input.nowMs,
+  })
+  if (closure.observedAt < (leg.observedAt ?? leg.intent.preparedAt))
+    throw new Error("Checkout Spark returned transfer observation is stale.")
+  const intent = normalizeIntent(current.plan, leg, input.intent, 1)
+  const archived: CheckoutSparkSettledClosedGeneration = {
+    generation: 0,
+    intent: leg.intent,
+    status: leg.status as CheckoutSparkSettledClosedGeneration["status"],
+    observedAt: leg.observedAt!,
+    finalFeeSats: null,
+    finalDebitSats: null,
+    closure,
+  }
+  return restoreCheckoutSparkSettledReconciliation({
+    ...current,
+    schemaVersion: 4,
+    legs: current.legs.map((item) =>
+      item.legId === input.legId
+        ? {
+            ...item,
+            generation: 1,
+            closedGenerations: [archived],
+            intent,
+            status: "prepared",
+            observedAt: intent.preparedAt,
+            finalFeeSats: null,
+            finalDebitSats: null,
+          }
+        : {
+            ...item,
+            generation: getCheckoutSparkSettledLegGeneration(item),
+            closedGenerations: item.closedGenerations ?? [],
+          }
+    ),
+    updatedAt: input.nowMs,
   })
 }
 

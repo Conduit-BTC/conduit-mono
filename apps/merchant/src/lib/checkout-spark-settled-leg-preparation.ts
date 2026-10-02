@@ -5,7 +5,10 @@ import {
   assertCheckoutSparkSettledMerchantPreparationWindow,
   assertCheckoutSparkSettledRecoveryProgression,
   createCheckoutSparkMerchantProgress,
+  checkoutSparkProviderSendWindowEndsAt,
+  deriveCheckoutSparkSettledRenewalTransferId,
   deriveCheckoutSparkSettledTransferId,
+  getCheckoutSparkSettledLegGeneration,
   getAccountSigner,
   parseMerchantCheckoutSparkProgressDeliveryRecord,
   prepareCheckoutSparkSettledOutgoingLegShared,
@@ -35,6 +38,7 @@ import {
   deriveMerchantCheckoutSparkRecoveryIdentity,
   inspectExactMerchantPayout,
   openMerchantCheckoutSparkRecoveryWallet,
+  proveMerchantCheckoutSparkReturnedPayout,
 } from "./checkout-spark-settled-recovery"
 
 type Store = Pick<
@@ -45,7 +49,10 @@ type Store = Pick<
   | "loadMerchantOrderWitness"
   | "recordMerchantCredit"
   | "recordMerchantPayout"
->
+> &
+  Partial<
+    Pick<DexieCheckoutSparkSettledRepository, "saveRenewedWithInvoiceOrigin">
+  >
 
 export interface MerchantCheckoutSparkPreparationDependencies {
   repository?: Store
@@ -87,7 +94,12 @@ export interface MerchantCheckoutSparkPreparationResult extends MerchantCheckout
 export async function prepareMerchantCheckoutSparkSettledPayout(
   principalPubkey: string,
   selected: MerchantCheckoutSparkRecoveryCandidate,
-  input: { legId: string; shouldContinue: () => boolean },
+  input: {
+    legId: string
+    shouldContinue: () => boolean
+    /** Explicit current-session authorization; never inferred from expiry. */
+    allowRenewal?: boolean
+  },
   dependencies: MerchantCheckoutSparkPreparationDependencies = {}
 ): Promise<MerchantCheckoutSparkPreparationResult> {
   const principal = principalPubkey.trim().toLowerCase()
@@ -98,7 +110,11 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
       ? { merchantProgress: { ...selected.merchantProgress } }
       : {}),
   }
-  input = { legId: input.legId, shouldContinue: input.shouldContinue }
+  input = {
+    legId: input.legId,
+    shouldContinue: input.shouldContinue,
+    allowRenewal: input.allowRenewal === true,
+  }
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   const now = dependencies.now ?? Date.now
@@ -310,7 +326,16 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
     const target = current.state.legs.find((leg) => leg.legId === input.legId)
     if (!target)
       throw new Error("Checkout Spark payout leg is not in this plan.")
-    if (target.intent) {
+    const endsAt = target.intent
+      ? checkoutSparkProviderSendWindowEndsAt(target.intent.paymentRequest)
+      : null
+    const renewing =
+      input.allowRenewal === true &&
+      target.intent !== null &&
+      getCheckoutSparkSettledLegGeneration(target) === 0 &&
+      endsAt !== null &&
+      endsAt <= now()
+    if (target.intent && !renewing) {
       await retainExisting()
       return
     }
@@ -329,6 +354,7 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
       mnemonic: initial.wallet.mnemonic,
       accountNumber: initial.wallet.accountNumber,
       network: initial.wallet.network,
+      ...(renewing ? { renewal: true as const } : {}),
     })
     try {
       assertEligible()
@@ -338,6 +364,10 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
       assertEligible()
       if (actualIdentity !== identity)
         throw new Error("Checkout Spark wallet identity changed.")
+      if (renewing && !wallet.inspectReturnedInvoiceAttempt) {
+        preparation = { status: "history_wait" }
+        return
+      }
       const receive = await wallet.getLightningReceiveRequest(
         plan.funding.requestId
       )
@@ -401,6 +431,9 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
           recipientId: recipient.recipientId,
           allocationSats: leg.allocationSats!,
           unpaidAllocationSats: leg.allocationSats!,
+          ...(getCheckoutSparkSettledLegGeneration(leg) === 1
+            ? { generation: 1 as const }
+            : {}),
           intent: leg.intent,
         }
         const observed = await inspectExactMerchantPayout(
@@ -413,6 +446,21 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
         if (observed.status === "not_found" && leg.status === "prepared")
           continue
         if (observed.status !== "paid") {
+          if (renewing && leg.legId === input.legId) {
+            try {
+              await proveMerchantCheckoutSparkReturnedPayout(
+                current.state,
+                leg.legId,
+                wallet,
+                assertEligible,
+                now
+              )
+              assertEligible()
+              continue
+            } catch {
+              assertEligible()
+            }
+          }
           preparation = { status: "history_wait" }
           return
         }
@@ -454,7 +502,7 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
       const selectedLeg = current.state.legs.find(
         (leg) => leg.legId === input.legId
       )!
-      if (selectedLeg.intent) {
+      if (selectedLeg.intent && (!renewing || selectedLeg.status === "paid")) {
         await retainExisting()
         return
       }
@@ -484,7 +532,9 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
       >
       try {
         priorTransfer = await wallet.getTransferFromSsp(
-          deriveCheckoutSparkSettledTransferId(plan, input.legId)
+          renewing
+            ? deriveCheckoutSparkSettledRenewalTransferId(plan, input.legId)
+            : deriveCheckoutSparkSettledTransferId(plan, input.legId)
         )
       } catch {
         assertEligible()
@@ -506,7 +556,19 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
           state.legs.some(
             (leg, index) =>
               leg.legId !== input.legId &&
-              JSON.stringify(leg) !== JSON.stringify(inspected.legs[index])
+              JSON.stringify({
+                ...leg,
+                generation: getCheckoutSparkSettledLegGeneration(leg),
+                closedGenerations: leg.closedGenerations ?? [],
+              }) !==
+                JSON.stringify({
+                  ...inspected.legs[index],
+                  generation: getCheckoutSparkSettledLegGeneration(
+                    inspected.legs[index]!
+                  ),
+                  closedGenerations:
+                    inspected.legs[index]!.closedGenerations ?? [],
+                })
           )
         ) {
           throw new CheckoutSparkSettledRepositoryConflictError()
@@ -519,6 +581,7 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
           planDigest: plan.planDigest,
           legId: input.legId,
           shouldContinue: input.shouldContinue,
+          allowRenewal: renewing,
         },
         {
           repository,
@@ -527,6 +590,25 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
             wallet.estimateLightningFee!({ paymentRequest }),
           assertAuthority: assertPreparedState,
           nowMs: now,
+          ...(renewing
+            ? {
+                proveRenewalReturn: async (
+                  state: CheckoutSparkSettledReconciliation,
+                  legId: string
+                ) => {
+                  assertPreparedState(state)
+                  const proof = await proveMerchantCheckoutSparkReturnedPayout(
+                    state,
+                    legId,
+                    wallet,
+                    assertEligible,
+                    now
+                  )
+                  assertPreparedState(state)
+                  return proof
+                },
+              }
+            : {}),
           async acknowledgeRecoverySnapshot(state) {
             const saved = await load()
             assertPreparedState(saved.state)
@@ -593,7 +675,8 @@ export type MerchantCheckoutSparkNextPreparationResult =
  * Choose the first unfinished obligation from this device's exact saved plan.
  * Local state only selects the leg; the existing adapter rechecks private
  * recovery, the order witness and provider evidence before invoice preparation.
- * An existing intent is retained unchanged, never skipped or replaced.
+ * Existing intents are retained unless this current session explicitly permits
+ * the separately proven, full-return generation-one renewal path.
  */
 export async function prepareNextMerchantCheckoutSparkSettledPayout(
   principalPubkey: string,
@@ -601,6 +684,7 @@ export async function prepareNextMerchantCheckoutSparkSettledPayout(
   input: {
     shouldContinue: () => boolean
     stopAndDrain?: () => Promise<void>
+    allowRenewal?: boolean
   },
   dependencies: MerchantCheckoutSparkPreparationDependencies = {}
 ): Promise<MerchantCheckoutSparkNextPreparationResult> {
@@ -613,6 +697,7 @@ export async function prepareNextMerchantCheckoutSparkSettledPayout(
   }
   const shouldContinue = input.shouldContinue
   const stopAndDrain = input.stopAndDrain
+  const allowRenewal = input.allowRenewal === true
   const assertActive = () => {
     if (shouldContinue() !== true) {
       throw new Error("Checkout Spark Merchant preparation session changed.")
@@ -645,7 +730,7 @@ export async function prepareNextMerchantCheckoutSparkSettledPayout(
   const recovery = await prepareMerchantCheckoutSparkSettledPayout(
     principal,
     selected,
-    { legId: next.legId, shouldContinue },
+    { legId: next.legId, shouldContinue, allowRenewal },
     { ...dependencies, repository }
   )
   assertActive()

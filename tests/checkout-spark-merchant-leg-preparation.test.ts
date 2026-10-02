@@ -31,7 +31,14 @@ import {
   prepareMerchantCheckoutSparkSettledPayout,
   prepareNextMerchantCheckoutSparkSettledPayout,
 } from "../apps/merchant/src/lib/checkout-spark-settled-leg-preparation"
-import { type MerchantSparkRecoveryWallet } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
+import {
+  retireMerchantCheckoutSparkSettledRecovery,
+  type MerchantSparkRecoveryWallet,
+} from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
+import {
+  continueMerchantCheckoutSparkSettledPayout,
+  reviewMerchantCheckoutSparkSettledPayout,
+} from "../apps/merchant/src/lib/checkout-spark-settled-continuation"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -57,10 +64,14 @@ type Dependencies = NonNullable<
   Parameters<typeof prepareMerchantCheckoutSparkSettledPayout>[3]
 >
 
-function invoice(amountSats: number, hashByte: number) {
+function invoice(
+  amountSats: number,
+  hashByte: number,
+  createdAt = CREATED_AT / 1_000
+) {
   return makeSignedBolt11Fixture({
     hrp: `lnbc${amountSats * 10}n`,
-    createdAt: CREATED_AT / 1_000,
+    createdAt,
     fields: [
       bolt11PaymentHashField(new Uint8Array(32).fill(hashByte)),
       bolt11PaymentSecretField(),
@@ -261,6 +272,8 @@ async function harness() {
     save: stored.save.bind(stored),
     savePreparedWithInvoiceOrigin:
       stored.savePreparedWithInvoiceOrigin.bind(stored),
+    saveRenewedWithInvoiceOrigin:
+      stored.saveRenewedWithInvoiceOrigin.bind(stored),
     loadMerchantOrderWitness: stored.loadMerchantOrderWitness.bind(stored),
     recordMerchantCredit: stored.recordMerchantCredit.bind(stored),
     recordMerchantPayout: stored.recordMerchantPayout.bind(stored),
@@ -550,6 +563,650 @@ async function seedMerchantPayout(
   }
   return { transferId, nativeRequest }
 }
+
+async function seedReturnedRenewal(test: Awaited<ReturnType<typeof harness>>) {
+  const initial = await test.stored.load(
+    test.plan.checkoutId,
+    test.plan.planDigest
+  )
+  if (initial.status !== "active") throw new Error("Fixture missing")
+  let state = prepared(credited(initial.state))
+  const original = state.legs[0]!.intent!
+  state = recordCheckoutSparkSettledLegStatus(state, {
+    legId: original.legId,
+    transferId: original.transferId,
+    paymentHash: original.paymentHash,
+    status: "submitted",
+    observedAt: CREATED_AT + 4_000,
+  })
+  await test.stored.save(state, initial.revision)
+  const clock = CREATED_AT + 7_200_000
+  test.setClock(clock)
+  const inspections: number[] = []
+  test.wallet.inspectReturnedInvoiceAttempt = async (request, options) => {
+    options.assertCurrent()
+    inspections.push(options.now())
+    return {
+      status: "returned",
+      evidence: {
+        network: request.network,
+        walletIdentityPublicKey: IDENTITY,
+        transferId: request.transferId,
+        requestId: "synthetic-returned-send-request",
+        paymentRequest: request.paymentRequest,
+        paymentHash: request.paymentHash,
+        invoiceAmountSats: request.amountSats,
+        maxFeeSats: request.maxFeeSats,
+        debitedSats: 996,
+        returnedSats: 996,
+        availableSats: 1_111,
+        sspStatus: "LIGHTNING_PAYMENT_FAILED",
+        operatorStatus: "EXPIRED",
+        htlcStatus: "RETURNED",
+        preimage: null,
+        returnedLeaves: [{ id: "synthetic-returned-leaf", valueSats: 996 }],
+        availableLeaves: [
+          { id: "synthetic-returned-leaf", valueSats: 996 },
+          { id: "synthetic-unspent-leaf", valueSats: 115 },
+        ],
+        observedAt: options.now(),
+      },
+    }
+  }
+  const preimageBytes = new Uint8Array(32).fill(21)
+  const paymentHashBytes = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", preimageBytes)
+  )
+  const paymentHash = Array.from(paymentHashBytes, (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("")
+  test.dependencies.resolveInvoice = async (request) => {
+    test.calls.invoices.push(request.amountSats)
+    return resolveCheckoutSparkLnurlInvoice(request, {
+      fetchMetadata: async () => ({
+        payRequestUrl:
+          "https://wallet.conduit.market/.well-known/lnurlp/merchant",
+        lnurl: "lnurl1synthetic",
+        callback: "https://wallet.conduit.market/pay",
+        minSendable: 1_000,
+        maxSendable: 100_000_000,
+        tag: "payRequest",
+        allowsNostr: false,
+        metadata: "[]",
+      }),
+      fetchInvoice: async () => ({
+        invoice: makeSignedBolt11Fixture({
+          hrp: `lnbc${request.amountSats * 10}n`,
+          createdAt: request.nowSeconds,
+          fields: [
+            bolt11PaymentHashField(paymentHashBytes),
+            bolt11PaymentSecretField(),
+            bolt11PlainDescriptionField(),
+          ],
+        }),
+      }),
+    })
+  }
+  return {
+    original,
+    clock,
+    inspections,
+    paymentHash,
+    preimage: "15".repeat(32),
+    run: () =>
+      prepareMerchantCheckoutSparkSettledPayout(
+        MERCHANT,
+        test.selected,
+        { ...test.input, allowRenewal: true },
+        test.dependencies
+      ),
+  }
+}
+
+async function renewedContinuation(test: Awaited<ReturnType<typeof harness>>) {
+  const returned = await seedReturnedRenewal(test)
+  expect((await returned.run()).preparation?.status).toBe("prepared")
+  const progress = test.calls.wraps[0]!
+  const selected = {
+    ...test.selected,
+    merchantProgress: {
+      wrapId: test.calls.publishes[0]!.id,
+      snapshotId: progress.snapshotId,
+      recordedAt: progress.recordedAt,
+    },
+  }
+  const beforePreview = returned.inspections.length
+  const review = await reviewMerchantCheckoutSparkSettledPayout(
+    MERCHANT,
+    selected,
+    test.stored
+  )
+  expect(review !== null).toBe(true)
+  expect(returned.inspections.length).toBe(beforePreview)
+  if (!review) throw new Error("Fixture review missing")
+  let sends = 0
+  test.wallet.outgoing = {
+    getAvailableSats: async () => 1_111n,
+    estimateFee: async () => 5,
+    sendFrozen: async () => {
+      sends += 1
+    },
+  }
+  const dependencies: NonNullable<
+    Parameters<typeof continueMerchantCheckoutSparkSettledPayout>[3]
+  > = {
+    ...test.dependencies,
+    repository: test.stored,
+    shouldContinue: test.input.shouldContinue,
+    openWallet: async () => test.wallet,
+    consumeRecovery: async (_principal, candidate, adapter) => {
+      await adapter.consumeMerchantProgress!(
+        test.payload,
+        test.payload,
+        progress,
+        () => {
+          if (!test.input.shouldContinue())
+            throw new Error("Synthetic current session ended")
+        }
+      )
+      return {
+        status: "consumed",
+        coverage: "complete",
+        discoveryCoverage: "complete",
+        declarationState: "declared",
+        candidate,
+      }
+    },
+  }
+  return {
+    ...returned,
+    selected,
+    review,
+    dependencies,
+    sends: () => sends,
+    continue: () =>
+      continueMerchantCheckoutSparkSettledPayout(
+        MERCHANT,
+        selected,
+        review,
+        dependencies
+      ),
+  }
+}
+
+describe("Merchant renewed signed-progress continuation", () => {
+  it.each(["closed_returned", "unavailable", "refund_mismatch"] as const)(
+    "requires exact terminal archived-return proof for Merchant retirement: %s",
+    async (status) => {
+      await withHarness(async (test) => {
+        const context = await renewedContinuation(test)
+        let saved = await test.stored.load(
+          test.plan.checkoutId,
+          test.plan.planDigest
+        )
+        if (saved.status !== "active") throw new Error("Fixture missing")
+        const merchantPaid = recordCheckoutSparkSettledLegStatus(saved.state, {
+          legId: context.review.legId,
+          transferId: context.review.intent.transferId,
+          paymentHash: context.review.intent.paymentHash,
+          status: "paid",
+          finalFeeSats: 5,
+          finalDebitSats: 1_000,
+          observedAt: context.clock + 1,
+        })
+        await test.stored.save(merchantPaid, saved.revision)
+        saved = await test.stored.load(
+          test.plan.checkoutId,
+          test.plan.planDigest
+        )
+        if (saved.status !== "active") throw new Error("Fixture missing")
+        const recipient = test.plan.recipients[1]!
+        const feePreimage = new Uint8Array(32).fill(31)
+        const feeHash = new Uint8Array(
+          await crypto.subtle.digest("SHA-256", feePreimage)
+        )
+        const resolved = await resolveCheckoutSparkLnurlInvoice(
+          {
+            lud16: recipient.destination.value,
+            amountSats: 109,
+            network: test.plan.network,
+            nowSeconds: Math.floor((context.clock + 2) / 1_000),
+            shouldContinue: test.input.shouldContinue,
+          },
+          {
+            fetchMetadata: async () => ({
+              payRequestUrl:
+                "https://wallet.conduit.market/.well-known/lnurlp/fee",
+              lnurl: "lnurl1synthetic",
+              callback: "https://wallet.conduit.market/pay",
+              minSendable: 1_000,
+              maxSendable: 100_000_000,
+              tag: "payRequest",
+              allowsNostr: false,
+              metadata: "[]",
+            }),
+            fetchInvoice: async () => ({
+              invoice: makeSignedBolt11Fixture({
+                hrp: "lnbc1090n",
+                createdAt: Math.floor((context.clock + 2) / 1_000),
+                fields: [
+                  bolt11PaymentHashField(feeHash),
+                  bolt11PlainDescriptionField(),
+                  bolt11PaymentSecretField(),
+                ],
+              }),
+            }),
+          }
+        )
+        const preparedFee = prepareCheckoutSparkSettledLeg(saved.state, {
+          legId: recipient.legId,
+          transferId: deriveCheckoutSparkSettledTransferId(
+            test.plan,
+            recipient.legId
+          ),
+          paymentRequest: resolved.paymentRequest,
+          paymentHash: resolved.paymentHash,
+          invoiceAmountSats: 109,
+          maxFeeSats: 2,
+          preparedAt: context.clock + 2,
+        })
+        if (!resolved.origin) throw new Error("Fixture missing invoice origin")
+        await test.stored.savePreparedWithInvoiceOrigin(
+          preparedFee,
+          saved.revision,
+          { legId: recipient.legId, origin: resolved.origin }
+        )
+        saved = await test.stored.load(
+          test.plan.checkoutId,
+          test.plan.planDigest
+        )
+        if (saved.status !== "active") throw new Error("Fixture missing")
+        const feeIntent = saved.state.legs[1]!.intent!
+        const completed = recordCheckoutSparkSettledLegStatus(saved.state, {
+          legId: recipient.legId,
+          transferId: feeIntent.transferId,
+          paymentHash: feeIntent.paymentHash,
+          status: "paid",
+          finalFeeSats: 2,
+          finalDebitSats: 111,
+          observedAt: context.clock + 3,
+        })
+        await test.stored.save(completed, saved.revision)
+        test.setClock(context.clock + 3)
+        const returned = await test.wallet.inspectReturnedInvoiceAttempt!(
+          {
+            network: test.plan.network,
+            transferId: context.original.transferId,
+            paymentRequest: context.original.paymentRequest,
+            paymentHash: context.original.paymentHash,
+            amountSats: context.original.invoiceAmountSats,
+            maxFeeSats: context.original.maxFeeSats,
+            receiverIdentityPublicKey: IDENTITY,
+            minimumAvailableSats: 1_111,
+          },
+          { now: test.dependencies.now!, assertCurrent() {} }
+        )
+        if (returned.status !== "returned")
+          throw new Error("Fixture missing return")
+        const { availableSats, availableLeaves, ...closedEvidence } =
+          returned.evidence
+        expect(availableSats > 0 && availableLeaves.length > 0).toBe(true)
+        let spendableReads = 0
+        let closureReads = 0
+        test.wallet.inspectReturnedInvoiceAttempt = async () => {
+          spendableReads += 1
+          return { status: "not_closed" }
+        }
+        test.wallet.inspectReturnedInvoiceClosure = async (
+          request,
+          options
+        ) => {
+          closureReads += 1
+          expect(request.transferId === context.original.transferId).toBe(true)
+          expect("minimumAvailableSats" in request).toBe(false)
+          if (status === "unavailable") return { status }
+          return {
+            status: "closed_returned",
+            evidence: {
+              ...closedEvidence,
+              returnedSats: status === "refund_mismatch" ? 995 : 996,
+              observedAt: options.now(),
+            },
+          }
+        }
+        const requests = [
+          {
+            intent: context.review.intent,
+            preimage: context.preimage,
+            fee: 5,
+            debit: 1_000,
+          },
+          { intent: feeIntent, preimage: "1f".repeat(32), fee: 2, debit: 111 },
+        ].map((item, index) => ({
+          ...item,
+          request: {
+            typename: "LightningSendRequest",
+            id: `synthetic-terminal-request-${index}`,
+            status: "LIGHTNING_PAYMENT_SUCCEEDED",
+            fee: { originalValue: item.fee, originalUnit: "SATOSHI" },
+            encodedInvoice: item.intent.paymentRequest,
+            idempotencyKey: item.intent.transferId,
+            paymentPreimage: item.preimage,
+          },
+        }))
+        test.wallet.getTransferFromSsp = async (id) => {
+          const paid = requests.find((item) => item.intent.transferId === id)
+          return paid
+            ? {
+                sparkId: id,
+                totalAmount: {
+                  originalValue: paid.debit,
+                  originalUnit: "SATOSHI",
+                },
+                userRequest: paid.request,
+              }
+            : undefined
+        }
+        test.wallet.getLightningSendRequest = async (id) =>
+          requests.find((item) => item.request.id === id)?.request ?? null
+        let balanceReads = 0
+        test.wallet.openRetirementReader = async () => ({
+          sparkAddress: "synthetic-private-checkout-address",
+          reader: {
+            getTransfers: async () => ({
+              transfers: [
+                {
+                  id: FUNDING_TRANSFER,
+                  type: 1,
+                  status: 5,
+                  network: 1,
+                  totalValue: 1_111,
+                },
+                {
+                  id: context.original.transferId,
+                  type: 0,
+                  status: 7,
+                  network: 1,
+                  totalValue: 996,
+                },
+                ...requests.map((item) => ({
+                  id: item.intent.transferId,
+                  type: 0,
+                  status: 5,
+                  network: 1,
+                  totalValue: item.debit,
+                })),
+              ],
+              offset: -1,
+            }),
+            getPendingTransfers: async () => {
+              test.setClock(context.clock + 4)
+              return []
+            },
+            getAvailableBalance: async () => {
+              balanceReads += 1
+              return 0n
+            },
+            getOwnedBalance: async () => {
+              balanceReads += 1
+              return 0n
+            },
+          },
+        })
+        const result = await retireMerchantCheckoutSparkSettledRecovery(
+          MERCHANT,
+          context.selected,
+          {
+            repository: {
+              ...test.repository,
+              retire: test.stored.retire.bind(test.stored),
+              assertLocalInvoiceOrigin:
+                test.stored.assertLocalInvoiceOrigin.bind(test.stored),
+            },
+            deriveIdentity: test.dependencies.deriveIdentity,
+            now: test.dependencies.now,
+            lockManager: null,
+            requireCrossTabLock: false,
+            openWallet: async (input) => {
+              expect(input.retirement).toBe(true)
+              return test.wallet
+            },
+            consumeRecovery: context.dependencies.consumeRecovery,
+          }
+        )
+        expect(closureReads).toBe(1)
+        expect(spendableReads).toBe(0)
+        expect(balanceReads > 0).toBe(status === "closed_returned")
+        expect(result.retirementStatus).toBe(
+          status === "closed_returned" ? "retired" : "pending"
+        )
+        expect(
+          (await test.stored.load(test.plan.checkoutId, test.plan.planDigest))
+            .status
+        ).toBe(status === "closed_returned" ? "retired" : "active")
+        expect(context.sends()).toBe(0)
+      })
+    },
+    30_000
+  )
+
+  it("re-proves returned funds after delayed preparation work before the renewal CAS", async () => {
+    await withHarness(async (test) => {
+      const context = await seedReturnedRenewal(test)
+      test.wallet.estimateLightningFee = async () => {
+        test.setClock(context.clock + 6_000)
+        return 5
+      }
+      expect((await context.run()).preparation?.status).toBe("prepared")
+      expect(context.inspections[0]).toBe(context.clock)
+      expect(context.inspections.at(-1)).toBe(context.clock + 6_000)
+      const saved = await test.stored.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(
+        saved.status === "active" &&
+          saved.state.legs[0]!.closedGenerations?.[0]?.closure.observedAt
+      ).toBe(context.clock + 6_000)
+    })
+  }, 15_000)
+
+  it("cannot commit a successor after the current session ends during return inspection", async () => {
+    await withHarness(async (test) => {
+      const context = await seedReturnedRenewal(test)
+      const inspect = test.wallet.inspectReturnedInvoiceAttempt!
+      const held = heldBoundary()
+      test.wallet.inspectReturnedInvoiceAttempt = async (request, options) => {
+        const result = await inspect(request, options)
+        await held.wait()
+        return result
+      }
+      const pending = context.run()
+      await held.started
+      test.revoke()
+      held.release()
+      await expect(pending).rejects.toThrow()
+      const saved = await test.stored.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(saved.status === "active" && saved.state.schemaVersion).toBe(3)
+      expect(test.calls.invoices.length).toBe(0)
+      expect(test.calls.cleanups).toBe(1)
+    })
+  }, 15_000)
+
+  it.each([
+    "unavailable",
+    "conflicting",
+    "not_closed",
+    "missing_capability",
+    "refund_mismatch",
+  ] as const)(
+    "holds the acknowledged successor without dispatch when fresh return proof is %s",
+    async (status) => {
+      await withHarness(async (test) => {
+        const context = await renewedContinuation(test)
+        const inspect = test.wallet.inspectReturnedInvoiceAttempt!
+        if (status === "missing_capability") {
+          test.wallet.inspectReturnedInvoiceAttempt = undefined
+        } else {
+          test.wallet.inspectReturnedInvoiceAttempt = async (
+            request,
+            options
+          ) => {
+            if (status !== "refund_mismatch") return { status }
+            const result = await inspect(request, options)
+            if (result.status !== "returned")
+              throw new Error("Fixture missing return")
+            return {
+              status: "returned",
+              evidence: { ...result.evidence, returnedSats: 995 },
+            }
+          }
+        }
+        const result = await context.continue()
+        expect(result.payout?.sendAttempted).toBe(false)
+        expect(result.payout?.outcome).toBe("wait")
+        expect(context.sends()).toBe(0)
+      })
+    },
+    15_000
+  )
+
+  it("does not dispatch a successor whose submitted private progress has no relay acknowledgement", async () => {
+    await withHarness(async (test) => {
+      const context = await renewedContinuation(test)
+      context.dependencies.progressTransport = {
+        ...test.dependencies.progressTransport!,
+        publishFn: async () => ({
+          attemptedRelayUrls: [INBOX],
+          successfulRelayUrls: [],
+          failedRelayUrls: [INBOX],
+          relayFailureMessages: {},
+        }),
+      }
+      const result = await context.continue()
+      expect(result.payout?.sendAttempted).toBe(false)
+      expect(context.sends()).toBe(0)
+      const saved = await test.stored.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(saved.status === "active" && saved.state.legs[0]!.status).toBe(
+        "submitted"
+      )
+    })
+  }, 15_000)
+
+  it("refreshes return proof after delayed fee work before admitting the exact successor", async () => {
+    await withHarness(async (test) => {
+      const context = await renewedContinuation(test)
+      const before = context.inspections.length
+      test.wallet.outgoing!.estimateFee = async () => {
+        test.setClock(context.clock + 6_000)
+        return 5
+      }
+      const result = await context.continue()
+      expect(result.payout?.sendAttempted).toBe(true)
+      expect(context.sends()).toBe(1)
+      expect(context.inspections.length).toBeGreaterThan(before)
+      expect(context.inspections.at(-1)).toBe(context.clock + 6_000)
+      const saved = await test.stored.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(
+        saved.status === "active" && saved.state.legs[0]!.intent?.transferId
+      ).toBe(context.review.intent.transferId)
+    })
+  }, 15_000)
+
+  it.each(["returned", "unavailable"] as const)(
+    "re-inspects returned funds after delayed private acknowledgement reports %s",
+    async (status) => {
+      await withHarness(async (test) => {
+        const context = await renewedContinuation(test)
+        const publish = test.dependencies.progressTransport!.publishFn!
+        const inspect = test.wallet.inspectReturnedInvoiceAttempt!
+        let acknowledged = false
+        const freshInspections: number[] = []
+        context.dependencies.progressTransport = {
+          ...test.dependencies.progressTransport!,
+          publishFn: async (...args) => {
+            const result = await publish(...args)
+            test.setClock(context.clock + 6_000)
+            acknowledged = true
+            return result
+          },
+        }
+        test.wallet.inspectReturnedInvoiceAttempt = async (
+          request,
+          options
+        ) => {
+          if (acknowledged) {
+            freshInspections.push(options.now())
+            if (status === "unavailable") return { status }
+          }
+          return inspect(request, options)
+        }
+        const result = await context.continue()
+        expect(freshInspections.length).toBeGreaterThan(0)
+        expect(
+          freshInspections.every(
+            (observedAt) => observedAt === context.clock + 6_000
+          )
+        ).toBe(true)
+        expect(result.payout?.sendAttempted).toBe(status === "returned")
+        expect(context.sends()).toBe(status === "returned" ? 1 : 0)
+      })
+    },
+    30_000
+  )
+
+  it("reconciles the exact paid successor without requiring returned parent leaves to remain available", async () => {
+    await withHarness(async (test) => {
+      const context = await renewedContinuation(test)
+      let deniedInspections = 0
+      test.wallet.inspectReturnedInvoiceAttempt = async () => {
+        deniedInspections += 1
+        return { status: "not_closed" }
+      }
+      const request = {
+        typename: "LightningSendRequest",
+        id: "synthetic-successor-send-request",
+        status: "LIGHTNING_PAYMENT_SUCCEEDED",
+        fee: { originalValue: 1, originalUnit: "SATOSHI" },
+        encodedInvoice: context.review.intent.paymentRequest,
+        idempotencyKey: context.review.intent.transferId,
+        paymentPreimage: context.preimage,
+      }
+      test.wallet.getTransferFromSsp = async (id) => ({
+        sparkId: id,
+        totalAmount: {
+          originalValue: context.review.intent.invoiceAmountSats + 1,
+          originalUnit: "SATOSHI",
+        },
+        userRequest: request,
+      })
+      test.wallet.getLightningSendRequest = async () => request
+
+      const result = await context.continue()
+      expect(
+        ["paid", "already_paid"].includes(result.payout?.outcome ?? "")
+      ).toBe(true)
+      expect(context.sends()).toBe(0)
+      expect(deniedInspections).toBe(0)
+      const saved = await test.stored.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(saved.status === "active" && saved.state.legs[0]!.status).toBe(
+        "paid"
+      )
+    })
+  }, 15_000)
+})
 
 describe("Merchant next unpaid payout preparation entry", () => {
   it("requires saved active recovery before any private or provider activity", async () => {
@@ -1593,6 +2250,69 @@ describe("Merchant payout preparation and exact recovery delivery adapter", () =
       })
     }
   })
+
+  it("holds an expired intent without positive returned-funds proof even when renewal is authorized", async () => {
+    await withHarness(async (test) => {
+      const initial = await test.stored.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      if (initial.status !== "active") throw new Error("Fixture missing")
+      const state = prepared(credited(initial.state))
+      await test.stored.save(state, initial.revision)
+      test.setClock(CREATED_AT + 7_200_000)
+
+      const result = await prepareMerchantCheckoutSparkSettledPayout(
+        MERCHANT,
+        test.selected,
+        { ...test.input, allowRenewal: true },
+        test.dependencies
+      )
+
+      expect(result.preparation?.status).toBe("history_wait")
+      expect(test.calls.invoices.length).toBe(0)
+      const saved = await test.stored.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(saved.status).toBe("active")
+      if (saved.status !== "active") throw new Error("Fixture missing")
+      expect(saved.state.legs[0]!.intent?.transferId).toBe(
+        state.legs[0]!.intent!.transferId
+      )
+    })
+  })
+
+  it("prepares and acknowledges one successor only after exact full returned-funds proof", async () => {
+    await withHarness(async (test) => {
+      const context = await seedReturnedRenewal(test)
+      const result = await context.run()
+
+      expect(result.preparation?.status).toBe("prepared")
+      expect(result.preparation?.recoveryDelivery).toBe("relay_accepted")
+      expect(context.inspections.length).toBeGreaterThanOrEqual(2)
+      const saved = await test.stored.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(saved.status).toBe("active")
+      if (saved.status !== "active") throw new Error("Fixture missing")
+      expect(saved.state.schemaVersion).toBe(4)
+      expect(saved.state.legs[0]!.generation).toBe(1)
+      expect(saved.state.legs[0]!.closedGenerations?.length).toBe(1)
+      expect(
+        saved.state.legs[0]!.closedGenerations?.[0]?.intent.transferId
+      ).toBe(context.original.transferId)
+      expect(
+        saved.state.legs[0]!.intent?.transferId === context.original.transferId
+      ).toBe(false)
+      expect(saved.state.legs[1]!.intent).toBeNull()
+      expect(test.calls.wraps.length).toBe(1)
+      expect(test.calls.wraps[0]!.schemaVersion).toBe(2)
+      expect(test.wallet.outgoing).toBeUndefined()
+      expect(test.calls.cleanups).toBe(1)
+    })
+  }, 15_000)
 
   it("never uses the optional fee allocation to pay an oversized merchant fee", async () => {
     await withHarness(async (test) => {

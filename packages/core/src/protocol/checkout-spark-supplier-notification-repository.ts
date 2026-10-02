@@ -210,7 +210,9 @@ export class DexieCheckoutSparkSupplierNotificationRepository implements Checkou
         assertCurrent()
         if (
           (!active && !retired) ||
-          (active && active.state.schemaVersion !== 3) ||
+          (active &&
+            active.state.schemaVersion !== 3 &&
+            active.state.schemaVersion !== 4) ||
           !binding.orderWitness ||
           (plan &&
             (plan.planDigest !== binding.planDigest ||
@@ -234,7 +236,15 @@ export class DexieCheckoutSparkSupplierNotificationRepository implements Checkou
         )
           invalid()
         const eligible = plan
-          ? getCheckoutSparkSupplierNotifications(plan, settlement).find(
+          ? getCheckoutSparkSupplierNotifications(
+              plan,
+              settlement,
+              active &&
+                (active.state.schemaVersion === 3 ||
+                  active.state.schemaVersion === 4)
+                ? active.state
+                : binding.retiredSettlementSummary
+            ).find(
               (item) => item.notificationId === notification.notificationId
             )
           : notification

@@ -143,7 +143,12 @@ describe("bounded merchant Spark reconciliation scheduling", () => {
     worker.dispose()
   })
 
-  it.each(["pending", "progress_pending", "retirement_pending"] as const)(
+  it.each([
+    "pending",
+    "progress_pending",
+    "retirement_pending",
+    "renewal_wait",
+  ] as const)(
     "gives other due candidates a turn and backs off %s to five minutes",
     async (status) => {
       const clock = fakeClock()

@@ -5,6 +5,8 @@ import {
   assertCheckoutSparkSettledRecoveryProgression,
   createCheckoutSparkMerchantProgress,
   createCheckoutSparkSettledNativeOutgoingProvider,
+  checkoutSparkProviderSendWindowEndsAt,
+  getCheckoutSparkSettledLegGeneration,
   getAccountSigner,
   hasCheckoutSparkProviderSendWindow,
   parseMerchantCheckoutSparkProgressDeliveryRecord,
@@ -34,6 +36,7 @@ import {
   deriveMerchantCheckoutSparkRecoveryIdentity,
   inspectExactMerchantPayout,
   openMerchantCheckoutSparkRecoveryWallet,
+  proveMerchantCheckoutSparkReturnedPayout,
 } from "./checkout-spark-settled-recovery"
 
 type Store = Pick<
@@ -57,6 +60,7 @@ export interface MerchantCheckoutSparkPayoutReview {
   destination: string
   allocationSats: number
   intent: NonNullable<Leg["intent"]>
+  generation?: 0 | 1
   /** Saved-state inspection only; not live settlement or send authority. */
   inspection?: {
     recipientAttribution:
@@ -83,6 +87,9 @@ function payoutReview(
     destination: recipient.destination.value,
     allocationSats: leg.allocationSats,
     intent: leg.intent,
+    ...(getCheckoutSparkSettledLegGeneration(leg) === 1
+      ? { generation: 1 as const }
+      : {}),
   }
 }
 
@@ -122,6 +129,7 @@ export async function reviewMerchantCheckoutSparkSettledPayout(
     allocationSats: review.allocationSats,
     unpaidAllocationSats: review.allocationSats,
     intent: review.intent,
+    ...(review.generation === 1 ? { generation: 1 as const } : {}),
   }
   let recipientAttribution: NonNullable<
     MerchantCheckoutSparkPayoutReview["inspection"]
@@ -172,6 +180,7 @@ export type MerchantCheckoutSparkSignedNextPayoutSelection =
   | {
       status:
         | "preparation_needed"
+        | "renewal_needed"
         | "handoff_wait"
         | "save_required"
         | "retired"
@@ -303,6 +312,19 @@ export async function selectMerchantCheckoutSparkSignedNextPayout(
       JSON.stringify(review) !== JSON.stringify(signedReview)
     ) {
       selection = { status: "preparation_needed" }
+      return
+    }
+    const endsAt = checkoutSparkProviderSendWindowEndsAt(
+      review.intent.paymentRequest
+    )
+    if (
+      getCheckoutSparkSettledLegGeneration(next) === 0 &&
+      endsAt !== null &&
+      endsAt <= now()
+    ) {
+      // Selection is read-only. Only a separate current-session operation may
+      // establish positive return proof and prepare an acknowledged successor.
+      selection = { status: "renewal_needed" }
       return
     }
     selection = {
@@ -704,6 +726,9 @@ export async function continueMerchantCheckoutSparkSettledPayout(
           allocationSats: leg.allocationSats!,
           unpaidAllocationSats: leg.allocationSats!,
           intent: leg.intent,
+          ...(getCheckoutSparkSettledLegGeneration(leg) === 1
+            ? { generation: 1 as const }
+            : {}),
         }
         const observed = await inspectExactMerchantPayout(
           plan,
@@ -808,10 +833,24 @@ export async function continueMerchantCheckoutSparkSettledPayout(
               allocationSats: review.allocationSats,
               unpaidAllocationSats: review.allocationSats,
               intent: review.intent,
+              ...(review.generation === 1 ? { generation: 1 as const } : {}),
             },
             assertEligible
           )
           await assertDurableState()
+          const activeLeg = expectedState.legs.find(
+            (leg) => leg.legId === review.legId
+          )!
+          if (getCheckoutSparkSettledLegGeneration(activeLeg) === 1) {
+            await proveMerchantCheckoutSparkReturnedPayout(
+              expectedState,
+              review.legId,
+              wallet,
+              assertEligible,
+              now
+            )
+            assertEligible()
+          }
         },
         now,
       })
@@ -827,6 +866,21 @@ export async function continueMerchantCheckoutSparkSettledPayout(
         // progress additionally uses the existing exact private self-outbox.
         // Neither relay acceptance nor the local write-ahead is a payment proof.
         acknowledgeRecoverySnapshot: retainProgress,
+        proveRenewalReturn: async (state, legId) => {
+          await assertDurableState()
+          if (JSON.stringify(state) !== JSON.stringify(expectedState)) {
+            throw new CheckoutSparkSettledRepositoryConflictError()
+          }
+          const proof = await proveMerchantCheckoutSparkReturnedPayout(
+            state,
+            legId,
+            wallet,
+            assertEligible,
+            now
+          )
+          assertEligible()
+          return proof
+        },
       })
       assertEligible()
       if (step.outcome === "paid" || step.outcome === "already_paid") {

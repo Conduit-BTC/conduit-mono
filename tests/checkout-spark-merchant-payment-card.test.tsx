@@ -18,6 +18,45 @@ const base = {
 
 describe("Merchant order payment presentation", () => {
   it.each([false, true])(
+    "explains expired-payout return proof without requesting more buyer funding when commerce is verified %s",
+    (commerceVerified) => {
+      const html = renderToStaticMarkup(
+        <CheckoutSparkMerchantPaymentCard
+          {...base}
+          checking
+          settlementRefreshing
+          paused
+          outcome="renewal_wait"
+          projection={{
+            creditVerified: true,
+            merchantVerified: commerceVerified,
+            commerceVerified,
+            feePending: true,
+            recipientUnverified: false,
+          }}
+        >
+          <button>Review saved payout</button>
+        </CheckoutSparkMerchantPaymentCard>
+      )
+      expect(html).toContain("The saved payout invoice has expired")
+      expect(html).toContain("confirmed returned and spendable")
+      expect(html).toContain("Do not request another buyer payment")
+      expect(html).not.toContain("Awaiting payment")
+      expect(html).not.toContain("Refreshing saved payment status")
+      expect(html).toContain("<details")
+      if (commerceVerified) {
+        expect(html).toContain("Payment verified")
+        expect(html).toContain(
+          "This order remains paid and fulfillment can continue"
+        )
+      } else {
+        expect(html).toContain("Payment needs attention")
+        expect(html).not.toContain("Checking this order")
+      }
+    }
+  )
+
+  it.each([false, true])(
     "clarifies the session-wide processing controls when paused is %s",
     (paused) => {
       for (const commerceVerified of [false, true]) {

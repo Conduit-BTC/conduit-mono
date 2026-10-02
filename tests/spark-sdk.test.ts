@@ -120,6 +120,23 @@ function testReceiveQuote(
 }
 
 describe("first-party Spark SDK adapter", () => {
+  it("keeps exact returned-attempt inspection unavailable when native closure reads are unsupported", async () => {
+    const client = await openClient(createFactory(createNativeWallet()))
+    expect(
+      await client.inspectCheckoutLightningReturnedAttempt!({
+        network: "mainnet",
+        transferId: CHECKOUT_OUTGOING_ID,
+        paymentRequest: ZERO_PREIMAGE_FIXED_INVOICE,
+        paymentHash: ZERO_PREIMAGE_PAYMENT_HASH,
+        amountSats: 1_000,
+        maxFeeSats: 4,
+        receiverIdentityPublicKey: RECEIVE_IDENTITY_KEY,
+        minimumAvailableSats: 1_111,
+      })
+    ).toEqual({ status: "unavailable" })
+    await client.disconnect()
+  })
+
   it("inspects terminal checkout history through an authenticated exact-wallet reader without closing the wallet", async () => {
     let readerCleanups = 0
     let walletCleanups = 0

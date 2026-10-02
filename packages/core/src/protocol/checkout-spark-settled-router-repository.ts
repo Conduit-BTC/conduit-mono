@@ -14,9 +14,15 @@ import {
   retireCheckoutSparkSettledReconciliation,
   restoreCheckoutSparkSettledPlan,
   restoreCheckoutSparkSettledReconciliation,
+  getCheckoutSparkSettledLegGeneration,
+  renewCheckoutSparkSettledLeg,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
+import {
+  assertCheckoutSparkSettledReturnedProof,
+  type CheckoutSparkSettledReturnedProof,
+} from "./checkout-spark-settled-returned"
 import {
   createCheckoutSparkMerchantSettlementRecord,
   recordCheckoutSparkMerchantCredit,
@@ -144,7 +150,7 @@ function projectState(
 ): CheckoutSparkSettledReconciliation {
   const valid = restoreCheckoutSparkSettledReconciliation(state)
   return {
-    schemaVersion: 3,
+    schemaVersion: valid.schemaVersion,
     plan: valid.plan,
     credit: valid.credit ? { ...valid.credit } : null,
     legs: valid.legs.map((leg) => ({
@@ -155,6 +161,16 @@ function projectState(
       observedAt: leg.observedAt,
       finalFeeSats: leg.finalFeeSats,
       finalDebitSats: leg.finalDebitSats,
+      ...(valid.schemaVersion === 4
+        ? {
+            generation: leg.generation!,
+            closedGenerations: leg.closedGenerations!.map((entry) => ({
+              ...entry,
+              intent: { ...entry.intent },
+              closure: { ...entry.closure },
+            })),
+          }
+        : {}),
     })),
     updatedAt: valid.updatedAt,
   }
@@ -210,7 +226,7 @@ function snapshotFromRows(
       active.checkoutId !== checkoutId ||
       !Number.isSafeInteger(active.revision) ||
       active.revision < 1 ||
-      active.state.schemaVersion !== 3
+      (active.state.schemaVersion !== 3 && active.state.schemaVersion !== 4)
     ) {
       throw new CheckoutSparkSettledRepositoryIntegrityError()
     }
@@ -245,7 +261,10 @@ export function assertCheckoutSparkSettledRecoveryProgression(
   previous: CheckoutSparkSettledReconciliation,
   next: CheckoutSparkSettledReconciliation
 ): void {
+  previous = restoreCheckoutSparkSettledReconciliation(previous)
+  next = restoreCheckoutSparkSettledReconciliation(next)
   if (
+    (previous.schemaVersion === 4 && next.schemaVersion !== 4) ||
     next.updatedAt < previous.updatedAt ||
     next.plan.planDigest !== previous.plan.planDigest ||
     (previous.credit !== null &&
@@ -255,7 +274,27 @@ export function assertCheckoutSparkSettledRecoveryProgression(
   }
   for (let position = 0; position < previous.legs.length; position += 1) {
     const before = previous.legs[position]!
-    const after = next.legs[position]!
+    const active = next.legs[position]!
+    const oldGeneration = getCheckoutSparkSettledLegGeneration(before)
+    const newGeneration = getCheckoutSparkSettledLegGeneration(active)
+    let after = active
+    if (oldGeneration === newGeneration) {
+      if (
+        JSON.stringify(before.closedGenerations ?? []) !==
+        JSON.stringify(active.closedGenerations ?? [])
+      )
+        throw new CheckoutSparkSettledRepositoryConflictError()
+    } else if (oldGeneration === 0 && newGeneration === 1) {
+      const closed = active.closedGenerations![0]!
+      after = {
+        ...active,
+        intent: closed.intent,
+        status: closed.status,
+        observedAt: closed.observedAt,
+        finalFeeSats: closed.finalFeeSats,
+        finalDebitSats: closed.finalDebitSats,
+      }
+    } else throw new CheckoutSparkSettledRepositoryConflictError()
     if (
       before.legId !== after.legId ||
       (before.allocationSats !== null &&
@@ -289,7 +328,7 @@ export function assertCheckoutSparkSettledRecoveryProgression(
   }
 }
 
-/** Version-three CAS store using the existing checkout binding and state rows. */
+/** Versioned CAS store using the existing checkout binding and state rows. */
 export class DexieCheckoutSparkSettledRepository {
   constructor(private readonly database: ConduitDB = db) {}
 
@@ -440,7 +479,7 @@ export class DexieCheckoutSparkSettledRepository {
           canonical
         )
         const supplierNotificationIntents =
-          getCheckoutSparkSupplierNotifications(canonical, next)
+          getCheckoutSparkSupplierNotifications(canonical, next, snapshot.state)
         if (
           JSON.stringify(previous) !== JSON.stringify(next) ||
           JSON.stringify(binding.supplierNotificationIntents ?? []) !==
@@ -490,11 +529,11 @@ export class DexieCheckoutSparkSettledRepository {
           target,
           observation,
           observedAt,
-          binding.invoiceOrigins?.find(
-            (origin) => origin.legId === target.legId
+          binding.invoiceOrigins?.find((origin) =>
+            hasCheckoutSparkInvoiceOrigin(origin, plan, target)
           ),
-          binding.invoiceRecipients?.find(
-            (recipient) => recipient.legId === target.legId
+          binding.invoiceRecipients?.find((recipient) =>
+            hasCheckoutSparkInvoiceRecipient(recipient, plan, target)
           )
         ),
       assertCurrent,
@@ -1158,6 +1197,22 @@ export class DexieCheckoutSparkSettledRepository {
     return this.saveState(state, expectedRevision, assertCurrent, evidence)
   }
 
+  /** Commit one full-return successor and its device-local origin atomically. */
+  async saveRenewedWithInvoiceOrigin(
+    state: CheckoutSparkSettledReconciliation,
+    expectedRevision: number,
+    evidence: {
+      legId: string
+      origin: CheckoutSparkLnurlInvoiceOrigin
+      proof: CheckoutSparkSettledReturnedProof
+      nowMs: number
+      now: () => number
+    },
+    assertCurrent?: () => void
+  ): Promise<CheckoutSparkSettledRepositorySnapshot> {
+    return this.saveState(state, expectedRevision, assertCurrent, evidence)
+  }
+
   async hasInvoiceOrigin(
     plan: CheckoutSparkSettledPlan,
     target: CheckoutSparkSettledOutgoingTarget,
@@ -1198,8 +1253,8 @@ export class DexieCheckoutSparkSettledRepository {
         )
           return false
         return hasCheckoutSparkInvoiceOrigin(
-          binding?.invoiceOrigins?.find(
-            (origin) => origin.legId === target.legId
+          binding?.invoiceOrigins?.find((origin) =>
+            hasCheckoutSparkInvoiceOrigin(origin, canonical, target)
           ),
           canonical,
           target
@@ -1247,8 +1302,8 @@ export class DexieCheckoutSparkSettledRepository {
         )
           return false
         return hasCheckoutSparkInvoiceRecipient(
-          binding.invoiceRecipients?.find(
-            (recipient) => recipient.legId === target.legId
+          binding.invoiceRecipients?.find((recipient) =>
+            hasCheckoutSparkInvoiceRecipient(recipient, canonical, target)
           ),
           canonical,
           target
@@ -1307,7 +1362,7 @@ export class DexieCheckoutSparkSettledRepository {
         if (!matchesSavedInvoiceTarget(snapshot.state, target))
           throw new CheckoutSparkSettledRepositoryConflictError()
         const previous = binding.invoiceRecipients?.find(
-          (recipient) => recipient.legId === target.legId
+          (recipient) => recipient.intentDigest === record.intentDigest
         )
         if (
           previous &&
@@ -1344,7 +1399,11 @@ export class DexieCheckoutSparkSettledRepository {
             ? {
                 merchantSettlement: attributed,
                 supplierNotificationIntents:
-                  getCheckoutSparkSupplierNotifications(canonical, attributed),
+                  getCheckoutSparkSupplierNotifications(
+                    canonical,
+                    attributed,
+                    snapshot.state
+                  ),
               }
             : {}),
         }
@@ -1358,7 +1417,13 @@ export class DexieCheckoutSparkSettledRepository {
     state: CheckoutSparkSettledReconciliation,
     expectedRevision: number,
     assertCurrent?: () => void,
-    evidence?: { legId: string; origin: CheckoutSparkLnurlInvoiceOrigin }
+    evidence?: {
+      legId: string
+      origin: CheckoutSparkLnurlInvoiceOrigin
+      proof?: CheckoutSparkSettledReturnedProof
+      nowMs?: number
+      now?: () => number
+    }
   ): Promise<CheckoutSparkSettledRepositorySnapshot> {
     assertCurrent?.()
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
@@ -1384,6 +1449,60 @@ export class DexieCheckoutSparkSettledRepository {
           throw new CheckoutSparkSettledRepositoryConflictError()
         }
         assertCheckoutSparkSettledRecoveryProgression(current.state, next)
+        const advanced = next.legs.filter(
+          (leg, index) =>
+            getCheckoutSparkSettledLegGeneration(leg) !==
+            getCheckoutSparkSettledLegGeneration(current.state.legs[index]!)
+        )
+        if (advanced.length > 0) {
+          const leg = advanced[0]!
+          if (
+            advanced.length !== 1 ||
+            !evidence?.proof ||
+            evidence.legId !== leg.legId ||
+            evidence.nowMs === undefined ||
+            typeof evidence.now !== "function" ||
+            !leg.intent ||
+            evidence.nowMs !== next.updatedAt
+          )
+            throw new CheckoutSparkSettledRepositoryConflictError()
+          const expected = renewCheckoutSparkSettledLeg(current.state, {
+            legId: leg.legId,
+            intent: leg.intent,
+            proof: evidence.proof,
+            nowMs: evidence.nowMs,
+          })
+          if (JSON.stringify(expected) !== JSON.stringify(next))
+            throw new CheckoutSparkSettledRepositoryConflictError()
+        } else if (evidence?.proof)
+          throw new CheckoutSparkSettledRepositoryConflictError()
+        const assertFreshReturn = () => {
+          if (!evidence?.proof) return
+          const old = current.state.legs.find(
+            (leg) => leg.legId === evidence.legId
+          )!
+          const recipient = current.state.plan.recipients.find(
+            (item) => item.legId === old.legId
+          )!
+          assertCheckoutSparkSettledReturnedProof(evidence.proof, {
+            plan: current.state.plan,
+            target: {
+              walletId: current.state.plan.walletId,
+              network: current.state.plan.network,
+              legId: old.legId,
+              recipientId: recipient.recipientId,
+              allocationSats: old.allocationSats!,
+              unpaidAllocationSats: current.state.legs.reduce(
+                (sum, leg) =>
+                  sum + (leg.status === "paid" ? 0 : (leg.allocationSats ?? 0)),
+                0
+              ),
+              intent: old.intent!,
+            },
+            nowMs: evidence.now!(),
+          })
+        }
+        assertFreshReturn()
         if (evidence) {
           const previousLeg = current.state.legs.find(
             (leg) => leg.legId === evidence.legId
@@ -1396,7 +1515,7 @@ export class DexieCheckoutSparkSettledRepository {
           )
           if (
             !previousLeg ||
-            previousLeg.intent ||
+            (previousLeg.intent !== null && !evidence.proof) ||
             !leg?.intent ||
             leg.status !== "prepared" ||
             leg.allocationSats === null ||
@@ -1415,17 +1534,19 @@ export class DexieCheckoutSparkSettledRepository {
               allocationSats: leg.allocationSats,
               unpaidAllocationSats: next.credit.creditedSats,
               intent: leg.intent,
+              generation: getCheckoutSparkSettledLegGeneration(leg),
             },
             evidence.origin
           )
           const binding =
             await this.database.checkoutSparkPlanBindings.get(checkoutId)
           assertCurrent?.()
+          assertFreshReturn()
           if (
             !binding ||
             binding.planDigest !== planDigest ||
             binding.invoiceOrigins?.some(
-              (entry) => entry.legId === evidence.legId
+              (entry) => entry.intentDigest === origin.intentDigest
             )
           ) {
             throw new CheckoutSparkSettledRepositoryIntegrityError()
@@ -1435,6 +1556,7 @@ export class DexieCheckoutSparkSettledRepository {
             invoiceOrigins: [...(binding.invoiceOrigins ?? []), origin],
           })
           assertCurrent?.()
+          assertFreshReturn()
         }
         const revision = current.revision + 1
         await this.database.checkoutSparkReconciliations.put({
@@ -1443,6 +1565,7 @@ export class DexieCheckoutSparkSettledRepository {
           state: next,
         })
         assertCurrent?.()
+        assertFreshReturn()
         return { status: "active" as const, revision, state: next }
       }
     )
@@ -1525,7 +1648,8 @@ export class DexieCheckoutSparkSettledRepository {
           retainedBinding.supplierNotificationIntents =
             getCheckoutSparkSupplierNotifications(
               current.state.plan,
-              binding.merchantSettlement
+              binding.merchantSettlement,
+              current.state
             )
         }
         delete retainedBinding.merchantProgressOutbox

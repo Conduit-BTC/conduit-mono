@@ -9,10 +9,12 @@ import {
   hasCheckoutSparkProviderSendWindow,
   isAmountlessLightningInvoice,
   isValidLightningInvoice,
+  inspectSparkCheckoutLightningReturnedAttempt,
   normalizeLightningInvoice,
   readExactSparkLightningRecoveredTransfer,
   verifyExactSparkLightningRequestDebit,
   type CheckoutSparkNativeRetirementReader,
+  type SparkCheckoutLightningReturnedReader,
   type WalletNetwork,
 } from "@conduit/core"
 
@@ -107,6 +109,9 @@ interface SparkNativeLightningSendRequest {
 }
 
 export interface SparkNativeWallet {
+  /** Authenticated native closure reads; only an explicit renewal uses these. */
+  queryHTLC?: SparkCheckoutLightningReturnedReader["queryHTLC"]
+  getLeaves?: SparkCheckoutLightningReturnedReader["getLeaves"]
   on(event: string, listener: (...args: unknown[]) => void): unknown
   off(event: string, listener: (...args: unknown[]) => void): unknown
   cleanup(): Promise<void>
@@ -1009,6 +1014,22 @@ function adaptFirstPartySparkWallet(input: {
       }
     },
     getFundsState: readFundsState,
+    async inspectCheckoutLightningReturnedAttempt(request, assertCurrent) {
+      if (request.network.toUpperCase() !== input.network) {
+        return { status: "conflicting" }
+      }
+      return inspectSparkCheckoutLightningReturnedAttempt(
+        input.wallet,
+        request,
+        {
+          now: input.now,
+          assertCurrent: () => {
+            if (disconnected) throw new Error("Spark wallet is closed.")
+            assertCurrent?.()
+          },
+        }
+      )
+    },
     openCheckoutRetirementReader,
     createCheckoutReceive,
     reconcileCheckoutReceive,
@@ -2384,6 +2405,8 @@ export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
           getTransfer: (id) => wallet.getTransfer(id),
           getTransferFromSsp: (id) => wallet.getTransferFromSsp(id),
           getIdentityPublicKey: () => wallet.getIdentityPublicKey(),
+          queryHTLC: (request) => wallet.queryHTLC(request),
+          getLeaves: () => wallet.getLeaves(),
           openRetirementReader: () => wallet.openRetirementReader(),
           getLightningReceiveQuote: (request) =>
             wallet.getLightningReceiveQuote({

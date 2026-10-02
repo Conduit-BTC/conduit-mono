@@ -2,10 +2,18 @@ import {
   CheckoutSparkSettledRepositoryConflictError,
   DexieCheckoutSparkSettledRepository,
   assertCheckoutSparkSettledRecoveryProgression,
+  assertCheckoutSparkSettledClosedReturnedProof,
+  assertCheckoutSparkSettledReturnedProof,
   checkoutSparkSettledOutgoingStatusObservation,
   classifyCheckoutSparkSettledExactOutgoingHistory,
   collectCheckoutSparkNativeRetirementEvidence,
   ensureSparkPrivateModeReady,
+  getCheckoutSparkSettledClosedGeneration,
+  getCheckoutSparkSettledLegGeneration,
+  inspectSparkCheckoutLightningReturnedAttempt,
+  inspectSparkCheckoutLightningClosedReturnedAttempt,
+  proveCheckoutSparkSettledClosedReturnedTransfer,
+  proveCheckoutSparkSettledReturnedTransfer,
   proveSparkCheckoutReceiveCredit,
   readExactSparkLightningRecoveredTransfer,
   recordCheckoutSparkSettledCredit,
@@ -21,12 +29,18 @@ import {
   type CheckoutSparkMerchantRecoveryLockManager,
   type CheckoutSparkSettledOutgoingObservation,
   type CheckoutSparkSettledOutgoingTarget,
+  type CheckoutSparkSettledReturnedProof,
+  type CheckoutSparkSettledClosedReturnedProof,
   type CheckoutSparkSettledPlan,
   type MerchantCheckoutSparkRecoveryCandidate,
   type MerchantCheckoutSparkRecoveryHandoffResult,
   type SparkCheckoutReceiveCreditNativeReceive,
   type SparkCheckoutReceiveCreditNativeTransfer,
   type CheckoutSparkNativeRetirementReader,
+  type SparkCheckoutLightningReturnedInspection,
+  type SparkCheckoutLightningReturnedInspectionInput,
+  type SparkCheckoutLightningClosedReturnedInspection,
+  type SparkCheckoutLightningClosedReturnedInspectionInput,
 } from "@conduit/core"
 
 type RecoveryStore = Pick<
@@ -47,6 +61,162 @@ interface RecoveryKeyVerificationDependencies {
     DexieCheckoutSparkSettledRepository,
     "load" | "loadMerchantOrderWitness"
   >
+}
+
+/** Native renewal only; signed closure metadata cannot mint provider proof. */
+export async function proveMerchantCheckoutSparkReturnedPayout(
+  state: CheckoutSparkSettledReconciliation,
+  legId: string,
+  wallet: MerchantSparkRecoveryWallet,
+  assertCurrent: () => void,
+  now: () => number = Date.now
+): Promise<CheckoutSparkSettledReturnedProof> {
+  assertCurrent()
+  const leg = state.legs.find((item) => item.legId === legId)
+  const recipient = state.plan.recipients.find((item) => item.legId === legId)
+  const closed = leg ? getCheckoutSparkSettledClosedGeneration(leg) : null
+  const intent = closed?.intent ?? leg?.intent
+  if (
+    !leg ||
+    !recipient ||
+    !intent ||
+    leg.allocationSats === null ||
+    !wallet.inspectReturnedInvoiceAttempt
+  ) {
+    throw new Error("Checkout Spark returned payout proof is unavailable.")
+  }
+  let protectedSats = 0
+  for (const item of state.legs) {
+    if (item.status === "paid") continue
+    if (
+      item.allocationSats === null ||
+      !Number.isSafeInteger(item.allocationSats) ||
+      item.allocationSats < 0
+    ) {
+      throw new Error("Checkout Spark returned payout budget is unavailable.")
+    }
+    protectedSats += item.allocationSats
+  }
+  if (!Number.isSafeInteger(protectedSats)) {
+    throw new Error("Checkout Spark returned payout budget is unavailable.")
+  }
+  const target: CheckoutSparkSettledOutgoingTarget = {
+    walletId: state.plan.walletId,
+    network: state.plan.network,
+    legId,
+    recipientId: recipient.recipientId,
+    allocationSats: leg.allocationSats,
+    unpaidAllocationSats: protectedSats,
+    generation: 0,
+    intent,
+  }
+  const observed = await wallet.inspectReturnedInvoiceAttempt(
+    {
+      network: state.plan.network,
+      transferId: intent.transferId,
+      paymentRequest: intent.paymentRequest,
+      paymentHash: intent.paymentHash,
+      amountSats: intent.invoiceAmountSats,
+      maxFeeSats: intent.maxFeeSats,
+      receiverIdentityPublicKey: state.plan.funding.receiverIdentityPublicKey,
+      minimumAvailableSats: protectedSats,
+    },
+    { now, assertCurrent }
+  )
+  assertCurrent()
+  if (observed.status !== "returned") {
+    throw new Error("Checkout Spark returned payout proof is unavailable.")
+  }
+  const proof = proveCheckoutSparkSettledReturnedTransfer({
+    plan: state.plan,
+    target,
+    evidence: observed.evidence,
+  })
+  const closure = assertCheckoutSparkSettledReturnedProof(proof, {
+    plan: state.plan,
+    target,
+    nowMs: now(),
+  })
+  if (
+    closed &&
+    (closure.requestId !== closed.closure.requestId ||
+      closure.debitedSats !== closed.closure.debitedSats ||
+      closure.returnedSats !== closed.closure.returnedSats)
+  ) {
+    throw new Error("Checkout Spark returned payout evidence changed.")
+  }
+  return proof
+}
+
+/** Terminal cleanup only; returned leaves may already fund the paid successor. */
+export async function proveMerchantCheckoutSparkClosedReturnedPayout(
+  state: CheckoutSparkSettledReconciliation,
+  legId: string,
+  wallet: MerchantSparkRecoveryWallet,
+  assertCurrent: () => void,
+  now: () => number = Date.now
+): Promise<CheckoutSparkSettledClosedReturnedProof> {
+  assertCurrent()
+  const leg = state.legs.find((item) => item.legId === legId)
+  const recipient = state.plan.recipients.find((item) => item.legId === legId)
+  const closed = leg ? getCheckoutSparkSettledClosedGeneration(leg) : null
+  if (
+    !leg ||
+    !recipient ||
+    !closed ||
+    leg.allocationSats === null ||
+    !wallet.inspectReturnedInvoiceClosure
+  ) {
+    throw new Error("Checkout Spark closed payout proof is unavailable.")
+  }
+  const intent = closed.intent
+  const target: CheckoutSparkSettledOutgoingTarget = {
+    walletId: state.plan.walletId,
+    network: state.plan.network,
+    legId,
+    recipientId: recipient.recipientId,
+    allocationSats: leg.allocationSats,
+    unpaidAllocationSats: leg.allocationSats,
+    generation: 0,
+    intent,
+  }
+  const observed = await wallet.inspectReturnedInvoiceClosure(
+    {
+      network: state.plan.network,
+      transferId: intent.transferId,
+      paymentRequest: intent.paymentRequest,
+      paymentHash: intent.paymentHash,
+      amountSats: intent.invoiceAmountSats,
+      maxFeeSats: intent.maxFeeSats,
+      receiverIdentityPublicKey: state.plan.funding.receiverIdentityPublicKey,
+    },
+    { now, assertCurrent }
+  )
+  assertCurrent()
+  if (observed.status !== "closed_returned") {
+    throw new Error("Checkout Spark closed payout proof is unavailable.")
+  }
+  const proof = proveCheckoutSparkSettledClosedReturnedTransfer({
+    plan: state.plan,
+    target,
+    evidence: observed.evidence,
+  })
+  const closure = assertCheckoutSparkSettledClosedReturnedProof(proof, {
+    walletId: state.plan.walletId,
+    network: state.plan.network,
+    nowMs: now(),
+  })
+  if (
+    closure.requestId !== closed.closure.requestId ||
+    closure.debitedSats !== closed.closure.debitedSats ||
+    closure.returnedSats !== closed.closure.returnedSats ||
+    closure.transferId !== closed.closure.transferId ||
+    closure.paymentHash !== closed.closure.paymentHash ||
+    closure.intentDigest !== closed.closure.intentDigest
+  ) {
+    throw new Error("Checkout Spark closed payout evidence changed.")
+  }
+  return proof
 }
 
 export interface MerchantSparkRecoveryWallet {
@@ -77,6 +247,16 @@ export interface MerchantSparkRecoveryWallet {
   } | null>
   /** Quote-only capability; preparing an intent does not enable outgoing sends. */
   estimateLightningFee?(input: { paymentRequest: string }): Promise<number>
+  /** Explicit native renewal only: fresh leaf inspection can recover keys. */
+  inspectReturnedInvoiceAttempt?(
+    input: SparkCheckoutLightningReturnedInspectionInput,
+    options: { now: () => number; assertCurrent: () => void }
+  ): Promise<SparkCheckoutLightningReturnedInspection>
+  /** Terminal retirement only; never reads spendable leaves or permits sends. */
+  inspectReturnedInvoiceClosure?(
+    input: SparkCheckoutLightningClosedReturnedInspectionInput,
+    options: { now: () => number; assertCurrent: () => void }
+  ): Promise<SparkCheckoutLightningClosedReturnedInspection>
   /** Authenticated, live native history/funds reads; never a public reader. */
   openRetirementReader?(): Promise<{
     reader: CheckoutSparkNativeRetirementReader
@@ -112,6 +292,7 @@ interface RecoveryCreditDependencies extends RecoveryKeyVerificationDependencies
     mnemonic: string
     accountNumber: number
     network: "mainnet" | "regtest"
+    retirement?: true
   }) => Promise<MerchantSparkRecoveryWallet>
   lockManager?: CheckoutSparkMerchantRecoveryLockManager | null
   requireCrossTabLock?: boolean
@@ -173,6 +354,8 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
   accountNumber: number
   network: "mainnet" | "regtest"
   outgoing?: true
+  renewal?: true
+  retirement?: true
 }): Promise<MerchantSparkRecoveryWallet> {
   const { SparkReadonlyClient, SparkWallet, DefaultSparkSigner, UUID } =
     await import("@buildonspark/spark-sdk")
@@ -225,6 +408,32 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
     getIdentityPublicKey: () => wallet.getIdentityPublicKey(),
     getTransferFromSsp: (id) => wallet.getTransferFromSsp(id),
     getLightningSendRequest: (id) => wallet.getLightningSendRequest(id),
+    ...(input.renewal || input.outgoing
+      ? {
+          inspectReturnedInvoiceAttempt: (
+            request: SparkCheckoutLightningReturnedInspectionInput,
+            options: { now: () => number; assertCurrent: () => void }
+          ) =>
+            inspectSparkCheckoutLightningReturnedAttempt(
+              wallet,
+              request,
+              options
+            ),
+        }
+      : {}),
+    ...(input.retirement
+      ? {
+          inspectReturnedInvoiceClosure: (
+            request: SparkCheckoutLightningClosedReturnedInspectionInput,
+            options: { now: () => number; assertCurrent: () => void }
+          ) =>
+            inspectSparkCheckoutLightningClosedReturnedAttempt(
+              wallet,
+              request,
+              options
+            ),
+        }
+      : {}),
     estimateLightningFee: ({ paymentRequest }) =>
       wallet.getLightningSendFeeEstimate({ encodedInvoice: paymentRequest }),
     getLightningReceiveRequest: (id) =>
@@ -815,6 +1024,7 @@ interface RecoveryRetirementDependencies extends Omit<
   RecoveryCreditDependencies,
   "repository"
 > {
+  consumeRecovery?: typeof withMerchantCheckoutSparkRecovery
   repository?: NonNullable<RecoveryCreditDependencies["repository"]> &
     Pick<
       DexieCheckoutSparkSettledRepository,
@@ -847,6 +1057,8 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
   const now = dependencies.now ?? Date.now
   let retirementStatus: MerchantCheckoutSparkRetirementResult["retirementStatus"] =
     null
+  const consumeRecovery =
+    dependencies.consumeRecovery ?? withMerchantCheckoutSparkRecovery
   const retire = async (
     initial: CheckoutSparkSettledRecoveryPayload,
     signed: CheckoutSparkSettledReconciliation,
@@ -903,6 +1115,7 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
       mnemonic: initial.wallet.mnemonic,
       accountNumber: initial.wallet.accountNumber,
       network: initial.wallet.network,
+      retirement: true,
     })
     try {
       assertEligible()
@@ -996,6 +1209,9 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
           recipientId: recipient.recipientId,
           allocationSats: leg.allocationSats,
           unpaidAllocationSats: leg.allocationSats,
+          ...(getCheckoutSparkSettledLegGeneration(leg) === 1
+            ? { generation: 1 as const }
+            : {}),
           intent: leg.intent,
         }
         await (
@@ -1026,6 +1242,24 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
         assertEligible()
         expectedTransferIds.push(leg.intent.transferId)
       }
+      const closedReturnedProofs: CheckoutSparkSettledClosedReturnedProof[] = []
+      for (const leg of state.legs) {
+        if (!getCheckoutSparkSettledClosedGeneration(leg)) continue
+        try {
+          closedReturnedProofs.push(
+            await proveMerchantCheckoutSparkClosedReturnedPayout(
+              state,
+              leg.legId,
+              wallet,
+              assertEligible,
+              now
+            )
+          )
+        } catch {
+          assertEligible()
+          return
+        }
+      }
       const session = await wallet.openRetirementReader()
       assertEligible()
       const evidence = await collectCheckoutSparkNativeRetirementEvidence({
@@ -1035,6 +1269,7 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
         network: plan.network,
         stateUpdatedAt: state.updatedAt,
         expectedTransferIds,
+        ...(closedReturnedProofs.length > 0 ? { closedReturnedProofs } : {}),
         now,
         assertCurrent: assertEligible,
       })
@@ -1058,30 +1293,26 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
     selected.planDigest,
     async () => {
       dependencies.assertActive?.()
-      const result = await withMerchantCheckoutSparkRecovery(
-        principal,
-        selected,
-        {
-          async consume(initial, assertCurrent) {
-            if (initial.schemaVersion !== 2)
-              throw new Error(
-                "An older checkout recovery cannot retire a settled wallet."
-              )
-            await retire(initial, initial.state, assertCurrent)
-          },
-          async consumeSettled(initial, latest, assertCurrent) {
-            await retire(initial, latest.state, assertCurrent)
-          },
-          async consumeMerchantProgress(
-            initial,
-            _latestBuyer,
-            progress,
-            assertCurrent
-          ) {
-            await retire(initial, progress.state, assertCurrent)
-          },
-        }
-      )
+      const result = await consumeRecovery(principal, selected, {
+        async consume(initial, assertCurrent) {
+          if (initial.schemaVersion !== 2)
+            throw new Error(
+              "An older checkout recovery cannot retire a settled wallet."
+            )
+          await retire(initial, initial.state, assertCurrent)
+        },
+        async consumeSettled(initial, latest, assertCurrent) {
+          await retire(initial, latest.state, assertCurrent)
+        },
+        async consumeMerchantProgress(
+          initial,
+          _latestBuyer,
+          progress,
+          assertCurrent
+        ) {
+          await retire(initial, progress.state, assertCurrent)
+        },
+      })
       return {
         ...result,
         retirementStatus:
@@ -1313,6 +1544,9 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
             // History-only validation needs the allocation that would have
             // been reserved before a send, not today's remaining wallet funds.
             unpaidAllocationSats: leg.allocationSats,
+            ...(getCheckoutSparkSettledLegGeneration(leg) === 1
+              ? { generation: 1 as const }
+              : {}),
             intent: leg.intent,
           }
           const observation = await inspectExactMerchantPayout(
