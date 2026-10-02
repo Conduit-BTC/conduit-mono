@@ -102,7 +102,7 @@ export function MerchantShippingPolicyEditor() {
   const needsUpgrade = remote?.policy.version === 1
   const [acceptedRevision, setAcceptedRevision] =
     useState<ShippingPolicyRevision | null>(null)
-  const [acceptedConflictRevision, setAcceptedConflictRevision] =
+  const [acceptedReplacementRevision, setAcceptedReplacementRevision] =
     useState<ShippingPolicyRevision | null>(null)
   const observedRevision =
     query.data && query.data.state !== "not_found"
@@ -112,16 +112,21 @@ export function MerchantShippingPolicyEditor() {
     (observedRevision?.eventId ?? null) !== (acceptedRevision?.eventId ?? null)
   const hasConflict =
     query.data?.state === "unavailable" && query.data.reason === "conflicting"
-  const canReviewConflict =
-    hasConflict && query.data?.coverageComplete && !!observedRevision
-  const conflictNeedsReview =
-    hasConflict &&
-    (!canReviewConflict ||
-      acceptedConflictRevision?.eventId !== observedRevision?.eventId)
-  function acceptConflict() {
-    if (!canReviewConflict || busy || query.isFetching || query.isError) return
+  const hasInvalidPolicy =
+    query.data?.state === "unavailable" &&
+    query.data.reason === "invalid_policy"
+  const needsReplacement = hasConflict || hasInvalidPolicy
+  const canReviewReplacement =
+    needsReplacement && query.data?.coverageComplete && !!observedRevision
+  const replacementNeedsReview =
+    needsReplacement &&
+    (!canReviewReplacement ||
+      acceptedReplacementRevision?.eventId !== observedRevision?.eventId)
+  function acceptReplacement() {
+    if (!canReviewReplacement || busy || query.isFetching || query.isError)
+      return
     setAcceptedRevision(observedRevision)
-    setAcceptedConflictRevision(observedRevision)
+    setAcceptedReplacementRevision(observedRevision)
     setDirty(true)
     setStatus({ state: "idle" })
   }
@@ -132,7 +137,7 @@ export function MerchantShippingPolicyEditor() {
         : createShippingPolicyDraft()
     )
     setAcceptedRevision(observedRevision)
-    setAcceptedConflictRevision(null)
+    setAcceptedReplacementRevision(null)
     setDirty(false)
     setStatus({ state: "idle" })
   }
@@ -145,7 +150,7 @@ export function MerchantShippingPolicyEditor() {
         : createShippingPolicyDraft()
     )
     setAcceptedRevision(observedRevision)
-    setAcceptedConflictRevision(null)
+    setAcceptedReplacementRevision(null)
   }, [remote, dirty, query.data, revisionChanged, observedRevision])
   function update(update: Partial<ShippingPolicyDraft>) {
     setDraft((current) => ({ ...current, ...update }))
@@ -166,7 +171,7 @@ export function MerchantShippingPolicyEditor() {
       !policy ||
       busy ||
       revisionChanged ||
-      conflictNeedsReview ||
+      replacementNeedsReview ||
       query.isPending ||
       authStatus !== "connected"
     )
@@ -258,23 +263,27 @@ export function MerchantShippingPolicyEditor() {
               ? "These rates were withdrawn. Publish new rates when you are ready to ship."
               : hasConflict
                 ? "Conflicting shipping rates were found. New checkouts need coordination until you publish replacement rates. Your draft will be kept."
-                : "The latest shipping policy could not be confirmed. Check the relay connection before publishing changes."}
+                : hasInvalidPolicy
+                  ? "The published shipping rates are invalid. New checkouts need coordination until you publish replacement rates. Your draft will be kept."
+                  : "The latest shipping policy could not be confirmed. Check the relay connection before publishing changes."}
           </p>
-          {hasConflict &&
-            (conflictNeedsReview ? (
+          {needsReplacement &&
+            (replacementNeedsReview ? (
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
                 disabled={
-                  !canReviewConflict ||
+                  !canReviewReplacement ||
                   busy ||
                   query.isFetching ||
                   query.isError
                 }
-                onClick={acceptConflict}
+                onClick={acceptReplacement}
               >
-                Replace conflicting rates
+                {hasInvalidPolicy
+                  ? "Replace invalid rates"
+                  : "Replace conflicting rates"}
               </Button>
             ) : (
               <p className="text-pretty text-sm text-[var(--text-secondary)]">
@@ -291,7 +300,7 @@ export function MerchantShippingPolicyEditor() {
           </Button>
         </div>
       )}
-      {dirty && revisionChanged && !hasConflict && (
+      {dirty && revisionChanged && !needsReplacement && (
         <div
           role="alert"
           className="space-y-2 rounded-xl border border-warning/40 p-3"
@@ -413,7 +422,7 @@ export function MerchantShippingPolicyEditor() {
               busy ||
               query.isPending ||
               revisionChanged ||
-              conflictNeedsReview ||
+              replacementNeedsReview ||
               authStatus !== "connected" ||
               (!dirty && !!remote && !needsUpgrade)
             }

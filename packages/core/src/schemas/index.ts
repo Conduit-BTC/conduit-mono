@@ -12,7 +12,9 @@ import {
   normalizeShippingPolicyRegion,
   normalizeShippingPolicySubdivision,
   hasSameShippingPolicyQuote,
+  MERCHANT_SHIPPING_POLICY_D_TAG,
 } from "../protocol/shipping-policy"
+import { EVENT_KINDS } from "../protocol/kinds"
 export { shippingPolicyQuoteSchema } from "../protocol/shipping-policy"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { parseEventMarketCalendarEvent } from "../protocol/event-market"
@@ -1083,10 +1085,36 @@ export const orderSchema = z
     const policyGroups = new Map<string, typeof order.items>()
     for (const item of order.items) {
       if (!item.shippingPolicyQuote) continue
-      const key = item.shippingPolicyQuote.policyEventId
+      const key = item.shippingPolicyQuote.policyCoordinate
       const group = policyGroups.get(key) ?? []
       group.push(item)
       policyGroups.set(key, group)
+    }
+    const merchantTableCoordinate = `${EVENT_KINDS.SHIPPING_OPTION}:${order.merchantPubkey.toLowerCase()}:${MERCHANT_SHIPPING_POLICY_D_TAG}`
+    const pricedShipping =
+      order.shippingCostStatus !== "manual" &&
+      (order.shippingCostSats !== undefined ||
+        order.shippingCostStatus === "priced" ||
+        order.shippingCostStatus === "included")
+    for (const [index, item] of order.items.entries()) {
+      if (
+        item.shippingPolicyQuote ||
+        item.format !== "physical" ||
+        (item.fulfillment && item.fulfillment.type !== "shipping")
+      )
+        continue
+      const group = policyGroups.get(item.shippingOptionId ?? "")
+      if (group) group.push(item)
+      else if (
+        pricedShipping &&
+        item.shippingOptionId === merchantTableCoordinate
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["items", index, "shippingPolicyQuote"],
+          message:
+            "Priced table shipping requires a quote for every shipped item.",
+        })
     }
     for (const group of policyGroups.values()) {
       const quote = group[0]!.shippingPolicyQuote!
@@ -1106,7 +1134,9 @@ export const orderSchema = z
         group.length !== quote.items.length ||
         group.some(
           (item) =>
-            !hasSameShippingPolicyQuote(item.shippingPolicyQuote!, quote)
+            !item.shippingPolicyQuote ||
+            !hasSameShippingPolicyQuote(item.shippingPolicyQuote, quote) ||
+            item.shippingAllocatedCostSats === undefined
         )
       for (const quoted of quote.items) {
         const line = group.find((item) => item.productId === quoted.productId)

@@ -9,12 +9,18 @@ import {
   publishTestRelayEvents,
   readTestRelayEvents,
   seedTestRelayIdentity,
+  TEST_RELAY_URL,
 } from "./helpers/auth"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
-for (const reopen of [false, true]) {
-  test(`conflicting shipping rates require explicit replacement${reopen ? " after reopening" : " while editing"} @merchant`, async ({
+for (const { reopen, invalid } of [
+  { reopen: false, invalid: false },
+  { reopen: true, invalid: false },
+  { reopen: false, invalid: true },
+  { reopen: true, invalid: true },
+]) {
+  test(`${invalid ? "malformed" : "conflicting"} shipping rates require explicit replacement${reopen ? " after reopening" : " while editing"} @merchant`, async ({
     page,
   }, testInfo) => {
     test.setTimeout(90_000)
@@ -57,6 +63,55 @@ for (const reopen of [false, true]) {
     const [conflicting, initial] = [signedRates(100), signedRates(200)].sort(
       (a, b) => a.id.localeCompare(b.id)
     )
+    function malformedRevision(timestamp: number) {
+      const event = signedRates(100)
+      return finalizeEvent(
+        {
+          ...event,
+          created_at: timestamp,
+          tags: event.tags.map((tag) =>
+            tag[0] === "conduit_shipping_table" ? [tag[0], "2", "bad"] : tag
+          ),
+        },
+        secretKey
+      )
+    }
+    let incompleteReads = false
+    if (invalid) {
+      await page.routeWebSocket(TEST_RELAY_URL, (socket) => {
+        const server = socket.connectToServer()
+        const policySubscriptions = new Set<string>()
+        socket.onMessage((message) => {
+          const frame = JSON.parse(message.toString())
+          if (
+            frame[0] === "REQ" &&
+            frame
+              .slice(2)
+              .some((filter: { kinds?: number[] }) =>
+                filter.kinds?.some((kind) => kind === 30406 || kind === 5)
+              )
+          )
+            policySubscriptions.add(frame[1])
+          server.send(message)
+        })
+        server.onMessage((message) => {
+          const frame = JSON.parse(message.toString())
+          if (
+            incompleteReads &&
+            frame[0] === "EOSE" &&
+            policySubscriptions.has(frame[1])
+          )
+            socket.send(
+              JSON.stringify([
+                "CLOSED",
+                frame[1],
+                "Synthetic incomplete shipping read",
+              ])
+            )
+          else socket.send(message)
+        })
+      })
+    }
     await publishTestRelayEvents([initial!])
     await installTestSigner(page, pubkey, { secretKey })
     await page.goto(`${merchantUrl}/shipping`)
@@ -65,7 +120,9 @@ for (const reopen of [false, true]) {
       initial!.tags.find((tag) => tag[0] === "price")![1]!
     )
     await price.fill("300")
-    await publishTestRelayEvents([conflicting!])
+    await publishTestRelayEvents([
+      invalid ? malformedRevision(createdAt + 1) : conflicting!,
+    ])
     async function activate(control: Locator) {
       if (testInfo.project.use.hasTouch) await control.tap()
       else await control.click()
@@ -74,7 +131,7 @@ for (const reopen of [false, true]) {
       page.getByRole("button", { name: "Check for updates", exact: true })
     )
     const replace = page.getByRole("button", {
-      name: "Replace conflicting rates",
+      name: invalid ? "Replace invalid rates" : "Replace conflicting rates",
       exact: true,
     })
     await expect(replace).toBeEnabled()
@@ -124,10 +181,55 @@ for (const reopen of [false, true]) {
           (window as unknown as { shippingSignCount: number }).shippingSignCount
       )
     expect(await signCount()).toBe(0)
+    if (invalid) {
+      incompleteReads = true
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toBeDisabled()
+      await expect(publish).toBeDisabled()
+      expect(await signCount()).toBe(0)
+      incompleteReads = false
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toBeEnabled()
+    }
     await activate(replace)
     await expect(price).toHaveValue("300")
     await expect(publish).toBeEnabled()
     expect(await signCount()).toBe(0)
+    if (invalid) {
+      incompleteReads = true
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toBeDisabled()
+      await expect(publish).toBeDisabled()
+      await page.evaluate(() => {
+        document
+          .querySelector('section[aria-label="Shipping rates"] form')!
+          .dispatchEvent(
+            new Event("submit", { bubbles: true, cancelable: true })
+          )
+      })
+      expect(await signCount()).toBe(0)
+      incompleteReads = false
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toHaveCount(0)
+      await expect(publish).toBeEnabled()
+      await publishTestRelayEvents([malformedRevision(createdAt + 2)])
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toBeEnabled()
+      await expect(publish).toBeDisabled()
+      expect(await signCount()).toBe(0)
+      await activate(replace)
+      await expect(publish).toBeEnabled()
+    }
     await activate(publish)
     await expect(
       page.getByText("Shipping rates published.", { exact: true })
@@ -138,7 +240,9 @@ for (const reopen of [false, true]) {
       authors: [pubkey],
       "#d": ["conduit-shipping-policy"],
     })
-    expect(replacement!.created_at).toBeGreaterThan(createdAt)
+    expect(replacement!.created_at).toBeGreaterThan(
+      createdAt + (invalid ? 2 : 0)
+    )
     expect(replacement!.tags.some((tag) => tag[0] === "price")).toBe(false)
     const replacementPolicy = JSON.parse(
       replacement!.tags.find((tag) => tag[0] === "conduit_shipping_table")![2]!

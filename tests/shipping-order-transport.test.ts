@@ -143,6 +143,7 @@ function shippingOrder(
   })
   if (result.status !== "quoted") throw new Error(result.status)
   return {
+    policy,
     buyer,
     merchantSigner: new NDKPrivateKeySigner(merchantSecret),
     merchantPubkey,
@@ -254,6 +255,119 @@ async function encryptedOrder(
 }
 
 describe("shipping order transport", () => {
+  for (const version of [1, 2] as const) {
+    it(`rejects omitted same-table lines in v${version} orders and compact recipient parsing`, async () => {
+      const { order, fixture, rumor } = await prepareOrder(2, true, version)
+      const single = quoteShippingPolicy({
+        ...fixture.quote,
+        policy: fixture.policy,
+        items: fixture.quoteItems.slice(0, 1),
+        rateInput: fixture.quote.pricingRate,
+      })
+      if (single.status !== "quoted") throw new Error(single.status)
+      const amount = single.quote.amountSats ?? single.quote.amountMinor
+      const omitted = {
+        ...order,
+        shippingCostSats: amount,
+        items: order.items.map((item, index) => ({
+          ...item,
+          shippingPolicyQuote: index === 0 ? single.quote : undefined,
+          shippingAllocatedCostSats: index === 0 ? amount : undefined,
+        })),
+      }
+      expect(orderSchema.safeParse(order).success).toBe(true)
+      expect(orderSchema.safeParse(omitted).success).toBe(false)
+      const compact = JSON.parse(serializeOrderRumorContent(order))
+      compact.shippingPolicyQuotes.groups[0] = single.quote
+      compact.shippingCostSats = amount
+      compact.items[0].shippingAllocatedCostSats = amount
+      delete compact.items[1].shippingPolicyQuoteRef
+      delete compact.items[1].shippingAllocatedCostSats
+      rumor.content = JSON.stringify(compact)
+      expect(() => parseOrderRumorEvent(rumor)).toThrow()
+      const nextRevision = await plainTestSigner(
+        fixture.merchantSigner
+      ).signEvent({
+        ...buildShippingPolicyEventDraft({ policy: fixture.policy }),
+        pubkey: fixture.merchantPubkey,
+        created_at: 101,
+      })
+      const second = quoteShippingPolicy({
+        ...fixture.quote,
+        policy: fixture.policy,
+        policyEvent: nextRevision,
+        policyEventId: nextRevision.id,
+        policyCreatedAt: nextRevision.created_at,
+        items: fixture.quoteItems.slice(1),
+        rateInput: fixture.quote.pricingRate,
+      })
+      if (second.status !== "quoted") throw new Error(second.status)
+      const secondAmount = second.quote.amountSats ?? second.quote.amountMinor
+      expect(
+        orderSchema.safeParse({
+          ...order,
+          shippingCostSats: amount + secondAmount,
+          items: order.items.map((item, index) => ({
+            ...item,
+            shippingPolicyQuote: index === 0 ? single.quote : second.quote,
+            shippingAllocatedCostSats: index === 0 ? amount : secondAmount,
+          })),
+        }).success
+      ).toBe(false)
+      expect(
+        orderSchema.safeParse({
+          ...order,
+          items: [
+            ...order.items,
+            {
+              productId: "digital-extra",
+              format: "digital",
+              quantity: 1,
+              priceAtPurchase: 0,
+              currency: "SATS",
+              shippingOptionId: fixture.policyCoordinate,
+            },
+          ],
+        }).success
+      ).toBe(true)
+      expect(
+        orderSchema.safeParse({
+          ...order,
+          shippingCostSats: order.shippingCostSats! + 25,
+          items: [
+            ...order.items,
+            {
+              productId: "fixed-extra",
+              format: "physical",
+              quantity: 1,
+              priceAtPurchase: 0,
+              currency: "SATS",
+              shippingOptionId: `30406:${fixture.merchantPubkey}:fixed-extra`,
+              shippingCostSats: 25,
+            },
+          ],
+        }).success
+      ).toBe(true)
+      const manual = {
+        ...order,
+        shippingCostStatus: "manual",
+        shippingCostSats: undefined,
+        items: order.items.map((item) => ({
+          ...item,
+          shippingPolicyQuote: undefined,
+          shippingAllocatedCostSats: undefined,
+        })),
+      }
+      expect(orderSchema.safeParse(manual).success).toBe(true)
+      expect(
+        orderSchema.safeParse({
+          ...manual,
+          shippingCostStatus: "priced",
+          shippingCostSats: 0,
+        }).success
+      ).toBe(false)
+    })
+  }
   it("delivers the last supported NIP-44 padding bucket and rejects its next byte", async () => {
     const rumorBytes = (rumor: NDKEvent, pubkey: string) =>
       utf8Bytes(
