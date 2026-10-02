@@ -657,6 +657,51 @@ async function gotoAs(
     .toBe(syntheticIdentities[identity].pubkey)
 }
 
+async function waitForSavedMerchantDecision(
+  page: Page,
+  marketCoordinate: string,
+  action: "approve" | "revoke"
+): Promise<void> {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ coordinate, merchant, action }) =>
+          new Promise<boolean>((resolve, reject) => {
+            const request = indexedDB.open("conduit")
+            request.onerror = () => reject(request.error)
+            request.onsuccess = () => {
+              const database = request.result
+              const transaction = database.transaction(
+                "eventMarketMerchantDecisionJobs",
+                "readonly"
+              )
+              const jobs = transaction
+                .objectStore("eventMarketMerchantDecisionJobs")
+                .getAll()
+              jobs.onerror = () => reject(jobs.error)
+              jobs.onsuccess = () =>
+                resolve(
+                  jobs.result.some(
+                    (job) =>
+                      job.marketCoordinate === coordinate &&
+                      job.merchantPubkey === merchant &&
+                      job.action === action &&
+                      job.status === "acknowledged"
+                  )
+                )
+              transaction.oncomplete = () => database.close()
+              transaction.onabort = () => {
+                database.close()
+                reject(transaction.error)
+              }
+            }
+          }),
+        { coordinate: marketCoordinate, merchant: MERCHANT_PUBKEY, action }
+      )
+    )
+    .toBe(true)
+}
+
 function uniquePublishedEvents(
   publications: readonly PublishedEvent[]
 ): SignedEvent[] {
@@ -1385,7 +1430,27 @@ test("Merchant links an approved shop product and Market discovers it without pi
   await expect(
     editor.getByRole("checkbox", { name: "Offer this product at this event" })
   ).toBeChecked()
+  // Retained calendar evidence alone is stale and must not authorize linking.
+  relay.remove(calendar)
   const publicationStart = relay.publications.length
+  await editor
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click()
+  await expect(
+    editor.getByText(
+      /Current organizer-signed Event Market approval and grant could not be confirmed/
+    )
+  ).toBeVisible()
+  expect(
+    relay.publications
+      .slice(publicationStart)
+      .some(({ event }) => event.kind === 30402)
+  ).toBe(false)
+
+  // A live selected signed revision remains usable after an incomplete read.
+  relay.seed(calendar)
+  relay.incompleteReadsForKind(30409)
+  relay.incompleteReadsForKind(31923)
   await editor
     .getByRole("button", { name: "Save changes", exact: true })
     .click()
@@ -1553,12 +1618,21 @@ test("organizer grants, revokes, and reapproves one merchant without republishin
       )
     )
     .toBe(true)
-  // A published authorization is only the first half of the saved decision.
-  // Stay on the organizer screen until the roster and journal also settle.
-  await expect(page.getByText("Revoked", { exact: true })).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: "Approve merchant" })
-  ).toBeEnabled()
+  // Refresh can remove this uninvited seller's card with the roster row.
+  // Check both published authorities and the settled journal, not transient copy.
+  await expect
+    .poll(() => {
+      const rosters = uniquePublishedEvents(relay.publications).filter(
+        (event) => event.kind === 30409
+      )
+      return rosters
+        .at(-1)
+        ?.tags.some(
+          (tag) => tag[0] === "merchant" && tag[1] === MERCHANT_PUBKEY
+        )
+    })
+    .toBe(false)
+  await waitForSavedMerchantDecision(page, eventCoordinate(market), "revoke")
   await expect(
     page.getByRole("button", { name: "Retry saved decision" })
   ).toHaveCount(0)
@@ -3128,10 +3202,17 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(
     page.getByRole("button", { name: "Decline request" })
   ).toBeVisible()
-  await page.locator(`[id="assignment-${MERCHANT_PUBKEY}"]`).fill("Booth 4")
-  await page
-    .getByRole("button", { name: "Approve merchant", exact: true })
-    .click()
+  const merchantRow = page.locator("div.rounded-xl").filter({
+    has: page.locator(`[id="assignment-${MERCHANT_PUBKEY}"]`),
+  })
+  await merchantRow.getByLabel("Public assignment").fill("Booth 4")
+  // The host's own seller row refreshes independently; target only the requester.
+  const approveMerchant = merchantRow.getByRole("button", {
+    name: "Approve merchant",
+    exact: true,
+  })
+  await expect(approveMerchant).toBeEnabled()
+  await approveMerchant.click()
   await expect(page.getByText("Approved", { exact: true })).toHaveCount(2)
   expect(
     uniquePublishedEvents(relay.publications).some(

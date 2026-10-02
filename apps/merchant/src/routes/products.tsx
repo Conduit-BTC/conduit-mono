@@ -928,8 +928,8 @@ async function publishProduct(
       ])
       if (
         marketRead.resolution.state !== "current" ||
-        marketRead.coverage !== "complete" ||
-        marketRead.calendarCoverage !== "complete" ||
+        !["complete", "partial"].includes(marketRead.coverage) ||
+        !["complete", "partial"].includes(marketRead.calendarCoverage ?? "") ||
         !marketRead.calendar ||
         !marketRead.retained ||
         authorizationRead.resolution.state !== "active" ||

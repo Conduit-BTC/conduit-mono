@@ -483,6 +483,9 @@ describe("experimental Event Market roster", () => {
       market: { merchants: [] },
     })
     expect(read.coverage).toBe("stale")
+    expect(read.observedEvidence).toEqual(
+      expect.arrayContaining([approved, removed])
+    )
   })
 
   it("uses the exact latest product revision when a lagging relay offers an old market tag", async () => {

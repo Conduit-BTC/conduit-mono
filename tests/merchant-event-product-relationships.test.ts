@@ -10,6 +10,7 @@ import {
   parseEventMarketCalendarEvent,
   parseEventMarketRosterEvent,
   parseEventMarketSeriesEvent,
+  resolveEventMarketRoster,
   type EventMarketRosterReadResult,
 } from "@conduit/core"
 import {
@@ -65,6 +66,7 @@ const exactRead: EventMarketRosterReadResult = {
   coverage: "complete",
   retained: true,
   observedRelayUrls: ["wss://example.test"],
+  observedEvidence: [signedMarket],
   calendar: date,
   calendarCoverage: "complete",
   schedule: {
@@ -177,6 +179,7 @@ describe("Merchant product Event Market relationships", () => {
     ): EventMarketRosterReadResult => ({
       coordinate: seriesMarket.coordinate,
       resolution: { state: "current", market: seriesMarket },
+      observedEvidence: [seriesMarketSigned],
       coverage,
       retained: true,
       observedRelayUrls: [],
@@ -238,6 +241,148 @@ describe("Merchant product Event Market relationships", () => {
     expect(
       mergeMerchantTimelineMarketReads([partialNewer], [exactRead])
     ).toEqual([partialNewer])
+  })
+
+  const newerSignedMarket = finalizeEvent(
+    {
+      ...signedMarket,
+      tags: [...signedMarket.tags, ["prev", signedMarket.id]],
+      created_at: 200,
+    },
+    organizerSecret
+  )
+  const newerRead: EventMarketRosterReadResult = {
+    ...exactRead,
+    resolution: {
+      state: "current",
+      market: parseEventMarketRosterEvent(newerSignedMarket)!,
+    },
+    observedEvidence: [signedMarket, newerSignedMarket],
+  }
+  function negativeRead(
+    events: (typeof signedMarket)[]
+  ): EventMarketRosterReadResult {
+    return {
+      ...exactRead,
+      resolution: resolveEventMarketRoster({
+        coordinate,
+        revisions: events.filter((event) => event.kind === 30409),
+        deletions: events.filter((event) => event.kind === 5),
+      }),
+      observedEvidence: events,
+    }
+  }
+
+  for (const target of ["coordinate", "old-id"] as const) {
+    it(`keeps a newer roster over a non-covering ${target} deletion in either merge order`, () => {
+      const deletion = finalizeEvent(
+        {
+          kind: 5,
+          created_at: target === "coordinate" ? 150 : 300,
+          tags: [
+            target === "coordinate"
+              ? ["a", coordinate]
+              : ["e", signedMarket.id],
+          ],
+          content: "",
+        },
+        organizerSecret
+      )
+      const older = negativeRead([signedMarket, deletion])
+      expect(older.resolution.state).toBe("deleted")
+      for (const [left, right] of [
+        [older, newerRead],
+        [newerRead, older],
+      ]) {
+        const merged = mergeMerchantTimelineMarketReads([left!], [right!])[0]!
+        expect(merged.resolution).toEqual(newerRead.resolution)
+        expect(merged.observedEvidence).toContainEqual(deletion)
+        expect(projectFutureMerchantTimelineOccurrences(merged)).toHaveLength(1)
+      }
+    })
+  }
+
+  it("allows a signed repair of an older malformed roster in either merge order", () => {
+    const malformed = finalizeEvent(
+      {
+        ...signedMarket,
+        created_at: 150,
+        tags: signedMarket.tags.filter((tag) => tag[0] !== "event_market"),
+      },
+      organizerSecret
+    )
+    const repaired = finalizeEvent(
+      {
+        ...signedMarket,
+        created_at: 200,
+        tags: [...signedMarket.tags, ["prev", malformed.id]],
+      },
+      organizerSecret
+    )
+    const repairedRead: EventMarketRosterReadResult = {
+      ...exactRead,
+      resolution: {
+        state: "current",
+        market: parseEventMarketRosterEvent(repaired)!,
+      },
+      observedEvidence: [signedMarket, malformed, repaired],
+    }
+    const older = negativeRead([signedMarket, malformed])
+    expect(older.resolution.state).toBe("malformed")
+    for (const [left, right] of [
+      [older, repairedRead],
+      [repairedRead, older],
+    ]) {
+      const merged = mergeMerchantTimelineMarketReads([left!], [right!])[0]!
+      expect(merged.resolution).toEqual(repairedRead.resolution)
+    }
+  })
+
+  it("keeps a covering deletion after merging a later current read and stale observations", () => {
+    const deletion = finalizeEvent(
+      { kind: 5, created_at: 250, tags: [["a", coordinate]], content: "" },
+      organizerSecret
+    )
+    const older = negativeRead([signedMarket, deletion])
+    for (const [left, right] of [
+      [older, newerRead],
+      [newerRead, older],
+    ]) {
+      const merged = mergeMerchantTimelineMarketReads([left!], [right!])
+      expect(merged[0]!.resolution.state).toBe("deleted")
+      expect(
+        mergeMerchantTimelineMarketReads(merged, [exactRead])[0]!.resolution
+          .state
+      ).toBe("deleted")
+      expect(projectFutureMerchantTimelineOccurrences(merged[0]!)).toEqual([])
+    }
+  })
+
+  it("preserves conflicts exposed only by the union of separately current reads", () => {
+    const fork = finalizeEvent(
+      {
+        ...newerSignedMarket,
+        created_at: 201,
+        content: "Independent sibling edit",
+      },
+      organizerSecret
+    )
+    const forkRead: EventMarketRosterReadResult = {
+      ...exactRead,
+      resolution: {
+        state: "current",
+        market: parseEventMarketRosterEvent(fork)!,
+      },
+      observedEvidence: [signedMarket, fork],
+    }
+    for (const [left, right] of [
+      [forkRead, newerRead],
+      [newerRead, forkRead],
+    ]) {
+      expect(
+        mergeMerchantTimelineMarketReads([left!], [right!])[0]!.resolution.state
+      ).toBe("conflicting")
+    }
   })
 
   it("keeps known negative signed evidence from painting an admitted row", () => {

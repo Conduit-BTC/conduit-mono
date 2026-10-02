@@ -49,6 +49,8 @@ export interface EventMarketRosterReadResult {
   coverage: EventMarketRosterReadCoverage
   retained: boolean
   observedRelayUrls: string[]
+  /** Scoped signed roster revisions and deletions for cross-read reconciliation. */
+  observedEvidence?: readonly SignedPublicNostrEvent[]
   calendar?: ParsedEventMarketCalendar | null
   calendarSignedEvent?: SignedPublicNostrEvent
   calendarCoverage?: EventMarketRosterReadCoverage
@@ -540,6 +542,7 @@ export async function readEventMarketRoster(
       coverage: "unavailable",
       retained,
       observedRelayUrls: [],
+      observedEvidence: retainedEvents,
     }
   }
   const options = fanoutOptions(plan, input)
@@ -648,7 +651,14 @@ export async function readEventMarketRoster(
         ? "partial"
         : "complete"
   if (resolution.state !== "current") {
-    return { coordinate, resolution, coverage, retained, observedRelayUrls }
+    return {
+      coordinate,
+      resolution,
+      coverage,
+      retained,
+      observedRelayUrls,
+      observedEvidence: all,
+    }
   }
   const linkedCoordinate = parseAddressableCoordinate(
     resolution.market.calendarCoordinate,
@@ -742,6 +752,7 @@ export async function readEventMarketRoster(
         coverage,
         retained,
         observedRelayUrls,
+        observedEvidence: all,
         calendar: null,
         calendarCoverage: masterCoverage,
         scheduleCoverage: masterCoverage,
@@ -889,6 +900,7 @@ export async function readEventMarketRoster(
       resolution,
       coverage,
       retained,
+      observedEvidence: all,
       observedRelayUrls: [
         ...new Set([
           ...observedRelayUrls,
@@ -1027,6 +1039,7 @@ export async function readEventMarketRoster(
     resolution,
     coverage,
     retained,
+    observedEvidence: all,
     observedRelayUrls: [
       ...new Set([
         ...observedRelayUrls,

@@ -1,6 +1,7 @@
 import {
   compareReplaceableEventFrontiers,
   decodeEventMarketReference,
+  resolveEventMarketRoster,
   type EventMarketRosterReadResult,
   type ProductSchema,
 } from "@conduit/core"
@@ -125,10 +126,59 @@ const knownNegative = (read: EventMarketRosterReadResult) =>
   read.resolution.state === "malformed" ||
   read.resolution.state === "conflicting"
 
+function mergedMarketEvidence(
+  existing: EventMarketRosterReadResult,
+  next: EventMarketRosterReadResult
+) {
+  const evidence = (read: EventMarketRosterReadResult) =>
+    read.observedEvidence ??
+    (read.resolution.state === "current"
+      ? [read.resolution.market.signedEvent]
+      : [])
+  return [
+    ...new Map(
+      [...evidence(existing), ...evidence(next)].map((event) => [
+        event.id,
+        event,
+      ])
+    ).values(),
+  ]
+}
+
 function chooseMarketRead(
   existing: EventMarketRosterReadResult,
   next: EventMarketRosterReadResult
 ): EventMarketRosterReadResult {
+  const evidence = mergedMarketEvidence(existing, next)
+  const reduce = (events: Readonly<typeof evidence>) =>
+    resolveEventMarketRoster({
+      coordinate: existing.coordinate,
+      revisions: events.filter((event) => event.kind === 30409),
+      deletions: events.filter((event) => event.kind === 5),
+    })
+  // Never discard a negative summary whose signed frontier is unavailable.
+  // Real roster reads carry the observations needed to re-reduce both sources.
+  const reproducible = [existing, next].every((read) => {
+    if (!knownNegative(read)) return true
+    const observed = reduce(read.observedEvidence ?? [])
+    return (
+      observed.state === read.resolution.state &&
+      "eventId" in observed &&
+      "eventId" in read.resolution &&
+      observed.eventId === read.resolution.eventId
+    )
+  })
+  if (reproducible && evidence.length > 0) {
+    const resolution = reduce(evidence)
+    if (resolution.state !== "current") {
+      return { ...existing, resolution }
+    }
+    const matches = (read: EventMarketRosterReadResult) =>
+      read.resolution.state === "current" &&
+      read.resolution.market.eventId === resolution.market.eventId
+    if (!matches(existing) && matches(next)) return next
+    if (!matches(next) && matches(existing)) return existing
+  }
   if (knownNegative(next)) return next
   if (knownNegative(existing)) return existing
   if (existing.resolution.state !== "current") return next
@@ -194,7 +244,12 @@ export function mergeMerchantTimelineMarketReads(
     const prior = byCoordinate.get(read.coordinate)
     byCoordinate.set(
       read.coordinate,
-      prior ? chooseMarketRead(prior, read) : read
+      prior
+        ? {
+            ...chooseMarketRead(prior, read),
+            observedEvidence: mergedMarketEvidence(prior, read),
+          }
+        : read
     )
   }
   return [...byCoordinate.values()]
