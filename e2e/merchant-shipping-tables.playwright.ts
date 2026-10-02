@@ -320,15 +320,21 @@ test("digital drafts publish after their unused shipping table is withdrawn @mer
   await dialog.getByLabel("Price", { exact: true }).fill("1000")
   await dialog.getByLabel("Fulfillment", { exact: true }).click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
+  await expect(dialog.getByLabel("Fulfillment", { exact: true })).toHaveText(
+    "Digital"
+  )
   await dialog.getByRole("button", { name: "Add by URL" }).click()
   await dialog
     .getByLabel("Primary image URL")
     .fill("https://media.conduit.market/synthetic-digital.png")
   const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
-  for (const tag of ["digital", "shipping", "test"]) {
-    await tags.fill(tag)
-    await tags.press("Enter")
-  }
+  await tags.fill("digital, shipping, test")
+  await tags.press("Tab")
+  for (const tag of ["digital", "shipping", "test"])
+    await expect(
+      dialog.getByRole("button", { name: `Remove ${tag} tag`, exact: true })
+    ).toBeVisible()
+  await expect(tags).toHaveValue("")
   await publishTestRelayEvents([
     finalizeEvent(
       {
