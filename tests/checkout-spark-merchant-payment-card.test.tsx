@@ -263,6 +263,31 @@ describe("Merchant order payment presentation", () => {
     expect(html).not.toContain("The coordination fee is still processing")
   })
 
+  it("allows inspecting a paused unresolved fee without running a payment check", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        paused
+        projection={{
+          creditVerified: true,
+          merchantVerified: true,
+          commerceVerified: true,
+          feePending: true,
+          recipientUnverified: false,
+        }}
+      >
+        <button>Review saved payout</button>
+      </CheckoutSparkMerchantPaymentCard>
+    )
+    expect(html).toContain("Payment verified")
+    expect(html).toContain("Coordination fee processing is paused")
+    expect(html).toContain("Coordination fee details")
+    expect(html).toContain("Review saved payout")
+    expect(html).not.toContain("<details open")
+    expect(html).not.toContain("Check coordination fee again")
+    expect(html).not.toContain("needs attention")
+  })
+
   it("keeps fulfillment available while a paid fee's recipient still needs verification", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard
