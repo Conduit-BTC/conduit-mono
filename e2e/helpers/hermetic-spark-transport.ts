@@ -1,0 +1,236 @@
+import { createHash, randomBytes, randomUUID } from "node:crypto"
+import { schnorr } from "../../packages/core/node_modules/@noble/curves/secp256k1.js"
+import type { BrowserContext } from "@playwright/test"
+import type { SparkNativeWallet } from "../../apps/market/src/lib/spark-sdk"
+import type { createHermeticSparkNative } from "./hermetic-spark-native"
+import type {
+  HermeticSparkRequest,
+  WalletMethod,
+} from "./hermetic-spark-transport-types"
+import { HERMETIC_SPARK_BINDING } from "./hermetic-spark-transport-types"
+
+const walletMethods = new Set<WalletMethod>([
+  "setPrivacyEnabled",
+  "getWalletSettings",
+  "getBalance",
+  "getTransfers",
+  "getSparkAddress",
+  "getTransfer",
+  "getTransferFromSsp",
+  "createLightningInvoice",
+  "getIdentityPublicKey",
+  "getLightningReceiveRequest",
+  "getLightningSendFeeEstimate",
+  "payLightningInvoice",
+  "getLightningSendRequest",
+])
+
+function unavailable(): never {
+  throw new Error("Hermetic Spark transport unavailable")
+}
+
+/** Runner-owned native sessions only; never receives application proof records. */
+export function createHermeticSparkTransport(
+  fixture: ReturnType<typeof createHermeticSparkNative>
+) {
+  const wallets = new Map<string, SparkNativeWallet>()
+  const credentials = new Map<
+    string,
+    { mnemonic: string; accountNumber: number; network: "regtest" }
+  >()
+  const challenges = new Map<
+    string,
+    { identityPublicKey: string; digest: Uint8Array; expiresAt: number }
+  >()
+  const readers = new Map<
+    string,
+    Awaited<ReturnType<typeof fixture.openAuthenticatedRetirementReader>>
+  >()
+  const readerMethods = new Set([
+    "getTransfers",
+    "getPendingTransfers",
+    "getAvailableBalance",
+    "getOwnedBalance",
+  ])
+  let closed = false
+  return {
+    async request(command: HermeticSparkRequest): Promise<unknown> {
+      try {
+        if (closed || !command || typeof command !== "object") unavailable()
+        switch (command.type) {
+          case "wallet.open": {
+            if (
+              command.input?.options?.network !== "REGTEST" ||
+              command.input.options.log !== false
+            )
+              unavailable()
+            const { wallet } = await fixture.module.initialize(command.input)
+            const identity = await wallet.getIdentityPublicKey()
+            if (closed) {
+              await wallet.cleanup()
+              unavailable()
+            }
+            credentials.set(identity, {
+              mnemonic: command.input.mnemonicOrSeed,
+              accountNumber: command.input.accountNumber,
+              network: "regtest",
+            })
+            const handle = randomUUID()
+            wallets.set(handle, wallet)
+            return { handle }
+          }
+          case "wallet.call": {
+            const wallet = wallets.get(command.handle)
+            if (
+              !wallet ||
+              !walletMethods.has(command.method) ||
+              !Array.isArray(command.args)
+            )
+              unavailable()
+            if (command.method === "payLightningInvoice") {
+              const [request] = command.args as [{ transferId?: string }]
+              if (!request || typeof request.transferId !== "string")
+                unavailable()
+              return await Reflect.apply(wallet[command.method], wallet, [
+                {
+                  ...request,
+                  transferId: fixture.module.parseTransferId(
+                    request.transferId
+                  ),
+                },
+              ])
+            }
+            return await Reflect.apply(
+              wallet[command.method],
+              wallet,
+              command.args
+            )
+          }
+          case "wallet.close": {
+            const wallet = wallets.get(command.handle)
+            wallets.delete(command.handle)
+            await wallet?.cleanup()
+            return null
+          }
+          case "reader.challenge": {
+            if (
+              command.network !== "REGTEST" ||
+              !credentials.has(command.identityPublicKey)
+            )
+              unavailable()
+            for (const [id, challenge] of challenges) {
+              if (challenge.expiresAt <= Date.now()) challenges.delete(id)
+            }
+            if (challenges.size >= 128) unavailable()
+            const challengeId = randomUUID()
+            const digest = createHash("sha256")
+              .update("conduit-hermetic-spark-reader-v1:REGTEST:")
+              .update(command.identityPublicKey)
+              .update(randomBytes(32))
+              .digest()
+            challenges.set(challengeId, {
+              identityPublicKey: command.identityPublicKey,
+              digest,
+              expiresAt: Date.now() + 30_000,
+            })
+            return { challengeId, digest: digest.toString("hex") }
+          }
+          case "reader.open": {
+            const challenge = challenges.get(command.challengeId)
+            challenges.delete(command.challengeId)
+            if (
+              !challenge ||
+              challenge.expiresAt <= Date.now() ||
+              !/^[0-9a-f]{128}$/.test(command.signature) ||
+              !schnorr.verify(
+                Buffer.from(command.signature, "hex"),
+                challenge.digest,
+                Buffer.from(challenge.identityPublicKey.slice(2), "hex")
+              )
+            )
+              unavailable()
+            const credential = credentials.get(challenge.identityPublicKey)
+            if (!credential) unavailable()
+            const reader =
+              await fixture.openAuthenticatedRetirementReader(credential)
+            if (closed) {
+              await reader.cleanup()
+              unavailable()
+            }
+            const handle = randomUUID()
+            readers.set(handle, reader)
+            return { handle, sparkAddress: reader.sparkAddress }
+          }
+          case "reader.call": {
+            const opened = readers.get(command.handle)
+            if (
+              !opened ||
+              !readerMethods.has(command.method) ||
+              !Array.isArray(command.args)
+            )
+              unavailable()
+            return await Reflect.apply(
+              opened.reader[command.method],
+              opened.reader,
+              command.args
+            )
+          }
+          case "reader.close": {
+            const reader = readers.get(command.handle)
+            readers.delete(command.handle)
+            await reader?.cleanup()
+            return null
+          }
+          default:
+            unavailable()
+        }
+      } catch {
+        unavailable()
+      }
+    },
+    async close() {
+      closed = true
+      const sessions = [...wallets.values()]
+      const readerSessions = [...readers.values()]
+      wallets.clear()
+      readers.clear()
+      challenges.clear()
+      credentials.clear()
+      await Promise.all(
+        [...sessions, ...readerSessions].map((session) => session.cleanup())
+      )
+    },
+  }
+}
+
+/** Install before app navigation; the retained transport belongs to the runner. */
+export async function installHermeticSparkTransport(
+  context: Pick<BrowserContext, "exposeBinding">,
+  transport: Pick<ReturnType<typeof createHermeticSparkTransport>, "request">,
+  options: { appUrl: string }
+): Promise<void> {
+  const app = new URL(options.appUrl)
+  if (
+    app.protocol !== "http:" ||
+    !["127.0.0.1", "[::1]"].includes(app.hostname) ||
+    !app.port ||
+    ["0", "3000", "3001", "3002"].includes(app.port) ||
+    app.username ||
+    app.password ||
+    app.pathname !== "/" ||
+    app.search ||
+    app.hash
+  )
+    unavailable()
+  await context.exposeBinding(
+    HERMETIC_SPARK_BINDING,
+    async ({ frame }, command: HermeticSparkRequest) => {
+      if (
+        frame.parentFrame() !== null ||
+        new URL(frame.url()).origin !== app.origin
+      )
+        unavailable()
+      return transport.request(command)
+    }
+  )
+}

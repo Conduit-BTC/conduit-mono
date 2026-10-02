@@ -25,6 +25,8 @@ export interface ProductCardProps {
   primaryPrice: string
   secondaryPrice?: string | null
   approximateUsdPrice?: string | null
+  /** Short context for an estimated all-in browsing price. */
+  priceNote?: string | null
   imageLoading?: "eager" | "lazy"
   /** Disable the image-only hover zoom when a parent supplies card-level motion. */
   disableImageHoverZoom?: boolean
@@ -58,6 +60,7 @@ export function ProductCard({
   primaryPrice,
   secondaryPrice,
   approximateUsdPrice,
+  priceNote,
   imageLoading = "lazy",
   disableImageHoverZoom = false,
   cartQuantity = 0,
@@ -173,6 +176,11 @@ export function ProductCard({
               <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
                 {approximateUsdPrice ?? "\u00a0"}
               </div>
+            ) : null}
+            {priceNote ? (
+              <p className="mt-1 text-pretty text-xs text-[var(--text-muted)]">
+                {priceNote}
+              </p>
             ) : null}
           </div>
           {action ? (

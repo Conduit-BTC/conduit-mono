@@ -136,6 +136,10 @@ export interface OrderViewModel {
   orderDeliveryStatus: OrderDeliveryStatus
   invoiceStatus: OrderInvoiceStatus
   paymentStatus: OrderPaymentStatus
+  /** Routed funding and generic status messages are not commerce settlement. */
+  checkoutSparkRouted?: boolean
+  checkoutSparkCommerceVerified?: boolean
+  checkoutSparkRecipientUnverified?: boolean
   proofDeliveryStatus: OrderProofDeliveryStatus
   zapReceiptStatus: OrderZapReceiptStatus
   addressValidity: OrderAddressValidity
@@ -266,6 +270,11 @@ export interface BuildOrderViewModelInput {
   messages?: ParsedOrderMessage[] | null
   paymentAttempt?: StoredPaymentAttempt | null
   nowSeconds?: number
+  /** Exact buyer/order-bound provider facts, never a relay progress claim. */
+  checkoutSparkSettlement?: {
+    commerceVerified: boolean
+    recipientUnverified?: boolean
+  } | null
 }
 
 export function isZeroCostPickupOrder(
@@ -354,11 +363,19 @@ function isCompletedMerchantStatus(
  * Payment is complete from the buyer's perspective when either the local
  * payment lifecycle confirms it or the merchant has published a status that
  * confirms settlement. The latter keeps relay-only and partial-read views
- * consistent when the buyer's local payment record is unavailable.
+ * consistent when the buyer's local payment record is unavailable. Routed
+ * orders instead require their exact provider-backed commerce projection.
  */
 export function isBuyerOrderPaid(
-  vm: Pick<OrderViewModel, "paymentStatus" | "merchantStatus">
+  vm: Pick<
+    OrderViewModel,
+    | "paymentStatus"
+    | "merchantStatus"
+    | "checkoutSparkRouted"
+    | "checkoutSparkCommerceVerified"
+  >
 ): boolean {
+  if (vm.checkoutSparkRouted) return vm.checkoutSparkCommerceVerified === true
   return (
     vm.paymentStatus === "paid" ||
     isMerchantOrderPaid({ status: vm.merchantStatus })
@@ -630,12 +647,23 @@ export function buildOrderViewModel(
     (invoiceFromMessages ? "received" : "not_requested")
 
   const proofFromMessages = summary?.paymentProofReceived ?? false
+  const checkoutSparkRouted =
+    !!lifecycle?.checkoutSparkRouterBinding ||
+    summary?.checkoutSparkRouted === true
+  const checkoutSparkCommerceVerified =
+    checkoutSparkRouted &&
+    input.checkoutSparkSettlement?.commerceVerified === true
   const merchantPaymentConfirmed =
     summary?.paymentConfirmed === true ||
     summary?.shippingUpdateReceived === true
-  const basePaymentStatus: OrderPaymentStatus = merchantPaymentConfirmed
-    ? "paid"
-    : (lifecycle?.paymentStatus ?? (proofFromMessages ? "paid" : "not_started"))
+  const basePaymentStatus: OrderPaymentStatus = checkoutSparkRouted
+    ? checkoutSparkCommerceVerified
+      ? "paid"
+      : "not_started"
+    : merchantPaymentConfirmed
+      ? "paid"
+      : (lifecycle?.paymentStatus ??
+        (proofFromMessages ? "paid" : "not_started"))
 
   const proofDeliveryStatus: OrderProofDeliveryStatus =
     lifecycle?.proofDeliveryStatus ??
@@ -655,6 +683,8 @@ export function buildOrderViewModel(
   const basePaymentPaid = isBuyerOrderPaid({
     paymentStatus: basePaymentStatus,
     merchantStatus,
+    checkoutSparkRouted,
+    checkoutSparkCommerceVerified,
   })
 
   const tracking =
@@ -684,15 +714,17 @@ export function buildOrderViewModel(
               : (lifecycle?.phase ??
                 (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
 
-  const merchantInvoiceAction = deriveMerchantInvoiceAction({
-    orderId: input.orderId,
-    lifecycle,
-    summary,
-    merchantStatus,
-    merchantPaymentConfirmed,
-    effectivePhase: phase,
-    nowSeconds: input.nowSeconds ?? Math.floor(Date.now() / 1_000),
-  })
+  const merchantInvoiceAction = checkoutSparkRouted
+    ? null
+    : deriveMerchantInvoiceAction({
+        orderId: input.orderId,
+        lifecycle,
+        summary,
+        merchantStatus,
+        merchantPaymentConfirmed,
+        effectivePhase: phase,
+        nowSeconds: input.nowSeconds ?? Math.floor(Date.now() / 1_000),
+      })
   const invoiceStatus: OrderInvoiceStatus =
     merchantInvoiceAction?.status === "payable"
       ? "manual_required"
@@ -703,7 +735,12 @@ export function buildOrderViewModel(
     merchantInvoiceAction?.status === "payable"
       ? "manual_required"
       : basePaymentStatus
-  const paymentPaid = isBuyerOrderPaid({ paymentStatus, merchantStatus })
+  const paymentPaid = isBuyerOrderPaid({
+    paymentStatus,
+    merchantStatus,
+    checkoutSparkRouted,
+    checkoutSparkCommerceVerified,
+  })
 
   const publicReceiptNotObserved =
     paymentStatus === "ambiguous" && zapReceiptStatus === "receipt_not_observed"
@@ -762,7 +799,12 @@ export function buildOrderViewModel(
     orderDeliveryStatus,
     invoiceStatus,
     paymentStatus,
+    checkoutSparkRouted,
+    checkoutSparkCommerceVerified,
     proofDeliveryStatus,
+    checkoutSparkRecipientUnverified:
+      checkoutSparkRouted &&
+      input.checkoutSparkSettlement?.recipientUnverified === true,
     zapReceiptStatus,
     addressValidity: lifecycle?.addressValidity ?? "not_required",
     merchantStatus,
@@ -1082,8 +1124,17 @@ export function buildOrderTimeline(
     const copy = copyFor(key, status)
     let title = copy.title
     let subtitle = copy.subtitle
-    // Prepaid (zap-out) orders have no merchant invoice; reflect direct payment.
-    if (key === "invoice" && vm.flow === "prepaid") {
+    // Funding a router is not a payment to a merchant or a merchant receipt.
+    if (key === "payment" && vm.checkoutSparkRouted) {
+      title = isBuyerOrderPaid(vm)
+        ? "Order payment verified"
+        : "Payment not yet verified"
+      subtitle = isBuyerOrderPaid(vm)
+        ? "Your order payment was verified on this device. Delivery is confirmed separately."
+        : vm.checkoutSparkRecipientUnverified
+          ? "Payment was sent, but its intended recipient has not been verified on this device. Do not pay it again."
+          : "Payment has not been verified yet. Check the saved payment status; do not start another payment."
+    } else if (key === "invoice" && vm.flow === "prepaid") {
       title = status === "complete" ? "Paid directly" : "Direct payment"
       subtitle =
         "Paid the merchant directly over Lightning — no invoice needed."
@@ -1178,6 +1229,30 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Failed",
       detailLabel: "Order not sent",
       actionNeeded: true,
+      showSpinner: false,
+    }
+  }
+  if (vm.checkoutSparkRouted) {
+    const fulfilling =
+      vm.merchantStatus === "accepted" ||
+      vm.merchantStatus === "processing" ||
+      vm.merchantStatus === "shipped"
+    return {
+      tone: paid || fulfilling ? "info" : "warning",
+      primaryLabel:
+        vm.merchantStatus === "shipped"
+          ? "Shipped"
+          : fulfilling
+            ? "In progress"
+            : paid
+              ? "Paid"
+              : "Pending",
+      detailLabel: paid
+        ? "Order payment verified"
+        : vm.checkoutSparkRecipientUnverified
+          ? "Payment sent; recipient confirmation pending"
+          : "Payment not yet verified on this device",
+      actionNeeded: false,
       showSpinner: false,
     }
   }

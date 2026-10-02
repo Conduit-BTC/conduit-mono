@@ -502,6 +502,7 @@ export function canSubmitExternalPaymentReport(
 ): lifecycle is OrderLifecycle {
   return (
     !!lifecycle &&
+    lifecycle.checkoutSparkRouterBinding === undefined &&
     !!lifecycle.invoice &&
     lifecycle.phase !== "completed" &&
     lifecycle.paymentStatus === "manual_required" &&
@@ -547,6 +548,7 @@ export function validateMerchantInvoicePaymentAction(
     : false
   if (
     !lifecycle ||
+    lifecycle.checkoutSparkRouterBinding !== undefined ||
     lifecycle.orderId !== action.orderId ||
     lifecycle.buyerPubkey !== action.recipientPubkey ||
     lifecycle.merchantPubkey !== action.senderPubkey ||
@@ -2530,6 +2532,9 @@ export async function submitExternalPaymentProof(
     }
     const lifecycle = await getOrderLifecycle(orderId)
     if (shouldContinue?.() === false) return runtimeStates.get(orderId)
+    if (lifecycle?.checkoutSparkRouterBinding !== undefined) {
+      return runtimeStates.get(orderId)
+    }
     const activeReplacementValidation = lifecycle?.invoice
       ? validateLightningInvoiceForPayment({
           invoice: lifecycle.invoice,

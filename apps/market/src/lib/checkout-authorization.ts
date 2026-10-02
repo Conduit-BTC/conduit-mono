@@ -2,6 +2,7 @@ import type {
   ParsedShippingOption,
   PricingRateInput,
   Product,
+  SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
   getCartCommerceFingerprint,
@@ -37,6 +38,8 @@ export type CheckoutAuthorizationResult =
       /** Preserve the source read state; [] alone cannot mean both no option
        * was needed and an order-first shipping lookup failed. */
       shippingOptionEvidence: CheckoutShippingOptionEvidence
+      /** Selected public pickup revisions; never persisted in cart items. */
+      pickupSourceEvents?: readonly SignedPublicNostrEvent[]
     }
   | { status: "changed" }
 
@@ -113,6 +116,13 @@ export async function authorizeCurrentCheckoutItems(input: {
     )
     return resolution.product
   })
+  const pickupSourceEvents = structuredClone(
+    fulfillmentResolutions.flatMap((resolution) =>
+      resolution.status === "pickup"
+        ? [...(resolution.pickupSourceEvents ?? [])]
+        : []
+    )
+  )
   const refreshedRawItems = rebuildCurrentCartItems(
     input.rawItems,
     resolvedProducts,
@@ -149,6 +159,7 @@ export async function authorizeCurrentCheckoutItems(input: {
         status: "unavailable_order_first",
         options: [],
       },
+      ...(pickupSourceEvents.length > 0 ? { pickupSourceEvents } : {}),
     }
   }
   const prepared = prepareCartFulfillment(refreshedRawItems, shippingOptions)
@@ -179,5 +190,6 @@ export async function authorizeCurrentCheckoutItems(input: {
       shippingCoordinates.length === 0
         ? { status: "not_required", options: [] }
         : { status: "verified", options: shippingOptions },
+    ...(pickupSourceEvents.length > 0 ? { pickupSourceEvents } : {}),
   }
 }

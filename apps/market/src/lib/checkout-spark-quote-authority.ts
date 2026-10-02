@@ -1,4 +1,13 @@
-import type { PricingRateInput, Product } from "@conduit/core"
+import type {
+  CheckoutSparkCommerceQuoteLine,
+  PricingRateInput,
+  Product,
+  SignedPublicNostrEvent,
+} from "@conduit/core"
+import {
+  orderPickupFulfillmentSchema,
+  resolveCheckoutSparkSignedPickup,
+} from "@conduit/core"
 import { getCartCommerceFingerprint, type CartItem } from "./cart-model"
 import { prepareCartFulfillment } from "./cart-shipping-options"
 import type { CheckoutAuthorizationResult } from "./checkout-authorization"
@@ -20,6 +29,7 @@ export interface CheckoutSparkQuoteLineEvidence {
     coordinate: string
     eventId: string
   }
+  pickup?: CheckoutSparkCommerceQuoteLine["pickup"]
 }
 
 /**
@@ -31,6 +41,10 @@ export interface CheckoutSparkQuoteAuthority {
   pricing: PricedIntent
   products: readonly Product[]
   lines: readonly CheckoutSparkQuoteLineEvidence[]
+  /** Exact selected 30406 revisions, retained from the same authorized read. */
+  shippingSourceEvents?: readonly SignedPublicNostrEvent[]
+  /** Exact calendar, collection and pickup revisions from current authorization. */
+  pickupSourceEvents?: readonly SignedPublicNostrEvent[]
 }
 
 const EVENT_ID = /^[0-9a-f]{64}$/
@@ -87,8 +101,8 @@ function requireMatchingProduct(
     resolved.shippingOptionLaunchUnsupported !==
       listing.shippingOptionLaunchUnsupported ||
     (item.fulfillment?.type !== "pickup" &&
-      item.shippingOptionLaunchUnsupported !==
-        listing.shippingOptionLaunchUnsupported) ||
+      (item.shippingOptionLaunchUnsupported === true) !==
+        (listing.shippingOptionLaunchUnsupported === true)) ||
     JSON.stringify(resolved.shippingOptionRefs) !==
       JSON.stringify(listing.shippingOptionRefs) ||
     JSON.stringify(resolved.collectionRefs) !==
@@ -187,7 +201,8 @@ export function buildCheckoutSparkQuoteAuthority(input: {
         item.fulfillment.product.eventId !== listing.sourceEventId ||
         item.fulfillment.product.merchantPubkey !== item.merchantPubkey ||
         item.shippingOptionId !== item.fulfillment.option.coordinate ||
-        !EVENT_ID.test(item.fulfillment.option.eventId)
+        !EVENT_ID.test(item.fulfillment.option.eventId) ||
+        !authorization.pickupSourceEvents?.length
       ) {
         invalidEvidence()
       }
@@ -199,6 +214,16 @@ export function buildCheckoutSparkQuoteAuthority(input: {
         shippingOption: {
           coordinate: item.fulfillment.option.coordinate,
           eventId: item.fulfillment.option.eventId,
+        },
+        pickup: {
+          calendar: {
+            coordinate: item.fulfillment.calendar.coordinate,
+            eventId: item.fulfillment.calendar.eventId,
+          },
+          collection: {
+            coordinate: item.fulfillment.collection.coordinate,
+            eventId: item.fulfillment.collection.eventId,
+          },
         },
       }
     }
@@ -273,9 +298,75 @@ export function buildCheckoutSparkQuoteAuthority(input: {
     invalidEvidence()
   }
 
+  const pickupSources = new Map<string, SignedPublicNostrEvent>()
+  for (const line of lines) {
+    if (!line.pickup) continue
+    const item = authorization.items.find(
+      (candidate) => candidate.productId === line.productCoordinate
+    )!
+    const priced = pricing.items.find(
+      (candidate) => candidate.productId === line.productCoordinate
+    )!
+    const productEvent = listingByCoordinate.get(line.productCoordinate)
+      ?.supplierAllocation?.revisionEvent
+    if (!productEvent) invalidEvidence()
+    try {
+      const snapshot = resolveCheckoutSparkSignedPickup({
+        productEvent,
+        line: {
+          ...line,
+          unitMerchandiseSats: priced.priceAtPurchase,
+          unitShippingSats: priced.shippingCostSats ?? 0,
+        },
+        sourceEvents: authorization.pickupSourceEvents ?? [],
+        acceptedAtMs: input.nowMs ?? Date.now(),
+      })
+      if (
+        !snapshot ||
+        JSON.stringify(orderPickupFulfillmentSchema.parse(snapshot)) !==
+          JSON.stringify(orderPickupFulfillmentSchema.parse(item.fulfillment))
+      ) {
+        invalidEvidence()
+      }
+      for (const id of [
+        line.pickup.calendar.eventId,
+        line.pickup.collection.eventId,
+        line.shippingOption!.eventId,
+      ]) {
+        const event = authorization.pickupSourceEvents!.find(
+          (source) => source.id === id
+        )
+        if (!event) invalidEvidence()
+        pickupSources.set(id, {
+          id: event.id,
+          pubkey: event.pubkey,
+          kind: event.kind,
+          created_at: event.created_at,
+          tags: event.tags.map((tag) => [...tag]),
+          content: event.content,
+          sig: event.sig,
+        })
+      }
+    } catch {
+      invalidEvidence()
+    }
+  }
+
   return freezeDeep({
     pricing: structuredClone(pricing),
     products: structuredClone(authorization.listingReadProducts),
     lines: structuredClone(lines),
+    ...(pickupSources.size > 0
+      ? { pickupSourceEvents: structuredClone([...pickupSources.values()]) }
+      : {}),
+    ...(selectedShipping.size > 0
+      ? {
+          shippingSourceEvents: structuredClone(
+            [...selectedShipping.values()].flatMap((option) =>
+              option.sourceEvent ? [option.sourceEvent] : []
+            )
+          ),
+        }
+      : {}),
   })
 }

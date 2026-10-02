@@ -48,6 +48,8 @@ import {
 } from "../lib/dashboard-charts"
 import { parseMerchantAuthHandoffSearch } from "../lib/market-links"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
+import { useCheckoutSparkOrderSettlements } from "../hooks/useCheckoutSparkOrderSettlements"
+import { isLocalCheckoutSparkRecoveryRehearsal } from "../lib/checkout-spark-settled-recovery"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import {
   getMerchantConversationQueue,
@@ -304,7 +306,8 @@ function MerchantReadinessPanel({
 }
 
 function DashboardPage() {
-  const { pubkey, status, error, authGeneration } = useAuth()
+  const { pubkey, status, error, authGeneration, isAuthGenerationCurrent } =
+    useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -376,6 +379,21 @@ function DashboardPage() {
       cachedConversationsQuery.data?.data
     )
   }, [signerConnected, conversationsQuery.data, cachedConversationsQuery.data])
+  const checkoutSparkRehearsalEnabled = isLocalCheckoutSparkRecoveryRehearsal({
+    dev: import.meta.env.DEV === true,
+    rehearsalFlag: import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL,
+    routerCanaryFlag: import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY,
+    hostname:
+      typeof window === "undefined" ? undefined : window.location.hostname,
+  })
+  const { bindings: orderSettlementBindings, getOrderSettlement } =
+    useCheckoutSparkOrderSettlements({
+      enabled: checkoutSparkRehearsalEnabled && signerConnected,
+      pubkey,
+      authGeneration,
+      isAuthGenerationCurrent,
+      conversations: allConversations,
+    })
   const conversationsMeta = conversationsQuery.data?.meta
   const protectedConversationsReadState = deriveProtectedReadPresentationState({
     visibleCount: allConversations.length,
@@ -395,12 +413,15 @@ function DashboardPage() {
     let verifyPayment = 0
     let paidFulfill = 0
     for (const conversation of allConversations) {
-      const queue = getMerchantConversationQueue(conversation)
+      const queue = getMerchantConversationQueue(
+        conversation,
+        getOrderSettlement(conversation)
+      )
       if (queue === "verify_payment") verifyPayment += 1
       if (queue === "paid_fulfill") paidFulfill += 1
     }
     return { verifyPayment, paidFulfill }
-  }, [allConversations])
+  }, [allConversations, getOrderSettlement])
   const chartData = useMemo<DashboardChartDataByCard>(() => {
     const now = Date.now()
     const cache = new Map<
@@ -413,7 +434,8 @@ function DashboardPage() {
       const data = buildDashboardChartData(
         allConversations,
         btcRateQuery.data ?? null,
-        resolveDashboardPresetRange(preset, now)
+        resolveDashboardPresetRange(preset, now),
+        orderSettlementBindings
       )
       cache.set(preset, data)
       return data
@@ -424,7 +446,12 @@ function DashboardPage() {
       revenue: build(chartRanges.revenue),
       products: build(chartRanges.products),
     }
-  }, [allConversations, btcRateQuery.data, chartRanges])
+  }, [
+    allConversations,
+    btcRateQuery.data,
+    chartRanges,
+    orderSettlementBindings,
+  ])
   const changeChartRange = useCallback(
     (chart: DashboardChartId, range: DashboardRangePreset) => {
       setChartRanges((current) => ({ ...current, [chart]: range }))
@@ -620,6 +647,7 @@ function DashboardPage() {
               <OrderListItem
                 key={conversation.id}
                 conversation={conversation}
+                settlement={getOrderSettlement(conversation)}
                 buyerProfile={buyerProfilesQuery.data[conversation.buyerPubkey]}
                 active={false}
                 onClick={() =>

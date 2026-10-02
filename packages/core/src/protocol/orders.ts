@@ -1,5 +1,7 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { z } from "zod"
+import { isSatsLikeCurrency } from "../pricing"
+import { EVENT_KINDS } from "./kinds"
 import {
   conversationMessageSchema,
   eventMarketFulfillmentRevocationSchema,
@@ -44,7 +46,16 @@ export function parseOrderRumorEvent(
 type OrderRumorEvent = Pick<
   NDKEvent,
   "id" | "created_at" | "content" | "tags" | "pubkey"
->
+> & { kind?: number }
+
+/** Private kind-16 buyer order hint; never payment or fulfillment evidence. */
+export const CHECKOUT_SPARK_ROUTER_ORDER_TAG = [
+  "conduit_checkout_payment",
+  "spark_router",
+  "1",
+] as const
+
+export type CheckoutOrderPaymentRoute = "spark_router_v1"
 
 type ParsedOrderMessageBase = {
   id: string
@@ -57,7 +68,11 @@ type ParsedOrderMessageBase = {
 }
 
 export type ParsedOrderMessage =
-  | (ParsedOrderMessageBase & { type: "order"; payload: OrderSchema })
+  | (ParsedOrderMessageBase & {
+      type: "order"
+      payload: OrderSchema
+      checkoutPaymentRoute?: CheckoutOrderPaymentRoute
+    })
   | (ParsedOrderMessageBase & {
       type: "payment_request"
       payload: PaymentRequestMessageSchema
@@ -270,6 +285,144 @@ function messageBase<TType extends OrderMessageTypeSchema>(
   }
 }
 
+/** Shape admission only; signed product/fulfillment authority is checked separately. */
+function hasCheckoutRouterFulfillmentShape(
+  item: OrderSchema["items"][number],
+  merchantPubkey: string
+): boolean {
+  if (item.format === "digital") {
+    return (
+      (item.fulfillment === undefined || item.fulfillment.type === "digital") &&
+      (item.shippingCostSats ?? 0) === 0 &&
+      item.shippingOptionId === undefined
+    )
+  }
+  if (item.fulfillment?.type === "pickup") {
+    // orderSchema already checks the product, option, cost and coherent graph.
+    // A router marker additionally requires explicit SAT-only handoff terms.
+    return (
+      item.fulfillment.handoffMode !== undefined &&
+      item.fulfillment.handlerPubkey !== undefined &&
+      item.sourceShippingCost !== undefined &&
+      item.sourceShippingCost.amount === item.shippingCostSats &&
+      isSatsLikeCurrency(item.sourceShippingCost.currency) &&
+      isSatsLikeCurrency(item.sourceShippingCost.normalizedCurrency) &&
+      item.shippingCountries?.length === 0 &&
+      item.shippingCountryRules?.length === 0
+    )
+  }
+  return (
+    item.fulfillment?.type === "shipping" &&
+    item.shippingCostSats !== undefined &&
+    Number.isSafeInteger(item.shippingCostSats) &&
+    item.shippingCostSats >= 0 &&
+    !!item.shippingOptionDTag &&
+    item.shippingOptionId ===
+      `30406:${merchantPubkey}:${item.shippingOptionDTag}` &&
+    item.sourceShippingCost !== undefined &&
+    item.sourceShippingCost.amount === item.shippingCostSats &&
+    isSatsLikeCurrency(item.sourceShippingCost.currency) &&
+    isSatsLikeCurrency(item.sourceShippingCost.normalizedCurrency)
+  )
+}
+
+function parseCheckoutOrderPaymentRoute(
+  event: OrderRumorEvent,
+  payload: OrderSchema
+): CheckoutOrderPaymentRoute | undefined {
+  const tags = event.tags ?? []
+  const markers = tags.filter(
+    (tag) => tag[0] === CHECKOUT_SPARK_ROUTER_ORDER_TAG[0]
+  )
+  if (markers.length === 0) return undefined
+
+  const exactlyOne = (name: string, value: string) => {
+    const matches = tags.filter((tag) => tag[0] === name)
+    return matches.length === 1 && matches[0]?.[1] === value
+  }
+  const buyer = event.pubkey.trim().toLowerCase()
+  const merchant = payload.merchantPubkey.trim().toLowerCase()
+  const itemTotal = payload.items.reduce(
+    (sum, item) => sum + item.priceAtPurchase * item.quantity,
+    0
+  )
+  const shippingTotal = payload.items.reduce(
+    (sum, item) => sum + (item.shippingCostSats ?? 0) * item.quantity,
+    0
+  )
+  const hasPhysical = payload.items.some((item) => item.format === "physical")
+  const hasShipping = payload.items.some(
+    (item) => item.fulfillment?.type === "shipping"
+  )
+  const itemTags = tags.filter((tag) => tag[0] === "item")
+  const shippingTags = tags.filter((tag) => tag[0] === "shipping")
+  const shippingItems = payload.items.filter(
+    (item) => item.format === "physical"
+  )
+  if (
+    markers.length !== 1 ||
+    markers[0]?.length !== CHECKOUT_SPARK_ROUTER_ORDER_TAG.length ||
+    markers[0]?.some(
+      (value, index) => value !== CHECKOUT_SPARK_ROUTER_ORDER_TAG[index]
+    ) ||
+    event.kind !== EVENT_KINDS.ORDER ||
+    !/^[0-9a-f]{64}$/.test(event.id) ||
+    !/^[0-9a-f]{64}$/.test(buyer) ||
+    !/^[0-9a-f]{64}$/.test(merchant) ||
+    (payload.buyerIdentityKind !== "signed_in" &&
+      payload.buyerIdentityKind !== "guest_ephemeral") ||
+    payload.buyerPubkey.trim().toLowerCase() !== buyer ||
+    !exactlyOne("p", merchant) ||
+    !exactlyOne("type", "order") ||
+    !exactlyOne("order", payload.id) ||
+    !exactlyOne("amount", String(payload.subtotal)) ||
+    !exactlyOne("currency", "SATS") ||
+    payload.currency !== "SATS" ||
+    !Number.isSafeInteger(payload.subtotal) ||
+    payload.subtotal <= 0 ||
+    !Number.isSafeInteger(itemTotal) ||
+    !Number.isSafeInteger(shippingTotal) ||
+    itemTotal + shippingTotal !== payload.subtotal ||
+    (payload.shippingCostSats ?? 0) !== shippingTotal ||
+    payload.shippingCostStatus !==
+      (hasPhysical
+        ? shippingTotal > 0
+          ? "priced"
+          : "included"
+        : "not_required") ||
+    (payload.shippingAddress !== undefined) !== hasShipping ||
+    (payload.buyerIdentityKind !== "guest_ephemeral" &&
+      payload.guestContact !== undefined) ||
+    payload.items.some(
+      (item, index) =>
+        !hasCheckoutRouterFulfillmentShape(item, merchant) ||
+        item.familyProductId !== undefined ||
+        item.selectedSpecifications !== undefined ||
+        (item.sourcePrice !== undefined &&
+          (item.sourcePrice.amount !== item.priceAtPurchase ||
+            !isSatsLikeCurrency(item.sourcePrice.currency) ||
+            !isSatsLikeCurrency(item.sourcePrice.normalizedCurrency))) ||
+        item.currency !== "SATS" ||
+        !Number.isSafeInteger(item.quantity) ||
+        !Number.isSafeInteger(item.priceAtPurchase) ||
+        item.priceAtPurchase < 0 ||
+        itemTags[index]?.length !== 3 ||
+        itemTags[index]?.[1] !== item.productId ||
+        itemTags[index]?.[2] !== String(item.quantity)
+    ) ||
+    itemTags.length !== payload.items.length ||
+    shippingTags.length !== shippingItems.length ||
+    shippingItems.some(
+      (item, index) =>
+        shippingTags[index]?.length !== 2 ||
+        shippingTags[index]?.[1] !== item.shippingOptionId
+    )
+  ) {
+    throw new Error("Invalid private checkout payment marker")
+  }
+  return "spark_router_v1"
+}
+
 /**
  * Parse an unwrapped kind-16 rumor into a typed order-conversation message.
  *
@@ -288,7 +441,12 @@ export function parseOrderMessageRumorEvent(
   if (type === "order") {
     const payload = parseOrderRumorEvent(event)
     const orderId = getTagValue(event.tags ?? [], "order") ?? payload.id
-    return { ...messageBase(event, type, orderId), payload }
+    const checkoutPaymentRoute = parseCheckoutOrderPaymentRoute(event, payload)
+    return {
+      ...messageBase(event, type, orderId),
+      payload,
+      ...(checkoutPaymentRoute ? { checkoutPaymentRoute } : {}),
+    }
   }
 
   const orderId =

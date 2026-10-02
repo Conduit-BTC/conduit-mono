@@ -1161,7 +1161,7 @@ describe("canonical fixed product shipping", () => {
 
     try {
       expect(await getShippingOptionsByCoordinates([coordinate])).toMatchObject(
-        [{ eventId: newer.id, price: 2 }]
+        [{ eventId: newer.id, price: 2, sourceEvent: newer.rawEvent() }]
       )
 
       visibleShippingEvents = [older]

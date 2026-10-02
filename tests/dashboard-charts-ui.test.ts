@@ -58,6 +58,8 @@ describe("dashboard chart presentation", () => {
     expect(markup).toContain(
       'aria-label="Paid revenue over time, Past 30 days"'
     )
+    expect(markup).toContain("Order value, not net wallet receipts.")
+    expect(markup).toContain("verified on this device.")
   })
 
   it("labels each chart range selector and shows the active preset", () => {

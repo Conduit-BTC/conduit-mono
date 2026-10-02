@@ -64,6 +64,38 @@ it. A stock update does not authorize payment, receipt sharing, organizer handof
 or order completion. Checkout continues to validate current product terms,
 organizer acceptance, and required pickup evidence independently.
 
+## Local write coordination and recovery
+
+New Products and Orders writes commit their exact signed listing/deletion
+intent, local revision frontier, projected product state, delivery jobs and any
+stock checkpoint together in IndexedDB. Signing and relay waits stay outside
+the cross-tab coordinate lock. The commit rechecks the captured revisions after
+those waits; family edits also check unchanged siblings. A missing Web Locks
+implementation stops the write rather than silently dropping serialization.
+
+The delivery journal records relay outcomes separately from current listing
+authority. A valid newer local edit may supersede an older listing's replay
+authority without waiting for every historical relay to acknowledge it. The
+older signed bytes and delivery observations remain intact. Replay eligibility
+is per event, so superseding one product does not cancel unrelated siblings in
+the same delivery job. Known newer external revisions and deletion evidence
+also stop stale retries. A late acknowledgment cannot restore a superseded
+cache row, including after that row was pruned. Its relay remains a historical
+source hint for a later matching deletion, not owner-selected relay authority.
+
+Stock decisions and shipping/deletion dependencies retain their own exact
+recovery boundaries. Retrying a stock delivery does not subtract stock again.
+An explicitly rejected legacy listing can be republished from its current
+failed tip using the current relay plan; this is distinct from retrying the
+original signed event. A staged intent can be retired as unpublished only when
+the local evidence establishes that it has not been sent. Local coordination
+does not establish global relay convergence.
+
+Supplier allocation edits use the same write boundary. Explicitly changing
+family-wide terms requires a complete current family baseline; unchanged terms
+remain attached to each product's exact revision. Signed public allocation
+declarations do not enable public zap execution or change historical orders.
+
 ## Validation boundary
 
 Regression tests cover the product-family planner through signed publication,
