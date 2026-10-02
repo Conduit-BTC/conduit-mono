@@ -192,21 +192,22 @@ pending -> invoiced -> paid -> processing -> shipped -> complete
 
 Dexie is used for local-first persistence and recovery:
 
-| Table                      | Purpose                                                     |
-| -------------------------- | ----------------------------------------------------------- |
-| `orders`                   | Buyer/merchant order records and local status               |
-| `messages`                 | Message cache                                               |
-| `products`                 | Product cache                                               |
-| `profiles`                 | Profile cache                                               |
-| `orderMessages`            | Order-linked message history                                |
-| `relayLists`               | NIP-65 relay list cache                                     |
-| `ownerRelayListEvidence`   | Validated owner `kind:10002` frontier and delivery evidence |
-| `inboxDeclarationEvidence` | Validated `kind:10050` frontier, delivery, and recovery     |
-| `accountNetworkLocalState` | Unsigned layer policy, exclusions, ordering, and metadata   |
-| `productSocialSummaries`   | Product trust/social summary cache                          |
-| `paymentAttempts`          | Buyer payment attempt history                               |
-| `wallets`                  | Non-secret local wallet descriptors/defaults                |
-| `walletCredentials`        | Device-local provider credential records                    |
+| Table                      | Purpose                                                      |
+| -------------------------- | ------------------------------------------------------------ |
+| `orders`                   | Buyer/merchant order records and local status                |
+| `messages`                 | Message cache                                                |
+| `products`                 | Product cache                                                |
+| `profiles`                 | Profile cache                                                |
+| `orderMessages`            | Order-linked message history                                 |
+| `relayLists`               | NIP-65 relay list cache                                      |
+| `ownerRelayListEvidence`   | Validated owner `kind:10002` frontier and delivery evidence  |
+| `inboxDeclarationEvidence` | Validated `kind:10050` frontier, delivery, and recovery      |
+| `accountNetworkLocalState` | Unsigned layer policy, exclusions, ordering, and metadata    |
+| `productSocialSummaries`   | Product trust/social summary cache                           |
+| `paymentAttempts`          | Buyer payment attempt history                                |
+| `wallets`                  | Non-secret local wallet descriptors/defaults                 |
+| `walletCredentials`        | Device-local provider credential records                     |
+| `sparkRecoveryEvidence`    | Account-scoped signed ciphertext and relay recovery evidence |
 
 Cache data is evidence for fast paint and recovery. It should not be presented as proof that relay discovery is complete.
 
@@ -217,6 +218,12 @@ provider-owned local records such as an NWC connection URI or an encrypted Spark
 recovery envelope. These records are device-local, are never relay-synced, and
 must not enter logs or telemetry. Spark SDK storage is additionally isolated by
 wallet instance.
+
+`sparkRecoveryEvidence` is a separate account-scoped journal for signer-backed
+Spark recovery. It retains signed encrypted backups/pointers, immutable relay
+plans, per-relay delivery/read evidence and unresolved discovery barriers. It
+never stores decrypted recovery payloads. The wallet owner composes shared
+signer/read/publication primitives and remains separate from account preferences.
 
 ### localStorage
 
@@ -319,17 +326,51 @@ authentication remains external-signer-only; a Portable Wallet provider may
 create or restore a wallet seed only inside its isolated client-side storage.
 Non-secret registry metadata lives in Dexie. See `docs/specs/wallets.md`.
 
-Wallet ownership is device-local rather than Nostr-account-scoped. Market keeps
-`/wallet` available while signed out so a user can create, restore, unlock,
-receive with, or remove a device-owned Portable Wallet without connecting an
-identity signer. A shared browser profile therefore shares its local wallet
-registry; signing out does not delete or switch those wallets.
+Device-owned wallets remain independent of Nostr sign-in. Market keeps `/wallet`
+available while signed out for create, restore, unlock, receive and removal.
+Signing out does not delete or switch these wallets; another pubkey does not
+implicitly claim them. Existing device-owned Spark wallets use a local password
+to encrypt their BIP39 mnemonic. The password is an unlock credential for that
+browser profile; the mnemonic, actual account number and network form the
+portable recovery bundle.
 
-Each Spark wallet uses a user-chosen local password to encrypt its BIP39
-mnemonic in the device-local credential store. The password is an unlock
-credential for that browser profile, not portable recovery material. The BIP39
-mnemonic, explicit Spark account number, and network form the portable
-cross-application recovery bundle.
+The target signer-backed primary adds account-scoped recovery without replacing
+the multi-wallet registry. The existing AccountSigner/SessionSigner must prove
+real self-encrypt/sign/decrypt operations and retain account/revision authority
+through publication and attachment. The account signer sees recovery plaintext;
+a compromised signer can recover the wallet, and an active browser compromise
+can access an open wallet. Apps never derive wallet seeds from Nostr keys or
+signatures. NIP-55 browser URLs must not carry recovery plaintext.
+
+Shared core owns a strict Conduit v1 NIP-44 v2 kind-30078 envelope under
+`conduit:spark:wallet:v1:<opaque UUID>` and a separate encrypted
+`conduit:spark:primary:v1` pointer. Validate signature/author before decryption,
+then schema, address, actual account/network and provider-derived Spark identity.
+Addy bare-mnemonic backups have a bounded read-only adapter with explicit source
+network/account; no write or cross-client compatibility is implied.
+
+Discovery preserves partial/unavailable/conflicting evidence and known backups.
+The initial three-operator rendezvous set and bounded user relays are defined in
+`docs/specs/wallets.md`. Recovery readiness requires two independent ACK plus
+fresh exact read-back copies, or explicit completed recovery export. Retries use
+the original signed ciphertext and targets. Account authority is checked again
+immediately before transmission. An ACK is not permanent retention.
+
+The foundation does not enable automatic create/recover/attach. Production
+publication composition remains gated on the shared final-send fence. Before
+rollout, prove real signer/relay/device recovery and SDK persistence/concurrency.
+The later lifecycle must close signer-backed sessions on lock or account cutoff,
+preserve device-owned wallets and promote existing wallets only by explicit
+choice without replacing their recovery material. Market and Merchant must
+recover the same identity across their separate storage before claiming a
+shared primary.
+
+A persistent primary is a funding source, not the single-checkout ephemeral
+router. Its recovery must not change payout, settlement, takeover or retirement
+contracts, in-flight wallet selection, or a merchant's published destination.
+Funding, Lightning address registration and Merchant adoption remain separate
+release gates. Full format, capability, migration and validation requirements
+live in `docs/specs/wallets.md`.
 
 Current payment model:
 

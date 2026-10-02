@@ -1,8 +1,14 @@
 # Wallets Specification
 
-This document defines the wallet model used by Conduit Market. Wallet ownership
-is independent from a user's Nostr identity, and Conduit-operated services never
-receive or control wallet credentials or funds.
+This document defines the multi-wallet model for Conduit Market and the shared
+signer-backed Spark recovery contract for Market and Merchant. Conduit-operated
+services never receive plaintext wallet credentials or control funds.
+
+The target experience gives a connected identity a recoverable primary Spark
+wallet while retaining device-owned imported and advanced wallets. The current
+implementation supplies recovery foundations; automatic recovery/creation,
+primary attachment, Merchant adoption and address registration are not enabled.
+The lifecycle requirements below are release gates, not claims of shipped UI.
 
 ## Terminology
 
@@ -27,7 +33,9 @@ derive, persist, or transmit an account `nsec`.
 A Portable Wallet seed is a separate wallet credential. It may be created or
 restored by a client-side provider adapter only when:
 
-- seed handling remains on the user's device;
+- seed generation and provider handling remain client-side; the explicitly
+  authorized account signer receives recovery plaintext for self-encryption
+  and decryption;
 - no seed, mnemonic, derived key, NWC URI, invoice, address, balance, or payment
   content enters logs or telemetry;
 - the user receives a documented portable recovery path that does not depend on
@@ -43,16 +51,27 @@ records in `walletCredentials`. Spark recovery records are encrypted envelopes;
 NWC connection URIs remain confined to the Connected Wallet provider record.
 Neither table is relay-synced.
 
-Wallet ownership is device-local and independent of Nostr sign-in state.
-`/wallet` remains available without a connected signer. Signing out must not
-remove, hide, or switch wallets, and signing in as a different pubkey must not
-implicitly reassign them. The UI must make this shared-browser-profile boundary
-clear anywhere account ownership could otherwise be inferred. Connecting or
-disconnecting a signer must never unlock or remove a wallet.
+Device-owned wallets remain independent of Nostr sign-in. `/wallet` remains
+available without a connected signer. Signing out must not remove, hide or
+switch these wallets, and another pubkey must not implicitly claim them.
+Connecting a signer must not unlock a password-protected device-owned wallet.
+
+Signer-backed recovery belongs to the connected Nostr identity. Its target
+lifecycle must close the open signer-backed wallet on lock, sign-out, account
+replacement or lost authority, without deleting backups or device-owned wallets.
+A new pubkey does not claim the previous identity's wallet. Market and Merchant
+have separate browser storage and must recover the same validated Spark identity
+before claiming a shared primary; concurrent SDK use requires separate proof.
+
+The account signer sees recovery plaintext and can recover the wallet. An active
+browser compromise can access an open wallet. Relay operators see ciphertext
+and public event metadata; neither relay authentication nor encryption promises
+permanent retention. These boundaries must be explained before relying on
+signer-backed recovery. Never derive a seed from an account key or signature.
 
 ## Local unlock and portable recovery
 
-Each Spark wallet has a user-chosen local password. Market derives an
+Existing device-owned Spark wallets have a user-chosen local password. Market derives an
 encryption key with PBKDF2-SHA-256 and stores only an AES-GCM encrypted recovery
 envelope in the device-local credential store. The password is not a wallet
 seed or the source wallet's password, is not stored, and is not needed to
@@ -76,7 +95,10 @@ needed to restore the intended wallet.
 
 ## Multi-wallet registry
 
-Market maintains a collection of wallet instances. Each descriptor contains:
+Market maintains a collection of wallet instances. The identity-backed primary
+designation is distinct from a per-payment selection. Changing primary must not
+change an in-flight attempt or a merchant's published sales destination.
+Each descriptor contains:
 
 - a locally generated opaque identifier;
 - kind (`portable` or `connected`);
@@ -206,9 +228,11 @@ Spark setup and restore identify the actual network. Before a Mainnet wallet is
 created or restored, the owner is informed that it uses real bitcoin and
 supports Lightning and Spark payments. Restore accepts the recovery phrase and
 any non-standard account number needed for the intended wallet. The owner is
-informed that a nickname is local and not backed up, and that the local password
-encrypts the recovery phrase in this browser; it is neither the source wallet's
-password nor required for recovery elsewhere.
+informed that a nickname is local and not backed up. For a device-owned wallet,
+the local password encrypts the phrase in this browser; it is neither the source
+wallet's password nor required for recovery elsewhere. The signer-backed target
+lifecycle reopens through current signer authorization without a second wallet
+password; it must not silently convert an existing password-protected wallet.
 
 The route is a device-owned surface and must render while signed out. Identity
 sign-in may still be required for order messaging and other Nostr workflows,
@@ -227,15 +251,137 @@ leave the flow to inspect wallet history, but the device-local safety marker
 remains. Returning to the send flow restores the unresolved state; only the
 specified terminal provider result or explicit acknowledgement may clear it.
 
-## Nostr backup interoperability
+## Signer-backed recovery format
 
-NIP-78 is an application-data envelope, not a general wallet-backup standard.
-Relay backup is optional and must never be the only recovery path.
+NIP-78 defines application data, not a generic wallet-backup format. Conduit v1
+uses signed kind `30078` events with NIP-44 v2 encryption to the owner's own
+pubkey. A newer encryption version requires public specification and explicit
+capability/interoperability evidence.
 
-Any future Wisp/addys compatibility must live behind an explicit versioned
-adapter, use capability-gated NIP-44 encryption, validate the author/signature
-and recovery payload, and ship with cross-application fixtures. Market must not
-derive a Spark seed from a raw Nostr private key.
+A wallet backup uses `d=conduit:spark:wallet:v1:<walletId>`. `walletId` is a random
+UUID, never a mnemonic-derived identifier. The strict encrypted JSON contains:
+
+| Field                      | Contract                                                           |
+| -------------------------- | ------------------------------------------------------------------ |
+| `format`, `version`        | `conduit.spark.recovery`, `1`                                      |
+| `walletId`, `ownerPubkey`  | Opaque UUID and signed event's author                              |
+| `provider`                 | `spark`                                                            |
+| `network`, `accountNumber` | Actual network and integer account in `0..2147483647`              |
+| `mnemonic`                 | Valid normalized English BIP39 phrase                              |
+| `identityPublicKey`        | Compressed Spark identity derived by the provider from this bundle |
+| `createdAt`                | Nonnegative integer Unix timestamp in seconds                      |
+
+The separate `d=conduit:spark:primary:v1` event encrypts `format` equal to
+`conduit.spark.primary`, `version=1`, `ownerPubkey`, `walletId`, `backupEventId`
+and `createdAt`. Its reference binds the exact signed wallet backup. Primary
+changes preserve every per-wallet backup. Public tags must not contain balances,
+addresses, recovery material or mnemonic-derived identifiers.
+
+Reject invalid signatures, authors and addresses before requesting decryption.
+Require canonical NIP-44 v2 ciphertext bounded to 4096 characters, plaintext
+bounded to 2048 UTF-8 bytes, strict known schemas, matching owner/d-tag, valid
+BIP39 and supported provider network/account. Derive and compare the Spark
+identity before attachment. Network must also be validated explicitly: matching
+identity alone does not prove the intended network. Mainnet's standard account
+is `1`, but backups and exports always carry the actual account and network.
+
+The bounded Addy read adapter accepts `d=spark-wallet-backup` and
+`d=spark-wallet-backup:<id>`, where the latter ID is the first 16 hexadecimal
+characters of SHA-256 of the normalized mnemonic. Addy content is a self-encrypted
+bare mnemonic, with no network/account metadata. Require explicit source network
+and account, signature/owner/ciphertext/BIP39/address validation and provider
+identity derivation. Multiple candidates never become primary automatically.
+Conduit v1 is not Addy-write-compatible; dual publication is outside this contract.
+Independent non-funded cross-client fixtures remain required before advertising
+interoperability. Runtime-generated local fixtures are not that proof.
+
+## Signer capability and authority
+
+Use the existing shared AccountSigner/SessionSigner owner. Before creating a
+wallet, perform a disposable self-encrypt, kind-30078 sign and self-decrypt probe
+with non-secret test data; never persist or publish the probe. Advertised methods
+or an optimistic encryption flag are insufficient.
+
+NIP-07 requires public-key access, event signing and both optional NIP-44 methods.
+NIP-46 pairing must request `get_public_key`, `sign_event:30078`, `nip44_encrypt`
+and `nip44_decrypt`, then prove the real operations. Preserve typed unsupported,
+denied, timeout and account-replacement outcomes. Fence the same account and
+session revision around every asynchronous operation and immediately before
+sending, retrying or attaching. Failure preserves existing wallets and backups
+and offers retry, a supported signer or manual recovery.
+
+NIP-55/Amber support requires a separately validated native Intent/Content
+Resolver bridge. Never put a mnemonic in a browser `nostrsigner:` URL. Web users
+require a safe NIP-07 or NIP-46 path until such a bridge is proven.
+
+## Discovery, delivery and local evidence
+
+The initial rendezvous set is `wss://relay.conduit.market`,
+`wss://relay.damus.io` and `wss://nos.lol`, plus at most five applicable user
+relays. Operator attribution is curated; unknown user relay labels cannot count
+as independent backups. Apply current relay policy and account authority.
+Discovery is bounded by author, kind and recognized Conduit/Addy addresses, with
+a 128-record limit. Unrelated application data is not a wallet candidate.
+
+Keep complete, partial and unavailable coverage distinct from absent within
+scope, recoverable, conflicting and unresolved states. An incomplete read is
+never global absence. Retain known signed candidates and unresolved-observation
+evidence across later omissions. Malformed or unknown records cannot authorize
+duplicate creation. Conflicting pointers or concurrent creation preserve all
+candidates and require explicit selection.
+
+The account-scoped Dexie `sparkRecoveryEvidence` journal holds signed ciphertext,
+immutable relay targets, per-relay outcomes and read-back evidence. It must not
+store plaintext mnemonic or decrypted envelopes. Preserve exact signed bytes
+across reload and retry; repair lost copies without re-encryption or a new seed.
+Historical ACK/read evidence is distinct from current presence. A definitive
+current absence permits repair even after an earlier ACK.
+
+Recovery readiness requires ACK plus exact-event read-back from at least two
+known independent operators, with current read evidence no older than five
+minutes, or explicit completed export of mnemonic, actual account and network.
+An export flag may only follow actual user receipt, not merely opening a dialog.
+Prepare a primary pointer only after the backup meets this gate. ACK is delivery
+evidence, not permanent retention or payment settlement.
+
+The recovery owner composes shared read and publication primitives; it must not
+introduce a second transport or preferences engine. Production publication must
+recheck authority immediately before socket send. The current foundation leaves
+that composition gated pending the shared publisher's final-send fence.
+
+## Primary lifecycle and migration gates
+
+Before automatic creation, the later lifecycle must complete bounded discovery,
+prove signer capability and check local wallets available for adoption. Partial,
+unavailable, malformed, stale or conflicting evidence must instead offer retry,
+import or explicit new-wallet choice with a conflict warning. Recovery must open
+the same validated wallet; it must not silently generate a replacement.
+
+Promoting an existing password-encrypted or phrase-restored wallet must reuse its
+exact mnemonic, network, account and derived identity. Require explicit choice,
+validate independent backups or completed export, then update the primary
+pointer. Preserve the original local credentials until recovery is proven and
+the owner chooses their disposition. Failed promotion must not change defaults,
+delete credentials or overwrite another primary. Explain that an earlier Nostr
+identity may still decrypt its historical backup.
+
+The persistent primary is separate from the single-checkout ephemeral Spark
+router. Recovery, payout order, fees, settlement, takeover and retirement rules
+for that router remain unchanged. Primary recovery does not register a Lightning
+address, change a merchant's destination or prove an order paid. Funding,
+address registration, Merchant adoption and release validation are later work.
+
+## Public references
+
+- [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md),
+  [NIP-44](https://github.com/nostr-protocol/nips/blob/master/44.md) and
+  [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md).
+- [NIP-07](https://github.com/nostr-protocol/nips/blob/master/07.md),
+  [NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md) and
+  [NIP-55](https://github.com/nostr-protocol/nips/blob/master/55.md).
+- [Spark identity derivation](https://docs.spark.money/wallets/identity-key-derivation).
+- [Addy backup](https://github.com/dmnyc/addy/blob/main/src/wallet/backup.ts)
+  and [local storage](https://github.com/dmnyc/addy/blob/main/src/wallet/storage.ts).
 
 ## Validation
 
@@ -252,6 +398,13 @@ Required coverage includes:
 - signed-out `/wallet`, dialog-state reset, and in-flight dismissal behavior;
 - password-encrypted device storage plus phrase/account/network recovery;
 - phrase-first Mainnet/account-`1` restore with an account-`0` negative control;
+- real signer operations and denial, timeout, unsupported capability and account
+  replacement during probe, encryption, publication, decryption and attachment;
+- strict signed-event, envelope, pointer and Addy validation;
+- independent ACK/read-back, exact retry/repair, stale evidence and explicit export;
+- partial reads, conflicts, retained observations and prevention of duplicate creation;
+- non-funded backup and fresh-storage restore to the same derived Spark identity,
+  including one unavailable relay and a browser persistence audit;
 - recovery and reopen behavior; and
 - content-free logs and telemetry.
 
@@ -259,3 +412,8 @@ Before merge, run formatting, typecheck, lint, unit tests, telemetry policy, and
 the main build. Spark browser QA must cover create, fund, pay, close/reopen, and
 restore on the configured deployment network. Mainnet QA must use a deliberately
 small balance and payment amount.
+
+The recovery foundation's synthetic signer/relay tests and offline SDK identity
+equality do not establish external-signer, public-relay, physical-device or
+cross-client compatibility. Record those evidence levels separately and retain
+maintainer-owned wallet/auth/privacy sign-off before enabling the lifecycle.
