@@ -4,6 +4,7 @@ import {
   type SourcePriceQuote,
   shippingMoneyToMinorUnits,
   shippingMinorUnitsToAmount,
+  policyCurrencyMinorDigits,
   type ShippingPolicy,
   type ShippingPolicyRule,
   type ShippingPolicyTable,
@@ -100,11 +101,16 @@ function parseGrams(value: string, label: string, optional = false): number {
 export function buildShippingPolicyFromDraft(
   draft: ShippingPolicyDraft
 ): ShippingPolicy {
-  const money = (value: string, label: string) =>
-    shippingMoneyToMinorUnits(
-      parsePlainDecimalAmount(value, label),
-      draft.currency
-    )
+  const money = (value: string, label: string) => {
+    try {
+      return shippingMoneyToMinorUnits(value, draft.currency)
+    } catch (error) {
+      throw new Error(
+        `${label}: ${error instanceof Error ? error.message : "Invalid amount."}`,
+        { cause: error }
+      )
+    }
+  }
   const table = (
     input: ShippingTableDraft,
     domestic: boolean
@@ -174,8 +180,15 @@ export function buildShippingPolicyFromDraft(
 export function shippingPolicyToDraft(
   policy: ShippingPolicy
 ): ShippingPolicyDraft {
-  const money = (minor: number) =>
-    String(shippingMinorUnitsToAmount(minor, policy.currency))
+  const money = (minor: number) => {
+    if (!Number.isSafeInteger(minor) || minor < 0)
+      throw new Error("Invalid minor-unit amount.")
+    const digits = policyCurrencyMinorDigits(policy.currency)
+    const text = String(minor).padStart(digits + 1, "0")
+    if (!digits) return text
+    const fraction = text.slice(-digits).replace(/0+$/, "")
+    return `${text.slice(0, -digits)}${fraction ? `.${fraction}` : ""}`
+  }
   const table = (input: ShippingPolicyTable | null): ShippingTableDraft => ({
     enabled: input !== null,
     freeShippingThreshold:

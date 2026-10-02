@@ -325,6 +325,56 @@ describe("merchant shipping table authoring", () => {
     form.domestic.rules[0]!.bands[0]!.price = "0.001"
     expect(() => buildShippingPolicyFromDraft(form)).toThrow()
   })
+  test.each(["SATS", "MSATS", "JPY", "USD", "KWD", "BTC"])(
+    "preserves %s prices and thresholds through edit and signed republication",
+    (currency) => {
+      for (const minor of [
+        0,
+        1,
+        12345,
+        Number.MAX_SAFE_INTEGER - 1,
+        Number.MAX_SAFE_INTEGER,
+      ]) {
+        const exactPolicy: ShippingPolicy = {
+          ...policy,
+          currency,
+          domestic: {
+            rules: [
+              {
+                country: "US",
+                bands: [{ maxWeightGrams: 500, priceMinor: minor }],
+              },
+            ],
+            freeShippingThresholdMinor: minor,
+          },
+          international: {
+            rules: [
+              {
+                country: "CA",
+                bands: [{ maxWeightGrams: 500, priceMinor: minor }],
+              },
+            ],
+            freeShippingThresholdMinor: minor,
+          },
+        }
+        const editable = shippingPolicyToDraft(exactPolicy)
+        editable.title = "Updated title"
+        const rebuilt = buildShippingPolicyFromDraft(editable)
+        expect(rebuilt).toEqual({ ...exactPolicy, title: "Updated title" })
+        const republished = finalizeEvent(
+          {
+            ...buildShippingPolicyEventDraft({ policy: rebuilt }),
+            created_at: 30,
+          },
+          secret
+        )
+        expect(
+          parseShippingOptionEvent(new NDKEvent(undefined, republished))
+            ?.shippingPolicy
+        ).toEqual(rebuilt)
+      }
+    }
+  )
   test("upgrading old tables removes policy buffers while existing product terms remain preserved", () => {
     const oldPolicy: ShippingPolicyV1 = {
       ...policy,
