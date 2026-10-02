@@ -1296,7 +1296,9 @@ export function getProductVariationFormState<
         shippingHandling:
           variation.product.shippingHandling === undefined
             ? ""
-            : String(variation.product.shippingHandling.amount),
+            : formatProductAmountInput(
+                variation.product.shippingHandling.amount
+              ),
         shippingLengthCm: variation.product.shippingDimensionsCm
           ? String(variation.product.shippingDimensionsCm.length)
           : "",

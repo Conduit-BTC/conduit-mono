@@ -442,7 +442,7 @@ function productToForm(
     shippingHandling:
       product.shippingHandling === undefined
         ? ""
-        : String(product.shippingHandling.amount),
+        : formatProductAmountInput(product.shippingHandling.amount),
     shippingLengthCm: product.shippingDimensionsCm
       ? String(product.shippingDimensionsCm.length)
       : "",
