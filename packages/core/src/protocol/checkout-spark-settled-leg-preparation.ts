@@ -267,10 +267,14 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
       continue
     }
     assertAuthorized(initial.state)
-    const validationProof = renewal
-      ? await dependencies.proveRenewalReturn!(initial.state, input.legId)
-      : null
-    assertAuthorized(initial.state)
+    let validationProof: CheckoutSparkSettledReturnedProof | null = null
+    if (renewal) {
+      validationProof = await dependencies.proveRenewalReturn!(
+        initial.state,
+        input.legId
+      )
+      assertAuthorized(initial.state)
+    }
     const validatedAt = nowMs()
     // An injected resolver is not payment authority. Validate its signed BOLT11
     // amount, network, hash and expiry before even asking the fee provider.
@@ -398,10 +402,14 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
     )
       throw new CheckoutSparkSettledRepositoryConflictError()
     // Invoice resolution, fee fitting and local source work may outlive proof TTL.
-    const commitProof = renewal
-      ? await dependencies.proveRenewalReturn!(snapshot.state, input.legId)
-      : null
-    assertAuthorized(snapshot.state)
+    let commitProof: CheckoutSparkSettledReturnedProof | null = null
+    if (renewal) {
+      commitProof = await dependencies.proveRenewalReturn!(
+        snapshot.state,
+        input.legId
+      )
+      assertAuthorized(snapshot.state)
+    }
     const preparedAt = nowMs()
     dependencies.assertAuthority(snapshot.state, preparedAt)
     if (

@@ -494,6 +494,13 @@ describe("bounded settled payout renewal", () => {
           generation: 1,
         })
       ).toBe(false)
+      expect(
+        await repository.hasInvoiceRecipient(plan, {
+          ...target,
+          intent,
+          generation: 1,
+        })
+      ).toBe(false)
       const persisted = await repository.saveRenewedWithInvoiceOrigin(
         next,
         saved.revision,
@@ -520,6 +527,24 @@ describe("bounded settled payout renewal", () => {
           generation: 1,
         })
       ).toBe(true)
+      expect(
+        await repository.hasInvoiceRecipient(plan, {
+          ...target,
+          intent,
+          generation: 1,
+        })
+      ).toBe(true)
+      expect(await repository.hasInvoiceOrigin(plan, target)).toBe(false)
+      expect(await repository.hasInvoiceRecipient(plan, target)).toBe(false)
+      const changedTarget = {
+        ...target,
+        intent: { ...intent, paymentHash: "06".repeat(32) },
+        generation: 1 as const,
+      }
+      expect(await repository.hasInvoiceOrigin(plan, changedTarget)).toBe(false)
+      expect(await repository.hasInvoiceRecipient(plan, changedTarget)).toBe(
+        false
+      )
       await expect(
         repository.saveRenewedWithInvoiceOrigin(next, saved.revision, {
           legId: target.legId,
@@ -533,6 +558,83 @@ describe("bounded settled payout renewal", () => {
       await database.delete()
     }
   })
+
+  it.each([2, 3])(
+    "keeps the original attempt when authority is revoked during shared renewal proof %s",
+    async (heldProofNumber) => {
+      const { plan, state, target, evidence } = fixture()
+      const database = new ConduitDB(
+        `renewal-proof-revocation-${crypto.randomUUID()}`,
+        { indexedDB, IDBKeyRange }
+      )
+      const repository = new DexieCheckoutSparkSettledRepository(database)
+      let current = true
+      let proofReads = 0
+      let acknowledgements = 0
+      let notifyHeld!: () => void
+      let releaseHeld!: () => void
+      const heldStarted = new Promise<void>((resolve) => {
+        notifyHeld = resolve
+      })
+      const held = new Promise<void>((resolve) => {
+        releaseHeld = resolve
+      })
+      try {
+        await repository.create(plan)
+        const original = await repository.save(state, 1)
+        const pending = prepareCheckoutSparkSettledOutgoingLegShared(
+          {
+            checkoutId: plan.checkoutId,
+            planDigest: plan.planDigest,
+            legId: target.legId,
+            allowRenewal: true,
+            shouldContinue: () => current,
+          },
+          {
+            repository,
+            nowMs: () => NOW,
+            assertAuthority:
+              assertCheckoutSparkSettledMerchantPreparationWindow,
+            proveRenewalReturn: async () => {
+              proofReads++
+              if (proofReads === heldProofNumber) {
+                notifyHeld()
+                await held
+              }
+              return proveCheckoutSparkSettledReturnedTransfer({
+                plan,
+                target,
+                evidence,
+              })
+            },
+            resolveInvoice: (request) =>
+              resolveCheckoutSparkFixtureInvoice(
+                request,
+                invoice(request.amountSats, 5, NOW)
+              ),
+            estimateFee: async () => 1,
+            acknowledgeRecoverySnapshot: async () => {
+              acknowledgements++
+            },
+          }
+        )
+        await heldStarted
+        current = false
+        releaseHeld()
+        await expect(pending).rejects.toThrow("authority changed")
+        const saved = await repository.load(plan.checkoutId, plan.planDigest)
+        expect(saved.status).toBe("active")
+        if (saved.status !== "active") throw new Error("Expected saved attempt")
+        expect(saved.revision).toBe(original.revision)
+        expect(JSON.stringify(saved.state) === JSON.stringify(state)).toBe(true)
+        expect(saved.state.schemaVersion).toBe(3)
+        expect(acknowledgements).toBe(0)
+      } finally {
+        releaseHeld()
+        await database.delete()
+      }
+    }
+  )
 
   it("refreshes return proof after slow invoice and fee work, then again after dispatch ACK", async () => {
     const { plan, state, target, evidence } = fixture()
