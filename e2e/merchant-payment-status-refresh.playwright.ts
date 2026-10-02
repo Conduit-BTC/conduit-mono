@@ -62,6 +62,11 @@ test("saved Merchant payment status stays stable across background refreshes @me
       const read = () => {
         const text = host.textContent ?? ""
         const heading = host.querySelector("h2")?.textContent
+        const details = host.querySelector("details")
+        const buttons = Array.from(host.querySelectorAll("button"))
+        const reviewButton = buttons.find(
+          (button) => button.textContent === "Review saved payout"
+        )
         return {
           verified: heading === "Payment verified",
           attention: heading === "Payment needs attention",
@@ -76,6 +81,15 @@ test("saved Merchant payment status stays stable across background refreshes @me
           paused: text.includes("Automatic payments are paused"),
           transitioning: text.includes(
             "Waiting for the current operation to finish safely"
+          ),
+          detailsPresent: details !== null,
+          detailsOpen: details?.open === true,
+          reviewPresent: reviewButton !== undefined,
+          reviewVisible: reviewButton?.checkVisibility() ?? false,
+          retryPresent: buttons.some(
+            (button) =>
+              button.textContent === "Check coordination fee again" ||
+              button.textContent === "Check payment again"
           ),
         }
       }
@@ -174,6 +188,30 @@ test("saved Merchant payment status stays stable across background refreshes @me
           settlementRefreshing: true,
           transitioning: true,
         })
+        const reviewChild = React.createElement(
+          "button",
+          { type: "button" },
+          "Review saved payout"
+        )
+        const activePendingFee = await render({
+          ...base,
+          projection: { ...verified, feePending: true },
+          children: reviewChild,
+        })
+        const settledPaused = await render({
+          ...base,
+          projection: verified,
+          paused: true,
+          children: reviewChild,
+        })
+        const pausedPendingFee = await render({
+          ...base,
+          projection: { ...verified, feePending: true },
+          paused: true,
+          children: reviewChild,
+        })
+        host.querySelector<HTMLElement>("details summary")?.click()
+        const expandedPausedFee = read()
         const empty = await render({
           ...base,
           checking: true,
@@ -186,6 +224,10 @@ test("saved Merchant payment status stays stable across background refreshes @me
           changed,
           paused,
           transitioning,
+          activePendingFee,
+          settledPaused,
+          pausedPendingFee,
+          expandedPausedFee,
           empty,
         }
       } finally {
@@ -233,6 +275,28 @@ test("saved Merchant payment status stays stable across background refreshes @me
     expect(states.transitioning.attention).toBe(true)
     expect(states.transitioning.transitioning).toBe(true)
     expect(states.transitioning.checkingParagraph).toBe(false)
+    stage = "ordinary pending fee details remain hidden"
+    expect(states.activePendingFee.verified).toBe(true)
+    expect(states.activePendingFee.detailsPresent).toBe(false)
+    expect(states.activePendingFee.reviewPresent).toBe(false)
+    expect(states.activePendingFee.retryPresent).toBe(false)
+    stage = "settled paused payment details remain hidden"
+    expect(states.settledPaused.verified).toBe(true)
+    expect(states.settledPaused.detailsPresent).toBe(false)
+    expect(states.settledPaused.reviewPresent).toBe(false)
+    expect(states.settledPaused.retryPresent).toBe(false)
+    stage = "paused fee saved review is available collapsed"
+    expect(states.pausedPendingFee.verified).toBe(true)
+    expect(states.pausedPendingFee.fulfillment).toBe(true)
+    expect(states.pausedPendingFee.detailsPresent).toBe(true)
+    expect(states.pausedPendingFee.detailsOpen).toBe(false)
+    expect(states.pausedPendingFee.reviewPresent).toBe(true)
+    expect(states.pausedPendingFee.reviewVisible).toBe(false)
+    expect(states.pausedPendingFee.retryPresent).toBe(false)
+    stage = "paused fee saved review expands without retry"
+    expect(states.expandedPausedFee.detailsOpen).toBe(true)
+    expect(states.expandedPausedFee.reviewVisible).toBe(true)
+    expect(states.expandedPausedFee.retryPresent).toBe(false)
     stage = "empty order feedback restored"
     expect(states.empty.checking).toBe(true)
     expect(states.empty.checkingParagraph).toBe(true)

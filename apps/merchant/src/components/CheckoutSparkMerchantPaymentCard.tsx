@@ -61,6 +61,7 @@ export function CheckoutSparkMerchantPaymentCard({
       outcome === "unbound" ||
       outcome === "unavailable" ||
       projection?.recipientUnverified === true)
+  const showPaymentDetails = attention || (coordinationFeeUnresolved && paused)
   const waitingForHandoff = nowMs < handoffAt
   const label = paid
     ? "Payment verified"
@@ -178,17 +179,19 @@ export function CheckoutSparkMerchantPaymentCard({
           results remain saved; do not request another payment.
         </p>
       )}
-      {attention && (
+      {showPaymentDetails && (
         <div className="mt-4 space-y-3">
-          <Button
-            type="button"
-            disabled={transitioning || checking}
-            onClick={onRetry}
-          >
-            {coordinationFeeUnresolved
-              ? "Check coordination fee again"
-              : "Check payment again"}
-          </Button>
+          {attention && (
+            <Button
+              type="button"
+              disabled={transitioning || checking}
+              onClick={onRetry}
+            >
+              {coordinationFeeUnresolved
+                ? "Check coordination fee again"
+                : "Check payment again"}
+            </Button>
+          )}
           {children && (
             <details className="text-sm text-[var(--text-secondary)]">
               <summary className="cursor-pointer rounded-sm py-2 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ring)]">
