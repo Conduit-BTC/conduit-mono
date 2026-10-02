@@ -548,11 +548,42 @@ describe("shipping policy arithmetic", () => {
 })
 
 describe("shipping signed terms and product wire tags", () => {
-  it("uses human content, canonical summary tags, and an explicit versioned tag", () => {
+  it("does not offer a fixed amount to readers that ignore table extensions", () => {
+    const event = signedPolicy()
+    const standardNames = new Set([
+      "d",
+      "title",
+      "price",
+      "country",
+      "service",
+      "client",
+    ])
+    // A standard-only reader ignores unknown tags rather than rejecting them.
+    const standardView = parseShippingOptionEvent({
+      ...event,
+      tags: event.tags.filter((tag) => standardNames.has(tag[0]!)),
+    } as never)
+    expect(standardView).toBeNull()
+    const product = parseProductEvent(new NDKEvent(undefined, signedProduct()))!
+    expect(
+      resolveProductFulfillment(product, standardView ? [standardView] : [])
+    ).toMatchObject({
+      status: "order_first",
+      reason: "unresolved",
+    })
+    const awareView = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+    expect(resolveProductFulfillment(product, [awareView])).toMatchObject({
+      intent: "weight_table",
+      status: "ready",
+    })
+    expect(quote().amountMinor).toBe(550)
+    expect(event.tags.some((tag) => tag[0] === "price")).toBe(false)
+  })
+  it("uses human content and an explicit table capability without a fixed price", () => {
     const draft = buildShippingPolicyEventDraft({ policy })
     expect(draft.content.startsWith("{")).toBe(false)
     expect(draft.tags).toContainEqual(["d", "conduit-shipping-policy"])
-    expect(draft.tags).toContainEqual(["price", "5.00", "USD"])
+    expect(draft.tags.some((tag) => tag[0] === "price")).toBe(false)
     const event = signedPolicy()
     const parsed = parseShippingOptionEvent(new NDKEvent(undefined, event))!
     expect(parsed.shippingPolicy).toEqual(policy)
@@ -563,9 +594,8 @@ describe("shipping signed terms and product wire tags", () => {
   it("rejects missing, duplicated, unsupported, and contradictory extension metadata", () => {
     const event = signedPolicy()
     for (const tags of [
-      event.tags.map((tag) =>
-        tag[0] === "price" ? ["price", "0", "USD"] : tag
-      ),
+      [...event.tags, ["price", "0", "USD"]],
+      [...event.tags, ["price", "5.00", "USD"], ["price", "5.00", "USD"]],
       [...event.tags, ["conduit_shipping_table", "1", JSON.stringify(policy)]],
       event.tags.map((tag) =>
         tag[0] === "conduit_shipping_table"
@@ -579,6 +609,36 @@ describe("shipping signed terms and product wire tags", () => {
           new NDKEvent(undefined, finalizeEvent({ ...event, tags }, secret))
         )
       ).toBeNull()
+  })
+  it("preserves historical signed table revisions with the old price summary", () => {
+    const version2: ShippingPolicyV2 = {
+      version: 2,
+      title: policy.title,
+      originCountry: policy.originCountry,
+      currency: policy.currency,
+      domestic: policy.domestic,
+      international: policy.international,
+    }
+    for (const value of [policy, version2]) {
+      const draft = buildShippingPolicyEventDraft({ policy: value })
+      const event = finalizeEvent(
+        {
+          ...draft,
+          tags: [...draft.tags, ["price", "5.00", "USD"]],
+          created_at: 10,
+        },
+        secret
+      )
+      const parsed = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+      expect(parsed.shippingPolicy).toEqual(parseShippingPolicy(value))
+      const historical = quote(value, {
+        policyEvent: event,
+        policyEventId: event.id,
+        rateInput: 50_000,
+      })
+      expect(shippingPolicyQuoteSchema.safeParse(historical).success).toBe(true)
+      expect(historical.policyEvent).toEqual(JSON.parse(JSON.stringify(event)))
+    }
   })
   it("retains exact policy and product revisions and rejects forged result fields", () => {
     const snapshot = quote()

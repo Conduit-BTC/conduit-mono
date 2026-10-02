@@ -139,7 +139,11 @@ for (const reopen of [false, true]) {
       "#d": ["conduit-shipping-policy"],
     })
     expect(replacement!.created_at).toBeGreaterThan(createdAt)
-    expect(replacement!.tags).toContainEqual(["price", "300", "SATS"])
+    expect(replacement!.tags.some((tag) => tag[0] === "price")).toBe(false)
+    const replacementPolicy = JSON.parse(
+      replacement!.tags.find((tag) => tag[0] === "conduit_shipping_table")![2]!
+    )
+    expect(replacementPolicy.domestic.rules[0].bands[0].priceMinor).toBe(300)
     await page.reload()
     await expect(price).toHaveValue("300")
     await expect(replace).toHaveCount(0)
@@ -404,6 +408,7 @@ for (const [viewportName, width, height] of [
       "#d": ["conduit-shipping-policy"],
     })
     expect(events).toHaveLength(1)
+    expect(events[0]!.tags.some((tag) => tag[0] === "price")).toBe(false)
     expect(events[0]!.content).not.toMatch(/^\s*\{/)
     const policy = JSON.parse(
       events[0]!.tags.find((tag) => tag[0] === "conduit_shipping_table")![2]!

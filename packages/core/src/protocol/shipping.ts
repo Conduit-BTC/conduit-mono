@@ -44,6 +44,7 @@ import {
   MERCHANT_SHIPPING_POLICY_D_TAG,
   SHIPPING_POLICY_EXTENSION_TAG,
   parseShippingPolicyEventTags,
+  shippingMinorUnitsToAmount,
   type ShippingPolicy,
   type ShippingPolicyQuote,
 } from "./shipping-policy"
@@ -531,6 +532,13 @@ export function parseShippingOptionEvent(
   event: Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">
 ): ParsedShippingOption | null {
   const tags = event.tags ?? []
+  const hasPolicyMarker = tags.some(
+    (tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG
+  )
+  const shippingPolicy = hasPolicyMarker
+    ? parseShippingPolicyEventTags(tags)
+    : undefined
+  if (hasPolicyMarker && !shippingPolicy) return null
 
   const getUniqueTag = (name: string): string[] | null => {
     const matches = tags.filter((tag) => tag[0] === name)
@@ -545,7 +553,7 @@ export function parseShippingOptionEvent(
   if (
     dTagEntry?.length !== 2 ||
     titleTag?.length !== 2 ||
-    priceTag?.length !== 3 ||
+    (!shippingPolicy && priceTag?.length !== 3) ||
     serviceTag?.length !== 2 ||
     clientTags.length > 1 ||
     clientTags.some(
@@ -562,11 +570,22 @@ export function parseShippingOptionEvent(
   if (dTag !== dTag.trim() || serviceValue !== serviceValue.trim()) return null
 
   // ["price", amount, currency]
-  const priceAmount = priceTag[1] ?? ""
-  const priceCurrency = priceTag[2] ?? ""
-  if (!FIXED_STANDARD_PRICE_AMOUNT.test(priceAmount)) return null
+  const priceAmount = priceTag?.[1] ?? ""
+  const priceCurrency = shippingPolicy?.currency ?? priceTag?.[2] ?? ""
+  if (!shippingPolicy && !FIXED_STANDARD_PRICE_AMOUNT.test(priceAmount))
+    return null
   if (!priceCurrency || priceCurrency !== priceCurrency.trim()) return null
-  const price = Number(priceAmount)
+  // This display summary is never a fixed shipping quote. Table fulfillment
+  // always prices the full signed policy for the actual shipment.
+  const firstRule =
+    shippingPolicy?.domestic?.rules[0] ??
+    shippingPolicy?.international?.rules[0]
+  const price = shippingPolicy
+    ? shippingMinorUnitsToAmount(
+        firstRule!.bands[0]!.priceMinor,
+        shippingPolicy.currency
+      )
+    : Number(priceAmount)
   const currency = normalizeCurrencyCode(priceCurrency)
   if (
     !Number.isFinite(price) ||
@@ -618,13 +637,6 @@ export function parseShippingOptionEvent(
         .filter(Boolean) ?? [],
   }))
 
-  const hasPolicyMarker = tags.some(
-    (tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG
-  )
-  const shippingPolicy = hasPolicyMarker
-    ? parseShippingPolicyEventTags(tags)
-    : undefined
-  if (hasPolicyMarker && !shippingPolicy) return null
   let signedEvent: SignedPublicNostrEvent | undefined
   if ("rawEvent" in event && typeof event.rawEvent === "function") {
     const raw = event.rawEvent() as SignedPublicNostrEvent

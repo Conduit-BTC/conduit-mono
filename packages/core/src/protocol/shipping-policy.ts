@@ -307,11 +307,6 @@ export function buildShippingPolicyEventDraft(input: {
     ["d", MERCHANT_SHIPPING_POLICY_D_TAG],
     ["title", policy.title],
     [
-      "price",
-      minorDecimal(rules[0]!.bands[0]!.priceMinor, policy.currency),
-      policy.currency,
-    ],
-    [
       "country",
       ...Array.from(new Set(rules.map((rule) => rule.country))).sort(),
     ],
@@ -330,7 +325,7 @@ export function buildShippingPolicyEventDraft(input: {
   }
 }
 
-/** An extension is authoritative only when all standard summary tags agree. */
+/** Table capability is required; summary metadata must agree with the policy. */
 export function parseShippingPolicyEventTags(
   tags: readonly string[][]
 ): ShippingPolicy | null {
@@ -345,9 +340,30 @@ export function parseShippingPolicyEventTags(
     const policy = parseShippingPolicy(JSON.parse(markers[0][2]!) as unknown)
     if (String(policy.version) !== markers[0]![1]) return null
     const draft = buildShippingPolicyEventDraft({ policy })
-    const permitted = new Set([...draft.tags.map((tag) => tag[0]), "client"])
+    const permitted = new Set([
+      ...draft.tags.map((tag) => tag[0]),
+      "client",
+      "price",
+    ])
     if (tags.some((tag) => !permitted.has(tag[0]))) return null
-    for (const name of ["d", "title", "price", "service"]) {
+    // Read-only compatibility for retained signed table revisions. New writes
+    // omit the old first-band summary so standard readers cannot charge it.
+    const prices = tags.filter((tag) => tag[0] === "price")
+    if (prices.length > 0) {
+      const firstRule =
+        policy.domestic?.rules[0] ?? policy.international!.rules[0]!
+      const legacyPrice = [
+        "price",
+        minorDecimal(firstRule.bands[0]!.priceMinor, policy.currency),
+        policy.currency,
+      ]
+      if (
+        prices.length !== 1 ||
+        JSON.stringify(prices[0]) !== JSON.stringify(legacyPrice)
+      )
+        return null
+    }
+    for (const name of ["d", "title", "service"]) {
       const expected = draft.tags.find((tag) => tag[0] === name)!
       const actual = tags.filter((tag) => tag[0] === name)
       if (
