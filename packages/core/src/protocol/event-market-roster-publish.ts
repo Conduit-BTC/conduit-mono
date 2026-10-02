@@ -234,6 +234,7 @@ export async function publishEventMarketRoster(
     Math.floor(Date.now() / 1_000),
     (previous?.signedEvent.created_at ?? 0) + (previous ? 1 : 0)
   )
+  const expectedDraft = JSON.stringify([draft.kind, draft.content, draft.tags])
   const signedEvent = await dependencies.sign({
     draft,
     createdAt,
@@ -243,6 +244,11 @@ export async function publishEventMarketRoster(
   const parsed = parseEventMarketRosterEvent(signedEvent)
   if (
     !parsed ||
+    JSON.stringify([
+      signedEvent.kind,
+      signedEvent.content,
+      signedEvent.tags,
+    ]) !== expectedDraft ||
     parsed.coordinate !== coordinate ||
     parsed.createdAt !== createdAt ||
     parsed.calendarCoordinate !== input.calendarCoordinate ||
