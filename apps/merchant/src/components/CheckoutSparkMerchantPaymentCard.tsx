@@ -44,6 +44,7 @@ export function CheckoutSparkMerchantPaymentCard({
   children,
 }: CheckoutSparkMerchantPaymentCardProps) {
   const processingScopeId = useId()
+  const hasSavedResult = projection !== null || outcome !== undefined
   const paid = projection?.commerceVerified === true
   // A terminal invoice payment can still lack independent recipient attribution.
   // Keep that fee-only exception visible without revoking verified commerce.
@@ -143,7 +144,7 @@ export function CheckoutSparkMerchantPaymentCard({
           . This is the recovery start time, not the payment time.
         </p>
       )}
-      {!paid && (checking || paused || transitioning) && (
+      {!paid && ((checking && !hasSavedResult) || paused || transitioning) && (
         <p role="status" className="mt-3 text-sm text-[var(--text-secondary)]">
           {transitioning
             ? "Waiting for the current operation to finish safely."
@@ -166,7 +167,7 @@ export function CheckoutSparkMerchantPaymentCard({
           {notice}
         </p>
       )}
-      {settlementRefreshing && (
+      {settlementRefreshing && !hasSavedResult && (
         <p role="status" className="mt-3 text-sm text-[var(--text-muted)]">
           Refreshing saved payment status…
         </p>

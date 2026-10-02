@@ -120,7 +120,6 @@ import {
   getMerchantOrderSummary,
   getMerchantOrderSelection,
   isMerchantGuestOrder,
-  isOrderQueueTab,
   isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
   ORDER_SORT_OPTIONS,
@@ -134,6 +133,10 @@ import {
   readMerchantOrderSort,
   saveMerchantOrderSort,
 } from "../lib/order-sort-preference"
+import {
+  parseMerchantOrderSearch,
+  shouldStartMerchantOrderRecoveryAutomatically,
+} from "../lib/order-search"
 import {
   getMerchantPickupOrganizerProfileRelayHints,
   getMerchantPickupAuthorizationMessage,
@@ -229,8 +232,6 @@ import {
   rememberCoordinatedMerchantHandoffFallback,
 } from "../lib/event-market-handoff-fallback"
 
-type OrdersSearch = { order?: string; queue?: OrderQueueTab }
-
 type ReopenOrderMutationInput = {
   merchantPubkey: string
   buyerPubkey: string
@@ -291,17 +292,8 @@ type StockUpdateMutationPayload =
       previousNotice: ProductDeliveryNotice
     }
 
-const ORDERS_SEARCH_DEFAULT: OrdersSearch = {}
-
 export const Route = createFileRoute("/orders")({
-  validateSearch: (search: Record<string, unknown>): OrdersSearch => {
-    const order = search.order
-    const queue = search.queue
-    return {
-      ...(typeof order === "string" && order.length > 0 ? { order } : {}),
-      ...(isOrderQueueTab(queue) && queue !== "all" ? { queue } : {}),
-    }
-  },
+  validateSearch: parseMerchantOrderSearch,
   beforeLoad: () => {
     requireAuth()
   },
@@ -812,7 +804,11 @@ function OrdersWorkspace() {
   const hasAccount = !!accountPubkey
   const authenticatedPubkey = signerConnected ? signerPubkey : null
   const navigate = useNavigate()
-  const { order: selectedFromUrl, queue: queueFromUrl } = Route.useSearch()
+  const {
+    order: selectedFromUrl,
+    queue: queueFromUrl,
+    recovery: recoveryMode,
+  } = Route.useSearch()
   const selectedQueueFromUrl = queueFromUrl ?? "all"
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data ?? null
@@ -1224,14 +1220,15 @@ function OrdersWorkspace() {
       )?.orderId
       void navigate({
         to: "/orders",
-        search: {
-          ...(orderId ? { order: orderId } : {}),
-          ...(phaseTab !== "all" ? { queue: phaseTab } : {}),
-        },
+        search: parseMerchantOrderSearch({
+          order: orderId,
+          queue: phaseTab,
+          recovery: recoveryMode,
+        }),
         replace: true,
       })
     },
-    [conversations, navigate, phaseTab]
+    [conversations, navigate, phaseTab, recoveryMode]
   )
 
   const changePhaseTab = useCallback(
@@ -1239,12 +1236,14 @@ function OrdersWorkspace() {
       setPhaseTab(nextPhase)
       void navigate({
         to: "/orders",
-        search:
-          nextPhase === "all" ? ORDERS_SEARCH_DEFAULT : { queue: nextPhase },
+        search: parseMerchantOrderSearch({
+          queue: nextPhase,
+          recovery: recoveryMode,
+        }),
         replace: true,
       })
     },
-    [navigate]
+    [navigate, recoveryMode]
   )
 
   useEffect(() => {
@@ -3420,7 +3419,10 @@ function OrdersWorkspace() {
           settlementRefreshing={checkoutSparkSettlementRefreshing}
           settlementReadUnavailable={checkoutSparkSettlementUnavailable}
           allowAutomaticPayouts={checkoutSparkRehearsalEnabled}
-          startAutomatically={checkoutSparkRehearsalEnabled}
+          startAutomatically={shouldStartMerchantOrderRecoveryAutomatically(
+            checkoutSparkRehearsalEnabled,
+            recoveryMode
+          )}
           isSessionCurrent={() => isAuthGenerationCurrent(authGeneration)}
         />
       )}
