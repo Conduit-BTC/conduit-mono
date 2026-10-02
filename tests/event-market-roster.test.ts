@@ -611,7 +611,7 @@ describe("experimental Event Market roster", () => {
       (call) =>
         call.kinds.includes(30402) && call.eventTag?.includes(marketCoordinate)
     )
-    expect(candidateCall?.authors).toEqual([])
+    expect(candidateCall?.authors).toEqual([merchant])
     expect(calls.filter((call) => call.kinds.includes(30402))).toHaveLength(1)
     expect(calls.every((call) => !call.kinds.includes(3841))).toBe(true)
   })
@@ -1370,7 +1370,12 @@ describe("retained future Event Market evidence", () => {
     )
     expect(authors).toEqual([organizer])
     expect(queries.filter((filter) => filter.kinds?.includes(30402))).toEqual([
-      { kinds: [30402], "#a": [marketCoordinate], limit: 48 },
+      {
+        kinds: [30402],
+        authors: rows.map((row) => row.pubkey),
+        "#a": [marketCoordinate],
+        limit: 48,
+      },
     ])
     expect(queries.some((filter) => filter.kinds?.includes(3841))).toBe(false)
     expect(catalog.products[0]?.resolution.state).toBe("candidate")
@@ -1520,6 +1525,7 @@ describe("retained future Event Market evidence", () => {
     )
     expect(filters[0]).toEqual({
       kinds: [30402],
+      authors: [merchant],
       "#a": [marketCoordinate],
       limit: 2,
       search: "soap",
@@ -1537,6 +1543,76 @@ describe("retained future Event Market evidence", () => {
       state.dependencies
     )
     expect(filters[2]?.limit).toBe(1)
+  })
+
+  it.each([
+    { limit: 48, partial: false },
+    { limit: 256, partial: true },
+  ])(
+    "finds approved products behind $limit newer unapproved listings (partial=$partial)",
+    async ({ limit, partial }) => {
+      const state = fixture()
+      const approved = product(merchantSecret, merchant, "soap", 100)
+      state.live.push(
+        approved,
+        ...Array.from({ length: limit }, (_, index) =>
+          product(spammerSecret, spammer, `spam-${index}`, 200 + index)
+        )
+      )
+      const fetch = state.dependencies.fetch
+      const queries: Filter[] = []
+      state.dependencies.fetch = async (filter, options) => {
+        const result = await fetch(filter, options)
+        if (!filter.kinds?.includes(30402 as never)) return result
+        queries.push(filter as Filter)
+        return {
+          events: result.events
+            .sort((a, b) => b.created_at - a.created_at)
+            .slice(0, filter.limit),
+          relays: [
+            ...result.relays,
+            ...(partial
+              ? [
+                  {
+                    relayUrl: "wss://offline.example",
+                    status: "timeout" as const,
+                  },
+                ]
+              : []),
+          ],
+        }
+      }
+      const catalog = await readEventMarketCatalog(
+        { reference: marketCoordinate, limit },
+        state.dependencies
+      )
+      expect(
+        catalog.products.map((entry) => entry.resolution.revision.id)
+      ).toEqual([approved.id])
+      expect(queries).toHaveLength(1)
+      expect(queries[0]?.authors).toEqual([merchant])
+      expect(catalog.coverage).toBe(partial ? "partial" : "complete")
+      expect(catalog.hasMore).toBe(false)
+      expect(catalog.products[0]?.actionable).toBe(false)
+    }
+  )
+
+  it("does not issue a broad product query for an empty signed roster", async () => {
+    const state = fixture([])
+    const fetch = state.dependencies.fetch
+    let productQueries = 0
+    state.dependencies.fetch = async (filter, options) => {
+      if (filter.kinds?.includes(30402 as never)) productQueries++
+      return fetch(filter, options)
+    }
+    const catalog = await readEventMarketCatalog(
+      { reference: marketCoordinate },
+      state.dependencies
+    )
+    expect(productQueries).toBe(0)
+    expect(catalog.products).toHaveLength(0)
+    expect(catalog.coverage).toBe("complete")
+    expect(catalog.hasMore).toBe(false)
   })
 
   for (const change of ["untagged", "hidden", "deleted"] as const) {

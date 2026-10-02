@@ -988,11 +988,26 @@ test("future Event Market catalog follows signed merchant approval and current p
     content: "Handmade soap",
     tags: productTags(true),
   })
+  const unapprovedProducts = Array.from({ length: 48 }, (_, index) =>
+    signEvent(BUYER_SECRET, {
+      kind: 30402,
+      created_at: createdAt + index + 1,
+      content: "Unapproved catalog listing",
+      tags: [
+        ["d", `unapproved-${index}`],
+        ["title", `Unapproved catalog listing ${index}`],
+        ["price", "1", "USD"],
+        ["type", "simple", "physical"],
+        ["a", eventCoordinate(approval)],
+      ],
+    })
+  )
   relay.seed(
     calendar,
     approval,
     grant,
     product,
+    ...unapprovedProducts,
     createFollowList("buyer", [ORGANIZER_PUBKEY], createdAt + 1),
     createFollowList("merchant", [ORGANIZER_PUBKEY], createdAt + 1)
   )
@@ -1036,6 +1051,9 @@ test("future Event Market catalog follows signed merchant approval and current p
   await expect(
     page.getByRole("heading", { name: "Future Fair soap" })
   ).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: /^Unapproved catalog listing/ })
+  ).toHaveCount(0)
   await expect(page.getByText(/Merchant booth: Booth 12/)).toBeVisible()
   const discoveryRequests = relay.requests.slice(beforeCatalog)
   expect(
@@ -1049,7 +1067,8 @@ test("future Event Market catalog follows signed merchant approval and current p
         (filter) =>
           filter.kinds?.includes(30402) &&
           filter["#a"]?.includes(eventCoordinate(approval)) &&
-          !filter.authors
+          filter.authors?.length === 1 &&
+          filter.authors[0] === MERCHANT_PUBKEY
       )
     )
   ).toBe(true)

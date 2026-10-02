@@ -1448,7 +1448,7 @@ function catalogCandidates(input: {
   }
 }
 
-/** One bounded market-tag query supplies display candidates; whitelist checks happen locally. */
+/** One roster-scoped query supplies display candidates; purchase authority is checked separately. */
 export async function readEventMarketCatalog(
   input: {
     reference: string
@@ -1513,13 +1513,19 @@ export async function readEventMarketCatalog(
   let planPromise: Promise<EventMarketReadPlan> | undefined
   const plan: RosterReadDependencies["plan"] = (query) =>
     (planPromise ??= dependencies.plan(query))
-  const rosterPromise = readEventMarketRoster(input, {
+  const marketRead = await readEventMarketRoster(input, {
     ...dependencies,
     plan,
     load: async () => cached,
   })
+  assertCurrent()
+  const authors =
+    marketRead.resolution.state === "current"
+      ? marketRead.resolution.market.merchants.map((row) => row.pubkey)
+      : []
   let discoveryPlan: EventMarketReadPlan | undefined
-  const discoveryPromise = (async (): Promise<SignedFanoutResult> => {
+  const discovery = await (async (): Promise<SignedFanoutResult> => {
+    if (authors.length === 0) return { events: [], relays: [] }
     try {
       discoveryPlan = await plan({
         organizerPubkey: decoded.authorPubkey,
@@ -1533,6 +1539,7 @@ export async function readEventMarketCatalog(
       const result = await dependencies.fetch(
         {
           kinds: [EVENT_KINDS.PRODUCT],
+          authors,
           "#a": [decoded.coordinate],
           limit,
           ...(search ? { search } : {}),
@@ -1546,17 +1553,13 @@ export async function readEventMarketCatalog(
       return { events: [], relays: [] }
     }
   })()
-  const [marketRead, discovery] = await Promise.all([
-    rosterPromise,
-    discoveryPromise,
-  ])
   assertCurrent()
   const live = discovery.events.slice(0, 256)
   let incomplete =
     !retained ||
     Boolean(discoveryPlan?.relayHintTruncated) ||
     discovery.events.length >= limit ||
-    discovery.relays.length === 0 ||
+    (authors.length > 0 && discovery.relays.length === 0) ||
     discovery.relays.some((relay) => relay.status !== "success")
   // Reload local evidence after the network wait: an observed newer withdrawal
   // or deletion must suppress the old candidate before publishing progress.

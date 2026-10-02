@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -240,6 +240,40 @@ describe("merchant opt-in contact-free immediate handoff", () => {
     expect(verifyEventGuestReceipt(receipt, message.payload, merchant)).toBe(
       true
     )
+  })
+  it("recovers contact-free orders after the event without trusting sender time as observation time", () => {
+    const { order, receipt } = guestOrder()
+    const fulfillment = order.items[0]!.fulfillment
+    if (fulfillment?.type !== "event_market_pickup")
+      throw new Error("Missing pickup")
+    const now = spyOn(Date, "now").mockReturnValue(
+      fulfillment.calendar.end + 86_400_000
+    )
+    try {
+      expect(isContactFreeEventHandoff(order.items, Date.now())).toBe(false)
+      const message = parseOrderMessageRumorEvent({
+        id: "a".repeat(64),
+        pubkey: order.buyerPubkey,
+        created_at: Math.floor(order.createdAt / 1000),
+        tags: [
+          ["p", merchant],
+          ["type", "order"],
+          ["order", order.id],
+        ],
+        content: JSON.stringify(order),
+      })
+      if (message.type !== "order") throw new Error("Wrong message")
+      expect(message.payload.createdAt).toBe(order.createdAt)
+      expect(message.payload.guestContact).toBeUndefined()
+      expect(verifyEventGuestReceipt(receipt, message.payload, merchant)).toBe(
+        true
+      )
+      // Parsing preserves historical terms; the sender can also claim this
+      // timestamp, so successful decoding cannot prove timely observation.
+      expect(message.createdAt).toBeLessThan(Date.now())
+    } finally {
+      now.mockRestore()
+    }
   })
   it("rejects absent opt-in, an expired/future occurrence and organizer handoff", () => {
     const { order, cart } = guestOrder()

@@ -73,3 +73,18 @@ Single-date commerce remains controlled by the signed market open/closed state.
 Series purchases require a current or future selected occurrence.
 `event-market-checkout-authorization` locks both rules at snapshot creation and
 submit; expiration of one series occurrence does not close other valid dates.
+
+Catalog discovery resolves the signed roster before querying kind `30402` by
+its bounded merchant author set and exact market tag. An empty roster sends no
+product query. Cached signed cards still appear before the network wait;
+candidate display adds no per-merchant grant reads or purchase authority.
+`event-market-roster` covers 48 and 256 newer unapproved listings ahead of an
+approved product, including partial relay coverage and saturated responses.
+
+Contact-free checkout checks the current date and merchant-signed opt-in before
+creating an order. Historical decoding checks the claimed creation-time terms;
+buyer-authored payload and rumor timestamps do not independently prove when a
+merchant observed the order. Receiver time cannot distinguish backdating from
+delayed delivery or another device's recovery. `event-contact-free` preserves
+receipt verification after the date has ended. Decoding and bearer receipt
+possession establish neither payment nor fulfillment authorization.
