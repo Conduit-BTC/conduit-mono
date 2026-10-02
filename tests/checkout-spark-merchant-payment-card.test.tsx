@@ -42,7 +42,7 @@ describe("Merchant order payment presentation", () => {
     }
   )
 
-  it("labels a local status refresh without reversing verified commerce", () => {
+  it("keeps a routine status refresh quiet without reversing verified commerce", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkMerchantPaymentCard
         {...base}
@@ -57,9 +57,26 @@ describe("Merchant order payment presentation", () => {
       />
     )
     expect(html).toContain("Payment verified")
-    expect(html).toContain("Refreshing saved payment status…")
+    expect(html).not.toContain("Refreshing saved payment status…")
     expect(html).not.toContain("Payment needs attention")
     expect(html).not.toContain("Resume")
+  })
+
+  it("keeps a saved attention result visible without routine checking copy", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        checking
+        settlementRefreshing
+        outcome="recipient_unverified"
+      />
+    )
+    expect(html).toContain("Payment needs attention")
+    expect(html).toContain(
+      "The recipient for a saved payment could not be verified."
+    )
+    expect(html).not.toContain("Checking this order")
+    expect(html).not.toContain("Refreshing saved payment status…")
   })
 
   it("does not describe unavailable local evidence as an invalid recipient", () => {

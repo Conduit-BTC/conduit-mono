@@ -57,6 +57,13 @@ export interface MerchantCheckoutSparkPayoutReview {
   destination: string
   allocationSats: number
   intent: NonNullable<Leg["intent"]>
+  /** Saved-state inspection only; not live settlement or send authority. */
+  inspection?: {
+    recipientAttribution:
+      "local_origin" | "recipient_verified" | "missing" | "unavailable"
+    savedStatus: Leg["status"]
+    allocationBudget: "fits" | "exceeds" | "unavailable"
+  }
 }
 
 function payoutReview(
@@ -83,7 +90,13 @@ function payoutReview(
 export async function reviewMerchantCheckoutSparkSettledPayout(
   principalPubkey: string,
   selected: MerchantCheckoutSparkRecoveryCandidate,
-  repository: Pick<Store, "load"> = new DexieCheckoutSparkSettledRepository()
+  repository: Pick<Store, "load"> &
+    Partial<
+      Pick<
+        DexieCheckoutSparkSettledRepository,
+        "hasInvoiceOrigin" | "hasInvoiceRecipient"
+      >
+    > = new DexieCheckoutSparkSettledRepository()
 ): Promise<MerchantCheckoutSparkPayoutReview | null> {
   const current = await repository.load(
     selected.checkoutId,
@@ -98,7 +111,60 @@ export async function reviewMerchantCheckoutSparkSettledPayout(
     )
   }
   const next = current.state.legs.find((leg) => leg.status !== "paid")
-  return next ? payoutReview(current.state, next.legId) : null
+  const review = next ? payoutReview(current.state, next.legId) : null
+  if (!review || !next) return null
+  const { plan } = current.state
+  const target: CheckoutSparkSettledOutgoingTarget = {
+    walletId: plan.walletId,
+    network: plan.network,
+    legId: review.legId,
+    recipientId: review.recipientId,
+    allocationSats: review.allocationSats,
+    unpaidAllocationSats: review.allocationSats,
+    intent: review.intent,
+  }
+  let recipientAttribution: NonNullable<
+    MerchantCheckoutSparkPayoutReview["inspection"]
+  >["recipientAttribution"] = "unavailable"
+  try {
+    if (repository.hasInvoiceOrigin) {
+      if (await repository.hasInvoiceOrigin(plan, target)) {
+        recipientAttribution = "local_origin"
+      } else if (repository.hasInvoiceRecipient) {
+        recipientAttribution = (await repository.hasInvoiceRecipient(
+          plan,
+          target
+        ))
+          ? "recipient_verified"
+          : "missing"
+      }
+    }
+  } catch {
+    // An unavailable local read is not evidence that attribution is missing.
+  }
+  const amount = review.intent.invoiceAmountSats
+  const fee = review.intent.maxFeeSats
+  const total = amount + fee
+  const budgetAvailable =
+    Number.isSafeInteger(amount) &&
+    amount > 0 &&
+    Number.isSafeInteger(fee) &&
+    fee >= 0 &&
+    Number.isSafeInteger(review.allocationSats) &&
+    review.allocationSats > 0 &&
+    Number.isSafeInteger(total)
+  return {
+    ...review,
+    inspection: {
+      recipientAttribution,
+      savedStatus: next.status,
+      allocationBudget: budgetAvailable
+        ? total <= review.allocationSats
+          ? "fits"
+          : "exceeds"
+        : "unavailable",
+    },
+  }
 }
 
 export type MerchantCheckoutSparkSignedNextPayoutSelection =
@@ -316,6 +382,8 @@ export async function continueMerchantCheckoutSparkSettledPayout(
       : {}),
   }
   review = { ...review, intent: { ...review.intent } }
+  // Preview classifications are advisory, not part of the frozen send intent.
+  delete review.inspection
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   const now = dependencies.now ?? Date.now

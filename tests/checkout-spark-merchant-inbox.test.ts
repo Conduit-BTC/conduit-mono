@@ -3597,7 +3597,13 @@ describe("Merchant checkout Spark payout history inspection", () => {
         repository
       )
       expect(review?.intent).toEqual(fixture.intent)
+      expect(review?.inspection).toEqual({
+        recipientAttribution: "local_origin",
+        savedStatus: "prepared",
+        allocationBudget: "fits",
+      })
       if (!review) throw new Error("Expected a prepared review.")
+      const previewSnapshot = JSON.stringify(review)
       const provider = { sent: false, sends: 0, cleanups: 0 }
       const dependencies = continuationDependencies(
         fixture,
@@ -3617,6 +3623,7 @@ describe("Merchant checkout Spark payout history inspection", () => {
         sendAttempted: true,
       })
       expect(provider.sends).toBe(1)
+      expect(JSON.stringify(review)).toBe(previewSnapshot)
       const stored = await repository.load(
         fixture.snapshot.plan.checkoutId,
         fixture.snapshot.plan.planDigest
@@ -3680,7 +3687,15 @@ describe("Merchant checkout Spark payout history inspection", () => {
           fixture.selected,
           secondRepository
         )
-        expect(secondReview).toEqual(firstReview)
+        const firstPayment = { ...firstReview }
+        const secondPayment = { ...secondReview }
+        delete firstPayment.inspection
+        delete secondPayment.inspection
+        expect(secondPayment).toEqual(firstPayment)
+        expect(firstReview?.inspection?.recipientAttribution).toBe(
+          "local_origin"
+        )
+        expect(secondReview?.inspection?.recipientAttribution).toBe("missing")
         if (!firstReview || !secondReview) {
           throw new Error("Expected matching prepared reviews.")
         }
@@ -3794,7 +3809,15 @@ describe("Merchant checkout Spark payout history inspection", () => {
         if (!firstReview || !secondReview) {
           throw new Error("Expected matching signed reviews.")
         }
-        expect(secondReview).toEqual(firstReview)
+        const firstPayment = { ...firstReview }
+        const secondPayment = { ...secondReview }
+        delete firstPayment.inspection
+        delete secondPayment.inspection
+        expect(secondPayment).toEqual(firstPayment)
+        expect(firstReview?.inspection?.recipientAttribution).toBe(
+          "local_origin"
+        )
+        expect(secondReview?.inspection?.recipientAttribution).toBe("missing")
         const provider = { sent: false, sends: 0, cleanups: 0 }
         const attempted: Array<{
           paymentRequest: string
@@ -3944,14 +3967,27 @@ describe("Merchant checkout Spark payout history inspection", () => {
           throw new Error("must not open")
         },
       }
-      await expect(
-        continueMerchantCheckoutSparkSettledPayout(
-          MERCHANT,
-          fixture.selected,
-          { ...review, destination: "attacker@example.test" },
-          { ...options, now: () => fixture.snapshot.plan.takeoverAt }
-        )
-      ).rejects.toThrow("Merchant checkout recovery adapter failed")
+      const alteredReviews = [
+        { ...review, destination: "attacker@example.test" },
+        {
+          ...review,
+          intent: {
+            ...review.intent,
+            maxFeeSats: review.intent.maxFeeSats + 1,
+          },
+        },
+        { ...review, unexpectedPaymentField: true },
+      ]
+      for (const alteredReview of alteredReviews) {
+        await expect(
+          continueMerchantCheckoutSparkSettledPayout(
+            MERCHANT,
+            fixture.selected,
+            alteredReview,
+            { ...options, now: () => fixture.snapshot.plan.takeoverAt }
+          )
+        ).rejects.toThrow("Merchant checkout recovery adapter failed")
+      }
       await expect(
         continueMerchantCheckoutSparkSettledPayout(
           MERCHANT,

@@ -83,6 +83,87 @@ describe("Merchant saved payout confirmation", () => {
     expect(markup).not.toContain("private-")
   })
 
+  it("explains missing saved recipient evidence separately from budget fit and live payment truth", () => {
+    const markup = renderReview(cutoff - 10 * 60_000, {
+      ...review,
+      inspection: {
+        recipientAttribution: "missing",
+        savedStatus: "prepared",
+        allocationBudget: "fits",
+      },
+    })
+    expect(markup).toContain(
+      "No matching recipient evidence found in this device’s saved records"
+    )
+    expect(markup).toContain("Prepared; no submission recorded here")
+    expect(markup).toContain(
+      "Saved invoice plus fee cap fits this recipient’s allocation"
+    )
+    expect(markup).toContain(
+      "Live wallet balance and provider history were not checked"
+    )
+    expect(markup).toContain("fresh checks still run before sending")
+    expect(markup).not.toContain(invoice)
+    expect(markup).not.toContain("private-")
+  })
+
+  it.each([
+    ["local_origin", "Matching local invoice origin found"],
+    ["recipient_verified", "Saved recipient evidence found"],
+    ["unavailable", "Saved recipient evidence could not be checked"],
+  ] as const)(
+    "describes %s as saved evidence, not live settlement",
+    (recipientAttribution, label) => {
+      const markup = renderReview(cutoff - 10 * 60_000, {
+        ...review,
+        inspection: {
+          recipientAttribution,
+          savedStatus: "ambiguous",
+          allocationBudget: "fits",
+        },
+      })
+      expect(markup).toContain(label)
+      expect(markup).toContain("Outcome uncertain")
+      expect(markup).toContain("Saved-state snapshot only")
+      expect(markup).toContain("history were not checked")
+      expect(markup).not.toContain("never sent")
+      expect(markup).not.toContain("unpaid")
+    }
+  )
+
+  it.each([
+    [
+      "exceeds",
+      "Saved invoice plus fee cap exceeds this recipient’s allocation",
+    ],
+    ["unavailable", "Saved allocation budget could not be checked"],
+  ] as const)(
+    "keeps the %s saved budget separate from live balance",
+    (allocationBudget, label) => {
+      const markup = renderReview(cutoff - 10 * 60_000, {
+        ...review,
+        inspection: {
+          recipientAttribution: "unavailable",
+          savedStatus: "lookup_unavailable",
+          allocationBudget,
+        },
+      })
+      expect(markup).toContain(label)
+      expect(markup).toContain("Prior lookup unavailable; outcome uncertain")
+      expect(markup).toContain(
+        "Live wallet balance and provider history were not checked"
+      )
+    }
+  )
+
+  it("does not invent saved classifications when a legacy review has no inspection snapshot", () => {
+    const markup = renderReview(cutoff - 10 * 60_000)
+    expect(markup).toContain("Saved recipient evidence could not be checked")
+    expect(markup).toContain("Saved payment status unavailable")
+    expect(markup).toContain("Saved allocation budget could not be checked")
+    expect(markup).not.toContain("no submission recorded here")
+  })
+
   it("updates the countdown from the supplied clock and warns when little time remains", () => {
     const earlier = renderReview(cutoff - 90_000)
     const later = renderReview(cutoff - 1_000)

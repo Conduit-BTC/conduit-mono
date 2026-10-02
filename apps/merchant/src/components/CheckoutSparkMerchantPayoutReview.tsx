@@ -1,6 +1,32 @@
 import { checkoutSparkProviderSendWindowEndsAt } from "@conduit/core/protocol"
 import type { MerchantCheckoutSparkPayoutReview } from "../lib/checkout-spark-settled-continuation"
 
+const recipientEvidenceLabels = {
+  local_origin: "Matching local invoice origin found",
+  recipient_verified: "Saved recipient evidence found",
+  missing:
+    "No matching recipient evidence found in this device’s saved records",
+  unavailable: "Saved recipient evidence could not be checked",
+}
+
+const savedStatusLabels = {
+  unprepared: "No prepared intent recorded",
+  prepared: "Prepared; no submission recorded here",
+  submitted: "Submission recorded; final outcome not established here",
+  ambiguous: "Outcome uncertain",
+  lookup_unavailable: "Prior lookup unavailable; outcome uncertain",
+  conflicting_evidence: "Saved observations conflict; outcome uncertain",
+  terminal_failure:
+    "Failure recorded; reconcile the original attempt before retrying",
+  paid: "Payment recorded; not a fresh provider check",
+}
+
+const budgetLabels = {
+  fits: "Saved invoice plus fee cap fits this recipient’s allocation",
+  exceeds: "Saved invoice plus fee cap exceeds this recipient’s allocation",
+  unavailable: "Saved allocation budget could not be checked",
+}
+
 function formatTimeRemaining(milliseconds: number): string {
   const seconds = Math.ceil(milliseconds / 1_000)
   const minutes = Math.floor(seconds / 60)
@@ -58,6 +84,46 @@ export function CheckoutSparkMerchantPayoutReview({
           </dd>
         </div>
       </dl>
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+        <p className="font-medium text-[var(--text-primary)]">
+          Saved payout checks
+        </p>
+        <dl className="mt-2 space-y-2">
+          <div>
+            <dt>Recipient evidence</dt>
+            <dd>
+              {
+                recipientEvidenceLabels[
+                  review.inspection?.recipientAttribution ?? "unavailable"
+                ]
+              }
+            </dd>
+          </div>
+          <div>
+            <dt>Saved payment status</dt>
+            <dd>
+              {review.inspection
+                ? savedStatusLabels[review.inspection.savedStatus]
+                : "Saved payment status unavailable"}
+            </dd>
+          </div>
+          <div>
+            <dt>Saved amount and fee budget</dt>
+            <dd>
+              {
+                budgetLabels[
+                  review.inspection?.allocationBudget ?? "unavailable"
+                ]
+              }
+            </dd>
+          </div>
+        </dl>
+        <p className="mt-2">
+          Saved-state snapshot only. Live wallet balance and provider history
+          were not checked. These labels do not authorize a payout; fresh checks
+          still run before sending.
+        </p>
+      </div>
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
         <p className="font-medium text-[var(--text-primary)]">
           Payout send cutoff
