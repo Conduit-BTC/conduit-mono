@@ -12,7 +12,9 @@ import {
   retryFutureMarketPrivateDelivery,
   saveFutureMarketPrivateDelivery,
   useAuth,
+  verifyFutureMarketReceiptAuthority,
   type FutureMarketOrganizerClaim,
+  type FutureMarketReadyReceiptSchema,
 } from "@conduit/core"
 import {
   Button,
@@ -25,6 +27,34 @@ import {
   Label,
 } from "@conduit/ui"
 import { SavedFutureHandoffUpdate } from "./SavedFutureHandoffUpdate"
+
+function hasVerifiedHandoffEvidence(
+  receipt: FutureMarketReadyReceiptSchema,
+  merchandiseVerified: boolean,
+  refreshing: boolean
+): boolean {
+  return (
+    verifyFutureMarketReceiptAuthority(receipt) &&
+    merchandiseVerified &&
+    !refreshing
+  )
+}
+
+function OriginalApprovalNotice({
+  receipt,
+  acknowledged,
+}: {
+  receipt: FutureMarketReadyReceiptSchema
+  acknowledged: boolean
+}) {
+  if (acknowledged || verifyFutureMarketReceiptAuthority(receipt)) return null
+  return (
+    <p role="alert" className="text-sm text-[var(--warning)]">
+      Original organizer handoff approval could not be verified from this
+      receipt. Physical handoff is blocked.
+    </p>
+  )
+}
 
 function ClaimCard({
   claim,
@@ -100,7 +130,11 @@ function ClaimCard({
   const canRelease =
     signerReady &&
     (Boolean(exactAck) ||
-      (merchandiseVerified && !merchandiseQuery.isFetching)) &&
+      hasVerifiedHandoffEvidence(
+        receipt,
+        merchandiseVerified,
+        merchandiseQuery.isFetching
+      )) &&
     claim.state === "ready_for_pickup" &&
     codeMatches &&
     !storageError &&
@@ -262,6 +296,7 @@ function ClaimCard({
       ) : null}
       {claim.state === "ready_for_pickup" ? (
         <div className="space-y-2">
+          <OriginalApprovalNotice receipt={receipt} acknowledged={!!exactAck} />
           <Label htmlFor={`claim-code-${claim.receipt.id}`}>
             Confirm buyer pickup code
           </Label>

@@ -220,6 +220,45 @@ async function fixture(series = false) {
 }
 
 describe("composed Event Market submit authorization", () => {
+  it("keeps an open single-date market purchasable after its calendar ends", async () => {
+    const originalNow = Date.now
+    Date.now = () => 1_900_004_000_000
+    try {
+      const state = await fixture(false)
+      expect((await state.submit()).status).toBe("ok")
+      expect(state.handlerCalls()).toBe(1)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  it("rejects an expired series date at snapshot creation and submit without closing other dates", async () => {
+    const state = await fixture(true)
+    const originalNow = Date.now
+    Date.now = () => 1_900_004_000_000
+    try {
+      await expect(fixture(true)).rejects.toThrow(
+        "Current signed Event Market participation is required"
+      )
+      expect((await state.submit()).status).not.toBe("ok")
+      expect(state.handlerCalls()).toBe(0)
+      const marketRead = await state.readMarket({ reference: marketCoordinate })
+      const productRead = await state.readProduct({
+        marketRead,
+        productCoordinate,
+      })
+      expect(
+        createEventMarketPickupSnapshot({
+          marketRead,
+          productRead,
+          selectedOccurrenceCoordinate: secondCalendarCoordinate,
+        }).calendar.coordinate
+      ).toBe(secondCalendarCoordinate)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
   for (const series of [false, true]) {
     it(`refreshes harmless ${series ? "series" : "single-date"} roster evidence through both checkout fingerprints`, async () => {
       const state = await fixture(series)

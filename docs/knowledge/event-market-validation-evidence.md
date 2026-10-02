@@ -55,3 +55,21 @@ A fixed midnight unit case verifies both complete and incomplete signed calendar
 The weekly-date authoring journey holds the post-publication roster refresh and
 checks that another edit or removal cannot start until the refreshed schedule
 arrives. Publication alone does not mean the editing state has caught up.
+
+Organizer handoff authenticates the original signed roster, occurrence, optional
+schedule and causal merchant grant carried in the private ready receipt. This
+is an offline check of the organizer-handoff role, not another merchant or
+product approval. Current roster removal, public grant revocation, closure,
+calendar expiry and relay pruning do not reinterpret an already-created order.
+The exact authenticated private release and its private revocation/conflict
+state remain authoritative for physical handoff. Receipts without the signed
+approval bundle remain decodable, but cannot authorize a new handoff ACK.
+The composed journey prunes the original approval and publishes a later closed
+roster and revoked grant before handing out the paid order; no exact approval
+relay reads occur. `future-market-merchandise` also rejects fabricated or
+mismatched approval evidence before reads, signing or persistence.
+
+Single-date commerce remains controlled by the signed market open/closed state.
+Series purchases require a current or future selected occurrence.
+`event-market-checkout-authorization` locks both rules at snapshot creation and
+submit; expiration of one series occurrence does not close other valid dates.

@@ -929,6 +929,12 @@ export const futureMarketReadyReceiptSchema = futureMarketPrivateGraphSchema
     version: z.literal(2),
     type: z.literal("future_market_ready"),
     releaseAuthorized: z.literal(true),
+    /** Original public approval only; no buyer, payment or full-order fields. */
+    authorityEvidence: z
+      .array(signedEventMarketEvidenceSchema.strict())
+      .min(3)
+      .max(64)
+      .optional(),
     items: z.array(futureMarketReceiptItemSchema).min(1).max(64),
     issuedAt: z.number().int().min(0),
   })

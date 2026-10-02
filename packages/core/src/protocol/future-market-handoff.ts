@@ -27,6 +27,13 @@ import {
 import { getFutureMarketReceiptMerchandise } from "./future-market-merchandise"
 import { isVerifiedEventMarketReceiptMerchandiseResolution } from "./event-market-merchandise"
 import { verifyEventMarketOrderEvidence } from "./event-market-order-evidence"
+import {
+  isEventMarketAddressableRevisionDeleted,
+  parseEventMarketCalendarEvent,
+} from "./event-market"
+import { resolveEventMarketRoster } from "./event-market-roster"
+import { parseEventMarketSeriesEvent } from "./event-market-schedule"
+import { resolveEventMarketAuthorization } from "./event-market-authorization"
 import { getEventMarketPrivateMessageList } from "./commerce"
 import {
   parseOrderMessageRumorEvent,
@@ -290,6 +297,77 @@ export function getFutureMarketClaimRef(input: {
   )
 }
 
+/** Authenticate original organizer approval offline, without reapproving a paid order. */
+export function verifyFutureMarketReceiptAuthority(
+  input: FutureMarketReadyReceiptSchema
+): boolean {
+  const parsed = futureMarketReadyReceiptSchema.safeParse(input)
+  if (!parsed.success || !parsed.data.authorityEvidence) return false
+  const receipt = parsed.data
+  const evidence = receipt.authorityEvidence!
+  if (
+    evidence.some(
+      (event) =>
+        event.pubkey !== receipt.organizerPubkey ||
+        event.created_at > receipt.issuedAt ||
+        ![30409, 31922, 31923, 31924, 3841, 5].includes(event.kind)
+    )
+  )
+    return false
+  const byId = new Map(evidence.map((event) => [event.id, event]))
+  const marketEvent = byId.get(receipt.market.eventId)
+  const calendarEvent = byId.get(receipt.calendar.eventId)
+  if (!marketEvent || !calendarEvent) return false
+  const deletions = evidence.filter((event) => event.kind === 5)
+  const marketRead = resolveEventMarketRoster({
+    coordinate: receipt.market.coordinate,
+    revisions: [marketEvent],
+    deletions,
+  })
+  if (marketRead.state !== "current") return false
+  const market = marketRead.market
+  const calendar = parseEventMarketCalendarEvent(calendarEvent)
+  if (
+    market.state !== "open" ||
+    market.createdAt * 1_000 !== receipt.market.createdAt ||
+    !market.merchants.some(
+      (row) =>
+        row.pubkey === receipt.merchantPubkey &&
+        row.mode === "organizer_handoff"
+    ) ||
+    !calendar ||
+    calendar.coordinate !== receipt.calendar.coordinate ||
+    calendar.createdAt !== receipt.calendar.createdAt ||
+    calendar.authorPubkey !== receipt.organizerPubkey ||
+    isEventMarketAddressableRevisionDeleted(receipt.calendar, deletions)
+  )
+    return false
+  if (market.calendarCoordinate !== calendar.coordinate) {
+    const schedules = evidence
+      .filter((event) => event.kind === 31924)
+      .map(parseEventMarketSeriesEvent)
+      .filter((series) => series?.coordinate === market.calendarCoordinate)
+    if (
+      schedules.length !== 1 ||
+      schedules[0]?.organizerPubkey !== receipt.organizerPubkey ||
+      !schedules[0]?.memberCoordinates.includes(calendar.coordinate) ||
+      isEventMarketAddressableRevisionDeleted(schedules[0], deletions)
+    )
+      return false
+  }
+  const authorization = resolveEventMarketAuthorization({
+    marketCoordinate: receipt.market.coordinate,
+    merchantPubkey: receipt.merchantPubkey,
+    transitions: evidence.filter((event) => event.kind === 3841),
+    deletions,
+  })
+  return (
+    authorization.state === "active" &&
+    authorization.tip.eventId === receipt.grant.eventId &&
+    authorization.tip.signedEvent.created_at * 1_000 === receipt.grant.createdAt
+  )
+}
+
 /** A merchant alone grants physical release for one paid order. */
 export function buildFutureMarketReadyReceipt(input: {
   order: OrderSchema
@@ -337,6 +415,13 @@ export function buildFutureMarketReadyReceipt(input: {
     market: first.market,
     calendar: first.calendar,
     grant: { eventId: first.grant.eventId, createdAt: first.grant.createdAt },
+    authorityEvidence: [
+      first.market.signedEvent,
+      first.calendar.signedEvent,
+      ...(first.schedule ? [first.schedule.signedEvent] : []),
+      ...first.grant.signedEvidence.ancestry,
+      ...first.grant.signedEvidence.deletions,
+    ],
     items: pickupItems.map((item) => {
       if (item.fulfillment?.type !== "event_market_pickup")
         throw new Error(
@@ -915,6 +1000,8 @@ export async function publishFutureMarketHandoffAck(input: {
     throw new Error(
       "Exact organizer physical release confirmation is required."
     )
+  if (!verifyFutureMarketReceiptAuthority(input.claim.receipt.payload))
+    throw new Error("Original signed organizer handoff approval is required.")
   const merchandise = await getFutureMarketReceiptMerchandise({
     receipt: input.claim.receipt.payload,
     authenticatedPubkey: input.organizerPubkey,

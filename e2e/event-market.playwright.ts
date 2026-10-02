@@ -1912,7 +1912,12 @@ test("two future market products form one order and one private organizer releas
           tags: [
             ...market.tags,
             ["prev", market.id],
-            ["merchant", BUYER_PUBKEY, "merchant_present", "Other booth"],
+            [
+              "merchant",
+              getPublicKey(generateSecretKey()),
+              "merchant_present",
+              "Other booth",
+            ],
           ],
         })
       )
@@ -2010,6 +2015,7 @@ test("two future market products form one order and one private organizer releas
   await expect.poll(() => readyMessages().length).toBe(1)
   const readyPayload = JSON.parse(readyMessages()[0]!.rumor.content) as {
     claimRef: string
+    authorityEvidence: SignedEvent[]
     items: Array<{
       product: { coordinate: string; signedEvent?: SignedEvent }
       quantity: number
@@ -2156,6 +2162,45 @@ test("two future market products form one order and one private organizer releas
       ),
     })
   )
+  // Paid handoff keeps its original organizer approval even after public
+  // closure, revocation and pruning. The private merchant release is current.
+  const originalMarket = readyPayload.authorityEvidence.find(
+    (event) => event.kind === 30409
+  )!
+  const originalGrant = readyPayload.authorityEvidence.find(
+    (event) => event.kind === 3841
+  )!
+  expect(
+    readyPayload.authorityEvidence.some((event) => event.kind === 31923)
+  ).toBe(true)
+  for (const event of readyPayload.authorityEvidence) relay.remove(event)
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 30409,
+      created_at: createdAt + 2,
+      content: "",
+      tags: [
+        ...originalMarket.tags.filter(
+          (tag) => !["prev", "merchant", "event_market"].includes(tag[0]!)
+        ),
+        ["event_market", "2", "closed"],
+        ["prev", originalMarket.id],
+      ],
+    }),
+    signEvent(ORGANIZER_SECRET, {
+      kind: 3841,
+      created_at: createdAt + 2,
+      content: "",
+      tags: [
+        ...originalGrant.tags.filter(
+          (tag) => !["state", "seq", "auth_parent"].includes(tag[0]!)
+        ),
+        ["state", "revoked"],
+        ["seq", "1"],
+        ["auth_parent", originalGrant.id],
+      ],
+    })
+  )
   const beforeOrganizer = relay.requests.length
   await gotoAs(page, merchantUrl, `/events/${marketNaddr}`, "organizer")
   await expect(
@@ -2198,6 +2243,18 @@ test("two future market products form one order and one private organizer releas
   await expect(
     page.getByRole("button", { name: "Mark handed out" })
   ).toBeEnabled()
+  const originalApprovalIds = new Set(
+    readyPayload.authorityEvidence.map((event) => event.id)
+  )
+  expect(
+    relay.requests
+      .slice(beforeOrganizer)
+      .some((request) =>
+        request.filters.some((filter) =>
+          filter.ids?.some((id) => originalApprovalIds.has(id))
+        )
+      )
+  ).toBe(false)
   relay.rejectKind(1059, true)
   const ackStart = relay.publications.length
   await page.getByRole("button", { name: "Mark handed out" }).click()

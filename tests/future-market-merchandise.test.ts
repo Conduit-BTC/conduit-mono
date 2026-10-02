@@ -22,8 +22,10 @@ import {
 } from "@conduit/core/schemas"
 import {
   buildFutureMarketPrivateRumor,
+  __resetFutureMarketHandoffTestState,
   publishFutureMarketHandoffAck,
   readFutureMarketReadyReceipts,
+  verifyFutureMarketReceiptAuthority,
 } from "@conduit/core/protocol/future-market-handoff"
 import {
   __resetCommerceTestOverrides,
@@ -33,7 +35,8 @@ import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event
 
 const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
-const ORGANIZER = getPublicKey(generateSecretKey())
+const ORGANIZER_SECRET = generateSecretKey()
+const ORGANIZER = getPublicKey(ORGANIZER_SECRET)
 const CREATED_AT = 1_700_000_000
 const RELAY_URL = "wss://future-merchandise.example"
 const COVERAGE = {
@@ -66,10 +69,48 @@ function productEvent(
   )
 }
 
+function signedApproval(
+  kind: number,
+  tags: string[][],
+  createdAt = CREATED_AT
+) {
+  return finalizeEvent(
+    { kind, tags, created_at: createdAt, content: "" },
+    ORGANIZER_SECRET
+  )
+}
+
+function approvalEvidence() {
+  return [
+    signedApproval(30409, [
+      ["d", "fair"],
+      ["a", `31923:${ORGANIZER}:fair-day`],
+      ["event_market", "2", "open"],
+      ["merchant", MERCHANT, "organizer_handoff", "Pickup desk"],
+    ]),
+    signedApproval(31923, [
+      ["d", "fair-day"],
+      ["title", "Fair"],
+      ["start", String(CREATED_AT)],
+      ["end", String(CREATED_AT + 3600)],
+      ["D", String(Math.floor(CREATED_AT / 86400))],
+    ]),
+    signedApproval(3841, [
+      ["openmarkets", "event-market-auth", "1"],
+      ["a", `30409:${ORGANIZER}:fair`],
+      ["p", MERCHANT],
+      ["state", "active"],
+      ["seq", "0"],
+      ["alt", "Open Markets event merchant authorization"],
+    ]),
+  ]
+}
+
 function receiptFor(
   products: readonly SignedPublicNostrEvent[],
   embedded = false
 ): FutureMarketReadyReceiptSchema {
+  const authorityEvidence = approvalEvidence()
   return futureMarketReadyReceiptSchema.parse({
     version: 2,
     type: "future_market_ready",
@@ -79,15 +120,16 @@ function receiptFor(
     organizerPubkey: ORGANIZER,
     market: {
       coordinate: `30409:${ORGANIZER}:fair`,
-      eventId: "a".repeat(64),
+      eventId: authorityEvidence[0]!.id,
       createdAt: CREATED_AT * 1_000,
     },
     calendar: {
       coordinate: `31923:${ORGANIZER}:fair-day`,
-      eventId: "b".repeat(64),
+      eventId: authorityEvidence[1]!.id,
       createdAt: CREATED_AT * 1_000,
     },
-    grant: { eventId: "c".repeat(64), createdAt: CREATED_AT * 1_000 },
+    grant: { eventId: authorityEvidence[2]!.id, createdAt: CREATED_AT * 1_000 },
+    authorityEvidence,
     items: products.map((product, index) => ({
       product: {
         coordinate: `30402:${MERCHANT}:${product.tags.find((tag) => tag[0] === "d")![1]}`,
@@ -103,6 +145,7 @@ function receiptFor(
 }
 
 afterEach(() => {
+  __resetFutureMarketHandoffTestState()
   __resetEventMarketMerchandiseTestOverrides()
   __resetCommerceTestOverrides()
 })
@@ -395,6 +438,224 @@ describe("future organizer exact merchandise", () => {
     ).rejects.toThrow("Reached ACK delivery ownership check")
     expect(deliveryOwnershipChecks).toBe(1)
     expect(publicReads()).toBe(0)
+  })
+
+  it("rejects an authenticated receipt with fabricated organizer approval before ACK signing", async () => {
+    const product = productEvent("soap", "Retained soap")
+    const payload = receiptFor([product], true)
+    delete payload.authorityEvidence
+    const publicReads = forbidPublicMerchandiseReads()
+    const rumor = buildFutureMarketPrivateRumor(payload)
+    __setCommerceTestOverrides({
+      allowMissingProtectedReadAuthorization: true,
+      getAccountSigner: () =>
+        ({ getPublicKey: async () => ORGANIZER }) as never,
+      resolveInboxRelayUrls: async () => ["wss://future.embedded.inbox.test"],
+      fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+        events: [
+          new NDKEvent(
+            undefined,
+            finalizeEvent(
+              {
+                kind: 1059,
+                created_at: rumor.created_at!,
+                tags: [["p", ORGANIZER]],
+                content: rumor.id!,
+              },
+              MERCHANT_SECRET
+            )
+          ),
+        ],
+        attemptedRelayUrls: [...(options?.relayUrls ?? [])],
+        successfulRelayUrls: [...(options?.relayUrls ?? [])],
+        failedRelayUrls: [],
+        cappedRelayUrls: [],
+      }),
+      giftUnwrap: async () => rumor,
+    })
+    const read = await readFutureMarketReadyReceipts({
+      organizerPubkey: ORGANIZER,
+    })
+    expect(read.claims).toHaveLength(1)
+    let deliveryOwnershipChecks = 0
+    const signer = {
+      user: async () => {
+        deliveryOwnershipChecks += 1
+        throw new Error("Reached ACK delivery ownership check")
+      },
+    } as unknown as NDKSigner
+    await expect(
+      publishFutureMarketHandoffAck({
+        organizerPubkey: ORGANIZER,
+        authenticatedPubkey: ORGANIZER,
+        claim: read.claims[0]!,
+        physicalReleaseConfirmed: true,
+        signer: plainTestSigner(signer),
+        persistExactWraps: () => {},
+      })
+    ).rejects.toThrow("Original signed organizer handoff approval is required.")
+    expect(deliveryOwnershipChecks).toBe(0)
+    expect(publicReads()).toBe(0)
+  })
+
+  for (const defect of [
+    "market-reference",
+    "calendar-reference",
+    "grant-reference",
+    "missing-row",
+    "merchant-booth",
+    "closed-market",
+    "wrong-calendar",
+    "wrong-merchant-grant",
+    "missing-parent",
+    "deleted-market",
+    "deleted-calendar",
+    "forged-signature",
+    "future-evidence",
+  ] as const) {
+    it(`blocks ${defect} approval before any ACK read, signing or persistence`, async () => {
+      const payload = receiptFor([productEvent("soap", "Signed soap")], true)
+      const bundle = payload.authorityEvidence!
+      const replaceMarket = (tags: string[][]) => {
+        bundle[0] = signedApproval(30409, tags)
+        payload.market.eventId = bundle[0].id
+      }
+      if (defect === "market-reference") payload.market.eventId = "a".repeat(64)
+      if (defect === "calendar-reference")
+        payload.calendar.eventId = "b".repeat(64)
+      if (defect === "grant-reference") payload.grant.eventId = "c".repeat(64)
+      if (defect === "missing-row")
+        replaceMarket(bundle[0]!.tags.filter((tag) => tag[0] !== "merchant"))
+      if (defect === "merchant-booth")
+        replaceMarket(
+          bundle[0]!.tags.map((tag) =>
+            tag[0] === "merchant"
+              ? ["merchant", MERCHANT, "merchant_present", "Booth 12"]
+              : tag
+          )
+        )
+      if (defect === "closed-market")
+        replaceMarket(
+          bundle[0]!.tags.map((tag) =>
+            tag[0] === "event_market" ? ["event_market", "2", "closed"] : tag
+          )
+        )
+      if (defect === "wrong-calendar")
+        replaceMarket(
+          bundle[0]!.tags.map((tag) =>
+            tag[0] === "a" ? ["a", `31923:${ORGANIZER}:other-day`] : tag
+          )
+        )
+      if (defect === "wrong-merchant-grant") {
+        bundle[2] = signedApproval(
+          3841,
+          bundle[2]!.tags.map((tag) =>
+            tag[0] === "p" ? ["p", getPublicKey(generateSecretKey())] : tag
+          )
+        )
+        payload.grant.eventId = bundle[2].id
+      }
+      if (defect === "missing-parent") {
+        bundle[2] = signedApproval(3841, [
+          ...bundle[2]!.tags.map((tag) =>
+            tag[0] === "seq" ? ["seq", "1"] : tag
+          ),
+          ["auth_parent", "e".repeat(64)],
+        ])
+        payload.grant.eventId = bundle[2].id
+      }
+      if (defect === "deleted-market" || defect === "deleted-calendar")
+        bundle.push(
+          signedApproval(
+            5,
+            [["e", bundle[defect === "deleted-market" ? 0 : 1]!.id]],
+            CREATED_AT + 5
+          )
+        )
+      if (defect === "forged-signature") bundle[2]!.sig = "0".repeat(128)
+      if (defect === "future-evidence") {
+        bundle[2] = signedApproval(3841, bundle[2]!.tags, CREATED_AT + 100)
+        payload.grant.eventId = bundle[2].id
+        payload.grant.createdAt = bundle[2].created_at * 1000
+      }
+      expect(verifyFutureMarketReceiptAuthority(payload)).toBe(false)
+      const publicReads = forbidPublicMerchandiseReads()
+      let privateReads = 0
+      let signatures = 0
+      let persisted = 0
+      __setCommerceTestOverrides({
+        getAccountSigner: () => {
+          privateReads++
+          throw new Error("Unexpected private read")
+        },
+      })
+      const signer = {
+        sign: async () => {
+          signatures++
+          return ""
+        },
+      } as unknown as NDKSigner
+      await expect(
+        publishFutureMarketHandoffAck({
+          organizerPubkey: ORGANIZER,
+          authenticatedPubkey: ORGANIZER,
+          physicalReleaseConfirmed: true,
+          signer: plainTestSigner(signer),
+          claim: {
+            state: "ready_for_pickup",
+            receipt: {
+              id: "d".repeat(64),
+              orderId: "",
+              createdAt: CREATED_AT * 1000,
+              rawContent: "",
+              senderPubkey: MERCHANT,
+              recipientPubkey: ORGANIZER,
+              type: "future_market_ready",
+              payload,
+            },
+          },
+          persistExactWraps: () => {
+            persisted++
+          },
+        })
+      ).rejects.toThrow(
+        "Original signed organizer handoff approval is required."
+      )
+      expect([publicReads(), privateReads, signatures, persisted]).toEqual([
+        0, 0, 0, 0,
+      ])
+    })
+  }
+
+  it("authenticates only the original signed series membership, independent of current time and relay edits", () => {
+    const payload = receiptFor([productEvent("soap", "Signed soap")], true)
+    const bundle = payload.authorityEvidence!
+    const masterCoordinate = `31924:${ORGANIZER}:fair-series`
+    bundle[0] = signedApproval(
+      30409,
+      bundle[0]!.tags.map((tag) =>
+        tag[0] === "a" ? ["a", masterCoordinate] : tag
+      )
+    )
+    payload.market.eventId = bundle[0].id
+    expect(verifyFutureMarketReceiptAuthority(payload)).toBe(false)
+    const master = signedApproval(31924, [
+      ["d", "fair-series"],
+      ["title", "Fair dates"],
+      ["a", payload.calendar.coordinate],
+    ])
+    bundle.push(master)
+    expect(verifyFutureMarketReceiptAuthority(payload)).toBe(true)
+    const wrongDate = signedApproval(31924, [
+      ["d", "fair-series"],
+      ["title", "Fair dates"],
+      ["a", `31923:${ORGANIZER}:other-day`],
+    ])
+    bundle[bundle.length - 1] = wrongDate
+    expect(verifyFutureMarketReceiptAuthority(payload)).toBe(false)
+    bundle[bundle.length - 1] = master
+    bundle.push(signedApproval(5, [["e", master.id]], CREATED_AT + 5))
+    expect(verifyFutureMarketReceiptAuthority(payload)).toBe(false)
   })
 
   it("authenticates every exact revision and preserves quantities and selected specifications", () => {

@@ -31,6 +31,7 @@ import {
   buildEventMarketRosterDraft,
   buildEventMarketSeriesDraft,
   buildFutureMarketReadyReceipt,
+  verifyFutureMarketReceiptAuthority,
   buildFutureMarketHandoffAck,
   buildFutureMarketRevocation,
   formatEventMarketPickupClaimCode,
@@ -722,6 +723,10 @@ describe("future Event Market private physical handoff", () => {
     })
     expect(receipt.items).toHaveLength(1)
     expect(receipt.items[0]?.quantity).toBe(1)
+    expect(verifyFutureMarketReceiptAuthority(receipt)).toBe(true)
+    expect(
+      receipt.authorityEvidence?.map((event) => event.kind).sort()
+    ).toEqual([30409, 31923, 3841].sort())
     const exactProduct = handoffOrder.items[0]!.fulfillment
     if (exactProduct?.type !== "event_market_pickup")
       throw new Error("Expected future pickup")
