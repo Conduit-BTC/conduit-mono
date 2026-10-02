@@ -2,7 +2,10 @@ import {
   EventFulfillmentChoice,
   type EventFulfillmentSelection,
 } from "@conduit/ui"
-import { hasEventShippingChoice } from "../../lib/event-fulfillment-choice"
+import {
+  hasEventShippingChoice,
+  readEventShippingProduct,
+} from "../../lib/event-fulfillment-choice"
 import { ChevronDown, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
@@ -134,6 +137,9 @@ function ProductPage() {
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
   const [selectedProductId, setSelectedProductId] = useState("")
   const [quantity, setQuantity] = useState(1)
+  const [cartActionPending, setCartActionPending] = useState(false)
+  const [cartActionError, setCartActionError] = useState("")
+  const cartActionLock = useRef(false)
   const [showAllTags, setShowAllTags] = useState(false)
   const [showFullDescription, setShowFullDescription] = useState(false)
   const [descriptionMetrics, setDescriptionMetrics] =
@@ -347,6 +353,23 @@ function ProductPage() {
     !!pickupHandlerIdentity &&
     !productFulfillmentNotice
   const cartQuantity = cartItem?.quantity ?? 0
+  const cartActionScope = JSON.stringify([
+    productId,
+    selectedProduct?.id,
+    selectedProduct?.sourceEventId,
+    eventMarketReference,
+    eventFulfillmentChoice,
+    quantity,
+    session.relayScope,
+    authGeneration,
+  ])
+  const cartActionScopeRef = useRef<string | null>(cartActionScope)
+  useLayoutEffect(() => {
+    cartActionScopeRef.current = cartActionScope
+    return () => {
+      cartActionScopeRef.current = null
+    }
+  }, [cartActionScope])
   const productAddAvailability = getProductAddAvailability(
     selectedProduct?.stock,
     cartQuantity,
@@ -502,8 +525,9 @@ function ProductPage() {
     })
   }
 
-  function addProductToCart(): void {
+  async function addProductToCart(): Promise<void> {
     if (
+      cartActionLock.current ||
       !product ||
       !selectedProduct ||
       !productCartCandidate ||
@@ -512,12 +536,51 @@ function ProductPage() {
     ) {
       return
     }
-    recordProductDetailAction("add_to_cart")
-    if (cartItem) {
-      cart.refreshAndIncrementItem(cartItem, productCartCandidate, quantity)
-      return
+    cartActionLock.current = true
+    setCartActionPending(true)
+    setCartActionError("")
+    const shouldContinue = () =>
+      cartActionScopeRef.current === cartActionScope &&
+      authGenerationRef.current === authGeneration
+    try {
+      let candidate = productCartCandidate
+      if (eventMarketReference && eventFulfillmentChoice === "shipping") {
+        if (!candidate.productEventId)
+          throw new Error(
+            "Current shipping terms could not be verified. Refresh the listing and try again."
+          )
+        const currentProduct = await readEventShippingProduct({
+          productId: selectedProduct.id,
+          merchantPubkey: selectedProduct.pubkey,
+          authenticatedPubkey,
+          expectedEventId: candidate.productEventId,
+          shouldContinue,
+        })
+        candidate = {
+          ...cartItemInputFromProductSelection(product, currentProduct, {
+            type: "shipping",
+          }),
+          eventMarketContext: candidate.eventMarketContext,
+        }
+      }
+      if (!shouldContinue()) return
+      if (cartItem)
+        await cart.refreshAndIncrementItem(cartItem, candidate, quantity)
+      else await cart.addItem(candidate, quantity)
+      recordProductDetailAction("add_to_cart")
+    } catch (cause) {
+      if (shouldContinue()) {
+        setCartActionError(
+          cause instanceof Error
+            ? cause.message
+            : "Could not add this product. Refresh the listing and try again."
+        )
+        await productQuery.refetch()
+      }
+    } finally {
+      cartActionLock.current = false
+      setCartActionPending(false)
     }
-    cart.addItem(productCartCandidate, quantity)
   }
 
   const productRefreshing = productQuery.isHydrating
@@ -993,26 +1056,35 @@ function ProductPage() {
                   <Button
                     className="min-w-[12rem] flex-1"
                     disabled={
-                      productCartBlocked || !productAddAvailability.canAdd
+                      cartActionPending ||
+                      productCartBlocked ||
+                      !productAddAvailability.canAdd
                     }
-                    onClick={addProductToCart}
+                    onClick={() => void addProductToCart()}
                   >
-                    {productSoldOut
-                      ? "Sold out"
-                      : eventMarketReference && eventMarketQuery.isFetching
-                        ? "Checking Event Market"
-                        : eventMarketReference && !eventMarketFulfillment
-                          ? "Review event catalog"
-                          : productCartFulfillment.isChecking
-                            ? "Checking event pickup"
-                            : productAddAvailability.remainingStock === 0
-                              ? "Stock limit reached"
-                              : cartQuantity > 0
-                                ? `Add more (${cartQuantity} in cart)`
-                                : `Add ${quantity} to cart`}
+                    {cartActionPending
+                      ? "Checking product…"
+                      : productSoldOut
+                        ? "Sold out"
+                        : eventMarketReference && eventMarketQuery.isFetching
+                          ? "Checking Event Market"
+                          : eventMarketReference && !eventMarketFulfillment
+                            ? "Review event catalog"
+                            : productCartFulfillment.isChecking
+                              ? "Checking event pickup"
+                              : productAddAvailability.remainingStock === 0
+                                ? "Stock limit reached"
+                                : cartQuantity > 0
+                                  ? `Add more (${cartQuantity} in cart)`
+                                  : `Add ${quantity} to cart`}
                   </Button>
                 </div>
 
+                {cartActionError ? (
+                  <p role="alert" className="text-sm text-[var(--error)]">
+                    {cartActionError}
+                  </p>
+                ) : null}
                 {productFulfillmentNotice || showPickupIdentityNotice ? (
                   <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
                     {showPickupIdentityNotice &&

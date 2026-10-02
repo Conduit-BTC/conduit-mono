@@ -115,6 +115,7 @@ describe("event-market organizer merchandise evidence", () => {
           product: receipt.items[0]!.product,
           title: "Fresh coffee",
           quantity: 1,
+          signedProduct: { type: "simple", specifications: [] },
           sourceRelayUrls: [RELAY_URL],
         },
       ],

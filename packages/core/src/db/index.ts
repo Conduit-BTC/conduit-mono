@@ -1298,7 +1298,7 @@ export class ConduitDB extends Dexie {
 
     this.version(21).stores({
       eventMarketMerchantDecisionJobs:
-        "id, marketCoordinate, merchantPubkey, status, updatedAt",
+        "id, [marketCoordinate+merchantPubkey], status, createdAt",
     })
 
     this.version(22).stores({
@@ -1312,6 +1312,13 @@ export class ConduitDB extends Dexie {
     this.version(23).stores({
       // Durable signed evidence, kept outside prunable commerce caches.
       merchantShippingSettingsEvidence: "pubkey",
+    })
+
+    this.version(24).stores({
+      // Restore direct per-market recovery queries while keeping the current
+      // merchant and update-time indexes available for organizer decisions.
+      eventMarketMerchantDecisionJobs:
+        "id, marketCoordinate, merchantPubkey, status, updatedAt",
     })
   }
 }

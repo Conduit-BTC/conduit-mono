@@ -104,6 +104,7 @@ const product = finalizeEvent(
       ["price", "12", "USD"],
       ["type", "simple", "physical"],
       ["a", marketCoordinate],
+      ["spec", "Scent", "Lavender"],
     ],
     content: "Soap",
     created_at: 101,
@@ -171,6 +172,73 @@ const order = orderSchema.parse({
 })
 
 describe("created future Event Market order evidence", () => {
+  it("binds selected variation specifications to the exact signed product", () => {
+    const variation = finalizeEvent(
+      {
+        kind: 30402,
+        tags: [
+          ["d", "soap-small"],
+          ["title", "Small soap"],
+          ["price", "12", "USD"],
+          ["type", "variation", "physical"],
+          ["a", productCoordinate],
+          ["a", marketCoordinate],
+          ["spec", "Size", "Small"],
+        ],
+        content: "Small soap",
+        created_at: 101,
+      },
+      merchantSecret
+    )
+    const variationCoordinate = `30402:${merchant}:soap-small`
+    const variationOrder = (
+      selectedSpecifications?: Array<{ key: string; value: string }>
+    ) =>
+      orderSchema.parse({
+        ...order,
+        items: order.items.map((item) => ({
+          ...item,
+          title: "Small soap",
+          productId: variationCoordinate,
+          ...(selectedSpecifications ? { selectedSpecifications } : {}),
+          fulfillment:
+            item.fulfillment?.type === "event_market_pickup"
+              ? {
+                  ...item.fulfillment,
+                  product: {
+                    coordinate: variationCoordinate,
+                    eventId: variation.id,
+                    createdAt: 101_000,
+                    signedEvent: variation,
+                  },
+                }
+              : item.fulfillment,
+        })),
+      })
+    expect(
+      verifyEventMarketOrderEvidence({
+        order: variationOrder([{ key: "Size", value: "Small" }]),
+        events: [],
+      }).status
+    ).toBe("verified")
+    for (const selected of [
+      [{ key: "Size", value: "Large" }],
+      [{ key: "Color", value: "Small" }],
+      [
+        { key: "Size", value: "Small" },
+        { key: "Color", value: "Blue" },
+      ],
+      undefined,
+    ]) {
+      expect(
+        verifyEventMarketOrderEvidence({
+          order: variationOrder(selected),
+          events: [],
+        })
+      ).toEqual({ status: "invalid", reason: "product" })
+    }
+  })
+
   it("binds a series order to its exact signed schedule and selected occurrence", () => {
     const secondCoordinate = `31923:${organizer}:fair-second`
     const second = finalizeEvent(
@@ -697,6 +765,30 @@ describe("future Event Market private physical handoff", () => {
     expect(formatEventMarketPickupClaimCode(receipt.claimRef)).toMatch(
       /^[A-Z0-9-]+$/
     )
+  })
+
+  it("rejects forged buyer specification labels before issuing a ready receipt", () => {
+    const forged = orderSchema.parse({
+      ...handoffOrder,
+      items: handoffOrder.items.map((item) => ({
+        ...item,
+        selectedSpecifications: [{ key: "Scent", value: "Mint" }],
+      })),
+    })
+    expect(
+      verifyEventMarketOrderEvidence({ order: forged, events: [] })
+    ).toEqual({
+      status: "invalid",
+      reason: "product",
+    })
+    expect(() =>
+      buildFutureMarketReadyReceipt({
+        order: forged,
+        signedOrderEvidence: [],
+        paymentAuthenticated: true,
+        releaseConfirmed: true,
+      })
+    ).toThrow("Exact signed organizer handoff evidence is required.")
   })
 
   for (const coverage of ["partial", "capped"] as const) {

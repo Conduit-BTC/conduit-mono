@@ -32,9 +32,13 @@ describe("generic Market event fulfillment", () => {
     expect(detail).toContain("useProductCartFulfillment")
     expect(detail).toContain("productCartCandidate")
     expect(detail).toContain("productCartBlocked")
-    expect(detail).toContain("cart.addItem(productCartCandidate, quantity)")
+    expect(detail).toContain("let candidate = productCartCandidate")
+    expect(detail).toContain("await readEventShippingProduct({")
+    expect(detail).toContain("expectedEventId: candidate.productEventId")
+    expect(detail).toContain("if (!shouldContinue()) return")
+    expect(detail).toContain("cart.addItem(candidate, quantity)")
     expect(detail).toContain(
-      "cart.refreshAndIncrementItem(cartItem, productCartCandidate, quantity)"
+      "cart.refreshAndIncrementItem(cartItem, candidate, quantity)"
     )
     expect(detail).not.toContain("cart.incrementItem(cartItem")
     expect(detail).toContain("ResolvedProductGridCard")

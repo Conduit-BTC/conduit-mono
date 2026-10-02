@@ -129,6 +129,112 @@ const authorizationRead = {
 }
 
 describe("experimental Event Market roster", () => {
+  it("keeps self-selling at the merchant booth and rejects externally signed self-handoff before checkout", () => {
+    const selfRow = { ...merchantRow, pubkey: organizer }
+    expect(() => roster([selfRow])).not.toThrow()
+    expect(() => roster([{ ...selfRow, mode: "organizer_handoff" }])).toThrow(
+      "Self-selling organizers must use merchant booth pickup"
+    )
+    const booth = roster([selfRow])
+    const invalidHandoff = sign(
+      organizerSecret,
+      30409,
+      booth.tags.map((tag) =>
+        tag[0] === "merchant"
+          ? ["merchant", organizer, "organizer_handoff", selfRow.assignment]
+          : tag
+      ),
+      100
+    )
+    const market = parseEventMarketRosterEvent(invalidHandoff)!
+    const selfProduct = product(organizerSecret, organizer, "soap", 100)
+    const selfCoordinate = `30402:${organizer}:soap`
+    const selfGrantDraft = buildEventMarketAuthorizationDraft({
+      marketCoordinate,
+      merchantPubkey: organizer,
+      state: "active",
+      sequence: 0,
+      parentIds: [],
+    })
+    const selfGrant = sign(
+      organizerSecret,
+      selfGrantDraft.kind,
+      selfGrantDraft.tags,
+      99
+    )
+    const selfAuthorization = resolveEventMarketAuthorization({
+      marketCoordinate,
+      merchantPubkey: organizer,
+      transitions: [selfGrant],
+    })
+    expect(
+      resolveEventMarketProduct({
+        market,
+        productCoordinate: selfCoordinate,
+        revisions: [selfProduct],
+        authorization: selfAuthorization,
+      }).state
+    ).toBe("malformed")
+    const boothMarket = parseEventMarketRosterEvent(booth)!
+    const eligible = resolveEventMarketProduct({
+      market: boothMarket,
+      productCoordinate: selfCoordinate,
+      revisions: [selfProduct],
+      authorization: selfAuthorization,
+    })
+    expect(eligible.state).toBe("eligible")
+    if (eligible.state !== "eligible")
+      throw new Error("Expected booth eligibility")
+    const signedCalendar = sign(
+      organizerSecret,
+      31923,
+      [
+        ["d", "fair"],
+        ["title", "Fair"],
+        ["start", "1790000000"],
+        ["D", "20717"],
+      ],
+      100
+    )
+    const marketRead = {
+      coordinate: marketCoordinate,
+      resolution: { state: "current" as const, market: boothMarket },
+      coverage: "complete" as const,
+      retained: true,
+      observedRelayUrls: [],
+      calendar: parseEventMarketCalendarEvent(signedCalendar)!,
+      calendarSignedEvent: signedCalendar,
+      calendarCoverage: "complete" as const,
+    }
+    const productRead = {
+      productCoordinate: selfCoordinate,
+      resolution: eligible,
+      coverage: "complete" as const,
+      retained: true,
+      actionable: true,
+      authorization: {
+        ...authorizationRead,
+        merchantPubkey: organizer,
+        resolution: selfAuthorization,
+      },
+    }
+    expect(
+      createEventMarketPickupSnapshot({ marketRead, productRead }).mode
+    ).toBe("merchant_present")
+    expect(() =>
+      createEventMarketPickupSnapshot({
+        marketRead: { ...marketRead, resolution: { state: "current", market } },
+        productRead: {
+          ...productRead,
+          resolution: {
+            ...eligible,
+            merchant: { ...selfRow, mode: "organizer_handoff" },
+          },
+        },
+      })
+    ).toThrow("Current signed Event Market participation is required")
+  })
+
   it("parses one organizer-signed mode and assignment with a finite author filter", () => {
     const signed = roster([merchantRow])
     const parsed = parseEventMarketRosterEvent(signed)

@@ -113,7 +113,7 @@ function parseProductVisibilityTag(
   return undefined
 }
 
-function canonicalizeProductSpecifications(
+export function canonicalizeProductSpecifications(
   specifications: ProductSchema["specifications"] | undefined
 ): ProductSchema["specifications"] {
   const canonical: ProductSchema["specifications"] = []

@@ -50,6 +50,11 @@ export interface EventMarketReceiptMerchandiseItem {
   product: FutureMarketReadyReceiptSchema["items"][number]["product"]
   quantity: number
   title?: string
+  /** Parsed from the exact authenticated product revision. */
+  signedProduct?: Pick<
+    ReturnType<typeof parseProductEvent>,
+    "type" | "specifications"
+  >
   sourceRelayUrls: string[]
 }
 
@@ -219,6 +224,10 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
         product: receiptItem.product,
         quantity: receiptItem.quantity,
         title: parsed.title,
+        signedProduct: {
+          type: parsed.type,
+          specifications: parsed.specifications,
+        },
         sourceRelayUrls,
       } satisfies EventMarketReceiptMerchandiseItem
     } catch {

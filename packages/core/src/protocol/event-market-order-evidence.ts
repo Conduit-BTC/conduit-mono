@@ -7,7 +7,10 @@ import { parseEventMarketCalendarEvent } from "./event-market"
 import { resolveEventMarketAuthorization } from "./event-market-authorization"
 import { parseEventMarketRosterEvent } from "./event-market-roster"
 import { parseEventMarketSeriesEvent } from "./event-market-schedule"
-import { parseProductEvent } from "./products"
+import {
+  canonicalizeProductSpecifications,
+  parseProductEvent,
+} from "./products"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -33,6 +36,27 @@ export type EventMarketOrderEvidenceResult =
         | "product"
         | "terms"
     }
+
+/** Compare a buyer's labels with the exact signed listing, independent of tag order. */
+export function hasExactSelectedProductSpecifications(
+  product: Pick<
+    ReturnType<typeof parseProductEvent>,
+    "type" | "specifications"
+  >,
+  selected: readonly { key: string; value: string }[] | undefined
+): boolean {
+  if (selected === undefined && product.type !== "variation") return true
+  const canonical = canonicalizeProductSpecifications(
+    selected ? [...selected] : undefined
+  )
+  if (canonical.length !== (selected?.length ?? 0)) return false
+  const sort = (specifications: readonly { key: string; value: string }[]) =>
+    specifications.map(({ key, value }) => JSON.stringify([key, value])).sort()
+  return (
+    JSON.stringify(sort(canonical)) ===
+    JSON.stringify(sort(product.specifications))
+  )
+}
 
 /** Exact original evidence authorizes only this already-created order's physical terms. */
 export function verifyEventMarketOrderEvidence(input: {
@@ -186,7 +210,13 @@ export function verifyEventMarketOrderEvidence(input: {
       normalizeCurrencyIdentity(
         product.sourcePrice?.currency ?? product.currency
       ) !==
-        normalizeCurrencyIdentity(item.sourcePrice?.currency ?? item.currency)
+        normalizeCurrencyIdentity(
+          item.sourcePrice?.currency ?? item.currency
+        ) ||
+      !hasExactSelectedProductSpecifications(
+        product,
+        item.selectedSpecifications
+      )
     )
       return { status: "invalid", reason: "product" }
   }

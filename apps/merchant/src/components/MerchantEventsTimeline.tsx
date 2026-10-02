@@ -22,6 +22,7 @@ import {
   useTimeBoundaryNow,
 } from "@conduit/ui"
 import { useMerchantEventTimeline } from "../hooks/useMerchantEventTimeline"
+import { mergeMerchantTimelineMarketReads } from "../lib/merchant-event-relationship-hydration"
 
 import {
   getNextMerchantEventTimelineLimit,
@@ -132,12 +133,17 @@ export function MerchantEventsTimeline({
     enabled: session.relaySettingsReady && !!merchantPubkey,
     refetchInterval: 60_000,
   })
-  const futureOccurrences = useMemo(
+  const marketReads = useMemo(
     () =>
-      (futureQuery.data?.markets ?? []).flatMap(
-        projectFutureMerchantTimelineOccurrences
+      mergeMerchantTimelineMarketReads(
+        futureQuery.data?.markets ?? [],
+        discovery.relationshipMarkets
       ),
-    [futureQuery.data?.markets]
+    [futureQuery.data?.markets, discovery.relationshipMarkets]
+  )
+  const futureOccurrences = useMemo(
+    () => marketReads.flatMap(projectFutureMerchantTimelineOccurrences),
+    [marketReads]
   )
   const visibleFutureOccurrences = useMemo(
     () =>
@@ -209,38 +215,39 @@ export function MerchantEventsTimeline({
     priority: "visible",
     maxUnresolvedRefetches: 1,
   })
-  const futureDateReadIncomplete = (futureQuery.data?.markets ?? []).some(
-    (read) => {
-      if (
-        read.resolution.state !== "current" ||
-        !read.resolution.market.calendarCoordinate.startsWith("31924:") ||
-        (read.schedule?.kind === "series" &&
-          read.schedule.unresolvedCoordinates.length === 0 &&
-          read.scheduleCoverage === "complete")
-      )
-        return false
-      const market = read.resolution.market
-      return (
-        (relationship !== "organizing" ||
-          market.organizerPubkey === merchantPubkey) &&
-        (relationship !== "selling" ||
-          market.merchants.some((row) => row.pubkey === merchantPubkey))
-      )
-    }
-  )
+  const futureDateReadIncomplete = marketReads.some((read) => {
+    if (
+      read.resolution.state !== "current" ||
+      !read.resolution.market.calendarCoordinate.startsWith("31924:") ||
+      (read.schedule?.kind === "series" &&
+        read.schedule.unresolvedCoordinates.length === 0 &&
+        read.scheduleCoverage === "complete")
+    )
+      return false
+    const market = read.resolution.market
+    return (
+      (relationship !== "organizing" ||
+        market.organizerPubkey === merchantPubkey) &&
+      (relationship !== "selling" ||
+        market.merchants.some((row) => row.pubkey === merchantPubkey))
+    )
+  })
   const discoveryComplete =
     futureQuery.data?.coverage === "complete" &&
+    !discovery.relationshipPending &&
     !discovery.isRefreshStale &&
     !futureQuery.isError &&
     !futureDateReadIncomplete
   const resultPresentation = getResultPresentation({
-    resultCount: Math.max(
-      futureQuery.data?.markets.length ?? 0,
-      futureOccurrences.length
-    ),
+    resultCount: Math.max(marketReads.length, futureOccurrences.length),
     visibleResultCount: visibleFutureOccurrences.length,
     reliability: discoveryComplete ? "complete" : "degraded",
   })
+  const initialLoading =
+    (discovery.isInitialLoading ||
+      discovery.relationshipPending ||
+      futureQuery.isPending) &&
+    visibleFutureOccurrences.length === 0
   function changeRelationship(value: string): void {
     const nextRelationship = value as MerchantEventRelationshipFilter
     timelineAnchor.rememberPosition()
@@ -334,7 +341,7 @@ export function MerchantEventsTimeline({
             className="text-sm tabular-nums text-[var(--text-muted)]"
             aria-live="polite"
           >
-            {discovery.isInitialLoading || futureQuery.isPending
+            {initialLoading
               ? "Loading events"
               : `${visibleFutureOccurrences.length} ${visibleFutureOccurrences.length === 1 ? "event" : "events"}`}
           </p>
@@ -362,7 +369,7 @@ export function MerchantEventsTimeline({
         </div>
       </div>
 
-      {discovery.isInitialLoading || futureQuery.isPending ? (
+      {initialLoading ? (
         <EventTimelineLoading />
       ) : visibleFutureOccurrences.length > 0 ? (
         <EventTimelineViewport

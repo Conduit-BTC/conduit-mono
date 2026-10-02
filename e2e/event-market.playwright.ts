@@ -1406,6 +1406,28 @@ test("Merchant links an approved shop product and Market discovers it without pi
     published.some((event) => event.kind === 30406 || event.kind === 30405)
   ).toBe(false)
 
+  // Product relationships must discover organizers outside the follow graph.
+  relay.seed(createFollowList("merchant", [], createdAt + 1))
+  const beforeTimeline = relay.requests.length
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  await page.reload()
+  await page.getByRole("button", { name: "Selling at", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: /^Open Merchant Fair\./ })
+  ).toBeVisible()
+  expect(
+    relay.requests
+      .slice(beforeTimeline)
+      .some((request) =>
+        request.filters.some(
+          (filter) =>
+            filter.kinds?.includes(30409) &&
+            filter.authors?.includes(ORGANIZER_PUBKEY) &&
+            filter["#d"]?.includes("merchant-fair")
+        )
+      )
+  ).toBe(true)
+
   await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
   await expect(
     page.getByRole("heading", { name: MERCHANT_TEMPLATE_TITLE })
@@ -3050,6 +3072,34 @@ test("a host and merchant create, request, approve and offer through the screens
   expect(market).toBeDefined()
   expect(market.tags.some((tag) => tag[0] === "merchant")).toBe(false)
 
+  await page
+    .getByRole("button", { name: "I'm also selling", exact: true })
+    .click()
+  await page.getByRole("combobox", { name: "Handoff mode" }).click()
+  await expect(
+    page.getByRole("option", { name: "Organizer pickup", exact: true })
+  ).toBeDisabled()
+  await page
+    .getByRole("option", { name: "Merchant booth", exact: true })
+    .click()
+  await page.getByLabel("Public assignment").fill("Host booth")
+  await page
+    .getByRole("button", { name: "Approve merchant", exact: true })
+    .click()
+  await expect(page.getByText("Approved", { exact: true })).toBeVisible()
+  expect(
+    uniquePublishedEvents(relay.publications).some(
+      (event) =>
+        event.kind === 30409 &&
+        event.tags.some(
+          (tag) =>
+            tag[0] === "merchant" &&
+            tag[1] === ORGANIZER_PUBKEY &&
+            tag[2] === "merchant_present"
+        )
+    )
+  ).toBe(true)
+
   await gotoAs(page, merchantUrl, eventPath, "merchant")
   await enableEventMessages(page)
   await page
@@ -3060,7 +3110,9 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(page.getByText("Request pending", { exact: true })).toBeVisible()
   expect(
     uniquePublishedEvents(relay.publications).some(
-      (event) => event.kind === 3841
+      (event) =>
+        event.kind === 3841 &&
+        event.tags.some((tag) => tag[0] === "p" && tag[1] === MERCHANT_PUBKEY)
     )
   ).toBe(false)
   const requests = uniquePrivatePublications(
@@ -3076,11 +3128,11 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(
     page.getByRole("button", { name: "Decline request" })
   ).toBeVisible()
-  await page.getByLabel("Public assignment").fill("Booth 4")
+  await page.locator(`[id="assignment-${MERCHANT_PUBKEY}"]`).fill("Booth 4")
   await page
     .getByRole("button", { name: "Approve merchant", exact: true })
     .click()
-  await expect(page.getByText("Approved", { exact: true })).toBeVisible()
+  await expect(page.getByText("Approved", { exact: true })).toHaveCount(2)
   expect(
     uniquePublishedEvents(relay.publications).some(
       (event) => event.kind === 3841
@@ -3155,4 +3207,174 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(page.getByRole("heading", { name: "Checkout" })).toBeVisible()
   await expect(page.getByText(/Booth 4/).first()).toBeVisible()
   await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
+})
+
+test("event variation shipping rejects changed and deleted listings before adding or incrementing @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1_000) - 10
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: createdAt,
+    content: "Two product future pickup",
+    tags: [
+      ["d", "future-handoff-fair"],
+      ["title", "Future Handoff Fair"],
+      ["start", "1790000000"],
+      ["D", "20717"],
+      ["location", "Town Hall"],
+    ],
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "future-handoff-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+      ["merchant", MERCHANT_PUBKEY, "organizer_handoff", "Pickup Desk"],
+    ],
+  })
+  const grant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["openmarkets", "event-market-auth", "1"],
+      ["a", eventCoordinate(market)],
+      ["p", MERCHANT_PUBKEY],
+      ["state", "active"],
+      ["seq", "0"],
+      ["alt", "Open Markets event merchant authorization"],
+    ],
+  })
+  const shipping = signEvent(MERCHANT_SECRET, {
+    kind: 30406,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "detail-shipping"],
+      ["title", "Shop shipping"],
+      ["price", "200", "SAT"],
+      ["country", "US"],
+      ["service", "shipping"],
+    ],
+  })
+  const product = (name: string, dTag: string) =>
+    signEvent(MERCHANT_SECRET, {
+      kind: 30402,
+      created_at: createdAt,
+      content: name,
+      tags: [
+        ["d", dTag],
+        ["title", name],
+        ["price", "0", "SAT"],
+        [
+          "type",
+          dTag === "future-handoff-soap" ? "variable" : "variation",
+          "physical",
+        ],
+        ...(dTag === "future-handoff-candle"
+          ? [
+              ["a", `30402:${MERCHANT_PUBKEY}:future-handoff-soap`],
+              ["spec", "Size", "Large"],
+            ]
+          : []),
+        ["stock", "5"],
+        ["shipping_option", eventCoordinate(shipping)],
+        [
+          "image",
+          "https://cdn.conduit.market/conduit-test/template-product.svg",
+        ],
+        ["t", "market"],
+        ["t", "merchant"],
+        ["t", "handmade"],
+        ["a", eventCoordinate(market)],
+      ],
+    })
+  const soap = product("Future handoff soap", "future-handoff-soap")
+  const candle = product("Future handoff candle", "future-handoff-candle")
+  relay.seed(
+    calendar,
+    market,
+    grant,
+    soap,
+    candle,
+    shipping,
+    createInboxDeclaration("organizer", createdAt),
+    createInboxDeclaration("merchant", createdAt),
+    createInboxDeclaration("buyer", createdAt)
+  )
+
+  await gotoAs(
+    page,
+    marketUrl,
+    `/products/${encodeURIComponent(eventCoordinate(soap))}`,
+    "buyer",
+    { event: eventCoordinate(market) }
+  )
+  await page.getByRole("button", { name: "Ship it", exact: true }).click()
+  const add = page.getByRole("button", { name: /^Add (1 to cart|more)/ })
+  await expect(add).toBeEnabled()
+  const revise = (offset: number) =>
+    signEvent(MERCHANT_SECRET, {
+      ...candle,
+      created_at: createdAt + offset,
+      tags: candle.tags.map((tag) =>
+        tag[0] === "price" ? ["price", String(offset), "SAT"] : tag
+      ),
+    })
+  relay.seed(revise(1))
+  await add.click()
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Product details changed" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Cart, 1 item", exact: true })
+  ).toHaveCount(0)
+  await expect(add).toBeEnabled()
+  await add.click()
+  await expect(
+    page.getByRole("button", { name: "Cart, 1 item", exact: true })
+  ).toBeVisible()
+
+  relay.seed(revise(2))
+  await add.click()
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Product details changed" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Cart, 1 item", exact: true })
+  ).toBeVisible()
+  await expect(add).toBeEnabled()
+  await add.click()
+  await expect(
+    page.getByRole("button", { name: "Cart, 2 items", exact: true })
+  ).toBeVisible()
+
+  relay.seed(
+    signEvent(MERCHANT_SECRET, {
+      kind: 5,
+      created_at: createdAt + 3,
+      content: "",
+      tags: [
+        ["a", eventCoordinate(candle)],
+        ["k", "30402"],
+      ],
+    })
+  )
+  await add.click()
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Current shipping terms could not be verified" })
+  ).toBeVisible()
+  await gotoAs(page, marketUrl, "/cart", "buyer")
+  await expect(
+    page.getByRole("button", { name: "Cart, 2 items", exact: true })
+  ).toBeVisible()
 })

@@ -147,6 +147,66 @@ describe("future organizer exact merchandise", () => {
     expect(fetched.coverage.attemptedRelayCount).toBe(0)
   })
 
+  it("does not certify forged receipt labels against an exact signed variation", async () => {
+    const variation = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: CREATED_AT,
+        tags: [
+          ["d", "soap-small"],
+          ["title", "Small soap"],
+          ["price", "1000", "SAT"],
+          ["type", "variation", "physical"],
+          ["a", `30402:${MERCHANT}:soap`],
+          ["spec", "Size", "Small"],
+        ],
+        content: "Small soap",
+      },
+      MERCHANT_SECRET
+    )
+    const valid = receiptFor([variation], true)
+    valid.items[0]!.selectedSpecifications = [{ key: "Size", value: "Small" }]
+    const validResolution = resolveFutureMarketReceiptMerchandiseEvidence({
+      receipt: valid,
+      events: [],
+      coverage: COVERAGE,
+    })
+    expect(
+      isVerifiedEventMarketReceiptMerchandiseResolution(validResolution)
+    ).toBe(true)
+    for (const forged of [
+      [{ key: "Size", value: "Large" }],
+      [{ key: "Color", value: "Small" }],
+      [
+        { key: "Size", value: "Small" },
+        { key: "Color", value: "Blue" },
+      ],
+      undefined,
+    ]) {
+      const receipt = receiptFor([variation], true)
+      receipt.items[0]!.selectedSpecifications = forged
+      const resolution = resolveFutureMarketReceiptMerchandiseEvidence({
+        receipt,
+        events: [],
+        coverage: COVERAGE,
+      })
+      expect(resolution.state).toBe("malformed")
+      expect(resolution.items[0]!.selectedSpecifications).toBeUndefined()
+      expect(
+        isVerifiedEventMarketReceiptMerchandiseResolution(resolution)
+      ).toBe(false)
+    }
+    const forged = receiptFor([variation], true)
+    forged.items[0]!.selectedSpecifications = [{ key: "Size", value: "Large" }]
+    const publicReads = forbidPublicMerchandiseReads()
+    const fetched = await getFutureMarketReceiptMerchandise({ receipt: forged })
+    expect(fetched.state).toBe("malformed")
+    expect(isVerifiedEventMarketReceiptMerchandiseResolution(fetched)).toBe(
+      false
+    )
+    expect(publicReads()).toBe(0)
+  })
+
   it("rejects forged or mismatched carried bytes without relay fallback or signing", async () => {
     const original = productEvent("soap", "Original soap")
     const newer = productEvent("soap", "Edited soap", CREATED_AT + 100)

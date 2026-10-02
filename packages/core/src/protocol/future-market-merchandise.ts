@@ -10,6 +10,7 @@ import {
   type GetEventMarketReceiptMerchandiseInput,
   type ResolveEventMarketReceiptMerchandiseEvidenceInput,
 } from "./event-market-merchandise"
+import { hasExactSelectedProductSpecifications } from "./event-market-order-evidence"
 
 export interface FutureMarketReceiptMerchandiseItem extends EventMarketReceiptMerchandiseItem {
   selectedSpecifications?: FutureMarketReadyReceiptSchema["items"][number]["selectedSpecifications"]
@@ -26,17 +27,31 @@ function includeReceiptSpecifications(
   resolution: EventMarketReceiptMerchandiseResolution,
   receipt: FutureMarketReadyReceiptSchema
 ): FutureMarketReceiptMerchandiseResolution {
-  // Keep the shared reader's authenticated object and its WeakSet certificate.
-  const projected: FutureMarketReceiptMerchandiseResolution = resolution
-  for (const [index, item] of projected.items.entries()) {
+  let invalidSelection = false
+  const items = resolution.items.map((item, index) => {
     const specifications = receipt.items[index]?.selectedSpecifications
-    if (specifications) {
-      item.selectedSpecifications = specifications.map((entry) => ({
-        ...entry,
-      }))
+    if (item.state !== "verified") return item
+    if (
+      !item.signedProduct ||
+      !hasExactSelectedProductSpecifications(item.signedProduct, specifications)
+    ) {
+      invalidSelection = true
+      return { ...item, state: "malformed" as const, signedProduct: undefined }
     }
+    return specifications
+      ? {
+          ...item,
+          selectedSpecifications: specifications.map((entry) => ({ ...entry })),
+        }
+      : item
+  })
+  if (invalidSelection) {
+    // A copied certificate cannot authenticate changed buyer labels.
+    return { ...resolution, state: "malformed", items }
   }
-  return projected
+  // Keep the shared reader's authenticated object and its WeakSet certificate.
+  resolution.items = items
+  return resolution
 }
 
 /** Resolve exact signed revisions; newer coordinate revisions never substitute. */

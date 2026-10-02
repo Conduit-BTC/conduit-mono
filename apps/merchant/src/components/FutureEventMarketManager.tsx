@@ -1413,11 +1413,19 @@ function MerchantAuthorityRow({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="merchant_present">Merchant booth</SelectItem>
-                <SelectItem value="organizer_handoff">
+                <SelectItem
+                  value="organizer_handoff"
+                  disabled={merchant === organizerPubkey}
+                >
                   Organizer pickup
                 </SelectItem>
               </SelectContent>
             </Select>
+            {merchant === organizerPubkey ? (
+              <p className="text-xs text-[var(--text-secondary)]">
+                When you're selling, buyers collect directly from your booth.
+              </p>
+            ) : null}
           </div>
           <div className="space-y-1">
             <Label htmlFor={`assignment-${merchant}`}>Public assignment</Label>

@@ -48,7 +48,10 @@ describe("Merchant live account authority", () => {
         /session.relayScope,[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,80}authGeneration/
       )
     }
-    expect(eventTimeline.match(generationGuard)).toHaveLength(2)
+    expect(eventTimeline.match(generationGuard)).toHaveLength(3)
+    expect(eventTimeline).toMatch(
+      /!signal\.aborted &&\s+!marketSignal\.aborted &&\s+authGenerationRef\.current === authGeneration/
+    )
     expect(shipping.match(generationGuard)).toHaveLength(1)
     expect(readiness.match(generationGuard)).toHaveLength(1)
   })
@@ -88,14 +91,14 @@ describe("Merchant live account authority", () => {
       "apps/merchant/src/components/MerchantEventsTimeline.tsx"
     )
     expect(hook).toContain(
-      'const authenticatedPubkey = status === "connected" ? pubkey : null'
+      'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
     expect(hook).not.toContain("authenticatedPubkey: merchantPubkey")
     expect(
       hook.match(
         /!signal.aborted && authGenerationRef.current === authGeneration/g
       )
-    ).toHaveLength(2)
+    ).toHaveLength(3)
     expect(hook).toMatch(
       /session.relayScope[\s\S]{0,80}authenticatedPubkey,[\s\S]{0,30}authGeneration/
     )

@@ -81,6 +81,13 @@ function validRows(rows: readonly EventMarketMerchantRow[]): boolean {
 export function buildEventMarketRosterDraft(
   input: EventMarketRosterDraftInput
 ): EventMarketEventDraft {
+  if (
+    input.merchants.some(
+      (row) =>
+        row.pubkey === input.organizerPubkey && row.mode === "organizer_handoff"
+    )
+  )
+    throw new Error("Self-selling organizers must use merchant booth pickup.")
   const calendar = parseAddressableCoordinate(input.calendarCoordinate, [
     EVENT_KINDS.CALENDAR_DATE,
     EVENT_KINDS.CALENDAR_TIME,
@@ -352,6 +359,11 @@ export function resolveEventMarketProduct(input: {
     (row) => row.pubkey === coordinate.authorPubkey
   )
   if (!merchant) return { state: "unapproved" }
+  if (
+    merchant.pubkey === input.market.organizerPubkey &&
+    merchant.mode === "organizer_handoff"
+  )
+    return { state: "malformed" }
   if (input.authorization?.state !== "active") return { state: "unauthorized" }
   const revisions = input.revisions
     .filter(

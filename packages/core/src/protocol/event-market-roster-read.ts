@@ -153,6 +153,8 @@ export function createEventMarketPickupSnapshot(input: {
       (!hasCurrentSignedEvidence(input.marketRead.calendarCoverage) ||
         calendar.end <= Date.now())) ||
     product.state !== "eligible" ||
+    (product.merchant.pubkey === market.market.organizerPubkey &&
+      product.merchant.mode === "organizer_handoff") ||
     authorization?.state !== "active" ||
     !input.productRead.actionable ||
     product.product.id !== input.productRead.productCoordinate
