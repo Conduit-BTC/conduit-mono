@@ -414,19 +414,31 @@ function readJsonFile<T>(path: string, label: string): T {
   }
 }
 
+export function buildPlaywrightSmokeDiscoveryArgs(
+  shard?: string,
+  config?: string
+): string[] {
+  if (config !== undefined && config.trim() === "") {
+    throw new Error("Playwright smoke config must name a configuration file.")
+  }
+  return [
+    "playwright",
+    "test",
+    "--list",
+    "--reporter=json",
+    ...(shard ? [`--shard=${shard}`] : []),
+    ...(config ? ["--config", config] : []),
+  ]
+}
+
 function discoverPlaywrightTests(
   area: SmokeArea | "all" = "all",
-  shard?: string
+  shard?: string,
+  config?: string
 ): PlaywrightJsonReport {
   const result = spawnSync(
     "bunx",
-    [
-      "playwright",
-      "test",
-      "--list",
-      "--reporter=json",
-      ...(shard ? [`--shard=${shard}`] : []),
-    ],
+    buildPlaywrightSmokeDiscoveryArgs(shard, config),
     {
       encoding: "utf8",
       env: {
@@ -451,6 +463,13 @@ function discoverPlaywrightTests(
 if (import.meta.main) {
   const selectedAreas = readSelectedAreas()
   const shard = readArgument("--shard")
+  const config = readArgument("--config")
+  if (
+    process.argv.includes("--config") &&
+    (!config || config.startsWith("--"))
+  ) {
+    throw new Error("Playwright smoke config must name a configuration file.")
+  }
   const executionReportPath = readArgument("--execution-report")
   const expectedManifestPath = readArgument("--expected-manifest")
   const manifestOutputPath = readArgument("--manifest-output")
@@ -496,10 +515,14 @@ if (import.meta.main) {
       )
     }
     const total = Number(match[2])
-    const full = discoverPlaywrightTests()
+    const full = discoverPlaywrightTests("all", undefined, config)
     validatePlaywrightSmokeAreas(full, selectedAreas)
     const parts = Array.from({ length: total }, (_, index) =>
-      discoverPlaywrightTests(selectedAreas[0]!, `${index + 1}/${total}`)
+      discoverPlaywrightTests(
+        selectedAreas[0]!,
+        `${index + 1}/${total}`,
+        config
+      )
     )
     validatePlaywrightSmokeShardPartition(
       buildPlaywrightSmokeManifest(full, selectedAreas, evidence),
@@ -509,7 +532,7 @@ if (import.meta.main) {
     )
     report = parts[Number(match[1]) - 1]!
   } else {
-    report = discoverPlaywrightTests()
+    report = discoverPlaywrightTests("all", undefined, config)
   }
   const counts = validatePlaywrightSmokeAreas(report, selectedAreas)
   const manifest = buildPlaywrightSmokeManifest(report, selectedAreas, evidence)

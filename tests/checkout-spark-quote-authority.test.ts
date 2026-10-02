@@ -398,7 +398,7 @@ describe("checkout Spark quote authority", () => {
     ).toThrow("Current signed checkout evidence changed")
   })
 
-  it("accepts a current pickup graph only with the exact product revision", async () => {
+  it("rejects a pickup snapshot without its exact signed graph bytes", async () => {
     const listing = product({
       format: "physical",
       shippingOptionId: PICKUP_ID,
@@ -410,14 +410,9 @@ describe("checkout Spark quote authority", () => {
     })
     if (authorization.status !== "ok") throw new Error("Expected checkout")
 
-    const bundle = buildCheckoutSparkQuoteAuthority({
-      authorization,
-      rateInput: null,
-    })
-    expect(bundle.lines[0]?.shippingOption).toEqual({
-      coordinate: PICKUP_ID,
-      eventId: PICKUP_EVENT_ID,
-    })
+    expect(() =>
+      buildCheckoutSparkQuoteAuthority({ authorization, rateInput: null })
+    ).toThrow("Current signed checkout evidence changed")
 
     const changed = {
       ...authorization,

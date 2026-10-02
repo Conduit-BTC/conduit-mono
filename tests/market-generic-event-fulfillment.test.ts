@@ -117,12 +117,13 @@ describe("generic Market event fulfillment", () => {
     expect(checkout).not.toContain("useProductCartFulfillmentBatch")
     expect(checkout).not.toContain("getCartEventFulfillmentBlock")
     expect(checkout).toContain("authorizeCurrentCheckoutItems")
+    // The settled router entry performs its own fresh authorization, too.
     expect(
       checkout.match(/await assertCheckoutItemsAvailable\(/g)
-    ).toHaveLength(2)
+    ).toHaveLength(3)
     expect(
       checkout.match(/getFreshPricingRateInput\(checkoutItems\)/g)
-    ).toHaveLength(2)
+    ).toHaveLength(3)
     expect(authorization).toContain("resolveCheckoutProductFulfillments")
     expect(authorization).toContain("assertCartPickupHandlerReady")
     expect(authorization).toContain("rebuildCurrentCartItems")

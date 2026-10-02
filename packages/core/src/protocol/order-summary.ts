@@ -8,6 +8,8 @@ import type { OrderItemFulfillmentSchema } from "../schemas"
 
 export type OrderSummary = {
   buyerIdentityKind: "signed_in" | "guest_ephemeral" | null
+  /** Validated private buyer routing hint, not settlement evidence. */
+  checkoutSparkRouted: boolean
   items: Array<{
     productId: string
     familyProductId?: string
@@ -82,6 +84,7 @@ export type OrderSummary = {
 export interface OrderSummaryParticipants {
   buyerPubkey: string
   merchantPubkey: string
+  orderId?: string
 }
 
 function normalizeSummaryCurrency(currency: unknown): string {
@@ -131,6 +134,7 @@ export function extractOrderSummary(
     participants?.buyerPubkey ?? firstOrder?.senderPubkey ?? ""
   const merchantPubkey =
     participants?.merchantPubkey ?? firstOrder?.recipientPubkey ?? ""
+  const summaryOrderId = participants?.orderId ?? firstOrder?.orderId ?? ""
   const isBuyerToMerchant = (message: ParsedOrderMessage) =>
     !!buyerPubkey &&
     !!merchantPubkey &&
@@ -193,6 +197,18 @@ export function extractOrderSummary(
   )
   const paymentConfirmed = merchantStatuses.some((message) =>
     isMerchantOrderPaid({ status: message.payload.status })
+  )
+  const checkoutSparkRouted = messages.some(
+    (message) =>
+      message.type === "order" &&
+      message.checkoutPaymentRoute === "spark_router_v1" &&
+      isBuyerToMerchant(message) &&
+      !!summaryOrderId &&
+      message.orderId === summaryOrderId &&
+      message.payload.id === summaryOrderId &&
+      message.payload.buyerPubkey.toLowerCase() === buyerPubkey.toLowerCase() &&
+      message.payload.merchantPubkey.toLowerCase() ===
+        merchantPubkey.toLowerCase()
   )
 
   const items =
@@ -314,6 +330,7 @@ export function extractOrderSummary(
       firstOrder?.type === "order"
         ? (firstOrder.payload.buyerIdentityKind ?? null)
         : null,
+    checkoutSparkRouted,
     items,
     itemSubtotal,
     shippingCostSats,

@@ -70,6 +70,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Active Compatibility Exceptions
 
+- `docs/knowledge/checkout-spark-recipient-verification-compat.md`: local-only
+  Coinos receiving-account lookup for preserved payout invoices; not a generic
+  receipt, settlement proof or production recovery guarantee
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order
   compatibility routing while users migrate to discoverable NIP-17 inbox
   declarations

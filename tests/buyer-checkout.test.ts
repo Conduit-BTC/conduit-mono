@@ -2610,6 +2610,7 @@ describe("payCheckoutInvoice", () => {
       )
     ).resolves.toEqual({
       status: "retryable_failure",
+      phase: "before_publish",
       reason: "Spark payment was not approved.",
     })
     expect(weblnPay).toHaveBeenCalledTimes(0)
@@ -2690,7 +2691,10 @@ describe("payCheckoutInvoice", () => {
       }
     )
 
-    expect(result).toMatchObject({ status: "retryable_failure" })
+    expect(result).toMatchObject({
+      status: "retryable_failure",
+      phase: "before_publish",
+    })
     expect(nwcPay).toHaveBeenCalledTimes(1)
     expect(weblnPay).toHaveBeenCalledTimes(0)
     expect(telemetryResults).toEqual([
@@ -2822,6 +2826,7 @@ describe("payCheckoutInvoice", () => {
       )
     ).resolves.toEqual({
       status: "retryable_failure",
+      phase: "before_publish",
       reason: "The selected browser wallet is unavailable.",
     })
     expect(walletPay).toHaveBeenCalledTimes(0)
@@ -3025,7 +3030,11 @@ describe("payCheckoutInvoice", () => {
         }
       )
 
-      expect(result).toEqual({ status: "retryable_failure", reason })
+      expect(result).toEqual({
+        status: "retryable_failure",
+        phase: "before_publish",
+        reason,
+      })
       expect(telemetryResults).toEqual([
         {
           amountSats: 1,

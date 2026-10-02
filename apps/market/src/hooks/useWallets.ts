@@ -68,6 +68,7 @@ import {
   notifyWalletChangeFallback,
   subscribeToWalletChangeFallback,
 } from "../lib/wallet-change-fallback"
+import { closeUnusedSparkWallets } from "../lib/checkout-spark-router-wallet-retention"
 
 /**
  * Reuse a recent live NWC probe across sequential route mounts. Explicit
@@ -187,12 +188,11 @@ export function useWallets(
           const openSparkRuntime = new Map<string, WalletRuntimeState>()
 
           if (sparkManager) {
-            await sparkManager.closeWalletsExcept(
-              new Set(
-                nextWallets
-                  .filter((wallet) => wallet.providerId === "spark")
-                  .map((wallet) => wallet.id)
-              )
+            await closeUnusedSparkWallets(
+              sparkManager,
+              nextWallets
+                .filter((wallet) => wallet.providerId === "spark")
+                .map((wallet) => wallet.id)
             )
             await Promise.all(
               nextWallets.map(async (wallet) => {

@@ -281,7 +281,8 @@ export function countDistinctMatchingRuntimePrivateWraps(input: {
  */
 export async function readAuthenticatedGiftWraps(
   identity: RuntimeSignerIdentity,
-  relayUrl: string
+  relayUrl: string,
+  nowMs: () => number = Date.now
 ): Promise<Event[]> {
   requireIdentitySecret(identity)
   const challengeSubscriptionId = "gift-wrap-challenge"
@@ -307,7 +308,7 @@ export async function readAuthenticatedGiftWraps(
 
     const authEvent = signRuntimeTestEvent(identity, {
       kind: 22_242,
-      created_at: Math.floor(Date.now() / 1_000),
+      created_at: Math.floor(nowMs() / 1_000),
       tags: [
         ["relay", relayUrl],
         ["challenge", challengeFrame[1] as string],

@@ -1,0 +1,311 @@
+import { describe, expect, it } from "bun:test"
+import { verifySavedMerchantCheckoutSparkRecipients } from "../apps/merchant/src/lib/checkout-spark-invoice-recipient"
+import {
+  createCheckoutSparkInvoiceRecipientRecord,
+  hasCheckoutSparkInvoiceRecipient,
+  verifyCheckoutSparkInvoiceRecipient,
+  type CheckoutSparkInvoiceRecipientRecord,
+} from "../packages/core/src/protocol/checkout-spark-invoice-recipient"
+import {
+  createCheckoutSparkSettledReconciliation,
+  deriveCheckoutSparkSettledTransferId,
+  freezeCheckoutSparkSettledPlan,
+  prepareCheckoutSparkSettledLeg,
+  recordCheckoutSparkSettledCredit,
+} from "../packages/core/src/protocol/checkout-spark-settled-router"
+import { CONDUIT_CHECKOUT_FEE_RECIPIENT } from "../packages/core/src/protocol/checkout-spark-router-obligations"
+import {
+  bolt11PaymentHashField,
+  bolt11PlainDescriptionField,
+} from "./support/bolt11-fixture"
+import {
+  bolt11PaymentSecretField,
+  makeSignedBolt11Fixture,
+} from "./support/signed-bolt11-fixture"
+
+const NOW = 1_800_000_000_000
+const MERCHANT = "a".repeat(64)
+type VerificationInput = Parameters<
+  typeof verifySavedMerchantCheckoutSparkRecipients
+>[0]
+
+function invoice(amount: number, byte: number) {
+  return makeSignedBolt11Fixture({
+    hrp: `lnbc${amount * 10}n`,
+    createdAt: NOW / 1_000,
+    fields: [
+      bolt11PaymentHashField(new Uint8Array(32).fill(byte)),
+      bolt11PaymentSecretField(),
+      bolt11PlainDescriptionField(),
+    ],
+  })
+}
+
+function fixture(address = "merchant@coinos.io") {
+  const plan = freezeCheckoutSparkSettledPlan({
+    checkoutId: "merchant-recipient-checkout",
+    orderId: "merchant-recipient-order",
+    merchantPubkey: MERCHANT,
+    walletId: "merchant-recipient-wallet",
+    network: "mainnet",
+    createdAt: NOW,
+    takeoverAt: NOW + 60_000,
+    commerceQuote: {
+      commerceTotalSats: 1_000,
+      lines: [
+        {
+          productCoordinate: `30402:${MERCHANT}:item`,
+          productEventId: "b".repeat(64),
+          merchantPubkey: MERCHANT,
+          quantity: 1,
+          unitMerchandiseSats: 1_000,
+          unitShippingSats: 0,
+        },
+      ],
+    },
+    funding: {
+      requestId: "receive-1",
+      paymentRequest: invoice(1_113, 3),
+      paymentHash: "03".repeat(32),
+      receiverIdentityPublicKey: `02${"c".repeat(64)}`,
+      grossFundingSats: 1_113,
+      createdAt: NOW,
+      expiresAt: NOW + 3_600_000,
+    },
+    recipients: [
+      {
+        kind: "merchant",
+        recipientId: MERCHANT,
+        destination: {
+          type: "lightning_address",
+          value: address,
+          source: {
+            type: "signed_profile",
+            profileEventId: "d".repeat(64),
+            profileEventCreatedAt: NOW / 1_000,
+          },
+        },
+        weightSats: 1_000,
+      },
+      {
+        kind: "conduit",
+        recipientId: CONDUIT_CHECKOUT_FEE_RECIPIENT,
+        destination: {
+          type: "lightning_address",
+          value: CONDUIT_CHECKOUT_FEE_RECIPIENT,
+          source: { type: "conduit_allowlist", policy: "production" },
+        },
+        weightSats: 111,
+      },
+    ],
+  })
+  const credited = recordCheckoutSparkSettledCredit(
+    createCheckoutSparkSettledReconciliation(plan),
+    {
+      requestId: plan.funding.requestId,
+      paymentHash: plan.funding.paymentHash,
+      transferId: "funding-transfer-1",
+      receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+      grossSats: 1_113,
+      creditedSats: 1_111,
+      observedAt: NOW + 1,
+    }
+  )
+  const legId = plan.recipients[0]!.legId
+  const state = prepareCheckoutSparkSettledLeg(credited, {
+    legId,
+    transferId: deriveCheckoutSparkSettledTransferId(plan, legId),
+    paymentRequest: invoice(995, 4),
+    paymentHash: "04".repeat(32),
+    invoiceAmountSats: 995,
+    maxFeeSats: 5,
+    preparedAt: NOW + 2,
+  })
+  const intent = state.legs[0]!.intent!
+  const canonical = {
+    id: "provider-invoice-1",
+    type: "lightning",
+    text: intent.paymentRequest,
+    hash: intent.paymentRequest,
+    paymentHash: intent.paymentHash,
+    amount: intent.invoiceAmountSats,
+    uid: "provider-user-1",
+    user: { id: "provider-user-1", username: "merchant" },
+  }
+  const records: CheckoutSparkInvoiceRecipientRecord[] = []
+  let current = true
+  let fetches = 0
+  const assertCurrent = () => {
+    if (!current) throw new Error("Session inactive")
+  }
+  const repository: VerificationInput["repository"] = {
+    async hasInvoiceRecipient(savedPlan, target, guard) {
+      guard?.()
+      return records.some((record) =>
+        hasCheckoutSparkInvoiceRecipient(record, savedPlan, target)
+      )
+    },
+    async recordInvoiceRecipientVerification(savedPlan, target, proof, guard) {
+      guard?.()
+      // This real proof boundary rejects unbranded evidence and persists only
+      // the bound attribution record, never a raw provider account response.
+      expect(Object.keys(proof)).toEqual([])
+      const record = createCheckoutSparkInvoiceRecipientRecord(
+        savedPlan,
+        target,
+        proof
+      )
+      records.push(structuredClone(record))
+    },
+  }
+  const fetchInvoiceRecord = async (url: string) => {
+    fetches += 1
+    // No provider invoice-creation endpoint is used in this read-only phase.
+    expect(
+      url ===
+        `https://coinos.io/api/invoice/${encodeURIComponent(intent.paymentRequest)}`
+    ).toBe(true)
+    return canonical
+  }
+  const input: VerificationInput = {
+    state,
+    repository,
+    assertCurrent,
+    now: () => NOW + 3,
+    verifyInvoice: (request) =>
+      verifyCheckoutSparkInvoiceRecipient(request, { fetchInvoiceRecord }),
+  }
+  return {
+    input,
+    records,
+    canonical,
+    fetches: () => fetches,
+    deactivate: () => {
+      current = false
+    },
+  }
+}
+
+describe("merchant saved invoice recipient verification", () => {
+  it("independently attributes the existing invoice without changing payment state", async () => {
+    const context = fixture()
+    const original = JSON.stringify(context.input.state)
+
+    expect(
+      await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).toBe("complete")
+    expect(context.fetches()).toBe(1)
+    expect(context.records).toHaveLength(1)
+    expect(Object.keys(context.records[0]!).sort()).toEqual([
+      "intentDigest",
+      "legId",
+      "schemaVersion",
+      "source",
+      "verifiedAt",
+    ])
+    expect(context.records[0]!.source).toBe("coinos_account_lookup_v1")
+    expect(context.records[0]!.verifiedAt).toBe(NOW + 3)
+    expect(JSON.stringify(context.input.state) === original).toBe(true)
+    expect(context.input.state.legs.every((leg) => leg.status !== "paid")).toBe(
+      true
+    )
+  })
+
+  it("skips an already persisted exact recipient proof", async () => {
+    const context = fixture()
+    await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    context.input.verifyInvoice = async () => {
+      throw new Error("A locally verified invoice needs no provider lookup")
+    }
+
+    expect(
+      await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).toBe("complete")
+    expect(context.fetches()).toBe(1)
+    expect(context.records).toHaveLength(1)
+  })
+
+  it("keeps unsupported recipients unverified without substituting a provider", async () => {
+    const context = fixture("merchant@example.test")
+
+    expect(
+      await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).toBe("complete")
+    expect(context.fetches()).toBe(0)
+    expect(context.records).toHaveLength(0)
+  })
+
+  it("leaves transient provider failures retryable without changing the saved intent", async () => {
+    const context = fixture()
+    const original = JSON.stringify(context.input.state)
+    const retry = context.input.verifyInvoice
+    context.input.verifyInvoice = (request) =>
+      verifyCheckoutSparkInvoiceRecipient(request, {
+        fetchInvoiceRecord: async () => {
+          throw new Error("Provider temporarily unavailable")
+        },
+      })
+
+    expect(
+      await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).toBe("unavailable")
+    expect(context.records).toHaveLength(0)
+    expect(JSON.stringify(context.input.state) === original).toBe(true)
+
+    context.input.verifyInvoice = retry
+    expect(
+      await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).toBe("complete")
+    expect(context.records).toHaveLength(1)
+  })
+
+  it.each(["account changes", "page becomes inactive"])(
+    "does not persist a recipient proof when the %s before the lookup finishes",
+    async () => {
+      const context = fixture()
+      context.input.verifyInvoice = (request) =>
+        verifyCheckoutSparkInvoiceRecipient(request, {
+          fetchInvoiceRecord: async () => {
+            context.deactivate()
+            return context.canonical
+          },
+        })
+
+      await expect(
+        verifySavedMerchantCheckoutSparkRecipients(context.input)
+      ).rejects.toThrow("Session inactive")
+      expect(context.records).toHaveLength(0)
+    }
+  )
+
+  it("checks the active session again after an existing-proof read", async () => {
+    const context = fixture()
+    context.input.repository.hasInvoiceRecipient = async () => {
+      context.deactivate()
+      return false
+    }
+
+    await expect(
+      verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).rejects.toThrow("Session inactive")
+    expect(context.fetches()).toBe(0)
+    expect(context.records).toHaveLength(0)
+  })
+
+  it("does not persist a completed proof after the active session changes", async () => {
+    const context = fixture()
+    context.input.verifyInvoice = async (request) => {
+      const result = await verifyCheckoutSparkInvoiceRecipient(request, {
+        fetchInvoiceRecord: async () => context.canonical,
+      })
+      expect(result.status).toBe("verified")
+      context.deactivate()
+      return result
+    }
+
+    await expect(
+      verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).rejects.toThrow("Session inactive")
+    expect(context.records).toHaveLength(0)
+  })
+})

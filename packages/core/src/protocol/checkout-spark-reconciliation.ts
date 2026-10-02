@@ -85,6 +85,11 @@ export interface CheckoutSparkCommerceQuoteLine {
     coordinate: string
     eventId: string
   }
+  /** Exact legacy event graph; selected pickup is the shippingOption above. */
+  pickup?: {
+    calendar: { coordinate: string; eventId: string }
+    collection: { coordinate: string; eventId: string }
+  }
 }
 
 export interface CheckoutSparkCommerceQuote {
@@ -317,7 +322,7 @@ function normalizeTimestamp(value: number, label: string): number {
 
 function normalizeCommerceCoordinate(
   value: string,
-  kind: 30402 | 30406,
+  kind: 30402 | 30405 | 30406 | 31922 | 31923,
   label: string
 ): string {
   const coordinate = normalizeBoundedString(
@@ -384,6 +389,46 @@ function normalizeCommerceQuote(
     if (unitShippingSats > 0 && !shippingOption) {
       throw new Error("Checkout Spark priced shipping lacks signed evidence.")
     }
+    const pickup =
+      candidate.pickup !== undefined
+        ? Object.freeze({
+            calendar: Object.freeze({
+              coordinate: normalizeCommerceCoordinate(
+                candidate.pickup.calendar.coordinate,
+                candidate.pickup.calendar.coordinate.startsWith("31922:")
+                  ? 31922
+                  : 31923,
+                "Commerce pickup calendar coordinate"
+              ),
+              eventId: normalizeHex64(
+                candidate.pickup.calendar.eventId,
+                "Commerce pickup calendar event"
+              ),
+            }),
+            collection: Object.freeze({
+              coordinate: normalizeCommerceCoordinate(
+                candidate.pickup.collection.coordinate,
+                30405,
+                "Commerce pickup collection coordinate"
+              ),
+              eventId: normalizeHex64(
+                candidate.pickup.collection.eventId,
+                "Commerce pickup collection event"
+              ),
+            }),
+          })
+        : undefined
+    if (pickup) {
+      const organizer = pickup.calendar.coordinate.split(":")[1]
+      const handler = shippingOption?.coordinate.split(":")[1]
+      if (
+        !shippingOption ||
+        pickup.collection.coordinate.split(":")[1] !== organizer ||
+        (handler !== organizer && handler !== lineMerchant)
+      ) {
+        throw new Error("Checkout Spark pickup graph authority is invalid.")
+      }
+    }
     return Object.freeze({
       productCoordinate,
       productEventId: normalizeHex64(
@@ -399,6 +444,7 @@ function normalizeCommerceQuote(
       ),
       unitShippingSats,
       ...(shippingOption ? { shippingOption } : {}),
+      ...(pickup ? { pickup } : {}),
     })
   })
   if (
@@ -529,6 +575,17 @@ function canonicalPlanValue(
               line.shippingOption
                 ? [line.shippingOption.coordinate, line.shippingOption.eventId]
                 : null,
+              ...(line.pickup
+                ? [
+                    [
+                      "pickup",
+                      line.pickup.calendar.coordinate,
+                      line.pickup.calendar.eventId,
+                      line.pickup.collection.coordinate,
+                      line.pickup.collection.eventId,
+                    ],
+                  ]
+                : []),
             ]),
           ],
         ]
@@ -728,7 +785,10 @@ function mergeObservedState<T extends string>(input: {
 /** The quote-bound merchant leg must name the listing merchant's account. */
 export function assertCheckoutSparkMerchantPayoutRecipient(
   merchantPubkey: string,
-  obligations: readonly CheckoutSparkObligationPlanInput[]
+  obligations: readonly Pick<
+    CheckoutSparkObligationPlanInput,
+    "kind" | "recipientId"
+  >[]
 ): void {
   const merchantLegs = obligations.filter((leg) => leg.kind === "merchant")
   if (

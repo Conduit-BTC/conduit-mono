@@ -7,6 +7,42 @@ import {
   type ProductStockDecision,
 } from "./productStock"
 
+/** Exact local signed listing frontier used by one Orders stock write. */
+export function captureOrderStockRevision(record: CommerceProductRecord) {
+  return {
+    addressId: record.addressId,
+    eventId: record.eventId,
+    eventCreatedAt: record.eventCreatedAt,
+    dTag: record.dTag,
+    pubkey: record.product.pubkey,
+    stock: record.product.stock,
+    allocation: JSON.stringify(record.product.supplierAllocation ?? null),
+  }
+}
+
+export function assertOrderStockRevisionCurrent(input: {
+  merchantPubkey: string
+  expected: ReturnType<typeof captureOrderStockRevision>
+  current: CommerceProductRecord | null | undefined
+}): void {
+  const current = input.current
+  const revision = current ? captureOrderStockRevision(current) : null
+  if (
+    !revision ||
+    revision.pubkey !== input.merchantPubkey ||
+    revision.addressId !== input.expected.addressId ||
+    revision.eventId !== input.expected.eventId ||
+    revision.eventCreatedAt !== input.expected.eventCreatedAt ||
+    revision.dTag !== input.expected.dTag ||
+    revision.stock !== input.expected.stock ||
+    revision.allocation !== input.expected.allocation
+  ) {
+    throw new Error(
+      "The listing changed while preparing the stock update. Refresh orders and try again."
+    )
+  }
+}
+
 /** Prepare a merchant-owned inventory mutation without reauthorizing fulfillment. */
 export function prepareOrderStockUpdate(input: {
   merchantPubkey: string

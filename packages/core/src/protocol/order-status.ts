@@ -58,6 +58,8 @@ export interface MerchantOrderState {
   accepted?: boolean
   /** The merchant has sent a payment request (invoice) for this order. */
   invoiceSent?: boolean
+  /** Buyer declared the private Spark router; this does not prove payment. */
+  checkoutSparkRouted?: boolean
   /** A merchant shipping update has been recorded, with or without tracking. */
   shippingUpdated?: boolean
   /** False only for an explicitly digital-only order. */
@@ -342,6 +344,10 @@ export function getMerchantOrderFulfillmentMode(
 }
 
 export function isMerchantOrderPaid(state: MerchantOrderState): boolean {
+  // The private router cannot inherit paid authority from a status message or
+  // a prior shipping action. Only the exact provider-verified projection sets
+  // `paid` for this lane; ordinary historical orders retain their own flow.
+  if (state.checkoutSparkRouted) return state.paid === true
   return (
     !!state.paid ||
     !!state.shippingUpdated ||
@@ -402,7 +408,9 @@ export function deriveOrderFlow(
   input: MerchantOrderState | string | null | undefined
 ): OrderFlow {
   const state = toState(input)
-  return (isMerchantOrderPaid(state) || !!state.paymentObserved) &&
+  return (isMerchantOrderPaid(state) ||
+    !!state.paymentObserved ||
+    !!state.checkoutSparkRouted) &&
     !state.invoiceSent
     ? "prepaid"
     : "invoice"
@@ -477,30 +485,37 @@ export function buildOrderStatusTimeline(
           title: "Confirm payment",
           subtitle: "Verify settlement before fulfilling the order.",
         }
-      : flow === "prepaid"
+      : state.checkoutSparkRouted && !state.invoiceSent
         ? {
-            title: "Await payment evidence",
-            subtitle: "Verify the checkout payment when evidence arrives.",
+            title: "Await checkout settlement",
+            subtitle: "Verify the routed payment when evidence arrives.",
           }
-        : state.invoiceSent
+        : flow === "prepaid"
           ? {
-              title: "Await payment",
-              subtitle: "Confirm payment after the buyer pays the invoice.",
+              title: "Await payment evidence",
+              subtitle: "Verify the checkout payment when evidence arrives.",
             }
-          : {
-              title: "Request payment",
-              subtitle:
-                state.buyerReplyable === false
-                  ? "Contact the buyer outside Nostr to request payment."
-                  : state.buyerReplyable === "unknown"
-                    ? "Recover the buyer identity before requesting payment."
-                    : "Send an invoice to the buyer.",
-            },
+          : state.invoiceSent
+            ? {
+                title: "Await payment",
+                subtitle: "Confirm payment after the buyer pays the invoice.",
+              }
+            : {
+                title: "Request payment",
+                subtitle:
+                  state.buyerReplyable === false
+                    ? "Contact the buyer outside Nostr to request payment."
+                    : state.buyerReplyable === "unknown"
+                      ? "Recover the buyer identity before requesting payment."
+                      : "Send an invoice to the buyer.",
+              },
     waiting: {
       title: "Payment",
       subtitle:
         flow === "prepaid"
-          ? "Verify payment evidence when it arrives."
+          ? state.checkoutSparkRouted && !state.invoiceSent
+            ? "Verify the routed payment when evidence arrives."
+            : "Verify payment evidence when it arrives."
           : "Accept the order before requesting payment.",
     },
   }

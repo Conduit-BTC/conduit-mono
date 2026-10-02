@@ -24,11 +24,12 @@ import {
 } from "../e2e/helpers/real-nip07-signer"
 import { startRelayServer } from "../scripts/dev/relay_bun"
 
-function startTestRelay() {
+function startTestRelay(now?: () => number) {
   const relay = startRelayServer({
     hostname: "127.0.0.1",
     port: 0,
     persistence: false,
+    now,
   })
   return {
     relay,
@@ -514,49 +515,57 @@ describe("real NIP-07 test signer", () => {
     }
   })
 
-  it("authenticates recipient-scoped NIP-42 gift-wrap reads", async () => {
-    const { relay, relayUrl } = startTestRelay()
-    const sender = createRuntimeSignerIdentity()
-    const recipient = createRuntimeSignerIdentity()
-    const unrelated = createRuntimeSignerIdentity()
-    const pool = new SimplePool()
+  it.each([0, 45 * 60_000])(
+    "authenticates recipient-scoped NIP-42 gift-wrap reads with clock offset %s",
+    async (offsetMs) => {
+      const nowMs = () => Date.now() + offsetMs
+      const { relay, relayUrl } = startTestRelay(nowMs)
+      const sender = createRuntimeSignerIdentity()
+      const recipient = createRuntimeSignerIdentity()
+      const unrelated = createRuntimeSignerIdentity()
+      const pool = new SimplePool()
 
-    try {
-      const recipientWrap = signRuntimeTestEvent(sender, {
-        kind: 1_059,
-        created_at: Math.floor(Date.now() / 1_000),
-        tags: [["p", recipient.pubkey]],
-        content: "opaque runner-only fixture",
-      })
-      const unrelatedWrap = signRuntimeTestEvent(sender, {
-        kind: 1_059,
-        created_at: Math.floor(Date.now() / 1_000),
-        tags: [["p", unrelated.pubkey]],
-        content: "unrelated opaque runner-only fixture",
-      })
-      await Promise.all(
-        pool.publish([relayUrl], recipientWrap, { maxWait: 2_000 })
-      )
-      await Promise.all(
-        pool.publish([relayUrl], unrelatedWrap, { maxWait: 2_000 })
-      )
+      try {
+        const recipientWrap = signRuntimeTestEvent(sender, {
+          kind: 1_059,
+          created_at: Math.floor(Date.now() / 1_000),
+          tags: [["p", recipient.pubkey]],
+          content: "opaque runner-only fixture",
+        })
+        const unrelatedWrap = signRuntimeTestEvent(sender, {
+          kind: 1_059,
+          created_at: Math.floor(Date.now() / 1_000),
+          tags: [["p", unrelated.pubkey]],
+          content: "unrelated opaque runner-only fixture",
+        })
+        await Promise.all(
+          pool.publish([relayUrl], recipientWrap, { maxWait: 2_000 })
+        )
+        await Promise.all(
+          pool.publish([relayUrl], unrelatedWrap, { maxWait: 2_000 })
+        )
 
-      const wraps = await readAuthenticatedGiftWraps(recipient, relayUrl)
-      const matchingRecipientWrapCount = wraps.filter(
-        (event) => event.id === recipientWrap.id
-      ).length
-      expect(wraps.length).toBe(1)
-      expect(matchingRecipientWrapCount).toBe(1)
-      expect(relay.counters.authAccepted).toBe(1)
-      expect(relay.counters.protectedRequests).toBe(1)
-    } finally {
-      pool.close([relayUrl])
-      disposeRuntimeSignerIdentity(sender)
-      disposeRuntimeSignerIdentity(recipient)
-      disposeRuntimeSignerIdentity(unrelated)
-      relay.server.stop()
+        const wraps = await readAuthenticatedGiftWraps(
+          recipient,
+          relayUrl,
+          nowMs
+        )
+        const matchingRecipientWrapCount = wraps.filter(
+          (event) => event.id === recipientWrap.id
+        ).length
+        expect(wraps.length).toBe(1)
+        expect(matchingRecipientWrapCount).toBe(1)
+        expect(relay.counters.authAccepted).toBe(1)
+        expect(relay.counters.protectedRequests).toBe(1)
+      } finally {
+        pool.close([relayUrl])
+        disposeRuntimeSignerIdentity(sender)
+        disposeRuntimeSignerIdentity(recipient)
+        disposeRuntimeSignerIdentity(unrelated)
+        relay.server.stop()
+      }
     }
-  })
+  )
 })
 
 describe("deterministic NWC wallet service", () => {

@@ -74,17 +74,24 @@ const contracts = [
         accountIdentity: "merchantPubkey",
         count: 1,
       },
-      {
-        intent: "commerce_author_event",
-        authorIdentity: "signerPubkey",
-        authenticatedIdentity: "authenticatedPubkey",
-        authenticatedPropertyPattern: "authenticatedPubkey",
-        accountIdentity: "signerPubkey",
-        count: 1,
-      },
     ],
     guards: [
       "const\\s+authenticatedPubkey\\s*=\\s*input\\.authenticatedPubkey\\s*===\\s*undefined\\s*\\|\\|\\s*suppliedAuthenticatedPubkey\\s*===\\s*signerPubkey\\s*\\?\\s*signerPubkey\\s*:\\s*null",
+      "deliverLocalProductShippingJob\\(\\s*shippingJob\\.id,\\s*publishExactProductShippingRelay,\\s*\\{\\s*authenticatedPubkey,",
+    ],
+  },
+  {
+    path: "apps/merchant/src/lib/product-listing-delivery.ts",
+    calls: [],
+    guards: [
+      "publishSignedEventToRelay\\(\\{\\s*signedEvent: input\\.signedEvent,\\s*relayUrl: input\\.relayUrl,\\s*authorPubkey: input\\.signedEvent\\.pubkey,\\s*accountPubkey: input\\.accountPubkey,\\s*authenticatedPubkey,",
+    ],
+  },
+  {
+    path: "packages/core/src/protocol/local-product-shipping-delivery.ts",
+    calls: [],
+    guards: [
+      "publishSignedEventToRelay\\(\\{\\s*relayUrl: input\\.relayUrl,\\s*signedEvent: input\\.signedEvent,\\s*authorPubkey: input\\.signedEvent\\.pubkey,\\s*accountPubkey: input\\.accountPubkey,\\s*authenticatedPubkey,",
     ],
   },
 ] as const

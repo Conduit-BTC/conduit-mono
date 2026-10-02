@@ -182,6 +182,26 @@ without approval performs no send. If re-preparing changes the fee or
 total, the user must approve the new values. A missing approval callback fails
 closed.
 
+An explicitly approved, immutable checkout-scoped router plan may authorize
+automatic private outgoing payments to its frozen recipients. Each invoice and
+outgoing fee must remain within that recipient's settled allocation. Separate
+per-leg fee approval is not required within this authorization. Approval must
+explain the funding total, allocation policy, fee deductions, and Conduit-last
+ordering; recipient net amounts are determined after exact inbound settlement
+and payout fee fitting. A changed plan, destination, allocation policy, or
+spending limit requires renewed approval. Ordinary wallet sends and the wallet
+payment funding the router retain their existing fee-approval boundary.
+
+Buyer-side automatic routing is foreground-only and requires a current order and buyer
+session. Pausing, hiding the page, changing identity, or leaving the order
+revokes automatic dispatch before the next irreversible operation; an already
+submitted operation must settle or be reconciled before another can start.
+Reload does not restore automatic authorization. Resume requires approval of
+the same saved plan and reconciliation of its existing attempts. Unknown
+outcomes never authorize a replacement invoice, new transfer identifier, or
+blind retry. Router completion requires every planned payout, including the
+Conduit leg; wallet retirement remains a separate evidence-gated action.
+
 An ambiguous result remains attached to the original wallet instance and
 attempt. The owner is directed to inspect that wallet's payment history, and
 no automatic retry is available until the result can be classified safely.

@@ -88,7 +88,8 @@ generation, storage, or access to a user's Nostr account key.
 
 Guest external-wallet checkout may create a per-order browser-generated key to
 sign the outbound private order and any external-payment report delivered to the
-merchant. This key is an order-scoped sender identity, not a Nostr inbox,
+merchant, and seal the bounded router recovery messages described below. This
+key is an order-scoped sender identity, not a Nostr inbox,
 account authentication, durable account-key or server-side custody, merchant
 signing, product publishing, wallet custody, or public zap signing.
 
@@ -113,6 +114,28 @@ The exception is constrained as follows:
   restricted to those events. Its review link must target the Merchant
   deployment paired with the Market deployment that created it; production,
   preview, signet, and supported local environments must not cross-link.
+- For a version-3 settled-allocation Spark router plan, a separate constrained
+  wrapping capability may seal the machine-only `checkout_spark_recovery`
+  and `checkout_spark_recovery_progress` rumors for that same order and
+  merchant. The canonical payload, plan, recipient, sender, and preparation
+  time must agree with the active guest identity before encryption or signing.
+  The capability must reject legacy router plans, generic messages, direct
+  rumor signatures, other recipients, and new signing after the existing
+  24-hour guest deadline. It reuses the guest key; it does not create another
+  account, key registry, or signer lifetime.
+- Router recovery uses the existing merchant-only NIP-59/NIP-44 envelope and
+  the merchant's current signed `kind:10050` inbox declaration, never the
+  compatibility order lane or a buyer self-copy. Persist the exact encrypted
+  wrap before publication; require a recipient relay acknowledgement before
+  exposing funding. Later progress must reference that acknowledged initial
+  handoff and carry no wallet secret. Neither plaintext recovery nor the
+  recovery rumor belongs in generic Messages, order history, or diagnostics.
+- Guest-key expiry ends new guest signing, not the merchant's recovery
+  authority. Already encrypted recovery records and exact-wrap delivery retry
+  state must not be pruned with the guest key. Merchant continuation still
+  requires the exact plan, order, objective takeover boundary, and current
+  settlement evidence; no new retention window is introduced. The guest
+  Nostr key is not used as a wallet seed or shared with the merchant.
 - Conduit clients must not project canonical advisory rumors carrying the exact
   versioned `["conduit", "order-companion", "1", "<kind-16-id>"]` marker, the
   `subject=conduit-order-notification` marker, and one non-empty `order` and `p`
@@ -137,9 +160,10 @@ The exception is constrained as follows:
   guest orders require both email and phone; shipping additionally requires its
   address contract. Historical pickup orders with one contact method remain
   readable but do not define the new-order requirement.
-- Same-session recovery means local invoice/payment-report continuity only. It
-  does not promise merchant status recovery, a private conversation, or durable
-  order history.
+- Same-session recovery means local invoice/payment-report and bounded router
+  continuity only. It does not promise merchant status recovery, a private
+  conversation, or durable order history. Merchant router recovery is a
+  separate encrypted capability, not a guest inbox.
 - This exception does not replace NIP-07/NIP-46 for signed-in buyers and does
   not broaden the Anon Conduit Shopper public zap signer exception.
 - Converting, claiming, or recovering a guest order into a durable identity is

@@ -429,7 +429,7 @@ function mergePublishResults(
   }
 }
 
-function getAuthorEventFallbackRelayUrls(input: {
+export function getAuthorEventFallbackRelayUrls(input: {
   eventKind: number | undefined
   intent: RelayWriteIntent
   attemptedRelayUrls: readonly string[]
@@ -1281,7 +1281,10 @@ export async function publishSignedEventToRelay(
     )
   }
   assertPublishSessionCurrent(input.shouldContinue)
-  const status = await publishSignedEventFrameToRelay({
+  const publishExactSignedEvent =
+    testOverrides.publishSignedEventFrameToRelay ??
+    publishSignedEventFrameToRelay
+  const status = await publishExactSignedEvent({
     signedEvent: input.signedEvent,
     relayUrl,
     timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
@@ -1299,6 +1302,9 @@ export async function publishSignedEventToRelay(
 export async function planPublishRelays(
   input: PublishWithPlannerInput
 ): Promise<RelayWritePlan> {
+  if (!input.exclusiveRelayUrls && testOverrides.planPublishRelays) {
+    return testOverrides.planPublishRelays(input)
+  }
   if (input.exclusiveRelayUrls) {
     const ownerSelectedRelayUrls =
       hasAuthenticatedAuthorRelayContext(input) &&

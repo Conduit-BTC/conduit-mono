@@ -19,7 +19,9 @@ import {
 } from "../apps/market/src/lib/checkout-spark-router-preparation"
 
 const CREATED_AT = 1_800_000_000_000
-const MERCHANT = getPublicKey(generateSecretKey())
+const MERCHANT_KEY = generateSecretKey()
+const MERCHANT = getPublicKey(MERCHANT_KEY)
+const RECIPIENT_SIGNING_KEYS = new Map([[MERCHANT, MERCHANT_KEY]])
 const BUYER = NDKPrivateKeySigner.generate()
 const MNEMONIC = generateSparkMnemonic()
 
@@ -95,7 +97,8 @@ function preparationInput() {
 async function readyInput(checkoutId = preparationInput().checkoutId) {
   return withMockRouterInvoiceWitnesses(
     { ...preparationInput(), checkoutId },
-    CREATED_AT / 1_000
+    CREATED_AT / 1_000,
+    RECIPIENT_SIGNING_KEYS
   )
 }
 
@@ -127,7 +130,8 @@ function fundingReceive() {
 describe("checkout Spark router preparation", () => {
   it("rejects another merchant payout before wallet creation despite valid invoice witnesses", async () => {
     const input = preparationInput()
-    const otherMerchant = getPublicKey(generateSecretKey())
+    const otherMerchantKey = generateSecretKey()
+    const otherMerchant = getPublicKey(otherMerchantKey)
     const ready = await withMockRouterInvoiceWitnesses(
       {
         ...input,
@@ -139,7 +143,8 @@ describe("checkout Spark router preparation", () => {
           })),
         },
       },
-      CREATED_AT / 1_000
+      CREATED_AT / 1_000,
+      new Map([[otherMerchant, otherMerchantKey]])
     )
     let walletCreateCalls = 0
     await expect(
@@ -239,7 +244,8 @@ describe("checkout Spark router preparation", () => {
         {
           ...(await withMockRouterInvoiceWitnesses(
             delayedInput,
-            CREATED_AT / 1_000
+            CREATED_AT / 1_000,
+            RECIPIENT_SIGNING_KEYS
           )),
           storage: new MemoryStorage(),
         },

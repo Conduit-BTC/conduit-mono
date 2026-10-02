@@ -8,6 +8,7 @@ import { config } from "../config"
 import type {
   OrderItemFulfillmentSchema,
   ProductShippingOptionReference,
+  ProductSupplierAllocation,
   ProductZapMessagePolicy,
 } from "../schemas"
 import type { AccountNetworkRoutingPolicy } from "../protocol/account-network-routing-policy"
@@ -15,6 +16,21 @@ import type {
   CheckoutSparkReconciliation,
   CheckoutSparkRetirementTombstone,
 } from "../protocol/checkout-spark-reconciliation"
+import type { CheckoutSparkSettledReconciliation } from "../protocol/checkout-spark-settled-router"
+import type { CheckoutSparkMerchantSettlementRecord } from "../protocol/checkout-spark-merchant-settlement"
+import type { CheckoutSparkInvoiceOriginRecord } from "../protocol/checkout-spark-invoice-origin"
+import type { CheckoutSparkInvoiceRecipientRecord } from "../protocol/checkout-spark-invoice-recipient"
+import type { CheckoutSparkMerchantOrderWitness } from "../protocol/checkout-spark-merchant-order-witness"
+import type { CheckoutSparkPlanSourceValidation } from "../protocol/checkout-spark-plan-sources"
+import type { StoredMerchantCheckoutSparkProgressDelivery } from "../protocol/checkout-spark-merchant-progress-repository"
+import type {
+  CheckoutSparkSupplierNotification,
+  StoredCheckoutSparkSupplierNotification,
+} from "../protocol/checkout-spark-supplier-notification"
+import type {
+  CheckoutSparkBuyerOrderBinding,
+  CheckoutSparkRetiredSettlementSummary,
+} from "../protocol/checkout-spark-retired-settlement"
 import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
@@ -131,6 +147,7 @@ export interface CachedProduct {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
+  supplierAllocation?: ProductSupplierAllocation
   location?: string
   geohash?: string
   eventId?: string
@@ -216,7 +233,8 @@ export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
 export type ProductDeletionRelayDeliveryStatus =
   "pending" | "acked" | "rejected" | "timed_out"
 
-export type ProductDeletionDeliveryState = "pending" | "partial" | "delivered"
+export type ProductDeletionDeliveryState =
+  "pending" | "partial" | "delivered" | "superseded_unpublished"
 
 export interface ProductDeletionRelayTarget {
   relayUrl: string
@@ -231,6 +249,8 @@ export interface ProductDeletionRelayDelivery {
   relayUrl: string
   status: ProductDeletionRelayDeliveryStatus
   attemptCount: number
+  /** Durable streak used only to pace background retries of explicit OK false. */
+  consecutiveRejections?: number
   lastAttemptAt?: number
   acknowledgedAt?: number
   rejectedAt?: number
@@ -253,6 +273,8 @@ export interface ProductDeletionDeliveryJob {
   state: ProductDeletionDeliveryState
   deliveryAttemptCount: number
   retryCount: number
+  /** Mixed mutation gate; deletion waits for one relay to ACK the full listing family. */
+  companionListingJobId?: string
   lastAttemptAt?: number
   nextRetryAt?: number
   /** Opaque local worker claim used to avoid duplicate cross-tab delivery. */
@@ -261,6 +283,131 @@ export interface ProductDeletionDeliveryJob {
   deliveryLeaseExpiresAt?: number
   createdAt: number
   updatedAt: number
+}
+
+export type ProductListingRelayDeliveryStatus =
+  "pending" | "acked" | "rejected" | "timed_out"
+
+export type ProductListingDeliveryState =
+  | "pending"
+  | "partial"
+  | "delivered"
+  | "failed"
+  /** Exact signed bytes remain durable, but this unattempted stage cannot publish. */
+  | "superseded_unpublished"
+
+export interface ProductListingRelayTarget {
+  relayUrl: string
+  /** True only when this target came from the merchant's own relay settings. */
+  ownerSelected: boolean
+  /** Immutable source provenance; retries still recheck the current layer policy. */
+  appRelay?: boolean
+  personalRelay?: boolean
+  independentRelay?: boolean
+}
+
+export interface ProductListingRelayDelivery {
+  eventId: string
+  relayUrl: string
+  status: ProductListingRelayDeliveryStatus
+  attemptCount: number
+  lastAttemptAt?: number
+  acknowledgedAt?: number
+  rejectedAt?: number
+  timedOutAt?: number
+}
+
+/**
+ * Durable delivery state for one exact, already-signed product-family revision.
+ *
+ * The signed events and relay targets are immutable. Delivery updates only the
+ * corresponding event/relay outcome so a later tab can replay the same bytes
+ * without asking the merchant to sign a mixed family revision.
+ */
+export interface ProductListingDeliveryJob {
+  id: string
+  merchantPubkey: string
+  signedEvents: SignedPublicNostrEvent[]
+  relayTargets: ProductListingRelayTarget[]
+  relayDelivery: ProductListingRelayDelivery[]
+  /** Exact NIP-09 job required by this mixed product mutation, when present. */
+  companionDeletionJobId?: string
+  /** Newly signed fixed-shipping events that must be ACKed before this listing can leave. */
+  prerequisiteShippingEventIds?: string[]
+  /** False while a mixed mutation is still staging its deletion and local cache. */
+  readyForDelivery?: boolean
+  /** Local-only provenance for an explicitly re-signed terminal rejection. */
+  replacedByListingJobId?: string
+  /** Durable successor-side recovery intent, persisted before readiness. */
+  replacesRejectedListingJobId?: string
+  /** Local replay authority only; historical signed bytes and ACKs stay immutable. */
+  localReplaySupersededBy?: Record<string, string>
+  state: ProductListingDeliveryState
+  deliveryAttemptCount: number
+  lastAttemptAt?: number
+  nextRetryAt?: number
+  createdAt: number
+  updatedAt: number
+}
+
+/** One committed local product mutation. No worker may infer authority from an uncommitted row. */
+export interface LocalProductWriteIntent {
+  id: string
+  merchantPubkey: string
+  productAddressIds: string[]
+  /** Exact signed baseline accepted by the atomic local commit. */
+  sourceRevisions?: Array<{ addressId: string; eventId: string | null }>
+  listingJobId?: string
+  deletionJobId?: string
+  shippingEventIds: string[]
+  stockCheckpointId?: string
+  committedAt: number
+}
+
+/** Device-local signed revision frontier for one merchant-owned coordinate. */
+export interface LocalProductWriteFrontier {
+  id: string
+  merchantPubkey: string
+  /** Last signed product revision, if any; a deletion does not invent a listing. */
+  eventId: string | null
+  eventCreatedAt: number | null
+  /** Strongest local address deletion cutoff, kept across later writes. */
+  deletionEventId?: string
+  deletionCreatedAt?: number
+  intentId: string
+}
+
+/** Exact signed shipping prerequisite; delivery and ACK handling remain separate. */
+export interface LocalProductShippingJob {
+  id: string
+  merchantPubkey: string
+  signedEvent: SignedPublicNostrEvent
+  relayUrls: string[]
+  acknowledgedRelayUrls: string[]
+  createdAt: number
+}
+
+/** Order stock recovery evidence committed with its signed product revision. */
+export interface LocalProductStockCheckpoint {
+  id: string
+  merchantPubkey: string
+  orderId: string
+  productAddressId: string
+  sourceEventId: string
+  signedEventId: string
+  adjustment: {
+    key: string
+    addressId: string
+    sourceEventId: string
+    title: string
+    quantity: number
+    currentStock: number
+    nextStock: number
+    shortfall: number
+    targetMode?: "custom"
+  }
+  state: "pending" | "applied" | "unpublished"
+  committedAt: number
 }
 
 export interface CachedProfile {
@@ -916,6 +1063,8 @@ export interface OrderLifecycle {
   }
   buyerPubkey: string
   buyerIdentityKind?: OrderBuyerIdentityKind
+  /** Local-only guest signing deadline; never extend it when preparation is slow. */
+  guestSessionExpiresAt?: number
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode
   /** When present, legacy direct-payment retries must not pay this order. */
@@ -1030,12 +1179,34 @@ export interface OrderLifecycle {
 export interface StoredCheckoutSparkPlanBinding {
   checkoutId: string
   planDigest: string
+  /** Exact authenticated buyer order; absent for older local preparations. */
+  orderWitness?: CheckoutSparkMerchantOrderWitness
+  /** Local signed-source admission; never copied from buyer recovery payloads. */
+  sourceValidation?: CheckoutSparkPlanSourceValidation
+  /** Exact verified public sources retained only while this plan is active. */
+  sourceEvents?: SignedPublicNostrEvent[]
+  /** Local exact-invoice resolution attestations; never imported from recovery. */
+  invoiceOrigins?: CheckoutSparkInvoiceOriginRecord[]
+  /** Independent provider attribution, verified on this device; never imported. */
+  invoiceRecipients?: CheckoutSparkInvoiceRecipientRecord[]
+  /** Private provider-verified facts retained when the active plan retires. */
+  merchantSettlement?: CheckoutSparkMerchantSettlementRecord
+  /** Bound to the delivered buyer order; no order body or session authority. */
+  buyerOrderBinding?: CheckoutSparkBuyerOrderBinding
+  /** Minimal frozen accounting facts kept after active state retirement. */
+  retiredSettlementSummary?: CheckoutSparkRetiredSettlementSummary
+  /** Exact signed ciphertext wraps pending private relay delivery; never plaintext. */
+  merchantProgressOutbox?: StoredMerchantCheckoutSparkProgressDelivery[]
+  /** Immutable supplier notices; retained after wallet retirement for exact retry/dedup. */
+  supplierNotificationOutbox?: StoredCheckoutSparkSupplierNotification[]
+  /** Minimal provider-verified notification eligibility; contains no wallet recovery data. */
+  supplierNotificationIntents?: CheckoutSparkSupplierNotification[]
 }
 
 export interface StoredCheckoutSparkReconciliation {
   checkoutId: string
   revision: number
-  state: CheckoutSparkReconciliation
+  state: CheckoutSparkReconciliation | CheckoutSparkSettledReconciliation
 }
 
 export interface StoredCheckoutSparkRetirement extends CheckoutSparkRetirementTombstone {
@@ -1063,6 +1234,11 @@ export class ConduitDB extends Dexie {
   merchantPendingInvoices!: EntityTable<StoredMerchantPendingInvoice, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
+  productListingOutbox!: EntityTable<ProductListingDeliveryJob, "id">
+  localProductWriteIntents!: EntityTable<LocalProductWriteIntent, "id">
+  localProductWriteFrontiers!: EntityTable<LocalProductWriteFrontier, "id">
+  localProductShippingOutbox!: EntityTable<LocalProductShippingJob, "id">
+  localProductStockCheckpoints!: EntityTable<LocalProductStockCheckpoint, "id">
   inboxDeclarationEvidence!: EntityTable<
     InboxDeclarationEvidenceRecord,
     "pubkey"
@@ -1293,11 +1469,20 @@ export class ConduitDB extends Dexie {
       checkoutSparkReconciliations: "checkoutId",
       checkoutSparkRetirements: "checkoutId",
       eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
+      // The local product-write preview used v20/v21 independently. Retain its
+      // stores while upgrading either lineage; v24 also adds them to main.
+      productListingOutbox:
+        "id, merchantPubkey, state, nextRetryAt, updatedAt, createdAt",
     })
 
     this.version(21).stores({
       eventMarketMerchantDecisionJobs:
         "id, [marketCoordinate+merchantPubkey], status, createdAt",
+      localProductWriteIntents: "id, merchantPubkey, listingJobId, committedAt",
+      localProductWriteFrontiers: "id, merchantPubkey, intentId",
+      localProductShippingOutbox: "id, merchantPubkey, createdAt",
+      localProductStockCheckpoints:
+        "id, merchantPubkey, orderId, productAddressId, state, committedAt",
     })
 
     this.version(22).stores({
@@ -1311,6 +1496,17 @@ export class ConduitDB extends Dexie {
     this.version(23).stores({
       // Durable signed evidence, kept outside prunable commerce caches.
       merchantShippingSettingsEvidence: "pubkey",
+    })
+
+    this.version(24).stores({
+      // Local write authority and delivery history are durable, not prunable cache.
+      productListingOutbox:
+        "id, merchantPubkey, state, nextRetryAt, updatedAt, createdAt",
+      localProductWriteIntents: "id, merchantPubkey, listingJobId, committedAt",
+      localProductWriteFrontiers: "id, merchantPubkey, intentId",
+      localProductShippingOutbox: "id, merchantPubkey, createdAt",
+      localProductStockCheckpoints:
+        "id, merchantPubkey, orderId, productAddressId, state, committedAt",
     })
   }
 }
