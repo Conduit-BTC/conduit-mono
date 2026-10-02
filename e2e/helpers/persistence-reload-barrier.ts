@@ -62,7 +62,7 @@ export function installPersistenceReloadBarrier(page: Page, appUrl: string) {
   page.on("requestfinished", onFinished)
   page.on("requestfailed", onFailed)
   page.on("close", dispose)
-  return {
+  const barrier = {
     dispose,
     async wait(timeoutMs = 10_000): Promise<void> {
       if (disposed) throw new Error("Persistence reload barrier was disposed.")
@@ -88,5 +88,17 @@ export function installPersistenceReloadBarrier(page: Page, appUrl: string) {
         waiters.add(settle)
       })
     },
+    async reload() {
+      for (;;) {
+        await barrier.wait()
+        // Even an idle wait yields: new work or failure may arrive before this
+        // continuation. Recheck synchronously before replacing the document.
+        if (disposed)
+          throw new Error("Persistence reload barrier was disposed.")
+        if (failed) throw new Error("Persistence reload local request failed.")
+        if (pending.size === 0) return page.reload()
+      }
+    },
   }
+  return barrier
 }

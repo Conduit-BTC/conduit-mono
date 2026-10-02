@@ -43,6 +43,7 @@ import {
   installHermeticCommerceNetwork,
 } from "./helpers/hermetic-network"
 import { createHermeticSparkNative } from "./helpers/hermetic-spark-native"
+import { installPersistenceReloadBarrier } from "./helpers/persistence-reload-barrier"
 import {
   createHermeticSparkTransport,
   installHermeticSparkTransport,
@@ -598,6 +599,7 @@ async function rehearseRouter(
       appUrl: marketUrl,
     })
     const page = await buyerContext.newPage()
+    const buyerPersistence = installPersistenceReloadBarrier(page, marketUrl)
     await installRealTestSigner(page, buyer, TEST_RELAY_URL)
     stage = "buyer catalog product load"
     await page.goto(`${marketUrl}${catalogPath}`)
@@ -830,6 +832,10 @@ async function rehearseRouter(
         appUrl: merchantUrl,
       })
       const coldPage = await coldContext.newPage()
+      const coldPersistence = installPersistenceReloadBarrier(
+        coldPage,
+        merchantUrl
+      )
       await coldPage.clock.install({ time: new Date(sharedClock.nowMs()) })
       await installRealTestSigner(coldPage, merchant, TEST_RELAY_URL)
       await coldPage.goto(`${merchantUrl}/orders?order=${orderId}`)
@@ -894,7 +900,7 @@ async function rehearseRouter(
       stage = "cold Merchant has no sends before reopening"
       expect(control().snapshot()).toEqual(beforeHandoff)
       stage = "cold Merchant reload navigation completes"
-      await coldPage.reload()
+      await coldPersistence.reload()
       stage = "cold Merchant enables automatic recovery on reopening"
       await expect(
         recovery.getByRole("button", {
@@ -988,7 +994,7 @@ async function rehearseRouter(
         stage =
           "cold Merchant never replays prior payments or invents recipient proof"
         const completed = control().snapshot()
-        await coldPage.reload()
+        await coldPersistence.reload()
         await expect(
           recovery.getByRole("heading", {
             name: "Payment needs attention",
@@ -1029,14 +1035,14 @@ async function rehearseRouter(
 
       stage = "cold Merchant retires only after fresh terminal zero evidence"
       control().setAdditionalOwnedSats(0)
-      await coldPage.reload()
+      await coldPersistence.reload()
       await expect
         .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
         .toBe("retired")
       const completed = control().snapshot()
       stage =
         "cold Merchant reload automatically checks without replaying payouts"
-      await coldPage.reload()
+      await coldPersistence.reload()
       await expect(
         recoveredOrder.getByText("Payment verified", { exact: true })
       ).toBeVisible({ timeout: 30_000 })
@@ -1315,7 +1321,7 @@ async function rehearseRouter(
     ).toBeVisible({ timeout: 30_000 })
     expect(control().snapshot()).toEqual(settled)
     stage = "retired buyer order survives reload without replay"
-    await page.reload()
+    await buyerPersistence.reload()
     await expect(
       page.getByText("Payment complete", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
