@@ -196,6 +196,86 @@ const resolveProductFulfillment = async (current: Product) => ({
 afterEach(() => __resetShippingTestOverrides())
 
 describe("current policy evidence at commerce action gates", () => {
+  for (const type of ["simple", "variation"] as const) {
+    for (const adjustments of [
+      [["conduit_shipping_adjustments", "1", "{"]],
+      [
+        ["conduit_shipping_adjustments", "1", '{"weightAllowanceGrams":50}'],
+        ["conduit_shipping_adjustments", "1", '{"weightAllowanceGrams":50}'],
+      ],
+    ]) {
+      it(`blocks malformed ${type} adjustments before any family signing (${adjustments.length} tags)`, async () => {
+        const source = reader()
+        const malformed = finalizeEvent(
+          {
+            ...event,
+            tags: [
+              ...event.tags.filter(([name]) => name !== "type"),
+              ["type", type, "physical"],
+              ...(type === "variation"
+                ? [
+                    ["a", `30402:${merchant}:parent`],
+                    ["spec", "Size", "Small"],
+                  ]
+                : []),
+              ...adjustments,
+            ],
+          },
+          secret
+        )
+        const baseline = parseProductEvent(new NDKEvent(undefined, malformed))!
+        expect(baseline.shippingAdjustmentsMalformed).toBe(true)
+        expect(
+          prepareCartFulfillment(
+            [{ ...createCartItemFromProduct(baseline), quantity: 1 }],
+            await source.read(),
+            destination
+          ).items[0]!.shippingPolicyQuote
+        ).toBeUndefined()
+        const lease = setTestAccountSigner(new NDKPrivateKeySigner(secret))
+        const sign = spyOn(lease, "signEvent").mockImplementation(async () => {
+          throw new Error("Unexpected product signing")
+        })
+        let localWrites = 0
+        try {
+          await expect(
+            signAndPublishProductWriteBundle(
+              {
+                merchantPubkey: merchant,
+                listings: [
+                  {
+                    ...listing,
+                    product: { ...product, id: `30402:${merchant}:two` },
+                    dTag: "two",
+                  },
+                  {
+                    product: { ...baseline, title: "Title-only edit" },
+                    dTag: "one",
+                    fulfillmentIntent: { kind: "preserve_existing", baseline },
+                  },
+                ],
+                onSignedLocal: async () => {
+                  localWrites++
+                },
+              },
+              {
+                getShippingOptions: source.read,
+                getEventMarketPickups: async () => [],
+              }
+            )
+          ).rejects.toThrow("repair or remove")
+          expect(sign).not.toHaveBeenCalled()
+          expect(localWrites).toBe(0)
+          expect(() =>
+            buildProductListingEventDraft({ product: baseline, dTag: "one" })
+          ).toThrow("repair or remove")
+        } finally {
+          sign.mockRestore()
+          removeTestAccountSigner(lease)
+        }
+      })
+    }
+  }
   const legacyPolicy: ShippingPolicy = {
     ...policy,
     version: 1,

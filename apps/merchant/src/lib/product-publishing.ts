@@ -491,6 +491,11 @@ export async function prepareProductPublicationListings(
     "getEventMarketPickups" | "getShippingOptions"
   >
 ): Promise<PreparedProductListingPublishTarget[]> {
+  if (listings.some(({ product }) => product.shippingAdjustmentsMalformed)) {
+    throw new Error(
+      "Change fulfillment to repair or remove invalid shipping adjustments before publishing."
+    )
+  }
   const coordinate = getMerchantShippingPolicyCoordinate(input.merchantPubkey)
   const isTable = (listing: ProductListingPublishTarget) =>
     listing.fulfillmentIntent.kind === "weight_table" ||

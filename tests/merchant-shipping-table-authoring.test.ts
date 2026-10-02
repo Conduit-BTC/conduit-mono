@@ -732,6 +732,172 @@ describe("merchant shipping table authoring", () => {
     // Shared policy remains unchanged; switching one product generates no withdrawal.
     expect(option.eventId).toBe(event.id)
   })
+  test.each(["repair", "remove"] as const)(
+    "explicitly %ss malformed parent and variation adjustments before signed republication",
+    async (action) => {
+      const terms: ShippingPolicy = {
+        version: 2,
+        title: "Repair rates",
+        originCountry: "US",
+        currency: "SATS",
+        domestic: {
+          rules: [
+            {
+              country: "US",
+              bands: [{ maxWeightGrams: 1000, priceMinor: 100 }],
+            },
+          ],
+        },
+        international: null,
+      }
+      const policyEvent = finalizeEvent(
+        { ...buildShippingPolicyEventDraft({ policy: terms }), created_at: 20 },
+        secret
+      )
+      const current = parseShippingOptionEvent(
+        new NDKEvent(undefined, policyEvent)
+      )!
+      current.readSource = "relay"
+      current.readCoverage = "complete"
+      const records = ["one", "one-small"].map((dTag, index) => {
+        const source = {
+          ...product,
+          id: `30402:${pubkey}:${dTag}`,
+          type: index === 0 ? ("variable" as const) : ("variation" as const),
+          parentProductId: index === 0 ? undefined : `30402:${pubkey}:one`,
+          specifications: index === 0 ? [] : [{ key: "Size", value: "Small" }],
+          price: 1000,
+          currency: "SATS",
+          sourcePrice: undefined,
+          shippingWeightAllowanceGrams: undefined,
+          shippingHandling: undefined,
+          shippingOptionId: tableIntent.policyCoordinate,
+        }
+        const draft = buildProductListingEventDraft({ product: source, dTag })
+        const signed = finalizeEvent(
+          {
+            ...draft,
+            tags: [...draft.tags, ["conduit_shipping_adjustments", "1", "{"]],
+            created_at: 21,
+          },
+          secret
+        )
+        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+        expect(parsed.shippingAdjustmentsMalformed).toBe(true)
+        return {
+          product: parsed,
+          dTag,
+          addressId: parsed.id,
+          eventId: signed.id,
+          eventCreatedAt: signed.created_at,
+        }
+      })
+      const family = {
+        root: records[0]!,
+        variations: records.slice(1),
+        orphanVariation: false,
+      }
+      const restored = getProductVariationFormState(
+        family.root,
+        family.variations
+      )
+      expect(restored.supported).toBe(true)
+      expect(() =>
+        buildProductFamilyChangePlan({
+          parentDTag: "one",
+          baseProduct: { ...family.root.product, title: "Title-only edit" },
+          variations: restored.state,
+          currency: "SATS",
+          fulfillmentIntent: {
+            kind: "preserve_existing",
+            baseline: family.root.product,
+          },
+          authoringCountries: [],
+          existing: family,
+        })
+      ).toThrow("repair or remove")
+      const fields = {
+        shippingWeightGrams: "250",
+        shippingWeightAllowanceGrams: action === "repair" ? "50" : "",
+        shippingHandling: action === "repair" ? "25" : "",
+      }
+      const change = buildProductFamilyChangePlan({
+        parentDTag: "one",
+        baseProduct: {
+          ...family.root.product,
+          ...getProductShippingMeasurements({ ...fields, currency: "SATS" }),
+          shippingAdjustmentsMalformed: undefined,
+        },
+        variations: {
+          ...restored.state,
+          rows: restored.state.rows.map((row) => ({ ...row, ...fields })),
+        },
+        currency: "SATS",
+        fulfillmentIntent: { ...tableIntent, policyEventId: policyEvent.id },
+        authoringCountries: [],
+        existing: family,
+      })
+      expect(change.publish).toHaveLength(2)
+      const prepared = await prepareProductPublicationListings(
+        change.publish,
+        { merchantPubkey: pubkey },
+        { ...dependencies, getShippingOptions: async () => [current] }
+      )
+      const items = prepared.map((target) => {
+        expect(target.product.shippingAdjustmentsMalformed).toBeUndefined()
+        const signed = finalizeEvent(
+          {
+            ...buildProductListingEventDraft({
+              product: applyProductFulfillmentIntentForPublication({
+                product: target.product,
+                merchantPubkey: pubkey,
+                productDTag: target.dTag,
+                intent: target.fulfillmentIntent,
+              }),
+              dTag: target.dTag,
+            }),
+            created_at: 22,
+          },
+          secret
+        )
+        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+        expect(parsed.shippingAdjustmentsMalformed).toBeUndefined()
+        expect(parsed.shippingHandling?.amount).toBe(
+          action === "repair" ? 25 : undefined
+        )
+        expect(parsed.shippingWeightAllowanceGrams).toBe(
+          action === "repair" ? 50 : undefined
+        )
+        return {
+          productId: parsed.id,
+          productEventId: signed.id,
+          productCreatedAt: signed.created_at,
+          productEvent: signed,
+          currency: "SATS",
+          quantity: 1,
+          weightGrams: parsed.shippingWeightGrams,
+          shippingWeightAllowanceGrams: parsed.shippingWeightAllowanceGrams,
+          shippingHandling: parsed.shippingHandling,
+          subtotalMinor: 1000,
+        }
+      })
+      const result = quoteShippingPolicy({
+        policy: terms,
+        policyCoordinate: tableIntent.policyCoordinate,
+        policyEventId: policyEvent.id,
+        policyCreatedAt: policyEvent.created_at,
+        merchantPubkey: pubkey,
+        policyEvent,
+        destination: { country: "US" },
+        rateInput: { rate: 10000, fetchedAt: Date.now(), source: "env" },
+        items,
+      })
+      expect(result.status).toBe("quoted")
+      if (result.status !== "quoted") throw new Error(result.status)
+      expect(result.quote.handlingMinor).toBe(action === "repair" ? 50 : 0)
+      expect(result.quote.amountMinor).toBe(action === "repair" ? 150 : 100)
+    }
+  )
   test("table variations share measurements only with an explicit authoring choice", async () => {
     const state = generateProductVariationRows({
       ...createEmptyProductVariationForm(),

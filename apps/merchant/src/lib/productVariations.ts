@@ -1689,6 +1689,9 @@ function buildVariationProduct(
     })
   }
 
+  if (!preserveExistingFulfillment) {
+    product.shippingAdjustmentsMalformed = undefined
+  }
   if (product.format === "digital") {
     product = copyShippingProjection(product, {
       shippingCostSats: undefined,
@@ -1967,6 +1970,7 @@ export function buildProductFamilyChangePlan<
   }
   const publish = desired.filter((target) => {
     if (!target.existing?.dTag) return true
+    if (target.existing.product.shippingAdjustmentsMalformed) return true
     const existingFulfillmentIntent =
       resolvePublishedProductFulfillmentIntentForTarget(target.existing.product)
     if (!existingFulfillmentIntent) return true

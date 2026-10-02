@@ -262,6 +262,11 @@ export function buildProductListingEventDraft({
   if (product.priceEvidenceMalformed) {
     throw new Error("Product price evidence is malformed")
   }
+  if (product.shippingAdjustmentsMalformed) {
+    throw new Error(
+      "Change fulfillment to repair or remove invalid shipping adjustments before publishing."
+    )
+  }
   const normalizedDTag = dTag.trim()
   if (!normalizedDTag) throw new Error("Product d tag is required")
 
