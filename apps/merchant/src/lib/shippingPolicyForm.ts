@@ -249,12 +249,15 @@ export function getProductShippingMeasurements(form: {
   }
   if (form.shippingHandling?.trim()) {
     const currency = form.currency ?? "SATS"
-    const minor = shippingMoneyToMinorUnits(
-      parsePlainDecimalAmount(form.shippingHandling, "Handling charge"),
-      currency
-    )
+    const minor = shippingMoneyToMinorUnits(form.shippingHandling, currency)
+    const amount = shippingMinorUnitsToAmount(minor, currency)
+    if (shippingMoneyToMinorUnits(amount, currency) !== minor) {
+      throw new Error(
+        "Handling charge is too large to preserve exactly. Enter a smaller amount."
+      )
+    }
     result.shippingHandling = {
-      amount: shippingMinorUnitsToAmount(minor, currency),
+      amount,
       currency,
       normalizedCurrency: normalizeCurrencyIdentity(currency),
     }

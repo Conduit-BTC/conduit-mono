@@ -12,6 +12,10 @@ import {
   type ShippingPolicyV1,
   parseShippingOptionEvent,
   productSchema,
+  parseProductEvent,
+  quoteShippingPolicy,
+  shippingMoneyToMinorUnits,
+  policyCurrencyMinorDigits,
   type ShippingPolicy,
 } from "../packages/core/src"
 import {
@@ -392,6 +396,132 @@ describe("merchant shipping table authoring", () => {
       shippingHandling: product.shippingHandling,
     })
   })
+  test.each(["SATS", "MSATS", "JPY", "USD", "KWD", "CLF", "BTC"])(
+    "preserves every accepted %s handling minor unit through signed product parsing and quoting",
+    (currency) => {
+      const digits = policyCurrencyMinorDigits(currency)
+      const exactText = (minor: number) => {
+        const text = String(minor).padStart(digits + 1, "0")
+        return digits
+          ? `${text.slice(0, -digits)}.${text.slice(-digits)}`
+          : text
+      }
+      const losesMaximum = ["USD", "KWD", "BTC"].includes(currency)
+      if (losesMaximum) {
+        expect(() =>
+          getProductShippingMeasurements({
+            currency,
+            shippingHandling: exactText(Number.MAX_SAFE_INTEGER),
+          })
+        ).toThrow("preserve exactly")
+      }
+      const exactPolicy: ShippingPolicy = {
+        version: 2,
+        title: "Handling boundary",
+        originCountry: "US",
+        currency,
+        domestic: {
+          rules: [
+            {
+              country: "US",
+              bands: [{ maxWeightGrams: 500_000, priceMinor: 0 }],
+            },
+          ],
+        },
+        international: null,
+      }
+      const policyEvent = finalizeEvent(
+        {
+          ...buildShippingPolicyEventDraft({ policy: exactPolicy }),
+          created_at: 30,
+        },
+        secret
+      )
+      for (const minor of [
+        0,
+        1,
+        12345,
+        Number.MAX_SAFE_INTEGER - 1,
+        ...(losesMaximum ? [] : [Number.MAX_SAFE_INTEGER]),
+      ]) {
+        const measurements = getProductShippingMeasurements({
+          currency,
+          shippingWeightGrams: "250",
+          shippingHandling: exactText(minor),
+        })
+        expect(
+          shippingMoneyToMinorUnits(
+            measurements.shippingHandling!.amount,
+            currency
+          )
+        ).toBe(minor)
+        const price = currency === "MSATS" ? 1000 : 1
+        const quantity = currency === "MSATS" && minor === 1 ? 1000 : 1
+        const signed = finalizeEvent(
+          {
+            ...buildProductListingEventDraft({
+              product: {
+                ...product,
+                ...measurements,
+                price,
+                currency,
+                shippingWeightAllowanceGrams: undefined,
+                shippingOptionId: tableIntent.policyCoordinate,
+              },
+              dTag: "one",
+            }),
+            created_at: 31,
+          },
+          secret
+        )
+        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+        expect(
+          shippingMoneyToMinorUnits(parsed.shippingHandling!.amount, currency)
+        ).toBe(minor)
+        const result = quoteShippingPolicy({
+          policy: exactPolicy,
+          policyCoordinate: tableIntent.policyCoordinate,
+          policyEventId: policyEvent.id,
+          policyCreatedAt: policyEvent.created_at,
+          merchantPubkey: pubkey,
+          policyEvent,
+          destination: { country: "US" },
+          rateInput: {
+            rate: minor <= 12345 ? 10_000 : 1_000_000_000_000,
+            fetchedAt: Date.now(),
+            source: "env",
+            fiatUsdRates: { JPY: 1, KWD: 1, CLF: 1 },
+            fiatSource: "env",
+          },
+          items: [
+            {
+              productId: parsed.id,
+              productEventId: signed.id,
+              productCreatedAt: signed.created_at,
+              productEvent: signed,
+              currency,
+              quantity,
+              weightGrams: parsed.shippingWeightGrams,
+              shippingHandling: parsed.shippingHandling,
+              subtotalMinor:
+                shippingMoneyToMinorUnits(price, currency) * quantity,
+            },
+          ],
+        })
+        expect(result.status).toBe("quoted")
+        if (result.status !== "quoted") throw new Error(result.status)
+        expect(result.quote.handlingMinor).toBe(minor * quantity)
+        expect(result.quote.amountMinor).toBe(minor * quantity)
+        if (result.quote.version !== 2) throw new Error("Expected v2 terms")
+        expect(
+          shippingMoneyToMinorUnits(
+            result.quote.items[0]!.shippingHandling!.amount,
+            currency
+          )
+        ).toBe(minor)
+      }
+    }
+  )
   test("validates product packing weights and exact handling precision in the product currency", () => {
     expect(
       getProductShippingMeasurements({
