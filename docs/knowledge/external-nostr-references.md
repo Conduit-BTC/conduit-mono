@@ -95,7 +95,26 @@ status are maintained in the guide rather than duplicated here.
 
 ### Auth and payments
 
-- Conduit Market and Merchant durable account auth remains external-signer-only. NIP-07 and NIP-46 are signer paths, not key-custody permission. Approved browser-generated exceptions are the outbound-only `guest_ephemeral` order sender in `docs/specs/protocol.md`, scoped to one guest order and its payment report, and the encrypted browser-local client connection key used to establish a NIP-46 signer session. Neither is a Conduit-custodied user account key. The only approved server-side private-key exception is the Anon Conduit Shopper public zap signer in `docs/specs/protocol.md`, scoped to authenticated merchant-authorized checkout zap requests and fixed-recipient Conduit.Market project-tip zap requests. See `docs/knowledge/anon-zap-signer-handoff.md` for the public-safe signer config and request boundary.
+- Conduit Market and Merchant currently use external NIP-07/NIP-46 signers.
+  The approved optional installed-PWA local exception imports an existing,
+  user-backed-up account key only in the separately reviewed `conduit-signer`
+  repository's dedicated signer origin. That origin owns import, persistence,
+  key use and logout. Apps/services must never receive a key, backup or material
+  that independently unwraps it. Physical-iPhone persistence and maintainer
+  security sign-off precede runtime integration; origin, deployment and release
+  approval remain separate. No account-key creation, server custody, wallet
+  derivation, settings sync or recovery. Automatic restore is not independent
+  at-rest protection. See `docs/specs/protocol.md` for the bounded contract.
+- Approved browser-generated exceptions remain the outbound-only
+  `guest_ephemeral` order sender and encrypted browser-local NIP-46 client
+  connection key. Runtime disposable fixtures in the separate signer's isolated
+  development control/test process are permitted without fixed credentials,
+  export, diagnostic or network sinks; they are not product key creation.
+  Existing guest-order/Portable Wallet boundaries and protected-smoke checks
+  remain enforced. The only approved server-side private-key exception is the
+  Anon Conduit Shopper public zap signer, scoped to authenticated merchant-
+  authorized checkout zap and fixed-recipient Conduit.Market project-tip zap
+  requests. See `docs/knowledge/anon-zap-signer-handoff.md` for its boundary.
 - NIP-42 relay AUTH is ephemeral relay-session authentication, not an app login
   system or persisted Conduit identity layer. The Conduit client keeps challenge
   and auth-event state in memory, but sends the signing request to the selected

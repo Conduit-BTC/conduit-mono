@@ -15,8 +15,9 @@ References:
 
 Non-goals for the current client repository:
 
-- durable Nostr user account-key custody or generation, server-side wallet
-  custody, escrow, or refunds
+- app-origin or server custody of Nostr account keys, account-key generation,
+  server-side wallet custody, escrow, or refunds; the bounded separate-origin
+  existing-key import exception below does not widen these boundaries
 - server-managed NIP-46 account custody or signer recovery beyond the current
   external-signer flow
 - service-operated checkout automation, except the scoped Anon Conduit Shopper public zap signer described below
@@ -25,13 +26,57 @@ Non-goals for the current client repository:
 
 ## Authentication
 
-Conduit Market and Merchant Portal user authentication use external signers only.
+Conduit Market and Merchant Portal currently authenticate through external
+signers. The separate-origin local path below is approved in policy and remains
+gated before runtime integration.
 
-| Signer path           | Status                 | Notes                                                   |
-| --------------------- | ---------------------- | ------------------------------------------------------- |
-| NIP-07 browser signer | Current client support | Required path for current interactive signing           |
-| NIP-46 remote signer  | Current client support | Uses a revocable encrypted browser-local client key     |
-| App-generated keys    | Prohibited by default  | Only the bounded guest-order exception below is allowed |
+| Signer path                  | Status                             | Notes                                                              |
+| ---------------------------- | ---------------------------------- | ------------------------------------------------------------------ |
+| NIP-07 browser signer        | Current client support             | Required path for current interactive signing                      |
+| NIP-46 remote signer         | Current client support             | Uses a revocable encrypted browser-local client key                |
+| Separate-origin local signer | Approved policy; integration gated | Existing-key import only; physical-iPhone and security gates below |
+| App-generated keys           | Prohibited by default              | Only the bounded guest-order exception below is allowed            |
+
+### Separate-Origin Imported Account Key Exception
+
+An optional installed-PWA local signer may import an existing, user-backed-up
+Nostr account key only inside the independently reviewed `conduit-signer`
+repository's dedicated HTTPS origin. The signer owns entry, validation, device-
+local persistence, key use and logout. No key, backup or independent unwrapping
+capability may reach Market/Merchant origins or Conduit services. No account-key
+creation, server custody, recovery, wallet derivation or settings sync is allowed.
+Runtime disposable fixtures are allowed only inside that repository's isolated
+development control and unit-test process, without fixed keys or export,
+diagnostic or network sinks; they are not a product creation feature.
+
+Physical-iPhone persistence in normal Safari and installed Market/Merchant PWAs
+on the exact approved origins and maintainer security sign-off must pass before
+runtime integration. Repository/policy approval
+does not approve an origin, deployment or release. Existing external signers and
+signer-free browsing remain available. Show the local option only in installed
+mode; this is a UX gate, not signing authority. Automatic restore and ordinary
+operations have no routine per-action approval and provide no independent unlock
+or hardware-backed at-rest guarantee. Explain separate imports and logout per
+storage partition using physical device evidence.
+
+The narrow typed API comprises status/public key, complete verified event
+signing, NIP-44 v2 encryption/decryption, logout and explicit legacy NIP-04
+decrypt-only capability. Import, export and NIP-04 sending are not RPC operations.
+Require exact message origin/source, request/channel/frame correlation,
+account/session binding, bounded timeouts and stale-response rejection. Adapt to
+the existing AccountSigner/SessionSigner and AuthContext owners; auth/frame
+replacement and logout cancel pending work. A reported public key, profile or
+restoration candidate cannot grant protected reads. A future local adapter may
+become eligible only through the existing authenticated-account owner after the
+gate passes; guest-order keys remain ineligible.
+
+Preserve the existing shared NIP-17/NIP-59 construction and verification:
+unsigned rumors, author-signed seals and ephemeral-key gift wraps. No new legacy
+sending. NIP-44 v3 remains gated on public references and explicit capability
+detection. Diagnostics and review evidence must contain no keys, key-derived
+material, identities or private payloads. Logout deletes the active record and
+revokes its live storage-partition sessions; it cannot guarantee forensic erasure
+or deletion from independent partitions.
 
 ### Relay Read Authentication
 
@@ -47,7 +92,9 @@ source IP, destination, timing, and traffic volume.
 The protected-read executor owns plain Nostr request/event contracts,
 WebSockets, subscription lifecycles, authentication, reconnects, validation,
 and typed per-relay outcomes without importing NDK. NIP-07 and NIP-46 are the
-only eligible account signer adapters. Guest-order keys and unsigned sessions
+currently eligible account signer adapters. The gated local provider must satisfy
+the account-owner requirements above before eligibility changes. Guest-order
+keys and unsigned sessions
 cannot authenticate and have no fallback. NDK remains a named edge adapter for
 existing signer and gift-wrap/unwrap work; protected reads must not deepen its
 relay ownership.

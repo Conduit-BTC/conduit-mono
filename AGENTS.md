@@ -48,11 +48,26 @@ Read only the rows the change actually touches. A route can cross several rows.
 
 ## Trust and product boundaries
 
-- Durable Nostr account signing uses external NIP-07 or NIP-46 signers. Apps
-  must not generate, store, or derive account keys. The bounded guest-order key
-  and isolated device-local Portable Wallet credential boundaries are distinct
+- Durable Nostr account signing currently uses external NIP-07 or NIP-46 signers.
+  The approved optional installed-PWA local signer may import an existing,
+  user-backed-up account key only inside the separately reviewed `conduit-signer`
+  repository's dedicated signer origin. That origin exclusively owns import,
+  persistence, key use and logout. Market/Merchant origins and Conduit services
+  must never receive or store the key, backup or material that independently
+  unwraps it. Physical-iPhone persistence and maintainer security sign-off are
+  mandatory before runtime integration. Origin, deployment and release approval
+  remain separate. Automatic restore provides no independent unlock or
+  hardware-backed at-rest protection. Preserve browsing and external signers;
+  installed mode is a UX gate, not key authority.
+  Apps must not generate, store, or derive account keys. The bounded guest-order
+  key and isolated device-local Portable Wallet credential boundaries are distinct
   exceptions; neither creates a Nostr account. The device-owned `/wallet`
   surface works without a connected signer.
+- Runtime disposable fixtures are allowed only in the separate signer's isolated
+  development test control and unit-test process, from a CSPRNG source. No fixed
+  scalar, encoded credential, real key, export, diagnostic or network sink is
+  allowed. This does not widen protected-smoke credential rules or authorize
+  product account-key creation, wallet derivation, settings sync or recovery.
 - Product listings use NIP-99 plus the Open Markets working specification for
   `kind:30402`, derived from the earlier GammaMarkets `market-spec`. Check public
   protocol authority before changing event meaning or canonical emission. Do
