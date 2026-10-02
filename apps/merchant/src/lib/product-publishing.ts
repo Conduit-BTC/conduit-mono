@@ -518,6 +518,7 @@ export async function prepareProductPublicationListings(
       "The shipping table could not be verified. Check Shipping before publishing."
     )
   }
+  const currentPolicy = option.shippingPolicy
   const prepared = listings.map((listing): ProductListingPublishTarget => {
     if (!isTable(listing)) return listing
     const product =
@@ -531,6 +532,18 @@ export async function prepareProductPublicationListings(
         : listing.product
     if (product.format === "digital")
       return { ...listing, fulfillmentIntent: { kind: "digital" } }
+    if (
+      currentPolicy.version === 1 &&
+      (normalizeCurrencyIdentity(
+        product.sourcePrice?.currency ?? product.currency
+      ) !== currentPolicy.currency ||
+        product.shippingWeightAllowanceGrams !== undefined ||
+        product.shippingHandling !== undefined)
+    ) {
+      throw new Error(
+        "These shipping rates do not support a different product currency or per-product packing and handling. Save Shipping to upgrade your rates before publishing, or use the table currency and remove packing and handling adjustments."
+      )
+    }
     if (
       !Number.isSafeInteger(product.shippingWeightGrams) ||
       product.shippingWeightGrams! <= 0

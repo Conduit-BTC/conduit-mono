@@ -9,6 +9,7 @@ import {
   __resetShippingTestOverrides,
   __setShippingTestOverrides,
   buildShippingPolicyEventDraft,
+  buildProductListingEventDraft,
   fetchMerchantShippingPolicy,
   getMerchantShippingPolicyCoordinate,
   getShippingOptionsByCoordinates,
@@ -30,6 +31,7 @@ import {
 } from "../apps/market/src/lib/cart-shipping-options"
 import {
   prepareProductPublicationListings,
+  applyProductFulfillmentIntentForPublication,
   signAndPublishProductWriteBundle,
 } from "../apps/merchant/src/lib/product-publishing"
 
@@ -194,6 +196,182 @@ const resolveProductFulfillment = async (current: Product) => ({
 afterEach(() => __resetShippingTestOverrides())
 
 describe("current policy evidence at commerce action gates", () => {
+  const legacyPolicy: ShippingPolicy = {
+    ...policy,
+    version: 1,
+    weightAllowanceGrams: 0,
+    handlingMinor: 0,
+  }
+  const incompatibleLegacyTerms = [
+    { name: "different currency", currency: "USD" },
+    {
+      name: "different signed price currency",
+      sourcePrice: { amount: 10, currency: "USD", normalizedCurrency: "USD" },
+    },
+    { name: "packing allowance", shippingWeightAllowanceGrams: 50 },
+    {
+      name: "explicit zero packing allowance",
+      shippingWeightAllowanceGrams: 0,
+    },
+    {
+      name: "handling charge",
+      shippingHandling: {
+        amount: 25,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    },
+    {
+      name: "explicit zero handling",
+      shippingHandling: {
+        amount: 0,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    },
+  ]
+  for (const changes of incompatibleLegacyTerms) {
+    it(`blocks legacy v1 ${changes.name} before signing new or preserved table listings`, async () => {
+      const source = reader()
+      const legacyEvent = policyEvent(1, legacyPolicy)
+      source.setEvents([legacyEvent])
+      const { name: _name, ...fields } = changes
+      const incompatible = { ...product, sourcePrice: undefined, ...fields }
+      const signed = finalizeEvent(
+        {
+          ...buildProductListingEventDraft({
+            product: incompatible,
+            dTag: "one",
+          }),
+          created_at: 2,
+        },
+        secret
+      )
+      const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+      expect(
+        prepareCartFulfillment(
+          [{ ...createCartItemFromProduct(parsed), quantity: 1 }],
+          await source.read(),
+          destination
+        ).items[0]!.shippingPolicyQuote
+      ).toBeUndefined()
+      const lease = setTestAccountSigner(new NDKPrivateKeySigner(secret))
+      const sign = spyOn(lease, "signEvent").mockImplementation(async () => {
+        throw new Error("Unexpected product signing")
+      })
+      let localWrites = 0
+      try {
+        for (const intent of [
+          { ...listing.fulfillmentIntent, policyEventId: legacyEvent.id },
+          { kind: "preserve_existing" as const, baseline: parsed },
+        ]) {
+          await expect(
+            signAndPublishProductWriteBundle(
+              {
+                merchantPubkey: merchant,
+                listings: [
+                  {
+                    product: incompatible,
+                    dTag: "one",
+                    fulfillmentIntent: intent,
+                  },
+                ],
+                onSignedLocal: async () => {
+                  localWrites++
+                },
+              },
+              {
+                getShippingOptions: source.read,
+                getEventMarketPickups: async () => [],
+              }
+            )
+          ).rejects.toThrow("Save Shipping to upgrade your rates")
+        }
+        expect(sign).not.toHaveBeenCalled()
+        expect(localWrites).toBe(0)
+      } finally {
+        sign.mockRestore()
+        removeTestAccountSigner(lease)
+      }
+    })
+  }
+  it("publishes automatically quoteable compatible v1 and adjusted mixed-currency v2 terms", async () => {
+    for (const terms of [legacyPolicy, policy]) {
+      const source = reader()
+      const current = policyEvent(terms.version, terms)
+      source.setEvents([current])
+      const candidate =
+        terms.version === 1
+          ? product
+          : {
+              ...product,
+              currency: "MSATS",
+              sourcePrice: undefined,
+              shippingWeightAllowanceGrams: 50,
+              shippingHandling: {
+                amount: 25000,
+                currency: "MSATS",
+                normalizedCurrency: "MSATS",
+              },
+            }
+      const prepared = await prepareProductPublicationListings(
+        [
+          {
+            product: candidate,
+            dTag: "one",
+            fulfillmentIntent: {
+              ...listing.fulfillmentIntent,
+              policyEventId: current.id,
+            },
+          },
+        ],
+        { merchantPubkey: merchant },
+        {
+          getShippingOptions: source.read,
+          getEventMarketPickups: async () => [],
+        }
+      )
+      const target = prepared[0]!
+      const signed = finalizeEvent(
+        {
+          ...buildProductListingEventDraft({
+            product: applyProductFulfillmentIntentForPublication({
+              product: target.product,
+              merchantPubkey: merchant,
+              productDTag: target.dTag,
+              intent: target.fulfillmentIntent,
+            }),
+            dTag: target.dTag,
+          }),
+          created_at: 2,
+        },
+        secret
+      )
+      const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+      const items = [{ ...createCartItemFromProduct(parsed), quantity: 1 }]
+      const reviewed = prepareCartFulfillment(
+        items,
+        await source.read(),
+        destination
+      ).items
+      expect(reviewed[0]!.shippingPolicyQuote).toMatchObject({
+        version: terms.version,
+        amountSats: terms.version === 1 ? 100 : 125,
+      })
+      await expect(
+        authorizeCurrentCheckoutItems({
+          mode: "direct_payment",
+          rawItems: items,
+          reviewedItems: reviewed,
+          refreshedProducts: [parsed],
+          destination,
+          readShippingOptions: source.read,
+          resolveProductFulfillment,
+          authorizePickupHandlers: async () => {},
+        })
+      ).resolves.toBeDefined()
+    }
+  })
   for (const mode of ["live", "partial_live"] as const) {
     it(`blocks conflicting policy revisions through ${mode}, subset reads and restart until a newer revision`, async () => {
       let source = reader()
