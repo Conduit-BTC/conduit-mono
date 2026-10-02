@@ -1356,6 +1356,10 @@ describe("paginated Merchant Spark recovery discovery", () => {
     })
     const all = Array.from({ length: 513 }, (_, index) => wrap(index + 1))
     const conflictWrapId = all[511]!.id
+    // The mocked decrypt boundary returns two exact rumors, not 513 newly
+    // reconstructed copies. All 513 distinct signed outer wraps still reach discovery.
+    const initialRumor = buildCheckoutSparkRecoveryRumor(initial)
+    const conflictRumor = buildCheckoutSparkRecoveryRumor(conflict)
     let readCount = 0
     __setCommerceTestOverrides({
       resolveInboxRelayUrls: async () => [FIRST_INBOX],
@@ -1375,9 +1379,7 @@ describe("paginated Merchant Spark recovery discovery", () => {
         )
       },
       giftUnwrap: async (event) =>
-        buildCheckoutSparkRecoveryRumor(
-          event.id === conflictWrapId ? conflict : initial
-        ),
+        event.id === conflictWrapId ? conflictRumor : initialRumor,
     })
     const session = await createMerchantCheckoutSparkRecoveryDiscovery(MERCHANT)
     let result = await session.nextPage()

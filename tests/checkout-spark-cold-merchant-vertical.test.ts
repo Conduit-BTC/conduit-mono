@@ -20,7 +20,6 @@ import {
   DexieCheckoutSparkSettledRepository,
   DexieMerchantCheckoutSparkProgressRepository,
   freezeCheckoutSparkSettledPlan,
-  getMerchantCheckoutSparkRecoveryList,
   getNdk,
   openCheckoutSparkMerchantProgressWrap,
   orderSchema,
@@ -245,6 +244,11 @@ describe("offline cold Merchant guest supplier recovery", () => {
         sends: [] as string[],
         snapshots: 0,
       }
+      let followupDiscovery:
+        | Awaited<
+            ReturnType<typeof createMerchantCheckoutSparkRecoveryDiscovery>
+          >
+        | undefined
 
       try {
         const merchantSigner = setTestAccountSigner(fixture.merchantSigner)
@@ -615,10 +619,18 @@ describe("offline cold Merchant guest supplier recovery", () => {
             return input.outgoing ? wallet : { ...wallet, outgoing: undefined }
           },
         }
+        // Match the worker's retained discovery session after the cold import.
+        // Newly signed progress is still opened and validated on each sweep;
+        // previously admitted wraps need not be decrypted from scratch again.
+        followupDiscovery = await createMerchantCheckoutSparkRecoveryDiscovery(
+          plan.merchantPubkey
+        )
+        let needsRescan = false
         const discover = async () => {
-          const found = await getMerchantCheckoutSparkRecoveryList(
-            plan.merchantPubkey
-          )
+          if (needsRescan) followupDiscovery!.restartScan()
+          const found = await followupDiscovery!.nextPage()
+          expect(found.history.hasMore).toBe(false)
+          needsRescan = true
           expect(found.conflictCount).toBe(0)
           expect(found.decryptFailureCount).toBe(0)
           expect(found.candidates).toHaveLength(1)
@@ -787,6 +799,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
         ).toBe("retired")
         expect(calls.opens).toBe(opensAfterRetirement)
       } finally {
+        followupDiscovery?.dispose()
         clearTestAccountSigner()
         __resetCommerceTestOverrides()
         __resetProtectedReadSigner()

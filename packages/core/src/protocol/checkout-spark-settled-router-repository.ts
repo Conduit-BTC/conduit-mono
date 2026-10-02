@@ -1252,12 +1252,10 @@ export class DexieCheckoutSparkSettledRepository {
           leg.intent.preparedAt !== target.intent.preparedAt
         )
           return false
-        return hasCheckoutSparkInvoiceOrigin(
-          binding?.invoiceOrigins?.find((origin) =>
+        return (
+          binding?.invoiceOrigins?.some((origin) =>
             hasCheckoutSparkInvoiceOrigin(origin, canonical, target)
-          ),
-          canonical,
-          target
+          ) ?? false
         )
       }
     )
@@ -1301,12 +1299,10 @@ export class DexieCheckoutSparkSettledRepository {
           !matchesSavedInvoiceTarget(snapshot.state, target)
         )
           return false
-        return hasCheckoutSparkInvoiceRecipient(
-          binding.invoiceRecipients?.find((recipient) =>
+        return (
+          binding.invoiceRecipients?.some((recipient) =>
             hasCheckoutSparkInvoiceRecipient(recipient, canonical, target)
-          ),
-          canonical,
-          target
+          ) ?? false
         )
       }
     )
