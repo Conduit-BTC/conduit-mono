@@ -9,6 +9,7 @@ import {
 } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
+  fetchMerchantShippingPolicy,
   getShippingOptionAddress,
   getShippingOptionsByCoordinates,
   useAuth,
@@ -161,6 +162,20 @@ export function useMerchantReadiness() {
   )
   const hasAuthoritativeStoredShipping =
     isStoredShippingConfigAuthoritative(rawShippingConfig)
+  const shippingPolicyQuery = useQuery({
+    queryKey: ["merchant-shipping-policy", pubkey ?? "none"],
+    enabled: !!pubkey && authStatus === "connected",
+    queryFn: ({ signal }) =>
+      fetchMerchantShippingPolicy(pubkey!, {
+        accountPubkey: pubkey,
+        authenticatedPubkey,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+      }),
+    staleTime: 30_000,
+  })
+  const shippingPolicyReady = shippingPolicyQuery.data?.state === "found"
   const remoteShippingQuery = useQuery({
     queryKey: ["merchant-shipping-options", pubkey ?? "none", authStatus],
     enabled: !!pubkey && !hasAuthoritativeStoredShipping,
@@ -192,8 +207,9 @@ export function useMerchantReadiness() {
   )
   const shippingCheckPending =
     !!pubkey &&
-    !hasAuthoritativeStoredShipping &&
-    remoteShippingQuery.isFetching
+    !shippingPolicyReady &&
+    ((!hasAuthoritativeStoredShipping && remoteShippingQuery.isFetching) ||
+      shippingPolicyQuery.isFetching)
   const networkComplete = isNetworkComplete(
     session.accountNetworkPreferences.reconciliation?.projection.rows ?? []
   )
@@ -237,6 +253,7 @@ export function useMerchantReadiness() {
   return getMerchantSetupReadiness({
     profile,
     shippingConfig: effectiveShippingConfig,
+    shippingPolicyReady,
     networkComplete,
     hasNwc,
     profileCheckPending,

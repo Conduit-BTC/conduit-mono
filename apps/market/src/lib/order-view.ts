@@ -31,7 +31,11 @@ import {
   type SourcePriceQuote,
 } from "@conduit/core"
 import type { StatusStepperRow, StatusStepperRowStatus } from "@conduit/ui"
-import type { CartItemFulfillment, CartPickupFulfillment } from "./cart-model"
+import type {
+  CartItem,
+  CartItemFulfillment,
+  CartPickupFulfillment,
+} from "./cart-model"
 import { getPickupHandoffSummary } from "./pickup-handoff"
 
 /** Show controlled copy, never an arbitrary provider response saved in lastError. */
@@ -80,6 +84,8 @@ export interface OrderViewItem {
   currency: string
   sourcePrice?: SourcePriceQuote
   shippingCostSats?: number
+  shippingPolicyQuote?: CartItem["shippingPolicyQuote"]
+  shippingAllocatedCostSats?: number
   sourceShippingCost?: SourcePriceQuote
   fulfillment?: CartItemFulfillment
 }
@@ -562,6 +568,8 @@ export function buildOrderViewModel(
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
+        shippingPolicyQuote: item.shippingPolicyQuote,
+        shippingAllocatedCostSats: item.shippingAllocatedCostSats,
         ...(item.sourcePrice ? { sourcePrice: item.sourcePrice } : {}),
         ...(item.shippingCostSats !== undefined
           ? { shippingCostSats: item.shippingCostSats }
@@ -590,6 +598,8 @@ export function buildOrderViewModel(
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
+        shippingPolicyQuote: item.shippingPolicyQuote,
+        shippingAllocatedCostSats: item.shippingAllocatedCostSats,
         ...(item.sourcePrice ? { sourcePrice: item.sourcePrice } : {}),
         ...(item.shippingCostSats !== undefined
           ? { shippingCostSats: item.shippingCostSats }

@@ -1,7 +1,8 @@
-import type {
-  ParsedShippingOption,
-  PricingRateInput,
-  Product,
+import {
+  hasCurrentShippingPolicyEvidence,
+  type ParsedShippingOption,
+  type PricingRateInput,
+  type Product,
 } from "@conduit/core"
 import {
   getCartCommerceFingerprint,
@@ -66,6 +67,7 @@ export async function authorizeCurrentCheckoutItems(input: {
   rawItems: readonly CartItem[]
   refreshedProducts: readonly Product[]
   readShippingOptions: CheckoutShippingOptionReader
+  destination?: { country: string; subdivision?: string; postalCode?: string }
   rateInput?: PricingRateInput
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
@@ -134,6 +136,18 @@ export async function authorizeCurrentCheckoutItems(input: {
       shippingCoordinates.length === 0
         ? []
         : await input.readShippingOptions(shippingCoordinates)
+    if (
+      shippingOptions.some(
+        (option) =>
+          shippingCoordinates.includes(option.id) &&
+          option.shippingPolicy &&
+          !hasCurrentShippingPolicyEvidence(option)
+      )
+    ) {
+      throw new Error(
+        "The current shipping rates could not be verified. Try again or arrange shipping with the merchant before paying."
+      )
+    }
   } catch (error) {
     if (input.mode === "direct_payment") throw error
 
@@ -151,7 +165,12 @@ export async function authorizeCurrentCheckoutItems(input: {
       },
     }
   }
-  const prepared = prepareCartFulfillment(refreshedRawItems, shippingOptions)
+  const prepared = prepareCartFulfillment(
+    refreshedRawItems,
+    shippingOptions,
+    input.destination,
+    input.rateInput ?? null
+  )
 
   if (
     getCartCommerceFingerprint(prepared.items) !==

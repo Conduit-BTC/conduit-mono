@@ -21,6 +21,11 @@ import {
   type OrderPickupFulfillmentSchema,
   type OrderEventMarketPickupFulfillmentSchema,
   type PickupEvidenceCoordinateSchema,
+  type ShippingPolicyQuote,
+  type SourcePriceQuote,
+  type SignedPublicNostrEvent,
+  isValidSignedPublicNostrEvent,
+  shippingPolicyQuoteSchema,
 } from "@conduit/core"
 
 export const CART_STORAGE_VERSION = 2
@@ -56,6 +61,12 @@ export type CartItem = {
   fulfillment?: CartItemFulfillment
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats?: number
+  shippingWeightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: SourcePriceQuote
+  shippingPolicyQuote?: ShippingPolicyQuote
+  /** Shipping allocated to this entire line, independent of quantity. */
+  shippingAllocatedCostSats?: number
   sourceShippingCost?: {
     amount: number
     currency: string
@@ -75,6 +86,7 @@ export type CartItem = {
   productUpdatedAt?: number
   /** Signed kind-30402 event id paired with productUpdatedAt for NIP-01 ordering. */
   productEventId?: string
+  signedProductEvent?: SignedPublicNostrEvent
   /** True only after exact canonical kind-30406 resolution. */
   canonicalShippingResolved?: boolean
   publicZapEnabled?: boolean
@@ -296,8 +308,14 @@ export function createCartItemFromProduct(
     shippingCountries: pickup || pickupPending ? [] : product.shippingCountries,
     shippingCountryRules:
       pickup || pickupPending ? [] : product.shippingCountryRules,
+    shippingWeightGrams: product.shippingWeightGrams,
+    shippingWeightAllowanceGrams: product.shippingWeightAllowanceGrams,
+    shippingHandling: product.shippingHandling
+      ? { ...product.shippingHandling }
+      : undefined,
     productUpdatedAt: product.updatedAt,
     productEventId: product.sourceEventId,
+    signedProductEvent: product.signedProductEvent,
     canonicalShippingResolved:
       pickup || pickupPending ? false : canonicalShippingResolved,
     publicZapEnabled: product.publicZapEnabled,
@@ -823,8 +841,21 @@ function parseCartItem(value: unknown): CartItem | null {
   const merchantAddedAt = finiteNonnegativeNumber(value.merchantAddedAt)
   const priceSats = finiteNonnegativeNumber(value.priceSats)
   const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
+  const shippingWeightGrams = finiteNonnegativeNumber(value.shippingWeightGrams)
+  const shippingWeightAllowanceGrams = finiteNonnegativeNumber(
+    value.shippingWeightAllowanceGrams
+  )
+  const shippingHandling = parseSourcePrice(value.shippingHandling)
+  const parsedPolicyQuote = shippingPolicyQuoteSchema.safeParse(
+    value.shippingPolicyQuote
+  )
   const productUpdatedAt = finiteNonnegativeNumber(value.productUpdatedAt)
   const productEventId = normalizedEventId(value.productEventId)
+  const signedProductEvent = isValidSignedPublicNostrEvent(
+    value.signedProductEvent as SignedPublicNostrEvent
+  )
+    ? (value.signedProductEvent as SignedPublicNostrEvent)
+    : undefined
   const stock = finiteNonnegativeNumber(value.stock)
   const selectedSpecifications = parseSpecifications(
     value.selectedSpecifications
@@ -881,6 +912,19 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(!pickupPending && shippingCostSats !== undefined
       ? { shippingCostSats }
       : {}),
+    ...(shippingWeightGrams !== undefined &&
+    Number.isSafeInteger(shippingWeightGrams) &&
+    shippingWeightGrams > 0
+      ? { shippingWeightGrams }
+      : {}),
+    ...(shippingWeightAllowanceGrams !== undefined &&
+    Number.isSafeInteger(shippingWeightAllowanceGrams)
+      ? { shippingWeightAllowanceGrams }
+      : {}),
+    ...(shippingHandling ? { shippingHandling } : {}),
+    ...(parsedPolicyQuote.success
+      ? { shippingPolicyQuote: parsedPolicyQuote.data }
+      : {}),
     ...(stock !== undefined ? { stock } : {}),
     ...(!pickupPending && sourceShippingCost ? { sourceShippingCost } : {}),
     ...(!pickupPending && nonemptyString(value.shippingOptionId)
@@ -900,6 +944,7 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(!pickupPending && shippingCountryRules ? { shippingCountryRules } : {}),
     ...(productUpdatedAt !== undefined ? { productUpdatedAt } : {}),
     ...(productEventId ? { productEventId } : {}),
+    ...(signedProductEvent ? { signedProductEvent } : {}),
     ...(pickupPending
       ? { canonicalShippingResolved: false }
       : typeof value.canonicalShippingResolved === "boolean"
@@ -946,6 +991,26 @@ function getCartPickupHandoffFingerprint(fulfillment: CartPickupFulfillment): {
     handoffMode: authority.mode,
     handlerPubkey: authority.handlerPubkey,
   }
+}
+
+function shippingQuoteTermsFingerprint(
+  quote: ShippingPolicyQuote | undefined
+): string | null {
+  if (!quote) return null
+  // Event ids commit to the complete signed body. Schnorr signature randomness
+  // and JSON property order cannot change the shopper's reviewed terms.
+  const canonicalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonicalize)
+    if (isRecord(value))
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([key]) => key !== "sig")
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, entry]) => [key, canonicalize(entry)])
+      )
+    return value
+  }
+  return JSON.stringify(canonicalize(quote))
 }
 
 export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
@@ -1012,6 +1077,12 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
                     collectionCoordinate: item.fulfillment.collectionCoordinate,
                   }
                 : getCartItemFulfillmentType(item),
+        shippingWeightGrams: item.shippingWeightGrams ?? null,
+        shippingWeightAllowanceGrams: item.shippingWeightAllowanceGrams ?? null,
+        shippingHandling: item.shippingHandling ?? null,
+        shippingPolicyQuote: shippingQuoteTermsFingerprint(
+          item.shippingPolicyQuote
+        ),
         shippingCostSats: item.shippingCostSats ?? null,
         sourceShippingCost: item.sourceShippingCost ?? null,
         shippingOptionId: item.shippingOptionId ?? null,

@@ -1,6 +1,10 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { z } from "zod"
 import {
+  hasSameShippingPolicyQuote,
+  type ShippingPolicyQuote,
+} from "./shipping-policy"
+import {
   conversationMessageSchema,
   eventMarketFulfillmentRevocationSchema,
   eventMarketHandoffAckSchema,
@@ -38,7 +42,93 @@ export function parseOrderRumorEvent(
   event: Pick<NDKEvent, "content">
 ): OrderSchema {
   const parsed = JSON.parse(event.content || "{}") as unknown
-  return orderSchema.parse(parsed)
+  return orderSchema.parse(expandOrderShippingPolicyQuotes(parsed))
+}
+
+/**
+ * Keep one exact quote per shipping group on the wire. Runtime orders retain
+ * the full quote on every line for pricing, recovery, and Merchant review.
+ * This is the versioned Conduit order-payload extension, not a NIP-44 format.
+ */
+export function serializeOrderRumorContent(order: OrderSchema): string {
+  orderSchema.parse(order)
+  if (!order.items.some((item) => item.shippingPolicyQuote))
+    return JSON.stringify(order)
+  const groups: ShippingPolicyQuote[] = []
+  const items = order.items.map((item) => {
+    const { shippingPolicyQuote, ...line } = item
+    if (!shippingPolicyQuote) return line
+    let groupIndex = groups.findIndex((quote) =>
+      hasSameShippingPolicyQuote(quote, shippingPolicyQuote)
+    )
+    if (groupIndex === -1) {
+      groupIndex = groups.length
+      groups.push(shippingPolicyQuote)
+    }
+    return { ...line, shippingPolicyQuoteRef: groupIndex }
+  })
+  return JSON.stringify({
+    ...order,
+    items,
+    shippingPolicyQuotes: { version: 1, groups },
+  })
+}
+
+function expandOrderShippingPolicyQuotes(input: unknown): unknown {
+  const order = parseObject(input)
+  if (!order) return input
+  const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(value, key)
+  const items = order.items
+  if (!hasOwn(order, "shippingPolicyQuotes")) {
+    if (
+      Array.isArray(items) &&
+      items.some((item) => {
+        const line = parseObject(item)
+        return line && hasOwn(line, "shippingPolicyQuoteRef")
+      })
+    )
+      throw new Error("Shipping quote reference is missing its group document.")
+    return input
+  }
+  const document = parseObject(order.shippingPolicyQuotes)
+  if (
+    !document ||
+    document.version !== 1 ||
+    !Array.isArray(document.groups) ||
+    !Array.isArray(items) ||
+    document.groups.length < 1 ||
+    document.groups.length > items.length
+  )
+    throw new Error("Invalid shipping quote group document.")
+  const groups = document.groups
+  const usedGroups = new Set<number>()
+  const expanded = items.map((value) => {
+    const line = parseObject(value)
+    if (!line) throw new Error("Invalid order item in shipping quote document.")
+    if (hasOwn(line, "shippingPolicyQuote"))
+      throw new Error(
+        "Shipping quote groups cannot mix inline quote snapshots."
+      )
+    if (!hasOwn(line, "shippingPolicyQuoteRef")) return line
+    const reference = line.shippingPolicyQuoteRef
+    if (
+      typeof reference !== "number" ||
+      !Number.isSafeInteger(reference) ||
+      reference < 0 ||
+      reference >= groups.length
+    )
+      throw new Error("Invalid shipping quote group reference.")
+    const item = { ...line }
+    delete item.shippingPolicyQuoteRef
+    usedGroups.add(reference)
+    return { ...item, shippingPolicyQuote: groups[reference] }
+  })
+  if (usedGroups.size !== groups.length)
+    throw new Error("Shipping quote document contains an unused group.")
+  const payload = { ...order }
+  delete payload.shippingPolicyQuotes
+  return { ...payload, items: expanded }
 }
 
 type OrderRumorEvent = Pick<

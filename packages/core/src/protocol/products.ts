@@ -1,11 +1,17 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
+import {
   canonicalizeProductPrice,
   normalizeCurrencyCode,
+  normalizeCurrencyIdentity,
   type CommercePriceLike,
 } from "../pricing"
 import {
   productSchema,
+  productShippingAdjustmentsSchema,
   type ProductSchema,
   type ProductShippingOptionReference,
   type ProductZapMessagePolicy,
@@ -24,6 +30,7 @@ import {
   signedProductPriceEvidenceIsMalformed,
 } from "./product-event-evidence"
 
+export const PRODUCT_SHIPPING_ADJUSTMENTS_TAG = "conduit_shipping_adjustments"
 export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
 const PRODUCT_TITLE_MAX_LENGTH = 200
@@ -255,6 +262,11 @@ export function buildProductListingEventDraft({
   if (product.priceEvidenceMalformed) {
     throw new Error("Product price evidence is malformed")
   }
+  if (product.shippingAdjustmentsMalformed) {
+    throw new Error(
+      "Change fulfillment to repair or remove invalid shipping adjustments before publishing."
+    )
+  }
   const normalizedDTag = dTag.trim()
   if (!normalizedDTag) throw new Error("Product d tag is required")
 
@@ -329,6 +341,54 @@ export function buildProductListingEventDraft({
       throw new Error("Product collection coordinate is invalid")
     }
     tags.push(["a", coordinate.coordinate])
+  }
+  if (product.shippingWeightGrams !== undefined) {
+    if (
+      !Number.isSafeInteger(product.shippingWeightGrams) ||
+      product.shippingWeightGrams <= 0
+    )
+      throw new Error("Shipping weight must be positive whole grams.")
+    tags.push(["weight", String(product.shippingWeightGrams), "g"])
+  }
+  if (product.shippingDimensionsCm) {
+    const { length, width, height } = product.shippingDimensionsCm
+    if (
+      [length, width, height].some(
+        (value) =>
+          !Number.isFinite(value) ||
+          value <= 0 ||
+          value > Number.MAX_SAFE_INTEGER
+      )
+    )
+      throw new Error("Shipping dimensions must be positive centimeters.")
+    tags.push(["dim", `${length}x${width}x${height}`, "cm"])
+  }
+  if (
+    product.shippingWeightAllowanceGrams !== undefined ||
+    product.shippingHandling !== undefined
+  ) {
+    const adjustments = productShippingAdjustmentsSchema.parse({
+      ...(product.shippingWeightAllowanceGrams !== undefined
+        ? { weightAllowanceGrams: product.shippingWeightAllowanceGrams }
+        : {}),
+      ...(product.shippingHandling
+        ? { handling: product.shippingHandling }
+        : {}),
+    })
+    if (
+      product.format !== "physical" ||
+      (adjustments.handling &&
+        adjustments.handling.normalizedCurrency !==
+          normalizeCurrencyIdentity(priceCurrency))
+    )
+      throw new Error(
+        "Shipping handling must use the physical product currency."
+      )
+    tags.push([
+      PRODUCT_SHIPPING_ADJUSTMENTS_TAG,
+      "1",
+      JSON.stringify(adjustments),
+    ])
   }
   for (const marketRef of uniqueNonEmptyStrings(
     product.eventMarketRefs ?? []
@@ -652,6 +712,93 @@ function parseProductCollectionRefs(tags: string[][] | undefined): string[] {
   )
 }
 
+function parseProductPhysicalProperties(
+  tags: string[][] | undefined
+): Pick<ProductSchema, "shippingWeightGrams" | "shippingDimensionsCm"> {
+  const weights = (tags ?? []).filter((tag) => tag[0] === "weight")
+  const dimensions = (tags ?? []).filter((tag) => tag[0] === "dim")
+  let shippingWeightGrams: number | undefined
+  let shippingDimensionsCm: ProductSchema["shippingDimensionsCm"]
+  const weight = weights[0]
+  if (
+    weights.length === 1 &&
+    weight?.length === 3 &&
+    /^\d+(?:\.\d+)?$/.test(weight[1]!)
+  ) {
+    const grams =
+      weight[2] === "g"
+        ? Number(weight[1])
+        : weight[2] === "kg"
+          ? Number(weight[1]) * 1000
+          : NaN
+    if (Number.isSafeInteger(grams) && grams > 0) shippingWeightGrams = grams
+  }
+  const dimension = dimensions[0]
+  if (
+    dimensions.length === 1 &&
+    dimension?.length === 3 &&
+    (dimension[2] === "cm" || dimension[2] === "m")
+  ) {
+    const values = dimension[1]!.split("x")
+    const scale = dimension[2] === "m" ? 100 : 1
+    if (
+      values.length === 3 &&
+      values.every(
+        (value) =>
+          /^\d+(?:\.\d+)?$/.test(value) &&
+          Number(value) > 0 &&
+          Number.isFinite(Number(value) * scale) &&
+          Number(value) * scale <= Number.MAX_SAFE_INTEGER
+      )
+    )
+      shippingDimensionsCm = {
+        length: Number(values[0]) * scale,
+        width: Number(values[1]) * scale,
+        height: Number(values[2]) * scale,
+      }
+  }
+  return { shippingWeightGrams, shippingDimensionsCm }
+}
+
+function parseProductShippingAdjustments(
+  tags: string[][] | undefined,
+  productCurrency: string | undefined
+): Partial<ProductSchema> {
+  const markers = (tags ?? []).filter(
+    (tag) => tag[0] === PRODUCT_SHIPPING_ADJUSTMENTS_TAG
+  )
+  const empty = {
+    shippingWeightAllowanceGrams: undefined,
+    shippingHandling: undefined,
+    shippingAdjustmentsMalformed: undefined,
+  }
+  if (!markers.length) return empty
+  try {
+    if (
+      markers.length !== 1 ||
+      markers[0]!.length !== 3 ||
+      markers[0]![1] !== "1"
+    )
+      throw new Error("Unsupported adjustments")
+    const adjustments = productShippingAdjustmentsSchema.parse(
+      JSON.parse(markers[0]![2]!)
+    )
+    if (
+      adjustments.handling &&
+      adjustments.handling.normalizedCurrency !==
+        normalizeCurrencyIdentity(productCurrency ?? "")
+    )
+      throw new Error("Currency mismatch")
+    return {
+      ...empty,
+      shippingWeightAllowanceGrams: adjustments.weightAllowanceGrams,
+      shippingHandling: adjustments.handling,
+    }
+  } catch {
+    return { ...empty, shippingAdjustmentsMalformed: true }
+  }
+}
+
 function parseProductEventMarketRefs(tags: string[][] | undefined): string[] {
   return uniqueNonEmptyStrings(
     (tags ?? [])
@@ -676,6 +823,8 @@ function parseProductShippingTags(
 
   return {
     ...legacyInline,
+    ...parseProductPhysicalProperties(tags),
+    ...parseProductShippingAdjustments(tags, productCurrency),
     ...(legacyInline.sourceShippingCost ||
     typeof legacyInline.shippingCostSats === "number"
       ? {}
@@ -1014,6 +1163,23 @@ export function normalizeProductSummaryForDisplay(
 export function parseProductEvent(
   event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
 ): ProductSchema {
+  const rawEvent = (
+    "rawEvent" in event && typeof event.rawEvent === "function"
+      ? event.rawEvent()
+      : event
+  ) as SignedPublicNostrEvent
+  const signedProductEvent = isValidSignedPublicNostrEvent(rawEvent)
+    ? {
+        id: rawEvent.id,
+        pubkey: rawEvent.pubkey,
+        created_at: rawEvent.created_at,
+        kind: rawEvent.kind,
+        content: rawEvent.content,
+        tags: rawEvent.tags.map((tag) => [...tag]),
+        sig: rawEvent.sig,
+      }
+    : undefined
+
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
   const standardPrice = parsePriceTag(event.tags)
@@ -1071,6 +1237,8 @@ export function parseProductEvent(
       // Compatibility content may describe the product, but it cannot replace
       // identity or time committed to by the signed event envelope.
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
+      sourceEventId: event.id,
+      signedProductEvent,
       pubkey: event.pubkey,
       ...zapPolicy,
       canonicalShippingResolved: false,
@@ -1171,6 +1339,8 @@ export function parseProductEvent(
   const fallback: ProductSchema = productSchema.parse(
     canonicalizeProductPrice({
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
+      sourceEventId: event.id,
+      signedProductEvent,
       pubkey: event.pubkey,
       title,
       summary,

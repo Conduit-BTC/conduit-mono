@@ -49,6 +49,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/nip42-protected-read-rollout.md`: recipient-scoped protected
   inbox authentication, relay operator contract, and client-first rollout
 
+- `docs/knowledge/merchant-shipping-tables.md`: signed shipping tables, local
+  combined-weight calculation, fixed-option compatibility, and order evidence
+
 ### QA Runbooks
 
 - `docs/knowledge/checkout-with-conduit.md`: public V1 product/cart link format,
