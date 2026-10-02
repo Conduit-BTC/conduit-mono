@@ -163,7 +163,7 @@ function createCache(
 
 describe("shopper trust evidence", () => {
   it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, invoice, and Spark recovery stores", () => {
-    expect(db.verno).toBe(23)
+    expect(db.verno).toBe(24)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
@@ -177,6 +177,7 @@ describe("shopper trust evidence", () => {
         "eventMarketMerchantDecisionJobs",
         "wallets",
         "walletCredentials",
+        "sparkRecoveryEvidence",
         "shippingOptionFrontiers",
         "merchantPendingInvoices",
         "shoppingCarts",
@@ -196,6 +197,8 @@ describe("shopper trust evidence", () => {
     expect(db.wallets.schema.indexes).toHaveLength(0)
     expect(db.walletCredentials.schema.primKey.name).toBe("walletId")
     expect(db.walletCredentials.schema.indexes).toHaveLength(0)
+    expect(db.sparkRecoveryEvidence.schema.primKey.name).toBe("ownerPubkey")
+    expect(db.sparkRecoveryEvidence.schema.indexes).toHaveLength(0)
     expect(db.shoppingCarts.schema.primKey.name).toBe("id")
     expect(db.shoppingCarts.schema.indexes.map(({ name }) => name)).toEqual([
       "updatedAt",
