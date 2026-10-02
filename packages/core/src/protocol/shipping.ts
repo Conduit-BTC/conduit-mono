@@ -396,18 +396,22 @@ export interface ParsedShippingOption {
   signedEvent?: SignedPublicNostrEvent
   readSource?: "relay" | "retained"
   readCoverage?: "complete" | "partial" | "unavailable"
+  /** The option lookup hit its event budget; observed terms may be truncated. */
+  optionReadSaturated?: boolean
 }
 
 /** A retained policy is display/recovery evidence, not authority for new terms.
  * Partial reads may authorize when the selected revision was observed now;
- * missing deletion coverage alone does not veto that positive evidence. */
+ * missing deletion coverage alone does not veto that positive evidence.
+ * A capped option lookup cannot establish current terms. */
 export function hasCurrentShippingPolicyEvidence(
   option: ParsedShippingOption
 ): boolean {
   return (
     !!option.shippingPolicy &&
     !!option.signedEvent &&
-    option.readSource === "relay"
+    option.readSource === "relay" &&
+    option.optionReadSaturated !== true
   )
 }
 
@@ -2026,6 +2030,7 @@ async function readShippingOptionsByCoordinates(
 ): Promise<ShippingOptionsDetailedResult> {
   let coverage: ShippingOptionsDetailedResult["coverage"] = "complete"
   const observedIds = new Set<string>()
+  const saturatedCoordinates = new Set<string>()
   const inspectRead = (
     result: FetchEventsFanoutResult,
     relayUrls: readonly string[],
@@ -2122,28 +2127,39 @@ async function readShippingOptionsByCoordinates(
       const executableIndependentRelayUrls = (
         readPlan.independentRelayUrls ?? []
       ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
+      const optionRead = await runShippingFetchEventsFanoutDetailed(
+        {
+          kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
+          authors: [batch.pubkey],
+          "#d": batch.dTags,
+          limit: SHIPPING_OPTION_READ_LIMIT,
+        },
+        {
+          relayUrls,
+          accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
+          authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+          ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+          appRelayUrls: executableAppRelayUrls,
+          personalRelayUrls: executablePersonalRelayUrls,
+          independentRelayUrls: executableIndependentRelayUrls,
+          accountNetworkLocalStateRepository:
+            options.accountNetworkLocalStateRepository,
+          shouldContinue: options.shouldContinue,
+          signal: options.signal,
+        }
+      )
+      if (
+        optionRead.relays.some(
+          (relay) =>
+            relay.eventCount + (relay.rejectedEventCount ?? 0) >=
+            SHIPPING_OPTION_READ_LIMIT
+        )
+      ) {
+        for (const coordinate of batch.coordinates)
+          saturatedCoordinates.add(coordinate)
+      }
       const observedShippingEvents = inspectRead(
-        await runShippingFetchEventsFanoutDetailed(
-          {
-            kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
-            authors: [batch.pubkey],
-            "#d": batch.dTags,
-            limit: SHIPPING_OPTION_READ_LIMIT,
-          },
-          {
-            relayUrls,
-            accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
-            authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-            ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-            appRelayUrls: executableAppRelayUrls,
-            personalRelayUrls: executablePersonalRelayUrls,
-            independentRelayUrls: executableIndependentRelayUrls,
-            accountNetworkLocalStateRepository:
-              options.accountNetworkLocalStateRepository,
-            shouldContinue: options.shouldContinue,
-            signal: options.signal,
-          }
-        ),
+        optionRead,
         relayUrls,
         SHIPPING_OPTION_READ_LIMIT
       )
@@ -2253,6 +2269,7 @@ async function readShippingOptionsByCoordinates(
           ? ("relay" as const)
           : ("retained" as const),
         readCoverage: coverage,
+        optionReadSaturated: saturatedCoordinates.has(option.id),
       })),
     coverage,
     signedEvents: shippingEvents.map(

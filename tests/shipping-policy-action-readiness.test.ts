@@ -92,7 +92,10 @@ function reader(frontiers = new Map<string, CachedShippingOptionFrontier>()) {
     | "unavailable"
     | "partial_empty"
     | "complete_empty"
+    | "saturated_live"
+    | "saturated_rejected"
     | "partial_live"
+    | "deletion_saturated"
     | "deletion_unavailable"
     | "older"
     | "withdrawn" = "live"
@@ -158,7 +161,15 @@ function reader(frontiers = new Map<string, CachedShippingOptionFrontier>()) {
             (mode.startsWith("partial") && index !== 0)
               ? ("error" as const)
               : ("success" as const),
-          eventCount: events.length,
+          eventCount:
+            (mode === "saturated_live" && filter.kinds?.includes(30406)) ||
+            (mode === "deletion_saturated" && !filter.kinds?.includes(30406))
+              ? filter.limit!
+              : events.length,
+          rejectedEventCount:
+            mode === "saturated_rejected" && filter.kinds?.includes(30406)
+              ? filter.limit! - events.length
+              : 0,
         })),
       }
     },
@@ -359,14 +370,99 @@ describe("current policy evidence at commerce action gates", () => {
     })
   }
 
-  for (const mode of ["partial_live", "deletion_unavailable"] as const) {
+  for (const mode of ["saturated_live", "saturated_rejected"] as const) {
+    it(`blocks new terms after ${mode} until an uncapped option read`, async () => {
+      const source = reader()
+      const reviewed = prepareCartFulfillment(
+        [raw],
+        await source.read(),
+        destination
+      ).items
+      const historicalQuote = reviewed[0]!.shippingPolicyQuote!
+      source.setMode(mode)
+      const capped = await source.read()
+      expect(capped[0]).toMatchObject({
+        readSource: "relay",
+        readCoverage: "partial",
+      })
+      const cart = prepareCartFulfillment([raw], capped, destination).items
+      expect(cart[0]!.shippingPolicyQuote).toBeUndefined()
+      expect(getCartShippingOptionsAvailable(cart)).toBe(false)
+      const authorize = () =>
+        authorizeCurrentCheckoutItems({
+          mode: "direct_payment",
+          rawItems: [raw],
+          reviewedItems: reviewed,
+          refreshedProducts: [product],
+          destination,
+          readShippingOptions: source.read,
+          resolveProductFulfillment,
+          authorizePickupHandlers: async () => {},
+        })
+      await expect(authorize()).rejects.toThrow("current shipping rates")
+      const signer = new NDKPrivateKeySigner(secret)
+      const lease = setTestAccountSigner(signer)
+      const sign = spyOn(lease, "signEvent")
+      let localWrites = 0
+      try {
+        await expect(
+          signAndPublishProductWriteBundle(
+            {
+              merchantPubkey: merchant,
+              listings: [listing],
+              onSignedLocal: async () => {
+                localWrites++
+              },
+            },
+            {
+              getShippingOptions: source.read,
+              getEventMarketPickups: async () => [],
+            }
+          )
+        ).rejects.toThrow("could not be verified")
+        expect(sign).not.toHaveBeenCalled()
+        expect(localWrites).toBe(0)
+      } finally {
+        sign.mockRestore()
+        removeTestAccountSigner(lease)
+      }
+      expect(shippingPolicyQuoteSchema.safeParse(historicalQuote).success).toBe(
+        true
+      )
+      source.setMode("live")
+      const recovered = prepareCartFulfillment(
+        [raw],
+        await source.read(),
+        destination
+      ).items
+      expect(recovered[0]!.shippingPolicyQuote?.amountSats).toBe(100)
+      await expect(authorize()).resolves.toMatchObject({ status: "ok" })
+      await expect(
+        prepareProductPublicationListings(
+          [listing],
+          { merchantPubkey: merchant },
+          {
+            getShippingOptions: source.read,
+            getEventMarketPickups: async () => [],
+          }
+        )
+      ).resolves.toHaveLength(1)
+    })
+  }
+
+  for (const mode of [
+    "partial_live",
+    "deletion_unavailable",
+    "deletion_saturated",
+  ] as const) {
     it(`allows current positive policy evidence with ${mode}`, async () => {
       const source = reader()
       source.setMode(mode)
       const live = await source.read()
       expect(live[0]).toMatchObject({
         readSource: "relay",
-        readCoverage: mode === "partial_live" ? "partial" : "unavailable",
+        readCoverage:
+          mode === "deletion_unavailable" ? "unavailable" : "partial",
       })
       const reviewed = prepareCartFulfillment([raw], live, destination).items
       expect(getCartShippingOptionsAvailable(reviewed)).toBe(true)

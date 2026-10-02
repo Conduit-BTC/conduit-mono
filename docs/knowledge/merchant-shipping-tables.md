@@ -49,6 +49,10 @@ Buyer destinations stay on the device until included in the existing encrypted o
 
 Physical variations in a table-priced family either use the table or leave shipping for coordination. An explicit fixed variation price is rejected before signing. Use fixed-price mode with country destinations to author fixed variation rates instead. Existing fulfillment remains preserved until explicitly changed.
 
+A policy option lookup that hits its event limit remains display evidence but cannot authorize new quotes, direct payment or table-linked product publication until an uncapped lookup confirms the revision. This is distinct from ordinary partial relay availability or incomplete deletion coverage.
+
+Changing the origin country clears domestic state and postal selectors while preserving custom prices. Custom rows require a new area or explicit removal before publication.
+
 ## Validation boundary
 
 Focused calculation, publication, withdrawal, partial-read, revision, schema, rounding, pre-authorization, and persistence tests exercise the shared helpers and composed checkout. Merchant browser journeys use actual ephemeral Nostr signatures and an isolated local relay to publish rates and two products with independent currencies, switch metric and imperial units, customize a state or postal area, author per-product packing adjustments, recover the policy in new browser storage, revise it, and withdraw it at mobile and desktop widths. Market browser coverage checks combined cart and encrypted-order totals.

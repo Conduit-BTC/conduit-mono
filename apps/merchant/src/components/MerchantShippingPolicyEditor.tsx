@@ -30,6 +30,7 @@ import {
 } from "@conduit/ui"
 import {
   buildShippingPolicyFromDraft,
+  changeShippingPolicyOrigin,
   createShippingPolicyDraft,
   shippingPolicyToDraft,
   type ShippingPolicyDraft,
@@ -321,7 +322,9 @@ export function MerchantShippingPolicyEditor() {
                 options={countryOptions}
                 placeholder="Choose origin country"
                 searchPlaceholder="Search countries"
-                onValueChange={(originCountry) => update({ originCountry })}
+                onValueChange={(originCountry) =>
+                  update(changeShippingPolicyOrigin(draft, originCountry))
+                }
               />
             </div>
             <div className="space-y-1.5">

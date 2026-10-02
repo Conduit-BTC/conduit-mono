@@ -63,6 +63,29 @@ export function createShippingPolicyDraft(): ShippingPolicyDraft {
   }
 }
 
+/** Preserve prices while requiring custom domestic areas to be selected again. */
+export function changeShippingPolicyOrigin(
+  draft: ShippingPolicyDraft,
+  originCountry: string
+): ShippingPolicyDraft {
+  if (originCountry === draft.originCountry) return draft
+  return {
+    ...draft,
+    originCountry,
+    domestic: {
+      ...draft.domestic,
+      rules: draft.domestic.rules.map((rule) => ({
+        ...rule,
+        country: originCountry,
+        customArea:
+          !!rule.customArea || !!rule.subdivision || !!rule.postalPrefix,
+        subdivision: "",
+        postalPrefix: "",
+      })),
+    },
+  }
+}
+
 function parseGrams(value: string, label: string, optional = false): number {
   if (optional && !value.trim()) return 0
   const grams = parsePlainDecimalAmount(value, label)

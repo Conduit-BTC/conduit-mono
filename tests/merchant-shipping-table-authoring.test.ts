@@ -34,6 +34,7 @@ import { getMerchantSetupReadiness } from "../apps/merchant/src/lib/readiness"
 import { validateProductPublishForm } from "../apps/merchant/src/lib/productForm"
 import {
   buildShippingPolicyFromDraft,
+  changeShippingPolicyOrigin,
   createShippingPolicyDraft,
   getProductShippingMeasurements,
   shippingPolicyToDraft,
@@ -98,6 +99,69 @@ const dependencies = {
 }
 
 describe("merchant shipping table authoring", () => {
+  test("changing origin clears domestic constraints and requires custom areas to be remapped", () => {
+    const original = shippingPolicyToDraft({
+      ...policy,
+      domestic: {
+        rules: [
+          policy.domestic!.rules[0]!,
+          {
+            country: "US",
+            subdivision: "US-CA",
+            postalPrefix: "94",
+            bands: [{ maxWeightGrams: 1000, priceMinor: 900 }],
+          },
+          {
+            country: "US",
+            postalPrefix: "98",
+            bands: [{ maxWeightGrams: 1000, priceMinor: 700 }],
+          },
+        ],
+      },
+      international: null,
+    })
+    expect(changeShippingPolicyOrigin(original, "US")).toBe(original)
+    const changed = changeShippingPolicyOrigin(original, "CA")
+    expect(changed.domestic.rules[1]).toMatchObject({
+      country: "CA",
+      customArea: true,
+      subdivision: "",
+      postalPrefix: "",
+    })
+    expect(changed.domestic.rules[2]).toMatchObject({
+      country: "CA",
+      customArea: true,
+      subdivision: "",
+      postalPrefix: "",
+    })
+    expect(changed.domestic.rules[1]!.bands).toEqual(
+      original.domestic.rules[1]!.bands
+    )
+    expect(changed.international).toBe(original.international)
+    expect(() => buildShippingPolicyFromDraft(changed)).toThrow(
+      "Choose a state or enter a postal prefix"
+    )
+    expect(original.domestic.rules[1]!.postalPrefix).toBe("94")
+    changed.domestic.rules[1]!.subdivision = "BC"
+    changed.domestic.rules[2]!.postalPrefix = "V6"
+    const remapped = buildShippingPolicyFromDraft(changed)
+    expect(remapped.domestic!.rules[1]).toMatchObject({
+      country: "CA",
+      subdivision: "CABC",
+    })
+    expect(remapped.domestic!.rules[2]).toMatchObject({
+      country: "CA",
+      postalPrefix: "V6",
+    })
+    const removed = changeShippingPolicyOrigin(original, "CA")
+    removed.domestic.rules = removed.domestic.rules.filter(
+      (rule) => !rule.customArea
+    )
+    expect(buildShippingPolicyFromDraft(removed).domestic!.rules).toHaveLength(
+      1
+    )
+  })
+
   test.each(["7", "0"])(
     "rejects fixed variation charge %s under a table before publication planning",
     (shippingCost) => {

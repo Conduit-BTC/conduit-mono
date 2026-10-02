@@ -317,6 +317,42 @@ for (const [viewportName, width, height] of [
     })
     await custom.getByLabel("Shipping price").first().fill("300")
     await custom.getByLabel("Shipping price").nth(1).fill("600")
+    await chooseCountry(page, "Origin country", "Canada")
+    const remapped = domestic.getByRole("group", {
+      name: "Canada custom area",
+      exact: true,
+    })
+    await expect(
+      remapped.getByLabel("State / region", { exact: true })
+    ).toHaveValue("")
+    await expect(
+      remapped.getByLabel("Postal prefix", { exact: true })
+    ).toHaveValue("")
+    await expect(remapped.getByLabel("Shipping price").first()).toHaveValue(
+      "300"
+    )
+    const blockedPublish = page.getByRole("button", {
+      name: "Publish shipping rates",
+      exact: true,
+    })
+    await expect(blockedPublish).toBeDisabled()
+    await expect(page.locator("#shipping-policy-error")).toContainText(
+      "Choose a state or enter a postal prefix"
+    )
+    await page
+      .locator("form")
+      .filter({ has: blockedPublish })
+      .dispatchEvent("submit")
+    expect(
+      await readTestRelayEvents({ kinds: [30406], authors: [pubkey] })
+    ).toHaveLength(0)
+    await remapped.getByLabel("State / region", { exact: true }).fill("BC")
+    await expect(blockedPublish).toBeEnabled()
+    await chooseCountry(page, "Origin country", "United States")
+    await expect(blockedPublish).toBeDisabled()
+    await domestic.getByLabel("State", { exact: true }).click()
+    await page.getByRole("option", { name: "California", exact: true }).click()
+    await domestic.getByLabel("Postal prefix", { exact: true }).fill("94")
     await domestic.getByLabel("Free shipping from").fill("10000")
     await page.getByRole("checkbox", { name: "Enable international" }).check()
     const international = page.getByRole("region", {
