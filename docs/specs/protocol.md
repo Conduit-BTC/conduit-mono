@@ -169,6 +169,37 @@ The exception is constrained as follows:
 - Converting, claiming, or recovering a guest order into a durable identity is
   outside this exception and outside the current client flow.
 
+### Settled Router Closed-Attempt Renewal
+
+Closed-attempt renewal is a Conduit private recovery extension, not a new Nostr
+payment standard or receiving-account proof. It retains the version-three
+frozen plan and original buyer-to-Merchant recovery/progress formats, order
+witness and acknowledged initial handoff. The guest-key exception and its
+signing lifetime are unchanged; Merchant renewal does not mint buyer progress.
+
+Only a positively verified complete, spendable return of the exact unpaid
+outgoing attempt permits the first Merchant-only replacement. The wallet
+contract defines the zero-historical-net-debit requirement and unsupported
+states. Expiry, missing history, imported preparation state and a signed
+closure summary alone never authorize a replacement invoice or payment.
+
+Renewed reconciliation and Merchant-authored progress must use new explicit
+versions, carry an append-only prior-attempt history, and remain bound to the
+same plan and initial handoff. Generation-zero identifiers stay unchanged;
+the successor uses its deterministic generation-one identifier and a fresh
+invoice obtained from the frozen endpoint. Reject forks, truncated histories,
+rollback and contradictory payment evidence. Existing clients must reject
+unsupported renewed state rather than project it as an ordinary legacy intent.
+
+Merchant progress remains a machine-only, Merchant-to-self NIP-59/NIP-44 v2
+record delivered through the Merchant's signed kind-10050 inbox. Persist the
+exact encrypted snapshot before publication and require relay acknowledgement
+before replacement dispatch. Neither acknowledgement nor Merchant-authored
+closure metadata replaces fresh operator/payment history and spendable-return
+verification. Recovery secrets do not enter progress, generic Messages,
+diagnostics or public events. Retired receipt summaries retain the winning
+attempt identity; the retirement tombstone remains a replay barrier.
+
 ### Service Signer Exception: Anon Public Zaps
 
 The Anon Conduit Shopper public zap signer is the only approved server-side

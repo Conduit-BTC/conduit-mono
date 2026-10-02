@@ -1,10 +1,17 @@
 import { hasCheckoutSparkProviderSendWindow } from "./checkout-spark-invoice-expiry"
 import {
   deriveCheckoutSparkSettledTransferId,
+  deriveCheckoutSparkSettledRenewalTransferId,
+  getCheckoutSparkSettledLegGeneration,
+  renewCheckoutSparkSettledLeg,
   prepareCheckoutSparkSettledLeg,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
+import {
+  assertCheckoutSparkSettledReturnedProof,
+  type CheckoutSparkSettledReturnedProof,
+} from "./checkout-spark-settled-returned"
 import type { CheckoutSparkNetwork } from "./checkout-spark-reconciliation"
 import {
   CheckoutSparkSettledRepositoryConflictError,
@@ -12,6 +19,7 @@ import {
   type DexieCheckoutSparkSettledRepository,
 } from "./checkout-spark-settled-router-repository"
 import { decodeLightningInvoiceMetadata } from "./lightning"
+import { checkoutSparkProviderSendWindowEndsAt } from "./checkout-spark-invoice-expiry"
 import {
   CheckoutSparkLnurlInvoiceRangeError,
   resolveCheckoutSparkLnurlInvoice,
@@ -36,6 +44,8 @@ export interface CheckoutSparkSettledLegPreparationInput {
   legId: string
   /** Bound by the caller to its authenticated actor and unlocked wallet lease. */
   shouldContinue: () => boolean
+  /** Current Merchant action only; omitted/false preserves exact-intent behavior. */
+  allowRenewal?: boolean
 }
 
 export interface CheckoutSparkSettledFeeEstimateInput {
@@ -50,7 +60,14 @@ export interface CheckoutSparkSettledLegPreparationDependencies {
   repository: Pick<
     DexieCheckoutSparkSettledRepository,
     "load" | "savePreparedWithInvoiceOrigin"
-  >
+  > &
+    Partial<
+      Pick<DexieCheckoutSparkSettledRepository, "saveRenewedWithInvoiceOrigin">
+    >
+  proveRenewalReturn?: (
+    state: CheckoutSparkSettledReconciliation,
+    legId: string
+  ) => Promise<CheckoutSparkSettledReturnedProof>
   estimateFee: (
     request: CheckoutSparkSettledFeeEstimateInput
   ) => Promise<number>
@@ -142,7 +159,8 @@ export function assertCheckoutSparkSettledMerchantPreparationWindow(
 
 /**
  * Prepare a fresh invoice only after exact inbound credit is known. This
- * function never sends funds, and never replaces a persisted invoice/ID.
+ * function never sends funds. Each persisted attempt remains immutable; only
+ * explicit Merchant renewal with fresh full-return proof appends a successor.
  * The recipient's allocation is the ceiling for invoice plus all send fees.
  */
 export async function prepareCheckoutSparkSettledOutgoingLegShared(
@@ -162,11 +180,51 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
   )
   assertAuthorized(initial.state)
   const { leg, recipient } = requireLeg(initial, input.legId)
+  const renewal =
+    !!leg.intent &&
+    input.allowRenewal === true &&
+    getCheckoutSparkSettledLegGeneration(leg) === 0
   if (leg.intent) {
-    // A page refresh may re-ACK the same intent, but never obtain a new invoice.
-    await dependencies.acknowledgeRecoverySnapshot(initial.state)
-    assertAuthorized(initial.state)
-    return initial
+    if (renewal) {
+      assertCheckoutSparkSettledMerchantPreparationWindow(
+        initial.state,
+        nowMs()
+      )
+      if (
+        (checkoutSparkProviderSendWindowEndsAt(leg.intent.paymentRequest) ??
+          Infinity) > nowMs() ||
+        !dependencies.proveRenewalReturn ||
+        !repository.saveRenewedWithInvoiceOrigin
+      )
+        throw new Error("Checkout Spark payout renewal proof is unavailable.")
+      const proof = await dependencies.proveRenewalReturn(
+        initial.state,
+        input.legId
+      )
+      assertAuthorized(initial.state)
+      assertCheckoutSparkSettledReturnedProof(proof, {
+        plan: initial.state.plan,
+        target: {
+          walletId: initial.state.plan.walletId,
+          network: initial.state.plan.network,
+          legId: leg.legId,
+          recipientId: recipient.recipientId,
+          allocationSats: leg.allocationSats!,
+          unpaidAllocationSats: initial.state.legs.reduce(
+            (sum, item) =>
+              sum + (item.status === "paid" ? 0 : (item.allocationSats ?? 0)),
+            0
+          ),
+          intent: leg.intent,
+        },
+        nowMs: nowMs(),
+      })
+    } else {
+      // A page refresh may re-ACK the same intent, but never obtain a new invoice.
+      await dependencies.acknowledgeRecoverySnapshot(initial.state)
+      assertAuthorized(initial.state)
+      return initial
+    }
   }
   const allocationSats = leg.allocationSats!
   if (allocationSats <= 1) {
@@ -209,12 +267,18 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
       continue
     }
     assertAuthorized(initial.state)
+    const validationProof = renewal
+      ? await dependencies.proveRenewalReturn!(initial.state, input.legId)
+      : null
+    assertAuthorized(initial.state)
     const validatedAt = nowMs()
     // An injected resolver is not payment authority. Validate its signed BOLT11
     // amount, network, hash and expiry before even asking the fee provider.
-    const validated = prepareCheckoutSparkSettledLeg(initial.state, {
+    const candidateIntent = {
       legId: input.legId,
-      transferId: deriveCheckoutSparkSettledTransferId(
+      transferId: (renewal
+        ? deriveCheckoutSparkSettledRenewalTransferId
+        : deriveCheckoutSparkSettledTransferId)(
         initial.state.plan,
         input.legId
       ),
@@ -223,7 +287,15 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
       invoiceAmountSats,
       maxFeeSats: allocationSats - invoiceAmountSats,
       preparedAt: validatedAt,
-    })
+    }
+    const validated = renewal
+      ? renewCheckoutSparkSettledLeg(initial.state, {
+          legId: input.legId,
+          intent: candidateIntent,
+          proof: validationProof!,
+          nowMs: validatedAt,
+        })
+      : prepareCheckoutSparkSettledLeg(initial.state, candidateIntent)
     const canonicalIntent = validated.legs.find(
       (candidate) => candidate.legId === input.legId
     )?.intent
@@ -308,7 +380,10 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
     )
     assertAuthorized(snapshot.state)
     const current = requireLeg(snapshot, input.legId).leg
-    if (current.intent) {
+    if (
+      current.intent &&
+      (!renewal || getCheckoutSparkSettledLegGeneration(current) === 1)
+    ) {
       // Another tab won the CAS; never replace or send against our invoice.
       await dependencies.acknowledgeRecoverySnapshot(snapshot.state)
       assertAuthorized(snapshot.state)
@@ -317,6 +392,16 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
     if (current.allocationSats !== allocationSats) {
       throw new Error("Checkout Spark payout allocation changed.")
     }
+    if (
+      renewal &&
+      JSON.stringify(current.intent) !== JSON.stringify(leg.intent)
+    )
+      throw new CheckoutSparkSettledRepositoryConflictError()
+    // Invoice resolution, fee fitting and local source work may outlive proof TTL.
+    const commitProof = renewal
+      ? await dependencies.proveRenewalReturn!(snapshot.state, input.legId)
+      : null
+    assertAuthorized(snapshot.state)
     const preparedAt = nowMs()
     dependencies.assertAuthority(snapshot.state, preparedAt)
     if (
@@ -327,9 +412,11 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
     ) {
       throw new Error("Checkout Spark payout invoice expires too soon.")
     }
-    const next = prepareCheckoutSparkSettledLeg(snapshot.state, {
+    const finalIntent = {
       legId: input.legId,
-      transferId: deriveCheckoutSparkSettledTransferId(
+      transferId: (renewal
+        ? deriveCheckoutSparkSettledRenewalTransferId
+        : deriveCheckoutSparkSettledTransferId)(
         snapshot.state.plan,
         input.legId
       ),
@@ -338,15 +425,36 @@ export async function prepareCheckoutSparkSettledOutgoingLegShared(
       invoiceAmountSats,
       maxFeeSats: allocationSats - invoiceAmountSats,
       preparedAt,
-    })
+    }
+    const next = renewal
+      ? renewCheckoutSparkSettledLeg(snapshot.state, {
+          legId: input.legId,
+          intent: finalIntent,
+          proof: commitProof!,
+          nowMs: preparedAt,
+        })
+      : prepareCheckoutSparkSettledLeg(snapshot.state, finalIntent)
     try {
       const persisted = requireActive(
-        await repository.savePreparedWithInvoiceOrigin(
-          next,
-          snapshot.revision,
-          { legId: input.legId, origin: selected.origin! },
-          () => assertAuthorized(snapshot.state)
-        ),
+        await (renewal
+          ? repository.saveRenewedWithInvoiceOrigin!(
+              next,
+              snapshot.revision,
+              {
+                legId: input.legId,
+                origin: selected.origin!,
+                proof: commitProof!,
+                nowMs: preparedAt,
+                now: nowMs,
+              },
+              () => assertAuthorized(snapshot.state)
+            )
+          : repository.savePreparedWithInvoiceOrigin(
+              next,
+              snapshot.revision,
+              { legId: input.legId, origin: selected.origin! },
+              () => assertAuthorized(snapshot.state)
+            )),
         input
       )
       assertAuthorized(persisted.state)

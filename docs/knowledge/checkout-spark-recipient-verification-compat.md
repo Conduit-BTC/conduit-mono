@@ -66,6 +66,16 @@ not request another buyer payment to repair missing evidence. Unsupported
 providers require a separate reviewed recipient-bound proof path, not relaxed
 identity checks or a mandatory receiving wallet introduced by this adapter.
 
+The separately reviewed closed-attempt renewal path is not Coinos attribution
+and does not relax this adapter. After positively verified complete unpaid
+return under the [wallet renewal contract](../specs/wallets.md#closed-attempt-invoice-renewal),
+Merchant may request the successor directly from the same frozen Lightning
+address using the existing provider-generic LNURL origin path. This creates
+origin evidence for the new invoice only, never retroactive attribution for
+the old one. Unsupported-provider or missing-origin observations alone cannot
+authorize renewal; pending, uncertain, partial-return and paid attempts remain
+protected from replacement.
+
 Rollback removes the verifier invocation behind the same local gate, preserving
 saved payments, recovery material and provider-paid facts. Exact history remains
 inspectable; no stored digest becomes authority for a new recipient or invoice.

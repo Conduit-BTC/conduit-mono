@@ -1,4 +1,5 @@
 import {
+  DexieCheckoutSparkSettledRepository,
   DexieCheckoutSparkSupplierNotificationRepository,
   getCheckoutSparkSupplierNotifications,
   captureCheckoutSparkSupplierNotificationSession,
@@ -98,16 +99,26 @@ async function dispatchSupplierNotifications(
     (await signer.getPublicKey()).toLowerCase() !== input.principal
   )
     return false
-  if (input.plan && input.settlement) {
+  const snapshot =
+    input.plan && input.settlement
+      ? await new DexieCheckoutSparkSettledRepository().load(
+          input.candidate.checkoutId,
+          input.candidate.planDigest
+        )
+      : null
+  if (!shouldContinue()) return false
+  if (input.plan && input.settlement && snapshot?.status === "active") {
     for (const notification of getCheckoutSparkSupplierNotifications(
       input.plan,
-      input.settlement
+      input.settlement,
+      snapshot.state
     )) {
       if (!shouldContinue()) return false
       try {
         const result = await publishCheckoutSparkSupplierPaymentNotification({
           plan: input.plan,
           settlement: input.settlement,
+          generationBinding: snapshot.state,
           supplierLegId: notification.legId,
           signer,
           store,

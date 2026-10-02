@@ -2,16 +2,23 @@ import { hasCheckoutSparkProviderSendWindow } from "./checkout-spark-invoice-exp
 import {
   recordCheckoutSparkSettledLegStatus,
   restoreCheckoutSparkSettledReconciliation,
+  getCheckoutSparkSettledLegGeneration,
+  getCheckoutSparkSettledClosedGeneration,
   type CheckoutSparkSettledLegEvidence,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
+import {
+  assertCheckoutSparkSettledReturnedProof,
+  type CheckoutSparkSettledReturnedProof,
+} from "./checkout-spark-settled-returned"
 import type { CheckoutSparkSettledRepositorySnapshot } from "./checkout-spark-settled-router-repository"
 
 type Leg = CheckoutSparkSettledReconciliation["legs"][number]
 type Intent = NonNullable<Leg["intent"]>
 
 export interface CheckoutSparkSettledOutgoingTarget {
+  readonly generation?: 0 | 1
   readonly walletId: string
   readonly network: CheckoutSparkSettledPlan["network"]
   readonly legId: string
@@ -191,6 +198,11 @@ export interface CheckoutSparkSettledOutgoingStepInput {
   acknowledgeRecoverySnapshot(
     state: CheckoutSparkSettledReconciliation
   ): Promise<void>
+  /** Fresh native parent closure; signed journal metadata never satisfies this. */
+  proveRenewalReturn?: (
+    state: CheckoutSparkSettledReconciliation,
+    legId: string
+  ) => Promise<CheckoutSparkSettledReturnedProof>
 }
 
 export interface CheckoutSparkSettledOutgoingStepResult {
@@ -218,6 +230,7 @@ export interface CheckoutSparkSettledOutgoingStepResult {
     | "terminal_failure"
     | "sibling_possible_send"
     | "prerequisite_unpaid"
+    | "renewal_return_unavailable"
   readonly sendAttempted: boolean
 }
 
@@ -376,6 +389,7 @@ export async function runCheckoutSparkSettledOutgoingStep(
     return next
   }, 0)
   const target: CheckoutSparkSettledOutgoingTarget = {
+    generation: getCheckoutSparkSettledLegGeneration(leg),
     walletId: state.plan.walletId,
     network: state.plan.network,
     legId: leg.legId,
@@ -479,6 +493,31 @@ export async function runCheckoutSparkSettledOutgoingStep(
   ) {
     return result(state, "wait", "invoice_window_insufficient")
   }
+  const proveParentReturn = async () => {
+    if (target.generation !== 1) return
+    const closed = getCheckoutSparkSettledClosedGeneration(
+      state.legs[position]!
+    )
+    if (input.actor !== "merchant" || !closed || !input.proveRenewalReturn)
+      throw new Error("Checkout Spark renewal return is unavailable.")
+    const proof = await input.proveRenewalReturn(state, target.legId)
+    const verified = assertCheckoutSparkSettledReturnedProof(proof, {
+      plan: state.plan,
+      target: { ...target, generation: 0, intent: closed.intent },
+      nowMs: input.now(),
+    })
+    if (
+      verified.requestId !== closed.closure.requestId ||
+      verified.debitedSats !== closed.closure.debitedSats ||
+      verified.returnedSats !== closed.closure.returnedSats
+    )
+      throw new Error("Checkout Spark renewal return changed.")
+  }
+  try {
+    await proveParentReturn()
+  } catch {
+    return result(state, "wait", "renewal_return_unavailable")
+  }
   let preflight: Awaited<ReturnType<typeof input.provider.preflight>>
   try {
     preflight = await input.provider.preflight(target)
@@ -526,6 +565,12 @@ export async function runCheckoutSparkSettledOutgoingStep(
     return result(state, "wait", "recovery_handoff_unavailable")
   }
   // A tab dying at this point leaves a conservative possible-send marker.
+  // Private ACK and provider preparation may outlive proof TTL; re-prove now.
+  try {
+    await proveParentReturn()
+  } catch {
+    return result(state, "wait", "renewal_return_unavailable")
+  }
   const afterWriteAt = input.now()
   if (
     !hasAuthority(state.plan, input.actor, afterWriteAt) ||

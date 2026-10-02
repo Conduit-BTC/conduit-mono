@@ -1,6 +1,7 @@
 import { decodeLightningInvoicePaymentHash } from "./lightning"
 import {
   deriveCheckoutSparkSettledTransferId,
+  deriveCheckoutSparkSettledRenewalTransferId,
   type CheckoutSparkSettledPlan,
 } from "./checkout-spark-settled-router"
 import {
@@ -31,8 +32,13 @@ export function requireCheckoutSparkSettledExactOutgoingRequest(
     !recipient ||
     target.recipientId !== recipient.recipientId ||
     target.intent.legId !== recipient.legId ||
+    (target.generation !== undefined &&
+      target.generation !== 0 &&
+      target.generation !== 1) ||
     target.intent.transferId !==
-      deriveCheckoutSparkSettledTransferId(plan, recipient.legId) ||
+      (target.generation === 1
+        ? deriveCheckoutSparkSettledRenewalTransferId(plan, recipient.legId)
+        : deriveCheckoutSparkSettledTransferId(plan, recipient.legId)) ||
     !Number.isSafeInteger(target.allocationSats) ||
     target.allocationSats <= 0 ||
     target.intent.invoiceAmountSats + target.intent.maxFeeSats !==

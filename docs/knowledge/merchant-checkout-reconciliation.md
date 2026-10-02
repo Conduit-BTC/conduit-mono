@@ -81,10 +81,11 @@ remain paused, and a fatal or retention-limited session cannot be reopened by
 this request. New signed selections invalidate held worker results.
 
 Every awaited phase retains active-account/page guards, immutable invoice and
-transfer identity, allocation limits, and the existing local recovery lock.
-Preparation does not send, continuation does not replace an invoice, and no
-second leg is sent in the same invocation. Unknown or previously submitted
-payments remain exact-history reconciliation cases.
+transfer identity within each attempt, allocation limits, and the existing local
+recovery lock. Preparation does not send and no second leg is sent in the same
+invocation. Unknown or previously submitted payments remain exact-history
+reconciliation cases. The bounded closed-return renewal exception below retains
+the old attempt instead of changing its invoice or transfer identity.
 
 Provider-attested commerce with a pending fee returns `progress_pending`, not
 terminal commerce completion for the router worker. Provider-attested payment
@@ -112,8 +113,9 @@ authorize Merchant wallet access or prove inbound settlement.
 The helper validates the frozen recipient, network, invoice amount and hash,
 and keeps each invoice plus maximum send fee inside that recipient's settled
 allocation. It saves the exact intent before acknowledging its recovery copy.
-A concurrent saved intent wins; an existing invoice and transfer ID are never
-replaced, even when expired or followed by an uncertain send.
+A concurrent saved intent wins; an existing attempt's invoice and transfer ID
+are never mutated, even when expired or followed by an uncertain send. Renewal
+requires the separate positive closed-return proof below.
 
 Sharing the helper alone does not enable UI preparation or resolve cross-device
 concurrency. Before a never-prepared Merchant payout can be sent,
@@ -163,7 +165,8 @@ does not open a wallet. All-paid local progress is only a reason that there is
 nothing to prepare, not new provider proof.
 
 The action reuses the private preparation adapter and retains existing or
-expired invoices unchanged. Preparation may initialize Spark and claim inbound
+expired attempts unchanged unless the closed-return renewal contract is met.
+Preparation may initialize Spark and claim inbound
 funds, but has no outgoing-send capability. Pending recovery delivery is shown
 without claiming that signing, staging, or relay acceptance succeeded. After
 successful delivery, the panel clears the older selection and refreshes signed
@@ -305,9 +308,42 @@ key; it does not compare new invoice parameters. Conduit therefore preserves the
 original invoice and transfer ID, and accepts payment only from exact matching
 provider readback. Pending, missing-after-submission, and conflicting results do
 not authorize a replacement invoice or a fresh transfer ID. Expired intents remain
-history-reconciliation cases. Source inspection supports reusing this existing
+history-reconciliation cases unless a positive full return meets the separate
+renewal contract. Source inspection supports reusing this existing
 runner; it does not replace funded SDK validation of concurrent clients, nor
 independently establish the private SSP server's divergent-invoice behavior.
+
+### Bounded renewal after a full unpaid return
+
+The [wallet contract](../specs/wallets.md#closed-attempt-invoice-renewal) permits
+one Merchant-only successor attempt after positive, exact provider evidence of a
+closed unpaid transfer with its full debit returned and spendable. The first
+implementation does not renew a partial return, charged failure, missing record,
+prepared-only snapshot, or possible send. Expiry and balance are not closure
+proof. Saved-only inspection never performs this native wallet check.
+
+Renewal leaves the signed plan and original attempt intact. It appends the old
+intent and closure metadata, fetches a genuinely new invoice from the same frozen
+Lightning address, saves a deterministic generation-one transfer identity, and
+retains authenticated Merchant progress before dispatch. A fresh public SDK
+inspection correlates SSP, operator transfer, sender HTLC and exact returned
+available leaves before committing the successor and again before its first
+send. Serialized closure metadata is not provider authority. Reconciliation of
+an already admitted successor does not require its consumed leaves to remain
+available and does not downgrade verified payment.
+
+Renewed reconciliation and private progress use explicit versions that retain
+attempt history; unchanged legacy state retains its original formats. Retirement
+keeps the winning attempt identity and actual payment costs. Renewal neither
+funds the order again nor repeats a supplier notice. Conduit remains the last
+allocation, and a held fee does not erase independently verified commerce.
+
+Wallet retirement checks an archived returned attempt against fresh, exact
+terminal SSP/operator/HTLC history. It does not require the returned leaves to
+remain available after the successor has spent them. This retirement-only
+evidence is distinct from the spendable-return proof required for renewal and
+cannot authorize another invoice or payment. Uncorrelated failures or missing
+history still block retirement.
 
 ## Evidence and limitations
 

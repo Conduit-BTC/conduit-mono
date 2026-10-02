@@ -132,6 +132,7 @@ function fixture() {
     recoveryDelivery: "relay_accepted",
   }
   let selectionOverride: Selection | null = null
+  const preparationAuthorizations: boolean[] = []
   let retirementStatus: "retired" | "pending" | null = "pending"
   let intercept: ((stage: string) => void | Promise<void>) | undefined
   const calls: string[] = []
@@ -238,7 +239,7 @@ function fixture() {
       expect(principal).toBe(merchant)
       expect(dependencies?.repository).toBe(repository)
       expect(input).not.toHaveProperty("stopAndDrain")
-      expect(Object.keys(input)).toEqual(["shouldContinue"])
+      preparationAuthorizations.push(input.allowRenewal === true)
       expect(input.shouldContinue()).toBe(true)
       phaseGuards.push(input.shouldContinue)
       observeCandidate(selected)
@@ -286,6 +287,7 @@ function fixture() {
     repositoryArguments,
     observedCandidates,
     phaseGuards,
+    preparationAuthorizations,
     assertActive,
     run(selected = candidate) {
       return advanceMerchantCheckoutSparkOrder(
@@ -329,6 +331,26 @@ function fixture() {
 }
 
 describe("automatic Merchant checkout one-phase advancement", () => {
+  it("inspects renewal in a separate authorized preparation phase without continuing the expired intent", async () => {
+    const context = fixture()
+    context.setSelection({ status: "renewal_needed" })
+
+    expect(await context.run(freshCandidate)).toBe("progress_pending")
+    expect(context.preparationAuthorizations).toEqual([true])
+    expect(context.calls).toContain("preparation")
+    expect(context.calls).not.toContain("continuation")
+    expect(context.calls).toContain("rescan")
+  })
+
+  it("reports expired renewal proof as attention rather than awaiting more funding", async () => {
+    const context = fixture()
+    context.setSelection({ status: "renewal_needed" })
+    context.setPreparation({ status: "history_wait" })
+    expect(await context.run(freshCandidate)).toBe("renewal_wait")
+    expect(context.calls).not.toContain("continuation")
+    expect(context.calls).not.toContain("rescan")
+  })
+
   it("retires provider-verified commerce and fee without selecting or sending another payout", async () => {
     const context = fixture()
     context.setRecord(providerRecord([merchantLeg, supplierLeg, feeLeg]))

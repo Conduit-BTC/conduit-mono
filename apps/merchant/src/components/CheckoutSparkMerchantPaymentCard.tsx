@@ -45,6 +45,8 @@ export function CheckoutSparkMerchantPaymentCard({
 }: CheckoutSparkMerchantPaymentCardProps) {
   const processingScopeId = useId()
   const hasSavedResult = projection !== null || outcome !== undefined
+  const renewalExplanation =
+    "The saved payout invoice has expired. A replacement is allowed only after the exact previous attempt is closed and its funds are confirmed returned and spendable. Do not request another buyer payment."
   const paid = projection?.commerceVerified === true
   // A terminal invoice payment can still lack independent recipient attribution.
   // Keep that fee-only exception visible without revoking verified commerce.
@@ -57,6 +59,7 @@ export function CheckoutSparkMerchantPaymentCard({
     (settlementReadUnavailable ||
       recoveryLookupIncomplete ||
       outcome === "needs_attention" ||
+      outcome === "renewal_wait" ||
       outcome === "recipient_unverified" ||
       outcome === "unbound" ||
       outcome === "unavailable" ||
@@ -86,9 +89,11 @@ export function CheckoutSparkMerchantPaymentCard({
               ? "The payment check could not finish. Your saved progress is kept and checks will retry. Do not request another payment."
               : outcome === "needs_attention"
                 ? "Payment processing needs a closer look. Check the saved payment before taking another action."
-                : projection?.creditVerified
-                  ? "The buyer's payment has arrived. We are finishing this order's payments automatically."
-                  : "We are checking for the buyer's payment. Funding and recipient payments are verified separately."
+                : outcome === "renewal_wait"
+                  ? renewalExplanation
+                  : projection?.creditVerified
+                    ? "The buyer's payment has arrived. We are finishing this order's payments automatically."
+                    : "We are checking for the buyer's payment. Funding and recipient payments are verified separately."
 
   return (
     <section
@@ -161,6 +166,11 @@ export function CheckoutSparkMerchantPaymentCard({
             : paused
               ? "Coordination fee processing is paused. This order remains paid."
               : "The coordination fee is still processing. This order remains paid."}
+        </p>
+      )}
+      {coordinationFeeUnresolved && outcome === "renewal_wait" && (
+        <p role="status" className="mt-3 text-sm text-[var(--text-muted)]">
+          {renewalExplanation}
         </p>
       )}
       {notice && (

@@ -1,5 +1,6 @@
 import {
   verifyCheckoutSparkInvoiceRecipient,
+  getCheckoutSparkSettledLegGeneration,
   type CheckoutSparkSettledOutgoingTarget,
   type CheckoutSparkSettledReconciliation,
   type DexieCheckoutSparkSettledRepository,
@@ -39,6 +40,9 @@ export async function verifySavedMerchantCheckoutSparkRecipients(input: {
       // Attribution is independent of dispatch reservation; no send uses this.
       unpaidAllocationSats: leg.allocationSats,
       intent: leg.intent,
+      ...(getCheckoutSparkSettledLegGeneration(leg) === 1
+        ? { generation: 1 as const }
+        : {}),
     }
     if (
       await repository.hasInvoiceRecipient(state.plan, target, assertCurrent)

@@ -270,6 +270,16 @@ function fixture() {
 }
 
 describe("Merchant automatic exact-signed-next-intent selection", () => {
+  it("selects expired signed generation-zero intent for separate renewal inspection", async () => {
+    const test = fixture()
+    const original = structuredClone(test.signed())
+    test.dependencies.now = () => CREATED_AT + 3_600_000
+
+    expect((await test.run()).status).toBe("renewal_needed")
+    expect(test.signed()).toEqual(original)
+    expect(test.recoveryCalls()).toBe(1)
+  })
+
   it("returns only the exact signed next review, never private wallet material", async () => {
     const test = fixture()
     const result = await test.run()

@@ -19,7 +19,7 @@ const HEX_64 = /^[0-9a-f]{64}$/
 
 /** Machine reconciliation data, never takeover authorization or payment proof. */
 export interface CheckoutSparkMerchantProgressPayload {
-  schemaVersion: 1
+  schemaVersion: 1 | 2
   type: "checkout_spark_merchant_progress"
   snapshotId: string
   initialHandoffId: string
@@ -57,6 +57,16 @@ function canonicalState(
       observedAt: leg.observedAt,
       finalFeeSats: leg.finalFeeSats,
       finalDebitSats: leg.finalDebitSats,
+      ...(state.schemaVersion === 4
+        ? {
+            generation: leg.generation!,
+            closedGenerations: leg.closedGenerations!.map((entry) => ({
+              ...entry,
+              intent: { ...entry.intent },
+              closure: { ...entry.closure },
+            })),
+          }
+        : {}),
     })),
     updatedAt: state.updatedAt,
   })
@@ -109,12 +119,18 @@ export function createCheckoutSparkMerchantProgress(input: {
       throw new Error("Missing post-handoff progress")
     }
     return {
-      schemaVersion: 1,
+      schemaVersion: state.schemaVersion === 4 ? 2 : 1,
       type: "checkout_spark_merchant_progress",
       snapshotId: bytesToHex(
         sha256(
           new TextEncoder().encode(
-            JSON.stringify([SNAPSHOT_DOMAIN, input.initialHandoffId, state])
+            JSON.stringify([
+              state.schemaVersion === 4
+                ? "conduit:checkout-spark-merchant-progress:v2"
+                : SNAPSHOT_DOMAIN,
+              input.initialHandoffId,
+              state,
+            ])
           )
         )
       ),

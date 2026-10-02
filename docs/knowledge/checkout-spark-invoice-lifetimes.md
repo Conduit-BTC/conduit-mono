@@ -66,12 +66,31 @@ rejected; a thrown call is therefore not proof of a safe, unattempted payment.
 
 ## Persistence and retry
 
-The recipient, invoice, amount, maximum fee, and transfer ID remain immutable.
+The recipient stays frozen. Within each outgoing attempt, the invoice, amount,
+maximum fee and transfer ID remain immutable.
 Before sending, the runner saves submitted state and delivers the exact recovery
 snapshot. If that work crosses expiry, it does not send or clear a previously
 saved possible-send marker. Existing expired intents remain available for exact
 history reconciliation; they do not cause another invoice or transfer ID to be
-created. Positive paid evidence can still complete the original leg after expiry.
+created merely because they expired. Positive paid evidence can still complete
+the original leg after expiry.
+
+The narrowly bounded closed-attempt renewal contract in
+[`wallets.md`](../specs/wallets.md#closed-attempt-invoice-renewal) permits one
+Merchant-only successor after exact positive unpaid closure and complete,
+spendable return with zero historical net debit. The old attempt remains in an
+append-only history; the successor gets a fresh recipient-origin invoice and
+its own deterministic identifier. Fresh provider proof is required before
+commit and dispatch, and the authenticated Merchant snapshot must be persisted
+and relay-acknowledged before sending. An absent request, imported `prepared`
+status or available aggregate balance is not this proof. Partial or charged
+returns and uncertain old attempts remain blocked.
+
+Recipient-issued LNURL invoices have their own signed expiry. LUD-06 does not
+standardize a requested expiry parameter, so increasing the application funding
+lifetime cannot extend an already issued payout invoice. The normal funding
+invoice remains fifteen minutes; changing that duration affects new funding
+attempts only.
 
 Each recipient's allocation remains the limit for invoice plus all send fees.
 Both app adapters retain `preferSpark: false` for these Lightning intents. No

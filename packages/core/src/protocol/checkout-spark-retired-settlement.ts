@@ -1,5 +1,6 @@
 import {
   deriveCheckoutSparkSettledTransferId,
+  getCheckoutSparkSettledLegGeneration,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
@@ -43,7 +44,7 @@ export interface CheckoutSparkBuyerOrderBinding {
 
 /** No wallet credential, invoice, destination, order body, or payment hash. */
 export interface CheckoutSparkRetiredSettlementSummary {
-  readonly schemaVersion: 1
+  readonly schemaVersion: 1 | 2
   readonly checkoutId: string
   readonly planDigest: string
   readonly orderId: string
@@ -60,6 +61,9 @@ export interface CheckoutSparkRetiredSettlementSummary {
     readonly kind: "merchant" | "supplier" | "organizer" | "conduit"
     readonly transferId: string
     readonly allocationSats: number
+    readonly generation?: 0 | 1
+    readonly closedTransferIds?: readonly string[]
+    readonly historicalNetDebitSats?: 0
   }[]
 }
 
@@ -96,7 +100,7 @@ export function createCheckoutSparkRetiredSettlementSummary(
 ): CheckoutSparkRetiredSettlementSummary {
   const state = restoreCheckoutSparkSettledReconciliation(input)
   const summary: CheckoutSparkRetiredSettlementSummary = {
-    schemaVersion: 1,
+    schemaVersion: state.schemaVersion === 4 ? 2 : 1,
     checkoutId: state.plan.checkoutId,
     planDigest: state.plan.planDigest,
     orderId: state.plan.orderId,
@@ -120,11 +124,20 @@ export function createCheckoutSparkRetiredSettlementSummary(
       return {
         legId: recipient.legId,
         kind: recipient.kind,
-        transferId: deriveCheckoutSparkSettledTransferId(
-          state.plan,
-          recipient.legId
-        ),
+        transferId:
+          state.schemaVersion === 4 && leg?.intent
+            ? leg.intent.transferId
+            : deriveCheckoutSparkSettledTransferId(state.plan, recipient.legId),
         allocationSats,
+        ...(state.schemaVersion === 4
+          ? {
+              generation: getCheckoutSparkSettledLegGeneration(leg!),
+              closedTransferIds: (leg!.closedGenerations ?? []).map(
+                (entry) => entry.intent.transferId
+              ),
+              historicalNetDebitSats: 0 as const,
+            }
+          : {}),
       }
     }),
   }
@@ -147,7 +160,7 @@ export function restoreCheckoutSparkRetiredSettlementSummary(
     "legs",
   ])
   if (
-    value.schemaVersion !== 1 ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
     !validId(value.checkoutId) ||
     !HEX_64.test(value.planDigest) ||
     !validId(value.orderId) ||
@@ -177,7 +190,27 @@ export function restoreCheckoutSparkRetiredSettlementSummary(
   let fees = 0
   for (const leg of value.legs) {
     if (!leg || typeof leg !== "object" || Array.isArray(leg)) invalid()
-    exactKeys(leg, ["legId", "kind", "transferId", "allocationSats"])
+    exactKeys(leg, [
+      "legId",
+      "kind",
+      "transferId",
+      "allocationSats",
+      ...(value.schemaVersion === 2
+        ? ["generation", "closedTransferIds", "historicalNetDebitSats"]
+        : []),
+    ])
+    if (
+      value.schemaVersion === 2 &&
+      (![0, 1].includes(leg.generation!) ||
+        !Array.isArray(leg.closedTransferIds) ||
+        leg.closedTransferIds.length !== leg.generation ||
+        leg.historicalNetDebitSats !== 0 ||
+        leg.closedTransferIds.some(
+          (id) => !validId(id) || id === leg.transferId
+        ) ||
+        new Set(leg.closedTransferIds).size !== leg.closedTransferIds.length)
+    )
+      invalid()
     if (
       !HEX_64.test(leg.legId) ||
       seen.has(leg.legId) ||
@@ -202,7 +235,12 @@ export function restoreCheckoutSparkRetiredSettlementSummary(
   return {
     ...value,
     credit: value.credit ? { ...value.credit } : null,
-    legs: value.legs.map((leg) => ({ ...leg })),
+    legs: value.legs.map((leg) => ({
+      ...leg,
+      ...(value.schemaVersion === 2
+        ? { closedTransferIds: Object.freeze([...leg.closedTransferIds!]) }
+        : {}),
+    })),
   }
 }
 

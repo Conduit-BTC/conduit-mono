@@ -35,6 +35,7 @@ interface ReconciliationDependencies {
         | "hasInvoiceRecipient"
         | "recordInvoiceRecipientVerification"
         | "assertInvoiceRecipient"
+        | "saveRenewedWithInvoiceOrigin"
       >
     >
   checkCredit?: typeof reconcileMerchantCheckoutSparkSettledCredit
@@ -318,11 +319,19 @@ export async function advanceMerchantCheckoutSparkOrder(
     assertActive()
     return true
   }
-  if (selection.status === "preparation_needed") {
+  if (
+    selection.status === "preparation_needed" ||
+    selection.status === "renewal_needed"
+  ) {
     const result = await (
       dependencies.preparePayout ??
       prepareNextMerchantCheckoutSparkSettledPayout
-    )(principal, candidate, { shouldContinue }, { repository, now })
+    )(
+      principal,
+      candidate,
+      { shouldContinue, allowRenewal: true },
+      { repository, now }
+    )
     assertActive()
     if (result.status === "retired") return "retired"
     if (result.status === "save_required") return "unbound"
@@ -338,6 +347,12 @@ export async function advanceMerchantCheckoutSparkOrder(
     ) {
       dependencies.requestRescan()
       return "progress_pending"
+    }
+    if (
+      selection.status === "renewal_needed" &&
+      prepared.status === "history_wait"
+    ) {
+      return "renewal_wait"
     }
     return prepared.status === "allocation_unavailable"
       ? "needs_attention"
