@@ -29,9 +29,10 @@ import {
   cn,
   type SignedActionStatusState,
 } from "@conduit/ui"
-import type {
-  MerchantOrganizerEventMarket,
-  MerchantOrganizerRecordDelivery,
+import {
+  organizerDeliveryNeedsRetry,
+  type MerchantOrganizerEventMarket,
+  type MerchantOrganizerRecordDelivery,
 } from "../lib/event-market"
 import {
   acceptOwnEventProduct,
@@ -507,10 +508,7 @@ export function EventProductPublisherDialog({
     reviewAcceptanceMutation.isPending ||
     retryAcceptanceMutation.isPending
   const acceptanceNeedsRetry =
-    !!signedAcceptance &&
-    (signedAcceptance.acknowledgedCount === 0 ||
-      signedAcceptance.rejectedCount > 0 ||
-      signedAcceptance.timedOutCount > 0)
+    !!signedAcceptance && organizerDeliveryNeedsRetry(signedAcceptance)
 
   const previousAuthorityKeyRef = useRef(`${authGeneration}:${signerReady}`)
   useLayoutEffect(() => {

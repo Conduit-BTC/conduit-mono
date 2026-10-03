@@ -7424,6 +7424,10 @@ export interface OrganizerEventMarketRecordDelivery {
   acknowledgedRelayUrls: string[]
   rejectedRelayUrls: string[]
   timedOutRelayUrls: string[]
+  authRequiredRelayUrls?: string[]
+  cancelledRelayUrls?: string[]
+  policyBlockedRelayUrls?: string[]
+  errorRelayUrls?: string[]
 }
 
 export interface OrganizerEventMarketSignedRecord {
@@ -7811,20 +7815,30 @@ function classifyRecordDelivery(
 ): OrganizerEventMarketRecordDelivery {
   const rejectedRelayUrls: string[] = []
   const timedOutRelayUrls: string[] = []
-  const rejected = new Set(result.rejectedRelayUrls)
-  const timedOut = new Set(
-    result.relayAttempts
-      ?.filter((attempt) => attempt.status === "timed_out")
-      .map((attempt) => attempt.relayUrl)
+  const authRequiredRelayUrls: string[] = []
+  const cancelledRelayUrls: string[] = []
+  const policyBlockedRelayUrls: string[] = []
+  const errorRelayUrls: string[] = []
+  const terminalStatuses = new Map(
+    result.relayAttempts?.map((attempt) => [attempt.relayUrl, attempt.status])
   )
   for (const relayUrl of result.failedRelayUrls) {
-    if (rejected.has(relayUrl)) rejectedRelayUrls.push(relayUrl)
-    else if (timedOut.has(relayUrl)) timedOutRelayUrls.push(relayUrl)
+    const status = terminalStatuses.get(relayUrl)
+    if (
+      status === "rejected" ||
+      (!status && result.rejectedRelayUrls?.includes(relayUrl))
+    )
+      rejectedRelayUrls.push(relayUrl)
     else if (
-      !result.relayAttempts &&
-      /timeout|timed out/i.test(result.relayFailureMessages[relayUrl] ?? "")
+      status === "timed_out" ||
+      (!status &&
+        /timeout|timed out/i.test(result.relayFailureMessages[relayUrl] ?? ""))
     )
       timedOutRelayUrls.push(relayUrl)
+    else if (status === "auth_required") authRequiredRelayUrls.push(relayUrl)
+    else if (status === "cancelled") cancelledRelayUrls.push(relayUrl)
+    else if (status === "policy_blocked") policyBlockedRelayUrls.push(relayUrl)
+    else errorRelayUrls.push(relayUrl)
   }
 
   return {
@@ -7834,6 +7848,10 @@ function classifyRecordDelivery(
     acknowledgedRelayUrls: [...result.successfulRelayUrls],
     rejectedRelayUrls,
     timedOutRelayUrls,
+    authRequiredRelayUrls,
+    cancelledRelayUrls,
+    policyBlockedRelayUrls,
+    errorRelayUrls,
   }
 }
 

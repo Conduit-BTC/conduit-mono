@@ -96,3 +96,11 @@ Public references: [NIP-01](https://github.com/nostr-protocol/nips/blob/master/0
 Public NIP-44 remains v2. Future v3 messaging capability work requires public
 references and explicit capability detection; this change does not alter
 encryption or envelope construction.
+
+Organizer delivery projections preserve `auth_required`, `cancelled`,
+`policy_blocked`, and `error` separately from rejection and timeout. Merchant
+recovery storage retains these outcomes even alongside an ACK, and exact retry
+remains available after reload. The delivery UI identifies signer authentication,
+Network policy, stopped delivery, and local errors with the corresponding recovery
+guidance. Unclassified legacy failures remain errors rather than fabricated
+timeouts.

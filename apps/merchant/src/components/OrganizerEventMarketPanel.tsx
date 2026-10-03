@@ -39,6 +39,7 @@ import {
 } from "@conduit/ui"
 import { type OrganizerCollectionMembershipAction } from "../lib/event-market-workflow"
 import {
+  organizerDeliveryNeedsRetry,
   getResolvedEventMarketRelayHints,
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
@@ -234,9 +235,48 @@ function DeliveryRow({
   actionsDisabled: boolean
   onRetry: (delivery: MerchantOrganizerRecordDelivery) => void
 }) {
-  const needsRetry =
-    delivery.acknowledgedCount === 0 ||
-    delivery.rejectedCount + delivery.timedOutCount > 0
+  const needsRetry = organizerDeliveryNeedsRetry(delivery)
+  const outcomes = [
+    {
+      count: delivery.rejectedCount,
+      label: "rejected",
+      variant: "destructive",
+      guidance: undefined,
+    },
+    {
+      count: delivery.timedOutCount,
+      label: "timed out",
+      variant: "warning",
+      guidance: undefined,
+    },
+    {
+      count: delivery.authRequiredCount ?? 0,
+      label: "authentication required",
+      variant: "warning",
+      guidance:
+        "Reconnect your signer and authenticate with the relay before retrying.",
+    },
+    {
+      count: delivery.cancelledCount ?? 0,
+      label: "cancelled",
+      variant: "warning",
+      guidance:
+        "Delivery was stopped. Retry to resume with the saved signed event.",
+    },
+    {
+      count: delivery.policyBlockedCount ?? 0,
+      label: "blocked by policy",
+      variant: "warning",
+      guidance: "Review your Network relay policy before retrying.",
+    },
+    {
+      count: delivery.errorCount ?? 0,
+      label: "local errors",
+      variant: "warning",
+      guidance: "Refresh and check local storage access before retrying.",
+    },
+  ] as const
+  const failedOutcomes = outcomes.filter((outcome) => outcome.count > 0)
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5">
       <div>
@@ -252,15 +292,22 @@ function DeliveryRow({
           {delivery.acknowledgedCount === 0 && (
             <Badge variant="warning">Not acknowledged</Badge>
           )}
-          {delivery.rejectedCount > 0 && (
-            <Badge variant="destructive">
-              {delivery.rejectedCount} rejected
+          {failedOutcomes.map((outcome) => (
+            <Badge key={outcome.label} variant={outcome.variant}>
+              {outcome.count} {outcome.label}
             </Badge>
-          )}
-          {delivery.timedOutCount > 0 && (
-            <Badge variant="warning">{delivery.timedOutCount} timed out</Badge>
-          )}
+          ))}
         </div>
+        {failedOutcomes.map((outcome) =>
+          outcome.guidance ? (
+            <p
+              key={outcome.label}
+              className="mt-1 text-sm text-[var(--text-secondary)]"
+            >
+              {outcome.guidance}
+            </p>
+          ) : null
+        )}
       </div>
       {needsRetry && delivery.signedEvent ? (
         <Button
