@@ -3058,9 +3058,6 @@ test("event catalog shops merchant groups with a URL-addressable filter before t
       })
   )
   const pickupGeohash = "dp3wj"
-  const pickupLocation = market.pickupEvent!.tags.find(
-    (tag) => tag[0] === "location"
-  )![1]!
   const pickups = Array.from({ length: 26 }, (_, index) =>
     signEvent(
       index === 1 || index === 2 || (index >= 4 && index % 2 === 1)
@@ -6406,6 +6403,18 @@ test("signed merchant booth deletion leaves pending cart blocked without backgro
   page,
 }) => {
   test.setTimeout(120_000)
+  // A live exchange-rate response changes the pending-cart query key. Keep
+  // pricing stable so this assertion measures retries after signed deletion.
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "conduit:btc-usd-rate",
+      JSON.stringify({
+        rate: 60_000,
+        fetchedAt: Date.now(),
+        source: "env",
+      })
+    )
+  })
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
   const market = await publishOrganizerMarket(page, relay, {

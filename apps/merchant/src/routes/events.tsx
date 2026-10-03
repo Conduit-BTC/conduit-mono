@@ -418,6 +418,7 @@ export function MyEventsPanel({
     status: authStatus,
     authGeneration,
     isAuthGenerationCurrent,
+    isAccountIdentityCurrent,
     remoteSignerRecovery,
     signerReadiness,
     connect,
@@ -1057,7 +1058,8 @@ export function MyEventsPanel({
       retryMerchantOrganizerRecord({
         organizerPubkey: input.ownerPubkey,
         authenticatedPubkey: null,
-        shouldContinue: () => isCurrentOwner(input.ownerPubkey),
+        // Signed delivery follows the account, independently of this event panel.
+        shouldContinue: () => isAccountIdentityCurrent(input.ownerPubkey),
         reference: input.reference,
         record: input.record,
       }),
@@ -1265,7 +1267,8 @@ export function MyEventsPanel({
         delivery: input.delivery,
         transport: {
           authenticatedPubkey: null,
-          shouldContinue: () => isCurrentOwner(input.ownerPubkey),
+          // Signed delivery follows the account, independently of this event panel.
+          shouldContinue: () => isAccountIdentityCurrent(input.ownerPubkey),
         },
       }),
     onSuccess: async (_delivery, input) => {

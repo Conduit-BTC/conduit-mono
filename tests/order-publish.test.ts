@@ -385,8 +385,20 @@ describe("buyer order publishing", () => {
     )
   })
 
-  for (const identityKind of ["signed_in", "guest_ephemeral"] as const) {
-    it(`adopts durable first-ACK delivery and lazy recovery for ${identityKind}`, async () => {
+  for (const [identityKind, terminalStatus] of (
+    ["signed_in", "guest_ephemeral"] as const
+  ).flatMap((identityKind) =>
+    (
+      [
+        "timed_out",
+        "auth_required",
+        "cancelled",
+        "policy_blocked",
+        "error",
+      ] as const
+    ).map((status) => [identityKind, status] as const)
+  )) {
+    it(`adopts durable first-ACK delivery and lazy recovery for ${identityKind}: ${terminalStatus}`, async () => {
       const buyerPubkey =
         identityKind === "signed_in"
           ? "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -475,6 +487,11 @@ describe("buyer order publishing", () => {
       }
       const settled = {
         ...accepted,
+        attemptedRelayUrls:
+          terminalStatus === "policy_blocked" ? [relayA] : [relayA, relayB],
+        relayAttempts: [
+          { relayUrl: relayB, attempt: 1, status: terminalStatus },
+        ],
         failedRelayUrls: [relayB],
         relayFailureMessages: {
           [relayB]: "No acknowledgement before timeout",
@@ -634,7 +651,7 @@ describe("buyer order publishing", () => {
         releaseLease: true,
         outcomes: [
           { relayUrl: relayA, status: "acked" },
-          { relayUrl: relayB, status: "timed_out" },
+          { relayUrl: relayB, status: terminalStatus },
         ],
       })
     })
@@ -982,9 +999,10 @@ describe("buyer order publishing", () => {
               stale: false,
               distributionRepairable: false,
             }),
-            giftWrapFn: (async (_rumor, recipient) => ({
-              id: `wrap-${recipient.pubkey}`,
-            })) as never,
+            giftWrapFn: (async (_rumor, recipient) =>
+              new NDKEvent(undefined, {
+                id: `wrap-${recipient.pubkey}`,
+              })) as never,
             publishFn: (async (_event, options) => {
               openedRelayUrls.push(...(options.exclusiveRelayUrls ?? []))
               return {
@@ -1207,7 +1225,9 @@ describe("buyer order publishing", () => {
             giftWrapFn: (async (rumor, recipient) => {
               publishedKinds.push(rumor.kind)
               wrappedRecipients.push(recipient.pubkey)
-              return { id: `wrap-${rumor.kind}-${recipient.pubkey}` } as never
+              return new NDKEvent(undefined, {
+                id: `wrap-${rumor.kind}-${recipient.pubkey}`,
+              }) as never
             }) as never,
             publishFn: (async (_event, options) => ({
               successfulRelayUrls: [...(options.exclusiveRelayUrls ?? [])],
@@ -1290,7 +1310,7 @@ describe("buyer order publishing", () => {
             publishFn: (async (event, options) => {
               wraps.push({
                 rumorKind: input.rumorKind,
-                event,
+                event: new NDKEvent(undefined, event),
                 recipients: [...(options.recipientPubkeys ?? [])],
               })
               return {

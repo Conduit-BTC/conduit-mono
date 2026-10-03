@@ -1,5 +1,6 @@
 import { decodeProductReference } from "@conduit/core"
 import {
+  organizerDeliveryNeedsRetry,
   isParticipationHandoffVerified,
   isParticipationProductPreviewVerified,
   loadOrganizerEventMarketDeliveryOutbox,
@@ -19,14 +20,6 @@ const acceptanceDependencies = {
   retry: retryMerchantOrganizerRecord,
   save: saveOrganizerEventMarketDelivery,
   load: loadOrganizerEventMarketDeliveryOutbox,
-}
-
-function needsExactRetry(record: MerchantOrganizerRecordDelivery): boolean {
-  return (
-    record.acknowledgedCount === 0 ||
-    record.rejectedCount > 0 ||
-    record.timedOutCount > 0
-  )
 }
 
 function compareAddressableRevision(
@@ -132,7 +125,7 @@ export async function acceptOwnEventProduct(
   if (
     retainedCollection &&
     retainedIsCurrent &&
-    needsExactRetry(retainedCollection) &&
+    organizerDeliveryNeedsRetry(retainedCollection) &&
     reconciledMarket.productCoordinates.includes(input.productCoordinate)
   ) {
     throw new Error(
@@ -254,7 +247,7 @@ export async function retryOwnEventProductAcceptance(
       "The event collection changed. Review this product before accepting again."
     )
   }
-  if (!needsExactRetry(strongest)) return true
+  if (!organizerDeliveryNeedsRetry(strongest)) return true
   const delivery = await dependencies.retry({
     organizerPubkey: organizer,
     authenticatedPubkey: input.authenticatedPubkey,

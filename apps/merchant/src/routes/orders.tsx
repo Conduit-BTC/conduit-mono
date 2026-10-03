@@ -1901,7 +1901,7 @@ function OrdersWorkspace() {
           if (!isCurrentOrderAccount(pubkey)) {
             throw new Error("Signed stock update belongs to another account.")
           }
-          const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+          const rawEvent = event
           signedEvent = rawEvent
           pendingStockDeliveryStoreRef.current.set(pubkey, {
             orderId: payload.orderId,

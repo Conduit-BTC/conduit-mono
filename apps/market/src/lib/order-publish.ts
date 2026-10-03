@@ -8,6 +8,7 @@ import {
   createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   getNdk,
+  getRelayPublishTargetStatus,
   getAccountSigner,
   type NostrKeySigner,
   parseOrderMessageRumorEvent,
@@ -500,50 +501,35 @@ export async function publishBuyerOrderMessage(
     if (orderDeliveryGenerations === null || orderDeliveryWrapId === null) {
       throw new Error("Order delivery outcomes arrived before staging.")
     }
-    const successful = new Set(recipientDelivery?.successfulRelayUrls ?? [])
-    const pending = new Set(
-      recipientDelivery && "pendingRelayUrls" in recipientDelivery
-        ? recipientDelivery.pendingRelayUrls
-        : []
-    )
-    const rejected = new Set(
-      recipientDelivery && "rejectedRelayUrls" in recipientDelivery
-        ? recipientDelivery.rejectedRelayUrls
-        : []
-    )
-    const failures = recipientDelivery?.relayFailureMessages ?? {}
+    const targetUrls = new Set([
+      ...(recipientDelivery?.attemptedRelayUrls ?? []),
+      ...(recipientDelivery?.relayAttempts?.map(
+        (attempt) => attempt.relayUrl
+      ) ?? []),
+    ])
     const persisted = await recordDeliveryOutcomes(
       {
         orderId: dependencies.orderLifecycle!.orderId,
         buyerPubkey: buyerIdentity.pubkey,
         leaseOwner: orderDeliveryLeaseOwner,
         wrapId: orderDeliveryWrapId,
-        outcomes: (recipientDelivery?.attemptedRelayUrls ?? []).flatMap(
-          (relayUrl) => {
-            const generation = orderDeliveryGenerations?.[relayUrl]
-            if (
-              generation === undefined ||
-              pending.has(relayUrl) ||
-              (options.ackOnly && !successful.has(relayUrl))
-            ) {
-              return []
-            }
-            return [
-              {
-                relayUrl,
-                status: successful.has(relayUrl)
-                  ? ("acked" as const)
-                  : rejected.has(relayUrl) ||
-                      /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
-                        failures[relayUrl]?.trim() ?? ""
-                      )
-                    ? ("rejected" as const)
-                    : ("timed_out" as const),
-                generation,
-              },
-            ]
-          }
-        ),
+        outcomes: [...targetUrls].flatMap((relayUrl) => {
+          const generation = orderDeliveryGenerations?.[relayUrl]
+          if (generation === undefined || !recipientDelivery) return []
+          const outcome = getRelayPublishTargetStatus(
+            recipientDelivery,
+            relayUrl
+          )
+          if (outcome === "pending" || (options.ackOnly && outcome !== "acked"))
+            return []
+          return [
+            {
+              relayUrl,
+              status: outcome,
+              generation,
+            },
+          ]
+        }),
         releaseLease: options.releaseLease,
       },
       orderRelayDeliveryOptions

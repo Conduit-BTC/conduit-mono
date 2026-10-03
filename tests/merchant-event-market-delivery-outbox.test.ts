@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+import { OrganizerEventMarketDeliveryList } from "../apps/merchant/src/components/OrganizerEventMarketPanel"
 import NDK, { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
@@ -17,6 +20,8 @@ import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
 import {
   loadOrganizerEventMarketDeliveryOutbox,
   mergeOrganizerEventMarketDeliveryState,
+  mergeMerchantOrganizerDeliveryProgress,
+  organizerDeliveryNeedsRetry,
   organizerEventMarketReferenceWithAllDeliveryRelayHints,
   organizerEventMarketReferenceWithDeliveryRelayHints,
   publishMerchantOrganizerEventMarket,
@@ -77,6 +82,132 @@ function expectExactSignedEvent(
 }
 
 describe("merchant organizer delivery outbox", () => {
+  for (const [status, field, label, guidance] of [
+    [
+      "auth_required",
+      "authRequiredCount",
+      "authentication required",
+      "Reconnect your signer",
+    ],
+    ["cancelled", "cancelledCount", "cancelled", "Retry to resume"],
+    [
+      "policy_blocked",
+      "policyBlockedCount",
+      "blocked by policy",
+      "Review your Network relay policy",
+    ],
+    ["error", "errorCount", "local errors", "check local storage access"],
+  ] as const) {
+    for (const withTimeout of [false, true]) {
+      it(`retains ${status} through exact retry, reload, and UI (timeout=${withTimeout})`, async () => {
+        const storage = new MemoryStorage()
+        const signedEvent = signedCollection()
+        const original: MerchantOrganizerRecordDelivery = {
+          record: "collection",
+          signedEvent,
+          acknowledgedCount: 1,
+          acknowledgedRelayUrls: [PUBLISH_RELAY],
+          rejectedCount: 0,
+          timedOutCount: 0,
+          [field]: 1,
+        }
+        saveOrganizerEventMarketDelivery(
+          ORGANIZER,
+          REFERENCE,
+          original,
+          storage
+        )
+        const failedRelay = "wss://failed.example"
+        const timeoutRelay = "wss://timeout.example"
+        __setEventMarketTestOverrides({
+          getNdk: async () => new NDK(),
+          signDraft: async () => {
+            throw new Error("Exact retry must not sign")
+          },
+          publishWithPlanner: async (event) => {
+            expectExactSignedEvent(event, signedEvent)
+            return {
+              plan: {
+                intent: "author_event",
+                primaryRelayUrls: [PUBLISH_RELAY],
+                broadcastRelayUrls: [],
+                parkedRelayUrls: [],
+              },
+              attemptedRelayUrls: [PUBLISH_RELAY],
+              successfulRelayUrls: [PUBLISH_RELAY],
+              failedRelayUrls: [
+                failedRelay,
+                ...(withTimeout ? [timeoutRelay] : []),
+              ],
+              relayFailureMessages: {},
+              relayAttempts: [
+                {
+                  relayUrl: PUBLISH_RELAY,
+                  eventId: event.id,
+                  attempt: 1,
+                  status: "acked",
+                },
+                {
+                  relayUrl: failedRelay,
+                  eventId: event.id,
+                  attempt: 1,
+                  status,
+                },
+                ...(withTimeout
+                  ? [
+                      {
+                        relayUrl: timeoutRelay,
+                        eventId: event.id,
+                        attempt: 1,
+                        status: "timed_out" as const,
+                      },
+                    ]
+                  : []),
+              ],
+            }
+          },
+        })
+        const retried = await retryMerchantOrganizerRecord({
+          organizerPubkey: ORGANIZER,
+          authenticatedPubkey: ORGANIZER,
+          reference: REFERENCE,
+          record: original,
+          storage,
+        })
+        expect(retried[field]).toBe(1)
+        expect(retried.timedOutCount).toBe(withTimeout ? 1 : 0)
+        saveOrganizerEventMarketDelivery(ORGANIZER, REFERENCE, retried, storage)
+        const loaded = loadOrganizerEventMarketDeliveryOutbox(
+          ORGANIZER,
+          storage
+        )[REFERENCE]![0]!
+        expect(loaded[field]).toBe(1)
+        expectExactSignedEvent(loaded.signedEvent, signedEvent)
+        expect(organizerDeliveryNeedsRetry(loaded)).toBe(true)
+        const complete = { ...original, [field]: 0 }
+        expect(organizerDeliveryNeedsRetry(complete)).toBe(false)
+        expect(
+          mergeMerchantOrganizerDeliveryProgress(loaded, complete)[field]
+        ).toBe(0)
+        expect(
+          mergeMerchantOrganizerDeliveryProgress(complete, loaded)[field]
+        ).toBe(0)
+        const markup = renderToStaticMarkup(
+          createElement(OrganizerEventMarketDeliveryList, {
+            deliveries: [{ ...complete, record: "calendar" }, loaded],
+            retryingRecord: null,
+            actionsDisabled: false,
+            onRetryDelivery: () => {},
+          })
+        )
+        expect(markup).toContain(label)
+        expect(markup).toContain(guidance)
+        expect(markup).toContain("Retry delivery")
+        expect(markup.includes("timed out")).toBe(withTimeout)
+      })
+    }
+  }
+
   it("keeps earlier required-record acknowledgements in a guest-readable recovery link", async () => {
     const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000)
       .toISOString()
@@ -493,6 +624,17 @@ describe("merchant organizer delivery outbox", () => {
     for (const retryState of [
       { acknowledgedCount: 0, rejectedCount: 0, timedOutCount: 1 },
       { acknowledgedCount: 1, rejectedCount: 1, timedOutCount: 0 },
+      ...[
+        "authRequiredCount",
+        "cancelledCount",
+        "policyBlockedCount",
+        "errorCount",
+      ].map((field) => ({
+        acknowledgedCount: 1,
+        rejectedCount: 0,
+        timedOutCount: 0,
+        [field]: 1,
+      })),
     ]) {
       const storage = new MemoryStorage()
       const storageKey = `conduit:merchant:event-market-delivery:v1:${ORGANIZER}`
@@ -622,7 +764,7 @@ describe("merchant organizer delivery outbox", () => {
     __setEventMarketTestOverrides({
       getNdk: async () => new NDK(),
       publishWithPlanner: async (event) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return {
           plan: {
             intent: "author_event",
@@ -670,7 +812,7 @@ describe("merchant organizer delivery outbox", () => {
     __setEventMarketTestOverrides({
       getNdk: async () => new NDK(),
       publishWithPlanner: async (event) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         throw new Error("stale retry reached relay transport")
       },
     })

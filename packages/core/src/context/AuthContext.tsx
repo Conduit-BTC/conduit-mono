@@ -52,6 +52,7 @@ import {
   createProtectedReadSessionLifecycle,
   type ProtectedReadSessionLifecycle,
 } from "../protocol/protected-read-session-lifecycle"
+import { createAccountIdentityScope } from "../protocol/session"
 import { RemoteSignerResumeController } from "../protocol/remote-signer-resume"
 
 export type AuthStatus =
@@ -64,6 +65,8 @@ export type AuthStatus =
 export interface AuthContextValue {
   /** Established account scope, retained while a NIP-46 route is recoverable. */
   accountPubkey: string | null
+  /** Live retained account identity, independent of route and relay effects. */
+  isAccountIdentityCurrent: (pubkey: string) => boolean
   pubkey: string | null
   restorePendingPubkey: string | null
   signer: AccountSigner | null
@@ -519,9 +522,20 @@ export async function resolveFailedAuthAttempt(options: {
 
 export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) {
   const initialSessionRef = useRef<AuthSession | null>(readAuthSession())
-  const [accountPubkey, setAccountPubkey] = useState<string | null>(() =>
+  const [accountPubkey, setAccountPubkeyState] = useState<string | null>(() =>
     getRetainedAuthAccountPubkey(initialSessionRef.current, true)
   )
+  const [accountIdentity] = useState(() =>
+    createAccountIdentityScope(accountPubkey)
+  )
+  const setAccountPubkey = useCallback(
+    (pubkey: string | null) => {
+      accountIdentity.setPubkey(pubkey)
+      setAccountPubkeyState(pubkey)
+    },
+    [accountIdentity]
+  )
+  const isAccountIdentityCurrent = accountIdentity.isCurrent
   const [pubkey, setPubkey] = useState<string | null>(
     () => initialSessionRef.current?.userPubkey ?? null
   )
@@ -650,7 +664,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     setNostrConnectUri(null)
     setCapabilities(NO_SIGNER_CAPABILITIES)
     return true
-  }, [settleRestorePending, updateRemoteSignerRecovery])
+  }, [setAccountPubkey, settleRestorePending, updateRemoteSignerRecovery])
 
   const deactivateLocalSigner = useCallback((options: {
     preserveSessionIdentity?: boolean
@@ -704,7 +718,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     setNostrConnectUri(null)
     setCapabilities(NO_SIGNER_CAPABILITIES)
     return connection
-  }, [resumeController, updateRemoteSignerRecovery])
+  }, [resumeController, setAccountPubkey, updateRemoteSignerRecovery])
 
   const retireInvalidatedSession = useCallback(
     async (options: {
@@ -1276,6 +1290,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     handleSignerSessionInvalidated,
     resumeController,
     retireInvalidatedSession,
+    setAccountPubkey,
     settleRestorePending,
     signerClientIcon,
     updateRemoteSignerRecovery,
@@ -1442,7 +1457,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     setAuthUrl(null)
     setNostrConnectUri(null)
     setRemoteSignerState("none")
-  }, [])
+  }, [setAccountPubkey])
 
   const disconnectWithoutLock = useCallback(
     async (expectedSession: AuthSession | null): Promise<void> => {
@@ -1473,6 +1488,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       // Cancel background payment work before asynchronous credential cleanup.
       // Keep the invalidated epoch private so a render during queued cleanup
       // cannot capture it as a fresh, current continuation generation.
+      // Revoke saved signed retries before asynchronous credential cleanup.
+      accountIdentity.setPubkey(null)
       connected.current = false
       authEpoch.current += 1
       const expectedSession =
@@ -1517,6 +1534,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       }
     },
     [
+      accountIdentity,
       disconnectWithoutLock,
       deactivateLocalSigner,
       invalidatePendingRestoreForDisconnect,
@@ -1842,6 +1860,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     <AuthContext.Provider
       value={{
         accountPubkey,
+        isAccountIdentityCurrent,
         pubkey,
         restorePendingPubkey,
         signer,

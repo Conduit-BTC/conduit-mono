@@ -214,7 +214,14 @@ export interface EventMarketMerchantDecisionJob {
 export type ProductDeletionRelayRole = "author_write" | "source" | "conduit"
 
 export type ProductDeletionRelayDeliveryStatus =
-  "pending" | "acked" | "rejected" | "timed_out"
+  | "pending"
+  | "acked"
+  | "rejected"
+  | "timed_out"
+  | "auth_required"
+  | "cancelled"
+  | "policy_blocked"
+  | "error"
 
 export type ProductDeletionDeliveryState = "pending" | "partial" | "delivered"
 
@@ -360,7 +367,14 @@ export interface OwnerRelayListEventEvidence {
 }
 
 export type NetworkPreferencePublishStatus =
-  "pending" | "acked" | "rejected" | "timed_out"
+  | "pending"
+  | "acked"
+  | "rejected"
+  | "timed_out"
+  | "auth_required"
+  | "cancelled"
+  | "policy_blocked"
+  | "error"
 
 export type NetworkPreferenceReadbackStatus =
   "pending" | "observed" | "absent" | "timed_out"
@@ -768,7 +782,14 @@ export type OrderDeliveryStatus = "not_started" | "pending" | "sent" | "failed"
 export type OrderDeliveryRoute = "declared_inbox" | "compatibility_order"
 
 export type OrderRelayDeliveryStatus =
-  "pending" | "acked" | "rejected" | "timed_out"
+  | "pending"
+  | "acked"
+  | "rejected"
+  | "timed_out"
+  | "auth_required"
+  | "cancelled"
+  | "policy_blocked"
+  | "error"
 
 export interface OrderRelayDelivery {
   relayUrl: string

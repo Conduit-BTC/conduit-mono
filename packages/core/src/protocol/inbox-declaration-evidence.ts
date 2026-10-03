@@ -616,7 +616,16 @@ function normalizeRelayOutcomes(
       "Inbox declaration outcomes must match the immutable publish plan"
     )
   }
-  const publishStatuses = new Set(["pending", "acked", "rejected", "timed_out"])
+  const publishStatuses = new Set([
+    "pending",
+    "acked",
+    "rejected",
+    "timed_out",
+    "auth_required",
+    "cancelled",
+    "policy_blocked",
+    "error",
+  ])
   const readbackStatuses = new Set([
     "pending",
     "observed",

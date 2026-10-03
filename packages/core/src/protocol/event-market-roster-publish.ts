@@ -1,4 +1,3 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { db, type EventMarketMerchantDecisionJob } from "../db"
 import { parseAddressableCoordinate } from "./event-market"
 import { EVENT_KINDS } from "./kinds"
@@ -19,7 +18,6 @@ import {
   readEventMarketRoster,
 } from "./event-market-roster-read"
 import { waitForVisibleDocument } from "./interactive-signer"
-import { getNdk } from "./ndk"
 import { getAccountSigner } from "./session-signer"
 import type { UnsignedNostrEvent } from "./nostr-event-signer"
 import {
@@ -152,26 +150,28 @@ async function signRoster(input: {
   await waitForVisibleDocument()
   if (input.shouldContinue?.() === false)
     throw new Error("Organizer session changed.")
-  const ndk = await getNdk()
   const signer = getAccountSigner()
   if (!signer) throw new Error("Organizer signer is not connected.")
   const signerPubkey = (await signer.getPublicKey()).toLowerCase()
   if (signerPubkey !== input.organizerPubkey) {
     throw new Error("Active signer does not match the organizer.")
   }
-  const event = new NDKEvent(ndk)
-  event.kind = input.draft.kind
-  event.tags = input.draft.tags
-  event.content = input.draft.content
-  event.created_at = input.createdAt
+  const draft: UnsignedNostrEvent = {
+    kind: 0,
+    pubkey: "",
+    created_at: 0,
+    tags: [],
+    content: "",
+  }
+  draft.kind = input.draft.kind
+  draft.tags = input.draft.tags
+  draft.content = input.draft.content
+  draft.created_at = input.createdAt
   if (input.shouldContinue?.() === false)
     throw new Error("Organizer session changed.")
-  event.pubkey = signerPubkey
-  Object.assign(
-    event,
-    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
-  )
-  const signed = event.rawEvent() as SignedPublicNostrEvent
+  draft.pubkey = signerPubkey
+  const event = await signer.signEvent(draft)
+  const signed = event
   if (
     !isValidSignedPublicNostrEvent(signed) ||
     signed.pubkey !== input.organizerPubkey
@@ -186,8 +186,7 @@ async function publishRoster(
   authorPubkey: string,
   shouldContinue?: () => boolean
 ): Promise<PublishWithPlannerResult> {
-  const ndk = await getNdk()
-  return publishWithPlanner(new NDKEvent(ndk, signedEvent), {
+  return publishWithPlanner(signedEvent, {
     intent: "commerce_author_event",
     authorPubkey,
     authenticatedPubkey: authorPubkey,

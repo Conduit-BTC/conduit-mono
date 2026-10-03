@@ -106,6 +106,58 @@ afterEach(() => {
 })
 
 describe("organizer event-market publishing", () => {
+  for (const status of [
+    "auth_required",
+    "cancelled",
+    "policy_blocked",
+    "error",
+  ] as const) {
+    it(`preserves mixed ACK, timeout, and ${status} organizer outcomes`, async () => {
+      const failedRelay = "wss://failed.example"
+      const timeoutRelay = "wss://timeout.example"
+      __setEventMarketTestOverrides({
+        getNdk: connectedNdk,
+        signDraft,
+        publishWithPlanner: async (event) => ({
+          ...publishResult(true),
+          failedRelayUrls: [failedRelay, timeoutRelay],
+          relayAttempts: [
+            {
+              relayUrl: RELAY_URL,
+              eventId: event.id,
+              attempt: 1,
+              status: "acked",
+            },
+            { relayUrl: failedRelay, eventId: event.id, attempt: 1, status },
+            {
+              relayUrl: timeoutRelay,
+              eventId: event.id,
+              attempt: 1,
+              status: "timed_out",
+            },
+          ],
+        }),
+      })
+      const result = await publishOrganizerEventMarket(input())
+      const field = {
+        auth_required: "authRequiredRelayUrls",
+        cancelled: "cancelledRelayUrls",
+        policy_blocked: "policyBlockedRelayUrls",
+        error: "errorRelayUrls",
+      } as const
+      const outcomeField = field[status]
+      for (const record of [
+        result.calendar,
+        result.pickup!,
+        result.collection,
+      ]) {
+        expect(record.delivery.acknowledgedRelayUrls).toEqual([RELAY_URL])
+        expect(record.delivery.timedOutRelayUrls).toEqual([timeoutRelay])
+        expect(record.delivery[outcomeField]).toEqual([failedRelay])
+      }
+    })
+  }
+
   it("routes organizer market events through the commerce author intent", async () => {
     const intents: string[] = []
     __setEventMarketTestOverrides({
@@ -129,7 +181,7 @@ describe("organizer event-market publishing", () => {
       getNdk: connectedNdk,
       signDraft,
       publishWithPlanner: async (event: NDKEvent) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return publishResult(true)
       },
     })
@@ -285,7 +337,7 @@ describe("organizer event-market publishing", () => {
         getNdk: connectedNdk,
         signDraft,
         publishWithPlanner: async (event: NDKEvent) => {
-          published.push(event.rawEvent() as SignedPublicNostrEvent)
+          published.push(structuredClone(event))
           return publishResult(true)
         },
       })
@@ -378,7 +430,7 @@ describe("organizer event-market publishing", () => {
       },
       publishWithPlanner: async (event: NDKEvent) => {
         sequence.push("publish")
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return publishResult(true)
       },
     })
@@ -436,7 +488,7 @@ describe("organizer event-market publishing", () => {
       signDraft,
       publishWithPlanner: async (event: NDKEvent, options) => {
         forwardedAuthority.push(options.shouldContinue)
-        signedEvents.push(event.rawEvent() as SignedPublicNostrEvent)
+        signedEvents.push(structuredClone(event))
         return publishResult(true)
       },
     })
@@ -760,7 +812,7 @@ describe("organizer event-market publishing", () => {
     const retried: SignedPublicNostrEvent[] = []
     __setEventMarketTestOverrides({
       publishWithPlanner: async (event: NDKEvent) => {
-        retried.push(event.rawEvent() as SignedPublicNostrEvent)
+        retried.push(structuredClone(event))
         return publishResult(true)
       },
       signDraft: async () => {
@@ -805,7 +857,7 @@ describe("organizer event-market publishing", () => {
     __setEventMarketTestOverrides({
       getNdk: connectedNdk,
       publishWithPlanner: async (event: NDKEvent) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return publishResult(true)
       },
       signDraft: async () => {

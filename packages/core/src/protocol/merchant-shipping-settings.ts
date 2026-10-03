@@ -1,11 +1,9 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { AccountSigner, UnsignedNostrEvent } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import { config } from "../config"
 import { db, type ConduitDB } from "../db"
 import { SHIPPING_COUNTRIES } from "./countries"
 import { EVENT_KINDS } from "./kinds"
-import { getNdk } from "./ndk"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
@@ -404,7 +402,6 @@ export async function publishMerchantShippingSettings(input: {
   }
 }): Promise<MerchantShippingRevision> {
   const owner = ownerPubkey(input.pubkey)
-  const ndk = getNdk()
   const signer = input.dependencies?.signer ?? getAccountSigner()
   if (!signer || (await signer.getPublicKey()).toLowerCase() !== owner)
     throw new Error(
@@ -448,16 +445,19 @@ export async function publishMerchantShippingSettings(input: {
     (current.state === "found" ? current.revision.createdAt : 0) + 1,
     (input.acceptedRevision?.createdAt ?? 0) + 1
   )
-  const event = new NDKEvent(ndk)
-  event.kind = EVENT_KINDS.APPLICATION_DATA
-  event.pubkey = owner
-  event.created_at = createdAt
-  event.tags = [["d", MERCHANT_SHIPPING_SETTINGS_D_TAG]]
-  event.content = serializeMerchantShippingSettings(input.settings)
-  Object.assign(
-    event,
-    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
-  )
+  const draft: UnsignedNostrEvent = {
+    kind: 0,
+    pubkey: "",
+    created_at: 0,
+    tags: [],
+    content: "",
+  }
+  draft.kind = EVENT_KINDS.APPLICATION_DATA
+  draft.pubkey = owner
+  draft.created_at = createdAt
+  draft.tags = [["d", MERCHANT_SHIPPING_SETTINGS_D_TAG]]
+  draft.content = serializeMerchantShippingSettings(input.settings)
+  const event = await signer.signEvent(draft)
   await (input.dependencies?.publishEvent ?? publishWithPlanner)(event, {
     intent: "author_event",
     authorPubkey: owner,
@@ -470,7 +470,7 @@ export async function publishMerchantShippingSettings(input: {
   try {
     await retainMerchantShippingEvent(
       owner,
-      event.rawEvent() as SignedPublicNostrEvent,
+      event,
       input.dependencies?.evidenceDb ?? db
     )
   } catch {

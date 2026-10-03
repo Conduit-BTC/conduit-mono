@@ -6,13 +6,11 @@
  * events, but do not attempt expensive reverse follower discovery.
  */
 
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { db, type CachedOwnContactListSnapshot } from "../db"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import type { AccountNetworkLocalStateRepository } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
-import { getNdk } from "./ndk"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { NostrSignerError, type UnsignedNostrEvent } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
@@ -164,7 +162,6 @@ type ObservedOwnFollowList = {
 const observedOwnFollowLists = new Map<string, ObservedOwnFollowList>()
 
 interface FollowListTestOverrides {
-  getNdk?: typeof getNdk
   getAccountSigner?: typeof getAccountSigner
   readLatestFollowLists?: typeof readLatestFollowLists
   publishWithPlanner?: typeof publishWithPlanner
@@ -1225,7 +1222,6 @@ export async function publishContactListUpdate({
     throw new Error("Cannot update a follow list with an invalid pubkey")
   }
 
-  const ndk = followListTestOverrides.getNdk?.() ?? getNdk()
   const readSigner =
     followListTestOverrides.getAccountSigner ?? getAccountSigner
   const signer = readSigner()
@@ -1276,7 +1272,7 @@ export async function publishContactListUpdate({
   }
 
   const publishExact = async (
-    event: NDKEvent,
+    event: SignedPublicNostrEvent,
     snapshot: SignedPublicNostrEvent
   ): Promise<string[]> => {
     assertCurrentSignerSession()
@@ -1325,7 +1321,7 @@ export async function publishContactListUpdate({
   ) {
     if (strongestOwnerSnapshotState === "pending") {
       await publishExact(
-        new NDKEvent(ndk, cloneSignedEvent(strongestOwnerEvent)),
+        cloneSignedEvent(strongestOwnerEvent),
         strongestOwnerEvent
       )
     }
@@ -1345,24 +1341,27 @@ export async function publishContactListUpdate({
     shouldFollow,
   })
 
-  const event = new NDKEvent(ndk)
-  event.kind = EVENT_KINDS.CONTACT_LIST
-  event.created_at = Math.max(
+  const draft: UnsignedNostrEvent = {
+    kind: 0,
+    pubkey: "",
+    created_at: 0,
+    tags: [],
+    content: "",
+  }
+  draft.kind = EVENT_KINDS.CONTACT_LIST
+  draft.created_at = Math.max(
     Math.floor(Date.now() / 1000),
     (latest?.created_at ?? -1) + 1
   )
-  event.content = latest?.content ?? ""
-  event.tags = appendConduitClientTag(nextTags, appId)
+  draft.content = latest?.content ?? ""
+  draft.tags = appendConduitClientTag(nextTags, appId)
 
-  assertSafeReplaceablePublish(event, replaceableSafety)
+  assertSafeReplaceablePublish(draft, replaceableSafety)
   assertCurrentSignerSession()
-  event.pubkey = normalizedOwnerPubkey
-  Object.assign(
-    event,
-    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
-  )
+  draft.pubkey = normalizedOwnerPubkey
+  const event = await signer.signEvent(draft)
   assertCurrentSignerSession()
-  const signedEvent = event.rawEvent() as SignedPublicNostrEvent
+  const signedEvent = event
   assertCurrentSignerSession()
   const retained = await persistOwnContactListSnapshot(
     {

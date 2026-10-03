@@ -54,17 +54,32 @@ export interface MerchantOrganizerRecordDelivery {
   acknowledgedCount: number
   rejectedCount: number
   timedOutCount: number
+  authRequiredCount?: number
+  cancelledCount?: number
+  policyBlockedCount?: number
+  errorCount?: number
   signedEvent: SignedPublicNostrEvent | null
+}
+
+export function organizerDeliveryNeedsRetry(
+  delivery: MerchantOrganizerRecordDelivery
+): boolean {
+  return (
+    delivery.acknowledgedCount === 0 ||
+    delivery.rejectedCount +
+      delivery.timedOutCount +
+      (delivery.authRequiredCount ?? 0) +
+      (delivery.cancelledCount ?? 0) +
+      (delivery.policyBlockedCount ?? 0) +
+      (delivery.errorCount ?? 0) >
+      0
+  )
 }
 
 function deliveryIsComplete(
   delivery: MerchantOrganizerRecordDelivery
 ): boolean {
-  return (
-    delivery.acknowledgedCount > 0 &&
-    delivery.rejectedCount === 0 &&
-    delivery.timedOutCount === 0
-  )
+  return !organizerDeliveryNeedsRetry(delivery)
 }
 
 /** Preserve monotonic relay progress for the same immutable signed record. */
@@ -350,6 +365,10 @@ function validStoredDelivery(
       acknowledgedCount: count("acknowledgedCount"),
       rejectedCount: count("rejectedCount"),
       timedOutCount: count("timedOutCount"),
+      authRequiredCount: count("authRequiredCount"),
+      cancelledCount: count("cancelledCount"),
+      policyBlockedCount: count("policyBlockedCount"),
+      errorCount: count("errorCount"),
       signedEvent,
     },
     savedAt: numberValue(stored?.savedAt) ?? 0,
@@ -477,8 +496,7 @@ export function saveOrganizerEventMarketDelivery(
     )
     const required = sorted.filter(
       (stored) =>
-        stored.delivery.acknowledgedCount === 0 ||
-        stored.delivery.rejectedCount + stored.delivery.timedOutCount > 0 ||
+        organizerDeliveryNeedsRetry(stored.delivery) ||
         `${stored.reference}:${stored.delivery.record}` === candidateKey
     )
     if (required.length > EVENT_MARKET_DELIVERY_OUTBOX_LIMIT) {
@@ -486,8 +504,7 @@ export function saveOrganizerEventMarketDelivery(
     }
     const acknowledgedHistory = sorted.filter(
       (stored) =>
-        stored.delivery.acknowledgedCount > 0 &&
-        stored.delivery.rejectedCount + stored.delivery.timedOutCount === 0 &&
+        !organizerDeliveryNeedsRetry(stored.delivery) &&
         `${stored.reference}:${stored.delivery.record}` !== candidateKey
     )
     const rows = [
@@ -776,7 +793,21 @@ function projectDeliveryRecord(
   const acknowledged = delivery?.acknowledgedRelayUrls ?? []
   const rejected = delivery?.rejectedRelayUrls ?? []
   const timedOut = delivery?.timedOutRelayUrls ?? []
-  const failed = delivery?.failedRelayUrls ?? []
+  const authRequired = delivery?.authRequiredRelayUrls ?? []
+  const cancelled = delivery?.cancelledRelayUrls ?? []
+  const policyBlocked = delivery?.policyBlockedRelayUrls ?? []
+  const errors = delivery?.errorRelayUrls ?? []
+  const classified = new Set([
+    ...rejected,
+    ...timedOut,
+    ...authRequired,
+    ...cancelled,
+    ...policyBlocked,
+    ...errors,
+  ])
+  const unclassified = (delivery?.failedRelayUrls ?? []).filter(
+    (url) => !classified.has(url)
+  )
   const acknowledgedRelayUrls = normalizeSecureOrIsolatedE2eRelayUrls([
     ...acknowledged,
     ...successful,
@@ -786,8 +817,11 @@ function projectDeliveryRecord(
     acknowledgedRelayUrls,
     acknowledgedCount: acknowledged.length || successful.length,
     rejectedCount: rejected.length,
-    timedOutCount:
-      timedOut.length || Math.max(0, failed.length - rejected.length),
+    timedOutCount: timedOut.length,
+    authRequiredCount: authRequired.length,
+    cancelledCount: cancelled.length,
+    policyBlockedCount: policyBlocked.length,
+    errorCount: errors.length + unclassified.length,
     signedEvent: value.signedEvent,
   }
 }

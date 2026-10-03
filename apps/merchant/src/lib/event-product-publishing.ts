@@ -1,4 +1,4 @@
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { SignedPublicNostrEvent } from "@conduit/core"
 import {
   canonicalizeProductPrice,
   decodeProductReference,
@@ -291,7 +291,7 @@ export async function publishEventProduct(input: {
   marketReference: string
   form: EventProductPublishFormValues
   onProductPrepared?: (dTag: string) => void | Promise<void>
-  onSignedLocal?: (event: NDKEvent) => void | Promise<void>
+  onSignedLocal?: (event: SignedPublicNostrEvent) => void | Promise<void>
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void
 }): Promise<EventProductPublishResult> {
   const validation = validateEventProductPublishForm(input.form)
@@ -391,7 +391,7 @@ export async function publishEventProduct(input: {
 }
 
 export async function retryEventProductDelivery(
-  event: NDKEvent,
+  event: SignedPublicNostrEvent,
   merchantPubkey: string,
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean
