@@ -608,10 +608,13 @@ for (const [viewportName, width, height] of [
         .getByLabel("Primary image URL")
         .fill(`https://media.conduit.market/shipping-table-${index}.png`)
       const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
-      for (const tag of ["shipping", "table", "test"]) {
-        await tags.fill(tag)
-        await tags.press("Enter")
-      }
+      await tags.fill("shipping, table, test")
+      await tags.press("Tab")
+      for (const tag of ["shipping", "table", "test"])
+        await expect(
+          dialog.getByRole("button", { name: `Remove ${tag} tag`, exact: true })
+        ).toBeVisible()
+      await expect(tags).toHaveValue("")
       if (index === 2 && viewportName === "mobile") {
         await dialog
           .getByLabel("Shipping weight", { exact: true })
