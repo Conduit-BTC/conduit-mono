@@ -625,8 +625,13 @@ async function rehearseRouter(
     stage = "buyer catalog product visibility"
     const product = page.getByRole("listitem").filter({ hasText: productTitle })
     await expect(product).toBeVisible({ timeout: 30_000 })
-    await expect(product.getByText("~ ₿1,113", { exact: true })).toBeVisible()
-    await expect(product.getByText(/Estimated total/)).toBeVisible()
+    if (fulfillment === "digital") {
+      await expect(product.getByText("~ ₿1,113", { exact: true })).toBeVisible()
+      await expect(product.getByText(/Estimated total/)).toBeVisible()
+    } else {
+      await expect(product.getByText("₿1,000", { exact: true })).toBeVisible()
+      await expect(product.getByText(/Estimated total/)).toHaveCount(0)
+    }
     stage = "buyer add product to cart"
     await product.getByRole("button", { name: "Add", exact: true }).click()
     stage = "buyer continue to checkout"

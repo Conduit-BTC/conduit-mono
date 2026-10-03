@@ -2,6 +2,7 @@ import { expect, it } from "bun:test"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 import { createHash } from "node:crypto"
 import { FirstPartySparkSdkFactory } from "../apps/market/src/lib/spark-sdk"
+import { SparkWalletManager } from "../apps/market/src/lib/spark-wallet"
 import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
 import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
 import {
@@ -17,9 +18,13 @@ const NOW = 1_800_000_000_000
 const MNEMONIC = createRuntimeMnemonic()
 const OTHER_MNEMONIC = createRuntimeMnemonic()
 
-function signedInvoice(amountSats: number, preimage: Uint8Array): string {
+function signedInvoice(
+  amountSats: number,
+  preimage: Uint8Array,
+  network: "mainnet" | "regtest" = "regtest"
+): string {
   return makeSignedBolt11Fixture({
-    hrp: `lnbcrt${amountSats * 10}n`,
+    hrp: `${network === "mainnet" ? "lnbc" : "lnbcrt"}${amountSats * 10}n`,
     createdAt: NOW / 1_000,
     fields: [
       bolt11PaymentHashField(createHash("sha256").update(preimage).digest()),
@@ -332,6 +337,167 @@ it("rejects non-regtest clients and readers before credential derivation or invo
   ).toThrow()
   expect(deriveCalls).toBe(0)
   expect(invoiceCalls).toBe(0)
+})
+
+it("keeps an explicitly configured mainnet fixture closed to other networks", async () => {
+  let deriveCalls = 0
+  const fixture = createHermeticSparkNative({
+    network: "mainnet",
+    deriveIdentity: async () => {
+      deriveCalls += 1
+      throw new Error("Must not derive")
+    },
+    issueFundingInvoice: async () => {
+      throw new Error("Must not issue")
+    },
+  })
+  for (const [network, nativeNetwork] of [
+    ["regtest", "REGTEST"],
+    ["testnet", "TESTNET"],
+    ["signet", "SIGNET"],
+  ] as const) {
+    await expect(
+      fixture.module.initialize({
+        mnemonicOrSeed: MNEMONIC,
+        accountNumber: 0,
+        options: { network: nativeNetwork, log: false },
+      })
+    ).rejects.toThrow()
+    await expect(
+      fixture.openAuthenticatedRetirementReader({
+        mnemonic: MNEMONIC,
+        accountNumber: 0,
+        network,
+      })
+    ).rejects.toThrow()
+    expect(() =>
+      fixture.module.createPublicReadonlyClient({
+        network: nativeNetwork,
+        log: false,
+      })
+    ).toThrow()
+  }
+  expect(deriveCalls).toBe(0)
+})
+
+it("routes synthetic mainnet funding and one exact outgoing payment through the real manager", async () => {
+  const fixture = createHermeticSparkNative({
+    network: "mainnet",
+    deriveIdentity: deriveMerchantCheckoutSparkRecoveryIdentity,
+    issueFundingInvoice: async ({ amountSats }) =>
+      signedInvoice(amountSats, new Uint8Array(32).fill(51), "mainnet"),
+  })
+  const manager = new SparkWalletManager(
+    new FirstPartySparkSdkFactory({
+      network: "mainnet",
+      loadModule: async () => fixture.module,
+      now: () => NOW,
+      wait: async () => {},
+    }),
+    async () => ({ release: async () => {} }),
+    undefined,
+    () => NOW
+  )
+  const walletId = `hermetic-mainnet-${crypto.randomUUID()}`
+  await manager.openWithMnemonic({
+    walletId,
+    mnemonic: MNEMONIC,
+    accountNumber: 0,
+  })
+  const reader = await fixture.openAuthenticatedRetirementReader({
+    mnemonic: MNEMONIC,
+    accountNumber: 0,
+    network: "mainnet",
+  })
+  try {
+    const receive = await manager.createCheckoutReceive(walletId, {
+      receiveMode: "ordinary_settled_v3",
+      description: "Offline funding",
+      requiredNetSats: 100,
+      grossFundingSats: 100,
+      expirySecs: 900,
+    })
+    expect(receive.network).toBe("mainnet")
+    expect(receive.id.startsWith("hermetic-funding-receive:mainnet:")).toBe(
+      true
+    )
+    expect(
+      await manager.attestCheckoutReceiveCredit(walletId, receive)
+    ).toBeNull()
+    const identity = await deriveMerchantCheckoutSparkRecoveryIdentity(
+      MNEMONIC,
+      0
+    )
+    const control = fixture.control.forIdentity(identity)
+    control.completeFunding()
+    expect(
+      await manager.attestCheckoutReceiveCredit(walletId, receive)
+    ).toMatchObject({
+      creditedSats: 100,
+    })
+    const preimage = new Uint8Array(32).fill(52)
+    const payout = {
+      paymentRequest: signedInvoice(99, preimage, "mainnet"),
+      preimage: Buffer.from(preimage).toString("hex"),
+      feeSats: 1,
+    }
+    expect(() =>
+      control.registerPayout({
+        ...payout,
+        paymentRequest: signedInvoice(99, preimage),
+      })
+    ).toThrow()
+    control.registerPayout(payout)
+    expect(() =>
+      control.setPendingTransfers([
+        {
+          id: "synthetic-wrong-network",
+          type: 0,
+          status: 1,
+          network: 2,
+          totalValue: 1,
+        },
+      ])
+    ).toThrow()
+    const target = {
+      transferId: "a5b78e44-a4f0-4c5d-a2da-1e04dbf7d813",
+      network: "mainnet" as const,
+      paymentRequest: payout.paymentRequest,
+      amountSats: 99,
+      maxFeeSats: 1,
+      completionTimeoutSecs: 0,
+    }
+    expect(
+      await manager.preflightCheckoutLightningObligation(walletId, target)
+    ).toBe("ready")
+    expect(
+      await manager.sendCheckoutLightningObligation(walletId, target)
+    ).toMatchObject({
+      status: "paid",
+    })
+    expect((await manager.getFundsState(walletId)).availableSats).toBe(0)
+    const history = await reader.reader.getTransfers({
+      sparkAddress: reader.sparkAddress,
+      types: [0],
+      limit: 10,
+      offset: 0,
+    })
+    expect(history.transfers).toHaveLength(2)
+    expect(
+      history.transfers.every(
+        (transfer) => transfer.network === 1 && transfer.status === 5
+      )
+    ).toBe(true)
+    expect(control.snapshot()).toEqual({
+      fundingInvoiceCount: 1,
+      sendInvocationCount: 1,
+      outgoingPaymentCount: 1,
+      debitedSats: 100,
+    })
+  } finally {
+    await reader.cleanup()
+    await manager.close(walletId)
+  }
 })
 
 it("credits one funding invoice only after its completed native receive and transfer agree", async () => {

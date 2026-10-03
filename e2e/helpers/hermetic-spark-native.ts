@@ -36,13 +36,16 @@ function unsupported(): never {
 }
 
 /**
- * Regtest-only native provider fixture. It never imports the Spark SDK,
- * opens a connection, or creates application credit/settlement proofs. Signed
+ * Explicit-network native provider fixture, defaulting to regtest. It never
+ * imports the Spark SDK, opens a connection, or creates application
+ * credit/settlement proofs. Signed
  * invoices come from the test runner; invoice-signing keys stay outside this
  * module and any future browser transport. The runner must retain this registry
  * across client reconnects; it is not disk or browser-reload persistence.
  */
 export function createHermeticSparkNative(input: {
+  /** Fixed runner configuration; never inferred from a client request or env. */
+  network?: "mainnet" | "regtest"
   /** Runner supplies the real local-only mnemonic/account derivation. */
   deriveIdentity: (mnemonic: string, accountNumber: number) => Promise<string>
   /** Optional real SDK encoder supplied by the runner, without provider I/O. */
@@ -53,6 +56,9 @@ export function createHermeticSparkNative(input: {
     expirySeconds: number
   }) => Promise<string>
 }) {
+  const network = input.network ?? "regtest"
+  if (network !== "mainnet" && network !== "regtest") unsupported()
+  const nativeNetwork = network === "mainnet" ? "MAINNET" : "REGTEST"
   const accounts = new Map<
     string,
     {
@@ -66,7 +72,7 @@ export function createHermeticSparkNative(input: {
     network: string
   }) {
     if (
-      request.network !== "regtest" ||
+      request.network !== network ||
       !Number.isSafeInteger(request.accountNumber) ||
       request.accountNumber < 0 ||
       request.accountNumber > 0x7fffffff
@@ -76,12 +82,13 @@ export function createHermeticSparkNative(input: {
       await input.deriveIdentity(request.mnemonic, request.accountNumber)
     ).toLowerCase()
     if (!/^(02|03)[0-9a-f]{64}$/.test(identityPublicKey)) unsupported()
-    const key = `regtest:${request.accountNumber}:${identityPublicKey}`
+    const key = `${network}:${request.accountNumber}:${identityPublicKey}`
     let account = accounts.get(key)
     if (!account) {
       account = {
         identityPublicKey,
         native: createHermeticWalletNative({
+          network,
           identityPublicKey,
           accountNumber: request.accountNumber,
           sparkAddress: input.encodeAddress?.(identityPublicKey),
@@ -94,14 +101,14 @@ export function createHermeticSparkNative(input: {
     return account.native
   }
   const module = createNativeModule(async (request) => {
-    if (request.options.network !== "REGTEST") unsupported()
+    if (request.options.network !== nativeNetwork) unsupported()
     const account = await getAccount({
       mnemonic: request.mnemonicOrSeed,
       accountNumber: request.accountNumber,
-      network: "regtest",
+      network,
     })
     return { wallet: account.openWallet() }
-  })
+  }, nativeNetwork)
   return {
     module,
     async openAuthenticatedRetirementReader(request: {
@@ -125,6 +132,7 @@ export function createHermeticSparkNative(input: {
 }
 
 function createHermeticWalletNative(input: {
+  network: "mainnet" | "regtest"
   identityPublicKey: string
   accountNumber: number
   sparkAddress?: string
@@ -133,10 +141,14 @@ function createHermeticWalletNative(input: {
     expirySeconds: number
   }) => Promise<string>
 }) {
+  const network = input.network
+  const nativeNetwork = network === "mainnet" ? "MAINNET" : "REGTEST"
+  // Spark 0.12.1 protobuf Network: MAINNET=1, REGTEST=2.
+  const historyNetwork = network === "mainnet" ? 1 : 2
   const identityPublicKey = input.identityPublicKey
   const issueFundingInvoice = input.issueFundingInvoice
-  const accountId = `${input.accountNumber}:${identityPublicKey}`
-  const sparkAddress = input.sparkAddress ?? `hermetic-regtest:${accountId}`
+  const accountId = `${network}:${input.accountNumber}:${identityPublicKey}`
+  const sparkAddress = input.sparkAddress ?? `hermetic-${accountId}`
   let fundingRequested = false
   let receive: NativeReceive | undefined
   let incomingTransfer: NativeTransfer | undefined
@@ -173,14 +185,14 @@ function createHermeticWalletNative(input: {
     const reader: CheckoutSparkNativeRetirementReader = {
       async getTransfers(request) {
         assertAddress(request.sparkAddress)
-        // Spark 0.11 protobuf: PREIMAGE_SWAP=0, COMPLETED=5, REGTEST=2.
+        // Spark 0.12.1 protobuf: PREIMAGE_SWAP=0, COMPLETED=5.
         const transfers = request.types.includes(0)
           ? history().map(({ id, totalValue }) => ({
               id,
               totalValue,
               type: 0,
               status: 5,
-              network: 2,
+              network: historyNetwork,
             }))
           : []
         return page(transfers, request.limit, request.offset)
@@ -281,21 +293,23 @@ function createHermeticWalletNative(input: {
         const metadata = decodeLightningInvoiceMetadata(encodedInvoice)
         const paymentHash = decodeLightningInvoicePaymentHash(encodedInvoice)
         if (
-          getLightningInvoiceNetwork(encodedInvoice) !== "regtest" ||
+          getLightningInvoiceNetwork(encodedInvoice) !== network ||
           metadata.sats !== request.amountSats ||
           metadata.createdAt === null ||
           metadata.expiresAt === null ||
           !paymentHash
         ) {
-          throw new Error("Hermetic fixture requires a signed regtest invoice")
+          throw new Error(
+            "Hermetic fixture requires a signed invoice for its configured network"
+          )
         }
         receive = {
           id: `hermetic-funding-receive:${accountId}`,
           status: "LIGHTNING_PAYMENT_PENDING",
-          network: "REGTEST",
+          network: nativeNetwork,
           invoice: {
             encodedInvoice,
-            bitcoinNetwork: "REGTEST",
+            bitcoinNetwork: nativeNetwork,
             paymentHash,
             amount: {
               originalValue: request.amountSats,
@@ -399,7 +413,7 @@ function createHermeticWalletNative(input: {
         if (
           transfers.some(
             (transfer) =>
-              transfer.network !== 2 ||
+              transfer.network !== historyNetwork ||
               !Number.isSafeInteger(transfer.totalValue) ||
               transfer.totalValue < 0
           )
@@ -418,7 +432,7 @@ function createHermeticWalletNative(input: {
       },
       registerPayout(payout: HermeticPayout) {
         if (
-          getLightningInvoiceNetwork(payout.paymentRequest) !== "regtest" ||
+          getLightningInvoiceNetwork(payout.paymentRequest) !== network ||
           !Number.isSafeInteger(payout.feeSats) ||
           payout.feeSats < 0
         )
@@ -481,7 +495,8 @@ function page<T>(transfers: readonly T[], limit: number, offset: number) {
 }
 
 function createNativeModule(
-  initialize: SparkNativeModule["initialize"]
+  initialize: SparkNativeModule["initialize"],
+  network: "MAINNET" | "REGTEST"
 ): SparkNativeModule {
   return {
     eventNames: [],
@@ -499,7 +514,7 @@ function createNativeModule(
     inspectLightningReceiveQuote: unsupported,
     isPreSendFeeCapError: () => false,
     createPublicReadonlyClient: (options) => {
-      if (options.network !== "REGTEST") unsupported()
+      if (options.network !== network) unsupported()
       return {
         async getAvailableBalance() {
           return 0n

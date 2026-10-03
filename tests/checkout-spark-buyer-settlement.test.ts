@@ -7,6 +7,7 @@ import {
 } from "nostr-tools/pure"
 import { ConduitDB } from "@conduit/core/db"
 import {
+  CONDUIT_CHECKOUT_FEE_RECIPIENT,
   createCheckoutSparkRetiredSettlementSummary,
   createCheckoutSparkSettledReconciliation,
   DexieCheckoutSparkSettledRepository,
@@ -123,11 +124,11 @@ function fixture(guest = false) {
       },
       {
         kind: "conduit",
-        recipientId: "conduit-tester@rizful.com",
+        recipientId: CONDUIT_CHECKOUT_FEE_RECIPIENT,
         destination: {
           type: "lightning_address",
-          value: "conduit-tester@rizful.com",
-          source: { type: "conduit_allowlist", policy: "local_router_canary" },
+          value: CONDUIT_CHECKOUT_FEE_RECIPIENT,
+          source: { type: "conduit_allowlist", policy: "production" },
         },
         weightSats: 111,
       },
