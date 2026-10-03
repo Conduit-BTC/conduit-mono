@@ -905,7 +905,26 @@ async function rehearseRouter(
       stage = "cold Merchant has no sends before reopening"
       expect(control().snapshot()).toEqual(beforeHandoff)
       stage = "cold Merchant reload navigation completes"
-      await coldPersistence.reload()
+      try {
+        await coldPersistence.reload()
+      } catch (error) {
+        if (error instanceof Error) {
+          if (error.message === "Persistence reload local request failed.") {
+            stage = "cold Merchant reload rejected a failed local request"
+          } else if (
+            error.message === "Persistence reload work did not settle."
+          ) {
+            stage = "cold Merchant reload rejected pending local work"
+          } else if (
+            error.message === "Persistence reload barrier was disposed."
+          ) {
+            stage = "cold Merchant reload rejected a disposed barrier"
+          } else if (error.name === "TimeoutError") {
+            stage = "cold Merchant reload navigation timed out"
+          }
+        }
+        throw error
+      }
       stage = "cold Merchant enables automatic recovery on reopening"
       await expect(
         recovery.getByRole("button", {
