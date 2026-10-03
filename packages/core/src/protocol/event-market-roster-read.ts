@@ -3,6 +3,7 @@ import {
   readEventMarketAuthorization,
   type EventMarketAuthorizationReadResult,
 } from "./event-market-authorization-read"
+import { resolveEventMarketAuthorization } from "./event-market-authorization"
 import { db, type CachedEventMarketRosterEvidence } from "../db"
 import {
   orderEventMarketPickupFulfillmentSchema,
@@ -1344,6 +1345,49 @@ function catalogCandidates(input: {
   const merchants = new Map(
     market.market.merchants.map((row) => [row.pubkey, row])
   )
+  const known = [...cached, ...(marketRead.observedEvidence ?? [])]
+  const transitions = known.filter(
+    (event) =>
+      event.kind === EVENT_KINDS.EVENT_MARKET_AUTH &&
+      event.pubkey === market.market.organizerPubkey &&
+      event.tags.some(
+        (tag) => tag[0] === "a" && tag[1] === market.market.coordinate
+      )
+  )
+  const authorizationDeletions = known.filter(
+    (event) =>
+      event.kind === EVENT_KINDS.DELETION &&
+      event.pubkey === market.market.organizerPubkey
+  )
+  const suppressedMerchants = new Set<string>()
+  for (const merchantPubkey of merchants.keys()) {
+    const merchantTransitions = transitions.filter((event) =>
+      event.tags.some((tag) => tag[0] === "p" && tag[1] === merchantPubkey)
+    )
+    const transitionIds = new Set(merchantTransitions.map((event) => event.id))
+    const authorization = resolveEventMarketAuthorization({
+      marketCoordinate: market.market.coordinate,
+      merchantPubkey,
+      transitions: merchantTransitions,
+      deletions: authorizationDeletions.filter(
+        (event) =>
+          event.tags.some(
+            (tag) => tag[0] === "e" && transitionIds.has(tag[1] ?? "")
+          ) ||
+          (event.tags.some(
+            (tag) => tag[0] === "a" && tag[1] === market.market.coordinate
+          ) &&
+            event.tags.some(
+              (tag) => tag[0] === "p" && tag[1] === merchantPubkey
+            ))
+      ),
+    })
+    // Missing evidence is still a provisional candidate. Any observed,
+    // unresolved organizer authorization evidence cannot restore a card over
+    // a retained revoke, fork, deletion, or invalid causal transition.
+    if (authorization.state !== "active" && authorization.state !== "missing")
+      suppressedMerchants.add(merchantPubkey)
+  }
   const newest = new Map<string, SignedPublicNostrEvent>()
   const coordinates = new Set<string>()
   const liveIds = new Set(live.map((event) => event.id))
@@ -1386,6 +1430,7 @@ function catalogCandidates(input: {
   for (const productCoordinate of coordinates) {
     const revision = newest.get(productCoordinate)!
     if (
+      suppressedMerchants.has(revision.pubkey) ||
       revision.tags.filter((tag) => tag[0] === "d").length !== 1 ||
       revision.tags.filter(
         (tag) => tag[0] === "a" && tag[1] === market.market.coordinate

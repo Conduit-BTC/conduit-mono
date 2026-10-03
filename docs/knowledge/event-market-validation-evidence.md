@@ -80,6 +80,36 @@ product query. Cached signed cards still appear before the network wait;
 candidate display adds no per-merchant grant reads or purchase authority.
 `event-market-roster` covers 48 and 256 newer unapproved listings ahead of an
 approved product, including partial relay coverage and saturated responses.
+Retained organizer revocation, conflict, deletion and unresolved causal evidence
+suppress candidate cards; a complete causal regrant can restore them. No
+additional network read is needed to honor this already-observed evidence.
+
+Direct product pickup checks the current signed roster, selected occurrence,
+merchant grant and exact product revision at both Add and increment. The browser
+regression changes revocation, closure, product association, deletion, price and
+pickup assignment after rendering, and preserves unrelated roster edits. A
+rejected action leaves the cart quantity unchanged and refreshes the displayed
+terms before another action.
+
+Private handoff recovery is bounded per owner using serialized UTF-16 sizes:
+768 KiB pending deliveries, 1 MiB exact archives, 1 MiB observed encrypted wraps
+and 512 KiB compact terminal history. New ready receipts leave 256 KiB of byte
+headroom; the pending queue allows 96 ready admissions and 128 total updates.
+Active exact bytes are never evicted to make room for a new release. Storage
+failure preserves saved retries and blocks new issuance.
+
+Authenticated organizer terminal observations compact encrypted history while
+retaining claim, graph-conflict and revocation denial fences. Merchant exact
+receipt and ACK evidence remain until an authenticated merchant-authored final
+order status permits compaction. Compact markers cannot establish payment,
+handoff acknowledgement or order completion. `future-market-handoff-storage`
+covers quota volume, restart/degraded reads, interrupted writes and reserved
+terminal-update capacity. Other owners/features share the origin quota, so a
+bounded handoff allocation does not guarantee every storage write succeeds.
+Retention and completed-history compaction use the same account-scoped Web Lock
+where available, with a serialized runtime queue as fallback. This coordinates
+the asynchronous decrypt/merge window with compaction across browser tabs;
+environments without Web Locks only have runtime-local serialization.
 
 Contact-free checkout checks the current date and merchant-signed opt-in before
 creating an order. Historical decoding checks the claimed creation-time terms;

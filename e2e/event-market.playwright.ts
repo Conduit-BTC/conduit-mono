@@ -3366,6 +3366,204 @@ test("a host and merchant create, request, approve and offer through the screens
   await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
 })
 
+test("direct event pickup verifies changed authority before adding and incrementing @market", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1_000) - 10
+  for (const change of [
+    "revoked",
+    "closed",
+    "untagged",
+    "deleted",
+    "price",
+    "assignment",
+    "roster",
+  ] as const) {
+    await test.step(change, async () => {
+      const calendar = signEvent(ORGANIZER_SECRET, {
+        kind: 31923,
+        created_at: createdAt,
+        content: "",
+        tags: [
+          ["d", `detail-${change}`],
+          ["title", "Detail pickup"],
+          ["start", "1790000000"],
+          ["D", "20717"],
+        ],
+      })
+      const market = signEvent(ORGANIZER_SECRET, {
+        kind: 30409,
+        created_at: createdAt,
+        content: "",
+        tags: [
+          ["d", `detail-${change}`],
+          ["a", eventCoordinate(calendar)],
+          ["event_market", "2", "open"],
+          ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 12"],
+        ],
+      })
+      const grant = signEvent(ORGANIZER_SECRET, {
+        kind: 3841,
+        created_at: createdAt,
+        content: "",
+        tags: [
+          ["openmarkets", "event-market-auth", "1"],
+          ["a", eventCoordinate(market)],
+          ["p", MERCHANT_PUBKEY],
+          ["state", "active"],
+          ["seq", "0"],
+          ["alt", "Open Markets event merchant authorization"],
+        ],
+      })
+      const product = signEvent(MERCHANT_SECRET, {
+        kind: 30402,
+        created_at: createdAt,
+        content: "Pickup soap",
+        tags: [
+          ["d", `detail-${change}`],
+          ["title", "Pickup soap"],
+          ["price", "0", "SAT"],
+          ["type", "simple", "physical"],
+          ["stock", "5"],
+          ["a", eventCoordinate(market)],
+        ],
+      })
+      relay.seed(calendar, market, grant, product)
+      await gotoAs(
+        page,
+        marketUrl,
+        `/products/${encodeURIComponent(eventCoordinate(product))}`,
+        "buyer",
+        { event: eventCoordinate(market) }
+      )
+      const add = page.getByRole("button", { name: /^Add (1 to cart|more)/ })
+      await expect(add).toBeEnabled()
+      // Seed new signed evidence after render. No subscription or manual refresh
+      // gives the page advance notice; the click must verify the current terms.
+      if (change === "revoked") {
+        relay.seed(
+          signEvent(ORGANIZER_SECRET, {
+            ...grant,
+            created_at: createdAt + 1,
+            tags: grant.tags
+              .map((tag) =>
+                tag[0] === "state"
+                  ? ["state", "revoked"]
+                  : tag[0] === "seq"
+                    ? ["seq", "1"]
+                    : tag
+              )
+              .concat([["auth_parent", grant.id]]),
+          })
+        )
+      } else if (
+        change === "closed" ||
+        change === "assignment" ||
+        change === "roster"
+      ) {
+        relay.seed(
+          signEvent(ORGANIZER_SECRET, {
+            ...market,
+            created_at: createdAt + 1,
+            tags: market.tags
+              .map((tag) =>
+                change === "closed" && tag[0] === "event_market"
+                  ? ["event_market", "2", "closed"]
+                  : change === "assignment" && tag[0] === "merchant"
+                    ? [
+                        "merchant",
+                        MERCHANT_PUBKEY,
+                        "merchant_present",
+                        "Booth 14",
+                      ]
+                    : tag
+              )
+              .concat(
+                [["prev", market.id]],
+                change === "roster"
+                  ? [["merchant", BUYER_PUBKEY, "merchant_present", "Booth 15"]]
+                  : []
+              ),
+          })
+        )
+      } else if (change === "deleted") {
+        relay.seed(
+          signEvent(MERCHANT_SECRET, {
+            kind: 5,
+            created_at: createdAt + 1,
+            content: "",
+            tags: [
+              ["a", eventCoordinate(product)],
+              ["k", "30402"],
+            ],
+          })
+        )
+      } else {
+        relay.seed(
+          signEvent(MERCHANT_SECRET, {
+            ...product,
+            created_at: createdAt + 1,
+            tags:
+              change === "untagged"
+                ? product.tags.filter((tag) => tag[0] !== "a")
+                : product.tags.map((tag) =>
+                    tag[0] === "price" ? ["price", "1", "SAT"] : tag
+                  ),
+          })
+        )
+      }
+      await add.click()
+      if (change === "roster") {
+        await expect(
+          page.getByRole("button", { name: "Cart, 1 item", exact: true })
+        ).toBeVisible()
+        await add.click()
+        await expect(
+          page.getByRole("button", { name: "Cart, 2 items", exact: true })
+        ).toBeVisible()
+        relay.seed(
+          signEvent(ORGANIZER_SECRET, {
+            ...grant,
+            created_at: createdAt + 2,
+            tags: grant.tags
+              .map((tag) =>
+                tag[0] === "state"
+                  ? ["state", "revoked"]
+                  : tag[0] === "seq"
+                    ? ["seq", "1"]
+                    : tag
+              )
+              .concat([["auth_parent", grant.id]]),
+          })
+        )
+        await add.click()
+        await expect(
+          page.getByRole("alert").filter({
+            hasText:
+              "This product is not currently available for event pickup.",
+          })
+        ).toBeVisible()
+        await expect(
+          page.getByRole("button", { name: "Cart, 2 items", exact: true })
+        ).toBeVisible()
+      } else {
+        await expect(
+          page.getByRole("alert").filter({
+            hasText:
+              /currently available for event pickup|details changed|Pickup terms changed/,
+          })
+        ).toBeVisible()
+        await expect(
+          page.getByRole("button", { name: /^Cart, [1-9]\d* items?/ })
+        ).toHaveCount(0)
+      }
+    })
+  }
+})
+
 test("event variation shipping rejects changed and deleted listings before adding or incrementing @market", async ({
   page,
 }) => {

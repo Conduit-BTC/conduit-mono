@@ -72,6 +72,7 @@ import {
 } from "../../hooks/useProgressiveProducts"
 import { getProductAddAvailability, selectCartLine } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
+import { getEventMarketCartReviewReasons } from "../../lib/event-market-cart-review"
 import { getFuturePickupHandoffSummary } from "../../lib/pickup-handoff"
 import {
   cartItemInputFromProductSelection,
@@ -121,7 +122,7 @@ function getMarketProductShareUrl(
 
 function ProductPage() {
   const navigate = useNavigate({ from: Route.fullPath })
-  const { authGeneration } = useAuth()
+  const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -358,6 +359,7 @@ function ProductPage() {
     selectedProduct?.id,
     selectedProduct?.sourceEventId,
     eventMarketReference,
+    selectedOccurrence,
     eventFulfillmentChoice,
     quantity,
     session.relayScope,
@@ -541,7 +543,7 @@ function ProductPage() {
     setCartActionError("")
     const shouldContinue = () =>
       cartActionScopeRef.current === cartActionScope &&
-      authGenerationRef.current === authGeneration
+      isAuthGenerationCurrent(authGeneration)
     try {
       let candidate = productCartCandidate
       if (eventMarketReference && eventFulfillmentChoice === "shipping") {
@@ -562,6 +564,54 @@ function ProductPage() {
           }),
           eventMarketContext: candidate.eventMarketContext,
         }
+      } else if (eventMarketReference) {
+        const marketRead = await readEventMarketRoster({
+          reference: eventMarketReference,
+          authenticatedPubkey,
+          shouldContinue,
+        })
+        if (!shouldContinue()) return
+        const productRead = await readEventMarketProduct({
+          marketRead,
+          productCoordinate: selectedProduct.id,
+          authenticatedPubkey,
+          shouldContinue,
+        })
+        if (!shouldContinue()) return
+        if (
+          productRead.resolution.state !== "eligible" ||
+          !productRead.actionable
+        )
+          throw new Error(
+            "This product is not currently available for event pickup."
+          )
+        if (productRead.resolution.revision.id !== candidate.productEventId)
+          throw new Error(
+            "Product details changed. Review the refreshed item before adding it."
+          )
+        const fulfillment = createEventMarketPickupSnapshot({
+          marketRead,
+          productRead,
+          selectedOccurrenceCoordinate: selectedOccurrence,
+        })
+        const current = cartItemInputFromProductSelection(
+          product,
+          productRead.resolution.product,
+          fulfillment
+        )
+        if (
+          !eventMarketFulfillment ||
+          getEventMarketCartReviewReasons({
+            saved: eventMarketFulfillment,
+            current: fulfillment,
+            savedPrice: candidate.price,
+            currentPrice: current.price,
+          }).length > 0
+        )
+          throw new Error(
+            "Pickup terms changed. Review the refreshed item before adding it."
+          )
+        candidate = current
       }
       if (!shouldContinue()) return
       if (cartItem)
@@ -575,7 +625,10 @@ function ProductPage() {
             ? cause.message
             : "Could not add this product. Refresh the listing and try again."
         )
-        await productQuery.refetch()
+        await Promise.all([
+          productQuery.refetch(),
+          ...(eventMarketReference ? [eventMarketQuery.refetch()] : []),
+        ])
       }
     } finally {
       cartActionLock.current = false

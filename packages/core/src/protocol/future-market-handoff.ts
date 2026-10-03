@@ -187,16 +187,18 @@ export async function readFutureMarketReadyReceipts(input: {
   // throughout relay reads and decryption. The caller also owns view lifetime.
   const read = await getEventMarketPrivateMessageList(input.organizerPubkey)
   assertFutureMarketReadCurrent(input.shouldContinue)
+  const claims = reduceFutureMarketOrganizerClaims({
+    organizerPubkey: input.organizerPubkey,
+    messages: await retainFutureMessages(
+      input.organizerPubkey,
+      read,
+      input.shouldContinue
+    ),
+    marketCoordinate: input.marketCoordinate,
+  })
+  applyTerminalHistoryToClaims(input.organizerPubkey, claims)
   return {
-    claims: reduceFutureMarketOrganizerClaims({
-      organizerPubkey: input.organizerPubkey,
-      messages: await retainFutureMessages(
-        input.organizerPubkey,
-        read,
-        input.shouldContinue
-      ),
-      marketCoordinate: input.marketCoordinate,
-    }),
+    claims,
     stale: read.stale,
     coverageDegraded: read.inbox?.coverage !== "complete",
     inbox: read.inbox,
@@ -248,10 +250,32 @@ export async function readFutureMarketHandoffAcks(input: {
       message.recipientPubkey === receipt.merchantPubkey
   )
   const stale = read.stale
+  const knownTerminal = getFutureMarketTerminalHistory(
+    input.merchantPubkey,
+    receipt.claimRef
+  )
+  const knownConflict = Boolean(
+    knownTerminal &&
+    (knownTerminal.conflicting ||
+      knownTerminal.graphDigest !== futurePrivateGraphDigest(receipt) ||
+      knownTerminal.readyReceiptId !== input.readyReceiptId ||
+      (knownTerminal.ack && knownTerminal.revoked))
+  )
   return {
-    exactAck: !conflicting && !revoked && acks.length === 1 ? acks[0]! : null,
-    revoked,
-    conflicting: conflicting || acks.length > 1 || (revoked && acks.length > 0),
+    exactAck:
+      !conflicting &&
+      !revoked &&
+      !knownConflict &&
+      !knownTerminal?.revoked &&
+      acks.length === 1
+        ? acks[0]!
+        : null,
+    revoked: revoked || Boolean(knownTerminal?.revoked),
+    conflicting:
+      conflicting ||
+      knownConflict ||
+      acks.length > 1 ||
+      (revoked && acks.length > 0),
     stale,
     coverageDegraded: read.inbox?.coverage !== "complete",
   }
@@ -569,8 +593,133 @@ export interface FutureMarketPrivateDeliveryRecord {
 
 const FUTURE_DELIVERY_STORAGE_PREFIX =
   "conduit:future-market-handoff-delivery:v2"
-const FUTURE_PENDING_DELIVERY_LIMIT = 100
+const FUTURE_PENDING_DELIVERY_LIMIT = 128
+const FUTURE_PENDING_READY_LIMIT = 96
 const FUTURE_DELIVERY_ARCHIVE_PREFIX = `${FUTURE_DELIVERY_STORAGE_PREFIX}:archive`
+const FUTURE_TERMINAL_STORAGE_PREFIX = `${FUTURE_DELIVERY_STORAGE_PREFIX}:terminal`
+// localStorage is shared with checkout and auth. Leave headroom for those owners.
+const FUTURE_PENDING_BYTES = 768 * 1024
+const FUTURE_ARCHIVE_BYTES = 1024 * 1024
+const FUTURE_OBSERVATION_BYTES = 1024 * 1024
+const FUTURE_TERMINAL_BYTES = 512 * 1024
+const FUTURE_TERMINAL_HEADROOM_BYTES = 256 * 1024
+
+type FutureTerminalRecord = {
+  readyReceiptId: string
+  ack: boolean
+  revoked: boolean
+  conflicting: boolean
+  graphDigest: string
+  observedRumorIds: string[]
+  compacted: boolean
+}
+type FutureTerminalHistory = Record<string, FutureTerminalRecord>
+
+function storageBytes(value: string): number {
+  // Web Storage quotas are commonly charged in UTF-16 code units.
+  return value.length * 2
+}
+
+function assertStorageBudget(value: string, limit: number): void {
+  if (storageBytes(value) > limit)
+    throw new Error(
+      "Future handoff recovery storage is full. Recover completed claims before issuing another update."
+    )
+}
+
+function terminalKey(ownerPubkey: string): string {
+  return `${FUTURE_TERMINAL_STORAGE_PREFIX}:${ownerPubkey}`
+}
+
+function loadTerminalHistory(
+  ownerPubkey: string,
+  storage: Pick<Storage, "getItem">
+): FutureTerminalHistory {
+  const raw = storage.getItem(terminalKey(ownerPubkey))
+  if (!raw) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error("Stored future handoff terminal history is invalid.")
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("Stored future handoff terminal history is invalid.")
+  for (const [claimRef, value] of Object.entries(parsed)) {
+    const record = value as Partial<FutureTerminalRecord> | null
+    if (
+      !HEX_64.test(claimRef) ||
+      !record ||
+      !HEX_64.test(record.readyReceiptId ?? "") ||
+      typeof record.ack !== "boolean" ||
+      typeof record.revoked !== "boolean" ||
+      typeof record.conflicting !== "boolean" ||
+      !HEX_64.test(record.graphDigest ?? "") ||
+      !Array.isArray(record.observedRumorIds) ||
+      record.observedRumorIds.some(
+        (id) => typeof id !== "string" || !HEX_64.test(id)
+      ) ||
+      typeof record.compacted !== "boolean" ||
+      (!record.ack && !record.revoked)
+    )
+      throw new Error("Stored future handoff terminal history is invalid.")
+  }
+  return parsed as FutureTerminalHistory
+}
+
+/** Local authenticated terminal history is a denial fence, never positive proof of handoff. */
+export function getFutureMarketTerminalHistory(
+  ownerPubkey: string,
+  claimRef: string,
+  storage: Pick<Storage, "getItem"> | null = typeof localStorage === "undefined"
+    ? null
+    : localStorage
+): FutureTerminalRecord | null {
+  if (!storage || !HEX_64.test(ownerPubkey) || !HEX_64.test(claimRef))
+    return null
+  return loadTerminalHistory(ownerPubkey, storage)[claimRef] ?? null
+}
+
+function applyTerminalHistoryToClaims(
+  owner: string,
+  claims: FutureMarketOrganizerClaim[]
+): void {
+  for (const claim of claims) {
+    const terminal = getFutureMarketTerminalHistory(
+      owner,
+      claim.receipt.payload.claimRef
+    )
+    if (!terminal) continue
+    if (
+      claim.state === "conflicting" ||
+      terminal.conflicting ||
+      terminal.readyReceiptId !== claim.receipt.id ||
+      terminal.graphDigest !==
+        futurePrivateGraphDigest(claim.receipt.payload) ||
+      (terminal.ack && terminal.revoked)
+    )
+      claim.state = "conflicting"
+    else if (terminal.revoked) claim.state = "revoked"
+    else if (terminal.ack) claim.state = "handed_out"
+  }
+}
+
+function futurePrivateGraphDigest(payload: FutureMarketPrivatePayload): string {
+  return bytesToHex(
+    sha256(
+      new TextEncoder().encode(
+        JSON.stringify({
+          claimRef: payload.claimRef,
+          merchantPubkey: payload.merchantPubkey,
+          organizerPubkey: payload.organizerPubkey,
+          market: payload.market,
+          calendar: payload.calendar,
+          grant: payload.grant,
+        })
+      )
+    )
+  )
+}
 
 export function loadFutureMarketPrivateDeliveries(
   ownerPubkey: string,
@@ -592,9 +741,12 @@ export function loadFutureMarketPrivateDeliveries(
     }
     if (!Array.isArray(parsed))
       throw new Error("Stored future handoff recovery records are invalid.")
-    return parsed
-      .map(parseFutureMarketPrivateDeliveryRecord)
-      .filter((record) => record.senderPubkey === ownerPubkey)
+    const records = parsed.map(parseFutureMarketPrivateDeliveryRecord)
+    if (records.some((record) => record.senderPubkey !== ownerPubkey))
+      throw new Error(
+        "Stored future handoff recovery belongs to another account."
+      )
+    return records
   }
   const pending = parseRecords(
     storage.getItem(`${FUTURE_DELIVERY_STORAGE_PREFIX}:${ownerPubkey}`)
@@ -647,22 +799,34 @@ export function saveFutureMarketPrivateDelivery(
   const exact = parseFutureMarketPrivateDeliveryRecord(record)
   const claimKey = `${FUTURE_DELIVERY_STORAGE_PREFIX}:claim:${ownerPubkey}:${exact.claimRef}`
   const existingReadyId = storage.getItem(claimKey)
+  const terminal = getFutureMarketTerminalHistory(
+    ownerPubkey,
+    exact.claimRef,
+    storage
+  )
   if (
     exact.type === "future_market_ready" &&
-    existingReadyId &&
-    existingReadyId !== exact.rumorId
+    ((existingReadyId && existingReadyId !== exact.rumorId) ||
+      (terminal && terminal.readyReceiptId !== exact.rumorId))
   )
     throw new Error(
       "A different exact organizer release already owns this claim."
     )
-  const pendingRaw = storage.getItem(
-    `${FUTURE_DELIVERY_STORAGE_PREFIX}:${ownerPubkey}`
+  const pending = loadFutureMarketPrivateDeliveries(ownerPubkey, storage, {
+    pendingOnly: true,
+  })
+  if (
+    exact.type === "future_market_ready" &&
+    pending.some(
+      (candidate) =>
+        candidate.type === "future_market_ready" &&
+        candidate.claimRef === exact.claimRef &&
+        candidate.rumorId !== exact.rumorId
+    )
   )
-  const pending = pendingRaw
-    ? (JSON.parse(pendingRaw) as FutureMarketPrivateDeliveryRecord[])
-    : []
-  if (!Array.isArray(pending))
-    throw new Error("Stored future handoff recovery records are invalid.")
+    throw new Error(
+      "A different exact organizer release already owns this claim."
+    )
   const archivedRaw = storage.getItem(
     `${FUTURE_DELIVERY_ARCHIVE_PREFIX}:${ownerPubkey}:${exact.rumorId}`
   )
@@ -673,14 +837,34 @@ export function saveFutureMarketPrivateDelivery(
     throw new Error(
       "A different exact handoff delivery already owns this rumor."
     )
-  if (existing) return
-  if (pending.length >= FUTURE_PENDING_DELIVERY_LIMIT)
+  if (existing) {
+    if (exact.type === "future_market_ready" && !existingReadyId)
+      storage.setItem(claimKey, exact.rumorId)
+    return
+  }
+  if (exact.type === "future_market_ready" && terminal) return
+  if (
+    pending.length >=
+    (exact.type === "future_market_ready"
+      ? FUTURE_PENDING_READY_LIMIT
+      : FUTURE_PENDING_DELIVERY_LIMIT)
+  )
     throw new Error(
       "Pending handoff deliveries need recovery before another release."
     )
+  const nextPending = JSON.stringify([...pending, exact])
+  assertStorageBudget(
+    nextPending,
+    FUTURE_PENDING_BYTES -
+      (exact.type === "future_market_ready"
+        ? FUTURE_TERMINAL_HEADROOM_BYTES
+        : 0)
+  )
+  // Exact wraps are written before the claim marker. If the second write
+  // fails, the pending record itself still prevents fresh issuance.
   storage.setItem(
     `${FUTURE_DELIVERY_STORAGE_PREFIX}:${ownerPubkey}`,
-    JSON.stringify([...pending, exact])
+    nextPending
   )
   if (exact.type === "future_market_ready")
     storage.setItem(claimKey, exact.rumorId)
@@ -700,11 +884,9 @@ export function archiveFutureMarketPrivateDelivery(
   if (!HEX_64.test(ownerPubkey) || !HEX_64.test(rumorId))
     throw new Error("Exact handoff delivery identity is invalid.")
   const pendingKey = `${FUTURE_DELIVERY_STORAGE_PREFIX}:${ownerPubkey}`
-  const pending = JSON.parse(
-    storage.getItem(pendingKey) ?? "[]"
-  ) as FutureMarketPrivateDeliveryRecord[]
-  if (!Array.isArray(pending))
-    throw new Error("Stored future handoff recovery records are invalid.")
+  const pending = loadFutureMarketPrivateDeliveries(ownerPubkey, storage, {
+    pendingOnly: true,
+  })
   const archivedRaw = storage.getItem(
     `${FUTURE_DELIVERY_ARCHIVE_PREFIX}:${ownerPubkey}:${rumorId}`
   )
@@ -718,11 +900,34 @@ export function archiveFutureMarketPrivateDelivery(
     throw new Error("Exact handoff delivery belongs to another account.")
   const archiveKey = `${FUTURE_DELIVERY_ARCHIVE_PREFIX}:${ownerPubkey}`
   const ids = JSON.parse(storage.getItem(archiveKey) ?? "[]") as string[]
-  // Write the durable evidence and its index first. A interrupted write leaves
+  const nextIds = ids.includes(rumorId) ? ids : [...ids, rumorId]
+  const archivedBytes = nextIds.reduce(
+    (total, id) => {
+      const raw =
+        id === rumorId
+          ? JSON.stringify(record)
+          : storage.getItem(`${archiveKey}:${id}`)
+      if (!raw)
+        throw new Error("Archived exact handoff evidence is unavailable.")
+      return total + storageBytes(raw)
+    },
+    storageBytes(JSON.stringify(nextIds))
+  )
+  if (
+    archivedBytes >
+    FUTURE_ARCHIVE_BYTES -
+      (record.type === "future_market_ready"
+        ? FUTURE_TERMINAL_HEADROOM_BYTES
+        : 0)
+  )
+    throw new Error(
+      "Future handoff exact archive is full. Recover completed claims before another update."
+    )
+  // Write the durable evidence and its index first. An interrupted write leaves
   // the pending copy intact, and duplicate copies are deduplicated on load.
   storage.setItem(`${archiveKey}:${rumorId}`, JSON.stringify(record))
   if (!ids.includes(rumorId))
-    storage.setItem(archiveKey, JSON.stringify([...ids, rumorId]))
+    storage.setItem(archiveKey, JSON.stringify(nextIds))
   storage.setItem(
     pendingKey,
     JSON.stringify(pending.filter((candidate) => candidate.rumorId !== rumorId))
@@ -739,7 +944,227 @@ export function __resetFutureMarketHandoffTestState(): void {
 }
 const FUTURE_OBSERVATION_STORAGE_PREFIX =
   "conduit:future-market-handoff-observed:v2"
+function futureObservationKey(owner: string): string {
+  return `${FUTURE_OBSERVATION_STORAGE_PREFIX}:${owner}`
+}
+
+function parseStoredFutureWraps(
+  raw: string | null
+): Record<string, SignedPublicNostrEvent> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw ?? "{}")
+  } catch {
+    throw new Error(
+      "Stored authenticated handoff recovery evidence is invalid."
+    )
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error(
+      "Stored authenticated handoff recovery evidence is invalid."
+    )
+  return parsed as Record<string, SignedPublicNostrEvent>
+}
+
+function noteTerminalMessages(
+  owner: string,
+  messages: readonly FuturePrivateMessage[],
+  storage: Pick<Storage, "getItem" | "setItem">
+): FutureTerminalHistory {
+  const history = loadTerminalHistory(owner, storage)
+  let changed = false
+  for (const message of messages) {
+    if (message.type === "future_market_ready") continue
+    const previous = history[message.payload.claimRef]
+    const next: FutureTerminalRecord = {
+      readyReceiptId:
+        previous?.readyReceiptId ?? message.payload.readyReceiptId,
+      ack: Boolean(
+        previous?.ack || message.type === "future_market_handed_out"
+      ),
+      revoked: Boolean(
+        previous?.revoked || message.type === "future_market_revoked"
+      ),
+      conflicting: previous?.conflicting ?? false,
+      graphDigest:
+        previous?.graphDigest ?? futurePrivateGraphDigest(message.payload),
+      observedRumorIds: previous?.observedRumorIds ?? [],
+      compacted: previous?.compacted ?? false,
+    }
+    if (
+      previous &&
+      (previous.readyReceiptId !== message.payload.readyReceiptId ||
+        previous.graphDigest !== futurePrivateGraphDigest(message.payload))
+    )
+      next.conflicting = true
+    if (JSON.stringify(previous) !== JSON.stringify(next)) {
+      history[message.payload.claimRef] = next
+      changed = true
+    }
+  }
+  for (const message of messages) {
+    const record = history[message.payload.claimRef]
+    if (
+      record &&
+      (record.graphDigest !== futurePrivateGraphDigest(message.payload) ||
+        (message.type === "future_market_ready" &&
+          record.readyReceiptId !== message.id))
+    ) {
+      record.conflicting = true
+      changed = true
+    }
+    if (record && !record.observedRumorIds.includes(message.id)) {
+      record.observedRumorIds.push(message.id)
+      changed = true
+    }
+  }
+  if (changed) {
+    const serialized = JSON.stringify(history)
+    assertStorageBudget(serialized, FUTURE_TERMINAL_BYTES)
+    storage.setItem(terminalKey(owner), serialized)
+  }
+  return history
+}
+
+function compactTerminalArchive(
+  owner: string,
+  history: FutureTerminalHistory,
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
+  completedClaimRef?: string
+): void {
+  const archiveKey = `${FUTURE_DELIVERY_ARCHIVE_PREFIX}:${owner}`
+  const ids: unknown = JSON.parse(storage.getItem(archiveKey) ?? "[]")
+  if (
+    !Array.isArray(ids) ||
+    ids.some((id) => typeof id !== "string" || !HEX_64.test(id))
+  )
+    throw new Error("Stored future handoff archive is invalid.")
+  const pending = loadFutureMarketPrivateDeliveries(owner, storage, {
+    pendingOnly: true,
+  })
+  const pendingIds = new Set(pending.map((record) => record.rumorId))
+  const pruneIds: string[] = []
+  for (const id of ids) {
+    if (pendingIds.has(id)) continue
+    const raw = storage.getItem(`${archiveKey}:${id}`)
+    if (!raw) throw new Error("Archived exact handoff evidence is unavailable.")
+    const record = parseFutureMarketPrivateDeliveryRecord(JSON.parse(raw))
+    const terminal = history[record.claimRef]
+    // Organizer terminal claims cannot be released again. Merchant records
+    // remain until a signed completed/cancelled order state is observed.
+    if (
+      terminal &&
+      terminal.readyReceiptId === record.readyReceiptId &&
+      (record.claimRef === completedClaimRef ||
+        terminal.compacted ||
+        (record.type === "future_market_ready" &&
+          owner === record.recipientPubkey) ||
+        (record.type === "future_market_handed_out" &&
+          owner === record.senderPubkey))
+    )
+      pruneIds.push(id)
+  }
+  if (pruneIds.length === 0) return
+  const pruned = new Set(pruneIds)
+  storage.setItem(
+    archiveKey,
+    JSON.stringify(ids.filter((id) => !pruned.has(id)))
+  )
+  for (const id of pruneIds) storage.removeItem(`${archiveKey}:${id}`)
+}
+
+/** Called only after the order reader has authenticated a final status update. */
+export async function compactCompletedFutureMarketDelivery(
+  owner: string,
+  claimRef: string,
+  status: "complete" | "cancelled",
+  storage: Pick<
+    Storage,
+    "getItem" | "setItem" | "removeItem"
+  > | null = typeof localStorage === "undefined" ? null : localStorage
+): Promise<void> {
+  await withFutureRetentionLock(owner, async () => {
+    compactCompletedFutureMarketDeliveryLocked(owner, claimRef, status, storage)
+  })
+}
+
+function compactCompletedFutureMarketDeliveryLocked(
+  owner: string,
+  claimRef: string,
+  status: "complete" | "cancelled",
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null
+): void {
+  if (!storage || !HEX_64.test(owner) || !HEX_64.test(claimRef)) return
+  const history = loadTerminalHistory(owner, storage)
+  const terminal = history[claimRef]
+  if (
+    !terminal ||
+    terminal.conflicting ||
+    (terminal.ack && terminal.revoked) ||
+    (status === "complete" && !terminal.ack) ||
+    (status === "cancelled" && !terminal.revoked)
+  )
+    return
+  if (!terminal.compacted) {
+    terminal.compacted = true
+    const serialized = JSON.stringify(history)
+    assertStorageBudget(serialized, FUTURE_TERMINAL_BYTES)
+    storage.setItem(terminalKey(owner), serialized)
+  }
+  compactTerminalArchive(owner, history, storage, claimRef)
+  const key = futureObservationKey(owner)
+  const observed = parseStoredFutureWraps(storage.getItem(key))
+  for (const id of terminal.observedRumorIds) delete observed[id]
+  storage.setItem(key, JSON.stringify(observed))
+  storage.removeItem(
+    `${FUTURE_DELIVERY_STORAGE_PREFIX}:claim:${owner}:${claimRef}`
+  )
+  const retained = retainedFutureMessages.get(owner)
+  if (retained)
+    for (const [id, message] of retained)
+      if (message.payload.claimRef === claimRef) retained.delete(id)
+}
+
+const futureRetentionLocks = new Map<string, Promise<void>>()
+async function withFutureRetentionLock<T>(
+  owner: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const previous = futureRetentionLocks.get(owner) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const queued = previous.then(() => current)
+  futureRetentionLocks.set(owner, queued)
+  await previous
+  try {
+    // Coordinate the read/merge/compact transaction across tabs when the
+    // browser provides Web Locks, as well as across reads in this runtime.
+    if (typeof navigator !== "undefined" && navigator.locks)
+      return await navigator.locks.request(
+        `${FUTURE_DELIVERY_STORAGE_PREFIX}:retention:${owner}`,
+        operation
+      )
+    return await operation()
+  } finally {
+    release()
+    if (futureRetentionLocks.get(owner) === queued)
+      futureRetentionLocks.delete(owner)
+  }
+}
+
 async function retainFutureMessages(
+  owner: string,
+  read: Awaited<ReturnType<typeof getEventMarketPrivateMessageList>>,
+  shouldContinue?: () => boolean
+): Promise<FuturePrivateMessage[]> {
+  return withFutureRetentionLock(owner, () =>
+    retainFutureMessagesLocked(owner, read, shouldContinue)
+  )
+}
+
+async function retainFutureMessagesLocked(
   owner: string,
   read: Awaited<ReturnType<typeof getEventMarketPrivateMessageList>>,
   shouldContinue?: () => boolean
@@ -748,10 +1173,9 @@ async function retainFutureMessages(
   const retained =
     retainedFutureMessages.get(owner) ?? new Map<string, FuturePrivateMessage>()
   const storage = typeof localStorage === "undefined" ? null : localStorage
-  const key = `${FUTURE_OBSERVATION_STORAGE_PREFIX}:${owner}`
-  const stored: Record<string, SignedPublicNostrEvent> = JSON.parse(
-    storage?.getItem(key) ?? "{}"
-  )
+  const key = futureObservationKey(owner)
+  const stored = parseStoredFutureWraps(storage?.getItem(key) ?? null)
+  const newlyObserved: Record<string, SignedPublicNostrEvent> = {}
   const signer = getAccountSigner()
   for (const [id, wrap] of Object.entries(stored)) {
     if (retained.has(id)) continue
@@ -789,12 +1213,71 @@ async function retainFutureMessages(
   for (const message of read.messages.filter(authenticatedFutureMessage)) {
     retained.set(message.id, message)
     const wrap = read.authenticatedWraps?.[message.id]
-    if (wrap) stored[message.id] = wrap
+    if (wrap) {
+      if (
+        !isValidSignedPublicNostrEvent(wrap) ||
+        wrap.kind !== EVENT_KINDS.GIFT_WRAP ||
+        !wrap.tags.some((tag) => tag[0] === "p" && tag[1] === owner)
+      )
+        throw new Error("Authenticated handoff recovery wrap is invalid.")
+      newlyObserved[message.id] = wrap
+    }
   }
-  if (storage && Object.keys(stored).length > 0)
-    storage.setItem(key, JSON.stringify(stored))
+  assertFutureMarketReadCurrent(shouldContinue)
+  const messages = [...retained.values()]
+  if (storage) {
+    if (
+      messages.length > 0 &&
+      (!signer ||
+        (await signer.getPublicKey()) !== owner ||
+        getAccountSigner() !== signer)
+    )
+      throw new Error(
+        "The account signer changed during private handoff recovery."
+      )
+    assertFutureMarketReadCurrent(shouldContinue)
+    const history = noteTerminalMessages(owner, messages, storage)
+    // A concurrent tab may have committed newer ciphertext during signer work.
+    // Merge that snapshot before writing; never replace it with an older read.
+    const latest = parseStoredFutureWraps(storage.getItem(key))
+    const merged = { ...latest, ...newlyObserved }
+    const byId = new Map(messages.map((message) => [message.id, message]))
+    for (const [id, message] of byId) {
+      const terminal = history[message.payload.claimRef]
+      if (
+        terminal &&
+        (owner === message.payload.organizerPubkey || terminal.compacted)
+      )
+        delete merged[id]
+    }
+    const serialized = JSON.stringify(merged)
+    const hasNewReady = read.messages.some(
+      (message) =>
+        authenticatedFutureMessage(message) &&
+        message.type === "future_market_ready" &&
+        Boolean(newlyObserved[message.id]) &&
+        !history[message.payload.claimRef]?.compacted
+    )
+    assertStorageBudget(
+      serialized,
+      FUTURE_OBSERVATION_BYTES -
+        (hasNewReady ? FUTURE_TERMINAL_HEADROOM_BYTES : 0)
+    )
+    storage.setItem(key, serialized)
+    compactTerminalArchive(owner, history, storage)
+    // Terminal messages are represented by the durable denial ledger after
+    // this read. Active exact messages stay in memory for degraded refreshes.
+    for (const [id, message] of retained) {
+      if (
+        history[message.payload.claimRef] &&
+        (owner === message.payload.organizerPubkey ||
+          history[message.payload.claimRef]!.compacted)
+      )
+        retained.delete(id)
+    }
+  }
   retainedFutureMessages.set(owner, retained)
-  return [...retained.values()]
+  return messages
 }
 
 /** Authenticated self-copy recovery precedes new merchant release issuance. */
@@ -842,6 +1325,7 @@ export async function readFutureMarketMerchantClaim(input: {
         candidate.receipt.payload.claimRef === claimRef &&
         candidate.receipt.payload.merchantPubkey === input.merchantPubkey
     ) ?? null
+  if (claim) applyTerminalHistoryToClaims(input.merchantPubkey, [claim])
   if (claim) {
     const receipt = claim.receipt.payload
     const exactSnapshot =
@@ -948,6 +1432,15 @@ export async function publishFutureMarketReadyReceipt(input: {
   ) => void | Promise<void>
 }): Promise<PublishPrivateMessageResult> {
   const payload = buildFutureMarketReadyReceipt(input)
+  const claimKey = `${FUTURE_DELIVERY_STORAGE_PREFIX}:claim:${payload.merchantPubkey}:${payload.claimRef}`
+  if (
+    typeof localStorage !== "undefined" &&
+    (localStorage.getItem(claimKey) ||
+      getFutureMarketTerminalHistory(payload.merchantPubkey, payload.claimRef))
+  )
+    throw new Error(
+      "An exact release is already saved for this order. Recover its original claim."
+    )
   if (
     loadFutureMarketPrivateDeliveries(payload.merchantPubkey).some(
       (record) =>
@@ -966,6 +1459,14 @@ export async function publishFutureMarketReadyReceipt(input: {
   if (recovered.claim)
     throw new Error(
       "An authenticated release already exists for this order. Recover its exact receipt instead of creating another release."
+    )
+  if (
+    typeof localStorage !== "undefined" &&
+    (localStorage.getItem(claimKey) ||
+      getFutureMarketTerminalHistory(payload.merchantPubkey, payload.claimRef))
+  )
+    throw new Error(
+      "An authenticated terminal update already exists for this claim. Refresh its history before another release."
     )
   if (recovered.stale || recovered.coverageDegraded)
     throw new Error(

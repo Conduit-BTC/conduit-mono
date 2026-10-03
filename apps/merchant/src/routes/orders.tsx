@@ -123,6 +123,9 @@ import {
 import {
   archiveFutureMarketPrivateDelivery,
   canCompleteFutureMarketHandoff,
+  compactCompletedFutureMarketDelivery,
+  getFutureMarketClaimRef,
+  getFutureMarketTerminalHistory,
   loadFutureMarketPrivateDeliveries,
   publishFutureMarketReadyReceipt,
   publishFutureMarketRevocation,
@@ -653,6 +656,7 @@ function OrdersWorkspace() {
   )
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [handoffDeliveryRevision, setHandoffDeliveryRevision] = useState(0)
+  const [handoffCompactionError, setHandoffCompactionError] = useState("")
   const selectedOrderResetRef = useRef<string | null>(null)
   const invoiceAmountNumber = useMemo(() => {
     const amount = Number(invoiceAmount)
@@ -1030,6 +1034,22 @@ function OrdersWorkspace() {
         item.fulfillment?.type === "event_market_pickup" &&
         item.fulfillment.mode === "organizer_handoff"
     ) ?? false
+  const selectedFutureClaimRef =
+    selectedOrder &&
+    selectedFuturePickup?.type === "event_market_pickup" &&
+    selectedFuturePickup.mode === "organizer_handoff" &&
+    pubkey
+      ? getFutureMarketClaimRef({
+          orderId: selectedOrder.id,
+          merchantPubkey: pubkey,
+          organizerPubkey: selectedFuturePickup.organizerPubkey,
+          marketCoordinate: selectedFuturePickup.market.coordinate,
+        })
+      : null
+  const futureTerminalHistory =
+    pubkey && selectedFutureClaimRef
+      ? getFutureMarketTerminalHistory(pubkey, selectedFutureClaimRef)
+      : null
   const selectedOrderCorrelationRef = selectedOrder
     ? getEventMarketOrderCorrelationRef(selectedOrder.id)
     : null
@@ -1068,7 +1088,9 @@ function OrdersWorkspace() {
     refetchInterval: 30_000,
   })
   const futureRecoveredClaim = futureRecoveryQuery.data?.claim
-  const futureHasRelease = Boolean(futureReadyRecord || futureRecoveredClaim)
+  const futureHasRelease = Boolean(
+    futureReadyRecord || futureRecoveredClaim || futureTerminalHistory
+  )
   const futureRevocationRecord = futureDeliveries.find(
     (record) =>
       record.type === "future_market_revoked" &&
@@ -1086,7 +1108,7 @@ function OrdersWorkspace() {
     enabled:
       signerConnected &&
       !!pubkey &&
-      futureHasRelease &&
+      !!(futureReadyRecord || futureRecoveredClaim) &&
       selectedFutureOrganizerHandoff,
     queryFn: async ({ signal }) => {
       const shouldContinue = () =>
@@ -1298,6 +1320,53 @@ function OrdersWorkspace() {
         }),
       }
     : { status: null }
+  useEffect(() => {
+    const terminalStatusAuthenticated = selected?.messages?.some(
+      (message) =>
+        message.type === "status_update" &&
+        message.senderPubkey === pubkey &&
+        message.recipientPubkey === selected.buyerPubkey &&
+        message.payload.status === merchantOrderState.status
+    )
+    if (
+      !terminalStatusAuthenticated ||
+      !pubkey ||
+      !selectedFutureClaimRef ||
+      (merchantOrderState.status !== "complete" &&
+        merchantOrderState.status !== "cancelled")
+    )
+      return
+    let current = true
+    const status = merchantOrderState.status
+    const compact = async () => {
+      try {
+        await compactCompletedFutureMarketDelivery(
+          pubkey,
+          selectedFutureClaimRef,
+          status
+        )
+        if (!current) return
+        setHandoffCompactionError("")
+        setHandoffDeliveryRevision((revision) => revision + 1)
+      } catch {
+        if (!current) return
+        setHandoffCompactionError(
+          "Saved handoff history could not be compacted. Retry after storage is available."
+        )
+      }
+    }
+    void compact()
+    return () => {
+      current = false
+    }
+  }, [
+    pubkey,
+    selected,
+    selectedFutureClaimRef,
+    merchantOrderState.status,
+    futureAckQuery.data?.exactAck?.id,
+    futureAckQuery.data?.revoked,
+  ])
   const stockAdjustments =
     !selected ||
     !orderSummary ||
@@ -3497,6 +3566,14 @@ function OrdersWorkspace() {
                         <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                           Organizer pickup release
                         </h3>
+                        {handoffCompactionError && (
+                          <p
+                            role="alert"
+                            className="mt-2 text-xs text-[var(--warning)]"
+                          >
+                            {handoffCompactionError}
+                          </p>
+                        )}
                         <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
                           Share only this order’s signed product evidence and
                           quantity. Payment and buyer details remain with you.
@@ -3506,11 +3583,14 @@ function OrdersWorkspace() {
                             ? "Organizer handed out"
                             : futureAckQuery.data?.conflicting
                               ? "Conflicting handoff evidence"
-                              : futureRevocationRecord
+                              : futureRevocationRecord ||
+                                  futureTerminalHistory?.revoked
                                 ? "Release revoked"
-                                : futureHasRelease
-                                  ? "Release authorized"
-                                  : "Not shared"}
+                                : futureTerminalHistory?.ack
+                                  ? "Handoff recorded"
+                                  : futureHasRelease
+                                    ? "Release authorized"
+                                    : "Not shared"}
                         </p>
                         {futureRecoveryQuery.isPending && !futureHasRelease && (
                           <p

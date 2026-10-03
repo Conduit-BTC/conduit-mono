@@ -1038,6 +1038,10 @@ describe("retained future Event Market evidence", () => {
       for (const liveDeletion of [true, false]) {
         const state = historyFixture(scope)
         if (liveDeletion) state.live.push(state.erased)
+        // Catalog discovery uses retained authorization evidence without a
+        // merchant-specific network read; the observed repair restores display.
+        if (scope === "authorization")
+          state.retained.set(state.current.id, state.current)
         const catalog = await readEventMarketCatalog(
           { reference: marketCoordinate },
           state.dependencies
@@ -1103,9 +1107,7 @@ describe("retained future Event Market evidence", () => {
         { reference: marketCoordinate },
         state.dependencies
       )
-      expect(catalog.products).toHaveLength(
-        scope === "authorization" || scope === "calendar" ? 1 : 0
-      )
+      expect(catalog.products).toHaveLength(scope === "calendar" ? 1 : 0)
       expect(catalog.products.every((entry) => !entry.actionable)).toBe(true)
     })
   }
@@ -1239,9 +1241,181 @@ describe("retained future Event Market evidence", () => {
     expect(catalog.coverage).toBe("complete")
     expect(catalog.products.map((entry) => entry.productCoordinate)).toEqual([
       productCoordinate,
-      `30402:${spammer}:soap`,
     ])
     expect(catalog.products.every((entry) => !entry.actionable)).toBe(true)
+  })
+
+  it("suppresses retained revoked authorization despite a stale relay and restores a causal regrant", async () => {
+    const state = fixture()
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    const active = grant()
+    const revokeDraft = buildEventMarketAuthorizationDraft({
+      marketCoordinate,
+      merchantPubkey: merchant,
+      state: "revoked",
+      sequence: 1,
+      parentIds: [active.id],
+    })
+    const revoked = sign(
+      organizerSecret,
+      revokeDraft.kind,
+      revokeDraft.tags,
+      105
+    )
+    state.live.push(tagged)
+    for (const event of [...state.live, revoked])
+      state.retained.set(event.id, event)
+    const progress: number[] = []
+    const denied = await readEventMarketCatalog(
+      {
+        reference: marketCoordinate,
+        onProgress: (read) => progress.push(read.products.length),
+      },
+      state.dependencies
+    )
+    expect(progress).toEqual([0, 0, 0])
+    expect(denied.products).toHaveLength(0)
+    expect(denied.candidateCount).toBe(1)
+
+    const regrantDraft = buildEventMarketAuthorizationDraft({
+      marketCoordinate,
+      merchantPubkey: merchant,
+      state: "active",
+      sequence: 2,
+      parentIds: [revoked.id],
+    })
+    const regranted = sign(
+      organizerSecret,
+      regrantDraft.kind,
+      regrantDraft.tags,
+      106
+    )
+    state.retained.set(regranted.id, regranted)
+    const restored = await readEventMarketCatalog(
+      { reference: marketCoordinate },
+      state.dependencies
+    )
+    expect(restored.products.map((entry) => entry.productCoordinate)).toEqual([
+      productCoordinate,
+    ])
+    expect(restored.products[0]?.actionable).toBe(false)
+  })
+
+  it("suppresses known authorization forks and deletions while ignoring wrong-author evidence", async () => {
+    const state = fixture()
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    const active = grant()
+    state.live.push(tagged)
+    const forkDraft = buildEventMarketAuthorizationDraft({
+      marketCoordinate,
+      merchantPubkey: merchant,
+      state: "active",
+      sequence: 1,
+      parentIds: [active.id],
+    })
+    const first = sign(organizerSecret, forkDraft.kind, forkDraft.tags, 105)
+    const second = sign(organizerSecret, forkDraft.kind, forkDraft.tags, 106)
+    for (const event of [active, first, second])
+      state.retained.set(event.id, event)
+    expect(
+      (
+        await readEventMarketCatalog(
+          { reference: marketCoordinate },
+          state.dependencies
+        )
+      ).products
+    ).toHaveLength(0)
+
+    state.retained.delete(first.id)
+    state.retained.delete(second.id)
+    const wrongAuthorDeletion = sign(spammerSecret, 5, [["e", active.id]], 107)
+    state.retained.set(wrongAuthorDeletion.id, wrongAuthorDeletion)
+    const wrongAuthorTransition = sign(
+      spammerSecret,
+      forkDraft.kind,
+      forkDraft.tags,
+      107
+    )
+    state.retained.set(wrongAuthorTransition.id, wrongAuthorTransition)
+    expect(
+      (
+        await readEventMarketCatalog(
+          { reference: marketCoordinate },
+          state.dependencies
+        )
+      ).products
+    ).toHaveLength(1)
+
+    const deletion = sign(organizerSecret, 5, [["e", active.id]], 108)
+    state.retained.set(deletion.id, deletion)
+    expect(
+      (
+        await readEventMarketCatalog(
+          { reference: marketCoordinate },
+          state.dependencies
+        )
+      ).products
+    ).toHaveLength(0)
+  })
+
+  it("does not let orphan or malformed organizer transitions restore a card over a retained revoke", async () => {
+    for (const defect of ["orphan", "malformed"] as const) {
+      const state = fixture()
+      const active = grant()
+      const revokeDraft = buildEventMarketAuthorizationDraft({
+        marketCoordinate,
+        merchantPubkey: merchant,
+        state: "revoked",
+        sequence: 1,
+        parentIds: [active.id],
+      })
+      const revoked = sign(
+        organizerSecret,
+        revokeDraft.kind,
+        revokeDraft.tags,
+        105
+      )
+      const nextDraft = buildEventMarketAuthorizationDraft({
+        marketCoordinate,
+        merchantPubkey: merchant,
+        state: "active",
+        sequence: 2,
+        parentIds: [revoked.id],
+      })
+      const bad =
+        defect === "orphan"
+          ? sign(
+              organizerSecret,
+              nextDraft.kind,
+              nextDraft.tags.map((tag) =>
+                tag[0] === "auth_parent" ? ["auth_parent", "a".repeat(64)] : tag
+              ),
+              106
+            )
+          : sign(
+              organizerSecret,
+              nextDraft.kind,
+              nextDraft.tags.map((tag) =>
+                tag[0] === "seq" ? ["seq", "02"] : tag
+              ),
+              106
+            )
+      state.live.push(product(merchantSecret, merchant, "soap", 100))
+      for (const event of [active, revoked, bad])
+        state.retained.set(event.id, event)
+      expect(
+        resolveEventMarketAuthorization({
+          marketCoordinate,
+          merchantPubkey: merchant,
+          transitions: [active, revoked, bad],
+        }).state
+      ).toBe(defect === "orphan" ? "missing_parent" : "malformed")
+      const catalog = await readEventMarketCatalog(
+        { reference: marketCoordinate },
+        state.dependencies
+      )
+      expect(catalog.products).toHaveLength(0)
+    }
   })
 
   it("keeps a retained candidate visible but stale when live discovery omits it", async () => {
@@ -1644,6 +1818,34 @@ describe("retained future Event Market evidence", () => {
       expect(catalog.products).toHaveLength(0)
     })
   }
+
+  it("rechecks a signed revocation learned while discovery is waiting", async () => {
+    const state = fixture()
+    const tagged = product(merchantSecret, merchant, "soap", 100)
+    const active = grant()
+    const draft = buildEventMarketAuthorizationDraft({
+      marketCoordinate,
+      merchantPubkey: merchant,
+      state: "revoked",
+      sequence: 1,
+      parentIds: [active.id],
+    })
+    const revoked = sign(organizerSecret, draft.kind, draft.tags, 105)
+    state.retained.set(active.id, active)
+    const fetch = state.dependencies.fetch
+    state.dependencies.fetch = async (filter, options) => {
+      const result = await fetch(filter, options)
+      if (!filter.kinds?.includes(30402 as never)) return result
+      state.retained.set(revoked.id, revoked)
+      return { ...result, events: [tagged] }
+    }
+    const catalog = await readEventMarketCatalog(
+      { reference: marketCoordinate },
+      state.dependencies
+    )
+    expect(catalog.candidateCount).toBe(1)
+    expect(catalog.products).toHaveLength(0)
+  })
 
   it("does not publish late candidate progress after the session is cancelled", async () => {
     const state = fixture()
