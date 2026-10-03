@@ -63,7 +63,7 @@ class MemoryStorage {
 
 function invoice(amountSats: number, preimage: Uint8Array) {
   return makeSignedBolt11Fixture({
-    hrp: `lnbcrt${amountSats * 10}n`,
+    hrp: `lnbc${amountSats * 10}n`,
     createdAt: NOW / 1_000,
     fields: [
       bolt11PaymentHashField(createHash("sha256").update(preimage).digest()),
@@ -95,6 +95,7 @@ async function fixture() {
     credentials.accountNumber
   )
   const native = createHermeticSparkNative({
+    network: "mainnet",
     deriveIdentity: deriveMerchantCheckoutSparkRecoveryIdentity,
     issueFundingInvoice: async ({ amountSats }) =>
       invoice(amountSats, randomBytes(32)),
@@ -113,7 +114,7 @@ async function fixture() {
   } = {}
   const manager = new SparkWalletManager(
     new FirstPartySparkSdkFactory({
-      network: "regtest",
+      network: "mainnet",
       now: () => authority.now,
       wait: async () => {},
       loadModule: async () => ({
@@ -163,7 +164,7 @@ async function fixture() {
     orderId: "runner-order",
     merchantPubkey: MERCHANT,
     walletId,
-    network: "regtest",
+    network: "mainnet",
     createdAt: NOW,
     takeoverAt: NOW + 2_700_000,
     commerceQuote: {
@@ -227,7 +228,7 @@ async function fixture() {
   const buyer = signer.pubkey
   const recovery = await publishCheckoutSparkSettledRecoveryHandoff({
     state: createCheckoutSparkSettledReconciliation(plan),
-    recovery: { ...credentials, network: "regtest" },
+    recovery: { ...credentials, network: "mainnet" },
     identity: { kind: "signed_in", pubkey: buyer, signer },
     storage,
     now: () => authority.now,
@@ -290,7 +291,7 @@ async function fixture() {
     readPreparation: (id) => getCheckoutSparkSettledPreparation(id, storage),
     readInitialRecovery: (id) => getCheckoutSparkRecoveryDelivery(id, storage),
     loadAuthorized,
-    sparkConfiguration: () => ({ status: "ready", network: "regtest" }),
+    sparkConfiguration: () => ({ status: "ready", network: "mainnet" }),
     sparkManager: () => manager,
     fundingBridge: (id) =>
       createCheckoutSparkSettledFundingBridge(id, {
@@ -343,7 +344,7 @@ async function fixture() {
     planDigest: plan.planDigest,
     orderId: plan.orderId,
     merchantPubkey: MERCHANT,
-    network: "regtest",
+    network: "mainnet",
     buyerPubkey: buyer,
     currentBuyerPubkey: () => buyer,
     shouldContinue: () => authority.active,
