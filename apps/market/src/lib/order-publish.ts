@@ -525,7 +525,7 @@ export async function publishBuyerOrderMessage(
           return [
             {
               relayUrl,
-              status: outcome === "error" ? ("timed_out" as const) : outcome,
+              status: outcome,
               generation,
             },
           ]

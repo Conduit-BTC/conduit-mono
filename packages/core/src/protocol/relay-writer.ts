@@ -14,6 +14,7 @@ export type ExactRelayWriteStatus =
   | "auth_required"
   | "cancelled"
   | "policy_blocked"
+  | "error"
 
 const MAX_RESPONSE_FRAMES = 64
 const MAX_RESPONSE_CHARS = 256 * 1024
@@ -165,7 +166,7 @@ export function publishSignedEventFrameToRelay(input: {
       try {
         eligible = await (input.beforeSend?.() ?? true)
       } catch {
-        finish("timed_out")
+        finish(isCancelled() ? "cancelled" : "error")
         return false
       }
       if (settled) return false

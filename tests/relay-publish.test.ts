@@ -634,7 +634,7 @@ describe("planPublishRelays", () => {
       expect.arrayContaining([
         expect.objectContaining({
           relayUrl: secondRelay,
-          status: "policy_blocked",
+          status: "error",
         }),
       ])
     )

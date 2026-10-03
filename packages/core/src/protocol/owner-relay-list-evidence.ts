@@ -257,6 +257,7 @@ function normalizeRelayOutcomes(
     "auth_required",
     "cancelled",
     "policy_blocked",
+    "error",
   ])
   const readbackStatuses = new Set([
     "pending",

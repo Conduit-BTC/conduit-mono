@@ -150,8 +150,7 @@ export interface PublishWithPlannerResult {
   relayFailureMessages: Record<string, string>
 }
 
-export type ProgressiveRelayPublishStatus =
-  ExactRelayWriteStatus | "error" | "policy_blocked"
+export type ProgressiveRelayPublishStatus = ExactRelayWriteStatus
 
 export interface ProgressiveRelayPublishAttempt {
   relayUrl: string
@@ -635,13 +634,17 @@ export async function publishSignedEventPlan(input: {
         })
       }
     } catch {
-      status = "error"
+      status =
+        input.shouldContinue?.() === false || input.signal?.aborted
+          ? "cancelled"
+          : "error"
     }
     const outcome = { relayUrl, eventId: input.event.id, attempt: 1, status }
     relayAttempts.push(outcome)
     input.onOutcome?.(outcome, attemptedRelayUrls.includes(relayUrl))
     if (status === "acked") recordRelaySuccess(relayUrl)
-    else if (status !== "cancelled" && status !== "policy_blocked")
+    // Local policy/executor and signer failures do not describe relay health.
+    else if (status === "timed_out" || status === "rejected")
       recordRelayFailure(relayUrl)
   }
   for (const relayUrl of targets.blockedRelayUrls) {
@@ -792,6 +795,7 @@ async function resolveRelayPublishTargets(input: {
             personalRelayUrls: input.personalRelayUrls,
             independentRelayUrls: input.independentRelayUrls,
             repository: accountNetworkLocalStateRepository,
+            propagatePolicyReadErrors: true,
           })
   const relayUrls =
     input.maxRelayAttempts && input.maxRelayAttempts > 0
@@ -1132,9 +1136,7 @@ export async function publishSignedEventToRelay(
     requiredRelayCount: 1,
     timeoutMs: CRITICAL_PUBLISH_TIMEOUT_MS,
   })
-  return result.relayAttempts[0]?.status === "error"
-    ? "timed_out"
-    : (result.relayAttempts[0]?.status ?? "policy_blocked")
+  return result.relayAttempts[0]?.status ?? "policy_blocked"
 }
 
 /**

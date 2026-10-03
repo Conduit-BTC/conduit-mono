@@ -752,6 +752,7 @@ describe("publishPrivateMessage", () => {
   }
 
   for (const status of [
+    "error",
     "auth_required",
     "cancelled",
     "policy_blocked",

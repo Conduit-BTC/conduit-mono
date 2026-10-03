@@ -127,6 +127,46 @@ describe("exact relay writer", () => {
     await expect(result).resolves.toBe("timed_out")
   })
 
+  it("preserves a rejected policy read as a local error and closes without sending", async () => {
+    const socket = new WriterTestSocket()
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://policy-error.conduit.market",
+      signedEvent: signedEvent(),
+      timeoutMs: 100,
+      beforeSend: async () => {
+        throw new Error("synthetic policy failure")
+      },
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+    socket.open()
+    await expect(result).resolves.toBe("error")
+    expect(socket.sentPayloads).toEqual([])
+    expect(socket.closeCalls).toBe(1)
+  })
+
+  it("preserves account cancellation when a pending policy read rejects", async () => {
+    const socket = new WriterTestSocket()
+    let rejectPolicy!: (error: Error) => void
+    const policy = new Promise<boolean>((_, reject) => {
+      rejectPolicy = reject
+    })
+    let current = true
+    const result = publishSignedEventFrameToRelay({
+      relayUrl: "wss://cancelled-policy-error.conduit.market",
+      signedEvent: signedEvent(),
+      timeoutMs: 100,
+      shouldContinue: () => current,
+      beforeSend: () => policy,
+      createWebSocket: () => socket as unknown as WebSocket,
+    })
+    socket.open()
+    current = false
+    rejectPolicy(new Error("synthetic policy failure"))
+    await expect(result).resolves.toBe("cancelled")
+    expect(socket.sentPayloads).toEqual([])
+    expect(socket.closeCalls).toBe(1)
+  })
+
   it("turns constructor failures into a retryable result", async () => {
     await expect(
       publishSignedEventFrameToRelay({

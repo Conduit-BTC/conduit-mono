@@ -389,7 +389,13 @@ describe("buyer order publishing", () => {
     ["signed_in", "guest_ephemeral"] as const
   ).flatMap((identityKind) =>
     (
-      ["timed_out", "auth_required", "cancelled", "policy_blocked"] as const
+      [
+        "timed_out",
+        "auth_required",
+        "cancelled",
+        "policy_blocked",
+        "error",
+      ] as const
     ).map((status) => [identityKind, status] as const)
   )) {
     it(`adopts durable first-ACK delivery and lazy recovery for ${identityKind}: ${terminalStatus}`, async () => {

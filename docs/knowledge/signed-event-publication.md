@@ -45,7 +45,13 @@ per-relay outcomes. Outcomes retain the event ID and attempt number:
 - `auth_required`: relay authorization is required and unavailable for the write.
 - `cancelled`: the operation or active account was cancelled.
 - `policy_blocked`: live target policy prevents delivery.
-- `error`: the executor failed before a usable relay outcome.
+- `error`: a local policy read or executor failed before a usable relay outcome.
+
+Local errors, cancellation, policy exclusions and signer/authentication failures
+do not penalize relay health. Only transport timeouts and relay event rejections
+increment its failure counter. Local policy reads still fail closed: an error
+cannot authorize an EVENT or AUTH frame. Exact writes and durable checkpoints
+retain local `error` evidence rather than substituting a relay timeout.
 
 Rejection of a separate NIP-42 AUTH event is authorization failure, not rejection
 of the original signed event.

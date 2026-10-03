@@ -221,6 +221,7 @@ export type ProductDeletionRelayDeliveryStatus =
   | "auth_required"
   | "cancelled"
   | "policy_blocked"
+  | "error"
 
 export type ProductDeletionDeliveryState = "pending" | "partial" | "delivered"
 
@@ -373,6 +374,7 @@ export type NetworkPreferencePublishStatus =
   | "auth_required"
   | "cancelled"
   | "policy_blocked"
+  | "error"
 
 export type NetworkPreferenceReadbackStatus =
   "pending" | "observed" | "absent" | "timed_out"
@@ -787,6 +789,7 @@ export type OrderRelayDeliveryStatus =
   | "auth_required"
   | "cancelled"
   | "policy_blocked"
+  | "error"
 
 export interface OrderRelayDelivery {
   relayUrl: string

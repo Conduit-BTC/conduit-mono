@@ -2,14 +2,21 @@ import { afterEach, describe, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import {
   __resetRelayPublishTestOverrides,
+  __resetRelayHealth,
   __setRelayPublishTestOverrides,
   emptyAccountNetworkLocalState,
   publishSignedEventPlan,
+  publishSignedEventToRelay,
   publishWithPlanner,
   publishWithPlannerProgressive,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import { publishSignedEventFrameToRelay } from "../packages/core/src/protocol/relay-writer"
+import {
+  getRelayHealth,
+  isRelayInCooldown,
+  recordRelaySuccess,
+} from "../packages/core/src/protocol/relay-health"
 
 function event(kind = 1): SignedPublicNostrEvent {
   return finalizeEvent(
@@ -23,9 +30,12 @@ function event(kind = 1): SignedPublicNostrEvent {
   )
 }
 
-afterEach(__resetRelayPublishTestOverrides)
+afterEach(() => {
+  __resetRelayPublishTestOverrides()
+  __resetRelayHealth()
+})
 
-function controlledRelays() {
+function controlledRelays(onConnect?: () => void) {
   const frames: string[] = []
   const counts = { opened: 0, closed: 0 }
   const sockets = new Set<import("bun").ServerWebSocket<{ mode: string }>>()
@@ -102,10 +112,12 @@ function controlledRelays() {
     publishSignedEventFrameToRelay: (input) =>
       publishSignedEventFrameToRelay({
         ...input,
-        createWebSocket: (url) =>
-          new WebSocket(
+        createWebSocket: (url) => {
+          onConnect?.()
+          return new WebSocket(
             `ws://127.0.0.1:${server.port}/${new URL(url).hostname.split(".")[0]}`
-          ),
+          )
+        },
       }),
   })
   return {
@@ -320,6 +332,152 @@ describe("composed plain signed-event target plan", () => {
       expect(second.attemptedRelayUrls).toEqual(reloaded.targets)
       expect(relay.frames).toHaveLength(2)
       expect(relay.frames[0]).toBe(relay.frames[1])
+    } finally {
+      await relay.stop()
+    }
+  })
+
+  for (const phase of ["before connection", "before send"] as const) {
+    it(`preserves local policy errors ${phase} without penalizing relay health`, async () => {
+      const target = "wss://fast.fixture.conduit.market"
+      let connected = false
+      const relay = controlledRelays(() => {
+        connected = true
+      })
+      const signed = event()
+      recordRelaySuccess(target, 1)
+      const health = { ...getRelayHealth(target)! }
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          connected = false
+          let reads = 0
+          const result = await publishSignedEventPlan({
+            event: signed,
+            relayUrls: [target],
+            independentRelayUrls: [target],
+            timeoutMs: 150,
+            requiredRelayCount: 1,
+            accountPubkey: signed.pubkey,
+            accountNetworkLocalStateRepository: {
+              get: async (pubkey) => {
+                reads++
+                // Initial plan succeeds; the live target refresh fails.
+                if (phase === "before connection" ? reads > 2 : connected)
+                  throw new Error("synthetic local policy read failure")
+                return emptyAccountNetworkLocalState(pubkey)
+              },
+            },
+          })
+          expect(result.relayAttempts).toEqual([
+            {
+              relayUrl: target,
+              eventId: signed.id,
+              attempt: 1,
+              status: "error",
+            },
+          ])
+          expect(result.attemptedRelayUrls).toEqual(
+            phase === "before connection" ? [] : [target]
+          )
+          expect(result.thrown).toBeInstanceOf(Error)
+          expect(getRelayHealth(target)).toEqual(health)
+          expect(isRelayInCooldown(target)).toBe(false)
+        }
+        expect(relay.frames).toEqual([])
+        await relay.stop()
+        expect(relay.counts).toEqual(
+          phase === "before connection"
+            ? { opened: 0, closed: 0 }
+            : { opened: 2, closed: 2 }
+        )
+      } finally {
+        await relay.stop()
+      }
+    })
+  }
+
+  it("preserves a final local policy error through the exact-target API", async () => {
+    let connected = false
+    const relay = controlledRelays(() => {
+      connected = true
+    })
+    const signed = event()
+    const target = "wss://fast.fixture.conduit.market"
+    try {
+      const status = await publishSignedEventToRelay({
+        signedEvent: signed,
+        relayUrl: target,
+        authorPubkey: signed.pubkey,
+        accountPubkey: signed.pubkey,
+        accountNetworkLocalStateRepository: {
+          get: async (pubkey) => {
+            if (connected)
+              throw new Error("synthetic local policy read failure")
+            return emptyAccountNetworkLocalState(pubkey)
+          },
+        },
+      })
+      expect(status).toBe("error")
+      expect(relay.frames).toEqual([])
+      expect(getRelayHealth(target)).toBeUndefined()
+    } finally {
+      await relay.stop()
+    }
+  })
+
+  it("does not penalize relay health when the local executor throws", async () => {
+    const target = "wss://executor-error.fixture.conduit.market"
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async () => {
+        throw new Error("synthetic local executor failure")
+      },
+    })
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await publishSignedEventPlan({
+        event: event(),
+        relayUrls: [target],
+        timeoutMs: 150,
+        requiredRelayCount: 1,
+      })
+      expect(result.relayAttempts[0]?.status).toBe("error")
+      expect(getRelayHealth(target)).toBeUndefined()
+      expect(isRelayInCooldown(target)).toBe(false)
+    }
+  })
+
+  it("does not penalize relay health for unavailable authentication", async () => {
+    const target = "wss://auth.fixture.conduit.market"
+    __setRelayPublishTestOverrides({
+      publishSignedEventFrameToRelay: async () => "auth_required",
+    })
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await publishSignedEventPlan({
+        event: event(),
+        relayUrls: [target],
+        timeoutMs: 150,
+        requiredRelayCount: 1,
+      })
+      expect(result.relayAttempts[0]?.status).toBe("auth_required")
+    }
+    expect(getRelayHealth(target)).toBeUndefined()
+  })
+
+  it("still parks a relay after repeated transport failures", async () => {
+    const relay = controlledRelays()
+    const target = "wss://disconnect.fixture.conduit.market"
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await publishSignedEventPlan({
+          event: event(),
+          relayUrls: [target],
+          timeoutMs: 150,
+          requiredRelayCount: 1,
+        })
+        expect(result.relayAttempts[0]?.status).toBe("timed_out")
+      }
+      expect(getRelayHealth(target)?.consecutiveFailures).toBe(2)
+      expect(isRelayInCooldown(target)).toBe(true)
+      expect(relay.frames).toHaveLength(2)
     } finally {
       await relay.stop()
     }

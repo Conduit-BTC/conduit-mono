@@ -2046,8 +2046,7 @@ function buildOrderRelayDeliveryRecord(input: {
       input.recipientDelivery,
       relayUrl
     )
-    const status: OrderRelayDeliveryStatus =
-      outcome === "error" ? "timed_out" : outcome
+    const status: OrderRelayDeliveryStatus = outcome
     const acked = status === "acked"
     const rejected = status === "rejected"
     return {
