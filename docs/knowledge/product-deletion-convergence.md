@@ -66,6 +66,23 @@ The accumulated candidate set remains available while relay responses arrive,
 so an individual relay's omission is not interpreted as removal of either a
 product observation or deletion evidence.
 
+Captured cache candidates are not resolved results. Every cache/live merge
+applies the current session's validated deletion frontier before choosing a
+coordinate revision, grouping, query filtering, sorting, or display limits.
+Catalog reads retain cached and live revision candidates until final resolution;
+an exact event deletion of the newest revision leaves an older valid revision
+eligible, including when the deletion arrives between progressive snapshots or
+during a cache write. Final catalog and storefront
+results also reload durable evidence after asynchronous product-cache writes,
+so a deletion committed by another tab cannot be undone by an older read.
+
+Merchant error fallback reconciles the captured cache with current evidence.
+When deletion removes every cached candidate, it returns an empty, stale and
+degraded snapshot rather than leaving the previous product list visible.
+Progressive reads emit their final retraction even if the product-cache write
+fails, while preserving the write failure for the caller. Neither delivery
+progress nor cache-write success determines signed deletion authority.
+
 ### Retained exact family eligibility
 
 An exact read may return only a requested variation even though its eligibility
@@ -131,6 +148,12 @@ The deletion regression matrix covers:
 - address cutoffs and newer replacements;
 - durable remote tombstones after relay omission;
 - tombstone-before-product and product-before-tombstone ordering;
+- preloaded-cache progressive results through both transport seams, including
+  subsequent snapshots after a locally signed deletion;
+- deletion during product-cache writes, including another tab's committed
+  evidence before its storage notification reaches the reader;
+- cache-write failure after remote deletion, including an empty Merchant
+  fallback and the final progressive retraction;
 - agreement between cache, catalog, storefront, detail, batch, and progressive
   reads; and
 - durable delivery of the same signed event after partial failure and browser

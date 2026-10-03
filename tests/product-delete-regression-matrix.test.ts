@@ -10,6 +10,7 @@ import {
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
   EVENT_KINDS,
+  getLocalProductDeletionSnapshot,
   getCachedMerchantStorefront,
   getCachedMarketplaceProducts,
   getCachedProductDetail,
@@ -113,6 +114,29 @@ function setRelayReads(input: {
   })
 }
 
+async function preloadDeletionScenario() {
+  const deleted = makeSignedProduct({
+    dTag: "preloaded-deleted",
+    createdAt: 100,
+    title: "Deleted cached product",
+  })
+  const survivor = makeSignedProduct({
+    dTag: "preloaded-survivor",
+    createdAt: 100,
+    title: "Surviving cached product",
+  })
+  const deletion = makeSignedDeletion({
+    createdAt: 110,
+    tags: [
+      ["e", deleted.id],
+      ["a", productAddress(MERCHANT_A_PUBKEY, "preloaded-deleted")],
+    ],
+  })
+  await cacheSignedProductListingEvent(deleted)
+  await cacheSignedProductListingEvent(survivor)
+  return { deleted, survivor, deletion }
+}
+
 beforeEach(() => {
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
@@ -173,6 +197,328 @@ afterEach(() => {
 })
 
 describe("product deletion convergence regression matrix", () => {
+  for (const surface of ["marketplace", "merchant", "progressive"] as const) {
+    for (const origin of ["local", "other-tab"] as const) {
+      it.each(["cached", "live"] as const)(
+        `retains the prior %s revision after ${origin} exact deletion during ${surface} cache writes`,
+        async (priorSource) => {
+          const prior = makeSignedProduct({
+            dTag: "revised-product",
+            createdAt: 100,
+            title: "Prior revision",
+          })
+          const newer = makeSignedProduct({
+            dTag: "revised-product",
+            createdAt: 120,
+            title: "New revision",
+          })
+          const deletion = makeSignedDeletion({
+            createdAt: 130,
+            tags: [["e", newer.id]],
+          })
+          if (priorSource === "cached")
+            await cacheSignedProductListingEvent(prior)
+          setRelayReads({
+            products: priorSource === "cached" ? [newer] : [prior, newer],
+          })
+          __setCommerceTestOverrides({
+            putCachedProducts: async () => {
+              if (origin === "local") {
+                await cacheSignedProductDeletionEvent(deletion)
+              } else {
+                cachedProductTombstones.push({
+                  id: `e:${MERCHANT_A_PUBKEY}:${newer.id}`,
+                  pubkey: MERCHANT_A_PUBKEY,
+                  eventId: newer.id,
+                  deletedAt: deletion.created_at!,
+                  deletionEventId: deletion.id,
+                  signedEvent:
+                    deletion.rawEvent() as CachedProductTombstone["signedEvent"],
+                  cachedAt: FIXED_NOW,
+                })
+                expect(getLocalProductDeletionSnapshot().evidence).toEqual([])
+              }
+            },
+          })
+          const snapshots: string[][] = []
+          const query = { merchantPubkey: MERCHANT_A_PUBKEY, limit: 1 }
+          const result =
+            surface === "merchant"
+              ? await getMerchantStorefront(query)
+              : surface === "marketplace"
+                ? await getMarketplaceProducts(query)
+                : await getMarketplaceProductsProgressive(query, (progress) => {
+                    snapshots.push(progress.data.map(({ eventId }) => eventId))
+                  })
+          expect(result.data.map(({ eventId }) => eventId)).toEqual([prior.id])
+          if (surface === "progressive")
+            expect(snapshots.at(-1)).toEqual([prior.id])
+        }
+      )
+    }
+  }
+
+  it.each(["cached", "live"] as const)(
+    "retains the prior %s revision after exact deletion between progressive snapshots",
+    async (priorSource) => {
+      const prior = makeSignedProduct({
+        dTag: "revised-product",
+        createdAt: 100,
+        title: "Prior revision",
+      })
+      const newer = makeSignedProduct({
+        dTag: "revised-product",
+        createdAt: 120,
+        title: "New revision",
+      })
+      const deletion = makeSignedDeletion({
+        createdAt: 130,
+        tags: [["e", newer.id]],
+      })
+      if (priorSource === "cached") await cacheSignedProductListingEvent(prior)
+      const products = priorSource === "cached" ? [newer] : [prior, newer]
+      const snapshots: string[][] = []
+      __setCommerceTestOverrides({
+        fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+          const progress = {
+            relayUrl: options?.relayUrls?.[0] ?? "wss://source.example",
+            events: products as never,
+            mergedEvents: products as never,
+          }
+          await onProgress(progress)
+          await cacheSignedProductDeletionEvent(deletion)
+          await onProgress(progress)
+          setRelayReads({ products, deletions: [] })
+          return products as never
+        },
+      })
+      const result = await getMarketplaceProductsProgressive(
+        { merchantPubkey: MERCHANT_A_PUBKEY, limit: 1 },
+        (progress) =>
+          snapshots.push(progress.data.map(({ eventId }) => eventId))
+      )
+      expect(snapshots[0]).toEqual([newer.id])
+      expect(snapshots[1]).toEqual([prior.id])
+      expect(result.data.map(({ eventId }) => eventId)).toEqual([prior.id])
+    }
+  )
+
+  it.each(["events-only", "progressive"] as const)(
+    "does not reinsert a preloaded deleted product in %s progress or final results",
+    async (transport) => {
+      const { deleted, survivor, deletion } = await preloadDeletionScenario()
+      const snapshots: { ids: string[]; deletionKnown: boolean }[] = []
+      if (transport === "events-only") {
+        setRelayReads({ products: [deleted, survivor], deletions: [deletion] })
+      } else {
+        __setCommerceTestOverrides({
+          fetchEventsFanoutProgressive: async (
+            _filter,
+            options,
+            onProgress
+          ) => {
+            await onProgress({
+              relayUrl: options?.relayUrls?.[0] ?? "wss://source.example",
+              events: [deleted, survivor] as never,
+              mergedEvents: [deleted, survivor] as never,
+            })
+            setRelayReads({
+              products: [deleted, survivor],
+              deletions: [deletion],
+            })
+            return [deleted, survivor] as never
+          },
+        })
+      }
+
+      const result = await getMarketplaceProductsProgressive(
+        { merchantPubkey: MERCHANT_A_PUBKEY, limit: 10 },
+        (progress) =>
+          snapshots.push({
+            ids: progress.data.map(({ eventId }) => eventId),
+            deletionKnown:
+              getLocalProductDeletionSnapshot().evidence.length > 0,
+          })
+      )
+
+      expect(cachedProductTombstones.length).toBeGreaterThan(0)
+      expect(result.data.map(({ eventId }) => eventId)).toEqual([survivor.id])
+      expect(
+        snapshots.filter(({ deletionKnown }) => deletionKnown).length
+      ).toBeGreaterThan(0)
+      for (const snapshot of snapshots.filter(
+        ({ deletionKnown }) => deletionKnown
+      )) {
+        expect(snapshot.ids).toEqual([survivor.id])
+      }
+
+      // Restart the in-memory evidence and omit the remote deletion. Durable
+      // tombstones must still suppress the original raw product-cache row.
+      __resetCommerceTestOverrides()
+      __setCommerceTestOverrides({
+        now: () => FIXED_NOW,
+        getCachedProducts: async () => cachedProducts,
+        getCachedProductTombstones: async () => cachedProductTombstones,
+        putCachedProducts: async () => {},
+      })
+      setRelayReads({ products: [deleted, survivor], deletions: [] })
+      const restarted = await getMarketplaceProductsProgressive(
+        { merchantPubkey: MERCHANT_A_PUBKEY, limit: 10 },
+        (progress) =>
+          expect(progress.data.map(({ eventId }) => eventId)).toEqual([
+            survivor.id,
+          ])
+      )
+      expect(restarted.data.map(({ eventId }) => eventId)).toEqual([
+        survivor.id,
+      ])
+    }
+  )
+
+  it("reconciles Merchant fallback with a remote deletion before a product-cache write failure", async () => {
+    const { deleted, survivor, deletion } = await preloadDeletionScenario()
+    setRelayReads({ products: [deleted, survivor], deletions: [deletion] })
+    __setCommerceTestOverrides({
+      putCachedProducts: async () => {
+        throw new Error("Product-cache write unavailable")
+      },
+    })
+
+    const result = await getMerchantStorefront({
+      merchantPubkey: MERCHANT_A_PUBKEY,
+      includeMarketHidden: true,
+      limit: 10,
+    })
+
+    expect(cachedProductTombstones.length).toBeGreaterThan(0)
+    expect(result.data.map(({ eventId }) => eventId)).toEqual([survivor.id])
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("uses newly signed local deletion evidence in subsequent progressive snapshots", async () => {
+    const { deleted, survivor, deletion } = await preloadDeletionScenario()
+    const snapshots: string[][] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+        const progress = {
+          relayUrl: options?.relayUrls?.[0] ?? "wss://source.example",
+          events: [deleted, survivor] as never,
+          mergedEvents: [deleted, survivor] as never,
+        }
+        await onProgress(progress)
+        await cacheSignedProductDeletionEvent(deletion)
+        await onProgress(progress)
+        setRelayReads({ products: [deleted, survivor], deletions: [] })
+        return [deleted, survivor] as never
+      },
+    })
+
+    const result = await getMarketplaceProductsProgressive(
+      { merchantPubkey: MERCHANT_A_PUBKEY, limit: 10 },
+      (progress) => snapshots.push(progress.data.map(({ eventId }) => eventId))
+    )
+
+    expect(snapshots[0]).toContain(deleted.id)
+    expect(snapshots[1]).toEqual([survivor.id])
+    expect(snapshots.at(-1)).toEqual([survivor.id])
+    expect(result.data.map(({ eventId }) => eventId)).toEqual([survivor.id])
+  })
+
+  it.each([
+    ["marketplace", "local"],
+    ["merchant", "local"],
+    ["progressive", "local"],
+    ["marketplace", "other-tab"],
+    ["merchant", "other-tab"],
+    ["progressive", "other-tab"],
+  ] as const)(
+    "reconciles %s results after a %s deletion during the product-cache write",
+    async (surface, origin) => {
+      const { deleted, survivor, deletion } = await preloadDeletionScenario()
+      setRelayReads({ products: [deleted, survivor], deletions: [] })
+      __setCommerceTestOverrides({
+        putCachedProducts: async () => {
+          if (origin === "local") {
+            await cacheSignedProductDeletionEvent(deletion)
+          } else {
+            // Model a validated commit from another tab before its asynchronous
+            // storage observer runs in this tab. Final reads must reload it.
+            cachedProductTombstones.push({
+              id: `a:${productAddress(MERCHANT_A_PUBKEY, "preloaded-deleted")}`,
+              pubkey: MERCHANT_A_PUBKEY,
+              addressId: productAddress(MERCHANT_A_PUBKEY, "preloaded-deleted"),
+              deletedAt: deletion.created_at!,
+              deletionEventId: deletion.id,
+              signedEvent:
+                deletion.rawEvent() as CachedProductTombstone["signedEvent"],
+              cachedAt: FIXED_NOW,
+            })
+            expect(getLocalProductDeletionSnapshot().evidence).toEqual([])
+          }
+        },
+      })
+      const query = { merchantPubkey: MERCHANT_A_PUBKEY, limit: 10 }
+      const result =
+        surface === "merchant"
+          ? await getMerchantStorefront(query)
+          : surface === "marketplace"
+            ? await getMarketplaceProducts(query)
+            : await getMarketplaceProductsProgressive(query, () => {})
+
+      expect(result.data.map(({ eventId }) => eventId)).toEqual([survivor.id])
+    }
+  )
+
+  it("emits the final deletion retraction even when progressive cache writes fail", async () => {
+    const { deleted, survivor, deletion } = await preloadDeletionScenario()
+    const snapshots: string[][] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+        await onProgress({
+          relayUrl: options?.relayUrls?.[0] ?? "wss://source.example",
+          events: [deleted, survivor] as never,
+          mergedEvents: [deleted, survivor] as never,
+        })
+        setRelayReads({ products: [deleted, survivor], deletions: [deletion] })
+        return [deleted, survivor] as never
+      },
+      putCachedProducts: async () => {
+        throw new Error("Product-cache write unavailable")
+      },
+    })
+
+    await expect(
+      getMarketplaceProductsProgressive(
+        { merchantPubkey: MERCHANT_A_PUBKEY, limit: 10 },
+        (progress) =>
+          snapshots.push(progress.data.map(({ eventId }) => eventId))
+      )
+    ).rejects.toThrow("Product-cache write unavailable")
+    expect(snapshots[0]).toContain(deleted.id)
+    expect(snapshots.at(-1)).toEqual([survivor.id])
+  })
+
+  it("returns an empty Merchant fallback when every preloaded product was deleted", async () => {
+    const { deleted, survivor, deletion } = await preloadDeletionScenario()
+    cachedProducts = cachedProducts.filter((row) => row.eventId === deleted.id)
+    setRelayReads({ products: [deleted, survivor], deletions: [deletion] })
+    __setCommerceTestOverrides({
+      putCachedProducts: async () => {
+        throw new Error("Product-cache write unavailable")
+      },
+    })
+
+    const result = await getMerchantStorefront({
+      merchantPubkey: MERCHANT_A_PUBKEY,
+    })
+    expect(result.data).toEqual([])
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+  })
+
   it("keeps product and deletion evidence reads on loopback in E2E isolation", async () => {
     const isolatedRelayUrl = "ws://127.0.0.1:7777"
     const product = makeSignedProduct({
