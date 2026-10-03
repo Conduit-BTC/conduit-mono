@@ -19,6 +19,14 @@ receive or control wallet credentials or funds.
 Spark must not be called "the Conduit wallet." Future providers must fit the
 Portable/Connected model without changing this terminology.
 
+A universal checkout may also create a **temporary checkout-scoped Spark
+wallet**. That wallet is not a reusable registered Portable Wallet or a
+Connected Wallet. A selected registered wallet, WebLN wallet, or external
+wallet only funds the same private router invoice. The temporary wallet's
+merchant-assisted recovery and settlement rules are in
+[`universal-checkout-router.md`](universal-checkout-router.md); they must not
+be inferred from this spec's registered-wallet recovery UI.
+
 ## Ownership and key boundary
 
 Nostr authentication remains external-signer-only. Market must never request,
@@ -174,6 +182,11 @@ idempotency key when the provider supports idempotency. Provider selection is
 local state and must not be sent to merchants or analytics.
 
 WebLN and manual invoice payment remain explicit fallbacks.
+
+For new universal-router checkouts after cutover, manual payment means paying
+the same private router invoice with an external wallet, not obtaining a
+second merchant invoice or paying a recipient directly. The earlier fallback
+sentence remains applicable to current direct-payment orders.
 
 Spark invoice and direct-transfer sends use a prepare/review/send boundary.
 Before the irreversible send call, Market presents the selected wallet, amount,
