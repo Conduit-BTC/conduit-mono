@@ -21,6 +21,9 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  isContactFreeEventHandoff,
+  getEventGuestReceiptCommitment,
+  formatEventMarketPickupDate,
   getProfilePaymentAddress,
   hasFreshProfilePaymentAddress,
   EVENT_KINDS,
@@ -45,6 +48,7 @@ import {
   normalizePubkey,
   normalizePublicMediaUrl,
   orderSchema,
+  serializeOrderRumorContent,
   patchOrderLifecycle,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -77,6 +81,7 @@ import {
   AvatarImage,
   Badge,
   Button,
+  Checkbox,
   Combobox,
   HoldToReleaseButton,
   Input,
@@ -86,6 +91,11 @@ import {
   SignerRecoveryNotice,
   Textarea,
 } from "@conduit/ui"
+import {
+  EventGuestReceiptDetails,
+  type EventGuestReceiptDraft,
+} from "../components/EventGuestReceiptDetails"
+import { CartEventFulfillmentChoice } from "../components/CartEventFulfillmentChoice"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -139,6 +149,7 @@ import {
   getCartAvailabilityVerificationMessage,
   getCartFulfillmentLane,
   getCartItemKey,
+  getCartCommerceFingerprint,
   getCartPurchaseReference,
   getMixedFulfillmentBlockingMessage,
   getCartPublicZapPolicy,
@@ -816,7 +827,9 @@ function OrderSummary({
   pickupHandlerIdentity,
   formatPrice,
   className = "",
+  fulfillmentChangesDisabled = false,
 }: {
+  fulfillmentChangesDisabled?: boolean
   items: CartItem[]
   merchantPubkey: string
   accountPubkey: string | null
@@ -838,11 +851,15 @@ function OrderSummary({
   const fulfillmentLane = getCartFulfillmentLane(items)
   const pickupHandoff = getCartPickupHandoffSummary(items)
   const pickupFulfillment = items.find(
-    (item) => item.fulfillment?.type === "pickup"
+    (item) => item.fulfillment?.type === "event_market_pickup"
   )?.fulfillment
   const pickupLocation =
-    pickupFulfillment?.type === "pickup"
-      ? (pickupFulfillment.option.location ?? pickupFulfillment.option.geohash)
+    pickupFulfillment?.type === "event_market_pickup"
+      ? pickupFulfillment.assignment
+      : null
+  const pickupDate =
+    pickupFulfillment?.type === "event_market_pickup"
+      ? formatEventMarketPickupDate(pickupFulfillment)
       : null
   const pricing = buildCheckoutPricingIntent(items, btcUsdRate)
   const pricingUnavailable = {
@@ -942,10 +959,7 @@ function OrderSummary({
                 : undefined,
             },
             {
-              allowZero:
-                pricing.status === "ok" &&
-                !pricing.paymentRequired &&
-                item.fulfillment?.type === "pickup",
+              allowZero: item.fulfillment?.type === "event_market_pickup",
             }
           )
           const imageUrl = normalizePublicMediaUrl(item.image)
@@ -975,6 +989,12 @@ function OrderSummary({
                 <div className="line-clamp-2 text-sm font-medium leading-5 text-[var(--text-primary)] sm:text-base">
                   {item.title}
                 </div>
+                <CartEventFulfillmentChoice
+                  disabled={fulfillmentChangesDisabled}
+                  shouldContinue={shouldContinue}
+                  item={item}
+                  authenticatedPubkey={authenticatedPubkey}
+                />
                 {soldOut || insufficientStock ? (
                   <Badge variant="warning" className="mt-1.5">
                     {soldOut
@@ -1024,6 +1044,7 @@ function OrderSummary({
                   <span>
                     {pickupHandoff.label}
                     {pickupLocation ? ` · ${pickupLocation}` : ""}
+                    {pickupDate ? ` · ${pickupDate}` : ""}
                   </span>
                 </span>
                 <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
@@ -1166,6 +1187,10 @@ function CheckoutPage() {
   const [shipping, setShipping] = useState<ShippingFormState>(
     DEFAULT_CHECKOUT_SHIPPING
   )
+  const [contactFreeRequested, setContactFreeRequested] = useState(false)
+  const [pickupLabel, setPickupLabel] = useState("")
+  const [eventReceiptDraft, setEventReceiptDraft] =
+    useState<EventGuestReceiptDraft | null>(null)
   const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [shippingAttempted, setShippingAttempted] = useState(false)
@@ -1573,13 +1598,23 @@ function CheckoutPage() {
         rawCheckoutItems,
         shippingOptionsIsFetching || shippingOptionsIsError
           ? []
-          : (shippingOptionsData ?? [])
+          : (shippingOptionsData ?? []),
+        {
+          country: shipping.country,
+          subdivision: shipping.state,
+          postalCode: shipping.postalCode,
+        },
+        btcUsdRate
       ),
     [
       rawCheckoutItems,
       shippingOptionsData,
       shippingOptionsIsError,
       shippingOptionsIsFetching,
+      shipping.country,
+      shipping.state,
+      shipping.postalCode,
+      btcUsdRate,
     ]
   )
   const checkoutItems = preparedFulfillment.items
@@ -1632,6 +1667,9 @@ function CheckoutPage() {
   })
   const checkoutEvidenceIsChecking = checkoutEvidenceCheckingLabel !== null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
+  const hasShippingPolicyQuote = checkoutItems.some(
+    (item) => !!item.shippingPolicyQuote
+  )
   const publicZapPolicy = useMemo(
     () => getCartPublicZapPolicy(checkoutItems),
     [checkoutItems]
@@ -1642,11 +1680,47 @@ function CheckoutPage() {
       : publicZapPolicy.missingPolicyProductIds.length > 0
         ? "At least one product is missing public zap policy metadata, so checkout will use a private invoice."
         : null
+  const contactFreeEligible =
+    isGuestCheckout && isContactFreeEventHandoff(checkoutItems, Date.now())
+  const contactFreeActive = contactFreeEligible && contactFreeRequested
+  const receiptScope = JSON.stringify([
+    selectedMerchant,
+    getCartCommerceFingerprint(checkoutItems),
+    rawCheckoutItems.map((item) => [item.cartLineId, item.quantity]),
+  ])
+  const currentEventReceipt =
+    eventReceiptDraft?.scope === receiptScope ? eventReceiptDraft : null
+  const contactFreeDetailsErrors: ShippingValidationError[] = contactFreeActive
+    ? [
+        ...(pickupLabel.trim().length === 0 || pickupLabel.trim().length > 80
+          ? [
+              {
+                field: "firstName" as const,
+                message:
+                  "Enter a name or pseudonym for handoff (up to 80 characters).",
+              },
+            ]
+          : []),
+        ...(!currentEventReceipt?.saved
+          ? [
+              {
+                field: "email" as const,
+                message:
+                  "Save your event receipt and confirm that you kept it.",
+              },
+            ]
+          : []),
+      ]
+    : []
   const requiresCheckoutDetailsStep = isShippingCheckout || isGuestCheckout
-  const requiresBothContactMethods = isGuestCheckout
-  const liveShippingErrors = useMemo(() => {
+  const requiresBothContactMethods = isGuestCheckout && !isPickupCheckout
+  const liveShippingErrors = (() => {
     if (isPickupCheckout) {
-      return isGuestCheckout ? validateGuestPickupContactFields(shipping) : []
+      return contactFreeActive
+        ? contactFreeDetailsErrors
+        : isGuestCheckout
+          ? validateGuestPickupContactFields(shipping)
+          : []
     }
     if (isAllDigital) {
       return isGuestCheckout ? validateGuestContactFields(shipping) : []
@@ -1654,7 +1728,7 @@ function CheckoutPage() {
     return isGuestCheckout
       ? validateGuestShippingFields(shipping)
       : validateShippingFields(shipping)
-  }, [isAllDigital, isGuestCheckout, isPickupCheckout, shipping])
+  })()
 
   const physicalItemsMissingShippingZone =
     isShippingCheckout && hasPhysicalItemsMissingShippingZone(checkoutItems)
@@ -1679,7 +1753,7 @@ function CheckoutPage() {
     if (pricingPreview.status === "ok") return pricingPreview.totalSats
     const itemSubtotal = checkoutItems.reduce((sum, item) => {
       const sats = getPriceSats(item, btcUsdRate, {
-        allowZero: item.fulfillment?.type === "pickup",
+        allowZero: item.fulfillment?.type === "event_market_pickup",
       })
       return sats ? sum + sats.sats * item.quantity : sum
     }, 0)
@@ -1721,11 +1795,12 @@ function CheckoutPage() {
     publicZapPolicy.publicZapsAllowed
       ? "anonymous_public_zap"
       : "private_checkout"
-  const selectedZapMode = isPickupCheckout
-    ? "private_checkout"
-    : isGuestCheckout
-      ? guestZapMode
-      : zapMode
+  const selectedZapMode =
+    isPickupCheckout || hasShippingPolicyQuote
+      ? "private_checkout"
+      : isGuestCheckout
+        ? guestZapMode
+        : zapMode
 
   const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
   const zapContentEditable = isPublicZapContentEditable(
@@ -1885,6 +1960,7 @@ function CheckoutPage() {
     : getCartShippingDestinationEligibility(
         {
           country: shipping.country,
+          subdivision: shipping.state,
           postalCode: shipping.postalCode,
         },
         checkoutItems
@@ -2045,15 +2121,15 @@ function CheckoutPage() {
       case "not_required":
         return "This cart does not require shipping."
       case "loading":
-        return "Resolving the product's fixed shipping option before direct payment is offered."
+        return "Checking signed shipping terms before direct payment is offered."
       case "missing_product_zone":
-        return "One product does not have resolved fixed shipping, so direct payment is disabled."
+        return "Shipping needs coordination with the merchant for one or more products. You can send the order first."
       case "no_published_rule":
-        return "The referenced fixed shipping option could not be resolved. You can still send the order first."
+        return "The signed shipping terms could not be resolved. You can still send the order first."
       case "allowed":
         return currentAddressValidity.canDirectPay
-          ? "The product's fixed shipping option covers this destination."
-          : "Fixed shipping may cover this destination, but address validity still needs attention."
+          ? "The signed shipping terms cover this destination."
+          : "Shipping may cover this destination, but address validity still needs attention."
       case "country_unsupported":
         return "Zap out is unavailable for this destination. You can still send the order first."
       case "postal_restricted":
@@ -2159,9 +2235,11 @@ function CheckoutPage() {
     nextShipping: ShippingFormState
   ): ShippingValidationError[] {
     if (isPickupCheckout) {
-      return isGuestCheckout
-        ? validateGuestPickupContactFields(nextShipping)
-        : []
+      return contactFreeActive
+        ? contactFreeDetailsErrors
+        : isGuestCheckout
+          ? validateGuestPickupContactFields(nextShipping)
+          : []
     }
     if (isAllDigital) {
       return isGuestCheckout ? validateGuestContactFields(nextShipping) : []
@@ -2221,6 +2299,11 @@ function CheckoutPage() {
             shouldContinue: shouldContinueBuyerSession,
           }),
         rateInput,
+        destination: {
+          country: shipping.country,
+          subdivision: shipping.state,
+          postalCode: shipping.postalCode,
+        },
         accountPubkey: draftOwnerIdentity,
         authenticatedPubkey: signedBuyerPubkey,
         shouldContinue: shouldContinueBuyerSession,
@@ -2234,6 +2317,9 @@ function CheckoutPage() {
       throw error
     }
     if (authorization.status === "changed") {
+      void queryClient.invalidateQueries({
+        queryKey: ["canonicalShippingOptions"],
+      })
       recordCheckoutStepResult({
         checkoutMode,
         status: "blocked",
@@ -2379,7 +2465,11 @@ function CheckoutPage() {
       return "not_required"
     }
     const eligibility = getCartShippingDestinationEligibility(
-      { country: shipping.country, postalCode: shipping.postalCode },
+      {
+        country: shipping.country,
+        subdivision: shipping.state,
+        postalCode: shipping.postalCode,
+      },
       items
     )
     return eligibility.eligible === true
@@ -2404,11 +2494,31 @@ function CheckoutPage() {
   }
 
   function buildGuestContact(): OrderGuestContact | undefined {
-    if (!isGuestCheckout) return undefined
+    if (!isGuestCheckout || contactFreeActive) return undefined
     const email = shipping.email.trim()
     const phone = shipping.phone.trim()
-    if (!email || !phone) return undefined
-    return { email, phone }
+    if (isPickupCheckout ? !email && !phone : !email || !phone) return undefined
+    return { ...(email ? { email } : {}), ...(phone ? { phone } : {}) }
+  }
+
+  function buildContactFreePickup(items: CartItem[], createdAt: number) {
+    if (!contactFreeActive) return undefined
+    if (
+      !currentEventReceipt?.saved ||
+      currentEventReceipt.receipt.merchantPubkey !== selectedMerchant ||
+      !isContactFreeEventHandoff(items, createdAt) ||
+      pickupLabel.trim().length === 0 ||
+      pickupLabel.trim().length > 80
+    )
+      throw new Error(
+        "Review current event terms, enter a handoff name and retain your receipt before ordering."
+      )
+    return {
+      label: pickupLabel.trim(),
+      receiptCommitment: getEventGuestReceiptCommitment(
+        currentEventReceipt.receipt
+      ),
+    }
   }
 
   /**
@@ -2460,6 +2570,8 @@ function CheckoutPage() {
       priceAtPurchase: number
       currency: string
       shippingCostSats?: number
+      shippingPolicyQuote?: CartItem["shippingPolicyQuote"]
+      shippingAllocatedCostSats?: number
       shippingOptionId?: string
       shippingOptionDTag?: string
       shippingCountryRules?: Array<{
@@ -2481,11 +2593,6 @@ function CheckoutPage() {
     }>
   ): OrderLifecycleItem[] {
     return items.map((item) => {
-      if (item.fulfillment?.type === "event_pickup_pending") {
-        throw new Error(
-          "Event pickup must finish verification before an order can be created."
-        )
-      }
       return {
         productId: item.productId,
         familyProductId: item.familyProductId,
@@ -2498,6 +2605,8 @@ function CheckoutPage() {
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
         shippingCostSats: item.shippingCostSats,
+        shippingPolicyQuote: item.shippingPolicyQuote,
+        shippingAllocatedCostSats: item.shippingAllocatedCostSats,
         shippingOptionId: item.shippingOptionId,
         shippingOptionDTag: item.shippingOptionDTag,
         shippingCountryRules: item.shippingCountryRules?.map((rule) => ({
@@ -2612,7 +2721,10 @@ function CheckoutPage() {
         amountSats: orderTotalSats,
       })
 
-      const orderId = crypto.randomUUID()
+      const orderId =
+        contactFreeActive && currentEventReceipt?.saved
+          ? currentEventReceipt.receipt.orderId
+          : crypto.randomUUID()
       publishedOrderId = orderId
       const guestIdentity = signedBuyerPubkey
         ? null
@@ -2626,8 +2738,12 @@ function CheckoutPage() {
         ? ("guest_ephemeral" as const)
         : ("signed_in" as const)
       const guestContact = buildGuestContact()
-      if (guestIdentity && !guestContact) {
-        throw new Error("Phone and email are required for guest checkout.")
+      if (guestIdentity && !guestContact && !contactFreeActive) {
+        throw new Error(
+          isPickupCheckout
+            ? "Email or phone is required for guest pickup."
+            : "Phone and email are required for guest checkout."
+        )
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
@@ -2648,10 +2764,14 @@ function CheckoutPage() {
         shippingCostStatus: checkoutPricing.shippingCost.status,
         shippingAddress: buildShippingAddress(),
         guestContact,
+        contactFreePickup: buildContactFreePickup(
+          authoritativeCheckoutItems,
+          orderCreatedAt
+        ),
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
       }
-      orderSchema.parse(payload)
+      const validatedPayload = orderSchema.parse(payload)
 
       const ndk = getNdk()
       const rumor = new NDKEvent(ndk)
@@ -2671,7 +2791,10 @@ function CheckoutPage() {
         }
       }
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
-      rumor.content = JSON.stringify(payload)
+      rumor.content = serializeOrderRumorContent({
+        ...payload,
+        ...validatedPayload,
+      })
 
       const shippingAddress = buildShippingAddress()
       const addressValidity = computeAddressValidity(shippingAddress)
@@ -3145,6 +3268,7 @@ function CheckoutPage() {
           : getCartShippingDestinationEligibility(
               {
                 country: shipping.country,
+                subdivision: shipping.state,
                 postalCode: shipping.postalCode,
               },
               authoritativeCheckoutItems
@@ -3234,7 +3358,10 @@ function CheckoutPage() {
         stepName: "checkout_revalidation",
       })
 
-      const orderId = crypto.randomUUID()
+      const orderId =
+        contactFreeActive && currentEventReceipt?.saved
+          ? currentEventReceipt.receipt.orderId
+          : crypto.randomUUID()
       publishedOrderId = orderId
       publishedTotalSats = checkoutPricing.totalSats
       const guestIdentity = connectedBuyerIdentity
@@ -3249,8 +3376,12 @@ function CheckoutPage() {
         ? ("guest_ephemeral" as const)
         : ("signed_in" as const)
       const guestContact = buildGuestContact()
-      if (guestIdentity && !guestContact) {
-        throw new Error("Phone and email are required for guest checkout.")
+      if (guestIdentity && !guestContact && !contactFreeActive) {
+        throw new Error(
+          isPickupCheckout
+            ? "Email or phone is required for guest pickup."
+            : "Phone and email are required for guest checkout."
+        )
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
@@ -3267,11 +3398,15 @@ function CheckoutPage() {
         shippingCostStatus: checkoutPricing.shippingCost.status,
         shippingAddress,
         guestContact,
+        contactFreePickup: buildContactFreePickup(
+          authoritativeCheckoutItems,
+          orderCreatedAt
+        ),
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
         pricingQuote: checkoutPricing.quote,
       }
-      orderSchema.parse(orderPayload)
+      const validatedOrderPayload = orderSchema.parse(orderPayload)
 
       const orderRumor = new NDKEvent(ndk)
       orderRumor.kind = EVENT_KINDS.ORDER
@@ -3290,7 +3425,10 @@ function CheckoutPage() {
         }
       }
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
-      orderRumor.content = JSON.stringify(orderPayload)
+      orderRumor.content = serializeOrderRumorContent({
+        ...orderPayload,
+        ...validatedOrderPayload,
+      })
 
       const canAutoPay =
         !guestIdentity &&
@@ -3339,6 +3477,9 @@ function CheckoutPage() {
               source: String(checkoutPricing.quote.source),
               fiatSource: checkoutPricing.quote.fiatSource
                 ? String(checkoutPricing.quote.fiatSource)
+                : undefined,
+              fiatUsdRates: checkoutPricing.quote.fiatUsdRates
+                ? { ...checkoutPricing.quote.fiatUsdRates }
                 : undefined,
             }
           : undefined,
@@ -3769,12 +3910,12 @@ function CheckoutPage() {
             <div className="mt-6 grid gap-3 sm:grid-cols-2">
               {choices.map((group) => {
                 const purchaseReference = getCartPurchaseReference(group.id)
-                const pickup =
-                  group.items[0]?.fulfillment?.type === "pickup"
+                const futurePickup =
+                  group.items[0]?.fulfillment?.type === "event_market_pickup"
                     ? group.items[0].fulfillment
                     : null
-                const label = pickup
-                  ? `Event pickup · ${pickup.option.title}`
+                const label = futurePickup
+                  ? `Event pickup · ${futurePickup.assignment} · ${formatEventMarketPickupDate(futurePickup)}`
                   : group.items.some((item) => item.format !== "digital")
                     ? "Shipping / delivery"
                     : "Digital delivery"
@@ -3968,6 +4109,7 @@ function CheckoutPage() {
         className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]"
       >
         <OrderSummary
+          fulfillmentChangesDisabled={step !== "shipping"}
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
           accountPubkey={draftOwnerIdentity}
@@ -3989,11 +4131,35 @@ function CheckoutPage() {
                 </h2>
                 {isGuestCheckout && isPickupCheckout ? (
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    Email and phone are required for this guest order. Only the
-                    merchant receives your contact details.
+                    Email or phone is required for this guest pickup unless you
+                    choose an eligible contact-free handoff. Only the merchant
+                    receives your details.
                   </p>
                 ) : null}
 
+                {contactFreeEligible ? (
+                  <div className="mt-4 space-y-3">
+                    <label className="flex items-center gap-2">
+                      <Checkbox
+                        checked={contactFreeActive}
+                        onCheckedChange={(checked) =>
+                          setContactFreeRequested(checked === true)
+                        }
+                      />
+                      Use a name only for handoff
+                    </label>
+                    {contactFreeActive && selectedMerchant ? (
+                      <EventGuestReceiptDetails
+                        merchantPubkey={selectedMerchant}
+                        scope={receiptScope}
+                        label={pickupLabel}
+                        onLabelChange={setPickupLabel}
+                        draft={currentEventReceipt}
+                        onDraftChange={setEventReceiptDraft}
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="mt-5 grid gap-4">
                   {shippingAttempted && shippingErrors.length > 0 && (
                     <div className="rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
@@ -4202,102 +4368,104 @@ function CheckoutPage() {
                   )}
 
                   {/* Contact */}
-                  <div
-                    className={
-                      isShippingCheckout
-                        ? "border-t border-[var(--border)] pt-5"
-                        : ""
-                    }
-                  >
-                    {isShippingCheckout ? (
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        Contact
-                      </div>
-                    ) : null}
+                  {!contactFreeActive && (
                     <div
-                      className={`${isShippingCheckout ? "mt-4" : ""} grid gap-4 sm:grid-cols-2`}
+                      className={
+                        isShippingCheckout
+                          ? "border-t border-[var(--border)] pt-5"
+                          : ""
+                      }
                     >
-                      <div className="grid gap-1.5">
-                        <Label htmlFor="ship-phone">
-                          Phone
-                          {requiresBothContactMethods && (
-                            <>
-                              {" "}
-                              <span className="text-error">*</span>
-                            </>
+                      {isShippingCheckout ? (
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          Contact
+                        </div>
+                      ) : null}
+                      <div
+                        className={`${isShippingCheckout ? "mt-4" : ""} grid gap-4 sm:grid-cols-2`}
+                      >
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-phone">
+                            Phone
+                            {requiresBothContactMethods && (
+                              <>
+                                {" "}
+                                <span className="text-error">*</span>
+                              </>
+                            )}
+                          </Label>
+                          <Input
+                            id="ship-phone"
+                            type="tel"
+                            inputMode="tel"
+                            value={shipping.phone}
+                            onChange={(e) =>
+                              updateShipping("phone", e.target.value)
+                            }
+                            onBlur={() => markShippingFieldTouched("phone")}
+                            autoComplete="tel"
+                            placeholder="555 123 4567"
+                            aria-invalid={fieldInvalid("phone")}
+                            aria-required={requiresBothContactMethods}
+                            required={requiresBothContactMethods}
+                            aria-describedby={
+                              fieldInvalid("phone")
+                                ? SHIPPING_PHONE_ERROR_ID
+                                : undefined
+                            }
+                            className={fieldClassName("phone")}
+                          />
+                          {fieldInvalid("phone") && (
+                            <p
+                              id={SHIPPING_PHONE_ERROR_ID}
+                              className="text-xs text-error"
+                            >
+                              {fieldError("phone")}
+                            </p>
                           )}
-                        </Label>
-                        <Input
-                          id="ship-phone"
-                          type="tel"
-                          inputMode="tel"
-                          value={shipping.phone}
-                          onChange={(e) =>
-                            updateShipping("phone", e.target.value)
-                          }
-                          onBlur={() => markShippingFieldTouched("phone")}
-                          autoComplete="tel"
-                          placeholder="555 123 4567"
-                          aria-invalid={fieldInvalid("phone")}
-                          aria-required={requiresBothContactMethods}
-                          required={requiresBothContactMethods}
-                          aria-describedby={
-                            fieldInvalid("phone")
-                              ? SHIPPING_PHONE_ERROR_ID
-                              : undefined
-                          }
-                          className={fieldClassName("phone")}
-                        />
-                        {fieldInvalid("phone") && (
-                          <p
-                            id={SHIPPING_PHONE_ERROR_ID}
-                            className="text-xs text-error"
-                          >
-                            {fieldError("phone")}
-                          </p>
-                        )}
-                      </div>
-                      <div className="grid gap-1.5">
-                        <Label htmlFor="ship-email">
-                          Email
-                          {requiresBothContactMethods && (
-                            <>
-                              {" "}
-                              <span className="text-error">*</span>
-                            </>
+                        </div>
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-email">
+                            Email
+                            {requiresBothContactMethods && (
+                              <>
+                                {" "}
+                                <span className="text-error">*</span>
+                              </>
+                            )}
+                          </Label>
+                          <Input
+                            id="ship-email"
+                            type="email"
+                            value={shipping.email}
+                            onChange={(e) =>
+                              updateShipping("email", e.target.value)
+                            }
+                            onBlur={() => markShippingFieldTouched("email")}
+                            autoComplete="email"
+                            placeholder="jane@example.com"
+                            aria-invalid={fieldInvalid("email")}
+                            aria-required={requiresBothContactMethods}
+                            aria-describedby={
+                              fieldInvalid("email")
+                                ? SHIPPING_EMAIL_ERROR_ID
+                                : undefined
+                            }
+                            required={requiresBothContactMethods}
+                            className={fieldClassName("email")}
+                          />
+                          {fieldInvalid("email") && (
+                            <p
+                              id={SHIPPING_EMAIL_ERROR_ID}
+                              className="text-xs text-error"
+                            >
+                              {fieldError("email")}
+                            </p>
                           )}
-                        </Label>
-                        <Input
-                          id="ship-email"
-                          type="email"
-                          value={shipping.email}
-                          onChange={(e) =>
-                            updateShipping("email", e.target.value)
-                          }
-                          onBlur={() => markShippingFieldTouched("email")}
-                          autoComplete="email"
-                          placeholder="jane@example.com"
-                          aria-invalid={fieldInvalid("email")}
-                          aria-required={requiresBothContactMethods}
-                          aria-describedby={
-                            fieldInvalid("email")
-                              ? SHIPPING_EMAIL_ERROR_ID
-                              : undefined
-                          }
-                          required={requiresBothContactMethods}
-                          className={fieldClassName("email")}
-                        />
-                        {fieldInvalid("email") && (
-                          <p
-                            id={SHIPPING_EMAIL_ERROR_ID}
-                            className="text-xs text-error"
-                          >
-                            {fieldError("email")}
-                          </p>
-                        )}
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
 
                   {isShippingCheckout &&
                   (!currentAddressValidity.canSubmitOrder ||
@@ -4341,7 +4509,7 @@ function CheckoutPage() {
                           )}
                           <div>
                             <div className="font-medium text-[var(--text-primary)]">
-                              Fixed shipping
+                              Shipping
                             </div>
                             <div>{shippingStatusMessage}</div>
                           </div>
@@ -4541,7 +4709,8 @@ function CheckoutPage() {
                 {paymentRequired &&
                   !isGuestCheckout &&
                   !lnurlProbing &&
-                  directCheckoutEligible && (
+                  directCheckoutEligible &&
+                  !hasShippingPolicyQuote && (
                     <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                       <div className="text-sm font-medium text-[var(--text-primary)]">
                         Zap visibility

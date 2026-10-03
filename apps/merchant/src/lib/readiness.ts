@@ -179,6 +179,7 @@ export function isNetworkComplete(
 export function getMerchantSetupReadiness({
   profile,
   shippingConfig,
+  shippingPolicyReady = false,
   networkComplete = false,
   hasNwc = false,
   profileCheckPending = false,
@@ -190,6 +191,7 @@ export function getMerchantSetupReadiness({
 }: {
   profile: Profile | null | undefined
   shippingConfig: ShippingConfig
+  shippingPolicyReady?: boolean
   networkComplete?: boolean
   hasNwc?: boolean
   profileCheckPending?: boolean
@@ -201,7 +203,8 @@ export function getMerchantSetupReadiness({
 }): MerchantSetupReadiness {
   const profileComplete = isProfileComplete(profile)
   const paymentsComplete = isPaymentsComplete(profile)
-  const shippingComplete = isShippingComplete(shippingConfig)
+  const shippingComplete =
+    shippingPolicyReady || isShippingComplete(shippingConfig)
   const privateInboxComplete =
     privateInboxCheckEnabled && privateInboxStatus === "ready"
   const privateInboxCheckPending =

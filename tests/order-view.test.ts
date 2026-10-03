@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import type {
   KnownOrderStatus,
   OrderLifecycle,
-  OrderPickupFulfillmentSchema,
+  OrderEventMarketPickupFulfillmentSchema,
 } from "@conduit/core"
 import { config } from "@conduit/core"
 import {
@@ -275,46 +276,8 @@ function vmWithMerchantStatus(status: KnownOrderStatus): OrderViewModel {
   })
 }
 
-function zeroPickupFulfillment(
-  sourceCurrency = "SAT"
-): OrderPickupFulfillmentSchema {
-  const organizer = "1".repeat(64)
-  const merchant = "2".repeat(64)
-  return {
-    type: "pickup",
-    organizerPubkey: organizer,
-    handoffMode: "organizer_handoff",
-    handlerPubkey: organizer,
-    product: {
-      coordinate: `30402:${merchant}:free-sticker`,
-      eventId: "a".repeat(64),
-      createdAt: 1_700_000_000_000,
-      merchantPubkey: merchant,
-    },
-    calendar: {
-      coordinate: `31923:${organizer}:market-day`,
-      eventId: "b".repeat(64),
-      createdAt: 1_700_000_001_000,
-    },
-    collection: {
-      coordinate: `30405:${organizer}:market-catalog`,
-      eventId: "c".repeat(64),
-      createdAt: 1_700_000_002_000,
-    },
-    option: {
-      coordinate: `30406:${organizer}:market-pickup`,
-      eventId: "d".repeat(64),
-      createdAt: 1_700_000_003_000,
-      title: "Event pickup",
-      location: "Public market hall",
-    },
-    costSats: 0,
-    sourceCost: {
-      amount: 0,
-      currency: sourceCurrency,
-      normalizedCurrency: sourceCurrency,
-    },
-  }
+function zeroPickupFulfillment(): OrderEventMarketPickupFulfillmentSchema {
+  return createEventMarketOrderFixture({ price: 0 }).fulfillment
 }
 
 function zeroPickupVm(
@@ -343,7 +306,7 @@ function zeroPickupVm(
           currency: pickupSourceCurrency,
           normalizedCurrency: pickupSourceCurrency,
         },
-        fulfillment: zeroPickupFulfillment(pickupSourceCurrency),
+        fulfillment: zeroPickupFulfillment(),
       },
     ],
     itemSubtotalSats: 0,
@@ -984,13 +947,8 @@ describe("buildOrderViewModel", () => {
         normalizedCurrency: "USD",
       },
       fulfillment: {
-        type: "pickup",
-        costSats: 0,
-        sourceCost: {
-          amount: 0,
-          currency: "USD",
-          normalizedCurrency: "USD",
-        },
+        type: "event_market_pickup",
+        mode: "organizer_handoff",
       },
     })
     expect(isZeroCostPickupOrder(vm)).toBe(true)
@@ -1033,22 +991,17 @@ describe("buildOrderViewModel", () => {
     delete missingCanonicalSource.items[0]!.sourcePrice
     expect(isZeroCostPickupOrder(missingCanonicalSource)).toBe(false)
 
-    const legacyHandoff = zeroPickupVm()
-    const legacyFulfillment = legacyHandoff.items[0]!.fulfillment
-    if (legacyFulfillment?.type !== "pickup") {
-      throw new Error("Expected pickup fixture")
+    const wrongPayee = zeroPickupVm()
+    const fulfillment = wrongPayee.items[0]!.fulfillment
+    if (fulfillment?.type !== "event_market_pickup") {
+      throw new Error("Expected current Event Market fixture")
     }
-    delete legacyFulfillment.handoffMode
-    delete legacyFulfillment.handlerPubkey
-    expect(isZeroCostPickupOrder(legacyHandoff)).toBe(false)
+    fulfillment.payeePubkey = "d".repeat(64)
+    expect(isZeroCostPickupOrder(wrongPayee)).toBe(false)
 
     const missingOuterPickupCost = zeroPickupVm()
     delete missingOuterPickupCost.items[0]!.sourceShippingCost
-    expect(isZeroCostPickupOrder(missingOuterPickupCost)).toBe(false)
-
-    const conflictingOuterPickupCost = zeroPickupVm()
-    conflictingOuterPickupCost.items[0]!.sourceShippingCost!.currency = "USD"
-    expect(isZeroCostPickupOrder(conflictingOuterPickupCost)).toBe(false)
+    expect(isZeroCostPickupOrder(missingOuterPickupCost)).toBe(true)
 
     const positivePickupCost = zeroPickupVm()
     positivePickupCost.items[0]!.shippingCostSats = 1

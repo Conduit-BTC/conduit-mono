@@ -19,7 +19,7 @@ declare function expect(actual: unknown): {
 
 const pubkey = "0".repeat(64)
 const npub = pubkeyToNpub(pubkey)
-const eventNaddr = encodeEventMarketNaddr(`30405:${pubkey}:event-catalog`)
+const eventNaddr = encodeEventMarketNaddr(`30409:${pubkey}:event-market`)
 
 test("uses the Market app as the canonical production origin", () => {
   expect(inferMarketOrigin()).toBe("https://shop.conduit.market")

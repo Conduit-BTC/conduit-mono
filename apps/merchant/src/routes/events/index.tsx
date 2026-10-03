@@ -51,8 +51,8 @@ function EventsIndexPage() {
           <Button asChild={!!organizerMarket} disabled={!organizerMarket}>
             {organizerMarket ? (
               <Link
-                to="/events/market/$marketRef"
-                params={{ marketRef: marketReference.trim() }}
+                to="/events/$collectionRef"
+                params={{ collectionRef: marketReference.trim() }}
               >
                 Manage merchants
               </Link>

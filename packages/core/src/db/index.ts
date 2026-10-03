@@ -4,6 +4,7 @@ import Dexie, {
   type EntityTable,
   type Table,
 } from "dexie"
+import type { ShippingPolicyQuote } from "../protocol/shipping-policy"
 import { config } from "../config"
 import type {
   OrderItemFulfillmentSchema,
@@ -33,6 +34,8 @@ export interface StoredOrder {
     quantity: number
     priceAtPurchase: number
     currency: string
+    shippingPolicyQuote?: ShippingPolicyQuote
+    shippingAllocatedCostSats?: number
     shippingCostSats?: number
     sourceShippingCost?: {
       amount: number
@@ -87,6 +90,7 @@ export interface StoredMessage {
 
 export interface CachedProduct {
   id: string
+  signedProductEvent?: SignedPublicNostrEvent
   pubkey: string
   dTag?: string
   title: string
@@ -104,6 +108,15 @@ export interface CachedProduct {
   parentProductId?: string
   specifications?: Array<{ key: string; value: string }>
   format?: "physical" | "digital"
+  shippingWeightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
+  shippingAdjustmentsMalformed?: true
+  shippingDimensionsCm?: { length: number; width: number; height: number }
   shippingCostSats?: number
   sourceShippingCost?: {
     amount: number
@@ -131,6 +144,7 @@ export interface CachedProduct {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
+  eventGuestContactOptional?: boolean
   location?: string
   geohash?: string
   eventId?: string
@@ -198,7 +212,7 @@ export interface StoredMerchantShippingSettingsEvidence {
   signedEvent: SignedPublicNostrEvent
 }
 
-/** Exact, paired organizer signatures kept outside admitted relay evidence. */
+/** Exact paired organizer signatures kept outside admitted relay evidence. */
 export interface EventMarketMerchantDecisionJob {
   id: string
   marketCoordinate: string
@@ -873,6 +887,8 @@ export interface OrderLifecycleItem {
   quantity: number
   priceAtPurchase: number
   currency: string
+  shippingPolicyQuote?: ShippingPolicyQuote
+  shippingAllocatedCostSats?: number
   shippingCostSats?: number
   sourceShippingCost?: {
     amount: number
@@ -946,6 +962,7 @@ export interface OrderLifecycle {
     fetchedAt: number
     source: string
     fiatSource?: string
+    fiatUsdRates?: Record<string, number>
   }
 
   /**
@@ -1311,6 +1328,13 @@ export class ConduitDB extends Dexie {
     this.version(23).stores({
       // Durable signed evidence, kept outside prunable commerce caches.
       merchantShippingSettingsEvidence: "pubkey",
+    })
+
+    this.version(24).stores({
+      // Restore direct per-market recovery queries while keeping the current
+      // merchant and update-time indexes available for organizer decisions.
+      eventMarketMerchantDecisionJobs:
+        "id, marketCoordinate, merchantPubkey, status, updatedAt",
     })
   }
 }

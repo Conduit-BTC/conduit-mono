@@ -89,6 +89,22 @@ describe("checkout intent signed resolution", () => {
     })
   })
 
+  it("imports an event-tagged product as ordinary shipping without pickup authority", async () => {
+    const request = intent([first])
+    const result = await prepareCheckoutIntent(request, {}, async () =>
+      readResult(request, null, {
+        format: "physical",
+        eventMarketRefs: [`30409:${other}:fair`],
+      })
+    )
+    expect(result).toMatchObject({
+      status: "ready",
+      items: [{ format: "physical" }],
+    })
+    if (result.status !== "ready") throw new Error("Expected ordinary shipping")
+    expect(result.items[0]?.fulfillment).toEqual({ type: "shipping" })
+  })
+
   it("stops mixed merchant links before relay reads", async () => {
     let reads = 0
     const result = await prepareCheckoutIntent(

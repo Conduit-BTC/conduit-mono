@@ -18,7 +18,8 @@ describe("generic Market event fulfillment", () => {
     }
     expect(resolvedCard).toContain("useProductCartFulfillment")
     expect(resolvedCard).toContain("selectCartLine")
-    expect(resolvedCard).toContain("View event catalog")
+    expect(resolvedCard).toContain('resolution?.status === "standard"')
+    expect(resolvedCard).toContain("type: resolution.type")
     expect(resolvedCard).toContain("cartActionDisabled={blocked}")
   })
 
@@ -31,9 +32,13 @@ describe("generic Market event fulfillment", () => {
     expect(detail).toContain("useProductCartFulfillment")
     expect(detail).toContain("productCartCandidate")
     expect(detail).toContain("productCartBlocked")
-    expect(detail).toContain("cart.addItem(productCartCandidate, quantity)")
+    expect(detail).toContain("let candidate = productCartCandidate")
+    expect(detail).toContain("await readEventShippingProduct({")
+    expect(detail).toContain("expectedEventId: candidate.productEventId")
+    expect(detail).toContain("if (!shouldContinue()) return")
+    expect(detail).toContain("cart.addItem(candidate, quantity)")
     expect(detail).toContain(
-      "cart.refreshAndIncrementItem(cartItem, productCartCandidate, quantity)"
+      "cart.refreshAndIncrementItem(cartItem, candidate, quantity)"
     )
     expect(detail).not.toContain("cart.incrementItem(cartItem")
     expect(detail).toContain("ResolvedProductGridCard")
@@ -53,7 +58,8 @@ describe("generic Market event fulfillment", () => {
     expect(cart).not.toContain(
       "cart.incrementItem(existing, 1, selectedProduct.stock)"
     )
-    expect(cart).toContain("View event catalog")
+    expect(cart).toContain('resolution?.status === "standard"')
+    expect(cart).toContain("type: resolution.type")
     expect(cart).not.toContain("createCartItemFromProduct(product))")
   })
 
@@ -63,7 +69,7 @@ describe("generic Market event fulfillment", () => {
         Bun.file("apps/market/src/routes/products/index.tsx").text(),
         Bun.file("apps/market/src/routes/$identityRef.tsx").text(),
         Bun.file("apps/market/src/routes/products/$productId.tsx").text(),
-        Bun.file("apps/market/src/routes/events/$collectionRef.tsx").text(),
+        Bun.file("apps/market/src/components/FutureEventMarketPage.tsx").text(),
         Bun.file(
           "apps/market/src/components/ResolvedProductGridCard.tsx"
         ).text(),
@@ -84,10 +90,18 @@ describe("generic Market event fulfillment", () => {
       "cart.refreshAndIncrementItem(existing, cartCandidate, 1)"
     )
     expect(resolvedCard).not.toContain("cart.incrementItem(existing")
-    expect(event).toContain("cart.addItem(candidate, 1)")
     expect(event).toContain(
-      "cart.refreshAndIncrementItem(existing, candidate, 1)"
+      "onSelectedProductChange={(selected) => setSelectedProductId(selected.id)}"
     )
+    expect(event).toContain('selected.type === "variable" ||')
+    expect(event).toContain("selected.id !== entry.productCoordinate")
+    expect(event).toContain("navigateToProduct(selected.id)")
+    expect(event).toContain(
+      "productRead.resolution.revision.id !== entry.resolution.revision.id"
+    )
+    expect(event).toContain("productCoordinate: entry.productCoordinate")
+    expect(event).toContain("cartItemInputFromProductSelection(")
+    expect(event).toContain("await cart.addItem(")
     expect(event).not.toContain(
       "cart.incrementItem(existing, 1, selectedProduct.stock)"
     )
@@ -123,14 +137,35 @@ describe("generic Market event fulfillment", () => {
     expect(
       checkout.match(/getFreshPricingRateInput\(checkoutItems\)/g)
     ).toHaveLength(2)
-    expect(authorization).toContain("resolveCheckoutProductFulfillments")
+    expect(authorization).toContain(
+      "resolveCurrentFutureEventMarketFulfillments"
+    )
+    expect(authorization).toContain("await dependencies.readMarket({")
+    expect(authorization).toContain("await dependencies.readProduct({")
+    expect(authorization).toContain("!productRead.actionable")
+    expect(authorization).toContain(
+      'productRead.resolution.state !== "eligible"'
+    )
+    expect(authorization).toContain(
+      "currentProduct.sourceEventId !== productRead.resolution.revision.id"
+    )
+    expect(authorization).toContain(
+      "ordinaryProducts.map(resolveProductCartFulfillment)"
+    )
     expect(authorization).toContain("assertCartPickupHandlerReady")
     expect(authorization).toContain("rebuildCurrentCartItems")
     expect(authorization).toContain("getCartCommerceFingerprint")
     expect(checkout).toContain("checkoutEvidenceIsChecking")
     expect(checkout).toContain("fulfillmentBlockingMessage")
     expect(checkout).not.toContain("Event pickup must be refreshed")
-    expect(hook).toContain("useEventCatalogs(references, rateInput)")
-    expect(hook).toContain("return !query?.data || query.isHydrating")
+    expect(hook).toContain("resolveProductCartFulfillment(product)")
+    expect(hook).not.toContain("useEventCatalogs")
+    const ordinary = await Bun.file(
+      "apps/market/src/lib/product-cart-fulfillment.ts"
+    ).text()
+    expect(ordinary).toContain(
+      'type: product.format === "digital" ? "digital" : "shipping"'
+    )
+    expect(ordinary).toContain('status: "standard"')
   })
 })

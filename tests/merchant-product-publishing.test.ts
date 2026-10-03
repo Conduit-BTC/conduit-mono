@@ -1711,77 +1711,54 @@ describe("canonical product publication ordering", () => {
     })
   })
 
-  it("preserves signed event pickup references while publishing a stock update", () => {
+  it("does not reinterpret retired direct or collection pickup references as ordinary fulfillment", () => {
     const collectionCoordinate = `30405:${MERCHANT_PUBKEY}:event`
-    const pickupCoordinate = `30406:${MERCHANT_PUBKEY}:event-pickup`
-    const product = {
-      ...makeProduct("event-listing"),
-      stock: 1,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: pickupCoordinate,
-      shippingOptionRefs: [
-        {
-          coordinate: pickupCoordinate,
-          relayHints: ["wss://relay.example"],
-        },
-      ],
-      canonicalShippingResolved: false,
+    for (const shippingOptionId of [
+      `30406:${MERCHANT_PUBKEY}:event-pickup`,
+      collectionCoordinate,
+    ]) {
+      const product = {
+        ...makeProduct("old-event-listing"),
+        collectionRefs: [collectionCoordinate],
+        shippingOptionId,
+        shippingOptionRefs: [{ coordinate: shippingOptionId }],
+        canonicalShippingResolved: false,
+      }
+      expect(
+        resolvePublishedProductFulfillmentIntentForTarget(product)
+      ).toBeNull()
     }
-
-    const intent = resolvePublishedProductFulfillmentIntentForTarget(product)
-    expect(intent).toEqual({ kind: "coordinate_after_order" })
-
-    const { prepared, parsed } = publishAndParse(
-      { ...product, stock: 0 },
-      "event-listing",
-      intent!
-    )
-    expect(prepared).toMatchObject({
-      stock: 0,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: pickupCoordinate,
-      shippingOptionRefs: [
-        {
-          coordinate: pickupCoordinate,
-          relayHints: ["wss://relay.example"],
-        },
-      ],
-      canonicalShippingResolved: false,
-    })
-
-    expect(parsed).toMatchObject({
-      stock: 0,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: pickupCoordinate,
-      shippingOptionRefs: [
-        {
-          coordinate: pickupCoordinate,
-          dTag: "event-pickup",
-        },
-      ],
-    })
   })
 
-  it("preserves a collection-level pickup reference while publishing stock", () => {
-    const collectionCoordinate = `30405:${MERCHANT_PUBKEY}:event`
+  it("an explicit ordinary fulfillment change clears retired pickup references and keeps current event associations", () => {
+    const marketCoordinate = `30409:${MERCHANT_PUBKEY}:current-event`
+    const shippingOptionId = `30405:${MERCHANT_PUBKEY}:old-event`
     const product = {
-      ...makeProduct("collection-pickup-listing"),
+      ...makeProduct("updated-event-listing"),
       stock: 0,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: collectionCoordinate,
-      shippingOptionRefs: [{ coordinate: collectionCoordinate }],
+      collectionRefs: [shippingOptionId],
+      shippingOptionId,
+      shippingOptionRefs: [{ coordinate: shippingOptionId }],
       canonicalShippingResolved: false,
+      eventMarketRefs: [marketCoordinate],
     }
-    const { parsed } = publishAndParse(product, "collection-pickup-listing", {
-      kind: "coordinate_after_order",
+    const { prepared, parsed } = publishAndParse(
+      product,
+      "updated-event-listing",
+      { kind: "coordinate_after_order" }
+    )
+    expect(prepared).toMatchObject({
+      shippingOptionId: undefined,
+      shippingOptionRefs: undefined,
+      collectionRefs: undefined,
+      eventMarketRefs: [marketCoordinate],
     })
-
     expect(parsed).toMatchObject({
       stock: 0,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: collectionCoordinate,
-      shippingOptionRefs: [{ coordinate: collectionCoordinate, dTag: "event" }],
+      shippingOptionRefs: [],
+      eventMarketRefs: [marketCoordinate],
     })
+    expect(parsed.shippingOptionId).toBeUndefined()
   })
 
   it("uses a variation's fixed shipping override under an order-first root", () => {
