@@ -5,6 +5,7 @@ import {
   createEmptyEventProductForm,
   createFreshEventProductDTag,
   eventProductFormFromTemplate,
+  getEventProductDeliveryPresentation,
   getMerchantEventPublishPresentation,
   validateEventProductPublishForm,
 } from "../apps/merchant/src/lib/event-product-publishing"
@@ -43,6 +44,116 @@ const PRODUCT = {
 } as ProductSchema
 
 describe("merchant event-led product publishing", () => {
+  it("requires a common product-family relay ACK before event acceptance", () => {
+    const baseDelivery = {
+      plan: {
+        intent: "author_event" as const,
+        primaryRelayUrls: ["wss://relay.example"],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      },
+      attemptedRelayUrls: ["wss://relay.example"],
+      relayFailureMessages: {},
+    }
+
+    expect(
+      getEventProductDeliveryPresentation({
+        ...baseDelivery,
+        successfulRelayUrls: ["wss://relay.example"],
+        failedRelayUrls: [],
+        rejectedRelayUrls: [],
+      })
+    ).toEqual({
+      acknowledged: true,
+      retryable: false,
+      message: null,
+    })
+
+    expect(
+      getEventProductDeliveryPresentation({
+        ...baseDelivery,
+        successfulRelayUrls: [],
+        failedRelayUrls: ["wss://relay.example"],
+        rejectedRelayUrls: [],
+      })
+    ).toEqual({
+      acknowledged: false,
+      retryable: true,
+      message:
+        "No relay acknowledged the complete product yet. The exact signed product is saved; retry delivery before requesting event acceptance.",
+    })
+
+    expect(
+      getEventProductDeliveryPresentation({
+        ...baseDelivery,
+        successfulRelayUrls: [],
+        failedRelayUrls: ["wss://relay.example"],
+        rejectedRelayUrls: ["wss://relay.example"],
+      })
+    ).toEqual({
+      acknowledged: false,
+      retryable: false,
+      message:
+        "Every target relay rejected the signed product. Event acceptance was not published; update the listing or relay setup and start again.",
+    })
+
+    expect(
+      getEventProductDeliveryPresentation({
+        ...baseDelivery,
+        successfulRelayUrls: ["wss://relay.example"],
+        failedRelayUrls: ["wss://second.example"],
+        rejectedRelayUrls: ["wss://second.example"],
+      })
+    ).toMatchObject({ acknowledged: true, retryable: false })
+
+    expect(
+      getEventProductDeliveryPresentation({
+        ...baseDelivery,
+        attemptedRelayUrls: ["wss://relay.example", "wss://second.example"],
+        successfulRelayUrls: [],
+        failedRelayUrls: ["wss://relay.example", "wss://second.example"],
+        rejectedRelayUrls: ["wss://relay.example"],
+      })
+    ).toMatchObject({ acknowledged: false, retryable: true })
+  })
+
+  it("gates initial and retry acceptance on acknowledged product delivery", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/components/EventProductPublisherDialog.tsx"
+    ).text()
+    const initialGate = source.search(
+      /requireAcknowledgedProductDelivery\(\s*result\.delivery,/
+    )
+    const initialAcceptance = source.indexOf(
+      "return reviewAndAccept(result.productCoordinate, authority)",
+      initialGate
+    )
+    const retryDelivery = source.indexOf(
+      "const delivery = await retryEventProductDelivery("
+    )
+    const retryGate = source.indexOf(
+      "requireAcknowledgedProductDelivery(delivery,",
+      retryDelivery
+    )
+    const retryAcceptedProduct = source.indexOf(
+      "return productCoordinateFromSignedEvent(input.event)",
+      retryGate
+    )
+
+    expect(initialGate).toBeGreaterThan(-1)
+    expect(initialAcceptance).toBeGreaterThan(initialGate)
+    expect(retryDelivery).toBeGreaterThan(-1)
+    expect(retryGate).toBeGreaterThan(retryDelivery)
+    expect(retryAcceptedProduct).toBeGreaterThan(retryGate)
+    expect(source).toContain("const reviewAcceptanceMutation = useMutation(")
+    expect(source).toContain("setPublishedCoordinate(productCoordinate)")
+    expect(source).toContain("Retry exact product delivery")
+    expect(source).toContain("productDeliveryRetryable")
+    expect(source).toContain("error instanceof SignedProductDeliveryError")
+    expect(source).toContain("setProductDeliveryRetryable(error.retryable)")
+    expect(source).toContain("Start over")
+  })
+
   it("distinguishes closed and ended events from recoverable exact reads", () => {
     expect(
       getMerchantEventPublishPresentation({

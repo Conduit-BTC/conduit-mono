@@ -1,6 +1,7 @@
 import { describe, expect, it, mock } from "bun:test"
 import type { LnurlPayMetadata } from "@conduit/core"
 import { resolveCheckoutSparkLnurlInvoice } from "../apps/market/src/lib/checkout-spark-lnurl-invoice"
+import { CheckoutSparkLnurlInvoiceRangeError } from "../packages/core/src/protocol/checkout-spark-lnurl-invoice"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -79,6 +80,7 @@ describe("checkout Spark private LNURL invoice resolution", () => {
       paymentRequest: invoice,
       paymentHash: PAYMENT_HASH,
       expiresAt: NOW_SECONDS + 3_600,
+      origin: expect.any(Object),
     })
     expect(fetchMetadata).toHaveBeenCalledWith(LUD16)
     expect(fetchInvoice).toHaveBeenCalledTimes(1)
@@ -134,6 +136,67 @@ describe("checkout Spark private LNURL invoice resolution", () => {
         fetchInvoice,
       })
     ).rejects.toThrow("callback is unsafe")
+    expect(fetchInvoice).toHaveBeenCalledTimes(0)
+  })
+
+  it("reports rounded whole-sat bounds without requesting an out-of-range invoice", async () => {
+    const fetchMetadata = async () =>
+      lnurlMetadata({ minSendable: 1_001, maxSendable: 5_999 })
+    const fetchInvoice = mock(
+      async (_callback: string, amountMsats: number) => ({
+        invoice: signedInvoice(amountMsats / 1_000),
+      })
+    )
+    for (const amountSats of [1, 6]) {
+      const error = await resolveCheckoutSparkLnurlInvoice(
+        request(amountSats),
+        {
+          fetchMetadata,
+          fetchInvoice,
+        }
+      ).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(CheckoutSparkLnurlInvoiceRangeError)
+      expect(error).toMatchObject({ minimumSats: 2, maximumSats: 5 })
+    }
+    expect(fetchInvoice).toHaveBeenCalledTimes(0)
+    for (const amountSats of [2, 5]) {
+      await expect(
+        resolveCheckoutSparkLnurlInvoice(request(amountSats), {
+          fetchMetadata,
+          fetchInvoice,
+        })
+      ).resolves.toMatchObject({ paymentHash: PAYMENT_HASH })
+    }
+    expect(fetchInvoice).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not expose a probe range for invalid or unusable whole-sat metadata", async () => {
+    const fetchInvoice = mock(async () => ({ invoice: signedInvoice(5) }))
+    for (const metadata of [
+      lnurlMetadata({ minSendable: 0 }),
+      lnurlMetadata({ maxSendable: 999 }),
+      lnurlMetadata({ minSendable: 1_001, maxSendable: 1_999 }),
+      lnurlMetadata({ tag: "withdrawRequest" }),
+    ]) {
+      const error = await resolveCheckoutSparkLnurlInvoice(request(), {
+        fetchMetadata: async () => metadata,
+        fetchInvoice,
+      }).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(Error)
+      expect(error).not.toBeInstanceOf(CheckoutSparkLnurlInvoiceRangeError)
+    }
+    expect(fetchInvoice).toHaveBeenCalledTimes(0)
+  })
+
+  it("validates callback safety before exposing an otherwise usable range", async () => {
+    const fetchInvoice = mock(async () => ({ invoice: signedInvoice(5) }))
+    const error = await resolveCheckoutSparkLnurlInvoice(request(), {
+      fetchMetadata: async () =>
+        lnurlMetadata({ callback: "", maxSendable: 4_000 }),
+      fetchInvoice,
+    }).catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(CheckoutSparkLnurlInvoiceRangeError)
     expect(fetchInvoice).toHaveBeenCalledTimes(0)
   })
 

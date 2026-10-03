@@ -25,13 +25,27 @@ export const GUEST_ORDER_LOCAL_RETENTION_MS = 24 * 60 * 60 * 1_000
 export const MAX_PRIOR_EXPIRED_MANUAL_INVOICES = 32
 
 export function isGuestOrderDataExpired(
-  lifecycle: Pick<OrderLifecycle, "buyerIdentityKind" | "createdAt">,
+  lifecycle: Pick<
+    OrderLifecycle,
+    "buyerIdentityKind" | "createdAt" | "guestSessionExpiresAt"
+  >,
   nowMs = Date.now(),
   retentionMs = GUEST_ORDER_LOCAL_RETENTION_MS
 ): boolean {
+  if (lifecycle.buyerIdentityKind !== "guest_ephemeral") return false
+  const deadline = lifecycle.guestSessionExpiresAt
+  if (
+    deadline !== undefined &&
+    (!Number.isSafeInteger(deadline) ||
+      !Number.isSafeInteger(lifecycle.createdAt) ||
+      deadline <= lifecycle.createdAt ||
+      deadline > lifecycle.createdAt + GUEST_ORDER_LOCAL_RETENTION_MS)
+  ) {
+    return true
+  }
   return (
-    lifecycle.buyerIdentityKind === "guest_ephemeral" &&
-    lifecycle.createdAt <= nowMs - retentionMs
+    lifecycle.createdAt <= nowMs - retentionMs ||
+    (deadline !== undefined && nowMs >= deadline)
   )
 }
 
@@ -282,6 +296,9 @@ function admitProjectedMerchantInvoice(
   nowMs: number,
   allowExpired: boolean
 ): AdmittedProjectedMerchantInvoice | null {
+  // A routed order pays only through its immutable Spark plan, even if a
+  // merchant later sends a syntactically valid ordinary invoice.
+  if (lifecycle.checkoutSparkRouterBinding !== undefined) return null
   const invoice = normalizeLightningInvoice(merchantInvoice.invoice)
   const paymentHash = merchantInvoice.paymentHash.trim().toLowerCase()
   const decodedPaymentHash = decodeLightningInvoicePaymentHash(invoice)
@@ -531,6 +548,7 @@ function buildClaimedOrderLifecycle(
 
 function canStartOrReplaceOrderPayment(lifecycle: OrderLifecycle): boolean {
   if (
+    lifecycle.checkoutSparkRouterBinding !== undefined ||
     lifecycle.orderDeliveryStatus !== "sent" ||
     lifecycle.phase === "completed" ||
     lifecycle.phase === "cancelled"
@@ -620,6 +638,7 @@ function isExpiredManualInvoiceRetryEligible(
     : null
 
   return (
+    lifecycle.checkoutSparkRouterBinding === undefined &&
     normalizedExpectedInvoice.length > 0 &&
     storedInvoice.toLowerCase() === normalizedExpectedInvoice.toLowerCase() &&
     (lifecycle.checkoutMode === "private_checkout" ||
@@ -752,6 +771,7 @@ export function getOrderPaymentAddressReplacementAdmission(
 ): "replaceable" | "missing" | "unsafe_state" {
   if (!lifecycle) return "missing"
   if (
+    lifecycle.checkoutSparkRouterBinding !== undefined ||
     lifecycle.orderDeliveryStatus !== "sent" ||
     lifecycle.phase === "completed" ||
     lifecycle.phase === "cancelled" ||
@@ -926,6 +946,7 @@ export async function claimOrderLifecyclePrivateFallbackPayment(
       lifecycle.publicZapSigner ??
       getOrderPublicZapSigner(lifecycle.checkoutMode)
     if (
+      lifecycle.checkoutSparkRouterBinding !== undefined ||
       lifecycle.paymentClaimId ||
       publicZapSigner !== "anon" ||
       lifecycle.orderDeliveryStatus !== "sent" ||
@@ -1402,6 +1423,9 @@ export async function claimExternalOrderPaymentProof(
     async () => {
       const lifecycle = await db.orderLifecycles.get(orderId)
       if (!lifecycle) return { status: "missing", lifecycle: null }
+      if (lifecycle.checkoutSparkRouterBinding !== undefined) {
+        return { status: "preserved", lifecycle }
+      }
       const now = options.nowMs ?? Date.now()
       const normalizedClaimId = proofDeliveryClaimId.trim()
       const merchantInvoice = options.merchantInvoice

@@ -269,7 +269,7 @@ function ProductPage() {
     quantity
   )
   const priceDisplay = selectedProduct
-    ? shopperPricing.formatPrice(selectedProduct, {
+    ? shopperPricing.formatListingPrice(selectedProduct, {
         allowZero: productCartResolution?.status === "pickup",
       })
     : null
@@ -781,8 +781,9 @@ function ProductPage() {
                     </div>
                   )}
                   <div className="mt-3 text-xs text-[var(--text-secondary)]">
-                    Payment and shipping are finalized with the merchant during
-                    the order flow.
+                    {priceDisplay?.feeEstimateIncluded
+                      ? "Estimated order total; shipping, if needed, is added at checkout. Combining items may lower the fee per item."
+                      : "Payment and shipping are finalized with the merchant during the order flow."}
                   </div>
                 </div>
 

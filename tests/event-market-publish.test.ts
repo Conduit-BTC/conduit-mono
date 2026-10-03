@@ -195,7 +195,8 @@ describe("organizer event-market publishing", () => {
         ORGANIZER_SECRET
       )
       expect(parseEventMarketCollectionEvent(sourceEvent)?.signedEvent).toEqual(
-        sourceEvent
+        // Compare wire data, not nostr-tools' process-local verification symbol.
+        JSON.parse(JSON.stringify(sourceEvent))
       )
       const result = await publishOrganizerCollectionOrderAcceptance({
         organizerPubkey: ORGANIZER_PUBKEY,

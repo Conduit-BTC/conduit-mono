@@ -33,6 +33,9 @@ export interface ReadProtectedInboxOptions {
   relayUrls: string[]
   /** Optional full signed event ID; only narrows the protected kind-1059/#p read. */
   eventId?: string
+  /** Inclusive NIP-01 time bounds; they never replace kind-1059/#p scoping. */
+  since?: number
+  until?: number
   /**
    * Exact relay subset backed by this authenticated owner's own inbox or
    * Network selection. Compatibility and remote evidence must not populate it.
@@ -139,6 +142,17 @@ export async function readProtectedInbox(
   if (eventId !== undefined && !/^[0-9a-f]{64}$/.test(eventId)) {
     throw new Error("Protected inbox event ID is invalid.")
   }
+  if (
+    (options.since !== undefined &&
+      (!Number.isSafeInteger(options.since) || options.since < 0)) ||
+    (options.until !== undefined &&
+      (!Number.isSafeInteger(options.until) || options.until < 0)) ||
+    (options.since !== undefined &&
+      options.until !== undefined &&
+      options.since > options.until)
+  ) {
+    throw new Error("Protected inbox time bounds are invalid.")
+  }
   if (!/^[0-9a-f]{64}$/.test(principalPubkey)) {
     return emptyUnavailableResult(options.relayUrls.length, "authority_changed")
   }
@@ -177,6 +191,8 @@ export async function readProtectedInbox(
           kinds: [1_059],
           "#p": [principalPubkey],
           ...(eventId ? { ids: [eventId] } : {}),
+          ...(options.since === undefined ? {} : { since: options.since }),
+          ...(options.until === undefined ? {} : { until: options.until }),
           limit: options.limit,
         },
       ],

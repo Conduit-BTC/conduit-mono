@@ -258,7 +258,23 @@ async function makeDeletionImmediatelyRetryableAndRemoveLocalEvidence(
           const jobsRequest = outbox.getAll()
           jobsRequest.onsuccess = () => {
             for (const job of jobsRequest.result) {
-              outbox.put({ ...job, nextRetryAt: 0 })
+              // This fixture represents a retry after the rejected target's
+              // backoff has elapsed. Job-level eligibility alone does not
+              // override the independent per-target rejection clock.
+              outbox.put({
+                ...job,
+                nextRetryAt: 0,
+                relayDelivery: job.relayDelivery.map(
+                  (delivery: {
+                    status: string
+                    lastAttemptAt?: number
+                    rejectedAt?: number
+                  }) =>
+                    delivery.status === "rejected"
+                      ? { ...delivery, lastAttemptAt: 0, rejectedAt: 0 }
+                      : delivery
+                ),
+              })
             }
           }
           transaction.objectStore("productTombstones").clear()
@@ -709,12 +725,27 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
           hasMerchantShippingSettingsEvidence: state.stores.includes(
             "merchantShippingSettingsEvidence"
           ),
+          hasProductListingOutbox: state.stores.includes(
+            "productListingOutbox"
+          ),
+          hasLocalProductWriteIntents: state.stores.includes(
+            "localProductWriteIntents"
+          ),
+          hasLocalProductWriteFrontiers: state.stores.includes(
+            "localProductWriteFrontiers"
+          ),
+          hasLocalProductShippingOutbox: state.stores.includes(
+            "localProductShippingOutbox"
+          ),
+          hasLocalProductStockCheckpoints: state.stores.includes(
+            "localProductStockCheckpoints"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 230,
+      nativeVersion: 240,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,
@@ -732,6 +763,11 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
       hasCheckoutSparkReconciliations: true,
       hasCheckoutSparkRetirements: true,
       hasMerchantShippingSettingsEvidence: true,
+      hasProductListingOutbox: true,
+      hasLocalProductWriteIntents: true,
+      hasLocalProductWriteFrontiers: true,
+      hasLocalProductShippingOutbox: true,
+      hasLocalProductStockCheckpoints: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)

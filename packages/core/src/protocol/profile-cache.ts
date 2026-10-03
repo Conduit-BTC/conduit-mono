@@ -3,6 +3,7 @@ import type { Profile } from "../types"
 import { getProfileName } from "../utils"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { isValidLud16Address } from "./lightning"
+import type { SignedPublicNostrEvent } from "./signed-event"
 
 export type ProfileMap = Record<string, Profile | undefined>
 
@@ -391,6 +392,8 @@ export type ProfileFrontierState =
 
 export interface SelectedProfileContext {
   profile: Profile
+  /** Exact observed payment frontier only; never reconstructed from cache data. */
+  signedEvent?: SignedPublicNostrEvent
   frontier?: {
     eventId: string
     eventCreatedAt: number

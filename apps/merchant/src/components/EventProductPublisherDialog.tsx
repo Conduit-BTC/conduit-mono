@@ -40,6 +40,7 @@ import {
 import {
   createEmptyEventProductForm,
   eventProductFormFromTemplate,
+  getEventProductDeliveryPresentation,
   listEventProductTemplates,
   publishEventProduct,
   retryEventProductDelivery,
@@ -48,6 +49,7 @@ import {
 } from "../lib/event-product-publishing"
 import {
   getProductSignerRequestMessage,
+  SignedProductDeliveryError,
   type ProductSignerRequestProgress,
 } from "../lib/product-publishing"
 import { ProductPaymentSetupNotice } from "./ProductPaymentSetupNotice"
@@ -171,6 +173,9 @@ export function EventProductPublisherDialog({
   const [signedAcceptance, setSignedAcceptance] =
     useState<MerchantOrganizerRecordDelivery | null>(null)
   const [accepting, setAccepting] = useState(false)
+  const [productDeliveryRetryable, setProductDeliveryRetryable] = useState<
+    boolean | null
+  >(null)
   const [productImageUploadScopeId, setProductImageUploadScopeId] = useState(
     createEventProductUploadScopeId
   )
@@ -253,6 +258,22 @@ export function EventProductPublisherDialog({
     return { productCoordinate, accepted }
   }
 
+  function requireAcknowledgedProductDelivery(
+    delivery: Parameters<typeof getEventProductDeliveryPresentation>[0],
+    ownerPubkey: string
+  ): void {
+    const presentation = getEventProductDeliveryPresentation(delivery)
+    if (isCurrentOwner(ownerPubkey)) {
+      setProductDeliveryRetryable(presentation.retryable)
+    }
+    if (!presentation.acknowledged) {
+      throw new Error(
+        presentation.message ??
+          "Product relay delivery was not acknowledged before event acceptance."
+      )
+    }
+  }
+
   function finishPublication(
     result: { productCoordinate: string; accepted: boolean },
     ownerPubkey: string
@@ -330,6 +351,10 @@ export function EventProductPublisherDialog({
             setActionState("publishing")
           },
         })
+        requireAcknowledgedProductDelivery(
+          result.delivery,
+          authority.ownerPubkey
+        )
         return reviewAndAccept(result.productCoordinate, authority)
       } catch (error) {
         if (
@@ -356,6 +381,7 @@ export function EventProductPublisherDialog({
       }
       setActionError("")
       setSignedEvent(null)
+      setProductDeliveryRetryable(null)
       setSignerProgress(null)
       setActionState("awaiting_signature")
     },
@@ -380,6 +406,9 @@ export function EventProductPublisherDialog({
         return
       }
       setSignerProgress(null)
+      if (!publishedCoordinate && error instanceof SignedProductDeliveryError) {
+        setProductDeliveryRetryable(error.retryable)
+      }
       setActionState("error")
       setActionError(
         errorMessage(error, "The event product could not be published.")
@@ -391,12 +420,13 @@ export function EventProductPublisherDialog({
       if (!isCurrentOwner(input.ownerPubkey)) {
         throw new Error("This signed product belongs to another account.")
       }
-      await retryEventProductDelivery(
+      const delivery = await retryEventProductDelivery(
         input.event,
         input.ownerPubkey,
         null,
         () => isCurrentOwner(input.ownerPubkey)
       )
+      requireAcknowledgedProductDelivery(delivery, input.ownerPubkey)
       return productCoordinateFromSignedEvent(input.event)
     },
     onMutate: (input) => {
@@ -406,6 +436,7 @@ export function EventProductPublisherDialog({
     },
     onSuccess: (productCoordinate, input) => {
       if (!isCurrentOwner(input.ownerPubkey)) return
+      setProductDeliveryRetryable(false)
       setPublishedCoordinate(productCoordinate)
       setSignerProgress(null)
       if (ownsMarket) {
@@ -419,6 +450,9 @@ export function EventProductPublisherDialog({
     },
     onError: (error, input) => {
       if (!isCurrentOwner(input.ownerPubkey)) return
+      if (!publishedCoordinate && error instanceof SignedProductDeliveryError) {
+        setProductDeliveryRetryable(error.retryable)
+      }
       setActionState("error")
       setActionError(
         errorMessage(error, "The signed product could not be redelivered.")
@@ -558,6 +592,7 @@ export function EventProductPublisherDialog({
     setSignedEvent(null)
     setPublishedCoordinate(null)
     setSignedAcceptance(null)
+    setProductDeliveryRetryable(null)
     setProductImageUploadScopeId(createEventProductUploadScopeId())
     requestAnimationFrame(() => titleInputRef.current?.focus())
   }
@@ -924,21 +959,36 @@ export function EventProductPublisherDialog({
           )}
 
           <DialogFooter>
-            {signedEvent && !publishedCoordinate && (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={pending}
-                onClick={() =>
-                  retryProductDeliveryMutation.mutate({
-                    ownerPubkey: merchantPubkey,
-                    event: signedEvent,
-                  })
-                }
-              >
-                Retry exact product delivery
-              </Button>
-            )}
+            {signedEvent &&
+              !publishedCoordinate &&
+              productDeliveryRetryable !== false && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() =>
+                    retryProductDeliveryMutation.mutate({
+                      ownerPubkey: merchantPubkey,
+                      event: signedEvent,
+                    })
+                  }
+                >
+                  Retry exact product delivery
+                </Button>
+              )}
+            {signedEvent &&
+              actionState === "error" &&
+              !publishedCoordinate &&
+              productDeliveryRetryable === false && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={startAnotherPublication}
+                >
+                  Start over
+                </Button>
+              )}
             {ownsMarket &&
               publishedCoordinate &&
               signedAcceptance &&

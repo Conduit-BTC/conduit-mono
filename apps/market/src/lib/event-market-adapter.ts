@@ -8,6 +8,7 @@ import {
   hasExactLiveProductAvailabilityEvidence,
   hasMarketVisibleListingImage,
   isMerchantHiddenOnlyListingSafetyAllowed,
+  isValidSignedPublicNostrEvent,
   normalizeCommercePrice,
   prepareProductCatalog,
   reconcileContextualListingSafety,
@@ -23,6 +24,7 @@ import {
   type PricingRateInput,
   type Product,
   type ProductsByIdsResult,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 import type {
   CartItem,
@@ -113,6 +115,8 @@ export type ProductCartFulfillmentResolution =
       collectionCoordinate: string
       canonicalNaddr: string
       eventState: EventMarketResolutionState
+      /** Exact selected public graph, separate from the persisted cart snapshot. */
+      pickupSourceEvents?: readonly SignedPublicNostrEvent[]
     }
   | {
       status: "blocked"
@@ -1841,6 +1845,46 @@ export function takeEventCatalogProductRefreshObservations(
   })
 }
 
+function selectedPickupSourceEvents(
+  catalog: EventCatalog,
+  fulfillment: CartPickupFulfillment
+): readonly SignedPublicNostrEvent[] | undefined {
+  const pickup = catalog.pickups.find(
+    (candidate) => candidate.coordinate === fulfillment.option.coordinate
+  )
+  const sources = [
+    [catalog.calendar?.signedEvent, fulfillment.calendar],
+    [catalog.collection?.signedEvent, fulfillment.collection],
+    [pickup?.signedEvent, fulfillment.option],
+  ] as const
+  if (
+    !sources.every(([event, reference]) => {
+      if (!event || !isValidSignedPublicNostrEvent(event)) return false
+      const identifiers = event.tags.filter((tag) => tag[0] === "d")
+      return (
+        event.id.toLowerCase() === reference.eventId.toLowerCase() &&
+        event.created_at * 1_000 === reference.createdAt &&
+        identifiers.length === 1 &&
+        `${event.kind}:${event.pubkey.toLowerCase()}:${identifiers[0]![1]}` ===
+          reference.coordinate
+      )
+    })
+  )
+    return undefined
+  return sources.map(([source]) => {
+    const event = source!
+    return {
+      id: event.id,
+      pubkey: event.pubkey,
+      kind: event.kind,
+      created_at: event.created_at,
+      content: event.content,
+      tags: event.tags.map((tag) => [...tag]),
+      sig: event.sig,
+    }
+  })
+}
+
 export function resolveProductCartFulfillmentFromCatalogs(
   product: Product,
   catalogs: readonly {
@@ -1906,6 +1950,10 @@ export function resolveProductCartFulfillmentFromCatalogs(
     entry?.purchaseReady &&
     entry.pickupFulfillment
   ) {
+    const pickupSourceEvents = selectedPickupSourceEvents(
+      catalog,
+      entry.pickupFulfillment
+    )
     return {
       status: "pickup",
       product: entry.product,
@@ -1913,6 +1961,7 @@ export function resolveProductCartFulfillmentFromCatalogs(
       collectionCoordinate: candidate.collectionCoordinate,
       canonicalNaddr: catalog.canonicalNaddr ?? candidate.canonicalNaddr,
       eventState: catalog.state,
+      ...(pickupSourceEvents ? { pickupSourceEvents } : {}),
     }
   }
 

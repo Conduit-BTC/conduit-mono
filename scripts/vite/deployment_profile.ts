@@ -7,6 +7,7 @@ export type DeploymentProfileName = "preview" | "production" | "staging"
 export interface PublicDeploymentFeatures {
   dmCompatibilityOrderRoutingEnabled: boolean
   livePresenceEnabled: boolean
+  quantumRouterEnabled: boolean
 }
 
 export interface PublicDeploymentProfile {
@@ -95,6 +96,19 @@ function assertProfile(
   if (typeof value.publicFeatures.livePresenceEnabled !== "boolean") {
     throw new Error(
       `Deployment profile ${name} must explicitly set livePresenceEnabled.`
+    )
+  }
+  if (typeof value.publicFeatures.quantumRouterEnabled !== "boolean") {
+    throw new Error(
+      `Deployment profile ${name} must explicitly set quantumRouterEnabled.`
+    )
+  }
+  if (
+    value.publicFeatures.quantumRouterEnabled &&
+    value.lightningNetwork !== "mainnet"
+  ) {
+    throw new Error(
+      `Deployment profile ${name} cannot enable Quantum Router on an unsupported network.`
     )
   }
 }
@@ -200,6 +214,9 @@ export function resolveDeploymentProfile(
         ),
         livePresenceEnabled: ["1", "true", "on"].includes(
           env.VITE_LIVE_PRESENCE_ENABLED?.trim().toLowerCase() ?? ""
+        ),
+        quantumRouterEnabled: ["1", "true", "on"].includes(
+          env.VITE_QUANTUM_ROUTER_ENABLED?.trim().toLowerCase() ?? ""
         ),
       },
     }

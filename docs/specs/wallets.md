@@ -182,6 +182,66 @@ without approval performs no send. If re-preparing changes the fee or
 total, the user must approve the new values. A missing approval callback fails
 closed.
 
+An explicitly approved, immutable checkout-scoped router plan may authorize
+automatic private outgoing payments to its frozen recipients. Each invoice and
+outgoing fee must remain within that recipient's settled allocation. Separate
+per-leg fee approval is not required within this authorization. Approval must
+explain the funding total, allocation policy, fee deductions, and Conduit-last
+ordering; recipient net amounts are determined after exact inbound settlement
+and payout fee fitting. A changed plan, destination, allocation policy, or
+spending limit requires renewed approval. Ordinary wallet sends and the wallet
+payment funding the router retain their existing fee-approval boundary.
+
+Buyer-side automatic routing is foreground-only and requires a current order and buyer
+session. Pausing, hiding the page, changing identity, or leaving the order
+revokes automatic dispatch before the next irreversible operation; an already
+submitted operation must settle or be reconciled before another can start.
+Reload does not restore automatic authorization. Resume requires approval of
+the same saved plan and reconciliation of its existing attempts. Unknown
+outcomes never authorize a replacement invoice, new transfer identifier, or
+blind retry. Router completion requires every planned payout, including the
+Conduit leg; wallet retirement remains a separate evidence-gated action.
+
+### Closed-attempt invoice renewal
+
+Merchant recovery may obtain a fresh invoice from the same frozen Lightning
+address after positively verifying that the exact old outgoing transfer closed
+unpaid and its complete debit returned to spendable checkout-wallet funds.
+An expired invoice, an empty history lookup, a saved `prepared` status, a generic
+failure, or aggregate wallet balance alone never establishes that closure.
+Payment/preimage evidence, incomplete or conflicting history, a pending return,
+or a failed return blocks renewal. Independently verified commerce remains paid
+when the Conduit fee alone needs attention; Conduit remains the last payout.
+
+The initial renewal contract permits one Merchant-only replacement, generation
+zero to one, after a complete return with zero historical net debit. Partial
+returns and uncertain or charged historical debits remain unsupported. The
+original plan, receiving destination, settled allocation, order authority and
+takeover boundary do not change. The fresh invoice and its outgoing fee must
+fit that allocation without borrowing from another recipient.
+
+Renewal must archive the exact prior intent and closure observation rather than
+overwrite them. The successor receives its own deterministic, generation-bound
+transfer identifier; retries of that successor retain its exact invoice and
+identifier. Closure metadata received through recovery is not provider proof:
+fresh exact provider checks are required before committing renewal and again
+before dispatch. Atomically persist the successor and history, then obtain a
+recipient-inbox relay acknowledgement for the authenticated Merchant recovery
+snapshot before any replacement payment. Pause, session and takeover guards
+continue to apply. No renewal submits a new buyer funding payment.
+
+Existing attempts retain their original identifiers and acquire no inferred
+closure during migration. Renewed reconciliation, Merchant progress and retired
+receipt records must be explicitly versioned so older clients fail closed,
+stale imports cannot erase attempt history, and retirement retains the actual
+winning transfer identifier. A replacement must not trigger duplicate supplier
+notifications or weaken the wallet-retirement replay barrier.
+
+Retirement must separately verify archived closed attempts against fresh exact
+terminal provider history. Returned leaves need not remain spendable after the
+successor consumes them; retirement-only terminal evidence cannot substitute
+for the spendable-return proof needed to prepare or dispatch a successor.
+
 An ambiguous result remains attached to the original wallet instance and
 attempt. The owner is directed to inspect that wallet's payment history, and
 no automatic retry is available until the result can be classified safely.

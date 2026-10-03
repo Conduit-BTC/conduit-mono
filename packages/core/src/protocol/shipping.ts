@@ -16,6 +16,7 @@ import {
   canonicalizeShippingCost,
   getShippingCostSats,
   normalizeCurrencyCode,
+  normalizeCurrencyIdentity,
   type CommerceShippingCostLike,
   type PricingRateInput,
 } from "../pricing"
@@ -365,6 +366,8 @@ export interface ShippingConfig {
 /** Parsed representation of a kind-30406 event */
 export interface ParsedShippingOption {
   eventId: string
+  /** Exact validated revision selected by the authoritative coordinate read. */
+  sourceEvent?: SignedPublicNostrEvent
   /** Addressable id: "30406:<pubkey>:<d>" */
   id: string
   pubkey: string
@@ -2050,9 +2053,19 @@ export async function getShippingOptionsByCoordinates(
   ])
   const deletionEvents =
     await getMergedShippingDeletionEvidence(deletionTargetIds)
-  return selectLatestShippingOptions(shippingEvents, deletionEvents).filter(
-    (option) => requested.has(option.id)
-  )
+  const sources = new Map(shippingEvents.map((event) => [event.id, event]))
+  return selectLatestShippingOptions(shippingEvents, deletionEvents)
+    .filter((option) => requested.has(option.id))
+    .map((option) => {
+      const event = sources.get(option.eventId)?.rawEvent() as
+        SignedPublicNostrEvent | undefined
+      return {
+        ...option,
+        ...(event && isValidSignedPublicNostrEvent(event)
+          ? { sourceEvent: cloneSignedEvent(event) }
+          : {}),
+      }
+    })
 }
 
 export function resolveProductFulfillment(
@@ -2148,12 +2161,12 @@ export function resolveProductFulfillment(
     }
   }
 
-  const productCurrency = normalizeCurrencyCode(
+  const productCurrency = normalizeCurrencyIdentity(
     product.sourcePrice?.normalizedCurrency ??
       product.sourcePrice?.currency ??
       product.currency
   )
-  if (option.currency !== productCurrency) {
+  if (normalizeCurrencyIdentity(option.currency) !== productCurrency) {
     return {
       intent: "fixed_standard",
       status: "order_first",
@@ -2263,9 +2276,11 @@ export type ShippingDestinationEligibility =
   | { eligible: false; reason: "country_unsupported" | "postal_restricted" }
   | { eligible: null; reason: "unknown" }
 
-export function getShippingDestinationEligibility(
+export function getShippingDestinationEligibility<
+  T extends Pick<ParsedShippingOption, "countryRules">,
+>(
   destination: { country: string; postalCode: string },
-  shippingOptions: ParsedShippingOption[]
+  shippingOptions: readonly T[]
 ): ShippingDestinationEligibility {
   if (shippingOptions.length === 0) {
     return { eligible: null, reason: "unknown" }

@@ -1,3 +1,5 @@
+import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
+import { getCheckoutSparkSettledTiming } from "../lib/checkout-spark-local-router-canary"
 import {
   AlertCircle,
   AlertTriangle,
@@ -27,6 +29,7 @@ import {
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
   config,
+  isQuantumRouterEnabled,
   fetchLnurlPayMetadata,
   formatNpub,
   getPriceSats,
@@ -197,6 +200,7 @@ import {
   isPublicZapContentEditable,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
+import { getCheckoutCoordinationPriceEstimate } from "../lib/checkout-coordination-pricing"
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   findCheckoutOrderRecovery,
@@ -213,7 +217,9 @@ import {
   clearSessionGuestOrderSigningIdentity,
   createSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
+  isCurrentGuestOrderSigningIdentity,
   listSessionGuestOrderIds,
+  type GuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
 import {
   consumeHudZapIntent,
@@ -235,6 +241,22 @@ import {
 } from "../lib/checkout-payment-target"
 import type { CheckoutPaymentTarget } from "../lib/payment-rails"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
+import { buildCheckoutSparkQuoteAuthority } from "../lib/checkout-spark-quote-authority"
+import { withCheckoutSparkRouterPreparationLock } from "../lib/checkout-spark-router-preparation-lock"
+import {
+  createCheckoutSparkPurchaseClaimDigest,
+  findBlockingCheckoutSparkPreparation,
+} from "../lib/checkout-spark-router-purchase-claim"
+import {
+  canRetryCheckoutSparkSettledPreparation,
+  prepareCheckoutSparkSettledOrder,
+  isCheckoutSparkSettledCart,
+} from "../lib/checkout-spark-settled-entry"
+import {
+  getCheckoutSparkSettledPreparation,
+  listCheckoutSparkSettledPreparations,
+} from "../lib/checkout-spark-settled-preparation"
+import { getSparkConfiguration } from "../lib/spark-sdk"
 import { checkoutReferralSessionFence } from "../lib/checkout-referral-session"
 import { useCheckoutIntentImport } from "../hooks/useCheckoutIntentImport"
 import {
@@ -815,6 +837,7 @@ function OrderSummary({
   availabilityByProductId,
   pickupHandlerIdentity,
   formatPrice,
+  routerFundingSeparate = false,
   className = "",
 }: {
   items: CartItem[]
@@ -826,6 +849,7 @@ function OrderSummary({
   availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
   pickupHandlerIdentity: EventActorIdentityView | null
   formatPrice: PriceFormatter
+  routerFundingSeparate?: boolean
   className?: string
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey, {
@@ -897,6 +921,13 @@ function OrderSummary({
                 currency: "SATS",
                 priceSats: shippingCost.totalSats,
               }).primary
+  const routerPrice =
+    routerFundingSeparate && pricing.status === "ok"
+      ? getCheckoutCoordinationPriceEstimate({
+          itemSubtotalSats: pricing.itemSubtotalSats,
+          shippingSubtotalSats: pricing.shippingCost.totalSats,
+        })
+      : null
 
   return (
     <aside
@@ -1002,57 +1033,98 @@ function OrderSummary({
       </div>
 
       <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-        <div className="flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
-          <span>
-            Subtotal ({items.reduce((sum, item) => sum + item.quantity, 0)} item
-            {items.reduce((sum, item) => sum + item.quantity, 0) === 1
-              ? ""
-              : "s"}
-            )
-          </span>
-          <span>{itemSubtotalPrice.primary}</span>
-        </div>
-        <div className="mt-3 flex items-start justify-between gap-3 text-sm text-[var(--text-secondary)]">
-          <span className="min-w-0">
-            {pickupHandoff && pickupHandlerIdentity ? (
-              <>
-                <span className="flex items-start gap-1.5 text-pretty">
-                  <MapPin
-                    className="mt-0.5 size-3.5 shrink-0 text-secondary-400"
-                    aria-hidden="true"
-                  />
-                  <span>
-                    {pickupHandoff.label}
-                    {pickupLocation ? ` · ${pickupLocation}` : ""}
-                  </span>
+        {routerPrice ? (
+          <>
+            <CheckoutCoordinationSummary
+              price={routerPrice}
+              estimate
+              formatSats={(sats) =>
+                sats === 0
+                  ? "0 sats"
+                  : formatPrice({
+                      price: sats,
+                      currency: "SATS",
+                      priceSats: sats,
+                    }).primary
+              }
+            />
+            {pickupHandoff && pickupHandlerIdentity && (
+              <p className="mt-3 text-xs text-[var(--text-secondary)]">
+                <span>
+                  {pickupHandoff.label}
+                  {pickupLocation ? ` · ${pickupLocation}` : ""}
                 </span>
-                <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
+                <span className="mt-1 block">
                   Handled by <EventActorName identity={pickupHandlerIdentity} />
                 </span>
-              </>
-            ) : fulfillmentLane === "pickup" ? (
-              "Event pickup"
-            ) : (
-              "Shipping"
+              </p>
             )}
-          </span>
-          <span>{shippingLabel}</span>
-        </div>
-        <div className="mt-5 flex items-end justify-between gap-3 border-t border-[var(--border)] pt-4">
-          <div className="text-lg font-semibold text-[var(--text-primary)]">
-            Total
-          </div>
-          <div className="text-right">
-            <div className="text-3xl font-semibold text-secondary-400">
-              {totalPrice.primary}
+            <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
+              The coordination fee includes the network estimate. Your wallet
+              may charge its own fee. The exact total is saved with your order
+              before payment.
+              {shippingCost.status === "manual"
+                ? " Shipping is not included until quoted by the merchant."
+                : ""}
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
+              <span>
+                Subtotal ({items.reduce((sum, item) => sum + item.quantity, 0)}{" "}
+                item
+                {items.reduce((sum, item) => sum + item.quantity, 0) === 1
+                  ? ""
+                  : "s"}
+                )
+              </span>
+              <span>{itemSubtotalPrice.primary}</span>
             </div>
-            {totalPrice.secondary && (
-              <div className="mt-1 text-sm text-[var(--text-muted)]">
-                {totalPrice.secondary}
+            <div className="mt-3 flex items-start justify-between gap-3 text-sm text-[var(--text-secondary)]">
+              <span className="min-w-0">
+                {pickupHandoff && pickupHandlerIdentity ? (
+                  <>
+                    <span className="flex items-start gap-1.5 text-pretty">
+                      <MapPin
+                        className="mt-0.5 size-3.5 shrink-0 text-secondary-400"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {pickupHandoff.label}
+                        {pickupLocation ? ` · ${pickupLocation}` : ""}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
+                      Handled by{" "}
+                      <EventActorName identity={pickupHandlerIdentity} />
+                    </span>
+                  </>
+                ) : fulfillmentLane === "pickup" ? (
+                  "Event pickup"
+                ) : (
+                  "Shipping"
+                )}
+              </span>
+              <span>{shippingLabel}</span>
+            </div>
+            <div className="mt-5 flex items-end justify-between gap-3 border-t border-[var(--border)] pt-4">
+              <div className="text-lg font-semibold text-[var(--text-primary)]">
+                Total
               </div>
-            )}
-          </div>
-        </div>
+              <div className="text-right">
+                <div className="text-3xl font-semibold text-secondary-400">
+                  {totalPrice.primary}
+                </div>
+                {totalPrice.secondary && (
+                  <div className="mt-1 text-sm text-[var(--text-muted)]">
+                    {totalPrice.secondary}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </aside>
   )
@@ -1183,6 +1255,7 @@ function CheckoutPage() {
   // first tick so a second click is rejected before it can publish a duplicate
   // order (CND-89).
   const paymentInFlightRef = useRef(false)
+  const routerPreparedOrderRef = useRef<string | null>(null)
   const autoZapStartedRef = useRef(false)
   const autoZapAuthorizationGenerationRef = useRef<number | null>(null)
   const payNowRef = useRef<
@@ -1671,6 +1744,10 @@ function CheckoutPage() {
   )
   const verifiedZeroCostPickup =
     pricingPreview.status === "ok" && !pricingPreview.paymentRequired
+  const routerBranchTargetCheckout =
+    isQuantumRouterEnabled() &&
+    !verifiedZeroCostPickup &&
+    isCheckoutSparkSettledCart(rawCheckoutItems)
   const paymentRequired =
     pricingPreview.status !== "ok" || pricingPreview.paymentRequired
   const paymentPathEnabled =
@@ -2526,7 +2603,237 @@ function CheckoutPage() {
 
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
+  /** Explicit checkout preparation; this action never submits payment. */
+  async function prepareSettledRouterOrder(): Promise<void> {
+    if (
+      !isQuantumRouterEnabled() ||
+      !routerBranchTargetCheckout ||
+      !selectedMerchant ||
+      !selectedPurchase ||
+      routerPreparedOrderRef.current ||
+      paymentInFlightRef.current
+    ) {
+      return
+    }
+    if (!validateCheckoutDetailsForSubmit()) return
+    if (
+      checkoutRecoveryIsChecking ||
+      checkoutRecoveryBlockingMessage ||
+      checkoutEvidenceIsChecking ||
+      fulfillmentBlockingMessage ||
+      hasUnavailableCheckoutItems
+    ) {
+      setError(
+        checkoutRecoveryBlockingMessage ??
+          fulfillmentBlockingMessage ??
+          "Wait for current checkout and saved-order verification."
+      )
+      return
+    }
+    const connectedBuyer = isGuestCheckout ? null : getCheckoutBuyerIdentity()
+    const signedIdentity = connectedBuyer?.signer
+      ? {
+          kind: "signed_in" as const,
+          pubkey: connectedBuyer.pubkey,
+          signer: connectedBuyer.signer,
+        }
+      : null
+    if (!isGuestCheckout && !signedIdentity) return
+    const guestContact = buildGuestContact()
+    if (isGuestCheckout && !guestContact) return
+    // Freeze the submitted private details before the authoritative quote reads.
+    // Entry rechecks address consistency and the exact signed option's coverage.
+    const shippingAddress = buildShippingAddress()
+    const submittedNote = isGuestCheckout
+      ? buildBuyerNote()
+      : buildContactNote()
+    const configuration = getSparkConfiguration()
+    if (configuration.status !== "ready") {
+      setError(
+        "The temporary checkout wallet is unavailable. No order or payment was started."
+      )
+      return
+    }
+    paymentInFlightRef.current = true
+    setStep(isGuestCheckout ? "sending" : "signing")
+    setError(null)
+    const checkoutId = crypto.randomUUID()
+    const orderId = crypto.randomUUID()
+    let guestIdentity: GuestOrderSigningIdentity | null = null
+    const canContinueSettledPreparation = () => {
+      if (!shouldContinueBuyerSession() || !isQuantumRouterEnabled()) {
+        return false
+      }
+      if (!guestIdentity) return true
+      const currentGuestIdentity = getSessionGuestOrderSigningIdentity(orderId)
+      return (
+        currentGuestIdentity !== null &&
+        currentGuestIdentity.pubkey === guestIdentity.pubkey &&
+        currentGuestIdentity.createdAt === guestIdentity.createdAt &&
+        currentGuestIdentity.expiresAt === guestIdentity.expiresAt &&
+        isCurrentGuestOrderSigningIdentity(currentGuestIdentity, {
+          orderId,
+          merchantPubkey: selectedMerchant,
+        })
+      )
+    }
+    let published = false
+    let preparationStarted = false
+    let lockedPurchaseClaimDigest: string | null = null
+    try {
+      await withCheckoutSparkRouterPreparationLock(
+        async () => {
+          if (!isQuantumRouterEnabled()) {
+            throw new Error("Quantum Router is unavailable in this deployment.")
+          }
+          const claim = await cart.capturePurchase(
+            selectedPurchase.id,
+            rawCheckoutItems
+          )
+          const digest = await createCheckoutSparkPurchaseClaimDigest(claim)
+          if (
+            findBlockingCheckoutSparkPreparation(
+              listCheckoutSparkSettledPreparations(),
+              digest,
+              Date.now()
+            )
+          ) {
+            throw new Error(
+              "This cart already has a saved checkout. Continue or recover that order in Orders; do not create another funding invoice."
+            )
+          }
+          lockedPurchaseClaimDigest = digest
+        },
+        async () => {
+          if (!isQuantumRouterEnabled()) {
+            throw new Error("Quantum Router is unavailable in this deployment.")
+          }
+          const rateInput = await getFreshPricingRateInput(checkoutItems)
+          const authorization = await assertCheckoutItemsAvailable(
+            "private_checkout",
+            rateInput
+          )
+          if (!canContinueSettledPreparation()) {
+            throw new Error(
+              "Buyer session or router availability changed before preparation."
+            )
+          }
+          const quoteAuthority = buildCheckoutSparkQuoteAuthority({
+            authorization,
+            rateInput,
+          })
+          const purchaseClaim = await cart.capturePurchase(
+            selectedPurchase.id,
+            rawCheckoutItems
+          )
+          const purchaseClaimDigest =
+            await createCheckoutSparkPurchaseClaimDigest(purchaseClaim)
+          if (purchaseClaimDigest !== lockedPurchaseClaimDigest) {
+            throw new Error(
+              "The cart changed during checkout preparation. Review it again before continuing."
+            )
+          }
+          if (!canContinueSettledPreparation()) {
+            throw new Error("Buyer session changed before order preparation.")
+          }
+          guestIdentity = isGuestCheckout
+            ? createSessionGuestOrderSigningIdentity(orderId, selectedMerchant)
+            : null
+          const buyer = guestIdentity ?? signedIdentity
+          if (!buyer)
+            throw new Error("The checkout signing identity is unavailable.")
+          preparationStarted = true
+          const result = await prepareCheckoutSparkSettledOrder({
+            checkoutId,
+            orderId,
+            purchaseClaimDigest,
+            quoteAuthority,
+            buyer,
+            network: configuration.network,
+            nowMs: Date.now(),
+            shouldContinue: canContinueSettledPreparation,
+            note: submittedNote,
+            guestContact,
+            shippingAddress,
+            relayAuthMethod: guestIdentity
+              ? undefined
+              : (authMethod ?? undefined),
+          })
+          published = true
+          routerPreparedOrderRef.current = orderId
+          clearCheckoutShippingSession()
+          if (!canContinueSettledPreparation()) {
+            throw new Error(
+              "The private order was accepted, but the buyer session or router availability changed. Continue it in Orders; do not start another checkout."
+            )
+          }
+          if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
+          await resolveCheckoutOrderAttempt(orderId)
+          void result.published.delivery.startPostAcceptanceWork?.()
+          void navigate({
+            to: "/orders",
+            search: { order: orderId },
+            replace: true,
+          })
+        }
+      )
+    } catch (cause) {
+      const message =
+        cause instanceof Error
+          ? cause.message
+          : "Private router preparation failed."
+      if (published) {
+        routerPreparedOrderRef.current = orderId
+        setError(
+          "The private router order was prepared. Continue it in Orders; do not prepare another invoice. " +
+            message
+        )
+      } else {
+        let recoveryState: "absent" | "present" | "unreadable" = "unreadable"
+        try {
+          recoveryState = getCheckoutSparkSettledPreparation(checkoutId)
+            ? "present"
+            : "absent"
+        } catch {
+          // An unreadable store is not proof that no wallet was prepared.
+        }
+        if (
+          canRetryCheckoutSparkSettledPreparation({
+            cause,
+            recoveryState,
+            preparationStarted,
+          })
+        ) {
+          // A failed admission or typed preflight with no saved wallet is safe
+          // to retry. Once preparation starts, all other failures stay closed.
+          if (guestIdentity) clearSessionGuestOrderSigningIdentity(orderId)
+          setError(
+            preparationStarted
+              ? "A required recipient's payout setup could not be verified. No checkout wallet or order was created; retry after their profile, payment endpoint, or network is ready. " +
+                  message
+              : message
+          )
+        } else {
+          routerPreparedOrderRef.current = orderId
+          setError(
+            "Settled router preparation could not be confirmed. Do not retry this checkout without checking recovery first. " +
+              message
+          )
+        }
+      }
+      setStep("payment")
+    } finally {
+      paymentInFlightRef.current = false
+    }
+  }
+
   async function placeOrder(): Promise<void> {
+    if (routerBranchTargetCheckout) {
+      setError(
+        "This purchase requires the private router order. Direct checkout is disabled for this purchase."
+      )
+      return
+    }
     if (!selectedMerchant || !selectedPurchase || checkoutItems.length === 0) {
       return
     }
@@ -2963,6 +3270,12 @@ function CheckoutPage() {
   async function payNow(
     zapAuthorization: HudZapAuthorization | null = null
   ): Promise<void> {
+    if (routerBranchTargetCheckout) {
+      setError(
+        "This purchase requires the private router order. Direct payment is disabled for this purchase."
+      )
+      return
+    }
     if (!selectedMerchant || !selectedPurchase || checkoutItems.length === 0) {
       return
     }
@@ -3656,6 +3969,12 @@ function CheckoutPage() {
     ) {
       return
     }
+    if (routerBranchTargetCheckout) {
+      autoZapAuthorizationGenerationRef.current = null
+      setAutoZapAuthorization(null)
+      setError("Direct zap out is disabled for this routed purchase.")
+      return
+    }
     if (!signerConnected) {
       autoZapAuthorizationGenerationRef.current = null
       setAutoZapAuthorization(null)
@@ -3722,6 +4041,7 @@ function CheckoutPage() {
     firstFastUnavailableReason,
     hasUnavailableCheckoutItems,
     pricingPreview,
+    routerBranchTargetCheckout,
     selectedMerchant,
     selectedPurchase?.id,
     signerConnected,
@@ -3977,6 +4297,7 @@ function CheckoutPage() {
           availabilityByProductId={checkoutAvailability.availabilityByProductId}
           pickupHandlerIdentity={pickupHandlerIdentity}
           formatPrice={shopperPricing.formatPrice}
+          routerFundingSeparate={routerBranchTargetCheckout}
           className="lg:order-2 lg:sticky lg:top-6"
         />
         <section className="space-y-5">
@@ -4357,7 +4678,7 @@ function CheckoutPage() {
           {/* ── Order action ──────────────────────────────────────────────── */}
           {
             <>
-              {!isGuestCheckout && (
+              {!routerBranchTargetCheckout && !isGuestCheckout && (
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div className="min-w-0 flex-1">
@@ -4495,13 +4816,30 @@ function CheckoutPage() {
               )}
 
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
-                {/* Zap out banner */}
-                <CheckoutMerchantPaymentNotice
-                  state={merchantPaymentReadiness}
-                  isGuestCheckout={isGuestCheckout}
-                />
+                {routerBranchTargetCheckout ? (
+                  <div
+                    role="status"
+                    className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm"
+                  >
+                    <div className="font-medium text-[var(--text-primary)]">
+                      Private checkout
+                    </div>
+                    <p className="mt-1 leading-6 text-[var(--text-secondary)]">
+                      Create one private order for this purchase, then review
+                      and approve payment in Orders. Once funding is verified,
+                      the saved split payments run automatically. Nothing is
+                      charged here and no public zap is created.
+                    </p>
+                  </div>
+                ) : (
+                  <CheckoutMerchantPaymentNotice
+                    state={merchantPaymentReadiness}
+                    isGuestCheckout={isGuestCheckout}
+                  />
+                )}
 
-                {paymentRequired &&
+                {!routerBranchTargetCheckout &&
+                  paymentRequired &&
                   !isGuestCheckout &&
                   !lnurlProbing &&
                   showFastCheckoutSurface && (
@@ -4538,7 +4876,8 @@ function CheckoutPage() {
                     </div>
                   )}
 
-                {paymentRequired &&
+                {!routerBranchTargetCheckout &&
+                  paymentRequired &&
                   !isGuestCheckout &&
                   !lnurlProbing &&
                   directCheckoutEligible && (
@@ -4696,49 +5035,83 @@ function CheckoutPage() {
 
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3 border-t border-[var(--border)] pt-4 sm:border-0 sm:pt-0">
-                  {!isGuestCheckout && directCheckoutEligible && (
-                    <HoldToReleaseButton
-                      className="h-11 w-full px-5 text-sm sm:w-auto"
-                      disabled={
-                        checkoutRecoveryIsChecking ||
-                        checkoutRecoveryBlockingMessage !== null ||
-                        checkoutEvidenceIsChecking ||
-                        hasUnavailableCheckoutItems ||
-                        fulfillmentBlockingMessage !== null ||
-                        selectedPaymentTargetIsStale ||
-                        authPending ||
-                        !!signerBlockedMessage
-                      }
-                      canComplete={() =>
-                        directCheckoutEligible &&
-                        !checkoutAvailability.isChecking &&
-                        !checkoutRecoveryIsChecking &&
-                        !checkoutRecoveryBlockingMessage &&
-                        !hasUnavailableCheckoutItems &&
-                        !paymentInFlightRef.current
-                      }
-                      onHoldComplete={() => {
-                        void payNow()
-                      }}
-                      chargedLabel={
-                        selectedPaymentTarget.type === "manual"
-                          ? "Release to show invoice"
-                          : "Release to zap out"
-                      }
-                    >
-                      <LightningIcon className="h-4 w-4" />
-                      {isGuestCheckout
-                        ? "Hold to send order and show invoice"
-                        : selectedPaymentTargetIsStale
-                          ? "Choose how to pay"
-                          : selectedPaymentTarget.type === "manual"
-                            ? "Hold to send order and show invoice"
-                            : canAttemptLightningPayment
-                              ? "Hold to zap out"
-                              : "Hold to send order and review payment"}
-                    </HoldToReleaseButton>
+                  {routerBranchTargetCheckout && (
+                    <div className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                      <Button
+                        type="button"
+                        className="h-11 w-full px-5 text-sm sm:w-auto"
+                        disabled={
+                          checkoutRecoveryIsChecking ||
+                          checkoutRecoveryBlockingMessage !== null ||
+                          checkoutEvidenceIsChecking ||
+                          hasUnavailableCheckoutItems ||
+                          fulfillmentBlockingMessage !== null ||
+                          authPending ||
+                          !!signerBlockedMessage ||
+                          !!routerPreparedOrderRef.current
+                        }
+                        onClick={() => void prepareSettledRouterOrder()}
+                      >
+                        Continue to payment
+                      </Button>
+                      <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">
+                        Continue when you are ready to pay: this creates a
+                        temporary checkout wallet and a funding invoice valid
+                        for{" "}
+                        {getCheckoutSparkSettledTiming().fundingExpirySecs / 60}{" "}
+                        minutes. Recipients and the funding amount are fixed
+                        before payment. Recovery is sent privately to the
+                        merchant; relay acceptance does not prove receipt. The
+                        coordination fee is included in the payment total.
+                      </p>
+                    </div>
                   )}
-                  {isGuestCheckout &&
+                  {!routerBranchTargetCheckout &&
+                    !isGuestCheckout &&
+                    directCheckoutEligible && (
+                      <HoldToReleaseButton
+                        className="h-11 w-full px-5 text-sm sm:w-auto"
+                        disabled={
+                          checkoutRecoveryIsChecking ||
+                          checkoutRecoveryBlockingMessage !== null ||
+                          checkoutEvidenceIsChecking ||
+                          hasUnavailableCheckoutItems ||
+                          fulfillmentBlockingMessage !== null ||
+                          selectedPaymentTargetIsStale ||
+                          authPending ||
+                          !!signerBlockedMessage
+                        }
+                        canComplete={() =>
+                          directCheckoutEligible &&
+                          !checkoutAvailability.isChecking &&
+                          !checkoutRecoveryIsChecking &&
+                          !checkoutRecoveryBlockingMessage &&
+                          !hasUnavailableCheckoutItems &&
+                          !paymentInFlightRef.current
+                        }
+                        onHoldComplete={() => {
+                          void payNow()
+                        }}
+                        chargedLabel={
+                          selectedPaymentTarget.type === "manual"
+                            ? "Release to show invoice"
+                            : "Release to zap out"
+                        }
+                      >
+                        <LightningIcon className="h-4 w-4" />
+                        {isGuestCheckout
+                          ? "Hold to send order and show invoice"
+                          : selectedPaymentTargetIsStale
+                            ? "Choose how to pay"
+                            : selectedPaymentTarget.type === "manual"
+                              ? "Hold to send order and show invoice"
+                              : canAttemptLightningPayment
+                                ? "Hold to zap out"
+                                : "Hold to send order and review payment"}
+                      </HoldToReleaseButton>
+                    )}
+                  {!routerBranchTargetCheckout &&
+                    isGuestCheckout &&
                     !fastEligible &&
                     manualInvoiceEligible && (
                       <Button
@@ -4755,7 +5128,8 @@ function CheckoutPage() {
                         Send order
                       </Button>
                     )}
-                  {pricingOnlyFastCheckoutBlocker &&
+                  {!routerBranchTargetCheckout &&
+                    pricingOnlyFastCheckoutBlocker &&
                     !directCheckoutEligible && (
                       <Button
                         className="h-11 w-full px-5 text-sm sm:w-auto"
@@ -4776,7 +5150,8 @@ function CheckoutPage() {
                       </Button>
                     )}
 
-                  {isGuestCheckout &&
+                  {!routerBranchTargetCheckout &&
+                    isGuestCheckout &&
                     !fastEligible &&
                     (verifiedZeroCostPickup ? (
                       <Button
@@ -4811,7 +5186,7 @@ function CheckoutPage() {
                       </Button>
                     ) : null)}
 
-                  {!isGuestCheckout && (
+                  {!routerBranchTargetCheckout && !isGuestCheckout && (
                     <Button
                       variant={
                         directCheckoutEligible || pricingOnlyFastCheckoutBlocker

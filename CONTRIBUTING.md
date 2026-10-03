@@ -378,8 +378,10 @@ These are non-negotiable across all code:
 - Do not generate, store, or manage a user's durable Nostr account private key.
   A bounded `guest_ephemeral` browser key may serve one guest order and merchant.
   Keep it only in same-tab session storage for recovery of up to 24 hours. Limit
-  signing to the initial private order and same-order payment reports. It must
-  never become an account key or nsec.
+  signing to the initial private order, same-order payment reports, and the
+  separately constrained merchant-only router recovery envelopes documented in
+  [the protocol specification](docs/specs/protocol.md#client-ephemeral-guest-order-key-exception).
+  It must never become an account key or nsec.
 - A revocable NIP-46 client connection key must use encrypted browser-local
   storage and must be deleted on logout. Store a CI client key only as a
   protected Actions environment secret. Use it only in a post-merge, main-only,

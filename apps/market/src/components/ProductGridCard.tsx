@@ -1,6 +1,5 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
-  getShopperPriceDisplay,
   pubkeyToNpub,
   type PricingRateInput,
   type Product,
@@ -14,6 +13,11 @@ import {
 } from "@conduit/ui"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { getProductAddAvailability } from "../lib/cart-model"
+import {
+  coordinationPricingEnabled,
+  canEstimateCheckoutCoordinationListing,
+  getFeeInclusiveListingPriceDisplay,
+} from "../lib/checkout-coordination-pricing"
 import {
   getDefaultProductSelection,
   getProductSelection,
@@ -151,18 +155,23 @@ export function ProductGridCard({
   const merchantName =
     merchantNameOverride ||
     getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
-  const selectedPriceDisplay = getShopperPriceDisplay(
+  const feeInclusive =
+    coordinationPricingEnabled() &&
+    canEstimateCheckoutCoordinationListing(selectedProduct)
+  const selectedPriceDisplay = getFeeInclusiveListingPriceDisplay(
     selectedProduct,
     pricePreference,
     typeof btcUsdRate === "object" ? btcUsdRate : null,
+    feeInclusive,
     { allowZero: allowZeroPrice }
   )
   const summaryMinimum = family?.priceSummary.minimum?.product
   const summaryPriceDisplay = summaryMinimum
-    ? getShopperPriceDisplay(
+    ? getFeeInclusiveListingPriceDisplay(
         summaryMinimum,
         pricePreference,
         typeof btcUsdRate === "object" ? btcUsdRate : null,
+        feeInclusive,
         { allowZero: allowZeroPrice }
       )
     : selectedPriceDisplay
@@ -228,6 +237,15 @@ export function ProductGridCard({
       primaryPrice={primary}
       secondaryPrice={secondary}
       approximateUsdPrice={approximateUsd}
+      priceNote={
+        displayedPrice.feeEstimateIncluded
+          ? selectedProduct.format === "digital" || allowZeroPrice
+            ? "Estimated total"
+            : "Estimated total · shipping extra"
+          : feeInclusive && displayedPrice.sats !== 0
+            ? "Fees calculated at checkout"
+            : null
+      }
       imageLoading={imageLoading}
       disableImageHoverZoom
       mediaClassName={cn(

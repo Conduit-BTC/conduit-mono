@@ -86,6 +86,10 @@ import { useShopperPresets } from "../hooks/useShopperPresets"
 import { getCartShippingDestinationEligibility } from "../lib/cart-shipping-options"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
+  coordinationPricingEnabled,
+  getCartCoordinationEstimate,
+} from "../lib/checkout-coordination-pricing"
+import {
   getCartCostSummary,
   getCartItemStockEvidenceForAvailability,
   getPendingEventPickupCartItems,
@@ -123,6 +127,7 @@ type CartSearch = {
 type CartSummaryPrice = {
   primary: string
   secondary?: string | null
+  estimateNote?: string
 }
 
 type SuggestedProduct = {
@@ -179,16 +184,30 @@ function getCartSummaryPrice(
     }
   }
 
+  const includeCoordination = coordinationPricingEnabled()
+  const estimate = includeCoordination
+    ? getCartCoordinationEstimate(items, btcUsdRate)
+    : null
   const display = formatPrice(
     {
-      price: pricing.totalSats,
+      price: estimate?.totalSats ?? pricing.totalSats,
       currency: "SATS",
-      priceSats: pricing.totalSats,
+      priceSats: estimate?.totalSats ?? pricing.totalSats,
     },
     { allowZero: !pricing.paymentRequired }
   )
 
-  return display
+  return estimate && pricing.paymentRequired
+    ? {
+        ...display,
+        primary: display.primary.startsWith("~ ")
+          ? display.primary
+          : `~ ${display.primary}`,
+        estimateNote: estimate.shippingPending
+          ? "Estimated total · unquoted shipping extra"
+          : "Estimated total · final amounts at checkout",
+      }
+    : display
 }
 
 function getCartTelemetryProductType(items: CartItem[]): string {
@@ -973,6 +992,11 @@ function MerchantCartCard({
                 {summary.secondary}
               </div>
             )}
+            {summary.estimateNote && (
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {summary.estimateNote}
+              </p>
+            )}
           </div>
 
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap lg:w-auto lg:justify-end">
@@ -1539,6 +1563,11 @@ function CartPage() {
               <div className="mt-1 text-sm text-[var(--text-muted)]">
                 {allCartsSummary.secondary}
               </div>
+            )}
+            {allCartsSummary.estimateNote && (
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {allCartsSummary.estimateNote}
+              </p>
             )}
             <div className="mt-3 text-sm text-[var(--text-secondary)]">
               {cart.totals.count} item{cart.totals.count === 1 ? "" : "s"}{" "}

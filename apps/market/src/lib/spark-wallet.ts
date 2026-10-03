@@ -4,6 +4,9 @@ import {
   getLightningInvoiceNetwork,
   isAmountlessLightningInvoice,
   normalizeLightningInvoice,
+  type CheckoutSparkNativeRetirementReader,
+  type SparkCheckoutLightningReturnedInspection,
+  type SparkCheckoutLightningReturnedInspectionInput,
   type WalletPaymentFeeApproval,
 } from "@conduit/core"
 
@@ -64,6 +67,18 @@ export interface SparkFundsState {
   observedAt: number
 }
 
+export interface SparkCheckoutRetirementTarget {
+  network: SparkWalletNetwork
+  receiverIdentityPublicKey: string
+}
+
+/** Private, authenticated inspection only; cleanup never closes the wallet. */
+export interface SparkCheckoutRetirementSession {
+  reader: CheckoutSparkNativeRetirementReader
+  sparkAddress: string
+  cleanup(): Promise<void>
+}
+
 export interface SparkCheckoutReceiveRequest {
   walletId: string
   network: SparkWalletNetwork
@@ -76,6 +91,14 @@ export interface SparkCheckoutReceiveRequest {
   expirySecs: number
   createdAt: number
   expiresAt: number
+  /** Only a receive created from a same-wallet, exact feeless NET quote has this. */
+  receiveQuotePolicy?: "same-wallet-feeless-net-v1"
+  /** Ordinary receive; executable only in an opted-in local rehearsal. */
+  receiveCanaryPolicy?: "local-loopback-unquoted-balance-gated-v1"
+  /** Ordinary gross invoice; exact credited sats require a later transfer proof. */
+  receiveSettledPolicy?: "ordinary-exact-credit-v3"
+  /** Compressed exact receiver identity frozen before the v3 invoice is exposed. */
+  receiverIdentityPublicKey?: string
 }
 
 export type SparkCheckoutReceiveState =
@@ -96,11 +119,39 @@ export interface SparkCheckoutReceiveReconciliation {
   funds: SparkFundsState
 }
 
+/** Frozen receive identity available to either checkout actor after funding. */
+export interface SparkCheckoutHistoricalReceiveTarget {
+  walletId: string
+  network: SparkWalletNetwork
+  requestId: string
+  paymentRequest: string
+  paymentHash: string
+  requiredNetSats: number
+  grossFundingSats: number
+  createdAt: number
+  expiresAt: number
+}
+
+/** Historical receipt only: completion does not attest current spendable funds. */
+export type SparkCheckoutHistoricalReceiveAttestation =
+  | { status: "completed"; observedAt: number }
+  | {
+      status: "unconfirmed"
+      reason:
+        | "not_found"
+        | "lookup_unavailable"
+        | "conflicting_evidence"
+        | "not_completed"
+      observedAt: number
+    }
+
 export interface SparkCheckoutReceiveInput {
   description: string
   requiredNetSats: number
   grossFundingSats: number
   expirySecs: number
+  /** Explicit local rehearsal mode; omitted means the production quote path. */
+  receiveMode?: "local_unquoted_canary" | "ordinary_settled_v3"
 }
 
 export interface SparkLightningSendReconciliationInput {
@@ -113,12 +164,26 @@ export interface SparkLightningSendReconciliationInput {
 
 export interface SparkCheckoutLightningObligationInput extends SparkLightningSendReconciliationInput {
   network: SparkWalletNetwork
+  /** Recheck actor/order/time authority after SDK reads, at the send boundary. */
+  assertBeforeSend?: () => Promise<void>
+}
+
+/** Exact pre-freeze Lightning leg; a numeric estimate is not a payment quote. */
+export interface SparkCheckoutLightningFeeEstimateInput {
+  walletId: string
+  network: SparkWalletNetwork
+  paymentRequest: string
+  paymentHash: string
+  amountSats: number
 }
 
 export type SparkCheckoutLightningObligationSendResult =
   | { status: "paid"; payment: SparkSdkPayment }
   | { status: "terminal_failure"; payment: SparkSdkPayment }
-  | { status: "not_sent"; reason: "fee_over_cap" | "fee_unavailable" }
+  | {
+      status: "not_sent"
+      reason: "fee_over_cap" | "fee_unavailable" | "invoice_expired"
+    }
   | { status: "ambiguous" }
 
 export type SparkCheckoutLightningObligationPreflight =
@@ -137,7 +202,12 @@ export interface SparkLightningSendAttempt {
 }
 
 export type SparkLightningSendReconciliation =
-  | { status: "resolved"; payment: SparkSdkPayment }
+  | {
+      status: "resolved"
+      payment: SparkSdkPayment
+      /** Exact provider transfer total, verified against invoice amount and observed fee. */
+      verifiedTransferTotalSats?: number
+    }
   | { status: "not_found" }
   | { status: "lookup_unavailable" }
   | { status: "conflicting_evidence"; reason: string }
@@ -174,9 +244,17 @@ export interface SparkSdkClient {
   reconcileLightningSend?(
     request: SparkLightningSendReconciliationInput
   ): Promise<SparkLightningSendReconciliation>
+  /** Explicit renewal inspection; may recover native wallet keyshares. */
+  inspectCheckoutLightningReturnedAttempt?(
+    request: SparkCheckoutLightningReturnedInspectionInput,
+    assertCurrent?: () => void
+  ): Promise<SparkCheckoutLightningReturnedInspection>
   preflightCheckoutLightningObligation?(
     request: SparkCheckoutLightningObligationInput
   ): Promise<SparkCheckoutLightningObligationPreflight>
+  estimateCheckoutLightningFee?(
+    request: SparkCheckoutLightningFeeEstimateInput
+  ): Promise<number>
   sendCheckoutLightningObligation?(
     request: SparkCheckoutLightningObligationInput
   ): Promise<SparkCheckoutLightningObligationSendResult>
@@ -191,12 +269,24 @@ export interface SparkSdkClient {
       | { type: "sparkAddress" }
   }): Promise<{ paymentRequest: string; fee: bigint }>
   getFundsState?(): Promise<SparkFundsState>
+  openCheckoutRetirementReader?(
+    target: SparkCheckoutRetirementTarget & { walletId: string }
+  ): Promise<SparkCheckoutRetirementSession>
   createCheckoutReceive?(
     request: SparkCheckoutReceiveInput
   ): Promise<SparkCheckoutReceiveRequest>
   reconcileCheckoutReceive?(
     request: SparkCheckoutReceiveRequest
   ): Promise<SparkCheckoutReceiveReconciliation>
+  attestCheckoutReceiveCredit?(
+    request: SparkCheckoutReceiveRequest
+  ): Promise<
+    | import("./spark-checkout-receive-credit").SparkCheckoutReceiveCreditProof
+    | null
+  >
+  attestCheckoutReceiveHistory?(
+    target: SparkCheckoutHistoricalReceiveTarget
+  ): Promise<SparkCheckoutHistoricalReceiveAttestation>
 }
 
 export interface SparkSdkFactory {
@@ -467,6 +557,57 @@ export class SparkWalletManager {
     return client.getFundsState()
   }
 
+  async openCheckoutRetirementReader(
+    walletId: string,
+    target: SparkCheckoutRetirementTarget
+  ): Promise<SparkCheckoutRetirementSession> {
+    const request = { ...target, walletId }
+    if (request.network !== this.#factory.network) {
+      throw new Error("Checkout Spark retirement belongs to another network.")
+    }
+    const client = this.#getClient(walletId)
+    if (!client.openCheckoutRetirementReader) {
+      throw new Error("This Spark adapter cannot inspect checkout retirement.")
+    }
+    const session = await client.openCheckoutRetirementReader(request)
+    let closed = false
+    const assertCurrent = () => {
+      if (closed || this.#getClient(walletId) !== client) {
+        throw new Error(
+          "Checkout Spark retirement session is no longer current."
+        )
+      }
+    }
+    try {
+      assertCurrent()
+    } catch (error) {
+      await session.cleanup()
+      throw error
+    }
+    const read = async <T>(action: () => Promise<T>): Promise<T> => {
+      assertCurrent()
+      const result = await action()
+      assertCurrent()
+      return result
+    }
+    return {
+      sparkAddress: session.sparkAddress,
+      reader: {
+        getTransfers: (input) => read(() => session.reader.getTransfers(input)),
+        getPendingTransfers: (address) =>
+          read(() => session.reader.getPendingTransfers(address)),
+        getAvailableBalance: (address) =>
+          read(() => session.reader.getAvailableBalance(address)),
+        getOwnedBalance: (address) =>
+          read(() => session.reader.getOwnedBalance(address)),
+      },
+      async cleanup() {
+        closed = true
+        await session.cleanup()
+      },
+    }
+  }
+
   async createCheckoutReceive(
     walletId: string,
     input: SparkCheckoutReceiveInput
@@ -508,6 +649,52 @@ export class SparkWalletManager {
       )
     }
     return client.reconcileCheckoutReceive(request)
+  }
+
+  async attestCheckoutReceiveCredit(
+    walletId: string,
+    request: SparkCheckoutReceiveRequest
+  ): Promise<
+    | import("./spark-checkout-receive-credit").SparkCheckoutReceiveCreditProof
+    | null
+  > {
+    if (
+      request.walletId !== walletId ||
+      request.network !== this.#factory.network ||
+      request.receiveSettledPolicy !== "ordinary-exact-credit-v3"
+    ) {
+      throw new Error(
+        "The settled checkout receive belongs to a different wallet or policy."
+      )
+    }
+    const client = this.#getClient(walletId)
+    if (!client.attestCheckoutReceiveCredit) {
+      throw new Error(
+        "This Spark adapter cannot attest an exact checkout credit."
+      )
+    }
+    return client.attestCheckoutReceiveCredit(request)
+  }
+
+  async attestCheckoutReceiveHistory(
+    walletId: string,
+    target: SparkCheckoutHistoricalReceiveTarget
+  ): Promise<SparkCheckoutHistoricalReceiveAttestation> {
+    if (
+      target.walletId !== walletId ||
+      target.network !== this.#factory.network
+    ) {
+      throw new Error(
+        "The Spark checkout receive target belongs to a different wallet or network."
+      )
+    }
+    const client = this.#getClient(walletId)
+    if (!client.attestCheckoutReceiveHistory) {
+      throw new Error(
+        "This Spark adapter cannot attest checkout receive history."
+      )
+    }
+    return client.attestCheckoutReceiveHistory(target)
   }
 
   async listPayments(walletId: string): Promise<SparkPaymentSummary[]> {
@@ -1058,6 +1245,39 @@ export class SparkWalletManager {
       throw new Error("This Spark adapter cannot preflight a checkout leg.")
     }
     return client.preflightCheckoutLightningObligation(request)
+  }
+
+  /** Explicit native renewal inspection; not a passive history/preview read. */
+  async inspectCheckoutLightningReturnedAttempt(
+    walletId: string,
+    request: SparkCheckoutLightningReturnedInspectionInput,
+    assertCurrent?: () => void
+  ): Promise<SparkCheckoutLightningReturnedInspection> {
+    if (request.network !== this.#factory.network) {
+      return { status: "conflicting" }
+    }
+    const client = this.#getClient(walletId)
+    if (!client.inspectCheckoutLightningReturnedAttempt) {
+      return { status: "unavailable" }
+    }
+    return client.inspectCheckoutLightningReturnedAttempt(
+      request,
+      assertCurrent
+    )
+  }
+
+  /** Read-only exact-invoice estimate before a separate per-leg cap is frozen. */
+  async estimateCheckoutLightningFee(
+    request: SparkCheckoutLightningFeeEstimateInput
+  ): Promise<number> {
+    if (request.network !== this.#factory.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    const client = this.#getClient(request.walletId)
+    if (!client.estimateCheckoutLightningFee) {
+      throw new Error("This Spark adapter cannot estimate a checkout leg.")
+    }
+    return client.estimateCheckoutLightningFee(request)
   }
 
   /**

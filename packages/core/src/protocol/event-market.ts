@@ -185,6 +185,8 @@ export interface EventMarketCollectionDraftInput {
 }
 
 export interface ParsedEventMarketCalendar {
+  /** Exact verified public revision; retaining it does not establish freshness. */
+  signedEvent?: SignedPublicNostrEvent
   coordinate: string
   eventId: string
   authorPubkey: string
@@ -211,6 +213,8 @@ export interface ParsedEventMarketCalendar {
 }
 
 export interface ParsedEventMarketPickup {
+  /** Exact verified public revision; retaining it does not establish freshness. */
+  signedEvent?: SignedPublicNostrEvent
   coordinate: string
   eventId: string
   authorPubkey: string
@@ -816,6 +820,20 @@ function validSignedKind(
   return kinds.includes(event.kind) && isValidSignedPublicNostrEvent(event)
 }
 
+function copyPublicEvent(
+  event: SignedPublicNostrEvent
+): SignedPublicNostrEvent {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    kind: event.kind,
+    created_at: event.created_at,
+    content: event.content,
+    tags: event.tags.map((tag) => [...tag]),
+    sig: event.sig,
+  }
+}
+
 export function parseEventMarketCalendarEvent(
   event: SignedPublicNostrEvent
 ): ParsedEventMarketCalendar | null {
@@ -899,6 +917,7 @@ export function parseEventMarketCalendarEvent(
   )
 
   return {
+    signedEvent: copyPublicEvent(event),
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
     authorPubkey: coordinate.authorPubkey,
@@ -968,6 +987,7 @@ export function parseEventMarketPickupEvent(
   }
 
   return {
+    signedEvent: copyPublicEvent(event),
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
     authorPubkey: coordinate.authorPubkey,
@@ -1061,7 +1081,7 @@ export function parseEventMarketCollectionEvent(
   }
 
   return {
-    signedEvent: { ...event, tags: event.tags.map((tag) => [...tag]) },
+    signedEvent: copyPublicEvent(event),
     coordinate: coordinate.coordinate,
     eventId: event.id.toLowerCase(),
     authorPubkey: coordinate.authorPubkey,

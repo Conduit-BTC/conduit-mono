@@ -3,11 +3,20 @@ import {
   isExternalPaymentReportMessage,
   isMerchantOrderPaid,
   isPaymentProofEvidenceMessage,
+  projectCheckoutSparkMerchantSettlement,
   type MerchantConversationSummary,
   type ParsedOrderMessage,
   type PricingRateInput,
 } from "@conduit/core"
-import { getMerchantConversationPhase, type OrderPhaseTab } from "./order-phase"
+import {
+  getCheckoutSparkOrderSettlementRecord,
+  type MerchantOrderSettlementBinding,
+} from "./checkout-spark-order-overlay"
+import {
+  getMerchantConversationPhase,
+  getMerchantOrderSummary,
+  type OrderPhaseTab,
+} from "./order-phase"
 
 export interface TimeBucketPoint {
   /** Bucket start (ms). */
@@ -352,7 +361,8 @@ function paymentCashflowTimestamp(
 export function buildDashboardChartData(
   conversations: MerchantConversationSummary[],
   rate: PricingRateInput,
-  range: DashboardDateRange
+  range: DashboardDateRange,
+  bindings: readonly MerchantOrderSettlementBinding[] = []
 ): DashboardChartData {
   const windowStart = startOfDay(range.start)
   const windowEnd = startOfDay(range.end)
@@ -375,6 +385,13 @@ export function buildDashboardChartData(
       conversation,
       orderMessage
     )
+    const routed = getMerchantOrderSummary(conversation).checkoutSparkRouted
+    const settlement = routed
+      ? getCheckoutSparkOrderSettlementRecord(conversation, bindings)
+      : null
+    const projection = settlement
+      ? projectCheckoutSparkMerchantSettlement(settlement)
+      : null
 
     const day = startOfDay(orderMessage.createdAt)
     const orderInRange = day >= windowStart && day <= windowEnd
@@ -387,18 +404,31 @@ export function buildDashboardChartData(
           (orderCountByBucket.get(bucket.start) ?? 0) + 1
         )
       }
-      const phase = getMerchantConversationPhase(conversation)
+      const phase = getMerchantConversationPhase(conversation, projection)
       statusCounts.set(phase, (statusCounts.get(phase) ?? 0) + 1)
     }
 
-    if (paymentConfirmation) {
-      const paymentDay = startOfDay(
-        paymentCashflowTimestamp(
-          conversation,
-          orderMessage,
-          paymentConfirmation
-        )
-      )
+    // Routed funding and buyer/merchant paid claims are not commerce receipt.
+    // The last required (non-fee) provider payout marks local verification.
+    const paidAt = routed
+      ? projection?.commerceVerified && settlement
+        ? Math.max(
+            ...settlement.requiredCommerceLegIds.map(
+              (legId) =>
+                settlement.paidLegs.find((leg) => leg.legId === legId)!
+                  .observedAt
+            )
+          )
+        : null
+      : paymentConfirmation
+        ? paymentCashflowTimestamp(
+            conversation,
+            orderMessage,
+            paymentConfirmation
+          )
+        : null
+    if (paidAt !== null && Number.isFinite(new Date(paidAt).getTime())) {
+      const paymentDay = startOfDay(paidAt)
       const paymentInRange =
         paymentDay >= windowStart && paymentDay <= windowEnd
       const sats = convertCommerceAmountToSats(

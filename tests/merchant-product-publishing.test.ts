@@ -1,5 +1,6 @@
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import {
   NDKEvent,
   NDKPrivateKeySigner,
@@ -16,15 +17,18 @@ import {
   cacheSignedProductListingEvent,
   CANONICAL_APP_BACKPLANE_RELAYS,
   config,
+  db,
   EVENT_KINDS,
   getCachedMerchantStorefront,
   parseProductEvent,
+  projectSignedProductListingForLocalCommit,
   planProductDeletionRelays,
   RemoteSignerError,
   resolveProductFulfillment,
   type ProductDeletionOutboxRepository,
   type ProductSchema,
   type PublishWithPlannerResult,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 import type {
   CachedProduct,
@@ -42,7 +46,7 @@ import {
   publishCanonicalProductEvents,
   resolveProductFulfillmentIntentForTarget,
   resolvePublishedProductFulfillmentIntentForTarget,
-  signAndPublishProductWriteBundle,
+  signAndPublishProductWriteBundle as signAndPublishProductWriteBundleCore,
   signAndPublishProductListing,
   type CanonicalProductPublishDependencies,
   type SignedProductWriteBundle,
@@ -67,6 +71,31 @@ function addTestCommerceFallbackRelays(): void {
 }
 const allowAllAccountNetworkLocalStateRepository = {
   get: async () => undefined,
+}
+
+// These publication fixtures exercise the real atomic browser journal. Only
+// IndexedDB, Web Locks and final relay transports are supplied offline.
+let restoreBrowser: (() => void) | undefined
+const exactPublishes: Array<{
+  kind: number
+  eventId: string
+  relayUrl: string
+}> = []
+let exactPublishStatus: "acked" | "timed_out" = "acked"
+let deletionSourceId = ""
+
+function signAndPublishProductWriteBundle(
+  input: Parameters<typeof signAndPublishProductWriteBundleCore>[0]
+) {
+  return signAndPublishProductWriteBundleCore({
+    ...input,
+    durableCommit: {},
+    productListingDeliveryOptions: {
+      accountNetworkLocalStateRepository:
+        allowAllAccountNetworkLocalStateRepository,
+      ...input.productListingDeliveryOptions,
+    },
+  })
 }
 
 function publishAndParse(
@@ -122,12 +151,15 @@ class MemoryProductDeletionOutbox implements ProductDeletionOutboxRepository {
   }
 
   async get(id: string): Promise<ProductDeletionDeliveryJob | undefined> {
-    const job = this.storage.get(id)
+    const job = (await db.productDeletionOutbox.get(id)) ?? this.storage.get(id)
     return job ? cloneDeletionJob(job) : undefined
   }
 
   async listUndelivered(): Promise<ProductDeletionDeliveryJob[]> {
-    return Array.from(this.storage.values())
+    return [
+      ...(await db.productDeletionOutbox.toArray()),
+      ...this.storage.values(),
+    ]
       .filter((job) => job.state !== "delivered")
       .map(cloneDeletionJob)
   }
@@ -136,10 +168,12 @@ class MemoryProductDeletionOutbox implements ProductDeletionOutboxRepository {
     id: string,
     updater: (current: ProductDeletionDeliveryJob) => ProductDeletionDeliveryJob
   ): Promise<ProductDeletionDeliveryJob> {
-    const current = this.storage.get(id)
+    const persisted = await db.productDeletionOutbox.get(id)
+    const current = persisted ?? this.storage.get(id)
     if (!current) throw new Error("missing")
     const next = updater(cloneDeletionJob(current))
-    this.storage.set(id, cloneDeletionJob(next))
+    if (persisted) await db.productDeletionOutbox.put(next)
+    else this.storage.set(id, cloneDeletionJob(next))
     return cloneDeletionJob(next)
   }
 }
@@ -257,7 +291,71 @@ async function readProductAfterCacheReload(
   return reloaded.data.find((record) => record.dTag === dTag)?.product
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  const dependencies = (
+    db as unknown as {
+      _deps: {
+        indexedDB?: globalThis.IDBFactory
+        IDBKeyRange?: typeof IDBKeyRange
+      }
+    }
+  )._deps
+  const priorIndexedDB = dependencies.indexedDB
+  const priorKeyRange = dependencies.IDBKeyRange
+  const priorNavigator = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "navigator"
+  )
+  const priorStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage"
+  )
+  const storageValues = new Map<string, string>()
+  db.close({ disableAutoOpen: false })
+  dependencies.indexedDB = new IDBFactory()
+  dependencies.IDBKeyRange = IDBKeyRange
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      locks: {
+        request: async <T>(
+          name: string,
+          operation: (lock: { name: string }) => Promise<T>
+        ) => operation({ name }),
+      },
+    },
+  })
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => storageValues.get(key) ?? null,
+      setItem: (key: string, value: string) => storageValues.set(key, value),
+      removeItem: (key: string) => storageValues.delete(key),
+    },
+  })
+  restoreBrowser = () => {
+    db.close({ disableAutoOpen: false })
+    dependencies.indexedDB = priorIndexedDB
+    dependencies.IDBKeyRange = priorKeyRange
+    if (priorNavigator)
+      Object.defineProperty(globalThis, "navigator", priorNavigator)
+    else Reflect.deleteProperty(globalThis, "navigator")
+    if (priorStorage)
+      Object.defineProperty(globalThis, "localStorage", priorStorage)
+    else Reflect.deleteProperty(globalThis, "localStorage")
+  }
+  exactPublishes.length = 0
+  exactPublishStatus = "acked"
+  const source = makeSignedProductEvent({
+    dTag: "variation",
+    acceptedRelayUrl: "wss://relay.conduit.market",
+  })
+  deletionSourceId = source.id
+  await db.products.put(
+    projectSignedProductListingForLocalCommit(
+      source.rawEvent() as SignedPublicNostrEvent
+    )
+  )
   cachedProducts = []
   __resetCommerceTestOverrides()
   __resetRelayPublishTestOverrides()
@@ -279,6 +377,14 @@ beforeEach(() => {
   __setRelayPublishTestOverrides({
     accountNetworkLocalStateRepository:
       allowAllAccountNetworkLocalStateRepository,
+    publishSignedEventFrameToRelay: async ({ signedEvent, relayUrl }) => {
+      exactPublishes.push({
+        kind: signedEvent.kind,
+        eventId: signedEvent.id,
+        relayUrl,
+      })
+      return exactPublishStatus
+    },
     planPublishRelays: async () => ({
       intent: "author_event",
       primaryRelayUrls: [],
@@ -289,6 +395,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  restoreBrowser?.()
+  restoreBrowser = undefined
   config.commerceRelayUrls = [...originalCommerceRelayUrls]
   __resetCommerceTestOverrides()
   __resetRelayPublishTestOverrides()
@@ -388,6 +496,7 @@ describe("merchant product event delivery", () => {
         return {
           intent: input.intent,
           primaryRelayUrls: [relayUrl],
+          personalRelayUrls: [relayUrl],
           broadcastRelayUrls: [],
           parkedRelayUrls: [],
         }
@@ -414,10 +523,13 @@ describe("merchant product event delivery", () => {
         ],
         onSignedLocal: async () => {},
       })
-      expect(intents).toEqual([
-        "commerce_author_event",
-        "commerce_author_event",
-      ])
+      expect(intents).toEqual(["commerce_author_event"])
+      expect(exactPublishes.map(({ kind }) => kind)).toContain(
+        EVENT_KINDS.SHIPPING_OPTION
+      )
+      expect(exactPublishes.map(({ kind }) => kind)).toContain(
+        EVENT_KINDS.PRODUCT
+      )
     } finally {
       publishSpy.mockRestore()
     }
@@ -431,6 +543,7 @@ describe("merchant product event delivery", () => {
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: [relayUrl],
+        personalRelayUrls: [relayUrl],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
@@ -685,6 +798,7 @@ describe("merchant product event delivery", () => {
         return {
           intent: "author_event",
           primaryRelayUrls: [relayUrl],
+          personalRelayUrls: [relayUrl],
           broadcastRelayUrls: [],
           parkedRelayUrls: [],
         }
@@ -857,7 +971,7 @@ describe("merchant product event delivery", () => {
     setSigner(signer)
     const deletionTargets = buildProductRemovalDeletionTargets([
       {
-        eventId: "b".repeat(64),
+        eventId: deletionSourceId,
         addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
         sourceRelayUrls: [deletionAckRelayUrl, deletionPendingRelayUrl],
       },
@@ -986,6 +1100,7 @@ describe("merchant product event delivery", () => {
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: ["wss://relay.example"],
+        personalRelayUrls: ["wss://relay.example"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
@@ -1067,6 +1182,7 @@ describe("merchant product event delivery", () => {
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: ["wss://relay.example"],
+        personalRelayUrls: ["wss://relay.example"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
@@ -1102,7 +1218,6 @@ describe("merchant product event delivery", () => {
       expect(signedKinds).toEqual([EVENT_KINDS.SHIPPING_OPTION])
       expect(signerProgress).toEqual([
         { kind: "shipping", current: 1, total: 2 },
-        { kind: "product", current: 2, total: 2 },
       ])
 
       visible = true
@@ -1140,6 +1255,7 @@ describe("merchant product event delivery", () => {
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: ["wss://relay.example"],
+        personalRelayUrls: ["wss://relay.example"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
@@ -1190,13 +1306,16 @@ describe("merchant product event delivery", () => {
       await signAndPublishProductWriteBundle(input)
       expect(signRequests).toBe(2)
       expect(signedLocalCalls).toBe(1)
-      expect(publishSpy).toHaveBeenCalledTimes(1)
+      expect(
+        exactPublishes.filter(({ kind }) => kind === EVENT_KINDS.PRODUCT).length
+      ).toBeGreaterThan(0)
+      expect(new Set(exactPublishes.map(({ eventId }) => eventId)).size).toBe(1)
     } finally {
       publishSpy.mockRestore()
     }
   })
 
-  it("retains a signer-returned product for exact retry after authority changes", async () => {
+  it("discards an uncommitted signer-returned product after authority changes", async () => {
     const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
     let authorityCurrent = true
     let signRequests = 0
@@ -1215,6 +1334,7 @@ describe("merchant product event delivery", () => {
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: ["wss://relay.example"],
+        personalRelayUrls: ["wss://relay.example"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
@@ -1241,16 +1361,11 @@ describe("merchant product event delivery", () => {
         })
       ).rejects.toThrow("Product signer session changed")
       expect(signRequests).toBe(1)
-      expect(signedEvent?.id).toBeTruthy()
+      expect(signedEvent).toBeNull()
       expect(publishSpy).toHaveBeenCalledTimes(0)
-
-      authorityCurrent = true
-      await deliverSignedProductEvent(signedEvent!, MERCHANT_PUBKEY, {
-        shouldContinue: () => authorityCurrent,
-      })
-      expect(signRequests).toBe(1)
-      expect(publishSpy).toHaveBeenCalledTimes(1)
-      expect(publishedIds).toEqual([signedEvent!.id])
+      expect(publishedIds).toEqual([])
+      expect(await db.localProductWriteIntents.count()).toBe(0)
+      expect(await db.productListingOutbox.count()).toBe(0)
     } finally {
       publishSpy.mockRestore()
     }
@@ -1269,7 +1384,8 @@ describe("merchant product event delivery", () => {
       __setRelayPublishTestOverrides({
         planPublishRelays: async () => ({
           intent: "author_event",
-          primaryRelayUrls: ["wss://saved-public.example", loopbackRelayUrl],
+          primaryRelayUrls: [loopbackRelayUrl],
+          appRelayUrls: [loopbackRelayUrl],
           broadcastRelayUrls: [],
           parkedRelayUrls: [],
         }),
@@ -1287,7 +1403,7 @@ describe("merchant product event delivery", () => {
         ],
         deletions: buildProductRemovalDeletionTargets([
           {
-            eventId: "e".repeat(64),
+            eventId: deletionSourceId,
             addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
             sourceRelayUrls: ["wss://source-public.example"],
           },
@@ -1354,68 +1470,73 @@ describe("merchant product event delivery", () => {
     const repository = new MemoryProductDeletionOutbox()
     const signer = new NDKPrivateKeySigner(MERCHANT_SECRET)
     setSigner(signer)
-    __setCommerceTestOverrides({
-      putCachedProducts: async () => {
-        throw new Error("listing cache unavailable")
-      },
-    })
+    const writeCache = spyOn(db.products, "put").mockRejectedValue(
+      new Error("listing cache unavailable")
+    )
     let onSignedLocalCalls = 0
     let deletionPublishAttempts = 0
 
-    await expect(
-      signAndPublishProductWriteBundle({
-        merchantPubkey: MERCHANT_PUBKEY,
-        listings: [
-          {
-            product: makeProduct("root"),
-            dTag: "root",
-            fulfillmentIntent: { kind: "coordinate_after_order" },
+    try {
+      await expect(
+        signAndPublishProductWriteBundle({
+          merchantPubkey: MERCHANT_PUBKEY,
+          listings: [
+            {
+              product: makeProduct("root"),
+              dTag: "root",
+              fulfillmentIntent: { kind: "coordinate_after_order" },
+            },
+          ],
+          deletions: buildProductRemovalDeletionTargets([
+            {
+              eventId: deletionSourceId,
+              addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
+              sourceRelayUrls: ["wss://relay.damus.io"],
+            },
+          ]),
+          onSignedLocal: async () => {
+            onSignedLocalCalls += 1
           },
-        ],
-        deletions: buildProductRemovalDeletionTargets([
-          {
-            eventId: "c".repeat(64),
-            addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
-            sourceRelayUrls: ["wss://relay.damus.io"],
+          deletionDeliveryOptions: {
+            repository,
+            accountNetworkLocalStateRepository:
+              allowAllAccountNetworkLocalStateRepository,
+            restoreLocalEvidence: async () => {},
+            publisher: async () => {
+              deletionPublishAttempts += 1
+              return { status: "acked" }
+            },
           },
-        ]),
-        onSignedLocal: async () => {
-          onSignedLocalCalls += 1
-        },
-        deletionDeliveryOptions: {
-          repository,
-          accountNetworkLocalStateRepository:
-            allowAllAccountNetworkLocalStateRepository,
-          restoreLocalEvidence: async () => {},
-          publisher: async () => {
-            deletionPublishAttempts += 1
-            return { status: "acked" }
-          },
-        },
+        })
+      ).rejects.toMatchObject({
+        retryable: false,
+        deliveryCause: { message: "listing cache unavailable" },
       })
-    ).rejects.toThrow("listing cache unavailable")
 
-    expect(await repository.listUndelivered()).toEqual([])
-    expect(onSignedLocalCalls).toBe(0)
-    expect(deletionPublishAttempts).toBe(0)
+      expect(await repository.listUndelivered()).toEqual([])
+      expect(onSignedLocalCalls).toBe(0)
+      expect(deletionPublishAttempts).toBe(0)
+    } finally {
+      writeCache.mockRestore()
+    }
   })
 
-  it("stops the production bundle before product side effects when fixed shipping has no ACK", async () => {
+  it("keeps the committed family off relays until its exact shipping prerequisite ACKs", async () => {
     const repository = new MemoryProductDeletionOutbox()
-    const publishAttempts: number[] = []
+    exactPublishStatus = "timed_out"
     let onSignedLocalCalls = 0
     setSigner(new NDKPrivateKeySigner(MERCHANT_SECRET))
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
         intent: "author_event",
         primaryRelayUrls: ["wss://relay.example"],
+        personalRelayUrls: ["wss://relay.example"],
         broadcastRelayUrls: [],
         parkedRelayUrls: [],
       }),
     })
     const publishSpy = spyOn(NDKEvent.prototype, "publish").mockImplementation(
       async function (this: NDKEvent) {
-        publishAttempts.push(this.kind ?? -1)
         return new Set()
       }
     )
@@ -1438,13 +1559,17 @@ describe("merchant product event delivery", () => {
           ],
           deletions: buildProductRemovalDeletionTargets([
             {
-              eventId: "c".repeat(64),
+              eventId: deletionSourceId,
               addressId: `${EVENT_KINDS.PRODUCT}:${MERCHANT_PUBKEY}:variation`,
               sourceRelayUrls: ["wss://relay.damus.io"],
             },
           ]),
           onSignedLocal: async () => {
             onSignedLocalCalls += 1
+            expect(await db.localProductWriteIntents.count()).toBe(1)
+            expect(await db.productListingOutbox.count()).toBe(1)
+            expect(await db.localProductShippingOutbox.count()).toBe(1)
+            expect(exactPublishes).toEqual([])
           },
           deletionDeliveryOptions: {
             repository,
@@ -1454,12 +1579,25 @@ describe("merchant product event delivery", () => {
             publisher: async () => ({ status: "acked" }),
           },
         })
-      ).rejects.toThrow("Product publication was stopped.")
+      ).rejects.toMatchObject({
+        retryable: true,
+        deliveryCause: {
+          message: "Signed shipping prerequisite is not acknowledged",
+        },
+      })
 
-      expect(publishAttempts).toEqual([EVENT_KINDS.SHIPPING_OPTION])
+      expect(exactPublishes.length).toBeGreaterThan(0)
+      expect(
+        exactPublishes.every(({ kind }) => kind === EVENT_KINDS.SHIPPING_OPTION)
+      ).toBe(true)
       expect(cachedProducts).toEqual([])
-      expect(await repository.listUndelivered()).toEqual([])
-      expect(onSignedLocalCalls).toBe(0)
+      expect(
+        (await repository.listUndelivered())[0]?.deliveryAttemptCount
+      ).toBe(0)
+      expect(
+        (await db.productListingOutbox.toArray())[0]?.readyForDelivery
+      ).toBe(false)
+      expect(onSignedLocalCalls).toBe(1)
     } finally {
       publishSpy.mockRestore()
     }

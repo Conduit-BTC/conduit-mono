@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import type { PublishWithPlannerResult } from "@conduit/core"
 import {
   buildLocalProductDeliveryNotice,
+  buildLocalProductQueueFailureNotice,
   buildLocalProductRetryNotice,
   buildProductDeliveryNotice,
   buildQueuedProductDeletionNotice,
@@ -108,6 +109,111 @@ describe("merchant product delivery notices", () => {
     expect(notice.state).toBe("retry_needed")
     expect(notice.detail).toContain("remains visible locally")
     expect(notice.successfulRelayUrls).toEqual([])
+  })
+
+  it("does not offer an impossible retry when the outbox was not saved", () => {
+    const notice = buildLocalProductQueueFailureNotice("publish")
+
+    expect(notice.state).toBe("failed")
+    expect(notice.detail).toContain("No relay delivery was attempted")
+    expect(notice.detail).not.toContain("Retry delivery")
+  })
+
+  it("projects terminal relay rejection without a no-op retry", () => {
+    const notice = buildProductDeliveryNotice(
+      "publish",
+      deliveryResult({
+        attemptedRelayUrls: ["wss://relay.one"],
+        failedRelayUrls: ["wss://relay.one"],
+        rejectedRelayUrls: ["wss://relay.one"],
+      })
+    )
+
+    expect(notice.state).toBe("rejected")
+    expect(notice.rejectedRelayUrls).toEqual(["wss://relay.one"])
+    expect(notice.detail).toContain("nothing left to retry")
+    expect(notice.detail).not.toContain("Use Retry delivery")
+  })
+
+  it("keeps a mixed publish retryable when its exact companion deletion is rejected", () => {
+    const rejectedDeletion = deliveryResult({
+      attemptedRelayUrls: ["wss://relay.one"],
+      failedRelayUrls: ["wss://relay.one"],
+      rejectedRelayUrls: ["wss://relay.one"],
+    })
+    const mixedDelivery = {
+      ...rejectedDeletion,
+      outstandingDeletion: {
+        jobId: "d".repeat(64),
+        delivery: rejectedDeletion,
+      },
+    }
+
+    const notice = buildProductDeliveryNotice("publish", mixedDelivery)
+
+    expect(notice.state).toBe("retry_needed")
+    expect(notice.detail).toContain("Use Retry delivery")
+    expect(notice.detail).not.toContain("nothing left to retry")
+  })
+
+  it("keeps an all-rejected deletion in the exact-delivery retry state", () => {
+    const rejected = buildProductDeliveryNotice(
+      "delete",
+      deliveryResult({
+        attemptedRelayUrls: ["wss://relay.one", "wss://relay.two"],
+        failedRelayUrls: ["wss://relay.one", "wss://relay.two"],
+        rejectedRelayUrls: ["wss://relay.one", "wss://relay.two"],
+      })
+    )
+
+    expect(rejected.state).toBe("retry_needed")
+    expect(rejected.title).toBe("Delete saved locally")
+    expect(rejected.detail).toContain("Use Retry delivery for 2 relays")
+    expect(rejected.detail).not.toContain("nothing left to retry")
+
+    const partlyAcknowledged = buildProductDeliveryNotice(
+      "delete",
+      deliveryResult({
+        attemptedRelayUrls: ["wss://relay.one", "wss://relay.two"],
+        successfulRelayUrls: ["wss://relay.one"],
+        failedRelayUrls: ["wss://relay.two"],
+        rejectedRelayUrls: ["wss://relay.two"],
+      }),
+      rejected
+    )
+    expect(partlyAcknowledged.state).toBe("partial")
+    expect(partlyAcknowledged.detail).toContain("ACKed 1 of 2 relays")
+    expect(partlyAcknowledged.detail).toContain(
+      "Use Retry delivery for 1 relay"
+    )
+
+    const delivered = buildProductDeliveryNotice(
+      "delete",
+      deliveryResult({
+        attemptedRelayUrls: ["wss://relay.two"],
+        successfulRelayUrls: ["wss://relay.two"],
+      }),
+      partlyAcknowledged
+    )
+    expect(delivered.state).toBe("delivered")
+    expect(delivered.failedRelayUrls).toEqual([])
+  })
+
+  it("treats a common family ACK as delivered when another relay rejects it", () => {
+    const notice = buildProductDeliveryNotice(
+      "publish",
+      deliveryResult({
+        attemptedRelayUrls: ["wss://relay.one", "wss://relay.two"],
+        successfulRelayUrls: ["wss://relay.one"],
+        failedRelayUrls: ["wss://relay.two"],
+        rejectedRelayUrls: ["wss://relay.two"],
+      })
+    )
+
+    expect(notice.state).toBe("delivered")
+    expect(notice.rejectedRelayUrls).toEqual(["wss://relay.two"])
+    expect(notice.detail).toContain("nothing left to retry")
+    expect(notice.detail).not.toContain("Use Retry delivery")
   })
 
   it("does not claim a queued deletion is hidden before restoring local evidence", () => {

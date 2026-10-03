@@ -538,7 +538,13 @@ function classifyLegacyOrderRumor(
   // A checkout recovery rumor contains wallet authority, not a conversation
   // message. Leave its ciphertext for the dedicated strict recovery reader;
   // the generic inbox must neither cache its content nor consume its wrap.
-  if (typeTags.some((tag) => tag[1] === "checkout_spark_recovery")) {
+  if (
+    typeTags.some(
+      (tag) =>
+        tag[1] === "checkout_spark_recovery" ||
+        tag[1] === "checkout_spark_merchant_progress"
+    )
+  ) {
     return typeTags.length === 1 &&
       orderTags.length === 1 &&
       recipientTags.length === 1 &&
@@ -1311,12 +1317,14 @@ export async function publishPrivateMessage(
     input.accountNetworkLocalStateRepository,
     input.shouldContinue
   )
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   const recipientDeclaration = await applyAccountRelayEligibilityToDeclaration(
     resolvedRecipientDeclaration,
     accountPubkey,
     authenticatedOwnerPubkey,
     input.accountNetworkLocalStateRepository
   )
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   if (
     resolvedRecipientDeclaration.state === "declared" &&
     resolvedRecipientDeclaration.relayUrls.length > 0 &&
@@ -1457,6 +1465,7 @@ export async function publishPrivateMessage(
   const senderRoute: ReturnType<
     typeof selectPrivateMessageDeliveryRoute
   > | null = progressiveRecipientDelivery ? null : await resolveSenderRoute()
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
 
   // The envelope's event context carries no account key authority.
   input.rumor.ndk ??= getNdk()

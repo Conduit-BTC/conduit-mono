@@ -26,14 +26,18 @@ export type CheckoutSparkOutgoingObservation = Omit<
 /** Only return this when the current invocation provably never entered send. */
 export type CheckoutSparkKnownNotSent = {
   status: "not_sent"
-  reason: "fee_over_cap" | "fee_unavailable"
+  reason: "fee_over_cap" | "fee_unavailable" | "invoice_expired"
 }
 
 function isKnownNotSent(value: unknown): value is CheckoutSparkKnownNotSent {
   if (!value || typeof value !== "object") return false
   if (!("status" in value) || value.status !== "not_sent") return false
   if (!("reason" in value)) return false
-  return value.reason === "fee_over_cap" || value.reason === "fee_unavailable"
+  return (
+    value.reason === "fee_over_cap" ||
+    value.reason === "fee_unavailable" ||
+    value.reason === "invoice_expired"
+  )
 }
 
 export interface CheckoutSparkOutgoingTarget {
@@ -406,7 +410,9 @@ async function step(
         reason:
           sent.reason === "fee_over_cap"
             ? "fee_exceeds_frozen_limit"
-            : "fee_preflight_unavailable",
+            : sent.reason === "invoice_expired"
+              ? "obligation_invoice_window_insufficient"
+              : "fee_preflight_unavailable",
       },
       sendAttempted: false,
     }

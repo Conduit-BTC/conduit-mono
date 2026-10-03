@@ -110,7 +110,7 @@ describe("deployment profiles", () => {
     ).toBe(false)
   })
 
-  it("configures compatibility routing and live presence by profile", () => {
+  it("configures compatibility routing, presence and Quantum Router by profile", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -129,6 +129,28 @@ describe("deployment profiles", () => {
     expect(preview.publicFeatures.livePresenceEnabled).toBe(true)
     expect(production.publicFeatures.livePresenceEnabled).toBe(true)
     expect(staging.publicFeatures.livePresenceEnabled).toBe(false)
+    expect(preview.publicFeatures.quantumRouterEnabled).toBe(true)
+    expect(production.publicFeatures.quantumRouterEnabled).toBe(true)
+    expect(staging.publicFeatures.quantumRouterEnabled).toBe(false)
+    expect(preview.lightningNetwork).toBe("mainnet")
+    expect(production.lightningNetwork).toBe("mainnet")
+    expect(staging.lightningNetwork).toBe("signet")
+  })
+
+  it("ignores dashboard router overrides for managed public profiles", () => {
+    for (const profile of ["preview", "production", "staging"] as const) {
+      const expected = profile !== "staging"
+      for (const override of ["true", "false"]) {
+        expect(
+          resolveDeploymentProfile({
+            CONDUIT_DEPLOYMENT_PROFILE: profile,
+            VITE_QUANTUM_ROUTER_ENABLED: override,
+            VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY: "true",
+            VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
+          }).publicFeatures.quantumRouterEnabled
+        ).toBe(expected)
+      }
+    }
   })
 
   it("selects mainnet Cloudflare preview and production without dashboard feature vars", () => {
@@ -208,6 +230,41 @@ describe("deployment profiles", () => {
     expect(() => parsePagesProfiles(missingPresence)).toThrow(
       "must explicitly set livePresenceEnabled"
     )
+
+    const missingRouter = structuredClone(profiles) as unknown as {
+      profiles: { preview: { publicFeatures: Record<string, unknown> } }
+    }
+    delete missingRouter.profiles.preview.publicFeatures.quantumRouterEnabled
+    expect(() => parsePagesProfiles(missingRouter)).toThrow(
+      "must explicitly set quantumRouterEnabled"
+    )
+    const disabledRouter = structuredClone(profiles)
+    disabledRouter.profiles.preview.publicFeatures.quantumRouterEnabled = false
+    expect(
+      parsePagesProfiles(disabledRouter).profiles.preview.publicFeatures
+        .quantumRouterEnabled
+    ).toBe(false)
+    const unsupportedNetwork = structuredClone(profiles)
+    unsupportedNetwork.profiles.staging.publicFeatures.quantumRouterEnabled = true
+    expect(() => parsePagesProfiles(unsupportedNetwork)).toThrow(
+      "cannot enable Quantum Router on an unsupported network"
+    )
+  })
+
+  it("keeps the local public capability disabled unless explicitly requested", () => {
+    expect(
+      resolveDeploymentProfile({}).publicFeatures.quantumRouterEnabled
+    ).toBe(false)
+    expect(
+      resolveDeploymentProfile({ VITE_QUANTUM_ROUTER_ENABLED: "true" })
+        .publicFeatures.quantumRouterEnabled
+    ).toBe(true)
+    expect(
+      resolveDeploymentProfile({
+        VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY: "true",
+        VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
+      }).publicFeatures.quantumRouterEnabled
+    ).toBe(false)
   })
 
   it("keeps local presence disabled unless explicitly enabled", () => {
@@ -238,6 +295,12 @@ describe("deployment profiles", () => {
       true
     )
     expect(manifest.publicFeatures.livePresenceEnabled).toBe(true)
+    expect(manifest.publicFeatures.quantumRouterEnabled).toBe(true)
+    expect(Object.keys(manifest.publicFeatures).sort()).toEqual([
+      "dmCompatibilityOrderRoutingEnabled",
+      "livePresenceEnabled",
+      "quantumRouterEnabled",
+    ])
     expect(manifest.publicConfigDigest).toBe(profile.configDigest)
     expect(Object.keys(manifest).sort()).toEqual([
       "app",
@@ -272,6 +335,35 @@ describe("deployment profiles", () => {
     expect(workflow).toContain(
       "manifest.publicFeatures?.livePresenceEnabled !== true"
     )
+    expect(workflow).toContain(
+      "manifest.publicFeatures?.quantumRouterEnabled !== true"
+    )
     expect(workflow).toContain("throw new Error(")
+  })
+
+  it("compiles the managed capability rather than dashboard router flags", () => {
+    for (const profile of ["preview", "production", "staging"] as const) {
+      const result = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          "-e",
+          'import { createConduitBuildContract } from "./scripts/vite/build_info.ts"; const { define } = createConduitBuildContract("apps/market"); console.log(JSON.stringify({ router: define["import.meta.env.VITE_QUANTUM_ROUTER_ENABLED"], network: define["import.meta.env.VITE_LIGHTNING_NETWORK"], profile: define["import.meta.env.VITE_DEPLOYMENT_PROFILE"] }));',
+        ],
+        env: {
+          ...process.env,
+          CF_PAGES: "",
+          CONDUIT_DEPLOYMENT_PROFILE: profile,
+          VITE_QUANTUM_ROUTER_ENABLED: profile === "staging" ? "true" : "false",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      expect(result.exitCode).toBe(0)
+      expect(JSON.parse(result.stdout.toString())).toEqual({
+        router: JSON.stringify(profile !== "staging" ? "true" : "false"),
+        network: JSON.stringify(profile === "staging" ? "signet" : "mainnet"),
+        profile: JSON.stringify(profile),
+      })
+    }
   })
 })

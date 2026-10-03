@@ -216,6 +216,8 @@ export interface ConduitConfig {
   dmCompatibilityOrderRelayUrls: string[]
   /** Redeploy-controlled flag for the validated-order compatibility lane. */
   dmCompatibilityOrderRoutingEnabled: boolean
+  /** Compiled capability for supported Quantum Router checkout and recovery. */
+  quantumRouterEnabled: boolean
   zapRelayUrls: string[]
   cacheApiUrl: string | null
   lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
@@ -233,6 +235,7 @@ export interface ConduitConfig {
 // Use direct access for each variable so Vite can inline them at build time.
 function getViteEnv(): {
   mode: string
+  dev: boolean
   e2eRelayUrl: string
   relayUrl: string
   defaultRelayUrl: string
@@ -244,6 +247,9 @@ function getViteEnv(): {
   lightningNetwork: string
   deploymentProfile: string
   dmCompatibilityOrderRouting: string
+  quantumRouter: string
+  localRouterCanary: string
+  checkoutSparkRehearsal: string
   nip89RelayHint: string
   nip89MarketPubkey: string
   nip89MerchantPubkey: string
@@ -255,6 +261,7 @@ function getViteEnv(): {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
       mode: import.meta.env.MODE ?? "",
+      dev: (import.meta.env.DEV as unknown) === true,
       e2eRelayUrl: import.meta.env.VITE_E2E_RELAY_URL ?? "",
       relayUrl: import.meta.env.VITE_RELAY_URL ?? "",
       defaultRelayUrl: import.meta.env.VITE_DEFAULT_RELAY_URL ?? "",
@@ -267,6 +274,11 @@ function getViteEnv(): {
       deploymentProfile: import.meta.env.VITE_DEPLOYMENT_PROFILE ?? "",
       dmCompatibilityOrderRouting:
         import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "",
+      quantumRouter: import.meta.env.VITE_QUANTUM_ROUTER_ENABLED ?? "",
+      localRouterCanary:
+        import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY ?? "",
+      checkoutSparkRehearsal:
+        import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL ?? "",
       nip89RelayHint: import.meta.env.VITE_NIP89_RELAY_HINT ?? "",
       nip89MarketPubkey: import.meta.env.VITE_NIP89_MARKET_PUBKEY ?? "",
       nip89MerchantPubkey: import.meta.env.VITE_NIP89_MERCHANT_PUBKEY ?? "",
@@ -278,6 +290,7 @@ function getViteEnv(): {
   }
   return {
     mode: "",
+    dev: false,
     e2eRelayUrl: "",
     relayUrl: "",
     defaultRelayUrl: "",
@@ -289,6 +302,9 @@ function getViteEnv(): {
     lightningNetwork: "",
     deploymentProfile: "",
     dmCompatibilityOrderRouting: "",
+    quantumRouter: "",
+    localRouterCanary: "",
+    checkoutSparkRehearsal: "",
     nip89RelayHint: "",
     nip89MarketPubkey: "",
     nip89MerchantPubkey: "",
@@ -447,6 +463,69 @@ export function resolveDmCompatibilityOrderRoutingEnabled(input: {
     return deploymentProfile === "staging"
   }
 
+  return true
+}
+
+/**
+ * Public capability admission only: signed plans and payout evidence still
+ * authorize payments. Local rehearsal flags never activate a hosted profile
+ * or grant the separate local fee, invoice, or accelerated-timing exceptions.
+ */
+export function resolveQuantumRouterEnabled(input: {
+  profileEnabled: boolean
+  deploymentProfile: string
+  lightningNetwork: string
+  hostname?: string | null
+  dev?: boolean
+  localRouterCanaryFlag?: string
+  localRehearsalFlag?: string
+  e2eRelayIsolationEnabled?: boolean
+}): boolean {
+  const deploymentProfile = input.deploymentProfile.trim().toLowerCase()
+  const lightningNetwork = input.lightningNetwork.trim().toLowerCase()
+  const hostname = (input.hostname ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.+$/, "")
+
+  if (deploymentProfile === "local") {
+    const localRehearsalEnabled =
+      input.localRouterCanaryFlag === "true" &&
+      input.localRehearsalFlag === "true"
+    // Mock maps to regtest only in the explicitly isolated browser rehearsal.
+    const localNetworkSupported =
+      lightningNetwork === "mainnet" ||
+      lightningNetwork === "regtest" ||
+      (lightningNetwork === "mock" &&
+        input.e2eRelayIsolationEnabled === true &&
+        localRehearsalEnabled)
+    return (
+      input.dev === true &&
+      localNetworkSupported &&
+      ["localhost", "127.0.0.1", "[::1]", "::1"].includes(hostname) &&
+      (input.profileEnabled || localRehearsalEnabled)
+    )
+  }
+
+  if (
+    !input.profileEnabled ||
+    lightningNetwork !== "mainnet" ||
+    (deploymentProfile !== "preview" && deploymentProfile !== "production")
+  ) {
+    return false
+  }
+
+  if (OFFICIAL_PRODUCTION_APP_HOSTNAMES.has(hostname)) {
+    return deploymentProfile === "production"
+  }
+  if (
+    SIGNET_PAGES_PROJECT_HOSTNAMES.some(
+      (projectHostname) =>
+        hostname === projectHostname || hostname.endsWith(`.${projectHostname}`)
+    )
+  ) {
+    return false
+  }
   return true
 }
 
@@ -624,6 +703,18 @@ const dmCompatibilityOrderRoutingEnabled =
     runtimeHostname:
       typeof window === "undefined" ? null : window.location.hostname,
   })
+const quantumRouterEnabled = resolveQuantumRouterEnabled({
+  profileEnabled: ["1", "true", "on"].includes(
+    env.quantumRouter.trim().toLowerCase()
+  ),
+  deploymentProfile: env.deploymentProfile,
+  lightningNetwork: env.lightningNetwork || "mainnet",
+  hostname: typeof window === "undefined" ? null : window.location.hostname,
+  dev: env.dev,
+  localRouterCanaryFlag: env.localRouterCanary,
+  localRehearsalFlag: env.checkoutSparkRehearsal,
+  e2eRelayIsolationEnabled: e2eRelayUrls.length === 1,
+})
 const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
   ...appCommercePublishRelayUrls,
@@ -662,6 +753,7 @@ const configuredRelayConfig: ConduitConfig = {
   dmInboxDefaultRelayUrls,
   dmCompatibilityOrderRelayUrls,
   dmCompatibilityOrderRoutingEnabled,
+  quantumRouterEnabled,
   zapRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork ||
@@ -792,6 +884,10 @@ export function getRelayBucketConfigs(
 
 export function isMockPayments(): boolean {
   return config.lightningNetwork === "mock"
+}
+
+export function isQuantumRouterEnabled(): boolean {
+  return config.quantumRouterEnabled
 }
 
 export function isSignet(): boolean {
