@@ -112,6 +112,9 @@ export function createConduitBuildContract(appDir: string): {
     "import.meta.env.VITE_LIVE_PRESENCE_ENABLED": JSON.stringify(
       profile.publicFeatures.livePresenceEnabled ? "true" : "false"
     ),
+    "import.meta.env.VITE_QUANTUM_ROUTER_ENABLED": JSON.stringify(
+      profile.publicFeatures.quantumRouterEnabled ? "true" : "false"
+    ),
     "import.meta.env.VITE_LIGHTNING_NETWORK": JSON.stringify(
       profile.lightningNetwork
     ),

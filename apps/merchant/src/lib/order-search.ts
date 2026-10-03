@@ -19,8 +19,8 @@ export function parseMerchantOrderSearch(
 }
 
 export function shouldStartMerchantOrderRecoveryAutomatically(
-  rehearsalEnabled: boolean,
+  routerEnabled: boolean,
   recovery: MerchantOrdersSearch["recovery"]
 ): boolean {
-  return rehearsalEnabled && recovery !== "paused"
+  return routerEnabled && recovery !== "paused"
 }

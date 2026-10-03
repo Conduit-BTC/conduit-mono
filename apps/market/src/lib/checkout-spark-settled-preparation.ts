@@ -21,7 +21,7 @@ import {
 
 import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
 import { isCurrentGuestOrderSigningIdentity } from "./guest-order-identity"
-import { canUseCheckoutSparkLocalRouterCanary } from "./checkout-spark-local-router-canary"
+import { assertMarketCheckoutSparkDispatchPlan } from "./checkout-spark-dispatch-policy"
 import { acquireCheckoutSparkWalletRetentionLock } from "./checkout-spark-wallet-retention-lock"
 import type { CheckoutSparkQuoteAuthority } from "./checkout-spark-quote-authority"
 import {
@@ -729,16 +729,7 @@ export async function loadAuthorizedCheckoutSparkSettledFunding(
     throw new Error("Settled checkout funding state is unavailable.")
   }
   const plan = snapshot.state.plan
-  const conduitDestination = plan.recipients.find(
-    (recipient) => recipient.kind === "conduit"
-  )?.destination.source
-  if (
-    conduitDestination?.type === "conduit_allowlist" &&
-    conduitDestination.policy === "local_router_canary" &&
-    !canUseCheckoutSparkLocalRouterCanary()
-  ) {
-    throw new Error("Local checkout router canary is unavailable here.")
-  }
+  assertMarketCheckoutSparkDispatchPlan(plan)
   const currentTime = (options.now ?? Date.now)()
   const delivery = getCheckoutSparkRecoveryDelivery(
     stored.recoveryHandoffId,

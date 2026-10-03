@@ -175,8 +175,12 @@ describe("local Merchant router settlement queries", () => {
       ).text()
       expect(route).toContain("useCheckoutSparkOrderSettlements({")
       expect(route).toContain(
-        "enabled: checkoutSparkRehearsalEnabled && signerConnected"
+        "enabled: quantumRouterEnabled && signerConnected"
       )
+      expect(route).toContain(
+        "const quantumRouterEnabled = isQuantumRouterEnabled()"
+      )
+      expect(route).not.toContain("isLocalCheckoutSparkRecoveryRehearsal")
       expect(route).toContain("settlement={getOrderSettlement(conversation)}")
     }
     const home = await Bun.file("apps/merchant/src/routes/index.tsx").text()

@@ -207,12 +207,7 @@ function getCartSummaryPrice(
           ? "Estimated total · unquoted shipping extra"
           : "Estimated total · final amounts at checkout",
       }
-    : {
-        ...display,
-        ...(includeCoordination && pricing.paymentRequired
-          ? { estimateNote: "Fees calculated at checkout" }
-          : {}),
-      }
+    : display
 }
 
 function getCartTelemetryProductType(items: CartItem[]): string {

@@ -18,6 +18,7 @@ import {
   createCheckoutSparkSettledReconciliation,
   createCheckoutSparkSettledRecoveryPayload,
   createCheckoutSparkSettledRecoveryProgressPayload,
+  checkoutSparkConduitFeeRecipient,
   checkoutSparkProviderSendWindowEndsAt,
   DexieMerchantCheckoutSparkProgressRepository,
   DexieCheckoutSparkSettledRepository,
@@ -182,11 +183,11 @@ function settledInitialSnapshot(
       },
       {
         kind: "conduit",
-        recipientId: "conduit-tester@rizful.com",
+        recipientId: checkoutSparkConduitFeeRecipient("production"),
         destination: {
           type: "lightning_address",
-          value: "conduit-tester@rizful.com",
-          source: { type: "conduit_allowlist", policy: "local_router_canary" },
+          value: checkoutSparkConduitFeeRecipient("production"),
+          source: { type: "conduit_allowlist", policy: "production" },
         },
         weightSats: 111,
       },
@@ -1188,12 +1189,13 @@ describe("Merchant checkout Spark settled import", () => {
     expect(panelSource).toContain("generation.current += 1")
   })
 
-  it("exposes recovery inspection only with an explicit loopback rehearsal flag", () => {
+  it("keeps experimental provider compatibility behind an explicit local rehearsal", () => {
     const local = {
       dev: true,
       rehearsalFlag: "true",
       routerCanaryFlag: "true",
       hostname: "localhost",
+      deploymentProfile: "local",
     }
     expect(isLocalCheckoutSparkRecoveryRehearsal(local)).toBe(true)
     expect(
@@ -1208,6 +1210,16 @@ describe("Merchant checkout Spark settled import", () => {
     expect(
       isLocalCheckoutSparkRecoveryRehearsal({ ...local, dev: false })
     ).toBe(false)
+    for (const deploymentProfile of [
+      "preview",
+      "production",
+      "staging",
+      "unknown",
+    ]) {
+      expect(
+        isLocalCheckoutSparkRecoveryRehearsal({ ...local, deploymentProfile })
+      ).toBe(false)
+    }
     expect(
       isLocalCheckoutSparkRecoveryRehearsal({
         ...local,
@@ -3498,8 +3510,9 @@ describe("Merchant checkout Spark payout history inspection", () => {
     }
   )
 
-  it("retains a provider-reconciled paid snapshot without sending and preserves payment when its ACK is lost", async () => {
-    for (const loseAck of [false, true]) {
+  it.each([false, true])(
+    "retains a provider-reconciled paid snapshot without sending and preserves payment (lost ACK=%s)",
+    async (loseAck) => {
       await withRecoveryDatabase(async (database, repository) => {
         const test = await merchantContinuationHarness(database, repository)
         test.provider.sent = true
@@ -3545,7 +3558,7 @@ describe("Merchant checkout Spark payout history inspection", () => {
         expect(test.snapshots).toHaveLength(1)
       })
     }
-  })
+  )
 
   it("stops Merchant continuation after account revocation or a CAS change during submitted snapshot delivery", async () => {
     for (const interruption of ["account", "cas"] as const) {

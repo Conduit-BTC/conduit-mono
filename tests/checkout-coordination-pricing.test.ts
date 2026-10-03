@@ -10,6 +10,8 @@ import {
   getFeeInclusiveListingPriceDisplay,
 } from "../apps/market/src/lib/checkout-coordination-pricing"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
+import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
+import { isCheckoutSparkSettledCart } from "../apps/market/src/lib/checkout-spark-settled-cart"
 
 const preference = { currency: "BITCOIN", bitcoinUnit: "sats" } as const
 
@@ -107,6 +109,7 @@ describe("fee-inclusive listing estimates", () => {
       price: 1_000,
       currency: "SATS",
       priceSats: 1_000,
+      format: "digital",
     })
     const display = getFeeInclusiveListingPriceDisplay(
       product,
@@ -132,7 +135,7 @@ describe("fee-inclusive listing estimates", () => {
     })
   })
 
-  it("uses a fresh fiat conversion for the whole estimated total", () => {
+  it("does not add router fees to unsupported fiat-priced listings", () => {
     const nowMs = 1_800_000_000_000
     const quote: BtcUsdRateQuote = {
       rate: 100_000,
@@ -146,10 +149,10 @@ describe("fee-inclusive listing estimates", () => {
       true,
       { nowMs }
     )
-    expect(display.sats).toBe(1_113)
-    expect(display.primary).toBe("~ $1.11")
-    expect(display.secondary).toBe("1,113 sats")
-    expect(display.feeEstimateIncluded).toBe(true)
+    expect(display.sats).toBe(1_000)
+    expect(display.primary).toBe("$1.00")
+    expect(display.secondary).toBe("1,000 sats")
+    expect(display.feeEstimateIncluded).toBe(false)
   })
 
   it("does not invent a fiat fee estimate when conversion is unavailable", () => {
@@ -188,8 +191,8 @@ describe("fee-inclusive listing estimates", () => {
 
 describe("combined cart estimates", () => {
   const item = (merchant = "a", product = "item"): CartItem => ({
-    productId: `30402:${merchant}:${product}`,
-    merchantPubkey: merchant,
+    productId: `30402:${merchant.repeat(64)}:${product}`,
+    merchantPubkey: merchant.repeat(64),
     title: "Test item",
     price: 1_000,
     priceSats: 1_000,
@@ -222,5 +225,86 @@ describe("combined cart estimates", () => {
         null
       )
     ).toBeNull()
+  })
+  it("does not add fees to variation or unresolved physical purchases", () => {
+    for (const unsupported of [
+      { ...item(), familyProductId: "family" },
+      { ...item(), format: "physical" as const },
+    ]) {
+      expect(getCartCoordinationEstimate([unsupported], null)).toBeNull()
+    }
+  })
+  it("adds fees only to the routed purchase in a mixed-merchant cart", () => {
+    const unsupported = { ...item("b"), familyProductId: "family" }
+    expect(getCartCoordinationEstimate([item(), unsupported], null)).toEqual({
+      totalSats: 2_113,
+      coordinationFeeSats: 113,
+      shippingPending: false,
+    })
+  })
+  it("keeps a resolved free merchant pickup outside payment estimates", () => {
+    const freePickup: CartItem = {
+      ...item(),
+      price: 0,
+      priceSats: 0,
+      sourcePrice: {
+        amount: 0,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+      shippingCostSats: 0,
+      sourceShippingCost: {
+        amount: 0,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+      format: "physical",
+      fulfillment: {
+        type: "pickup",
+        organizerPubkey: "a".repeat(64),
+        product: {
+          coordinate: `30402:${"a".repeat(64)}:item`,
+          merchantPubkey: "a".repeat(64),
+          eventId: "1".repeat(64),
+          createdAt: 100,
+        },
+        calendar: {
+          coordinate: `31923:${"a".repeat(64)}:market`,
+          eventId: "2".repeat(64),
+          createdAt: 101,
+        },
+        collection: {
+          coordinate: `30405:${"a".repeat(64)}:market`,
+          eventId: "3".repeat(64),
+          createdAt: 102,
+        },
+        option: {
+          coordinate: `30406:${"a".repeat(64)}:pickup`,
+          eventId: "4".repeat(64),
+          createdAt: 103,
+          title: "Merchant booth",
+        },
+        handoffMode: "merchant_handoff",
+        handlerPubkey: "a".repeat(64),
+        costSats: 0,
+        sourceCost: {
+          amount: 0,
+          currency: "SATS",
+          normalizedCurrency: "SATS",
+        },
+      },
+    }
+    expect(isCheckoutSparkSettledCart([freePickup])).toBe(true)
+    expect(buildCheckoutPricingIntent([freePickup], null)).toMatchObject({
+      status: "ok",
+      paymentRequired: false,
+      totalSats: 0,
+    })
+    expect(getCartCoordinationEstimate([freePickup], null)).toBeNull()
+    expect(getCartCoordinationEstimate([freePickup, item("b")], null)).toEqual({
+      totalSats: 1_113,
+      coordinationFeeSats: 113,
+      shippingPending: false,
+    })
   })
 })

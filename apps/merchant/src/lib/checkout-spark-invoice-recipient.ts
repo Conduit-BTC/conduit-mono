@@ -5,6 +5,7 @@ import {
   type CheckoutSparkSettledReconciliation,
   type DexieCheckoutSparkSettledRepository,
 } from "@conduit/core"
+import { canUseMerchantCheckoutSparkRecipientCompatibility } from "./checkout-spark-recovery-policy"
 
 type RecipientRepository = Pick<
   DexieCheckoutSparkSettledRepository,
@@ -22,6 +23,8 @@ export async function verifySavedMerchantCheckoutSparkRecipients(input: {
   assertCurrent: () => void
   now: () => number
   verifyInvoice?: typeof verifyCheckoutSparkInvoiceRecipient
+  /** Trusted caller/test seam, never sourced from a recovery message. */
+  allowProviderCompatibility?: boolean
 }): Promise<"complete" | "unavailable"> {
   const { state, repository, assertCurrent, now } = input
   assertCurrent()
@@ -51,6 +54,12 @@ export async function verifySavedMerchantCheckoutSparkRecipients(input: {
       continue
     }
     assertCurrent()
+    if (!(
+      input.allowProviderCompatibility ??
+      canUseMerchantCheckoutSparkRecipientCompatibility()
+    )) {
+      continue
+    }
     const result = await (
       input.verifyInvoice ?? verifyCheckoutSparkInvoiceRecipient
     )({ plan: state.plan, target, now: now(), assertCurrent })

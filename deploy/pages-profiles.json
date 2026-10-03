@@ -26,7 +26,8 @@
       "lightningNetwork": "mainnet",
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": true,
-        "livePresenceEnabled": true
+        "livePresenceEnabled": true,
+        "quantumRouterEnabled": true
       }
     },
     "production": {
@@ -34,7 +35,8 @@
       "lightningNetwork": "mainnet",
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": false,
-        "livePresenceEnabled": true
+        "livePresenceEnabled": true,
+        "quantumRouterEnabled": true
       }
     },
     "staging": {
@@ -42,7 +44,8 @@
       "lightningNetwork": "signet",
       "publicFeatures": {
         "dmCompatibilityOrderRoutingEnabled": true,
-        "livePresenceEnabled": false
+        "livePresenceEnabled": false,
+        "quantumRouterEnabled": false
       }
     }
   }

@@ -27,6 +27,10 @@ describe("checkout Spark local router canary gate", () => {
     }
     for (const context of [
       { ...demo, dev: false },
+      { ...demo, deploymentProfile: "preview" },
+      { ...demo, deploymentProfile: "production" },
+      { ...demo, deploymentProfile: "staging" },
+      { ...demo, deploymentProfile: "unknown" },
       { ...demo, flag: undefined },
       { ...demo, rehearsalFlag: undefined },
       { ...demo, fastHandoffFlag: undefined },
@@ -56,6 +60,18 @@ describe("checkout Spark local router canary gate", () => {
 
     for (const context of [
       { dev: false, flag: "true", hostname: "localhost" },
+      {
+        dev: true,
+        flag: "true",
+        hostname: "localhost",
+        deploymentProfile: "preview",
+      },
+      {
+        dev: true,
+        flag: "true",
+        hostname: "localhost",
+        deploymentProfile: "production",
+      },
       { dev: true, flag: undefined, hostname: "localhost" },
       { dev: true, flag: "TRUE", hostname: "localhost" },
       { dev: true, flag: "true", hostname: "localhost.example.com" },

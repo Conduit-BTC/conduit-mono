@@ -1,5 +1,7 @@
 import {
   calculateCheckoutSparkBuyerPrice,
+  isQuantumRouterEnabled,
+  isSatsLikeCurrency,
   getShopperPriceDisplay,
   getShopperSatsDisplay,
   type BtcUsdRateQuote,
@@ -10,21 +12,36 @@ import {
   type ShopperPriceDisplayOptions,
   type ShopperPricePreference,
 } from "@conduit/core"
-import { canUseCheckoutSparkLocalRouterCanary } from "./checkout-spark-local-router-canary"
 import type { CartItem } from "../hooks/useCart"
 import { groupCartPurchases } from "./cart-model"
 import { buildCheckoutPricingIntent } from "./checkout-payment"
+import { isCheckoutSparkSettledCart } from "./checkout-spark-settled-cart"
 
-/** Match the current local router lane; never change production direct prices. */
+/** Price estimates follow the same deployment capability as checkout. */
 export function coordinationPricingEnabled(): boolean {
-  return (
-    import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL === "true" &&
-    canUseCheckoutSparkLocalRouterCanary()
-  )
+  return isQuantumRouterEnabled()
 }
 
 export type FeeInclusiveListingPriceDisplay = ShopperPriceDisplay & {
   feeEstimateIncluded: boolean
+}
+
+type RouterListingPrice = CommercePriceLike & {
+  type?: string
+  format?: string
+}
+
+/** Physical fulfillment must be resolved in the cart before estimating fees. */
+export function canEstimateCheckoutCoordinationListing(
+  price: RouterListingPrice
+): boolean {
+  return (
+    price.currency === "SATS" &&
+    price.format === "digital" &&
+    (price.type === undefined || price.type === "simple") &&
+    (price.sourcePrice === undefined ||
+      isSatsLikeCurrency(price.sourcePrice.normalizedCurrency))
+  )
 }
 
 /** Invalid prices stay unavailable in the preview, never a render-time crash. */
@@ -57,10 +74,20 @@ export function getCartCoordinationEstimate(
   let totalSats = 0
   let coordinationFeeSats = 0
   let shippingPending = false
+  let hasRoutedPurchase = false
   try {
     for (const group of groups) {
       const pricing = buildCheckoutPricingIntent(group.items, quote)
       if (pricing.status !== "ok") return null
+      if (
+        !pricing.paymentRequired ||
+        !isCheckoutSparkSettledCart(group.items)
+      ) {
+        totalSats += pricing.totalSats
+        shippingPending ||= pricing.shippingCost.status === "manual"
+        continue
+      }
+      hasRoutedPurchase = true
       const price = calculateCheckoutSparkBuyerPrice({
         itemSubtotalSats: pricing.itemSubtotalSats,
         shippingSubtotalSats: pricing.shippingCost.totalSats,
@@ -69,7 +96,8 @@ export function getCartCoordinationEstimate(
       coordinationFeeSats += price.coordinationFeeSats
       shippingPending ||= pricing.shippingCost.status === "manual"
     }
-    return Number.isSafeInteger(totalSats) &&
+    return hasRoutedPurchase &&
+      Number.isSafeInteger(totalSats) &&
       Number.isSafeInteger(coordinationFeeSats)
       ? { totalSats, coordinationFeeSats, shippingPending }
       : null
@@ -80,7 +108,7 @@ export function getCartCoordinationEstimate(
 
 /** Display only. Never write these estimated totals into a listing or cart line. */
 export function getFeeInclusiveListingPriceDisplay(
-  price: CommercePriceLike,
+  price: RouterListingPrice,
   preference: ShopperPricePreference | undefined,
   quote: BtcUsdRateQuote | null,
   enabled: boolean,
@@ -89,6 +117,7 @@ export function getFeeInclusiveListingPriceDisplay(
   const base = getShopperPriceDisplay(price, preference, quote, options)
   if (
     !enabled ||
+    !canEstimateCheckoutCoordinationListing(price) ||
     base.state !== "ready" ||
     base.sats === null ||
     base.sats === 0

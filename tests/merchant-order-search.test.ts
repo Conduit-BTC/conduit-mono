@@ -35,7 +35,7 @@ describe("Merchant Orders search", () => {
     })
   })
 
-  it("keeps default automatic startup bounded by existing rehearsal eligibility", () => {
+  it("keeps default automatic startup bounded by deployment routing eligibility", () => {
     expect(
       shouldStartMerchantOrderRecoveryAutomatically(false, undefined)
     ).toBe(false)
@@ -116,11 +116,9 @@ describe("Merchant Orders search", () => {
     expect(source).toContain("validateSearch: parseMerchantOrderSearch")
     expect(source).toContain("recovery: recoveryMode")
     expect(source).toMatch(
-      /startAutomatically=\{shouldStartMerchantOrderRecoveryAutomatically\(\s*checkoutSparkRehearsalEnabled,\s*recoveryMode\s*\)\}/
+      /startAutomatically=\{shouldStartMerchantOrderRecoveryAutomatically\(\s*quantumRouterEnabled,\s*recoveryMode\s*\)\}/
     )
-    expect(source).toContain(
-      "allowAutomaticPayouts={checkoutSparkRehearsalEnabled}"
-    )
+    expect(source).toContain("allowAutomaticPayouts={quantumRouterEnabled}")
     const select = source.slice(
       source.indexOf("const selectConversation ="),
       source.indexOf("const changePhaseTab =")
