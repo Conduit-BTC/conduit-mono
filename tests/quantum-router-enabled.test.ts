@@ -2,8 +2,11 @@ import { describe, expect, it } from "bun:test"
 import {
   config,
   isQuantumRouterEnabled,
+  resolveE2eRelayIsolation,
   resolveQuantumRouterEnabled,
 } from "../packages/core/src/config"
+import { resolvePlaywrightRouterWebServerTarget } from "../scripts/dev/run_playwright_router_web_server"
+import { resolveDeploymentProfile } from "../scripts/vite/deployment_profile"
 
 const hosted = {
   profileEnabled: true,
@@ -22,6 +25,74 @@ const local = {
 }
 
 describe("Quantum Router capability admission", () => {
+  it("admits the dedicated isolated mock router deployment", () => {
+    const { env } = resolvePlaywrightRouterWebServerTarget("market", {
+      PLAYWRIGHT_RELAY_PORT: "5175",
+    })
+    const profile = resolveDeploymentProfile(env)
+    const isolatedRelayUrls = resolveE2eRelayIsolation(
+      "mock",
+      env.VITE_E2E_RELAY_URL ?? ""
+    )
+    expect(
+      resolveQuantumRouterEnabled({
+        profileEnabled: profile.publicFeatures.quantumRouterEnabled,
+        deploymentProfile: profile.name,
+        lightningNetwork: profile.lightningNetwork,
+        hostname: "127.0.0.1",
+        dev: true,
+        localRouterCanaryFlag: env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY,
+        localRehearsalFlag: env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL,
+        e2eRelayIsolationEnabled: isolatedRelayUrls.length === 1,
+      })
+    ).toBe(true)
+  })
+
+  it("does not admit mock routing outside the fully isolated local rehearsal", () => {
+    const isolatedMock = {
+      ...local,
+      lightningNetwork: "mock",
+      e2eRelayIsolationEnabled: true,
+    }
+    for (const override of [
+      { e2eRelayIsolationEnabled: false },
+      { e2eRelayIsolationEnabled: undefined },
+      { dev: false },
+      { dev: undefined },
+      { hostname: hosted.hostname },
+      { hostname: "localhost.example" },
+      { hostname: undefined },
+      { deploymentProfile: "unknown" },
+    ]) {
+      expect(
+        resolveQuantumRouterEnabled({ ...isolatedMock, ...override })
+      ).toBe(false)
+    }
+    for (const deploymentProfile of ["preview", "production", "staging"]) {
+      expect(
+        resolveQuantumRouterEnabled({
+          ...isolatedMock,
+          profileEnabled: true,
+          deploymentProfile,
+        })
+      ).toBe(false)
+    }
+    for (const override of [
+      { localRouterCanaryFlag: "false" },
+      { localRouterCanaryFlag: undefined },
+      { localRehearsalFlag: "false" },
+      { localRehearsalFlag: undefined },
+    ]) {
+      expect(
+        resolveQuantumRouterEnabled({
+          ...isolatedMock,
+          profileEnabled: true,
+          ...override,
+        })
+      ).toBe(false)
+    }
+  })
+
   it("admits compiled mainnet preview and production without local flags or DEV", () => {
     expect(resolveQuantumRouterEnabled(hosted)).toBe(true)
     for (const hostname of ["shop.conduit.market", "sell.conduit.market"]) {

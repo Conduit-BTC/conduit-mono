@@ -260,18 +260,14 @@ describe("Merchant automatic recovery session activation", () => {
     ).text()
     const route = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
     const mounted = route.slice(
-      route.indexOf(
-        "{signerConnected && pubkey && checkoutSparkRehearsalEnabled"
-      ),
+      route.indexOf("{signerConnected && pubkey && quantumRouterEnabled"),
       route.indexOf(
         "{hasAccount &&",
         route.indexOf("<CheckoutSparkRecoveryPanel")
       )
     )
     expect(mounted).toContain("key={`${pubkey}:${authGeneration}`}")
-    expect(mounted).toContain(
-      "allowAutomaticPayouts={checkoutSparkRehearsalEnabled}"
-    )
+    expect(mounted).toContain("allowAutomaticPayouts={quantumRouterEnabled}")
     expect(mounted).toContain(
       "isSessionCurrent={() => isAuthGenerationCurrent(authGeneration)}"
     )

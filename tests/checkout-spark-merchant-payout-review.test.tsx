@@ -61,9 +61,7 @@ describe("Merchant saved payout confirmation", () => {
       route.indexOf("/>", route.indexOf("<CheckoutSparkRecoveryPanel"))
     )
     expect(mounted).not.toContain("automaticPayouts=")
-    expect(mounted).toContain(
-      "allowAutomaticPayouts={checkoutSparkRehearsalEnabled}"
-    )
+    expect(mounted).toContain("allowAutomaticPayouts={quantumRouterEnabled}")
   })
 
   it("shows the exact destination, amount and full allocation limit without recovery material", () => {
