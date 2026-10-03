@@ -85,6 +85,7 @@ export {
   AlertDialogDescription,
 } from "./Dialog"
 export { Input, type InputProps } from "./Input"
+export { InputWithSuffix, type InputWithSuffixProps } from "./InputWithSuffix"
 export { Textarea, type TextareaProps } from "./Textarea"
 export {
   ConversationMessageBubble,

@@ -138,10 +138,10 @@ describe("Market event catalog route", () => {
     }
     expect(checkout.match(/orderSchema\.parse\(/g)?.length).toBe(2)
     expect(checkout.indexOf("orderSchema.parse(payload)")).toBeLessThan(
-      checkout.indexOf("rumor.content = JSON.stringify(payload)")
+      checkout.indexOf("rumor.content = serializeOrderRumorContent(")
     )
     expect(checkout.indexOf("orderSchema.parse(orderPayload)")).toBeLessThan(
-      checkout.indexOf("orderRumor.content = JSON.stringify(orderPayload)")
+      checkout.indexOf("orderRumor.content = serializeOrderRumorContent(")
     )
   })
 

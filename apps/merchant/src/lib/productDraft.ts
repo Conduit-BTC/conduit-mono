@@ -1,3 +1,4 @@
+import { isShippingWeightUnit } from "./shippingWeightUnits"
 import type { MerchantProductFormValues } from "./productForm"
 import {
   isAcceptedListingAreaCountry,
@@ -16,7 +17,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 10
+const PRODUCT_DRAFT_VERSION = 12
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -140,6 +141,8 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 7 &&
         candidate.version !== 8 &&
         candidate.version !== 9 &&
+        candidate.version !== 10 &&
+        candidate.version !== 11 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -207,7 +210,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
           ? "coordinate_after_order"
           : "fixed"
         : form.shippingPricingMode === "fixed" ||
-            form.shippingPricingMode === "coordinate_after_order"
+            form.shippingPricingMode === "coordinate_after_order" ||
+            (candidate.version >= 11 &&
+              form.shippingPricingMode === "weight_table")
           ? form.shippingPricingMode
           : null
     if (!shippingPricingMode) return null
@@ -350,6 +355,23 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
           : {}),
         shippingPricingMode,
         shippingCost,
+        ...(candidate.version >= 11
+          ? Object.fromEntries(
+              [
+                "shippingWeightGrams",
+                "shippingWeightAllowanceGrams",
+                "shippingHandling",
+                "shippingLengthCm",
+                "shippingWidthCm",
+                "shippingHeightCm",
+              ]
+                .filter((field) => typeof form[field] === "string")
+                .map((field) => [field, form[field]])
+            )
+          : {}),
+        ...(isShippingWeightUnit(form.shippingWeightUnit)
+          ? { shippingWeightUnit: form.shippingWeightUnit }
+          : {}),
         usePresetShippingZone: form.usePresetShippingZone,
         customShippingConfig: parseShippingConfig(
           JSON.stringify(form.customShippingConfig ?? null)

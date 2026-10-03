@@ -1,8 +1,14 @@
 import {
   canonicalizeShippingCost,
+  quoteShippingPolicy,
+  normalizeShippingPolicyRegion,
+  normalizeShippingPolicySubdivision,
+  shippingMoneyToMinorUnits,
   getShippingDestinationEligibility,
+  hasCurrentShippingPolicyEvidence,
   resolveProductFulfillment,
   type ParsedShippingOption,
+  type PricingRateInput,
   type PreparedProductFulfillment,
   type ShippingDestinationEligibility,
 } from "@conduit/core"
@@ -36,6 +42,8 @@ function clearPreparedShipping(item: CartItem): CartItem {
     shippingCountries: undefined,
     shippingCountryRules: undefined,
     canonicalShippingResolved: false,
+    shippingPolicyQuote: undefined,
+    shippingAllocatedCostSats: undefined,
   }
 }
 
@@ -46,11 +54,39 @@ export type PreparedCartFulfillment = {
 
 export function prepareCartFulfillment(
   items: CartItem[],
-  shippingOptions: readonly ParsedShippingOption[]
+  shippingOptions: readonly ParsedShippingOption[],
+  destination?: { country: string; subdivision?: string; postalCode?: string },
+  rateInput: PricingRateInput = null
 ): PreparedCartFulfillment {
   const resolutions = new Map<string, PreparedProductFulfillment>()
+  const policyGroups = new Map<
+    string,
+    { option: ParsedShippingOption; items: CartItem[] }
+  >()
   const preparedItems = items.map((item) => {
-    if (item.fulfillment?.type === "event_market_pickup") return item
+    if (item.fulfillment?.type === "event_market_pickup") {
+      return {
+        ...item,
+        shippingPolicyQuote: undefined,
+        shippingAllocatedCostSats: undefined,
+      }
+    }
+    const policyOption =
+      item.format !== "digital"
+        ? shippingOptions.find(
+            (option) =>
+              option.id === item.shippingOptionId &&
+              option.pubkey === item.merchantPubkey &&
+              hasCurrentShippingPolicyEvidence(option)
+          )
+        : undefined
+    if (policyOption) {
+      const key = `${item.merchantPubkey}:${policyOption.id}:${policyOption.eventId}`
+      const group = policyGroups.get(key) ?? { option: policyOption, items: [] }
+      group.items.push(item)
+      policyGroups.set(key, group)
+      return clearPreparedShipping(item)
+    }
 
     const resolution = resolveProductFulfillment(
       {
@@ -99,6 +135,59 @@ export function prepareCartFulfillment(
     }
   })
 
+  if (destination) {
+    for (const { option, items: groupItems } of policyGroups.values()) {
+      if (groupItems.some((item) => !item.signedProductEvent)) continue
+      const inputs = groupItems.map((item) => {
+        const currency = item.sourcePrice?.normalizedCurrency ?? item.currency
+        let subtotalMinor = -1
+        try {
+          subtotalMinor =
+            shippingMoneyToMinorUnits(
+              item.sourcePrice?.amount ?? item.price,
+              currency
+            ) * item.quantity
+        } catch {
+          // Invalid source precision requires coordination, never a zero charge.
+        }
+        return {
+          productId: item.productId,
+          productEventId: item.productEventId ?? "",
+          productEvent: item.signedProductEvent!,
+          productCreatedAt: Math.floor((item.productUpdatedAt ?? 0) / 1000),
+          quantity: item.quantity,
+          weightGrams: item.shippingWeightGrams,
+          shippingWeightAllowanceGrams: item.shippingWeightAllowanceGrams,
+          shippingHandling: item.shippingHandling,
+          currency,
+          subtotalMinor,
+        }
+      })
+      const result = quoteShippingPolicy({
+        policy: option.shippingPolicy!,
+        policyEvent: option.signedEvent!,
+        policyCoordinate: option.id,
+        policyEventId: option.eventId,
+        policyCreatedAt: Math.floor(option.createdAt / 1000),
+        merchantPubkey: option.pubkey,
+        items: inputs,
+        destination,
+        rateInput,
+      })
+      if (result.status !== "quoted") continue
+      for (const item of preparedItems) {
+        if (
+          item.merchantPubkey === option.pubkey &&
+          groupItems.some((entry) => entry.productId === item.productId)
+        ) {
+          item.shippingOptionId = option.id
+          item.shippingOptionDTag = option.dTag
+          item.shippingPolicyQuote = result.quote
+          item.canonicalShippingResolved = true
+        }
+      }
+    }
+  }
   return { items: preparedItems, resolutions }
 }
 
@@ -106,7 +195,7 @@ export function hasCartItemShippingSnapshot(item: CartItem): boolean {
   return (
     item.canonicalShippingResolved === true &&
     !!item.shippingOptionId &&
-    (item.shippingCountryRules?.length ?? 0) > 0
+    (!!item.shippingPolicyQuote || (item.shippingCountryRules?.length ?? 0) > 0)
   )
 }
 
@@ -115,6 +204,7 @@ export function getCartShippingOptionSnapshots(
 ): ParsedShippingOption[] {
   return items
     .filter(isPhysicalItem)
+    .filter((item) => item.fulfillment?.type !== "event_market_pickup")
     .filter(hasCartItemShippingSnapshot)
     .map((item) => ({
       eventId: item.shippingOptionId!,
@@ -163,13 +253,27 @@ export function getCartShippingOptionsAvailable(items: CartItem[]): boolean {
 }
 
 export function getCartShippingDestinationEligibility(
-  destination: { country: string; postalCode: string },
+  destination: { country: string; subdivision?: string; postalCode: string },
   items: CartItem[]
 ): ShippingDestinationEligibility {
   const results = items
     .filter(isPhysicalItem)
     .filter((item) => item.fulfillment?.type !== "event_market_pickup")
     .map((item) => {
+      if (item.shippingPolicyQuote) {
+        const quoted = item.shippingPolicyQuote.destination
+        const country = destination.country.trim().toUpperCase()
+        const subdivision = normalizeShippingPolicySubdivision(
+          country,
+          destination.subdivision
+        )
+        return quoted.country === country &&
+          (quoted.postalCode ?? "") ===
+            normalizeShippingPolicyRegion(destination.postalCode) &&
+          quoted.subdivision === subdivision
+          ? ({ eligible: true } as const)
+          : ({ eligible: null, reason: "unknown" } as const)
+      }
       const itemOptions = getCartShippingOptionSnapshots([item])
       return getShippingDestinationEligibility(destination, itemOptions)
     })

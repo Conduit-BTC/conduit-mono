@@ -4,6 +4,7 @@ import Dexie, {
   type EntityTable,
   type Table,
 } from "dexie"
+import type { ShippingPolicyQuote } from "../protocol/shipping-policy"
 import { config } from "../config"
 import type {
   OrderItemFulfillmentSchema,
@@ -33,6 +34,8 @@ export interface StoredOrder {
     quantity: number
     priceAtPurchase: number
     currency: string
+    shippingPolicyQuote?: ShippingPolicyQuote
+    shippingAllocatedCostSats?: number
     shippingCostSats?: number
     sourceShippingCost?: {
       amount: number
@@ -87,6 +90,7 @@ export interface StoredMessage {
 
 export interface CachedProduct {
   id: string
+  signedProductEvent?: SignedPublicNostrEvent
   pubkey: string
   dTag?: string
   title: string
@@ -104,6 +108,15 @@ export interface CachedProduct {
   parentProductId?: string
   specifications?: Array<{ key: string; value: string }>
   format?: "physical" | "digital"
+  shippingWeightGrams?: number
+  shippingWeightAllowanceGrams?: number
+  shippingHandling?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
+  shippingAdjustmentsMalformed?: true
+  shippingDimensionsCm?: { length: number; width: number; height: number }
   shippingCostSats?: number
   sourceShippingCost?: {
     amount: number
@@ -874,6 +887,8 @@ export interface OrderLifecycleItem {
   quantity: number
   priceAtPurchase: number
   currency: string
+  shippingPolicyQuote?: ShippingPolicyQuote
+  shippingAllocatedCostSats?: number
   shippingCostSats?: number
   sourceShippingCost?: {
     amount: number
@@ -947,6 +962,7 @@ export interface OrderLifecycle {
     fetchedAt: number
     source: string
     fiatSource?: string
+    fiatUsdRates?: Record<string, number>
   }
 
   /**

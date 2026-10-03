@@ -38,7 +38,7 @@ describe("Merchant live account authority", () => {
       /!signal\.aborted &&\s+!!pubkey &&\s+isCurrentOrderOwner\(pubkey, authGeneration\)/g
     expect(dashboard.match(generationGuard)).toHaveLength(1)
     expect(orders.match(orderGenerationGuard)).toHaveLength(4)
-    expect(products.match(generationGuard)).toHaveLength(1)
+    expect(products.match(generationGuard)).toHaveLength(2)
     const eventGenerationGuard =
       /!signal\.aborted && isAuthGenerationCurrent\(authGeneration\)/g
     expect(manager.match(eventGenerationGuard)).toHaveLength(2)

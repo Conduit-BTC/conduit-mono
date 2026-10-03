@@ -16,6 +16,7 @@ import { useQuery } from "@tanstack/react-query"
 import {
   formatEventMarketPickupDate,
   getProfilePaymentAddress,
+  getShippingOptionsByCoordinates,
   formatNpub,
   getCachedMarketplaceProducts,
   getCachedMerchantStorefront,
@@ -44,6 +45,9 @@ import {
   AvatarImage,
   Badge,
   Button,
+  Combobox,
+  Input,
+  Label,
   cn,
 } from "@conduit/ui"
 import {
@@ -79,7 +83,17 @@ import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapab
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type UseWalletsReturn } from "../hooks/useWallets"
 import { useShopperPresets } from "../hooks/useShopperPresets"
-import { getCartShippingDestinationEligibility } from "../lib/cart-shipping-options"
+import {
+  getCartShippingDestinationEligibility,
+  getCartShippingOptionCoordinates,
+  prepareCartFulfillment,
+} from "../lib/cart-shipping-options"
+import {
+  DEFAULT_CHECKOUT_SHIPPING,
+  readCheckoutShippingCapabilityInitialization,
+  initializeCheckoutShippingSession,
+  writeCheckoutShippingSession,
+} from "../lib/checkout-session"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   getCartCostSummary,
@@ -826,6 +840,15 @@ function MerchantCartCard({
           </div>
         </div>
 
+        {group.kind === "delivery" &&
+          group.items.some((item) => item.format !== "digital") && (
+            <p className="mt-4 text-sm text-[var(--text-muted)]">
+              {pricing.status === "ok" &&
+              pricing.shippingCost.status !== "manual"
+                ? `Shipping estimate: ${formatPrice({ price: pricing.shippingCost.totalSats, currency: "SATS", priceSats: pricing.shippingCost.totalSats }, { allowZero: true }).primary}. Confirm your full address at checkout.`
+                : "Enter a supported destination in Estimate shipping, or coordinate shipping with the merchant after sending an order."}
+            </p>
+          )}
         <div className="mt-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
             <div className="text-3xl font-semibold leading-tight text-secondary-400 sm:text-4xl">
@@ -911,7 +934,9 @@ function MerchantCartCard({
 }
 
 function CartPage() {
-  const { authGeneration } = useAuth()
+  const { authGeneration, signerReadiness, restorePendingPubkey } = useAuth()
+  const authPending =
+    signerReadiness === "pending" || restorePendingPubkey !== null
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -929,6 +954,77 @@ function CartPage() {
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
   const shopperPresets = useShopperPresets()
+  const [estimateOpen, setEstimateOpen] = useState(false)
+  const [estimate, setEstimate] = useState(() => ({
+    owner: accountPubkey,
+    value: readCheckoutShippingCapabilityInitialization(null, accountPubkey)
+      .value,
+  }))
+  useLayoutEffect(() => {
+    setEstimate({
+      owner: accountPubkey,
+      value: readCheckoutShippingCapabilityInitialization(null, accountPubkey)
+        .value,
+    })
+  }, [accountPubkey, authGeneration])
+  const estimateValue =
+    estimate.owner === accountPubkey
+      ? estimate.value
+      : DEFAULT_CHECKOUT_SHIPPING
+  const shippingCoordinates = getCartShippingOptionCoordinates(cart.items)
+  const shippingOptions = useQuery({
+    queryKey: [
+      "cartShippingEstimateOptions",
+      shippingCoordinates,
+      accountPubkey,
+      session.relayScope,
+    ],
+    queryFn: ({ signal }) =>
+      getShippingOptionsByCoordinates(shippingCoordinates, {
+        accountPubkey,
+        authenticatedPubkey,
+        signal,
+        shouldContinue: shouldContinueAccountRead,
+      }),
+    enabled: shippingCoordinates.length > 0,
+    staleTime: 15000,
+  })
+  const estimatedItems = useMemo(
+    () =>
+      prepareCartFulfillment(
+        cart.items,
+        shippingOptions.data ?? [],
+        {
+          country: estimateValue.country,
+          subdivision: estimateValue.state,
+          postalCode: estimateValue.postalCode,
+        },
+        shopperPricing.quote
+      ).items,
+    [
+      cart.items,
+      shippingOptions.data,
+      estimateValue.country,
+      estimateValue.state,
+      estimateValue.postalCode,
+      shopperPricing.quote,
+    ]
+  )
+  const estimatedGroups = groupCartPurchases(estimatedItems)
+  function updateEstimate(
+    field: "country" | "state" | "postalCode",
+    value: string
+  ): void {
+    if (authPending) return
+    const current = initializeCheckoutShippingSession(null, accountPubkey).value
+    const next = {
+      ...current,
+      [field]: value,
+      ...(field === "country" ? { state: "", postalCode: "" } : {}),
+    }
+    writeCheckoutShippingSession(next, undefined, undefined, accountPubkey)
+    setEstimate({ owner: accountPubkey, value: next })
+  }
   const [confirmClearTarget, setConfirmClearTarget] = useState<
     "all" | string | null
   >(null)
@@ -1093,7 +1189,7 @@ function CartPage() {
     cachedRelatedProductsQuery.isLoading
 
   const allCartsSummary = getCartSummaryPrice(
-    cart.items,
+    estimatedItems,
     shopperPricing.quote,
     shopperPricing.formatPrice
   )
@@ -1221,6 +1317,74 @@ function CartPage() {
             </div>
           </div>
 
+          {cart.items.some(
+            (item) =>
+              item.format !== "digital" &&
+              item.fulfillment?.type !== "event_market_pickup"
+          ) && (
+            <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+              <Button
+                variant="ghost"
+                className="w-full justify-between px-0"
+                aria-expanded={estimateOpen}
+                aria-controls="cart-shipping-estimate"
+                onClick={() => setEstimateOpen(!estimateOpen)}
+              >
+                Estimate shipping <ChevronDown className="h-4 w-4" />
+              </Button>
+              {estimateOpen && (
+                <div
+                  id="cart-shipping-estimate"
+                  className="mt-3 grid gap-3 sm:grid-cols-3"
+                >
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="estimate-country">Country</Label>
+                    <Combobox
+                      id="estimate-country"
+                      value={estimateValue.country}
+                      disabled={authPending}
+                      searchPlaceholder="Search countries..."
+                      options={SHIPPING_COUNTRIES.map(({ code, name }) => ({
+                        value: code,
+                        label: name,
+                      }))}
+                      onValueChange={(value) =>
+                        updateEstimate("country", value)
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="estimate-state">State / region</Label>
+                    <Input
+                      id="estimate-state"
+                      disabled={authPending}
+                      value={estimateValue.state}
+                      onChange={(event) =>
+                        updateEstimate("state", event.target.value)
+                      }
+                      autoComplete="address-level1"
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="estimate-postal">Postal / ZIP code</Label>
+                    <Input
+                      id="estimate-postal"
+                      disabled={authPending}
+                      value={estimateValue.postalCode}
+                      onChange={(event) =>
+                        updateEstimate("postalCode", event.target.value)
+                      }
+                      autoComplete="postal-code"
+                    />
+                  </div>
+                  <p className="text-xs text-[var(--text-muted)] sm:col-span-3">
+                    Calculated on this device from the merchant's signed
+                    shipping terms. Review your full address at checkout.
+                  </p>
+                </div>
+              )}
+            </section>
+          )}
           {merchantCount < purchaseGroups.length ? (
             <div className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-secondary)]">
               <AlertTriangle
@@ -1315,7 +1479,7 @@ function CartPage() {
             </div>
           )}
 
-          {purchaseGroups.map((group) => {
+          {estimatedGroups.map((group) => {
             const forceExpanded = purchaseGroups.length === 1
             const expanded = forceExpanded || expandedGroup?.id === group.id
 

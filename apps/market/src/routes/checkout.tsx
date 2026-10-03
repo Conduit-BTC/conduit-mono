@@ -48,6 +48,7 @@ import {
   normalizePubkey,
   normalizePublicMediaUrl,
   orderSchema,
+  serializeOrderRumorContent,
   patchOrderLifecycle,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -1597,13 +1598,23 @@ function CheckoutPage() {
         rawCheckoutItems,
         shippingOptionsIsFetching || shippingOptionsIsError
           ? []
-          : (shippingOptionsData ?? [])
+          : (shippingOptionsData ?? []),
+        {
+          country: shipping.country,
+          subdivision: shipping.state,
+          postalCode: shipping.postalCode,
+        },
+        btcUsdRate
       ),
     [
       rawCheckoutItems,
       shippingOptionsData,
       shippingOptionsIsError,
       shippingOptionsIsFetching,
+      shipping.country,
+      shipping.state,
+      shipping.postalCode,
+      btcUsdRate,
     ]
   )
   const checkoutItems = preparedFulfillment.items
@@ -1656,6 +1667,9 @@ function CheckoutPage() {
   })
   const checkoutEvidenceIsChecking = checkoutEvidenceCheckingLabel !== null
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
+  const hasShippingPolicyQuote = checkoutItems.some(
+    (item) => !!item.shippingPolicyQuote
+  )
   const publicZapPolicy = useMemo(
     () => getCartPublicZapPolicy(checkoutItems),
     [checkoutItems]
@@ -1781,11 +1795,12 @@ function CheckoutPage() {
     publicZapPolicy.publicZapsAllowed
       ? "anonymous_public_zap"
       : "private_checkout"
-  const selectedZapMode = isPickupCheckout
-    ? "private_checkout"
-    : isGuestCheckout
-      ? guestZapMode
-      : zapMode
+  const selectedZapMode =
+    isPickupCheckout || hasShippingPolicyQuote
+      ? "private_checkout"
+      : isGuestCheckout
+        ? guestZapMode
+        : zapMode
 
   const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
   const zapContentEditable = isPublicZapContentEditable(
@@ -1945,6 +1960,7 @@ function CheckoutPage() {
     : getCartShippingDestinationEligibility(
         {
           country: shipping.country,
+          subdivision: shipping.state,
           postalCode: shipping.postalCode,
         },
         checkoutItems
@@ -2105,15 +2121,15 @@ function CheckoutPage() {
       case "not_required":
         return "This cart does not require shipping."
       case "loading":
-        return "Resolving the product's fixed shipping option before direct payment is offered."
+        return "Checking signed shipping terms before direct payment is offered."
       case "missing_product_zone":
-        return "One product does not have resolved fixed shipping, so direct payment is disabled."
+        return "Shipping needs coordination with the merchant for one or more products. You can send the order first."
       case "no_published_rule":
-        return "The referenced fixed shipping option could not be resolved. You can still send the order first."
+        return "The signed shipping terms could not be resolved. You can still send the order first."
       case "allowed":
         return currentAddressValidity.canDirectPay
-          ? "The product's fixed shipping option covers this destination."
-          : "Fixed shipping may cover this destination, but address validity still needs attention."
+          ? "The signed shipping terms cover this destination."
+          : "Shipping may cover this destination, but address validity still needs attention."
       case "country_unsupported":
         return "Zap out is unavailable for this destination. You can still send the order first."
       case "postal_restricted":
@@ -2283,6 +2299,11 @@ function CheckoutPage() {
             shouldContinue: shouldContinueBuyerSession,
           }),
         rateInput,
+        destination: {
+          country: shipping.country,
+          subdivision: shipping.state,
+          postalCode: shipping.postalCode,
+        },
         accountPubkey: draftOwnerIdentity,
         authenticatedPubkey: signedBuyerPubkey,
         shouldContinue: shouldContinueBuyerSession,
@@ -2296,6 +2317,9 @@ function CheckoutPage() {
       throw error
     }
     if (authorization.status === "changed") {
+      void queryClient.invalidateQueries({
+        queryKey: ["canonicalShippingOptions"],
+      })
       recordCheckoutStepResult({
         checkoutMode,
         status: "blocked",
@@ -2441,7 +2465,11 @@ function CheckoutPage() {
       return "not_required"
     }
     const eligibility = getCartShippingDestinationEligibility(
-      { country: shipping.country, postalCode: shipping.postalCode },
+      {
+        country: shipping.country,
+        subdivision: shipping.state,
+        postalCode: shipping.postalCode,
+      },
       items
     )
     return eligibility.eligible === true
@@ -2542,6 +2570,8 @@ function CheckoutPage() {
       priceAtPurchase: number
       currency: string
       shippingCostSats?: number
+      shippingPolicyQuote?: CartItem["shippingPolicyQuote"]
+      shippingAllocatedCostSats?: number
       shippingOptionId?: string
       shippingOptionDTag?: string
       shippingCountryRules?: Array<{
@@ -2575,6 +2605,8 @@ function CheckoutPage() {
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
         shippingCostSats: item.shippingCostSats,
+        shippingPolicyQuote: item.shippingPolicyQuote,
+        shippingAllocatedCostSats: item.shippingAllocatedCostSats,
         shippingOptionId: item.shippingOptionId,
         shippingOptionDTag: item.shippingOptionDTag,
         shippingCountryRules: item.shippingCountryRules?.map((rule) => ({
@@ -2739,7 +2771,7 @@ function CheckoutPage() {
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
       }
-      orderSchema.parse(payload)
+      const validatedPayload = orderSchema.parse(payload)
 
       const ndk = getNdk()
       const rumor = new NDKEvent(ndk)
@@ -2759,7 +2791,10 @@ function CheckoutPage() {
         }
       }
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
-      rumor.content = JSON.stringify(payload)
+      rumor.content = serializeOrderRumorContent({
+        ...payload,
+        ...validatedPayload,
+      })
 
       const shippingAddress = buildShippingAddress()
       const addressValidity = computeAddressValidity(shippingAddress)
@@ -3233,6 +3268,7 @@ function CheckoutPage() {
           : getCartShippingDestinationEligibility(
               {
                 country: shipping.country,
+                subdivision: shipping.state,
                 postalCode: shipping.postalCode,
               },
               authoritativeCheckoutItems
@@ -3370,7 +3406,7 @@ function CheckoutPage() {
         createdAt: orderCreatedAt,
         pricingQuote: checkoutPricing.quote,
       }
-      orderSchema.parse(orderPayload)
+      const validatedOrderPayload = orderSchema.parse(orderPayload)
 
       const orderRumor = new NDKEvent(ndk)
       orderRumor.kind = EVENT_KINDS.ORDER
@@ -3389,7 +3425,10 @@ function CheckoutPage() {
         }
       }
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
-      orderRumor.content = JSON.stringify(orderPayload)
+      orderRumor.content = serializeOrderRumorContent({
+        ...orderPayload,
+        ...validatedOrderPayload,
+      })
 
       const canAutoPay =
         !guestIdentity &&
@@ -3438,6 +3477,9 @@ function CheckoutPage() {
               source: String(checkoutPricing.quote.source),
               fiatSource: checkoutPricing.quote.fiatSource
                 ? String(checkoutPricing.quote.fiatSource)
+                : undefined,
+              fiatUsdRates: checkoutPricing.quote.fiatUsdRates
+                ? { ...checkoutPricing.quote.fiatUsdRates }
                 : undefined,
             }
           : undefined,
@@ -4467,7 +4509,7 @@ function CheckoutPage() {
                           )}
                           <div>
                             <div className="font-medium text-[var(--text-primary)]">
-                              Fixed shipping
+                              Shipping
                             </div>
                             <div>{shippingStatusMessage}</div>
                           </div>
@@ -4667,7 +4709,8 @@ function CheckoutPage() {
                 {paymentRequired &&
                   !isGuestCheckout &&
                   !lnurlProbing &&
-                  directCheckoutEligible && (
+                  directCheckoutEligible &&
+                  !hasShippingPolicyQuote && (
                     <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                       <div className="text-sm font-medium text-[var(--text-primary)]">
                         Zap visibility

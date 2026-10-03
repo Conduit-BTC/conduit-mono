@@ -1,11 +1,62 @@
 import { z } from "zod"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "../protocol/signed-event"
+import { normalizeCurrencyIdentity } from "../pricing"
+import {
+  shippingPolicyQuoteSchema,
+  shippingMoneyToMinorUnits,
+  convertShippingMinor,
+  normalizeShippingPolicyRegion,
+  normalizeShippingPolicySubdivision,
+  hasSameShippingPolicyQuote,
+  MERCHANT_SHIPPING_POLICY_D_TAG,
+} from "../protocol/shipping-policy"
+import { EVENT_KINDS } from "../protocol/kinds"
+export { shippingPolicyQuoteSchema } from "../protocol/shipping-policy"
 import { isContactFreeEventHandoff } from "../protocol/event-guest-checkout"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { resolveEventMarketAuthorization } from "../protocol/event-market-authorization"
 import { parseEventMarketCalendarEvent } from "../protocol/event-market"
 import { parseEventMarketSeriesEvent } from "../protocol/event-market-schedule"
 import { projectSignedProductPreviewEvidence } from "../protocol/product-event-evidence"
-import { isValidSignedPublicNostrEvent } from "../protocol/signed-event"
+
+/** Conduit product extension; not an Open Markets physical-property tag. */
+export const productShippingAdjustmentsSchema = z
+  .object({
+    weightAllowanceGrams: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional(),
+    handling: z
+      .object({
+        amount: z.number().finite().nonnegative(),
+        currency: z.string(),
+        normalizedCurrency: z.string(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.handling) return
+    try {
+      if (
+        value.handling.normalizedCurrency !==
+        normalizeCurrencyIdentity(value.handling.currency)
+      )
+        throw new Error("Currency mismatch")
+      shippingMoneyToMinorUnits(value.handling.amount, value.handling.currency)
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "Invalid product shipping handling amount.",
+      })
+    }
+  })
 
 const publicMediaUrlSchema = z
   .string()
@@ -66,6 +117,16 @@ export type ProductShippingOptionReference = z.infer<
 
 export const productSchema = z.object({
   id: z.string(),
+  sourceEventId: z.string().optional(),
+  signedProductEvent: z
+    .custom<SignedPublicNostrEvent>((value) =>
+      Boolean(
+        value &&
+        typeof value === "object" &&
+        isValidSignedPublicNostrEvent(value as SignedPublicNostrEvent)
+      )
+    )
+    .optional(),
   pubkey: z.string(),
   title: z.string().min(1).max(200),
   summary: z.string().max(5000).optional(),
@@ -88,7 +149,34 @@ export const productSchema = z.object({
   specifications: z.array(productSpecificationSchema).default([]),
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: z.enum(["physical", "digital"]).default("physical"),
-  /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
+  shippingWeightGrams: z
+    .number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  shippingWeightAllowanceGrams: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  shippingHandling: z
+    .object({
+      amount: z.number().finite().nonnegative(),
+      currency: z.string(),
+      normalizedCurrency: z.string(),
+    })
+    .optional(),
+  shippingAdjustmentsMalformed: z.literal(true).optional(),
+  shippingDimensionsCm: z
+    .object({
+      length: z.number().positive().max(Number.MAX_SAFE_INTEGER),
+      width: z.number().positive().max(Number.MAX_SAFE_INTEGER),
+      height: z.number().positive().max(Number.MAX_SAFE_INTEGER),
+    })
+    .optional(),
+  /** Per-item fixed shipping; table orders retain a group quote separately. */
   shippingCostSats: z.number().int().min(0).optional(),
   sourceShippingCost: z
     .object({
@@ -563,6 +651,13 @@ export const orderItemSchema = z
     quantity: z.number().int().min(1),
     priceAtPurchase: z.number().min(0),
     currency: z.string(),
+    shippingPolicyQuote: z.lazy(() => shippingPolicyQuoteSchema).optional(),
+    shippingAllocatedCostSats: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional(),
     shippingCostSats: z.number().int().min(0).optional(),
     sourceShippingCost: z
       .object({
@@ -593,6 +688,37 @@ export const orderItemSchema = z
       .optional(),
   })
   .superRefine((item, context) => {
+    if (item.shippingPolicyQuote) {
+      const quote = item.shippingPolicyQuote
+      const quotedItem = quote.items.find(
+        (line) => line.productId === item.productId
+      )
+      if (
+        item.format === "digital" ||
+        item.fulfillment?.type === "event_market_pickup" ||
+        !quotedItem ||
+        quotedItem.quantity !== item.quantity ||
+        quote.policyCoordinate !== item.shippingOptionId ||
+        normalizeCurrencyIdentity(
+          item.sourcePrice?.normalizedCurrency ??
+            item.sourcePrice?.currency ??
+            item.currency
+        ) !== quotedItem?.currency ||
+        item.shippingAllocatedCostSats === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["shippingPolicyQuote"],
+          message: "Shipping quote must match this shipped order item.",
+        })
+      }
+    } else if (item.shippingAllocatedCostSats !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["shippingAllocatedCostSats"],
+        message: "Allocated shipping requires a policy quote.",
+      })
+    }
     if (!item.fulfillment) return
     if ((item.fulfillment.type === "digital") !== (item.format === "digital")) {
       context.addIssue({
@@ -685,6 +811,127 @@ export const orderSchema = z
     createdAt: z.number(),
   })
   .superRefine((order, context) => {
+    const policyGroups = new Map<string, typeof order.items>()
+    for (const item of order.items) {
+      if (!item.shippingPolicyQuote) continue
+      const key = item.shippingPolicyQuote.policyCoordinate
+      const group = policyGroups.get(key) ?? []
+      group.push(item)
+      policyGroups.set(key, group)
+    }
+    const merchantTableCoordinate = `${EVENT_KINDS.SHIPPING_OPTION}:${order.merchantPubkey.toLowerCase()}:${MERCHANT_SHIPPING_POLICY_D_TAG}`
+    const pricedShipping =
+      order.shippingCostStatus !== "manual" &&
+      (order.shippingCostSats !== undefined ||
+        order.shippingCostStatus === "priced" ||
+        order.shippingCostStatus === "included")
+    for (const [index, item] of order.items.entries()) {
+      if (
+        item.shippingPolicyQuote ||
+        item.format !== "physical" ||
+        (item.fulfillment && item.fulfillment.type !== "shipping")
+      )
+        continue
+      const group = policyGroups.get(item.shippingOptionId ?? "")
+      if (group) group.push(item)
+      else if (
+        pricedShipping &&
+        item.shippingOptionId === merchantTableCoordinate
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["items", index, "shippingPolicyQuote"],
+          message:
+            "Priced table shipping requires a quote for every shipped item.",
+        })
+    }
+    for (const group of policyGroups.values()) {
+      const quote = group[0]!.shippingPolicyQuote!
+      const country = order.shippingAddress?.country.trim().toUpperCase()
+      const subdivision = normalizeShippingPolicySubdivision(
+        country ?? "",
+        order.shippingAddress?.state
+      )
+      const postalCode = order.shippingAddress?.postalCode
+        ? normalizeShippingPolicyRegion(order.shippingAddress.postalCode)
+        : undefined
+      let invalid =
+        quote.merchantPubkey !== order.merchantPubkey.toLowerCase() ||
+        quote.destination.country !== country ||
+        quote.destination.subdivision !== subdivision ||
+        quote.destination.postalCode !== postalCode ||
+        group.length !== quote.items.length ||
+        group.some(
+          (item) =>
+            !item.shippingPolicyQuote ||
+            !hasSameShippingPolicyQuote(item.shippingPolicyQuote, quote) ||
+            item.shippingAllocatedCostSats === undefined
+        )
+      for (const quoted of quote.items) {
+        const line = group.find((item) => item.productId === quoted.productId)
+        if (!line || line.quantity !== quoted.quantity) {
+          invalid = true
+          continue
+        }
+        try {
+          const unitMinor = shippingMoneyToMinorUnits(
+            line.sourcePrice?.amount ?? line.priceAtPurchase,
+            line.sourcePrice?.currency ?? line.currency
+          )
+          if (unitMinor * line.quantity !== quoted.subtotalMinor) invalid = true
+        } catch {
+          invalid = true
+        }
+      }
+      const groupAllocation = group.reduce(
+        (sum, item) => sum + (item.shippingAllocatedCostSats ?? 0),
+        0
+      )
+      let expectedAllocation = quote.amountSats
+      if (expectedAllocation === undefined) {
+        try {
+          // Historical native Bitcoin amounts are exact; legacy fiat quotes
+          // remain readable but cannot establish an automatic settlement amount.
+          expectedAllocation = convertShippingMinor(
+            quote.amountMinor,
+            quote.currency,
+            "SATS"
+          )
+        } catch {
+          invalid = true
+        }
+      }
+      if (
+        !Number.isSafeInteger(groupAllocation) ||
+        groupAllocation !== expectedAllocation
+      )
+        invalid = true
+      if (invalid)
+        context.addIssue({
+          code: "custom",
+          path: ["items"],
+          message:
+            "Shipping quote group or destination does not match the order.",
+        })
+    }
+    if (policyGroups.size > 0) {
+      const allocated = order.items.reduce(
+        (sum, item) =>
+          sum +
+          (item.shippingAllocatedCostSats ??
+            (item.shippingCostSats ?? 0) * item.quantity),
+        0
+      )
+      if (
+        !Number.isSafeInteger(allocated) ||
+        allocated !== order.shippingCostSats
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["shippingCostSats"],
+          message: "Shipping allocations must match the order shipping total.",
+        })
+    }
     const firstFuture = order.items.find(
       (item) => item.fulfillment?.type === "event_market_pickup"
     )?.fulfillment
