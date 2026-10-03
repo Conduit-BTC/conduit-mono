@@ -2436,8 +2436,6 @@ export function applyPreparedProductFulfillment(
     canonicalShippingResolved: false,
     shippingOptionCreatedAt: undefined,
     shippingOptionLaunchUnsupported: undefined,
-    shippingPolicy: undefined,
-    shippingPolicyQuote: undefined,
   }
   if (
     (prepared.intent !== "fixed_standard" &&
@@ -2457,9 +2455,9 @@ export function applyPreparedProductFulfillment(
   const option = prepared.option
   return {
     ...withoutShipping,
-    ...(option.shippingPolicy
-      ? { shippingPolicy: option.shippingPolicy }
-      : canonicalizeShippingCost(option.price, option.currency)),
+    ...(!option.shippingPolicy
+      ? canonicalizeShippingCost(option.price, option.currency)
+      : {}),
     shippingOptionId: option.id,
     shippingOptionDTag: option.dTag,
     shippingCountries: [...option.countries],

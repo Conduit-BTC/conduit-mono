@@ -193,7 +193,12 @@ export function MerchantShippingPolicyEditor() {
         state: "success",
         message: "Shipping rates published.",
       })
-      await queryClient.invalidateQueries({ queryKey })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-shipping-options", pubkey],
+        }),
+      ])
     } catch (error) {
       if (generationRef.current === authGeneration)
         setStatus({ state: "error", message: errorMessage(error) })
@@ -220,7 +225,12 @@ export function MerchantShippingPolicyEditor() {
         message:
           "Shipping policy withdrawn. New orders need coordination until rates are published again.",
       })
-      await queryClient.invalidateQueries({ queryKey })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-shipping-options", pubkey],
+        }),
+      ])
     } catch (error) {
       if (generationRef.current === authGeneration)
         setStatus({ state: "error", message: errorMessage(error) })

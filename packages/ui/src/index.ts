@@ -12,3 +12,5 @@ export * from "./theme"
 
 // Utils
 export { cn } from "./utils"
+
+export * from "./event-timeline-presentation"

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import type {
   MerchantConversationSummary,
   OrderSummary,
@@ -72,41 +73,8 @@ const conversation: MerchantConversationSummary = {
   messages: [order, proof],
 }
 
-const organizerPubkey = "a".repeat(64)
-const merchantPubkey = "b".repeat(64)
-const pickupFulfillment = {
-  type: "pickup" as const,
-  organizerPubkey,
-  product: {
-    coordinate: `30402:${merchantPubkey}:coffee`,
-    eventId: "1".repeat(64),
-    createdAt: 10,
-    merchantPubkey,
-  },
-  calendar: {
-    coordinate: `31922:${organizerPubkey}:market-day`,
-    eventId: "2".repeat(64),
-    createdAt: 11,
-  },
-  collection: {
-    coordinate: `30405:${organizerPubkey}:market-day-products`,
-    eventId: "3".repeat(64),
-    createdAt: 12,
-  },
-  option: {
-    coordinate: `30406:${organizerPubkey}:market-day-pickup`,
-    eventId: "4".repeat(64),
-    createdAt: 13,
-    title: "Market entrance pickup",
-    location: "100 Public Square",
-  },
-  costSats: 0,
-  sourceCost: {
-    amount: 0,
-    currency: "SATS",
-    normalizedCurrency: "SATS",
-  },
-}
+const fixture = createEventMarketOrderFixture()
+const pickupFulfillment = fixture.fulfillment
 
 function orderItem(
   overrides: Partial<OrderSummary["items"][number]> = {}
@@ -118,10 +86,8 @@ function orderItem(
     quantity: 1,
     priceAtPurchase: 100,
     currency: "SATS",
-    shippingOptionId: pickupFulfillment.option.coordinate,
-    shippingOptionDTag: "market-day-pickup",
-    shippingCostSats: pickupFulfillment.costSats,
-    sourceShippingCost: { ...pickupFulfillment.sourceCost },
+    sourcePrice: { amount: 100, currency: "SATS", normalizedCurrency: "SATS" },
+    shippingCostSats: 0,
     ...overrides,
   }
 }
@@ -680,7 +646,6 @@ describe("merchant order phase", () => {
     ).toEqual({
       mode: "digital",
       requiresShipping: false,
-      pickup: null,
       hasPickupClaim: false,
     })
     expect(
@@ -690,7 +655,6 @@ describe("merchant order phase", () => {
     ).toEqual({
       mode: "shipping",
       requiresShipping: true,
-      pickup: null,
       hasPickupClaim: false,
     })
 
@@ -698,21 +662,21 @@ describe("merchant order phase", () => {
     expect(pickup.mode).toBe("pickup")
     expect(pickup.requiresShipping).toBe(false)
     expect(pickup.hasPickupClaim).toBe(true)
-    expect(pickup.pickup).toEqual({
-      organizerPubkey,
-      calendar: pickupFulfillment.calendar,
-      collection: pickupFulfillment.collection,
-      option: pickupFulfillment.option,
-    })
+    expect(pickup.futureMarket).toEqual(pickupFulfillment)
 
     const digitalItem = orderItem({
       productId: "download",
       format: "digital",
       fulfillment: { type: "digital" },
     })
-    expect(getMerchantOrderFulfillment([digitalItem, orderItem()])).toEqual(
-      pickup
-    )
+    expect(
+      getMerchantOrderFulfillment([digitalItem, orderItem()])
+    ).toMatchObject({
+      mode: "pickup",
+      requiresShipping: false,
+      hasPickupClaim: true,
+      futureMarket: pickupFulfillment,
+    })
     expect(
       getMerchantOrderFulfillment([
         digitalItem,
@@ -721,7 +685,6 @@ describe("merchant order phase", () => {
     ).toEqual({
       mode: "shipping",
       requiresShipping: true,
-      pickup: null,
       hasPickupClaim: false,
     })
   })
@@ -734,7 +697,6 @@ describe("merchant order phase", () => {
     ).toEqual({
       mode: "unknown",
       requiresShipping: true,
-      pickup: null,
       hasPickupClaim: false,
     })
     expect(
@@ -744,7 +706,6 @@ describe("merchant order phase", () => {
     ).toEqual({
       mode: "digital",
       requiresShipping: false,
-      pickup: null,
       hasPickupClaim: false,
     })
     expect(
@@ -755,106 +716,55 @@ describe("merchant order phase", () => {
     ).toEqual({
       mode: "unknown",
       requiresShipping: false,
-      pickup: null,
       hasPickupClaim: true,
     })
 
-    const conflictingPickup = {
-      ...pickupFulfillment,
-      option: {
-        ...pickupFulfillment.option,
-        eventId: "5".repeat(64),
-      },
-    }
+    const conflictingPickup = createEventMarketOrderFixture({
+      assignment: "Other organizer table",
+    }).fulfillment
     expect(
       getMerchantOrderFulfillment([
         orderItem(),
         orderItem({ fulfillment: conflictingPickup }),
       ])
-    ).toEqual({
+    ).toMatchObject({
       mode: "unknown",
       requiresShipping: false,
-      pickup: null,
       hasPickupClaim: true,
     })
   })
 
-  it("restricts schema-accepted mixed and conflicting pickup claims", () => {
-    const base = orderItem({
-      productId: pickupFulfillment.product.coordinate,
-    })
-    const conflictingTitle = orderItem({
-      productId: pickupFulfillment.product.coordinate,
-      fulfillment: {
-        ...pickupFulfillment,
-        option: {
-          ...pickupFulfillment.option,
-          title: "Different pickup title",
-        },
-      },
-    })
-    const conflictingPlace = orderItem({
-      productId: pickupFulfillment.product.coordinate,
-      fulfillment: {
-        ...pickupFulfillment,
-        option: {
-          ...pickupFulfillment.option,
-          location: "200 Other Public Square",
-        },
-      },
-    })
-    const conflictingGraph = orderItem({
-      productId: pickupFulfillment.product.coordinate,
-      fulfillment: {
-        ...pickupFulfillment,
-        collection: {
-          coordinate: `30405:${organizerPubkey}:other-products`,
-          eventId: "6".repeat(64),
-          createdAt: 14,
-        },
-      },
-    })
-    const shipping = orderItem({
-      productId: `30402:${merchantPubkey}:shirt`,
-      fulfillment: { type: "shipping" },
-    })
-
-    for (const pair of [
-      [base, conflictingTitle],
-      [base, conflictingPlace],
-      [base, conflictingGraph],
-      [base, shipping],
-    ]) {
-      expect(
-        pair.every((item) => orderItemSchema.safeParse(item).success)
-      ).toBe(true)
-      expect(getMerchantOrderFulfillment(pair)).toEqual({
+  it("restricts independently valid signed pickup terms that disagree", () => {
+    const base = orderItem({ productId: pickupFulfillment.product.coordinate })
+    const variants = [
+      createEventMarketOrderFixture({ assignment: "Other organizer table" })
+        .fulfillment,
+      createEventMarketOrderFixture({ dTag: "other-date" }).fulfillment,
+      createEventMarketOrderFixture({
+        mode: "merchant_present",
+        assignment: "Booth 12",
+      }).fulfillment,
+    ]
+    for (const fulfillment of variants) {
+      const other = orderItem({
+        productId: fulfillment.product.coordinate,
+        fulfillment,
+      })
+      expect(orderItemSchema.safeParse(other).success).toBe(true)
+      expect(getMerchantOrderFulfillment([base, other])).toMatchObject({
         mode: "unknown",
         requiresShipping: false,
-        pickup: null,
         hasPickupClaim: true,
       })
     }
   })
 
-  it("fails closed when pickup has no public place context", () => {
-    const malformedPickup = {
-      ...pickupFulfillment,
-      option: {
-        coordinate: pickupFulfillment.option.coordinate,
-        eventId: pickupFulfillment.option.eventId,
-        createdAt: pickupFulfillment.option.createdAt,
-        title: pickupFulfillment.option.title,
-      },
-    }
-    expect(
-      getMerchantOrderFulfillment([orderItem({ fulfillment: malformedPickup })])
-    ).toEqual({
-      mode: "unknown",
-      requiresShipping: false,
-      pickup: null,
-      hasPickupClaim: true,
-    })
+  it("rejects tampered signed pickup terms at schema parsing", () => {
+    const fulfillment = structuredClone(pickupFulfillment)
+    fulfillment.assignment = "Unsigned replacement booth"
+    expect(orderItemSchema.safeParse(orderItem({ fulfillment })).success).toBe(
+      false
+    )
   })
 
   it("treats the shipment event as shipped even without a generic status", () => {

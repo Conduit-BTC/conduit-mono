@@ -1,8 +1,5 @@
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
-import type {
-  ShippingPolicy,
-  ShippingPolicyQuote,
-} from "../protocol/shipping-policy"
+import type { ShippingPolicyQuote } from "../protocol/shipping-policy"
 import type {
   KnownOrderStatus,
   OrderItemFulfillmentSchema,
@@ -56,8 +53,6 @@ export interface Product {
   }
   shippingAdjustmentsMalformed?: true
   shippingDimensionsCm?: { length: number; width: number; height: number }
-  shippingPolicy?: ShippingPolicy
-  shippingPolicyQuote?: ShippingPolicyQuote
   shippingCostSats?: number
   sourceShippingCost?: {
     amount: number
@@ -75,6 +70,7 @@ export interface Product {
   collectionRefs?: string[]
   /** Repeated kind-30409 Event Market association references in signed tag order. */
   eventMarketRefs?: string[]
+  eventGuestContactOptional?: boolean
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries?: string[]
   shippingCountryRules?: Array<{

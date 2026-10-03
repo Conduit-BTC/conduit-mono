@@ -242,10 +242,13 @@ export function validatePickupContactFields(
 export function validateGuestPickupContactFields(
   shipping: ShippingFormState
 ): ShippingValidationError[] {
-  return appendRequiredGuestContactErrors(
-    validateContactFields(shipping),
-    shipping
-  )
+  const errors = validateContactFields(shipping)
+  if (!shipping.email.trim() && !shipping.phone.trim())
+    errors.push({
+      field: "email",
+      message: "Email or phone is required for guest pickup",
+    })
+  return errors
 }
 
 function shippingErrorFromAddressIssue(

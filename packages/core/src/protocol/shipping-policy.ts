@@ -231,8 +231,6 @@ export function parseShippingPolicy(input: unknown): ShippingPolicy {
   })
 }
 
-export const policyCurrencyMinorDigits = getCurrencyFractionDigits
-
 /** Decimal conversion checks precision instead of silently rounding terms. */
 export function shippingMoneyToMinorUnits(
   amount: number | string,
@@ -270,7 +268,6 @@ export function shippingMoneyToMinorUnits(
     throw new Error("Amount exceeds the supported range.")
   return minor
 }
-export const shippingAmountToMinor = shippingMoneyToMinorUnits
 export function shippingMinorUnitsToAmount(
   minor: number,
   currency: string
@@ -279,7 +276,6 @@ export function shippingMinorUnitsToAmount(
     throw new Error("Invalid minor-unit amount.")
   return minor / 10 ** getCurrencyFractionDigits(currency)
 }
-export const shippingMinorToAmount = shippingMinorUnitsToAmount
 function minorDecimal(minor: number, currency: string): string {
   const digits = getCurrencyFractionDigits(currency)
   if (!digits) return String(minor)
@@ -881,7 +877,6 @@ export interface ShippingPolicyPreviewItem {
   weightGrams?: number
   shippingWeightAllowanceGrams?: number
   shippingHandling?: SourcePriceQuote
-  shippingWeightGrams?: number
   quantity: number
   currency: string
   subtotalMinor: number
@@ -989,11 +984,7 @@ export function previewShippingPolicy(input: {
     !shippingPricingRateSchema.safeParse(input.rateInput).success
   )
     return { status: "rate_required" }
-  const normalizedItems = input.items.map((item) => ({
-    ...item,
-    weightGrams: item.weightGrams ?? item.shippingWeightGrams,
-  }))
-  const items = normalizedItems.filter(
+  const items = input.items.filter(
     (item) =>
       item.format !== "digital" &&
       item.fulfillmentType !== "pickup" &&
@@ -1107,7 +1098,7 @@ export function previewShippingPolicy(input: {
         )
           return { status: "invalid_items" }
         handlingMinor += convertShippingMinor(
-          shippingAmountToMinor(handling.amount, handling.currency) *
+          shippingMoneyToMinorUnits(handling.amount, handling.currency) *
             item.quantity,
           handling.currency,
           policy.currency,
@@ -1253,7 +1244,7 @@ export function quoteShippingPolicy(input: {
       return { status: "invalid_items" }
     try {
       if (
-        shippingAmountToMinor(
+        shippingMoneyToMinorUnits(
           product.sourcePrice?.amount ?? product.price,
           item.currency
         ) *
@@ -1316,7 +1307,7 @@ export function quoteShippingPolicy(input: {
           usesRate(
             item.shippingHandling.currency,
             policy.currency,
-            shippingAmountToMinor(
+            shippingMoneyToMinorUnits(
               item.shippingHandling.amount,
               item.shippingHandling.currency
             ) * item.quantity
@@ -1369,7 +1360,7 @@ export function quoteShippingPolicy(input: {
                 : 0,
               convertedHandlingMinor: item.shippingHandling
                 ? convertShippingMinor(
-                    shippingAmountToMinor(
+                    shippingMoneyToMinorUnits(
                       item.shippingHandling.amount,
                       item.shippingHandling.currency
                     ) * item.quantity,

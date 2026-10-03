@@ -187,10 +187,10 @@ describe("merchant invoice route contract", () => {
     expect(source).toContain("checking your wallet")
     expect(source).toContain("notifies the buyer")
     expect(source).toContain("confirmMerchantPayment")
-    expect(source).toContain('id="release-with-payment"')
-    expect(source).toContain("Confirm payment and authorize pickup")
-    expect(source).toContain("Do not request another payment")
-    expect(source).toContain(': "Payment confirmed."')
+    expect(source).not.toContain('id="release-with-payment"')
+    expect(source).not.toContain("Confirm payment and authorize pickup")
+    expect(source).toContain("const futureReadyMutation =")
+    expect(source).toContain('flash("Payment confirmed.")')
     expect(source).not.toContain(
       "Payment confirmed. Prepare the order before authorizing pickup."
     )

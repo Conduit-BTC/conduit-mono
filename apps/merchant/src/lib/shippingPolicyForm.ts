@@ -4,7 +4,7 @@ import {
   type SourcePriceQuote,
   shippingMoneyToMinorUnits,
   shippingMinorUnitsToAmount,
-  policyCurrencyMinorDigits,
+  getCurrencyFractionDigits,
   type ShippingPolicy,
   type ShippingPolicyRule,
   type ShippingPolicyTable,
@@ -183,7 +183,7 @@ export function shippingPolicyToDraft(
   const money = (minor: number) => {
     if (!Number.isSafeInteger(minor) || minor < 0)
       throw new Error("Invalid minor-unit amount.")
-    const digits = policyCurrencyMinorDigits(policy.currency)
+    const digits = getCurrencyFractionDigits(policy.currency)
     const text = String(minor).padStart(digits + 1, "0")
     if (!digits) return text
     const fraction = text.slice(-digits).replace(/0+$/, "")

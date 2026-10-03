@@ -15,36 +15,36 @@ const merchantPubkey = "a".repeat(64)
 const productId = `30402:${merchantPubkey}:event-product`
 const ordinaryProductId = `30402:${merchantPubkey}:ordinary-product`
 
-function pickupFulfillment(): CartItem["fulfillment"] {
+function futureMarketFulfillment(): CartItem["fulfillment"] {
+  const organizer = "b".repeat(64)
   return {
-    type: "pickup",
-    organizerPubkey: "b".repeat(64),
-    product: {
-      coordinate: productId,
+    type: "event_market_pickup",
+    organizerPubkey: organizer,
+    merchantPubkey,
+    payeePubkey: merchantPubkey,
+    market: {
+      coordinate: `30409:${organizer}:fair`,
       eventId: "1".repeat(64),
       createdAt: 100,
-      merchantPubkey,
     },
     calendar: {
-      coordinate: `31922:${"b".repeat(64)}:event`,
+      coordinate: `31923:${organizer}:fair`,
       eventId: "2".repeat(64),
-      createdAt: 101,
+      createdAt: 100,
+      start: 200,
+      end: 300,
     },
-    collection: {
-      coordinate: `30405:${"b".repeat(64)}:market`,
+    grant: {
+      kind: 3841,
+      pubkey: organizer,
       eventId: "3".repeat(64),
-      createdAt: 102,
+      createdAt: 100,
+      ancestryEventIds: ["3".repeat(64)],
+      observedDeletionEventIds: [],
     },
-    option: {
-      coordinate: `30406:${"b".repeat(64)}:pickup`,
-      eventId: "4".repeat(64),
-      createdAt: 103,
-      title: "Pickup",
-    },
-    handoffMode: "organizer_handoff",
-    handlerPubkey: "b".repeat(64),
-    costSats: 0,
-    sourceCost: { amount: 0, currency: "SAT", normalizedCurrency: "SAT" },
+    product: { coordinate: productId, eventId: "4".repeat(64), createdAt: 100 },
+    mode: "organizer_handoff",
+    assignment: "Pickup table",
   }
 }
 
@@ -63,12 +63,25 @@ function item(fulfillment: CartItem["fulfillment"], id = productId): CartItem {
 describe("cart readiness hidden product scope", () => {
   it("opts only explicit event pickup coordinates into exact hidden reads", () => {
     const ordinary = item({ type: "shipping" }, ordinaryProductId)
-    const eventPickup = item(pickupFulfillment())
+    const eventPickup = item(futureMarketFulfillment())
 
     expect(getCartMerchantHiddenProductIds([ordinary])).toEqual([])
     expect(getCartMerchantHiddenProductIds([ordinary, eventPickup])).toEqual([
       productId,
     ])
+  })
+
+  it("opts future market lines into exact hidden reads without widening ordinary delivery", () => {
+    const ordinary = item({ type: "shipping" }, ordinaryProductId)
+    const future = item(futureMarketFulfillment())
+    expect(getCartMerchantHiddenProductIds([ordinary, future])).toEqual([
+      productId,
+    ])
+    expect(
+      getCartAvailabilityReadScopes([ordinary, future])
+        .map((scope) => scope.merchantHiddenProductIds)
+        .sort()
+    ).toEqual([[], [productId]])
   })
 
   it("separates ordinary and event-pickup readiness query caches", () => {
@@ -87,7 +100,7 @@ describe("cart readiness hidden product scope", () => {
 
   it("does not let a pickup hidden-listing exception leak into delivery", () => {
     const shipping = item({ type: "shipping" })
-    const pickup = item(pickupFulfillment())
+    const pickup = item(futureMarketFulfillment())
     const scopes = getCartAvailabilityReadScopes([shipping, pickup])
 
     expect(scopes).toHaveLength(2)

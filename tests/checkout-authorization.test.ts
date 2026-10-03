@@ -4,20 +4,13 @@ import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-a
 import {
   createCartItemFromProduct,
   type CartItem,
-  type CartPickupFulfillment,
 } from "../apps/market/src/lib/cart-model"
+
+import { createEventMarketCheckoutFixture } from "./helpers/event-market-checkout-fixture"
 
 const MERCHANT = "a".repeat(64)
 const PRODUCT_ID = `30402:${MERCHANT}:field-notes`
 const SHIPPING_ID = `30406:${MERCHANT}:field-notes-shipping-standard`
-const ORGANIZER = "b".repeat(64)
-const COLLECTION_ID = `30405:${ORGANIZER}:chicago-market`
-const CALENDAR_ID = `31923:${ORGANIZER}:chicago-market`
-const PICKUP_ID = `30406:${ORGANIZER}:chicago-market-pickup`
-const OWN_COLLECTION_ID = `30405:${MERCHANT}:merchant-market`
-const OWN_CALENDAR_ID = `31923:${MERCHANT}:merchant-market`
-const OWN_PICKUP_ID = `30406:${MERCHANT}:merchant-market-pickup`
-
 function rawItem(overrides: Partial<CartItem> = {}): CartItem {
   return {
     productId: PRODUCT_ID,
@@ -91,114 +84,7 @@ function shippingOption(
   }
 }
 
-function pickupFulfillment(
-  overrides: Partial<CartPickupFulfillment> = {}
-): CartPickupFulfillment {
-  return {
-    type: "pickup",
-    organizerPubkey: ORGANIZER,
-    product: {
-      coordinate: PRODUCT_ID,
-      eventId: "2".repeat(64),
-      createdAt: 2,
-      merchantPubkey: MERCHANT,
-    },
-    calendar: {
-      coordinate: CALENDAR_ID,
-      eventId: "3".repeat(64),
-      createdAt: 3,
-    },
-    collection: {
-      coordinate: COLLECTION_ID,
-      eventId: "4".repeat(64),
-      createdAt: 4,
-    },
-    option: {
-      coordinate: PICKUP_ID,
-      eventId: "5".repeat(64),
-      createdAt: 5,
-      title: "Chicago pickup",
-      location: "Market entrance",
-    },
-    handoffMode: "organizer_handoff",
-    handlerPubkey: ORGANIZER,
-    costSats: 0,
-    sourceCost: {
-      amount: 0,
-      currency: "SAT",
-      normalizedCurrency: "SAT",
-    },
-    ...overrides,
-  }
-}
-
-function pickupProduct(): Product {
-  return product({
-    shippingOptionId: PICKUP_ID,
-    shippingOptionDTag: "chicago-market-pickup",
-    shippingOptionRefs: [{ coordinate: PICKUP_ID }],
-    collectionRefs: [COLLECTION_ID],
-    canonicalShippingResolved: false,
-  })
-}
-
-function ownPickupProduct(): Product {
-  return product({
-    shippingOptionId: OWN_PICKUP_ID,
-    shippingOptionDTag: "merchant-market-pickup",
-    shippingOptionRefs: [{ coordinate: OWN_PICKUP_ID }],
-    collectionRefs: [OWN_COLLECTION_ID],
-    canonicalShippingResolved: false,
-  })
-}
-
-function ownPickupFulfillment(
-  handoffMode: "merchant_handoff" | "organizer_handoff"
-): CartPickupFulfillment {
-  return {
-    ...pickupFulfillment(),
-    organizerPubkey: MERCHANT,
-    calendar: {
-      coordinate: OWN_CALENDAR_ID,
-      eventId: "6".repeat(64),
-      createdAt: 6,
-    },
-    collection: {
-      coordinate: OWN_COLLECTION_ID,
-      eventId: "7".repeat(64),
-      createdAt: 7,
-    },
-    option: {
-      coordinate: OWN_PICKUP_ID,
-      eventId: "8".repeat(64),
-      createdAt: 8,
-      title: "Merchant pickup",
-      location: "Merchant booth",
-    },
-    handoffMode,
-    handlerPubkey: MERCHANT,
-  }
-}
-
 describe("checkout authorization refresh", () => {
-  it("keeps future Event Market payment disabled before any payment authority read", async () => {
-    const futureItem = rawItem({
-      fulfillment: { type: "event_market_pickup" } as CartItem["fulfillment"],
-    })
-    let shippingRead = false
-    const result = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems: [futureItem],
-      rawItems: [futureItem],
-      refreshedProducts: [product()],
-      readShippingOptions: async () => {
-        shippingRead = true
-        return []
-      },
-    })
-    expect(result).toEqual({ status: "changed" })
-    expect(shippingRead).toBe(false)
-  })
   it("accepts unchanged raw listing terms after preparing the fresh shipping option", async () => {
     const original = rawItem()
     const option = shippingOption()
@@ -563,287 +449,98 @@ describe("checkout authorization refresh", () => {
     }
   })
 
-  it("authorizes one exact pickup snapshot through the submit-time seam", async () => {
-    const refreshedProduct = pickupProduct()
-    const fulfillment = pickupFulfillment()
-    const item = {
-      ...createCartItemFromProduct(refreshedProduct, fulfillment),
-      quantity: 2,
-    }
-    let shippingRead = false
-    let handlerAuthorizationCount = 0
-
-    const result = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems: [item],
-      rawItems: [item],
-      refreshedProducts: [refreshedProduct],
-      readShippingOptions: async () => {
-        shippingRead = true
-        return []
-      },
-      resolveProductFulfillment: async () => ({
-        status: "pickup",
-        product: refreshedProduct,
-        fulfillment,
-      }),
-      authorizePickupHandlers: async (items) => {
-        handlerAuthorizationCount += 1
-        expect(items[0]?.fulfillment).toEqual(fulfillment)
-      },
-    })
-
-    expect(result).toEqual({
-      status: "ok",
-      items: [item],
-      listingReadProducts: [refreshedProduct],
-      fulfillmentResolvedProducts: [refreshedProduct],
-      shippingOptionEvidence: { status: "not_required", options: [] },
-    })
-    expect(shippingRead).toBe(false)
-    expect(handlerAuthorizationCount).toBe(1)
-  })
-
-  it("retains distinct listing-read and pickup-catalog product sources", async () => {
-    const listingReadProduct = {
-      ...pickupProduct(),
-      sourceEventId: "1".repeat(64),
-    }
-    const catalogProduct = {
-      ...listingReadProduct,
-      sourceEventId: "2".repeat(64),
-    }
-    const fulfillment = pickupFulfillment()
-    const item = createCartItemFromProduct(catalogProduct, fulfillment)
-
-    const result = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems: [item],
-      rawItems: [item],
-      refreshedProducts: [listingReadProduct],
-      readShippingOptions: async () => {
-        throw new Error("Pickup checkout must not read standard shipping")
-      },
-      resolveProductFulfillment: async () => ({
-        status: "pickup",
-        product: catalogProduct,
-        fulfillment,
-      }),
-      authorizePickupHandlers: async () => undefined,
-    })
-
-    expect(result.status).toBe("ok")
-    if (result.status !== "ok") throw new Error("Expected authorized items")
-    expect(result.listingReadProducts[0]).toBe(listingReadProduct)
-    expect(result.fulfillmentResolvedProducts[0]).toBe(catalogProduct)
-    expect(result.listingReadProducts[0]?.sourceEventId).toBe("1".repeat(64))
-    expect(result.fulfillmentResolvedProducts[0]?.sourceEventId).toBe(
-      "2".repeat(64)
-    )
-    expect(result.items[0]?.productEventId).toBe("2".repeat(64))
-    expect(result.shippingOptionEvidence.status).toBe("not_required")
-  })
-
-  it("authorizes a combined pickup line after its fiat quote refreshes", async () => {
-    const refreshedProduct = pickupProduct()
-    const initialFulfillment = pickupFulfillment({
-      costSats: 1_000,
-      sourceCost: {
-        amount: 1,
-        currency: "USD",
-        normalizedCurrency: "USD",
-      },
-    })
-    const refreshedFulfillment = pickupFulfillment({
-      ...initialFulfillment,
-      costSats: 2_000,
-    })
-    const reviewedItems = [
-      {
-        ...createCartItemFromProduct(refreshedProduct, refreshedFulfillment),
-        quantity: 2,
-      },
-    ]
-
-    expect(reviewedItems).toHaveLength(1)
-    expect(reviewedItems[0]).toMatchObject({
-      quantity: 2,
-      fulfillment: { costSats: 2_000 },
-    })
-
-    const result = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems,
-      rawItems: reviewedItems,
-      refreshedProducts: [refreshedProduct],
-      readShippingOptions: async () => [],
-      resolveProductFulfillment: async () => ({
-        status: "pickup",
-        product: refreshedProduct,
-        fulfillment: refreshedFulfillment,
-      }),
-      authorizePickupHandlers: async () => undefined,
-    })
-
-    expect(result.status).toBe("ok")
-    if (result.status === "ok") {
-      expect(result.items).toHaveLength(1)
-      expect(result.items[0]).toMatchObject({
-        quantity: 2,
-        fulfillment: { costSats: 2_000 },
+  for (const mode of ["direct_payment", "order_first"] as const) {
+    it(`blocks an old collection pickup cart before ${mode} authorization`, async () => {
+      const refreshedProduct = product()
+      const item = {
+        ...createCartItemFromProduct(refreshedProduct),
+        fulfillment: { type: "pickup" } as unknown as CartItem["fulfillment"],
+      }
+      let read = false
+      const result = await authorizeCurrentCheckoutItems({
+        mode,
+        reviewedItems: [item],
+        rawItems: [item],
+        refreshedProducts: [refreshedProduct],
+        readShippingOptions: async () => {
+          read = true
+          return []
+        },
+        authorizePickupHandlers: async () => {
+          read = true
+        },
       })
-    }
-  })
-
-  it("normalizes the bounded historical own-product handoff during checkout", async () => {
-    const refreshedProduct = ownPickupProduct()
-    const historical = ownPickupFulfillment("organizer_handoff")
-    const current = ownPickupFulfillment("merchant_handoff")
-    const item = createCartItemFromProduct(refreshedProduct, historical)
-
-    const result = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems: [item],
-      rawItems: [item],
-      refreshedProducts: [refreshedProduct],
-      readShippingOptions: async () => [],
-      resolveProductFulfillment: async () => ({
-        status: "pickup",
-        product: refreshedProduct,
-        fulfillment: current,
-      }),
-      authorizePickupHandlers: async (items) => {
-        expect(items[0]?.fulfillment).toEqual(current)
-      },
+      expect(result).toEqual({ status: "changed" })
+      expect(read).toBe(false)
     })
-
-    expect(result).toEqual({
-      status: "ok",
-      items: [createCartItemFromProduct(refreshedProduct, current)],
-      listingReadProducts: [refreshedProduct],
-      fulfillmentResolvedProducts: [refreshedProduct],
-      shippingOptionEvidence: { status: "not_required", options: [] },
-    })
-  })
-
-  it("still blocks a real pickup authority change between distinct parties", async () => {
-    const refreshedProduct = pickupProduct()
-    const historical = pickupFulfillment()
-    const item = createCartItemFromProduct(refreshedProduct, historical)
-
-    const result = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems: [item],
-      rawItems: [item],
-      refreshedProducts: [refreshedProduct],
-      readShippingOptions: async () => [],
-      resolveProductFulfillment: async () => ({
-        status: "pickup",
-        product: refreshedProduct,
-        fulfillment: pickupFulfillment({
-          handoffMode: "merchant_handoff",
-          handlerPubkey: MERCHANT,
-        }),
-      }),
-    })
-
-    expect(result).toEqual({ status: "changed" })
-  })
-
-  it("blocks a filtered non-pickup item in a mixed pickup cart", async () => {
-    const refreshedPickupProduct = pickupProduct()
-    const fulfillment = pickupFulfillment()
-    const pickupCartItem = createCartItemFromProduct(
-      refreshedPickupProduct,
-      fulfillment
-    )
-    const digitalProduct = product({
-      id: `30402:${MERCHANT}:digital-notes`,
+  }
+  it("retains exact current Event Market products beside ordinary evidence for later quotes", async () => {
+    const event = await createEventMarketCheckoutFixture()
+    const digital = product({
       format: "digital",
       shippingOptionId: undefined,
       shippingOptionDTag: undefined,
     })
-    const digitalCartItem = createCartItemFromProduct(digitalProduct, {
-      type: "digital",
-    })
-    const items = [pickupCartItem, digitalCartItem]
-
+    const digitalItem = { ...createCartItemFromProduct(digital), quantity: 1 }
+    let handlerCalls = 0
     const result = await authorizeCurrentCheckoutItems({
       mode: "direct_payment",
-      reviewedItems: items,
-      rawItems: items,
-      // The regular item was filtered by the exact buyer read; the presence of
-      // a valid pickup item must not let checkout silently drop or revive it.
-      refreshedProducts: [refreshedPickupProduct],
-      readShippingOptions: async () => [],
-      resolveProductFulfillment: async () => ({
-        status: "pickup",
-        product: refreshedPickupProduct,
-        fulfillment,
-      }),
-    })
-
-    expect(result).toEqual({ status: "changed" })
-  })
-
-  it("blocks a changed pickup graph before handler authorization", async () => {
-    const refreshedProduct = pickupProduct()
-    const reviewedFulfillment = pickupFulfillment()
-    const item = {
-      ...createCartItemFromProduct(refreshedProduct, reviewedFulfillment),
-      quantity: 1,
-    }
-    let handlerAuthorized = false
-
-    const result = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems: [item],
-      rawItems: [item],
-      refreshedProducts: [refreshedProduct],
-      readShippingOptions: async () => [],
-      resolveProductFulfillment: async () => ({
-        status: "pickup",
-        product: refreshedProduct,
-        fulfillment: pickupFulfillment({
-          calendar: {
-            ...reviewedFulfillment.calendar,
-            eventId: "6".repeat(64),
-          },
-        }),
-      }),
-      authorizePickupHandlers: async () => {
-        handlerAuthorized = true
+      reviewedItems: [event.item, digitalItem],
+      rawItems: [event.item, digitalItem],
+      refreshedProducts: [event.product, digital],
+      futureEventMarketDependencies: event.futureEventMarketDependencies,
+      readShippingOptions: async () => {
+        throw new Error("No shipping read required")
+      },
+      authorizePickupHandlers: async (items) => {
+        handlerCalls++
+        expect(items[0]?.fulfillment).toEqual(event.fulfillment)
       },
     })
-
-    expect(result).toEqual({ status: "changed" })
-    expect(handlerAuthorized).toBe(false)
+    expect(result.status).toBe("ok")
+    if (result.status !== "ok")
+      throw new Error("Expected current authorization")
+    expect(result.listingReadProducts).toEqual([event.product, digital])
+    expect(result.fulfillmentResolvedProducts).toEqual([digital, event.product])
+    expect(result.fulfillmentResolvedProducts[1]).toBe(event.product)
+    expect(result.items[0]?.productEventId).toBe(event.product.sourceEventId)
+    expect(result.shippingOptionEvidence).toEqual({
+      status: "not_required",
+      options: [],
+    })
+    expect(handlerCalls).toBe(1)
   })
 
-  it("propagates fail-closed pickup handler authorization", async () => {
-    const refreshedProduct = pickupProduct()
-    const fulfillment = pickupFulfillment()
-    const item = {
-      ...createCartItemFromProduct(refreshedProduct, fulfillment),
+  it("retains Event Market product evidence when ordinary shipping falls back to order-first", async () => {
+    const event = await createEventMarketCheckoutFixture()
+    const shippedProduct = product()
+    const shippedItem = {
+      ...createCartItemFromProduct(shippedProduct),
       quantity: 1,
     }
-
-    await expect(
-      authorizeCurrentCheckoutItems({
-        mode: "direct_payment",
-        reviewedItems: [item],
-        rawItems: [item],
-        refreshedProducts: [refreshedProduct],
-        readShippingOptions: async () => [],
-        resolveProductFulfillment: async () => ({
-          status: "pickup",
-          product: refreshedProduct,
-          fulfillment,
-        }),
-        authorizePickupHandlers: async () => {
-          throw new Error("Organizer inbox coverage is partial")
-        },
-      })
-    ).rejects.toThrow("Organizer inbox coverage is partial")
+    const result = await authorizeCurrentCheckoutItems({
+      mode: "order_first",
+      reviewedItems: [event.item, shippedItem],
+      rawItems: [event.item, shippedItem],
+      refreshedProducts: [event.product, shippedProduct],
+      futureEventMarketDependencies: event.futureEventMarketDependencies,
+      readShippingOptions: async () => {
+        throw new Error("Shipping unavailable")
+      },
+      authorizePickupHandlers: async () => undefined,
+    })
+    expect(result.status).toBe("ok")
+    if (result.status !== "ok")
+      throw new Error("Expected order-first authorization")
+    expect(result.fulfillmentResolvedProducts).toEqual([
+      shippedProduct,
+      event.product,
+    ])
+    expect(result.items[0]?.fulfillment).toEqual(event.fulfillment)
+    expect(result.items[1]?.shippingOptionId).toBeUndefined()
+    expect(result.shippingOptionEvidence).toEqual({
+      status: "unavailable_order_first",
+      options: [],
+    })
   })
 })

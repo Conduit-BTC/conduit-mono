@@ -1,146 +1,37 @@
-import { describe, expect, it } from "bun:test"
-import {
-  formatEventMarketPickupClaimCode,
-  getEventMarketPickupClaimRef,
-  type EventMarketOrganizerInboxResolution,
-} from "@conduit/core"
-import type { CartPickupFulfillment } from "../apps/market/src/lib/cart-model"
+import type { EventMarketOrganizerInboxResolution } from "@conduit/core"
 import {
   assertCartPickupHandlerReady,
   getOrganizerInboxBlockingMessage,
-  getOrganizerPickupClaimCode,
-  getPickupHandoffSummary,
+  getFuturePickupHandoffSummary,
 } from "../apps/market/src/lib/pickup-handoff"
-
-const ORGANIZER = "a".repeat(64)
-const MERCHANT = "b".repeat(64)
-
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
+const fixture = createEventMarketOrderFixture()
+const ORGANIZER = fixture.organizer
+const MERCHANT = fixture.merchant
 function pickupFulfillment(
-  mode: "merchant_handoff" | "organizer_handoff" = "organizer_handoff"
-): CartPickupFulfillment {
-  const handlerPubkey = mode === "organizer_handoff" ? ORGANIZER : MERCHANT
-  return {
-    type: "pickup",
-    organizerPubkey: ORGANIZER,
-    product: {
-      coordinate: `30402:${MERCHANT}:coffee`,
-      merchantPubkey: MERCHANT,
-      eventId: "1".repeat(64),
-      createdAt: 100,
-    },
-    calendar: {
-      coordinate: `31923:${ORGANIZER}:market-day`,
-      eventId: "2".repeat(64),
-      createdAt: 101,
-    },
-    collection: {
-      coordinate: `30405:${ORGANIZER}:market-day`,
-      eventId: "3".repeat(64),
-      createdAt: 102,
-    },
-    option: {
-      coordinate: `30406:${handlerPubkey}:pickup`,
-      eventId: "4".repeat(64),
-      createdAt: 103,
-      title:
-        mode === "organizer_handoff" ? "Organizer table" : "Merchant booth",
-      location: "Public hall",
-    },
-    handoffMode: mode,
-    handlerPubkey,
-    costSats: 0,
-    sourceCost: {
-      amount: 0,
-      currency: "SATS",
-      normalizedCurrency: "SATS",
-    },
-  }
+  mode: "merchant_present" | "organizer_handoff" = "organizer_handoff"
+) {
+  return createEventMarketOrderFixture({ mode }).fulfillment
 }
-
 describe("Market pickup handoff", () => {
-  it("keeps a legacy organizer-authored snapshot merchant-only", () => {
-    const legacy = pickupFulfillment("organizer_handoff")
-    delete legacy.handoffMode
-    delete legacy.handlerPubkey
-
-    expect(getPickupHandoffSummary(legacy)).toEqual({
+  it("uses only the exact signed merchant or organizer handoff mode", () => {
+    expect(
+      getFuturePickupHandoffSummary(pickupFulfillment("merchant_present"))
+    ).toEqual({
       mode: "merchant_handoff",
       handlerPubkey: MERCHANT,
-      legacySafeDefault: true,
       label: "Pickup from merchant booth",
     })
-  })
-
-  it("keeps historical organizer-owned product snapshots merchant-only", async () => {
-    const historical = pickupFulfillment("organizer_handoff")
-    historical.product = {
-      ...historical.product,
-      coordinate: `30402:${ORGANIZER}:own-coffee`,
-      merchantPubkey: ORGANIZER,
-    }
-
-    expect(getPickupHandoffSummary(historical)).toEqual({
-      mode: "merchant_handoff",
+    expect(getFuturePickupHandoffSummary(pickupFulfillment())).toEqual({
+      mode: "organizer_handoff",
       handlerPubkey: ORGANIZER,
-      legacySafeDefault: false,
-      label: "Pickup from merchant booth",
+      label: "Pickup from event organizer",
     })
-    expect(
-      getOrganizerPickupClaimCode("private-order-id", historical)
-    ).toBeNull()
-
-    let inboxLookups = 0
-    await assertCartPickupHandlerReady(
-      [{ fulfillment: historical }],
-      async () => {
-        inboxLookups += 1
-        return {
-          state: "blocked",
-          organizerPubkey: ORGANIZER,
-          reason: "not_observed",
-        }
-      }
-    )
-    expect(inboxLookups).toBe(0)
   })
-
-  it("derives the same organizer pickup code without exposing order identity", () => {
-    const fulfillment = pickupFulfillment("organizer_handoff")
-    const orderId = "private-order-id"
-    const claim = getEventMarketPickupClaimRef({
-      orderId,
-      merchantPubkey: MERCHANT,
-      organizerPubkey: ORGANIZER,
-      collectionCoordinate: fulfillment.collection.coordinate,
-    })
-
-    expect(getOrganizerPickupClaimCode(orderId, fulfillment)).toBe(
-      formatEventMarketPickupClaimCode(claim)
-    )
-    expect(getOrganizerPickupClaimCode(orderId, fulfillment)).not.toContain(
-      orderId
-    )
-    expect(
-      getOrganizerPickupClaimCode(
-        orderId,
-        pickupFulfillment("merchant_handoff")
-      )
-    ).toBeNull()
-
-    const legacy = pickupFulfillment("organizer_handoff")
-    delete legacy.handoffMode
-    delete legacy.handlerPubkey
-    expect(getOrganizerPickupClaimCode(orderId, legacy)).toBeNull()
-
-    const malformed = pickupFulfillment("organizer_handoff")
-    malformed.collection.coordinate = "not-a-collection"
-    expect(getOrganizerPickupClaimCode(orderId, malformed)).toBeNull()
-  })
-
   it("does not require an organizer inbox for merchant handoff", async () => {
     let inboxLookups = 0
     await assertCartPickupHandlerReady(
-      [{ fulfillment: pickupFulfillment("merchant_handoff") }],
+      [{ fulfillment: pickupFulfillment("merchant_present") }],
       async () => {
         inboxLookups += 1
         return {

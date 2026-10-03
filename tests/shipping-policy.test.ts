@@ -21,8 +21,8 @@ import {
   parseShippingPolicy,
   previewShippingPolicy,
   quoteShippingPolicy,
-  shippingAmountToMinor,
-  shippingMinorToAmount,
+  shippingMoneyToMinorUnits,
+  shippingMinorUnitsToAmount,
   convertShippingMinor,
   type ShippingPolicyV2,
   type BtcUsdRateQuote,
@@ -136,7 +136,7 @@ function quote(
         weightGrams: 200,
         currency: value.currency,
         subtotalMinor:
-          shippingAmountToMinor(
+          shippingMoneyToMinorUnits(
             value.currency === "MSATS" ? 20000 : 20,
             value.currency
           ) * 2,
@@ -537,13 +537,13 @@ describe("shipping policy arithmetic", () => {
     ).toEqual({ status: "currency_mismatch" })
   })
   it("converts fiat, sats, and tiny BTC amounts with currency precision", () => {
-    expect(shippingAmountToMinor("1.23", "USD")).toBe(123)
-    expect(shippingAmountToMinor(0.00000001, "BTC")).toBe(1)
-    expect(shippingAmountToMinor("10", "SATS")).toBe(10)
-    expect(shippingAmountToMinor("10", "JPY")).toBe(10)
-    expect(shippingMinorToAmount(1, "BTC")).toBe(0.00000001)
-    expect(() => shippingAmountToMinor("1.234", "USD")).toThrow()
-    expect(() => shippingAmountToMinor("1.1", "SATS")).toThrow()
+    expect(shippingMoneyToMinorUnits("1.23", "USD")).toBe(123)
+    expect(shippingMoneyToMinorUnits(0.00000001, "BTC")).toBe(1)
+    expect(shippingMoneyToMinorUnits("10", "SATS")).toBe(10)
+    expect(shippingMoneyToMinorUnits("10", "JPY")).toBe(10)
+    expect(shippingMinorUnitsToAmount(1, "BTC")).toBe(0.00000001)
+    expect(() => shippingMoneyToMinorUnits("1.234", "USD")).toThrow()
+    expect(() => shippingMoneyToMinorUnits("1.1", "SATS")).toThrow()
   })
 })
 
@@ -1335,7 +1335,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       quantity,
       weightGrams: 200,
       currency,
-      subtotalMinor: shippingAmountToMinor(amount, currency) * quantity,
+      subtotalMinor: shippingMoneyToMinorUnits(amount, currency) * quantity,
       shippingWeightAllowanceGrams: allowance,
       shippingHandling: handling,
     }

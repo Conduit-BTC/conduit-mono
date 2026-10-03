@@ -8,8 +8,8 @@ import {
   __setRelayListTestOverrides,
   formatNpub,
   getProfiles,
-  eventMarketReadyReceiptSchema,
-  orderPickupFulfillmentSchema,
+  futureMarketReadyReceiptSchema,
+  orderEventMarketPickupFulfillmentSchema,
   pubkeyToNpub,
 } from "@conduit/core"
 import {
@@ -35,70 +35,57 @@ afterEach(() => {
 })
 
 describe("Merchant event actor identity", () => {
-  it("binds every new actor-profile read to explicit live account authority", async () => {
-    const components = [
-      "MerchantEventMarketPanel",
-      "OrganizerEventMarketPanel",
-      "OrganizerHandoffReceiptQueue",
-    ]
-    const sources = await Promise.all(
-      components.map((name) =>
-        Bun.file(`apps/merchant/src/components/${name}.tsx`).text()
+  it("binds actor-profile reads to explicit live account authority", async () => {
+    for (const name of [
+      "FutureEventMarketManager",
+      "FutureEventMerchantParticipation",
+    ]) {
+      const source = await Bun.file(
+        `apps/merchant/src/components/${name}.tsx`
+      ).text()
+      const profileRead = source.slice(
+        source.indexOf("useProfiles("),
+        source.indexOf("useProfiles(") + 500
       )
-    )
-    const orders = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
-    sources.push(
-      orders.slice(
-        orders.indexOf("function PickupFulfillmentCard("),
-        orders.indexOf("function OrdersPage(")
-      )
-    )
-    const reads = sources.flatMap((source) =>
-      Array.from(
-        source.matchAll(/useProfiles?\([^,]+, \{([\s\S]*?)\n  \}\)/g),
-        (match) => match[1]!
-      )
-    )
-    expect(reads).toHaveLength(7)
-    for (const options of reads) {
-      expect(options).toMatch(/accountPubkey[,:]/)
-      expect(options).toContain("authenticatedPubkey,")
-      expect(options).toContain("shouldContinue,")
-      expect(options).not.toMatch(
+      expect(profileRead).toContain("accountPubkey")
+      expect(profileRead).toContain("authenticatedPubkey")
+      expect(profileRead).toContain("shouldContinue")
+      expect(profileRead).toContain("isAuthGenerationCurrent(authGeneration)")
+      expect(profileRead).not.toMatch(
         /authenticatedPubkey:\s*(merchantPubkey|organizerPubkey|market\.)/
       )
     }
-    const events = await Bun.file("apps/merchant/src/routes/events.tsx").text()
-    expect(events).toMatch(
-      /<OrganizerHandoffReceiptQueue[\s\S]{0,240}authenticatedPubkey=\{authenticatedPubkey\}[\s\S]{0,80}shouldContinue=\{shouldContinue\}/
+    const [manager, queue] = await Promise.all([
+      Bun.file(
+        "apps/merchant/src/components/FutureEventMarketManager.tsx"
+      ).text(),
+      Bun.file(
+        "apps/merchant/src/components/FutureOrganizerClaimQueue.tsx"
+      ).text(),
+    ])
+    expect(manager).toMatch(
+      /<FutureOrganizerClaimQueue[\s\S]{0,180}organizerPubkey=\{accountPubkey\}/
     )
-    expect(orders).toMatch(
-      /<PickupFulfillmentCard[\s\S]{0,420}accountPubkey=\{pubkey\}[\s\S]{0,80}authenticatedPubkey=\{authenticatedPubkey\}[\s\S]{0,180}isCurrentOrderOwner\(pubkey, authGeneration\)/
+    expect(queue).toMatch(
+      /accountPubkey === organizerPubkey &&\s+pubkey === organizerPubkey &&\s+signerReadiness === "ready"/
     )
+    expect(queue).not.toMatch(/authenticatedPubkey:\s*receipt\.merchantPubkey/)
   })
 
-  it("reads an eligible merchant sign profile without organizer relay hints", async () => {
-    const source = await Bun.file(
-      "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
+  it("uses exact seller profiles for signs without borrowing organizer relay hints", async () => {
+    const manager = await Bun.file(
+      "apps/merchant/src/components/FutureEventMarketManager.tsx"
     ).text()
-    const signageAction = source.slice(
-      source.indexOf("function MerchantEventSignageAction("),
-      source.indexOf("export function MerchantEventMarketPanel(")
+    const profileRead = manager.slice(
+      manager.indexOf("const profiles = useProfiles("),
+      manager.indexOf("const sheets =")
     )
-    const profileRead = signageAction.slice(
-      signageAction.indexOf("const merchantProfileQuery = useProfile("),
-      signageAction.indexOf("const sheet = buildMerchantEventQrSignSheet(")
-    )
-
-    expect(signageAction).toContain(
-      "isMerchantEligibleForEventSign(market, merchantPubkey)"
-    )
-    expect(profileRead).toContain("eligible ? merchantPubkey : null")
-    expect(profileRead).toContain("accountPubkey: merchantPubkey")
-    expect(profileRead).toContain("authenticatedPubkey,")
-    expect(profileRead).toContain("shouldContinue,")
     expect(profileRead).not.toContain("relayHints")
-    expect(signageAction).toContain("merchantProfileQuery.data")
+    expect(manager).toContain("profiles: profiles.data")
+    const signage = await Bun.file(
+      "apps/merchant/src/lib/event-signage.ts"
+    ).text()
+    expect(signage).toContain("candidateProfile?.pubkey === row.pubkey")
   })
 
   it("prefers a hydrated profile name without changing signed provenance", () => {
@@ -165,29 +152,24 @@ describe("Merchant event actor identity", () => {
     expect(second).not.toContain(pubkeyToNpub(actorPubkey))
   })
 
-  it("keeps compact signed organizer provenance on both Merchant event details", async () => {
-    const [participantPanel, organizerPanel] = await Promise.all([
-      Bun.file(
-        "apps/merchant/src/components/MerchantEventMarketPanel.tsx"
-      ).text(),
-      Bun.file(
-        "apps/merchant/src/components/OrganizerEventMarketPanel.tsx"
-      ).text(),
-    ])
-
-    expect(participantPanel).toContain("EventActorProvenance")
-    expect(participantPanel).toContain('copyLabel="Copy organizer npub"')
-    expect(participantPanel).toMatch(
-      /!ownsMarket[\s\S]{0,300}<EventActorProvenance/
-    )
-    expect(organizerPanel).toContain("EventActorProvenance")
-    expect(organizerPanel).toContain('copyLabel="Copy organizer signer npub"')
+  it("keeps compact organizer provenance in host and merchant views", async () => {
+    for (const name of [
+      "FutureEventMarketManager",
+      "FutureEventMerchantParticipation",
+    ]) {
+      const source = await Bun.file(
+        `apps/merchant/src/components/${name}.tsx`
+      ).text()
+      expect(source).toContain("EventActorProvenance")
+      expect(source).toContain('copyLabel="Copy organizer npub"')
+      expect(source).toContain("market.organizerPubkey")
+    }
   })
 
   it("renders organizer handoff with friendly identity and exact provenance", () => {
     const markup = renderToStaticMarkup(
       createElement(EventPickupHandlerIdentity, {
-        handoffMode: "organizer_handoff",
+        mode: "organizer_handoff",
         handlerPubkey: actorPubkey,
         profile: { pubkey: actorPubkey, name: "Friendly organizer" },
       })
@@ -203,7 +185,7 @@ describe("Merchant event actor identity", () => {
   it("renders merchant handoff with a safe fallback for a mismatched profile", () => {
     const markup = renderToStaticMarkup(
       createElement(EventPickupHandlerIdentity, {
-        handoffMode: "merchant_handoff",
+        mode: "merchant_present",
         handlerPubkey: actorPubkey,
         profile: { pubkey: otherPubkey, name: "Wrong merchant" },
       })
@@ -218,7 +200,7 @@ describe("Merchant event actor identity", () => {
   it("renders an immediate npub fallback while profile metadata is missing", () => {
     const markup = renderToStaticMarkup(
       createElement(EventPickupHandlerIdentity, {
-        handoffMode: "merchant_handoff",
+        mode: "merchant_present",
         handlerPubkey: actorPubkey,
       })
     )
@@ -256,12 +238,12 @@ describe("Merchant event actor identity", () => {
   it.each([
     [
       "order organizer",
-      orderPickupFulfillmentSchema.shape.organizerPubkey,
+      orderEventMarketPickupFulfillmentSchema.shape.organizerPubkey,
       orderOrganizerPubkey,
     ],
     [
       "receipt merchant",
-      eventMarketReadyReceiptSchema.shape.merchantPubkey,
+      futureMarketReadyReceiptSchema.shape.merchantPubkey,
       receiptMerchantPubkey,
     ],
   ] as const)(

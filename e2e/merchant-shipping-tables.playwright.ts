@@ -318,11 +318,11 @@ test("digital drafts publish after their unused shipping table is withdrawn @mer
     .getByLabel("Title", { exact: true })
     .fill("Synthetic digital listing")
   await dialog.getByLabel("Price", { exact: true }).fill("1000")
-  await dialog.getByLabel("Fulfillment", { exact: true }).click()
+  await dialog.getByLabel("Shop fulfillment", { exact: true }).click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
-  await expect(dialog.getByLabel("Fulfillment", { exact: true })).toHaveText(
-    "Digital"
-  )
+  await expect(
+    dialog.getByLabel("Shop fulfillment", { exact: true })
+  ).toHaveText("Digital")
   await dialog.getByRole("button", { name: "Add by URL" }).click()
   await dialog
     .getByLabel("Primary image URL")
@@ -745,6 +745,9 @@ for (const [viewportName, width, height] of [
     await expect(
       second.getByRole("button", { name: "Publish rate changes" })
     ).toBeVisible({ timeout: 20_000 })
+    await expect(second.locator('aside a[href="/shipping"]')).toHaveText(
+      "Shipping"
+    )
     await expect(second.getByLabel("Up to weight").first()).toHaveValue("454")
     await expect(second.getByLabel("Shipping price").first()).toHaveValue("200")
     await second.getByLabel("Shipping price").first().fill("201")
@@ -768,6 +771,10 @@ for (const [viewportName, width, height] of [
     await expect(second.getByText(/Shipping policy withdrawn\./)).toBeVisible({
       timeout: 20_000,
     })
+    await expect(second.locator('aside a[href="/shipping"]')).toContainText(
+      "Needs completion",
+      { timeout: 20_000 }
+    )
     const deletions = await readTestRelayEvents({
       kinds: [5],
       authors: [pubkey],

@@ -15,7 +15,7 @@ import {
   parseProductEvent,
   quoteShippingPolicy,
   shippingMoneyToMinorUnits,
-  policyCurrencyMinorDigits,
+  getCurrencyFractionDigits,
   type ShippingPolicy,
 } from "../packages/core/src"
 import {
@@ -399,7 +399,7 @@ describe("merchant shipping table authoring", () => {
   test.each(["SATS", "MSATS", "JPY", "USD", "KWD", "CLF", "BTC"])(
     "preserves every accepted %s handling minor unit through signed product parsing and quoting",
     (currency) => {
-      const digits = policyCurrencyMinorDigits(currency)
+      const digits = getCurrencyFractionDigits(currency)
       const exactText = (minor: number) => {
         const text = String(minor).padStart(digits + 1, "0")
         return digits

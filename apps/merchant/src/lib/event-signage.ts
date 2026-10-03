@@ -7,22 +7,13 @@ import {
   normalizePubkey,
   type ConduitBrowserLocation,
   type Profile,
+  type ParsedEventMarketRoster,
+  type ParsedEventMarketCalendar,
 } from "@conduit/core"
-import {
-  isParticipationProductPreviewVerified,
-  type MerchantOrganizerEventMarket,
-  type MerchantOrganizerEventMarketState,
-} from "./event-market"
 import {
   getEventMarketMerchantFilterUrl,
   getEventMarketUrl,
 } from "./market-links"
-import { formatMerchantEventTimelineSchedule } from "./merchant-event-timeline"
-
-export interface EligibleEventSignMerchant {
-  pubkey: string
-  productCount: number
-}
 
 export interface EventQrSignMerchant {
   pubkey: string
@@ -60,13 +51,20 @@ export function isEventSignQrValueWithinBudget(value: string): boolean {
 function buildEventSignQrUrl(
   naddr: string,
   merchantPubkey: string | undefined,
-  location?: ConduitBrowserLocation
+  location?: ConduitBrowserLocation,
+  occurrenceCoordinate?: string
 ): string {
-  const buildUrl = (reference: string) =>
+  const baseUrl = (reference: string) =>
     merchantPubkey
       ? getEventMarketMerchantFilterUrl(reference, merchantPubkey, location)
       : getEventMarketUrl(reference, location)
-  const decoded = decodeEventMarketReference(naddr, [30405])
+  const buildUrl = (reference: string) => {
+    const url = new URL(baseUrl(reference))
+    if (occurrenceCoordinate)
+      url.searchParams.set("occurrence", occurrenceCoordinate)
+    return url.toString()
+  }
+  const decoded = decodeEventMarketReference(naddr, [30409])
   if (!decoded) return buildUrl(naddr)
 
   let selectedRelayHints: string[] = []
@@ -83,47 +81,127 @@ function buildEventSignQrUrl(
   return selectedUrl
 }
 
-function cleanOptionalText(value: string | undefined): string | undefined {
-  const cleaned = value?.trim()
-  return cleaned || undefined
-}
-
-export function formatEventSignSchedule(
-  market: MerchantOrganizerEventMarket,
+/** Date-only end is exclusive; timed dates use each signed timezone. */
+export function formatFutureEventSignSchedule(
+  calendar: ParsedEventMarketCalendar,
   locale?: string
 ): string {
-  if (market.calendarKind === 31922) {
-    return formatMerchantEventTimelineSchedule(market, locale)
+  if (calendar.kind === 31922) {
+    const format = new Intl.DateTimeFormat(locale, {
+      dateStyle: "medium",
+      timeZone: "UTC",
+    })
+    const start = format.format(calendar.start)
+    const lastDay =
+      calendar.end === undefined
+        ? calendar.start
+        : Math.max(calendar.start, calendar.end - 86_400_000)
+    return lastDay > calendar.start
+      ? `${start} – ${format.format(lastDay)}`
+      : start
   }
-
-  try {
-    const formatter = new Intl.DateTimeFormat(locale, {
+  const format = (time: number, timezone?: string) =>
+    new Intl.DateTimeFormat(locale, {
       dateStyle: "medium",
       timeStyle: "short",
-      timeZone: market.timezone || "UTC",
-    })
-    const start =
-      typeof market.start === "number"
-        ? formatter.format(new Date(market.start * 1_000))
-        : String(market.start)
-    const end =
-      typeof market.end === "number"
-        ? formatter.format(new Date(market.end * 1_000))
-        : market.end
-    return end ? `${start} - ${end}` : start
-  } catch {
-    return "See the event catalog for schedule details"
-  }
+      timeZone: timezone || calendar.startTzid || "UTC",
+    }).format(time)
+  const start = format(calendar.start, calendar.startTzid)
+  return calendar.end === undefined
+    ? start
+    : `${start} – ${format(calendar.end, calendar.endTzid)}`
 }
 
-export function getEventSignLocation(
-  market: MerchantOrganizerEventMarket
+function destinationUrl(
+  naddr: string,
+  merchant: string | undefined,
+  location: ConduitBrowserLocation | undefined,
+  occurrence: string | undefined
 ): string {
-  return (
-    cleanOptionalText(market.eventLocation) ??
-    cleanOptionalText(market.eventGeohash) ??
-    "See the event catalog for location details"
+  const url = new URL(
+    merchant
+      ? getEventMarketMerchantFilterUrl(naddr, merchant, location)
+      : getEventMarketUrl(naddr, location)
   )
+  if (occurrence) url.searchParams.set("occurrence", occurrence)
+  return url.toString()
+}
+
+/** Future signs always resolve to the kind-30409 catalog and its merchant filter. */
+export function buildFutureEventQrSignSheets(input: {
+  occurrenceCoordinate?: string
+  market: ParsedEventMarketRoster
+  calendar: ParsedEventMarketCalendar
+  profiles?: Record<string, Profile | undefined>
+  relayHints?: readonly string[]
+  location?: ConduitBrowserLocation
+}): EventQrSignSheet[] {
+  const { market, calendar, profiles, location } = input
+  const naddr = encodeEventMarketNaddr(market.coordinate, input.relayHints)
+  const eventTitle = calendar.title
+  const schedule = formatFutureEventSignSchedule(calendar)
+  const eventLocation =
+    calendar.locations.join(", ") ||
+    calendar.geohash ||
+    "See the event catalog for location details"
+  const bannerUrl = normalizePublicMediaUrl(calendar.image) ?? undefined
+  const event: EventQrSignSheet = {
+    id: `${market.coordinate}:event`,
+    kind: "event",
+    url: destinationUrl(naddr, undefined, location, input.occurrenceCoordinate),
+    qrValue: buildEventSignQrUrl(
+      naddr,
+      undefined,
+      location,
+      input.occurrenceCoordinate
+    ),
+    eventTitle,
+    schedule,
+    location: eventLocation,
+    ...(bannerUrl ? { bannerUrl } : {}),
+  }
+  const booths = market.merchants.map((row): EventQrSignSheet => {
+    const candidateProfile = profiles?.[row.pubkey]
+    const profile =
+      candidateProfile?.pubkey === row.pubkey ? candidateProfile : undefined
+    const name = getProfileName(profile) ?? formatNpub(row.pubkey)
+    const imageUrl = normalizePublicMediaUrl(profile?.picture) ?? undefined
+    const merchantBannerUrl =
+      normalizePublicMediaUrl(profile?.banner) ?? undefined
+    return {
+      id: `${market.coordinate}:${row.pubkey}`,
+      kind: "merchant",
+      url: destinationUrl(
+        naddr,
+        row.pubkey,
+        location,
+        input.occurrenceCoordinate
+      ),
+      qrValue: buildEventSignQrUrl(
+        naddr,
+        row.pubkey,
+        location,
+        input.occurrenceCoordinate
+      ),
+      eventTitle,
+      schedule,
+      location: row.assignment,
+      ...(bannerUrl ? { bannerUrl } : {}),
+      merchant: {
+        pubkey: row.pubkey,
+        name,
+        ...(imageUrl ? { imageUrl } : {}),
+        ...(merchantBannerUrl ? { bannerUrl: merchantBannerUrl } : {}),
+        fallback: getMerchantSignImageFallback(name, row.pubkey),
+      },
+    }
+  })
+  booths.sort(
+    (left, right) =>
+      left.merchant!.name.localeCompare(right.merchant!.name) ||
+      left.merchant!.pubkey.localeCompare(right.merchant!.pubkey)
+  )
+  return [event, ...booths]
 }
 
 export function getEventSignImageFallback(title: string): string {
@@ -148,121 +226,11 @@ export function getMerchantSignImageFallback(
   return normalized ? normalized.slice(0, 2).toUpperCase() : "M"
 }
 
-export function getEligibleEventSignMerchants(
-  market: MerchantOrganizerEventMarket
-): EligibleEventSignMerchant[] {
-  const accepted = new Map<string, number>()
-
-  for (const item of market.participation) {
-    if (
-      item.status !== "accepted" ||
-      !isParticipationProductPreviewVerified(item)
-    ) {
-      continue
-    }
-    const pubkey = normalizePubkey(item.merchantPubkey)
-    if (!pubkey) continue
-    accepted.set(pubkey, (accepted.get(pubkey) ?? 0) + 1)
-  }
-
-  return Array.from(accepted, ([pubkey, productCount]) => ({
-    pubkey,
-    productCount,
-  })).sort((a, b) => a.pubkey.localeCompare(b.pubkey))
-}
-
-export function isMerchantEligibleForEventSign(
-  market: MerchantOrganizerEventMarket,
-  merchantPubkey: string
-): boolean {
-  const normalized = normalizePubkey(merchantPubkey)
-  return (
-    !!normalized &&
-    getEligibleEventSignMerchants(market).some(
-      (merchant) => merchant.pubkey === normalized
-    )
-  )
-}
-
-export function buildEventQrSignSheet(
-  market: MerchantOrganizerEventMarket,
-  location?: ConduitBrowserLocation
-): EventQrSignSheet {
-  const bannerUrl = normalizePublicMediaUrl(market.imageUrl) ?? undefined
-  return {
-    id: `${market.collectionCoordinate}:event`,
-    kind: "event",
-    url: getEventMarketUrl(market.naddr, location),
-    qrValue: buildEventSignQrUrl(market.naddr, undefined, location),
-    eventTitle: market.title,
-    schedule: formatEventSignSchedule(market),
-    location: getEventSignLocation(market),
-    ...(bannerUrl ? { bannerUrl } : {}),
-  }
-}
-
-export function buildMerchantEventQrSignSheet(
-  market: MerchantOrganizerEventMarket,
-  merchantPubkey: string,
-  profile?: Profile,
-  location?: ConduitBrowserLocation
-): EventQrSignSheet | null {
-  const normalized = normalizePubkey(merchantPubkey)
-  if (!normalized || !isMerchantEligibleForEventSign(market, normalized)) {
-    return null
-  }
-
-  const name = getProfileName(profile) || formatNpub(normalized)
-  const eventBannerUrl = normalizePublicMediaUrl(market.imageUrl) ?? undefined
-  const imageUrl = normalizePublicMediaUrl(profile?.picture) ?? undefined
-  const merchantBannerUrl =
-    normalizePublicMediaUrl(profile?.banner) ?? undefined
-
-  return {
-    id: `${market.collectionCoordinate}:merchant:${normalized}`,
-    kind: "merchant",
-    url: getEventMarketMerchantFilterUrl(market.naddr, normalized, location),
-    qrValue: buildEventSignQrUrl(market.naddr, normalized, location),
-    eventTitle: market.title,
-    schedule: formatEventSignSchedule(market),
-    location: getEventSignLocation(market),
-    ...(eventBannerUrl ? { bannerUrl: eventBannerUrl } : {}),
-    merchant: {
-      pubkey: normalized,
-      name,
-      ...(imageUrl ? { imageUrl } : {}),
-      ...(merchantBannerUrl ? { bannerUrl: merchantBannerUrl } : {}),
-      fallback: getMerchantSignImageFallback(name, normalized),
-    },
-  }
-}
-
-export function buildMerchantEventQrSignSheets(
-  market: MerchantOrganizerEventMarket,
-  getProfile: (pubkey: string) => Profile | undefined,
-  location?: ConduitBrowserLocation
-): EventQrSignSheet[] {
-  return getEligibleEventSignMerchants(market)
-    .map((merchant) =>
-      buildMerchantEventQrSignSheet(
-        market,
-        merchant.pubkey,
-        getProfile(merchant.pubkey),
-        location
-      )
-    )
-    .filter((sheet): sheet is EventQrSignSheet => !!sheet)
-    .sort(
-      (a, b) =>
-        a.merchant!.name.localeCompare(b.merchant!.name, undefined, {
-          sensitivity: "base",
-          numeric: true,
-        }) || a.merchant!.pubkey.localeCompare(b.merchant!.pubkey)
-    )
-}
+export type EventSignEvidenceState =
+  "current" | "partial" | "stale" | "unavailable"
 
 export function getEventSignEvidenceNotice(
-  state: MerchantOrganizerEventMarketState,
+  state: EventSignEvidenceState,
   batch: boolean
 ): EventSignEvidenceNotice | null {
   if (state === "partial") {
@@ -271,7 +239,7 @@ export function getEventSignEvidenceNotice(
         ? "Merchant list may be incomplete"
         : "Event evidence is incomplete",
       message: batch
-        ? "Some planned relay reads did not complete, so this batch may not include every accepted merchant. Refresh event evidence before printing."
+        ? "Some planned relay reads did not complete, so this batch may not include every approved merchant. Refresh event evidence before printing."
         : "Some planned relay reads did not complete. Refresh event evidence before printing when possible.",
     }
   }
@@ -281,11 +249,11 @@ export function getEventSignEvidenceNotice(
         ? "Merchant list is based on stale evidence"
         : "Event evidence is stale",
       message: batch
-        ? "The last verified event view is retained, but this batch may not reflect current accepted merchants. Refresh event evidence before printing."
+        ? "The last verified event view is retained, but this batch may not reflect current approved merchants. Refresh event evidence before printing."
         : "The last verified event view is retained, but it may not reflect current event details. Refresh event evidence before printing.",
     }
   }
-  if (state === "active" || state === "ended") return null
+  if (state === "current") return null
 
   return {
     title: "Event evidence needs attention",
@@ -297,7 +265,7 @@ export function getEventSignEvidenceNotice(
 export type EventSignPreviewMode = "event" | "merchant" | "merchant-batch"
 
 export function getEventSignPreviewEvidenceNotice(
-  state: MerchantOrganizerEventMarketState,
+  state: EventSignEvidenceState,
   mode: EventSignPreviewMode
 ): EventSignEvidenceNotice | null {
   return getEventSignEvidenceNotice(state, mode === "merchant-batch")

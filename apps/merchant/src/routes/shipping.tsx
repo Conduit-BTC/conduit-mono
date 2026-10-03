@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   fetchMerchantShippingSettings,
   publishMerchantShippingSettings,
+  getMerchantShippingPolicyCoordinate,
   getShippingOptionAddress,
   getShippingOptionsByCoordinates,
   useAuth,
@@ -106,14 +107,20 @@ function ShippingPage() {
     queryKey: ["merchant-shipping-options", pubkey ?? "none", authStatus],
     enabled: !!pubkey,
     queryFn: ({ signal }) =>
-      getShippingOptionsByCoordinates([getShippingOptionAddress(pubkey!)], {
-        accountPubkey: pubkey,
-        authenticatedPubkey: authStatus === "connected" ? pubkey : null,
-        signal,
-        shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
-      }),
-    staleTime: 60_000,
+      getShippingOptionsByCoordinates(
+        [
+          getShippingOptionAddress(pubkey!),
+          getMerchantShippingPolicyCoordinate(pubkey!),
+        ],
+        {
+          accountPubkey: pubkey,
+          authenticatedPubkey: authStatus === "connected" ? pubkey : null,
+          signal,
+          shouldContinue: () =>
+            !signal.aborted && authGenerationRef.current === authGeneration,
+        }
+      ),
+    staleTime: 30_000,
   })
 
   const retainedSettings =

@@ -61,13 +61,13 @@ export function ShippingPolicyPreview({
         destination: { country, subdivision, postalCode },
         items: [
           {
-            shippingWeightGrams: first,
+            weightGrams: first,
             quantity: q,
             currency: policy.currency,
             subtotalMinor: 0,
           },
           {
-            shippingWeightGrams: second,
+            weightGrams: second,
             quantity: 1,
             currency: policy.currency,
             subtotalMinor,

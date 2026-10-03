@@ -3,7 +3,7 @@ import {
   quoteShippingPolicy,
   normalizeShippingPolicyRegion,
   normalizeShippingPolicySubdivision,
-  shippingAmountToMinor,
+  shippingMoneyToMinorUnits,
   getShippingDestinationEligibility,
   hasCurrentShippingPolicyEvidence,
   resolveProductFulfillment,
@@ -14,13 +14,6 @@ import {
 } from "@conduit/core"
 import type { CartItem } from "./cart-model"
 
-function isPickupItem(item: CartItem): boolean {
-  return (
-    item.fulfillment?.type === "pickup" ||
-    item.fulfillment?.type === "event_market_pickup"
-  )
-}
-
 function isPhysicalItem(item: CartItem): boolean {
   return item.format !== "digital"
 }
@@ -30,7 +23,7 @@ export function getCartShippingOptionCoordinates(items: CartItem[]): string[] {
     new Set(
       items
         .filter(isPhysicalItem)
-        .filter((item) => !isPickupItem(item))
+        .filter((item) => item.fulfillment?.type !== "event_market_pickup")
         .flatMap((item) =>
           item.shippingOptionId ? [item.shippingOptionId] : []
         )
@@ -71,9 +64,12 @@ export function prepareCartFulfillment(
     { option: ParsedShippingOption; items: CartItem[] }
   >()
   const preparedItems = items.map((item) => {
-    if (item.fulfillment?.type === "pickup") return item
     if (item.fulfillment?.type === "event_market_pickup") {
-      return clearPreparedShipping(item)
+      return {
+        ...item,
+        shippingPolicyQuote: undefined,
+        shippingAllocatedCostSats: undefined,
+      }
     }
     const policyOption =
       item.format !== "digital"
@@ -147,7 +143,7 @@ export function prepareCartFulfillment(
         let subtotalMinor = -1
         try {
           subtotalMinor =
-            shippingAmountToMinor(
+            shippingMoneyToMinorUnits(
               item.sourcePrice?.amount ?? item.price,
               currency
             ) * item.quantity
@@ -208,7 +204,7 @@ export function getCartShippingOptionSnapshots(
 ): ParsedShippingOption[] {
   return items
     .filter(isPhysicalItem)
-    .filter((item) => !isPickupItem(item))
+    .filter((item) => item.fulfillment?.type !== "event_market_pickup")
     .filter(hasCartItemShippingSnapshot)
     .map((item) => ({
       eventId: item.shippingOptionId!,
@@ -234,7 +230,7 @@ export function hasPhysicalItemsMissingShippingZone(
 ): boolean {
   return items
     .filter(isPhysicalItem)
-    .filter((item) => !isPickupItem(item))
+    .filter((item) => item.fulfillment?.type !== "event_market_pickup")
     .some((item) => {
       return !hasCartItemShippingSnapshot(item)
     })
@@ -249,7 +245,11 @@ export function hasPhysicalItemsMissingShippingSnapshot(
 export function getCartShippingOptionsAvailable(items: CartItem[]): boolean {
   return items
     .filter(isPhysicalItem)
-    .every((item) => isPickupItem(item) || hasCartItemShippingSnapshot(item))
+    .every(
+      (item) =>
+        item.fulfillment?.type === "event_market_pickup" ||
+        hasCartItemShippingSnapshot(item)
+    )
 }
 
 export function getCartShippingDestinationEligibility(
@@ -258,7 +258,7 @@ export function getCartShippingDestinationEligibility(
 ): ShippingDestinationEligibility {
   const results = items
     .filter(isPhysicalItem)
-    .filter((item) => !isPickupItem(item))
+    .filter((item) => item.fulfillment?.type !== "event_market_pickup")
     .map((item) => {
       if (item.shippingPolicyQuote) {
         const quoted = item.shippingPolicyQuote.destination
