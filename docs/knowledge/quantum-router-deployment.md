@@ -40,6 +40,11 @@ dashboard flags or an imported plan. Public dispatch requires the canonical
 mainnet production fee recipient; historical local-canary records remain
 readable but are not silently rewritten or dispatched.
 
+The isolated router browser lane uses the application `mock` network, mapped to
+regtest by its hermetic Spark adapter. This lane additionally requires validated
+loopback relay isolation and both explicit rehearsal flags. Ordinary mock builds
+and hosted profiles do not acquire router activation from this test exception.
+
 Public builds retain the normal fifteen-minute requested funding lifetime and
 forty-five-minute handoff. Saved deadlines stay immutable. See
 [invoice lifetimes](checkout-spark-invoice-lifetimes.md) and
@@ -48,8 +53,9 @@ for the distinct expiry, renewal and attribution boundaries.
 
 ## Verification
 
-Build manifests expose `quantumRouterEnabled` alongside the resolved profile,
-network and configuration digest. Managed-profile parsing, artifact verification
+Build manifests expose `quantumRouterEnabled` alongside the resolved profile
+and public configuration digest, which covers the selected network.
+Managed-profile parsing, artifact verification
 and preview CI assert that value for every app. Pure capability tests cover
 hosted admission without local flags, production-host/profile mismatches,
 unsupported networks and isolation of local exceptions. App tests retain

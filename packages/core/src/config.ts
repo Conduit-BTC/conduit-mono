@@ -479,6 +479,7 @@ export function resolveQuantumRouterEnabled(input: {
   dev?: boolean
   localRouterCanaryFlag?: string
   localRehearsalFlag?: string
+  e2eRelayIsolationEnabled?: boolean
 }): boolean {
   const deploymentProfile = input.deploymentProfile.trim().toLowerCase()
   const lightningNetwork = input.lightningNetwork.trim().toLowerCase()
@@ -488,13 +489,21 @@ export function resolveQuantumRouterEnabled(input: {
     .replace(/\.+$/, "")
 
   if (deploymentProfile === "local") {
+    const localRehearsalEnabled =
+      input.localRouterCanaryFlag === "true" &&
+      input.localRehearsalFlag === "true"
+    // Mock maps to regtest only in the explicitly isolated browser rehearsal.
+    const localNetworkSupported =
+      lightningNetwork === "mainnet" ||
+      lightningNetwork === "regtest" ||
+      (lightningNetwork === "mock" &&
+        input.e2eRelayIsolationEnabled === true &&
+        localRehearsalEnabled)
     return (
       input.dev === true &&
-      (lightningNetwork === "mainnet" || lightningNetwork === "regtest") &&
+      localNetworkSupported &&
       ["localhost", "127.0.0.1", "[::1]", "::1"].includes(hostname) &&
-      (input.profileEnabled ||
-        (input.localRouterCanaryFlag === "true" &&
-          input.localRehearsalFlag === "true"))
+      (input.profileEnabled || localRehearsalEnabled)
     )
   }
 
@@ -704,6 +713,7 @@ const quantumRouterEnabled = resolveQuantumRouterEnabled({
   dev: env.dev,
   localRouterCanaryFlag: env.localRouterCanary,
   localRehearsalFlag: env.checkoutSparkRehearsal,
+  e2eRelayIsolationEnabled: e2eRelayUrls.length === 1,
 })
 const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
