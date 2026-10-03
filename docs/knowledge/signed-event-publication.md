@@ -52,6 +52,9 @@ do not penalize relay health. Only transport timeouts and relay event rejections
 increment its failure counter. Local policy reads still fail closed: an error
 cannot authorize an EVENT or AUTH frame. Exact writes and durable checkpoints
 retain local `error` evidence rather than substituting a relay timeout.
+Best-effort broadcast policy errors cannot revoke a primary acknowledgement.
+They retain unattempted broadcast targets as local error evidence without
+opening sockets or authorizing sends.
 
 Rejection of a separate NIP-42 AUTH event is authorization failure, not rejection
 of the original signed event.

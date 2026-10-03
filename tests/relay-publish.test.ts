@@ -4,6 +4,7 @@ import {
   resetFixturePublishers,
 } from "./helpers/plain-publisher"
 import { getAccountSigner } from "../packages/core/src/protocol/session-signer"
+import { getRelayHealth } from "../packages/core/src/protocol/relay-health"
 import {
   setTestAccountSigner as setSigner,
   removeTestAccountSigner as removeSigner,
@@ -1246,6 +1247,73 @@ describe("planPublishRelays", () => {
     expect(attempts).toHaveLength(1)
     expect(attempts[0]?.[0]).toStartWith(primaryRelay)
   })
+
+  for (const cancelled of [false, true]) {
+    it(`retains primary ACK when initial broadcast policy loading ${cancelled ? "cancels" : "fails"}`, async () => {
+      const primaryRelay = "wss://primary-policy.fixture.conduit.market"
+      const broadcastRelays = [
+        "wss://broadcast-policy.fixture.conduit.market",
+        "wss://broadcast-policy-2.fixture.conduit.market",
+      ]
+      const event = signedRawTestEvent()
+      let primaryAcked = false
+      let current = true
+      const attempted: string[] = []
+      __setRelayPublishTestOverrides({
+        planPublishRelays: async () => ({
+          intent: "author_event",
+          primaryRelayUrls: [primaryRelay],
+          broadcastRelayUrls: broadcastRelays,
+          knownRelayUrls: [primaryRelay, ...broadcastRelays],
+          blockedRelayUrls: [],
+          parkedRelayUrls: [],
+          recipientRelayUrls: [],
+          usedFallback: false,
+        }),
+        publishSignedEventFrameToRelay: async ({ relayUrl }) => {
+          attempted.push(relayUrl)
+          primaryAcked = true
+          return "acked"
+        },
+      })
+      const result = await publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: event.pubkey,
+        accountPubkey: event.pubkey,
+        shouldContinue: () => current,
+        accountNetworkLocalStateRepository: {
+          get: async (pubkey) => {
+            if (primaryAcked) {
+              current = !cancelled
+              throw new Error("synthetic broadcast policy read failure")
+            }
+            return accountNetworkState(pubkey, [])
+          },
+        },
+      })
+      expect(attempted).toEqual([primaryRelay])
+      expect(result.attemptedRelayUrls).toEqual([primaryRelay])
+      expect(result.admittedRelayUrls).toEqual([primaryRelay])
+      expect(result.successfulRelayUrls).toEqual([primaryRelay])
+      expect(result.failedRelayUrls).toEqual(broadcastRelays)
+      expect(result.relayAttempts).toEqual([
+        {
+          relayUrl: primaryRelay,
+          eventId: event.id,
+          attempt: 1,
+          status: "acked",
+        },
+        ...broadcastRelays.map((relayUrl) => ({
+          relayUrl,
+          eventId: event.id,
+          attempt: 1,
+          status: cancelled ? "cancelled" : "error",
+        })),
+      ])
+      for (const relayUrl of broadcastRelays)
+        expect(getRelayHealth(relayUrl)).toBeUndefined()
+    })
+  }
 
   it("returns broadcast failures as diagnostics after primary delivery succeeds", async () => {
     const primaryRelay = "wss://recipient.conduit.market"

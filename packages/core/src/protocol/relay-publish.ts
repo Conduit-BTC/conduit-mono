@@ -1715,26 +1715,53 @@ export async function publishWithPlanner(
       relayFailureMessages: primary.relayFailureMessages,
     }
   }
-  const broadcast = await publishSignedEventPlan({
-    event,
-    relayUrls: plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls,
-    maxRelayAttempts: plan.maxBroadcastRelayAttempts,
-    requiredRelayCount:
-      (plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls).length > 0
-        ? 1
-        : 0,
-    timeoutMs: publishTimeoutMs,
-    accountPubkey: input.accountPubkey,
-    authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
-    appRelayUrls: plan.appRelayUrls,
-    personalRelayUrls: plan.personalRelayUrls,
-    independentRelayUrls: plan.independentRelayUrls,
-    accountNetworkLocalStateRepository:
-      input.accountNetworkLocalStateRepository,
-    shouldContinue: input.shouldContinue,
-    signal: input.signal,
-  })
+  const broadcastRelayUrls = mergeUnique([
+    plan.broadcastCandidateRelayUrls ?? plan.broadcastRelayUrls,
+  ])
+  let broadcast: Awaited<ReturnType<typeof publishSignedEventPlan>>
+  try {
+    broadcast = await publishSignedEventPlan({
+      event,
+      relayUrls: broadcastRelayUrls,
+      maxRelayAttempts: plan.maxBroadcastRelayAttempts,
+      requiredRelayCount: broadcastRelayUrls.length > 0 ? 1 : 0,
+      timeoutMs: publishTimeoutMs,
+      accountPubkey: input.accountPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
+      ownerSelectedRelayUrls: ownerSelectedPublishRelayUrls,
+      appRelayUrls: plan.appRelayUrls,
+      personalRelayUrls: plan.personalRelayUrls,
+      independentRelayUrls: plan.independentRelayUrls,
+      accountNetworkLocalStateRepository:
+        input.accountNetworkLocalStateRepository,
+      shouldContinue: input.shouldContinue,
+      signal: input.signal,
+    })
+  } catch {
+    // Optional broadcast cannot revoke a primary ACK. A failed initial
+    // policy read admits no targets and performs no broadcast socket I/O.
+    const status =
+      input.shouldContinue?.() === false || input.signal?.aborted
+        ? "cancelled"
+        : "error"
+    broadcast = {
+      attemptedRelayUrls: [],
+      admittedRelayUrls: [],
+      successfulRelayUrls: [],
+      failedRelayUrls: broadcastRelayUrls,
+      rejectedRelayUrls: [],
+      relayAttempts: broadcastRelayUrls.map((relayUrl) => ({
+        relayUrl,
+        eventId: event.id,
+        attempt: 1,
+        status,
+      })),
+      relayFailureMessages: Object.fromEntries(
+        broadcastRelayUrls.map((url) => [url, writeFailureMessage(status)])
+      ),
+      thrown: new Error("Best-effort broadcast did not complete."),
+    }
+  }
   attemptedRelayUrls = mergeUnique([
     attemptedRelayUrls,
     broadcast.attemptedRelayUrls,
