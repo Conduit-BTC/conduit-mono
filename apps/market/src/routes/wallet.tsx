@@ -73,6 +73,7 @@ import {
 } from "../lib/portable-wallet-form"
 import { MAX_SPARK_ACCOUNT_NUMBER } from "../lib/spark-recovery"
 import type { SparkRecoveryBundle } from "../lib/spark-recovery-bundle"
+import { checkSparkRecoveryPresence } from "../lib/spark-recovery-presence"
 import { getDefaultSparkAccountNumber } from "../lib/spark-sdk"
 import type {
   SparkPaymentSummary,
@@ -93,7 +94,8 @@ type SparkRecoveryState =
   | { status: "idle" }
   | { status: "checking" }
   | { status: "ready" }
-  | { status: "missing"; reason: string }
+  | { status: "missing" }
+  | { status: "unavailable" }
 
 const SPARK_HISTORY_LOAD_TIMEOUT_MS = 15_000
 
@@ -806,47 +808,43 @@ function WalletRuntimePill({ runtime }: { runtime: WalletRuntimeState }) {
 function useSparkRecoveryState(
   walletId: string | null,
   hasRecovery: UseWalletsReturn["hasSparkRecovery"]
-): SparkRecoveryState {
+): {
+  state: SparkRecoveryState
+  retry: () => void
+  invalidate: () => void
+} {
   const [state, setState] = useState<SparkRecoveryState>({
     status: "idle",
   })
+  const [attempt, setAttempt] = useState(0)
+  const generation = useRef(0)
 
   useEffect(() => {
+    const current = ++generation.current
     if (!walletId) {
       setState({ status: "idle" })
       return
     }
 
-    let current = true
     setState({ status: "checking" })
-    void hasRecovery(walletId)
-      .then((available) => {
-        if (!current) return
-        setState(
-          available
-            ? { status: "ready" }
-            : {
-                status: "missing",
-                reason:
-                  "No local recovery method was found. Restore this wallet again before using it.",
-              }
-        )
-      })
-      .catch(() => {
-        if (current) {
-          setState({
-            status: "missing",
-            reason:
-              "The local recovery method could not be read. Retry or restore this wallet again.",
-          })
-        }
-      })
+    void checkSparkRecoveryPresence(walletId, hasRecovery).then((status) => {
+      if (generation.current === current) setState({ status })
+    })
     return () => {
-      current = false
+      if (generation.current === current) generation.current += 1
     }
-  }, [hasRecovery, walletId])
+  }, [attempt, hasRecovery, walletId])
 
-  return state
+  return {
+    state,
+    retry: () => {
+      generation.current += 1
+      setAttempt((previous) => previous + 1)
+    },
+    invalidate: () => {
+      generation.current += 1
+    },
+  }
 }
 
 function PortableWalletDialog({
@@ -1378,12 +1376,14 @@ function UnlockWalletDialog({
   const [password, setPassword] = useState("")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const recoveryState = useSparkRecoveryState(
-    wallet?.id ?? null,
-    wallets.hasSparkRecovery
-  )
+  const {
+    state: recoveryState,
+    retry: retryRecoveryRead,
+    invalidate: invalidateRecoveryRead,
+  } = useSparkRecoveryState(wallet?.id ?? null, wallets.hasSparkRecovery)
 
   const close = () => {
+    invalidateRecoveryRead()
     setPassword("")
     setPending(false)
     setError(null)
@@ -1428,12 +1428,15 @@ function UnlockWalletDialog({
             <Loader2 className="h-4 w-4 animate-spin" />
             Checking recovery method
           </div>
-        ) : recoveryState.status === "missing" ? (
+        ) : recoveryState.status === "missing" ||
+          recoveryState.status === "unavailable" ? (
           <p
             role="alert"
             className="text-sm leading-6 text-[var(--text-secondary)]"
           >
-            {recoveryState.reason}
+            {recoveryState.status === "missing"
+              ? "No local recovery method was found. Restore this wallet again before using it."
+              : "The local recovery method is temporarily unavailable. Retry without removing this wallet."}
           </p>
         ) : (
           <div className="grid gap-2">
@@ -1457,6 +1460,20 @@ function UnlockWalletDialog({
           <Button variant="ghost" onClick={close} disabled={pending}>
             Cancel
           </Button>
+          {(recoveryState.status === "missing" ||
+            recoveryState.status === "unavailable") && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPassword("")
+                setError(null)
+                retryRecoveryRead()
+              }}
+              disabled={pending}
+            >
+              Retry
+            </Button>
+          )}
           {recoveryState.status === "ready" && (
             <Button
               onClick={() => void submitPassword()}
@@ -2448,12 +2465,14 @@ function RecoveryWalletDialog({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const recoveryHeadingRef = useRef<HTMLHeadingElement>(null)
-  const recoveryState = useSparkRecoveryState(
-    wallet?.id ?? null,
-    wallets.hasSparkRecovery
-  )
+  const {
+    state: recoveryState,
+    retry: retryRecoveryRead,
+    invalidate: invalidateRecoveryRead,
+  } = useSparkRecoveryState(wallet?.id ?? null, wallets.hasSparkRecovery)
 
   const close = () => {
+    invalidateRecoveryRead()
     setPassword("")
     setRecovery(null)
     setPending(false)
@@ -2518,12 +2537,15 @@ function RecoveryWalletDialog({
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Checking recovery method
               </div>
-            ) : recoveryState.status === "missing" ? (
+            ) : recoveryState.status === "missing" ||
+              recoveryState.status === "unavailable" ? (
               <p
                 role="alert"
                 className="text-sm leading-6 text-[var(--text-secondary)]"
               >
-                {recoveryState.reason}
+                {recoveryState.status === "missing"
+                  ? "No local recovery method was found. Restore this wallet again before using it."
+                  : "The local recovery method is temporarily unavailable. Retry without removing this wallet."}
               </p>
             ) : (
               <div className="grid gap-2">
@@ -2547,6 +2569,20 @@ function RecoveryWalletDialog({
               <Button variant="ghost" onClick={close} disabled={pending}>
                 Cancel
               </Button>
+              {(recoveryState.status === "missing" ||
+                recoveryState.status === "unavailable") && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setPassword("")
+                    setError(null)
+                    retryRecoveryRead()
+                  }}
+                  disabled={pending}
+                >
+                  Retry
+                </Button>
+              )}
               {recoveryState.status === "ready" && (
                 <Button
                   onClick={() => void revealPassword()}
