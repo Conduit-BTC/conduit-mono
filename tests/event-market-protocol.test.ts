@@ -7,8 +7,6 @@ import {
 
 import {
   buildEventMarketCalendarDraft,
-  buildEventMarketCollectionDraft,
-  buildEventMarketPickupDraft,
   buildProductListingEventDraft,
   decodeEventMarketReference,
   encodeEventMarketNaddr,
@@ -16,8 +14,6 @@ import {
   EVENT_KINDS,
   parseAddressableCoordinate,
   parseEventMarketCalendarEvent,
-  parseEventMarketCollectionEvent,
-  parseEventMarketPickupEvent,
   parseProductEvent,
   type EventMarketEventDraft,
 } from "@conduit/core"
@@ -63,17 +59,17 @@ function signRaw(input: {
 }
 
 describe("event-market coordinates and naddr references", () => {
-  it("round-trips a strict collection coordinate through naddr and a share link", () => {
-    const coordinate = `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER_PUBKEY.toUpperCase()}:summer:market`
+  it("round-trips a strict current market coordinate through naddr and a share link", () => {
+    const coordinate = `${EVENT_KINDS.EVENT_MARKET}:${ORGANIZER_PUBKEY.toUpperCase()}:summer:market`
     const parsed = parseAddressableCoordinate(coordinate, [
-      EVENT_KINDS.PRODUCT_COLLECTION,
+      EVENT_KINDS.EVENT_MARKET,
     ])
 
     expect(parsed).toEqual({
-      kind: EVENT_KINDS.PRODUCT_COLLECTION,
+      kind: EVENT_KINDS.EVENT_MARKET,
       authorPubkey: ORGANIZER_PUBKEY,
       dTag: "summer:market",
-      coordinate: `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER_PUBKEY}:summer:market`,
+      coordinate: `${EVENT_KINDS.EVENT_MARKET}:${ORGANIZER_PUBKEY}:summer:market`,
     })
 
     const naddr = encodeEventMarketNaddr(parsed!, [
@@ -83,7 +79,7 @@ describe("event-market coordinates and naddr references", () => {
       "ws://127.0.0.1:4789",
     ])
     expect(
-      decodeEventMarketReference(naddr, [EVENT_KINDS.PRODUCT_COLLECTION])
+      decodeEventMarketReference(naddr, [EVENT_KINDS.EVENT_MARKET])
     ).toEqual({
       ...parsed,
       relayHints: ["wss://relay.example"],
@@ -95,7 +91,7 @@ describe("event-market coordinates and naddr references", () => {
     })
     expect(shareLink).toStartWith("https://market.example/events/naddr1")
     expect(
-      decodeEventMarketReference(shareLink, [EVENT_KINDS.PRODUCT_COLLECTION])
+      decodeEventMarketReference(shareLink, [EVENT_KINDS.EVENT_MARKET])
     ).toMatchObject(parsed!)
   })
 
@@ -104,23 +100,23 @@ describe("event-market coordinates and naddr references", () => {
     expect(parseAddressableCoordinate(`1:${ORGANIZER_PUBKEY}:event`)).toBeNull()
     expect(
       parseAddressableCoordinate(
-        `${EVENT_KINDS.PRODUCT_COLLECTION}:${"f".repeat(63)}:event`
+        `${EVENT_KINDS.EVENT_MARKET}:${"f".repeat(63)}:event`
       )
     ).toBeNull()
     expect(
       parseAddressableCoordinate(
-        `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER_PUBKEY}:`
+        `${EVENT_KINDS.EVENT_MARKET}:${ORGANIZER_PUBKEY}:`
       )
     ).toBeNull()
     expect(
       parseAddressableCoordinate(
-        `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER_PUBKEY}:${tooLong}`
+        `${EVENT_KINDS.EVENT_MARKET}:${ORGANIZER_PUBKEY}:${tooLong}`
       )
     ).toBeNull()
     expect(
       decodeEventMarketReference(
         `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER_PUBKEY}:pickup`,
-        [EVENT_KINDS.PRODUCT_COLLECTION]
+        [EVENT_KINDS.EVENT_MARKET]
       )
     ).toBeNull()
     expect(decodeEventMarketReference("naddr1not-valid")).toBeNull()
@@ -128,6 +124,33 @@ describe("event-market coordinates and naddr references", () => {
 })
 
 describe("event-market protocol fixtures", () => {
+  it("requires every UTC day for a signed calendar crossing midnight", () => {
+    const now = Date.UTC(2026, 8, 30, 22, 30) / 1_000
+    for (const offset of [3_600, -60]) {
+      const draft = buildEventMarketCalendarDraft({
+        kind: EVENT_KINDS.CALENDAR_TIME,
+        dTag: "midnight-market",
+        title: "Midnight market",
+        start: now + offset,
+        end: now + 7_200,
+      })
+      const dayTags = draft.tags.filter((tag) => tag[0] === "D")
+      expect(dayTags).toHaveLength(2)
+      expect(
+        parseEventMarketCalendarEvent(signDraft(ORGANIZER_SECRET, draft, now))
+      ).not.toBeNull()
+      const incomplete = {
+        ...draft,
+        tags: draft.tags.filter((tag) => tag !== dayTags[1]),
+      }
+      expect(
+        parseEventMarketCalendarEvent(
+          signDraft(ORGANIZER_SECRET, incomplete, now)
+        )
+      ).toBeNull()
+    }
+  })
+
   it("builds and parses NIP-52 date and timed calendar events", () => {
     const dateDraft = buildEventMarketCalendarDraft({
       kind: EVENT_KINDS.CALENDAR_DATE,
@@ -304,214 +327,6 @@ describe("event-market protocol fixtures", () => {
 
     expect(() => parseEventMarketCalendarEvent(unsupported)).not.toThrow()
     expect(parseEventMarketCalendarEvent(unsupported)).toBeNull()
-  })
-
-  it("builds a Gamma pickup without destination tags and rejects unsafe pickup fixtures", () => {
-    const pickupDraft = buildEventMarketPickupDraft({
-      dTag: "front-desk",
-      title: "Front desk pickup",
-      price: 250,
-      currency: "sats",
-      countries: ["us"],
-      location: "Convention Center lobby",
-    })
-    expect(pickupDraft.tags).toContainEqual(["service", "pickup"])
-    expect(pickupDraft.tags).toContainEqual(["country", "US"])
-    expect(
-      pickupDraft.tags.some(
-        (tag) => tag[0] === "destination" || tag[0] === "destination_schema"
-      )
-    ).toBe(false)
-    expect(
-      parseEventMarketPickupEvent(signDraft(ORGANIZER_SECRET, pickupDraft))
-    ).toMatchObject({
-      coordinate: `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER_PUBKEY}:front-desk`,
-      price: 250,
-      currency: "SATS",
-      countries: ["US"],
-      location: "Convention Center lobby",
-    })
-
-    expect(() =>
-      buildEventMarketPickupDraft({
-        dTag: "hidden",
-        title: "Hidden pickup",
-        price: 0,
-        currency: "USD",
-        countries: ["US"],
-      })
-    ).toThrow("public location or geohash")
-
-    const proposedDestination = signRaw({
-      kind: EVENT_KINDS.SHIPPING_OPTION,
-      tags: [
-        ["d", "proposal-dependent"],
-        ["title", "Proposal-dependent pickup"],
-        ["price", "0", "USD"],
-        ["country", "US"],
-        ["service", "pickup"],
-        ["location", "Public Square"],
-        ["destination_schema", "postal"],
-      ],
-    })
-    expect(parseEventMarketPickupEvent(proposedDestination)).toBeNull()
-
-    const pickupTags = [
-      ["d", "malformed-price"],
-      ["title", "Malformed price pickup"],
-      ["country", "US"],
-      ["service", "pickup"],
-      ["location", "Public Square"],
-    ]
-    for (const amount of ["", "-1", "Infinity", "1e3", "0x10"]) {
-      expect(
-        parseEventMarketPickupEvent(
-          signRaw({
-            kind: EVENT_KINDS.SHIPPING_OPTION,
-            tags: [...pickupTags, ["price", amount, "USD"]],
-          })
-        )
-      ).toBeNull()
-    }
-    expect(
-      parseEventMarketPickupEvent(
-        signRaw({ kind: EVENT_KINDS.SHIPPING_OPTION, tags: pickupTags })
-      )
-    ).toBeNull()
-    expect(
-      parseEventMarketPickupEvent(
-        signRaw({
-          kind: EVENT_KINDS.SHIPPING_OPTION,
-          tags: [...pickupTags, ["price", "0", "USD"]],
-        })
-      )?.price
-    ).toBe(0)
-
-    for (const price of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(() =>
-        buildEventMarketPickupDraft({
-          dTag: "invalid-price",
-          title: "Invalid price pickup",
-          price,
-          currency: "USD",
-          countries: ["US"],
-          location: "Public Square",
-        })
-      ).toThrow("Pickup price is invalid")
-    }
-  })
-
-  it("builds and parses an empty authoritative collection", () => {
-    const calendarCoordinate = `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER_PUBKEY}:calendar`
-    const pickupCoordinate = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER_PUBKEY}:pickup`
-    const collectionDraft = buildEventMarketCollectionDraft({
-      dTag: "market",
-      title: "Organizer Market",
-      eventCoordinate: calendarCoordinate,
-      pickupCoordinate,
-      productCoordinates: [],
-      location: "Public Square",
-    })
-    const collection = parseEventMarketCollectionEvent(
-      signDraft(ORGANIZER_SECRET, collectionDraft)
-    )
-
-    expect(collection).toMatchObject({
-      coordinate: `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER_PUBKEY}:market`,
-      eventCoordinates: [calendarCoordinate],
-      pickupCoordinates: [pickupCoordinate],
-      productCoordinates: [],
-      unsupportedReferences: [],
-    })
-  })
-
-  it("limits collection pickup authority to one organizer-authored option", () => {
-    const calendarCoordinate = `${EVENT_KINDS.CALENDAR_TIME}:${ORGANIZER_PUBKEY}:calendar`
-    const organizerPickup = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER_PUBKEY}:pickup`
-    const secondOrganizerPickup = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER_PUBKEY}:other`
-    const merchantPickup = `${EVENT_KINDS.SHIPPING_OPTION}:${MERCHANT_PUBKEY}:booth`
-
-    expect(() =>
-      buildEventMarketCollectionDraft({
-        dTag: "market",
-        title: "Organizer Market",
-        eventCoordinate: calendarCoordinate,
-        pickupCoordinates: [organizerPickup, secondOrganizerPickup],
-      })
-    ).toThrow("one organizer-authored pickup")
-    expect(() =>
-      buildEventMarketCollectionDraft({
-        dTag: "market",
-        title: "Organizer Market",
-        eventCoordinate: calendarCoordinate,
-        pickupCoordinate: merchantPickup,
-      })
-    ).toThrow("one organizer-authored pickup")
-
-    const parsed = parseEventMarketCollectionEvent(
-      signRaw({
-        kind: EVENT_KINDS.PRODUCT_COLLECTION,
-        tags: [
-          ["d", "market"],
-          ["title", "Organizer Market"],
-          ["a", calendarCoordinate],
-          ["shipping_option", merchantPickup],
-        ],
-      })
-    )
-    expect(parsed?.pickupCoordinates).toEqual([])
-    expect(parsed?.unsupportedReferences).toEqual([merchantPickup])
-  })
-
-  it("preserves and re-emits repeated collection and shipping references", () => {
-    const pickupOne = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER_PUBKEY}:pickup-one`
-    const pickupTwo = `${EVENT_KINDS.SHIPPING_OPTION}:${ORGANIZER_PUBKEY}:pickup-two`
-    const collectionOne = `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER_PUBKEY}:market-one`
-    const collectionTwo = `${EVENT_KINDS.PRODUCT_COLLECTION}:${ORGANIZER_PUBKEY}:market-two`
-    const parsed = parseProductEvent({
-      id: "external-product-event",
-      pubkey: MERCHANT_PUBKEY,
-      created_at: 1_800_000_000,
-      content: "Merchant product",
-      tags: [
-        ["d", "coffee"],
-        ["title", "Coffee"],
-        ["price", "25", "USD"],
-        ["type", "simple", "physical"],
-        ["shipping_option", pickupOne, "5"],
-        ["shipping_option", pickupTwo, "0"],
-        ["a", collectionOne],
-        ["a", collectionTwo],
-      ],
-    })
-
-    expect(parsed.shippingOptionId).toBe(pickupOne)
-    expect(parsed.shippingOptionRefs).toEqual([
-      {
-        coordinate: pickupOne,
-        dTag: "pickup-one",
-        extraCost: { amount: 5, currency: "USD", normalizedCurrency: "USD" },
-      },
-      {
-        coordinate: pickupTwo,
-        dTag: "pickup-two",
-        extraCost: { amount: 0, currency: "USD", normalizedCurrency: "USD" },
-      },
-    ])
-    expect(parsed.collectionRefs).toEqual([collectionOne, collectionTwo])
-
-    const emitted = buildProductListingEventDraft({
-      product: parsed,
-      dTag: "coffee",
-    })
-    expect(emitted.tags.filter((tag) => tag[0] === "shipping_option")).toEqual([
-      ["shipping_option", pickupOne, "5"],
-      ["shipping_option", pickupTwo, "0"],
-    ])
-    expect(emitted.tags.filter((tag) => tag[0] === "a")).toEqual([
-      ["a", collectionOne],
-      ["a", collectionTwo],
-    ])
   })
 
   it("preserves repeated raw shipping-option tags for fail-closed classification", () => {

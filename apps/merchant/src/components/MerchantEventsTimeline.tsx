@@ -1,7 +1,8 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, Plus, RefreshCw } from "lucide-react"
-import { useQueryClient } from "@tanstack/react-query"
 import {
+  useProgressiveEventMarketDiscovery,
+  encodeEventMarketNaddr,
   getProfileDisplayLabel,
   useAuth,
   useConduitSession,
@@ -14,28 +15,23 @@ import {
   EventTimelineLoading,
   EventTimelineViewport,
   getResultPresentation,
+  paginateEventTimeline,
   SegmentedControl,
   SegmentedControlItem,
   useEventTimelineAnchor,
   useTimeBoundaryNow,
 } from "@conduit/ui"
 import { useMerchantEventTimeline } from "../hooks/useMerchantEventTimeline"
-import type { MerchantOrganizerEventMarket } from "../lib/event-market"
+import { mergeMerchantTimelineMarketReads } from "../lib/merchant-event-relationship-hydration"
+
 import {
-  merchantEventMarketQueryIdentity,
-  type MerchantEventMarketQueryData,
-} from "../lib/merchant-event-query"
-import {
-  filterAndSortMerchantEventTimeline,
-  getMerchantEventTimelineBoundaries,
-  getMerchantEventTimelineDateParts,
-  getMerchantEventTimelinePresentation,
   getNextMerchantEventTimelineLimit,
-  formatMerchantEventTimelineSchedule,
+  getFutureMerchantTimelineDateParts,
+  projectFutureMerchantTimelineOccurrences,
+  type FutureMerchantTimelineOccurrence,
   MERCHANT_EVENT_RELATIONSHIP_FILTERS,
   MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
   type MerchantEventRelationshipFilter,
-  type MerchantEventTimelineItem,
   type MerchantEventTimelineSearch,
 } from "../lib/merchant-event-timeline"
 
@@ -51,6 +47,13 @@ interface TimelinePresentationLimits {
   later: number
 }
 
+type TimelineRow = {
+  entry: FutureMerchantTimelineOccurrence
+  start: number
+  end: number
+  key: string
+}
+
 export function MerchantEventsTimeline({
   merchantPubkey,
   search,
@@ -62,11 +65,10 @@ export function MerchantEventsTimeline({
   merchantPubkey: string
   search: MerchantEventTimelineSearch
   onSearchChange: (search: MerchantEventTimelineSearch) => void
-  onOpen: (reference: string) => void
+  onOpen: (reference: string, occurrence?: string) => void
   onCreate: () => void
   createDisabled?: boolean
 }) {
-  const queryClient = useQueryClient()
   const session = useConduitSession()
   const {
     accountPubkey,
@@ -89,60 +91,120 @@ export function MerchantEventsTimeline({
       key: relationship,
       later: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
     })
-  const activePresentationLimits =
-    presentationLimits.key === relationship
-      ? presentationLimits
-      : {
-          earlier: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
-          key: relationship,
-          later: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
-        }
+  const activePresentationLimits = useMemo(
+    () =>
+      presentationLimits.key === relationship
+        ? presentationLimits
+        : {
+            earlier: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
+            key: relationship,
+            later: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
+          },
+    [presentationLimits, relationship]
+  )
   const discovery = useMerchantEventTimeline({
     merchantPubkey,
     source: "combined",
   })
+  const futureAuthors = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [merchantPubkey, ...(discovery.organizerPubkeys ?? [])].filter(
+            Boolean
+          )
+        )
+      ),
+    [discovery.organizerPubkeys, merchantPubkey]
+  )
+  const futureQuery = useProgressiveEventMarketDiscovery({
+    queryKey: [
+      "merchant-future-event-timeline",
+      session.relayScope,
+      authenticatedPubkey,
+      authGeneration,
+      futureAuthors.join(","),
+    ],
+    discoveryInput: {
+      organizerPubkeys: futureAuthors,
+      authenticatedPubkey,
+      shouldContinue: () => authGenerationRef.current === authGeneration,
+    },
+    enabled: session.relaySettingsReady && !!merchantPubkey,
+    refetchInterval: 60_000,
+  })
+  const marketReads = useMemo(
+    () =>
+      mergeMerchantTimelineMarketReads(
+        futureQuery.data?.markets ?? [],
+        discovery.relationshipMarkets
+      ),
+    [futureQuery.data?.markets, discovery.relationshipMarkets]
+  )
+  const futureOccurrences = useMemo(
+    () => marketReads.flatMap(projectFutureMerchantTimelineOccurrences),
+    [marketReads]
+  )
+  const visibleFutureOccurrences = useMemo(
+    () =>
+      futureOccurrences.filter(({ read }) => {
+        if (read.resolution.state !== "current") return false
+        const market = read.resolution.market
+        if (
+          relationship === "organizing" &&
+          market.organizerPubkey !== merchantPubkey
+        )
+          return false
+        if (
+          relationship === "selling" &&
+          !market.merchants.some((row) => row.pubkey === merchantPubkey)
+        )
+          return false
+        return true
+      }),
+    [futureOccurrences, merchantPubkey, relationship]
+  )
   const timelineBoundaries = useMemo(
-    () => getMerchantEventTimelineBoundaries(discovery.items),
-    [discovery.items]
+    () => [
+      ...visibleFutureOccurrences.flatMap(({ calendar }) => [
+        calendar.start,
+        calendar.end,
+      ]),
+    ],
+    [visibleFutureOccurrences]
   )
   const nowMs = useTimeBoundaryNow(timelineBoundaries)
-  const filteredItems = useMemo(
-    () => filterAndSortMerchantEventTimeline(discovery.items, search, nowMs),
-    [discovery.items, nowMs, search]
-  )
-  const presentation = useMemo(
-    () =>
-      getMerchantEventTimelinePresentation(
-        filteredItems,
-        {
-          earlier: activePresentationLimits.earlier,
-          later: activePresentationLimits.later,
-        },
-        nowMs
-      ),
-    [
-      activePresentationLimits.earlier,
-      activePresentationLimits.later,
-      filteredItems,
-      nowMs,
+  const presentation = useMemo(() => {
+    const rows: TimelineRow[] = [
+      ...visibleFutureOccurrences.map((entry) => ({
+        entry,
+        start: entry.calendar.start,
+        end: entry.calendar.end,
+        key: `${entry.read.coordinate}:${entry.coordinate}`,
+      })),
     ]
-  )
-  const presentedItems = useMemo(
-    () => [...presentation.past, ...presentation.currentAndFuture],
-    [presentation.currentAndFuture, presentation.past]
-  )
+    return paginateEventTimeline(rows, activePresentationLimits, nowMs)
+  }, [activePresentationLimits, nowMs, visibleFutureOccurrences])
   const timelineAnchor = useEventTimelineAnchor({
-    isFetching: discovery.isFetching,
-    itemCount: filteredItems.length,
+    isFetching: discovery.isFetching || futureQuery.isFetching,
+    itemCount: visibleFutureOccurrences.length,
     pastCount: presentation.past.length,
     viewportKey,
   })
   const organizerPubkeys = useMemo(
     () =>
       Array.from(
-        new Set(presentedItems.map((item) => item.market.organizerPubkey))
+        new Set([
+          ...presentation.past
+            .concat(presentation.currentAndFuture)
+            .flatMap((row) =>
+              row.entry.read.resolution.state === "current"
+                ? [row.entry.read.resolution.market.organizerPubkey]
+                : []
+            ),
+        ])
       ),
-    [presentedItems]
+    [presentation.currentAndFuture, presentation.past]
   )
   const profiles = useProfiles(organizerPubkeys, {
     accountPubkey,
@@ -152,33 +214,40 @@ export function MerchantEventsTimeline({
       isAuthGenerationCurrent(authGeneration),
     priority: "visible",
     maxUnresolvedRefetches: 1,
-    relayHintsByPubkey: discovery.profileRelayHintsByPubkey,
+  })
+  const futureDateReadIncomplete = marketReads.some((read) => {
+    if (
+      read.resolution.state !== "current" ||
+      !read.resolution.market.calendarCoordinate.startsWith("31924:") ||
+      (read.schedule?.kind === "series" &&
+        read.schedule.unresolvedCoordinates.length === 0 &&
+        read.scheduleCoverage === "complete")
+    )
+      return false
+    const market = read.resolution.market
+    return (
+      (relationship !== "organizing" ||
+        market.organizerPubkey === merchantPubkey) &&
+      (relationship !== "selling" ||
+        market.merchants.some((row) => row.pubkey === merchantPubkey))
+    )
   })
   const discoveryComplete =
-    !!discovery.network &&
-    ["complete", "complete_empty"].includes(discovery.network.state) &&
+    futureQuery.data?.coverage === "complete" &&
+    !discovery.relationshipPending &&
     !discovery.isRefreshStale &&
-    discovery.network.perspective.truncated !== true
+    !futureQuery.isError &&
+    !futureDateReadIncomplete
   const resultPresentation = getResultPresentation({
-    resultCount: discovery.items.length,
-    visibleResultCount: filteredItems.length,
+    resultCount: Math.max(marketReads.length, futureOccurrences.length),
+    visibleResultCount: visibleFutureOccurrences.length,
     reliability: discoveryComplete ? "complete" : "degraded",
   })
-  function openMarket(market: MerchantOrganizerEventMarket): void {
-    const identity = merchantEventMarketQueryIdentity(market.naddr, {
-      relayScope: session.relayScope,
-      authenticatedPubkey,
-      authGeneration,
-    })
-    queryClient.setQueryData<MerchantEventMarketQueryData>(
-      identity.queryKey,
-      (current) => current ?? { read: market, complete: false },
-      { updatedAt: 0 }
-    )
-    timelineAnchor.rememberPosition()
-    onOpen(market.naddr)
-  }
-
+  const initialLoading =
+    (discovery.isInitialLoading ||
+      discovery.relationshipPending ||
+      futureQuery.isPending) &&
+    visibleFutureOccurrences.length === 0
   function changeRelationship(value: string): void {
     const nextRelationship = value as MerchantEventRelationshipFilter
     timelineAnchor.rememberPosition()
@@ -214,23 +283,43 @@ export function MerchantEventsTimeline({
     })
   }
 
-  function renderEntry(item: MerchantEventTimelineItem) {
-    const market = item.market
+  function renderFutureEntry({
+    read,
+    calendar,
+    coordinate,
+    series,
+  }: FutureMerchantTimelineOccurrence) {
+    if (read.resolution.state !== "current") return null
+    const market = read.resolution.market
     const profile = profiles.getProfile(market.organizerPubkey)
     return (
       <EventTimelineEntry
-        key={market.collectionCoordinate}
-        date={getMerchantEventTimelineDateParts(market)}
-        imageUrl={market.imageUrl}
+        key={`${market.coordinate}:${coordinate}`}
+        date={getFutureMerchantTimelineDateParts(calendar)}
+        imageUrl={calendar.image}
         organizerName={getProfileDisplayLabel(profile, market.organizerPubkey, {
           lookupSettled: profiles.lookupSettled,
         })}
         organizerPending={!profiles.lookupSettled && !profile}
-        schedule={formatMerchantEventTimelineSchedule(market)}
-        title={market.title}
-        onOpen={() => openMarket(market)}
+        schedule={
+          calendar.kind === 31922 && calendar.startDate
+            ? calendar.startDate
+            : new Date(calendar.start).toLocaleString()
+        }
+        title={calendar.title}
+        onOpen={() => {
+          timelineAnchor.rememberPosition()
+          onOpen(
+            encodeEventMarketNaddr(market.coordinate, read.observedRelayUrls),
+            series ? coordinate : undefined
+          )
+        }}
       />
     )
+  }
+
+  function renderMixedEntries(rows: TimelineRow[]) {
+    return rows.map((row) => renderFutureEntry(row.entry))
   }
 
   return (
@@ -252,17 +341,20 @@ export function MerchantEventsTimeline({
             className="text-sm tabular-nums text-[var(--text-muted)]"
             aria-live="polite"
           >
-            {discovery.isInitialLoading
+            {initialLoading
               ? "Loading events"
-              : `${filteredItems.length} ${filteredItems.length === 1 ? "event" : "events"}`}
+              : `${visibleFutureOccurrences.length} ${visibleFutureOccurrences.length === 1 ? "event" : "events"}`}
           </p>
           <Button
             type="button"
             variant="ghost"
             size="sm"
             aria-label="Refresh events"
-            disabled={discovery.isFetching}
-            onClick={discovery.refetch}
+            disabled={discovery.isFetching || futureQuery.isFetching}
+            onClick={() => {
+              discovery.refetch()
+              void futureQuery.refetch()
+            }}
           >
             <RefreshCw
               className={cn(
@@ -277,13 +369,13 @@ export function MerchantEventsTimeline({
         </div>
       </div>
 
-      {discovery.isInitialLoading ? (
+      {initialLoading ? (
         <EventTimelineLoading />
-      ) : filteredItems.length > 0 ? (
+      ) : visibleFutureOccurrences.length > 0 ? (
         <EventTimelineViewport
-          busy={discovery.isFetching}
-          currentAndFutureEvents={presentation.currentAndFuture.map(
-            renderEntry
+          busy={discovery.isFetching || futureQuery.isFetching}
+          currentAndFutureEvents={renderMixedEntries(
+            presentation.currentAndFuture
           )}
           hiddenEarlierCount={presentation.hiddenEarlierCount}
           hiddenLaterCount={presentation.hiddenLaterCount}
@@ -291,7 +383,7 @@ export function MerchantEventsTimeline({
           onLoadEarlier={loadEarlier}
           onLoadLater={loadLater}
           pageSize={MERCHANT_EVENT_TIMELINE_PAGE_SIZE}
-          pastEvents={presentation.past.map(renderEntry)}
+          pastEvents={renderMixedEntries(presentation.past)}
           viewportRef={timelineAnchor.timelineViewportRef}
         />
       ) : (
@@ -311,20 +403,24 @@ export function MerchantEventsTimeline({
             aria-hidden="true"
           />
           <h3 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
-            {resultPresentation.kind === "degraded_empty"
-              ? "Events couldn't be fully loaded"
-              : resultPresentation.kind === "filter_empty"
-                ? "No events match this relationship"
-                : "No events yet"}
+            {futureDateReadIncomplete && visibleFutureOccurrences.length === 0
+              ? "Event dates couldn't be fully loaded"
+              : resultPresentation.kind === "degraded_empty"
+                ? "Events couldn't be fully loaded"
+                : resultPresentation.kind === "filter_empty"
+                  ? "No events match this relationship"
+                  : "No events yet"}
           </h3>
           <p className="mx-auto mt-2 max-w-xl text-pretty text-sm leading-6 text-[var(--text-muted)]">
-            {resultPresentation.kind === "degraded_empty"
-              ? "Retry to check for more events."
-              : resultPresentation.kind === "filter_empty"
-                ? resultPresentation.visibility === "compact"
-                  ? "Discovery is incomplete, so matching events may still be available. Retry or choose another relationship."
-                  : "Choose another relationship to see other events."
-                : "Create your first event to add it to the timeline."}
+            {futureDateReadIncomplete && visibleFutureOccurrences.length === 0
+              ? "Retry to check the signed dates for this market."
+              : resultPresentation.kind === "degraded_empty"
+                ? "Retry to check for more events."
+                : resultPresentation.kind === "filter_empty"
+                  ? resultPresentation.visibility === "compact"
+                    ? "Discovery is incomplete, so matching events may still be available. Retry or choose another relationship."
+                    : "Choose another relationship to see other events."
+                  : "Create your first event to add it to the timeline."}
           </p>
           {resultPresentation.visibility === "compact" ? (
             <Button
@@ -332,8 +428,11 @@ export function MerchantEventsTimeline({
               variant="outline"
               size="sm"
               className="mt-4"
-              disabled={discovery.isFetching}
-              onClick={discovery.refetch}
+              disabled={discovery.isFetching || futureQuery.isFetching}
+              onClick={() => {
+                discovery.refetch()
+                void futureQuery.refetch()
+              }}
             >
               <RefreshCw className="size-4" aria-hidden="true" />
               {discovery.isFetching ? "Refreshing…" : "Retry"}

@@ -131,6 +131,7 @@ export interface CachedProduct {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
+  eventGuestContactOptional?: boolean
   location?: string
   geohash?: string
   eventId?: string
@@ -198,7 +199,7 @@ export interface StoredMerchantShippingSettingsEvidence {
   signedEvent: SignedPublicNostrEvent
 }
 
-/** Exact, paired organizer signatures kept outside admitted relay evidence. */
+/** Exact paired organizer signatures kept outside admitted relay evidence. */
 export interface EventMarketMerchantDecisionJob {
   id: string
   marketCoordinate: string
@@ -1311,6 +1312,13 @@ export class ConduitDB extends Dexie {
     this.version(23).stores({
       // Durable signed evidence, kept outside prunable commerce caches.
       merchantShippingSettingsEvidence: "pubkey",
+    })
+
+    this.version(24).stores({
+      // Restore direct per-market recovery queries while keeping the current
+      // merchant and update-time indexes available for organizer decisions.
+      eventMarketMerchantDecisionJobs:
+        "id, marketCoordinate, merchantPubkey, status, updatedAt",
     })
   }
 }

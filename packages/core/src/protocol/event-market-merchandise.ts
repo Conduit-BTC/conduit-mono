@@ -1,5 +1,5 @@
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
-import type { EventMarketReadyReceiptSchema } from "../schemas"
+import type { FutureMarketReadyReceiptSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
 import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
@@ -19,12 +19,13 @@ import { parseProductEvent } from "./products"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
-import { EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT } from "./event-market"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
 
+// Client execution budget; this is not a protocol receipt item limit.
+const MAX_RECEIPT_ITEMS = 64
 const MAX_RECEIPT_READ_RELAYS = 8
 const RECEIPT_DELETION_REVISIONS_PER_TARGET = 4
 const RECEIPT_READ_CONCURRENCY = 4
@@ -46,9 +47,14 @@ export type EventMarketReceiptMerchandiseItemState =
 
 export interface EventMarketReceiptMerchandiseItem {
   state: EventMarketReceiptMerchandiseItemState
-  product: EventMarketReadyReceiptSchema["items"][number]["product"]
+  product: FutureMarketReadyReceiptSchema["items"][number]["product"]
   quantity: number
   title?: string
+  /** Parsed from the exact authenticated product revision. */
+  signedProduct?: Pick<
+    ReturnType<typeof parseProductEvent>,
+    "type" | "specifications"
+  >
   sourceRelayUrls: string[]
 }
 
@@ -73,8 +79,21 @@ export function isVerifiedEventMarketReceiptMerchandiseResolution(
   )
 }
 
+/** Only receipt identity and exact item snapshots are needed for this read. */
+export type EventMarketReceiptMerchandiseEvidence = Pick<
+  FutureMarketReadyReceiptSchema,
+  "claimRef" | "merchantPubkey" | "organizerPubkey"
+> & {
+  items: readonly Pick<
+    FutureMarketReadyReceiptSchema["items"][number],
+    "product" | "quantity"
+  >[]
+}
+
 export interface ResolveEventMarketReceiptMerchandiseEvidenceInput {
-  receipt: EventMarketReadyReceiptSchema
+  receipt: EventMarketReceiptMerchandiseEvidence
+  /** Future physical release terms remain pinned despite later listing deletion. */
+  receiptRevisionPolicy?: "current_product" | "historical_physical_receipt"
   events: readonly SignedPublicNostrEvent[]
   coverage: EventMarketReceiptMerchandiseCoverage
   sourceRelayUrlsById?: ReadonlyMap<string, readonly string[]>
@@ -169,6 +188,7 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
       } satisfies EventMarketReceiptMerchandiseItem
     }
     if (
+      input.receiptRevisionPolicy !== "historical_physical_receipt" &&
       isProductDeletedByNip09(
         {
           authorPubkey: event.pubkey,
@@ -193,7 +213,9 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
         parsed.id !== expectedAddress.addressId ||
         parsed.pubkey.toLowerCase() !== receipt.merchantPubkey.toLowerCase() ||
         parsed.createdAt !== receiptItem.product.createdAt ||
-        parsed.priceEvidenceMalformed
+        parsed.priceEvidenceMalformed ||
+        (input.receiptRevisionPolicy === "historical_physical_receipt" &&
+          (parsed.format !== "physical" || parsed.visibility !== "public"))
       ) {
         throw new Error("Exact receipt product metadata is invalid.")
       }
@@ -202,6 +224,10 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
         product: receiptItem.product,
         quantity: receiptItem.quantity,
         title: parsed.title,
+        signedProduct: {
+          type: parsed.type,
+          specifications: parsed.specifications,
+        },
         sourceRelayUrls,
       } satisfies EventMarketReceiptMerchandiseItem
     } catch {
@@ -295,7 +321,9 @@ function rawEvents(result: FetchEventsFanoutResult): {
 }
 
 export interface GetEventMarketReceiptMerchandiseInput {
-  receipt: EventMarketReadyReceiptSchema
+  receipt: EventMarketReceiptMerchandiseEvidence
+  /** Future physical release terms remain pinned despite later listing deletion. */
+  receiptRevisionPolicy?: "current_product" | "historical_physical_receipt"
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
@@ -307,10 +335,7 @@ export interface GetEventMarketReceiptMerchandiseInput {
 export async function getEventMarketReceiptMerchandise(
   input: GetEventMarketReceiptMerchandiseInput
 ): Promise<EventMarketReceiptMerchandiseResolution> {
-  if (
-    input.receipt.items.length >
-    EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT
-  ) {
+  if (input.receipt.items.length > MAX_RECEIPT_ITEMS) {
     throw new Error("Receipt merchandise exceeds the bounded read budget.")
   }
   const merchant = input.receipt.merchantPubkey.toLowerCase()
@@ -397,7 +422,7 @@ export async function getEventMarketReceiptMerchandise(
       kinds: [EVENT_KINDS.PRODUCT],
       authors: [merchant],
       ids: productIds,
-      limit: EVENT_MARKET_PARTICIPATION_FRONTIER_TARGET_LIMIT,
+      limit: MAX_RECEIPT_ITEMS,
     },
     ...productIds.map((eventId): NDKFilter => ({
       kinds: [EVENT_KINDS.DELETION],
@@ -474,6 +499,7 @@ export async function getEventMarketReceiptMerchandise(
   }
   return resolveEventMarketReceiptMerchandiseEvidence({
     receipt: input.receipt,
+    receiptRevisionPolicy: input.receiptRevisionPolicy,
     events: Array.from(events.values()),
     sourceRelayUrlsById,
     coverage: combineCoverage(relayUrls, results),

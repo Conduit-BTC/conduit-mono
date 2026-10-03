@@ -6,13 +6,17 @@ import {
   buildMerchantEventParticipationUrl,
   encodeEventMarketNaddr,
   inferConduitAppOrigin,
+  normalizeExactEventCatalogNaddr,
   pubkeyToNpub,
 } from "@conduit/core"
 
-const EVENT_COORDINATE = `30405:${"1".repeat(64)}:fall-market`
+const EVENT_COORDINATE = `30409:${"1".repeat(64)}:fall-market`
 const EVENT_NADDR = encodeEventMarketNaddr(EVENT_COORDINATE, [
   "wss://relay.example/events",
 ])
+const FUTURE_MARKET_NADDR = encodeEventMarketNaddr(
+  `30409:${"1".repeat(64)}:fall-market`
+)
 const MERCHANT_PUBKEY = "2".repeat(64)
 const MERCHANT_NPUB = pubkeyToNpub(MERCHANT_PUBKEY)
 
@@ -116,6 +120,45 @@ describe("paired Conduit app origins", () => {
 })
 
 describe("event market links", () => {
+  it("builds shopper and merchant links to the new market coordinate", () => {
+    expect(
+      buildMarketEventCatalogUrl(
+        "https://shop.conduit.market",
+        FUTURE_MARKET_NADDR
+      )
+    ).toBe(`https://shop.conduit.market/events/${FUTURE_MARKET_NADDR}`)
+    expect(
+      buildMerchantEventParticipationUrl(
+        "https://sell.conduit.market",
+        FUTURE_MARKET_NADDR
+      )
+    ).toBe(`https://sell.conduit.market/events/${FUTURE_MARKET_NADDR}`)
+  })
+
+  it("rejects retired collection and shipping references without changing their ordinary coordinate encoding", () => {
+    for (const kind of [30405, 30406, 30402, 31923]) {
+      const reference = encodeEventMarketNaddr(
+        `${kind}:${"1".repeat(64)}:ordinary-reference`
+      )
+      expect(reference).toStartWith("naddr1")
+      expect(() => normalizeExactEventCatalogNaddr(reference)).toThrow(
+        "supported Event Market naddr"
+      )
+      expect(() =>
+        buildMarketEventCatalogUrl("https://shop.conduit.market", reference)
+      ).toThrow()
+      expect(() =>
+        buildMerchantEventParticipationUrl(
+          "https://sell.conduit.market",
+          reference
+        )
+      ).toThrow()
+    }
+    expect(normalizeExactEventCatalogNaddr(`  ${EVENT_NADDR}  `)).toBe(
+      EVENT_NADDR
+    )
+  })
+
   it("builds separate preview shopper and merchant links", () => {
     expect(
       buildMarketEventCatalogUrl(
@@ -151,6 +194,40 @@ describe("event market links", () => {
       ).toBe(
         `https://shop.conduit.market/events/${EVENT_NADDR}?merchant=${MERCHANT_NPUB}`
       )
+    }
+  })
+
+  it("retains the selected date on hinted and hint-free event links", () => {
+    for (const kind of [31922, 31923]) {
+      const occurrenceCoordinate = `${kind}:${"1".repeat(64)}:selected-date`
+      for (const reference of [EVENT_NADDR, FUTURE_MARKET_NADDR]) {
+        for (const merchantPubkey of [undefined, MERCHANT_PUBKEY]) {
+          const url = new URL(
+            buildMarketEventCatalogUrl(
+              "https://shop.conduit.market",
+              reference,
+              {
+                merchantPubkey,
+                occurrenceCoordinate,
+              }
+            )
+          )
+          expect(url.searchParams.get("occurrence")).toBe(occurrenceCoordinate)
+          expect(url.searchParams.get("merchant")).toBe(
+            merchantPubkey ? MERCHANT_NPUB : null
+          )
+        }
+      }
+    }
+  })
+
+  it("rejects invalid selected occurrence coordinates", () => {
+    for (const occurrenceCoordinate of ["not-a-coordinate", EVENT_COORDINATE]) {
+      expect(() =>
+        buildMarketEventCatalogUrl("https://shop.conduit.market", EVENT_NADDR, {
+          occurrenceCoordinate,
+        })
+      ).toThrow("valid event occurrence coordinate")
     }
   })
 

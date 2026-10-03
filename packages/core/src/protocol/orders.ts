@@ -2,9 +2,9 @@ import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { z } from "zod"
 import {
   conversationMessageSchema,
-  eventMarketFulfillmentRevocationSchema,
-  eventMarketHandoffAckSchema,
-  eventMarketReadyReceiptSchema,
+  futureMarketReadyReceiptSchema,
+  futureMarketRevocationSchema,
+  futureMarketHandoffAckSchema,
   orderMessageTypeSchema,
   orderSchema,
   paymentProofActionSchema,
@@ -16,9 +16,9 @@ import {
   shippingUpdateMessageSchema,
   statusUpdateMessageSchema,
   type ConversationMessageSchema,
-  type EventMarketFulfillmentRevocationSchema,
-  type EventMarketHandoffAckSchema,
-  type EventMarketReadyReceiptSchema,
+  type FutureMarketReadyReceiptSchema,
+  type FutureMarketRevocationSchema,
+  type FutureMarketHandoffAckSchema,
   type OrderMessageTypeSchema,
   type OrderSchema,
   type PaymentProofMessageSchema,
@@ -83,25 +83,25 @@ export type ParsedOrderMessage =
       payload: PaymentProofMessageSchema
     })
   | (ParsedOrderMessageBase & {
-      type: "organizer_fulfillment_receipt"
-      payload: EventMarketReadyReceiptSchema
+      type: "future_market_ready"
+      payload: FutureMarketReadyReceiptSchema
     })
   | (ParsedOrderMessageBase & {
-      type: "organizer_fulfillment_revocation"
-      payload: EventMarketFulfillmentRevocationSchema
+      type: "future_market_revoked"
+      payload: FutureMarketRevocationSchema
     })
   | (ParsedOrderMessageBase & {
-      type: "organizer_handoff_ack"
-      payload: EventMarketHandoffAckSchema
+      type: "future_market_handed_out"
+      payload: FutureMarketHandoffAckSchema
     })
 
 export type ParsedEventMarketPrivateMessage = Extract<
   ParsedOrderMessage,
   {
     type:
-      | "organizer_fulfillment_receipt"
-      | "organizer_fulfillment_revocation"
-      | "organizer_handoff_ack"
+      | "future_market_ready"
+      | "future_market_revoked"
+      | "future_market_handed_out"
   }
 >
 
@@ -390,18 +390,16 @@ export function parseOrderMessageRumorEvent(
     return { ...messageBase(event, type, orderId), payload }
   }
 
-  if (type === "organizer_fulfillment_receipt") {
-    const payload = eventMarketReadyReceiptSchema.parse(json)
+  if (type === "future_market_ready") {
+    const payload = futureMarketReadyReceiptSchema.parse(json)
     return { ...messageBase(event, type, payload.claimRef), payload }
   }
-
-  if (type === "organizer_fulfillment_revocation") {
-    const payload = eventMarketFulfillmentRevocationSchema.parse(json)
+  if (type === "future_market_revoked") {
+    const payload = futureMarketRevocationSchema.parse(json)
     return { ...messageBase(event, type, payload.claimRef), payload }
   }
-
-  if (type === "organizer_handoff_ack") {
-    const payload = eventMarketHandoffAckSchema.parse(json)
+  if (type === "future_market_handed_out") {
+    const payload = futureMarketHandoffAckSchema.parse(json)
     return { ...messageBase(event, type, payload.claimRef), payload }
   }
 

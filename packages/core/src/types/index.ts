@@ -58,6 +58,7 @@ export interface Product {
   collectionRefs?: string[]
   /** Repeated kind-30409 Event Market association references in signed tag order. */
   eventMarketRefs?: string[]
+  eventGuestContactOptional?: boolean
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries?: string[]
   shippingCountryRules?: Array<{

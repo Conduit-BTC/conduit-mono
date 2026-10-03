@@ -1,4 +1,8 @@
-import type { PricingRateInput, Product } from "@conduit/core"
+import {
+  orderEventMarketPickupFulfillmentSchema,
+  type PricingRateInput,
+  type Product,
+} from "@conduit/core"
 import { getCartCommerceFingerprint, type CartItem } from "./cart-model"
 import { prepareCartFulfillment } from "./cart-shipping-options"
 import type { CheckoutAuthorizationResult } from "./checkout-authorization"
@@ -86,7 +90,7 @@ function requireMatchingProduct(
     resolved.shippingOptionDTag !== listing.shippingOptionDTag ||
     resolved.shippingOptionLaunchUnsupported !==
       listing.shippingOptionLaunchUnsupported ||
-    (item.fulfillment?.type !== "pickup" &&
+    (item.fulfillment?.type !== "event_market_pickup" &&
       item.shippingOptionLaunchUnsupported !==
         listing.shippingOptionLaunchUnsupported) ||
     JSON.stringify(resolved.shippingOptionRefs) !==
@@ -119,10 +123,10 @@ function requireMatchingProduct(
 
 /**
  * Admit only a fresh, direct-payable quote from the checkout's current signed
- * 30402 and 30406 reads. Pickup catalog projections may differ for browsing,
- * but router funding cannot start until both sources agree on one exact
- * product revision. Core's read boundary remains responsible for verifying
- * signatures, deletion frontiers, and pickup graph authority.
+ * 30402 and ordinary shipping 30406 reads. Router funding requires both
+ * projections to agree on one exact product revision. Current Event Market
+ * pickup retains its signed roster, date and grant snapshot without inventing
+ * a shipping option. Core's live read remains responsible for current authority.
  */
 export function buildCheckoutSparkQuoteAuthority(input: {
   authorization: AuthorizedItems
@@ -179,15 +183,19 @@ export function buildCheckoutSparkQuoteAuthority(input: {
     if (usedProducts.has(item.productId)) invalidEvidence()
     usedProducts.add(item.productId)
 
-    if (item.fulfillment?.type === "event_pickup_pending") invalidEvidence()
-    if (item.fulfillment?.type === "pickup") {
+    if (item.fulfillment?.type === "event_market_pickup") {
+      const fulfillment = item.fulfillment
       if (
-        authorization.shippingOptionEvidence.status !== "not_required" ||
-        item.fulfillment.product.coordinate !== item.productId ||
-        item.fulfillment.product.eventId !== listing.sourceEventId ||
-        item.fulfillment.product.merchantPubkey !== item.merchantPubkey ||
-        item.shippingOptionId !== item.fulfillment.option.coordinate ||
-        !EVENT_ID.test(item.fulfillment.option.eventId)
+        !orderEventMarketPickupFulfillmentSchema.safeParse(fulfillment)
+          .success ||
+        fulfillment.product.coordinate !== item.productId ||
+        fulfillment.product.eventId !== listing.sourceEventId ||
+        fulfillment.product.createdAt !== listing.updatedAt ||
+        fulfillment.merchantPubkey !== item.merchantPubkey ||
+        fulfillment.payeePubkey !== item.merchantPubkey ||
+        item.shippingOptionId !== undefined ||
+        item.sourceShippingCost !== undefined ||
+        (item.shippingCostSats !== undefined && item.shippingCostSats !== 0)
       ) {
         invalidEvidence()
       }
@@ -196,10 +204,6 @@ export function buildCheckoutSparkQuoteAuthority(input: {
         productEventId: listing.sourceEventId!,
         merchantPubkey: item.merchantPubkey,
         quantity: item.quantity,
-        shippingOption: {
-          coordinate: item.fulfillment.option.coordinate,
-          eventId: item.fulfillment.option.eventId,
-        },
       }
     }
 

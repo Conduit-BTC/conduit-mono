@@ -1,126 +1,42 @@
-import { useEffect, useMemo } from "react"
-import { ArrowLeft } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-
-import { useAuth } from "@conduit/core"
-import {
-  Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@conduit/ui"
-
-import { FindEventsPanel, MyEventsPanel } from "../events"
-import { parseOrganizerEventMarketReference } from "../../lib/event-market"
+import { decodeEventMarketReference } from "@conduit/core"
+import { Button, Card, CardContent, CardHeader, CardTitle } from "@conduit/ui"
+import { FutureEventMarketManager } from "../../components/FutureEventMarketManager"
 
 export const Route = createFileRoute("/events/$collectionRef")({
   component: EventDetailPage,
 })
-
 function EventDetailPage() {
   const { collectionRef } = Route.useParams()
-  const {
-    accountPubkey,
-    pubkey,
-    signerReadiness,
-    authGeneration,
-    isAuthGenerationCurrent,
-  } = useAuth()
+  const { occurrence } = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
-
-  const eventReference = useMemo(() => {
-    try {
-      return parseOrganizerEventMarketReference(collectionRef)
-    } catch {
-      return null
-    }
-  }, [collectionRef])
-  const canonicalReference = eventReference?.naddr
-
-  useEffect(() => {
-    if (!canonicalReference || canonicalReference === collectionRef) return
-    void navigate({
-      to: "/events/$collectionRef",
-      params: { collectionRef: canonicalReference },
-      search: {},
-      replace: true,
-    })
-  }, [canonicalReference, collectionRef, navigate])
-
-  if (!eventReference || !canonicalReference) {
+  if (!decodeEventMarketReference(collectionRef, [30409]))
     return (
-      <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
-        <Button asChild variant="outline" className="w-fit">
-          <Link to="/events" search={{}}>
-            <ArrowLeft aria-hidden="true" />
-            Back to events
-          </Link>
-        </Button>
-        <Card>
-          <CardHeader>
-            <CardTitle>Event link is invalid</CardTitle>
-            <CardDescription>
-              Open this event again from its exact catalog naddr or Market share
-              link.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button asChild variant="outline">
-              <Link to="/events" search={{}}>
-                Browse events
-              </Link>
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Repost this event</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p>
+            This event uses a retired format. Create an Event Market to offer
+            products and manage merchants.
+          </p>
+          <Button asChild>
+            <Link to="/events/new">Create Event Market</Link>
+          </Button>
+        </CardContent>
+      </Card>
     )
-  }
-
-  const merchantPubkey = accountPubkey ?? ""
-  const authenticatedPubkey =
-    signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
-  const shouldContinue = () => isAuthGenerationCurrent(authGeneration)
-  const organizerPubkey = eventReference.coordinate.split(":")[1]
-  const selectedIsOwned = organizerPubkey === merchantPubkey
-  const openEvent = (reference: string) => {
-    const nextReference = parseOrganizerEventMarketReference(reference).naddr
-    void navigate({
-      to: "/events/$collectionRef",
-      params: { collectionRef: nextReference },
-      search: {},
-      replace: true,
-    })
-  }
-
   return (
-    <div className="mx-auto max-w-[68rem] space-y-6 py-2 sm:py-6">
-      <Button asChild variant="outline" className="w-fit">
-        <Link to="/events" search={{}}>
-          <ArrowLeft aria-hidden="true" />
-          Back to events
-        </Link>
-      </Button>
-
-      {selectedIsOwned ? (
-        <MyEventsPanel
-          key={`${merchantPubkey}:${canonicalReference}`}
-          organizerPubkey={merchantPubkey}
-          initialReference={canonicalReference}
-          onPublished={openEvent}
-          authenticatedPubkey={authenticatedPubkey}
-          shouldContinue={shouldContinue}
-        />
-      ) : (
-        <FindEventsPanel
-          key={`${merchantPubkey}:${canonicalReference}`}
-          merchantPubkey={merchantPubkey}
-          authenticatedPubkey={authenticatedPubkey}
-          shouldContinue={shouldContinue}
-          initialReference={canonicalReference}
-        />
-      )}
-    </div>
+    <FutureEventMarketManager
+      reference={collectionRef}
+      selectedOccurrence={occurrence}
+      onSelectOccurrence={(coordinate) =>
+        void navigate({
+          search: (previous) => ({ ...previous, occurrence: coordinate }),
+          replace: true,
+        })
+      }
+    />
   )
 }

@@ -7,11 +7,9 @@ import {
   cacheSignedProductListingEvent,
   compileProductFulfillmentIntent,
   EVENT_KINDS,
-  getEventMarketPickupsByCoordinates,
   getNdk,
   getAccountSigner,
   type UnsignedNostrEvent,
-  getProductEventMarketFulfillmentClaims,
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,
   getShippingOptionsByCoordinates,
@@ -23,7 +21,6 @@ import {
   resolveProductFulfillment,
   waitForVisibleDocument,
   type ParsedShippingOption,
-  type ParsedEventMarketPickup,
   type ProductDeletionEventTarget,
   type ProductFulfillmentIntent,
   type ProductSchema,
@@ -230,20 +227,9 @@ export interface ProductListingPublishTarget {
   fulfillmentIntent: ProductPublicationFulfillmentIntent
 }
 
-const VERIFIED_EVENT_PICKUP = Symbol("verified-event-pickup")
-
-type PreparedProductListingPublishTarget = ProductListingPublishTarget & {
-  [VERIFIED_EVENT_PICKUP]?: true
-}
+type PreparedProductListingPublishTarget = ProductListingPublishTarget
 
 export interface ProductPublicationDependencies {
-  getEventMarketPickups: (
-    coordinates: readonly string[],
-    options: {
-      authenticatedPubkey?: string | null
-      shouldContinue?: () => boolean
-    }
-  ) => Promise<ParsedEventMarketPickup[]>
   getShippingOptions: (
     coordinates: readonly string[],
     options: {
@@ -329,19 +315,6 @@ function getProductShippingDestinations(
   }))
 }
 
-function hasEventPickupReferences(
-  product: Pick<
-    ProductSchema,
-    "canonicalShippingResolved" | "collectionRefs" | "shippingOptionRefs"
-  >
-): boolean {
-  return (
-    product.canonicalShippingResolved !== true &&
-    (product.collectionRefs?.length ?? 0) > 0 &&
-    (product.shippingOptionRefs?.length ?? 0) > 0
-  )
-}
-
 function hasCanonicalProductShippingReference(
   product: Pick<
     ProductSchema,
@@ -379,28 +352,6 @@ function hasCanonicalProductShippingReference(
   )
 }
 
-function getEventProductPreservationStrategy(
-  product: ProductSchema
-): "product_event" | "event_pickup" | null {
-  const reference = product.shippingOptionRefs?.[0]
-  const hasExactReference =
-    product.visibility !== "public" &&
-    product.canonicalShippingResolved !== true &&
-    product.shippingOptionRefs?.length === 1 &&
-    !!product.shippingOptionId &&
-    reference?.coordinate === product.shippingOptionId &&
-    reference.extraCostMalformed !== true
-  if (!hasExactReference) return null
-
-  const claims = getProductEventMarketFulfillmentClaims(product)
-  if (claims.length === 0) return null
-  return claims.some((claim) =>
-    claim.directPickupCoordinates.includes(product.shippingOptionId!)
-  )
-    ? "event_pickup"
-    : "product_event"
-}
-
 function hasLegacyInlineShipping(
   product: Pick<
     ProductSchema,
@@ -424,11 +375,7 @@ function hasLegacyInlineShipping(
 }
 
 type PreservedFulfillmentStrategy =
-  | "product_event"
-  | "event_pickup"
-  | "canonical_fixed"
-  | "legacy_upgrade"
-  | "explicit_change"
+  "product_event" | "canonical_fixed" | "legacy_upgrade" | "explicit_change"
 
 function getPreservedFulfillmentStrategy(
   product: ProductSchema,
@@ -439,8 +386,6 @@ function getPreservedFulfillmentStrategy(
     return "canonical_fixed"
   }
   if (hasLegacyInlineShipping(product)) return "legacy_upgrade"
-  const eventStrategy = getEventProductPreservationStrategy(product)
-  if (eventStrategy) return eventStrategy
   return product.shippingOptionId ? "explicit_change" : "product_event"
 }
 
@@ -463,12 +408,6 @@ function getCanonicalPreservationError(
   }
   return new Error(
     "Fixed shipping could not be verified safely. Try again or choose Change fulfillment before saving."
-  )
-}
-
-function getEventPickupPreservationError(): Error {
-  return new Error(
-    "Event pickup could not be verified safely. Try again or choose Change fulfillment before saving."
   )
 }
 
@@ -511,10 +450,7 @@ async function prepareProductPublicationListings(
       )
     }
     return {
-      kind:
-        strategy === "event_pickup"
-          ? ("pickup" as const)
-          : ("canonical" as const),
+      kind: "canonical" as const,
       baseline,
       listing,
       product,
@@ -523,22 +459,13 @@ async function prepareProductPublicationListings(
   const evidenceRequired = prepared.filter(
     (
       entry
-    ): entry is Extract<
-      (typeof prepared)[number],
-      { kind: "pickup" | "canonical" }
-    > => entry.kind === "pickup" || entry.kind === "canonical"
+    ): entry is Extract<(typeof prepared)[number], { kind: "canonical" }> =>
+      entry.kind === "canonical"
   )
   if (evidenceRequired.length === 0) {
     return prepared.map((entry) => entry.listing)
   }
 
-  const pickupCoordinates = Array.from(
-    new Set(
-      evidenceRequired
-        .filter((entry) => entry.kind === "pickup")
-        .map((entry) => entry.baseline.shippingOptionId!)
-    )
-  )
   const canonicalCoordinates = Array.from(
     new Set(
       evidenceRequired
@@ -546,20 +473,6 @@ async function prepareProductPublicationListings(
         .map((entry) => entry.baseline.shippingOptionId!)
     )
   )
-  let eventPickups: ParsedEventMarketPickup[] = []
-  if (pickupCoordinates.length > 0) {
-    try {
-      eventPickups = await dependencies.getEventMarketPickups(
-        pickupCoordinates,
-        {
-          authenticatedPubkey: input.authenticatedPubkey,
-          shouldContinue: input.shouldContinue,
-        }
-      )
-    } catch {
-      throw getEventPickupPreservationError()
-    }
-  }
   let shippingOptions: ParsedShippingOption[]
   if (canonicalCoordinates.length > 0) {
     try {
@@ -582,18 +495,6 @@ async function prepareProductPublicationListings(
 
   return prepared.map((entry): PreparedProductListingPublishTarget => {
     if (entry.kind === "ready") return entry.listing
-
-    if (entry.kind === "pickup") {
-      const pickup = eventPickups.find(
-        (option) => option.coordinate === entry.baseline.shippingOptionId
-      )
-      if (!pickup) throw getEventPickupPreservationError()
-      return {
-        ...entry.listing,
-        product: entry.product,
-        [VERIFIED_EVENT_PICKUP]: true,
-      }
-    }
 
     const fulfillment = resolveProductFulfillment(
       entry.baseline,
@@ -645,9 +546,6 @@ export function resolveProductFulfillmentIntentForTarget(input: {
   authoringCountries: readonly string[]
 }): ProductFulfillmentIntent {
   if (input.product.format === "digital") return { kind: "digital" }
-  if (hasEventPickupReferences(input.product)) {
-    return { kind: "coordinate_after_order" }
-  }
 
   const amount =
     input.product.sourceShippingCost?.amount ?? input.product.shippingCostSats
@@ -692,9 +590,6 @@ export function resolvePublishedProductFulfillmentIntentForTarget(
   >
 ): ProductFulfillmentIntent | null {
   if (product.format === "digital") return { kind: "digital" }
-  if (hasEventPickupReferences(product)) {
-    return { kind: "coordinate_after_order" }
-  }
   if (product.shippingOptionLaunchUnsupported) return null
   if (product.shippingOptionId && product.canonicalShippingResolved !== true) {
     return null
@@ -793,7 +688,9 @@ export function applyProductFulfillmentIntentForPublication(input: {
       normalizeCurrencyIdentity(currency) ===
       normalizeCurrencyIdentity(previousCurrency)
     if (price === 0 && (previousPrice !== 0 || !sameCurrencyUnit)) {
-      throw new Error("Verify local pickup before setting a new zero price")
+      throw new Error(
+        "Existing free prices may be kept; a new zero price is not supported."
+      )
     }
     if (
       !sameCurrencyUnit &&
@@ -825,25 +722,14 @@ export function applyProductFulfillmentIntentForPublication(input: {
     return { ...input.product }
   }
   if (input.intent.kind !== "fixed_standard") {
-    const preserveEventPickup =
-      input.intent.kind === "coordinate_after_order" &&
-      hasEventPickupReferences(input.product)
     return {
       ...input.product,
       shippingCostSats: undefined,
       sourceShippingCost: undefined,
-      shippingOptionId: preserveEventPickup
-        ? input.product.shippingOptionId
-        : undefined,
-      shippingOptionDTag: preserveEventPickup
-        ? input.product.shippingOptionDTag
-        : undefined,
-      shippingOptionRefs: preserveEventPickup
-        ? input.product.shippingOptionRefs
-        : undefined,
-      collectionRefs: preserveEventPickup
-        ? input.product.collectionRefs
-        : undefined,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingOptionRefs: undefined,
+      collectionRefs: undefined,
       shippingOptionLaunchUnsupported: undefined,
       shippingCountries: undefined,
       shippingCountryRules: undefined,
@@ -921,10 +807,7 @@ async function signProductWrite(
       listing.fulfillmentIntent.baseline,
       listing.dTag
     )
-    if (
-      strategy !== "product_event" &&
-      (strategy !== "event_pickup" || listing[VERIFIED_EVENT_PICKUP] !== true)
-    ) {
+    if (strategy !== "product_event") {
       throw new Error(
         "Existing fulfillment must be prepared before requesting a signature"
       )
@@ -1096,9 +979,6 @@ export async function signAndPublishProductWriteBundle(
       shouldContinue: input.shouldContinue,
     },
     {
-      getEventMarketPickups:
-        dependencies.getEventMarketPickups ??
-        getEventMarketPickupsByCoordinates,
       getShippingOptions:
         dependencies.getShippingOptions ?? getShippingOptionsByCoordinates,
     }

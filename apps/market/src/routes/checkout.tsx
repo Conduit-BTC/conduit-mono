@@ -21,6 +21,9 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  isContactFreeEventHandoff,
+  getEventGuestReceiptCommitment,
+  formatEventMarketPickupDate,
   getProfilePaymentAddress,
   hasFreshProfilePaymentAddress,
   EVENT_KINDS,
@@ -77,6 +80,7 @@ import {
   AvatarImage,
   Badge,
   Button,
+  Checkbox,
   Combobox,
   HoldToReleaseButton,
   Input,
@@ -86,6 +90,11 @@ import {
   SignerRecoveryNotice,
   Textarea,
 } from "@conduit/ui"
+import {
+  EventGuestReceiptDetails,
+  type EventGuestReceiptDraft,
+} from "../components/EventGuestReceiptDetails"
+import { CartEventFulfillmentChoice } from "../components/CartEventFulfillmentChoice"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -139,6 +148,7 @@ import {
   getCartAvailabilityVerificationMessage,
   getCartFulfillmentLane,
   getCartItemKey,
+  getCartCommerceFingerprint,
   getCartPurchaseReference,
   getMixedFulfillmentBlockingMessage,
   getCartPublicZapPolicy,
@@ -816,7 +826,9 @@ function OrderSummary({
   pickupHandlerIdentity,
   formatPrice,
   className = "",
+  fulfillmentChangesDisabled = false,
 }: {
+  fulfillmentChangesDisabled?: boolean
   items: CartItem[]
   merchantPubkey: string
   accountPubkey: string | null
@@ -838,11 +850,15 @@ function OrderSummary({
   const fulfillmentLane = getCartFulfillmentLane(items)
   const pickupHandoff = getCartPickupHandoffSummary(items)
   const pickupFulfillment = items.find(
-    (item) => item.fulfillment?.type === "pickup"
+    (item) => item.fulfillment?.type === "event_market_pickup"
   )?.fulfillment
   const pickupLocation =
-    pickupFulfillment?.type === "pickup"
-      ? (pickupFulfillment.option.location ?? pickupFulfillment.option.geohash)
+    pickupFulfillment?.type === "event_market_pickup"
+      ? pickupFulfillment.assignment
+      : null
+  const pickupDate =
+    pickupFulfillment?.type === "event_market_pickup"
+      ? formatEventMarketPickupDate(pickupFulfillment)
       : null
   const pricing = buildCheckoutPricingIntent(items, btcUsdRate)
   const pricingUnavailable = {
@@ -942,10 +958,7 @@ function OrderSummary({
                 : undefined,
             },
             {
-              allowZero:
-                pricing.status === "ok" &&
-                !pricing.paymentRequired &&
-                item.fulfillment?.type === "pickup",
+              allowZero: item.fulfillment?.type === "event_market_pickup",
             }
           )
           const imageUrl = normalizePublicMediaUrl(item.image)
@@ -975,6 +988,12 @@ function OrderSummary({
                 <div className="line-clamp-2 text-sm font-medium leading-5 text-[var(--text-primary)] sm:text-base">
                   {item.title}
                 </div>
+                <CartEventFulfillmentChoice
+                  disabled={fulfillmentChangesDisabled}
+                  shouldContinue={shouldContinue}
+                  item={item}
+                  authenticatedPubkey={authenticatedPubkey}
+                />
                 {soldOut || insufficientStock ? (
                   <Badge variant="warning" className="mt-1.5">
                     {soldOut
@@ -1024,6 +1043,7 @@ function OrderSummary({
                   <span>
                     {pickupHandoff.label}
                     {pickupLocation ? ` · ${pickupLocation}` : ""}
+                    {pickupDate ? ` · ${pickupDate}` : ""}
                   </span>
                 </span>
                 <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
@@ -1166,6 +1186,10 @@ function CheckoutPage() {
   const [shipping, setShipping] = useState<ShippingFormState>(
     DEFAULT_CHECKOUT_SHIPPING
   )
+  const [contactFreeRequested, setContactFreeRequested] = useState(false)
+  const [pickupLabel, setPickupLabel] = useState("")
+  const [eventReceiptDraft, setEventReceiptDraft] =
+    useState<EventGuestReceiptDraft | null>(null)
   const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [shippingAttempted, setShippingAttempted] = useState(false)
@@ -1642,11 +1666,47 @@ function CheckoutPage() {
       : publicZapPolicy.missingPolicyProductIds.length > 0
         ? "At least one product is missing public zap policy metadata, so checkout will use a private invoice."
         : null
+  const contactFreeEligible =
+    isGuestCheckout && isContactFreeEventHandoff(checkoutItems, Date.now())
+  const contactFreeActive = contactFreeEligible && contactFreeRequested
+  const receiptScope = JSON.stringify([
+    selectedMerchant,
+    getCartCommerceFingerprint(checkoutItems),
+    rawCheckoutItems.map((item) => [item.cartLineId, item.quantity]),
+  ])
+  const currentEventReceipt =
+    eventReceiptDraft?.scope === receiptScope ? eventReceiptDraft : null
+  const contactFreeDetailsErrors: ShippingValidationError[] = contactFreeActive
+    ? [
+        ...(pickupLabel.trim().length === 0 || pickupLabel.trim().length > 80
+          ? [
+              {
+                field: "firstName" as const,
+                message:
+                  "Enter a name or pseudonym for handoff (up to 80 characters).",
+              },
+            ]
+          : []),
+        ...(!currentEventReceipt?.saved
+          ? [
+              {
+                field: "email" as const,
+                message:
+                  "Save your event receipt and confirm that you kept it.",
+              },
+            ]
+          : []),
+      ]
+    : []
   const requiresCheckoutDetailsStep = isShippingCheckout || isGuestCheckout
-  const requiresBothContactMethods = isGuestCheckout
-  const liveShippingErrors = useMemo(() => {
+  const requiresBothContactMethods = isGuestCheckout && !isPickupCheckout
+  const liveShippingErrors = (() => {
     if (isPickupCheckout) {
-      return isGuestCheckout ? validateGuestPickupContactFields(shipping) : []
+      return contactFreeActive
+        ? contactFreeDetailsErrors
+        : isGuestCheckout
+          ? validateGuestPickupContactFields(shipping)
+          : []
     }
     if (isAllDigital) {
       return isGuestCheckout ? validateGuestContactFields(shipping) : []
@@ -1654,7 +1714,7 @@ function CheckoutPage() {
     return isGuestCheckout
       ? validateGuestShippingFields(shipping)
       : validateShippingFields(shipping)
-  }, [isAllDigital, isGuestCheckout, isPickupCheckout, shipping])
+  })()
 
   const physicalItemsMissingShippingZone =
     isShippingCheckout && hasPhysicalItemsMissingShippingZone(checkoutItems)
@@ -1679,7 +1739,7 @@ function CheckoutPage() {
     if (pricingPreview.status === "ok") return pricingPreview.totalSats
     const itemSubtotal = checkoutItems.reduce((sum, item) => {
       const sats = getPriceSats(item, btcUsdRate, {
-        allowZero: item.fulfillment?.type === "pickup",
+        allowZero: item.fulfillment?.type === "event_market_pickup",
       })
       return sats ? sum + sats.sats * item.quantity : sum
     }, 0)
@@ -2159,9 +2219,11 @@ function CheckoutPage() {
     nextShipping: ShippingFormState
   ): ShippingValidationError[] {
     if (isPickupCheckout) {
-      return isGuestCheckout
-        ? validateGuestPickupContactFields(nextShipping)
-        : []
+      return contactFreeActive
+        ? contactFreeDetailsErrors
+        : isGuestCheckout
+          ? validateGuestPickupContactFields(nextShipping)
+          : []
     }
     if (isAllDigital) {
       return isGuestCheckout ? validateGuestContactFields(nextShipping) : []
@@ -2404,11 +2466,31 @@ function CheckoutPage() {
   }
 
   function buildGuestContact(): OrderGuestContact | undefined {
-    if (!isGuestCheckout) return undefined
+    if (!isGuestCheckout || contactFreeActive) return undefined
     const email = shipping.email.trim()
     const phone = shipping.phone.trim()
-    if (!email || !phone) return undefined
-    return { email, phone }
+    if (isPickupCheckout ? !email && !phone : !email || !phone) return undefined
+    return { ...(email ? { email } : {}), ...(phone ? { phone } : {}) }
+  }
+
+  function buildContactFreePickup(items: CartItem[], createdAt: number) {
+    if (!contactFreeActive) return undefined
+    if (
+      !currentEventReceipt?.saved ||
+      currentEventReceipt.receipt.merchantPubkey !== selectedMerchant ||
+      !isContactFreeEventHandoff(items, createdAt) ||
+      pickupLabel.trim().length === 0 ||
+      pickupLabel.trim().length > 80
+    )
+      throw new Error(
+        "Review current event terms, enter a handoff name and retain your receipt before ordering."
+      )
+    return {
+      label: pickupLabel.trim(),
+      receiptCommitment: getEventGuestReceiptCommitment(
+        currentEventReceipt.receipt
+      ),
+    }
   }
 
   /**
@@ -2481,11 +2563,6 @@ function CheckoutPage() {
     }>
   ): OrderLifecycleItem[] {
     return items.map((item) => {
-      if (item.fulfillment?.type === "event_pickup_pending") {
-        throw new Error(
-          "Event pickup must finish verification before an order can be created."
-        )
-      }
       return {
         productId: item.productId,
         familyProductId: item.familyProductId,
@@ -2612,7 +2689,10 @@ function CheckoutPage() {
         amountSats: orderTotalSats,
       })
 
-      const orderId = crypto.randomUUID()
+      const orderId =
+        contactFreeActive && currentEventReceipt?.saved
+          ? currentEventReceipt.receipt.orderId
+          : crypto.randomUUID()
       publishedOrderId = orderId
       const guestIdentity = signedBuyerPubkey
         ? null
@@ -2626,8 +2706,12 @@ function CheckoutPage() {
         ? ("guest_ephemeral" as const)
         : ("signed_in" as const)
       const guestContact = buildGuestContact()
-      if (guestIdentity && !guestContact) {
-        throw new Error("Phone and email are required for guest checkout.")
+      if (guestIdentity && !guestContact && !contactFreeActive) {
+        throw new Error(
+          isPickupCheckout
+            ? "Email or phone is required for guest pickup."
+            : "Phone and email are required for guest checkout."
+        )
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
@@ -2648,6 +2732,10 @@ function CheckoutPage() {
         shippingCostStatus: checkoutPricing.shippingCost.status,
         shippingAddress: buildShippingAddress(),
         guestContact,
+        contactFreePickup: buildContactFreePickup(
+          authoritativeCheckoutItems,
+          orderCreatedAt
+        ),
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
       }
@@ -3234,7 +3322,10 @@ function CheckoutPage() {
         stepName: "checkout_revalidation",
       })
 
-      const orderId = crypto.randomUUID()
+      const orderId =
+        contactFreeActive && currentEventReceipt?.saved
+          ? currentEventReceipt.receipt.orderId
+          : crypto.randomUUID()
       publishedOrderId = orderId
       publishedTotalSats = checkoutPricing.totalSats
       const guestIdentity = connectedBuyerIdentity
@@ -3249,8 +3340,12 @@ function CheckoutPage() {
         ? ("guest_ephemeral" as const)
         : ("signed_in" as const)
       const guestContact = buildGuestContact()
-      if (guestIdentity && !guestContact) {
-        throw new Error("Phone and email are required for guest checkout.")
+      if (guestIdentity && !guestContact && !contactFreeActive) {
+        throw new Error(
+          isPickupCheckout
+            ? "Email or phone is required for guest pickup."
+            : "Phone and email are required for guest checkout."
+        )
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
@@ -3267,6 +3362,10 @@ function CheckoutPage() {
         shippingCostStatus: checkoutPricing.shippingCost.status,
         shippingAddress,
         guestContact,
+        contactFreePickup: buildContactFreePickup(
+          authoritativeCheckoutItems,
+          orderCreatedAt
+        ),
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
         pricingQuote: checkoutPricing.quote,
@@ -3769,12 +3868,12 @@ function CheckoutPage() {
             <div className="mt-6 grid gap-3 sm:grid-cols-2">
               {choices.map((group) => {
                 const purchaseReference = getCartPurchaseReference(group.id)
-                const pickup =
-                  group.items[0]?.fulfillment?.type === "pickup"
+                const futurePickup =
+                  group.items[0]?.fulfillment?.type === "event_market_pickup"
                     ? group.items[0].fulfillment
                     : null
-                const label = pickup
-                  ? `Event pickup · ${pickup.option.title}`
+                const label = futurePickup
+                  ? `Event pickup · ${futurePickup.assignment} · ${formatEventMarketPickupDate(futurePickup)}`
                   : group.items.some((item) => item.format !== "digital")
                     ? "Shipping / delivery"
                     : "Digital delivery"
@@ -3968,6 +4067,7 @@ function CheckoutPage() {
         className="grid grid-cols-[minmax(0,1fr)] items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]"
       >
         <OrderSummary
+          fulfillmentChangesDisabled={step !== "shipping"}
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
           accountPubkey={draftOwnerIdentity}
@@ -3989,11 +4089,35 @@ function CheckoutPage() {
                 </h2>
                 {isGuestCheckout && isPickupCheckout ? (
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    Email and phone are required for this guest order. Only the
-                    merchant receives your contact details.
+                    Email or phone is required for this guest pickup unless you
+                    choose an eligible contact-free handoff. Only the merchant
+                    receives your details.
                   </p>
                 ) : null}
 
+                {contactFreeEligible ? (
+                  <div className="mt-4 space-y-3">
+                    <label className="flex items-center gap-2">
+                      <Checkbox
+                        checked={contactFreeActive}
+                        onCheckedChange={(checked) =>
+                          setContactFreeRequested(checked === true)
+                        }
+                      />
+                      Use a name only for handoff
+                    </label>
+                    {contactFreeActive && selectedMerchant ? (
+                      <EventGuestReceiptDetails
+                        merchantPubkey={selectedMerchant}
+                        scope={receiptScope}
+                        label={pickupLabel}
+                        onLabelChange={setPickupLabel}
+                        draft={currentEventReceipt}
+                        onDraftChange={setEventReceiptDraft}
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="mt-5 grid gap-4">
                   {shippingAttempted && shippingErrors.length > 0 && (
                     <div className="rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
@@ -4202,102 +4326,104 @@ function CheckoutPage() {
                   )}
 
                   {/* Contact */}
-                  <div
-                    className={
-                      isShippingCheckout
-                        ? "border-t border-[var(--border)] pt-5"
-                        : ""
-                    }
-                  >
-                    {isShippingCheckout ? (
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        Contact
-                      </div>
-                    ) : null}
+                  {!contactFreeActive && (
                     <div
-                      className={`${isShippingCheckout ? "mt-4" : ""} grid gap-4 sm:grid-cols-2`}
+                      className={
+                        isShippingCheckout
+                          ? "border-t border-[var(--border)] pt-5"
+                          : ""
+                      }
                     >
-                      <div className="grid gap-1.5">
-                        <Label htmlFor="ship-phone">
-                          Phone
-                          {requiresBothContactMethods && (
-                            <>
-                              {" "}
-                              <span className="text-error">*</span>
-                            </>
+                      {isShippingCheckout ? (
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          Contact
+                        </div>
+                      ) : null}
+                      <div
+                        className={`${isShippingCheckout ? "mt-4" : ""} grid gap-4 sm:grid-cols-2`}
+                      >
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-phone">
+                            Phone
+                            {requiresBothContactMethods && (
+                              <>
+                                {" "}
+                                <span className="text-error">*</span>
+                              </>
+                            )}
+                          </Label>
+                          <Input
+                            id="ship-phone"
+                            type="tel"
+                            inputMode="tel"
+                            value={shipping.phone}
+                            onChange={(e) =>
+                              updateShipping("phone", e.target.value)
+                            }
+                            onBlur={() => markShippingFieldTouched("phone")}
+                            autoComplete="tel"
+                            placeholder="555 123 4567"
+                            aria-invalid={fieldInvalid("phone")}
+                            aria-required={requiresBothContactMethods}
+                            required={requiresBothContactMethods}
+                            aria-describedby={
+                              fieldInvalid("phone")
+                                ? SHIPPING_PHONE_ERROR_ID
+                                : undefined
+                            }
+                            className={fieldClassName("phone")}
+                          />
+                          {fieldInvalid("phone") && (
+                            <p
+                              id={SHIPPING_PHONE_ERROR_ID}
+                              className="text-xs text-error"
+                            >
+                              {fieldError("phone")}
+                            </p>
                           )}
-                        </Label>
-                        <Input
-                          id="ship-phone"
-                          type="tel"
-                          inputMode="tel"
-                          value={shipping.phone}
-                          onChange={(e) =>
-                            updateShipping("phone", e.target.value)
-                          }
-                          onBlur={() => markShippingFieldTouched("phone")}
-                          autoComplete="tel"
-                          placeholder="555 123 4567"
-                          aria-invalid={fieldInvalid("phone")}
-                          aria-required={requiresBothContactMethods}
-                          required={requiresBothContactMethods}
-                          aria-describedby={
-                            fieldInvalid("phone")
-                              ? SHIPPING_PHONE_ERROR_ID
-                              : undefined
-                          }
-                          className={fieldClassName("phone")}
-                        />
-                        {fieldInvalid("phone") && (
-                          <p
-                            id={SHIPPING_PHONE_ERROR_ID}
-                            className="text-xs text-error"
-                          >
-                            {fieldError("phone")}
-                          </p>
-                        )}
-                      </div>
-                      <div className="grid gap-1.5">
-                        <Label htmlFor="ship-email">
-                          Email
-                          {requiresBothContactMethods && (
-                            <>
-                              {" "}
-                              <span className="text-error">*</span>
-                            </>
+                        </div>
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-email">
+                            Email
+                            {requiresBothContactMethods && (
+                              <>
+                                {" "}
+                                <span className="text-error">*</span>
+                              </>
+                            )}
+                          </Label>
+                          <Input
+                            id="ship-email"
+                            type="email"
+                            value={shipping.email}
+                            onChange={(e) =>
+                              updateShipping("email", e.target.value)
+                            }
+                            onBlur={() => markShippingFieldTouched("email")}
+                            autoComplete="email"
+                            placeholder="jane@example.com"
+                            aria-invalid={fieldInvalid("email")}
+                            aria-required={requiresBothContactMethods}
+                            aria-describedby={
+                              fieldInvalid("email")
+                                ? SHIPPING_EMAIL_ERROR_ID
+                                : undefined
+                            }
+                            required={requiresBothContactMethods}
+                            className={fieldClassName("email")}
+                          />
+                          {fieldInvalid("email") && (
+                            <p
+                              id={SHIPPING_EMAIL_ERROR_ID}
+                              className="text-xs text-error"
+                            >
+                              {fieldError("email")}
+                            </p>
                           )}
-                        </Label>
-                        <Input
-                          id="ship-email"
-                          type="email"
-                          value={shipping.email}
-                          onChange={(e) =>
-                            updateShipping("email", e.target.value)
-                          }
-                          onBlur={() => markShippingFieldTouched("email")}
-                          autoComplete="email"
-                          placeholder="jane@example.com"
-                          aria-invalid={fieldInvalid("email")}
-                          aria-required={requiresBothContactMethods}
-                          aria-describedby={
-                            fieldInvalid("email")
-                              ? SHIPPING_EMAIL_ERROR_ID
-                              : undefined
-                          }
-                          required={requiresBothContactMethods}
-                          className={fieldClassName("email")}
-                        />
-                        {fieldInvalid("email") && (
-                          <p
-                            id={SHIPPING_EMAIL_ERROR_ID}
-                            className="text-xs text-error"
-                          >
-                            {fieldError("email")}
-                          </p>
-                        )}
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
 
                   {isShippingCheckout &&
                   (!currentAddressValidity.canSubmitOrder ||

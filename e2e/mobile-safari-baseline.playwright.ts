@@ -8,9 +8,9 @@ import {
 
 import {
   buildEventMarketCalendarDraft,
-  buildEventMarketCollectionDraft,
   encodeEventMarketNaddr,
 } from "@conduit/core/protocol/event-market"
+import { buildEventMarketRosterDraft } from "../packages/core/src/protocol/event-market-roster"
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
@@ -942,22 +942,24 @@ test.describe("CND-162 mobile browser baseline", () => {
       organizerSecret
     )
     const calendarCoordinate = `${calendar.kind}:${organizerPubkey}:${calendarDTag}`
-    const collectionDTag = "mobile-profile-refresh-collection"
-    const collectionDraft = buildEventMarketCollectionDraft({
-      dTag: collectionDTag,
-      title: "Stable mobile event catalog",
-      eventCoordinate: calendarCoordinate,
+    const marketDTag = "mobile-profile-refresh-market"
+    const marketDraft = buildEventMarketRosterDraft({
+      dTag: marketDTag,
+      organizerPubkey,
+      calendarCoordinate,
+      state: "open",
+      merchants: [],
     })
-    const collection = finalizeEvent(
-      { ...collectionDraft, created_at: createdAt },
+    const market = finalizeEvent(
+      { ...marketDraft, created_at: createdAt },
       organizerSecret
     )
-    const collectionRef = encodeEventMarketNaddr(
-      `${collection.kind}:${organizerPubkey}:${collectionDTag}`,
+    const marketRef = encodeEventMarketNaddr(
+      `${market.kind}:${organizerPubkey}:${marketDTag}`,
       [TEST_RELAY_URL]
     )
 
-    await publishTestRelayEvents([calendar, collection])
+    await publishTestRelayEvents([calendar, market])
     await seedTestRelayIdentity(shopperSecret)
     await installTestSigner(page, shopperPubkey, { secretKey: shopperSecret })
 
@@ -1005,7 +1007,7 @@ test.describe("CND-162 mobile browser baseline", () => {
       })
     })
 
-    await page.goto(`${marketUrl}/events/${collectionRef}`)
+    await page.goto(`${marketUrl}/events/${marketRef}`)
     const heading = page.getByRole("heading", {
       name: "Stable mobile event catalog",
       exact: true,
