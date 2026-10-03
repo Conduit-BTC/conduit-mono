@@ -172,6 +172,7 @@ function fixture(address = "merchant@coinos.io") {
     repository,
     assertCurrent,
     now: () => NOW + 3,
+    allowProviderCompatibility: true,
     verifyInvoice: (request) =>
       verifyCheckoutSparkInvoiceRecipient(request, { fetchInvoiceRecord }),
   }
@@ -187,6 +188,39 @@ function fixture(address = "merchant@coinos.io") {
 }
 
 describe("merchant saved invoice recipient verification", () => {
+  it("does not enable provider lookup when public routing is enabled without compatibility approval", async () => {
+    const context = fixture()
+    context.input.allowProviderCompatibility = false
+    const original = JSON.stringify(context.input.state)
+    expect(
+      await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).toBe("complete")
+    expect(context.fetches()).toBe(0)
+    expect(context.records).toHaveLength(0)
+    expect(JSON.stringify(context.input.state)).toBe(original)
+  })
+
+  it("defaults to no experimental lookup outside a compiled local rehearsal", async () => {
+    const context = fixture()
+    delete context.input.allowProviderCompatibility
+    expect(
+      await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).toBe("complete")
+    expect(context.fetches()).toBe(0)
+    expect(context.records).toHaveLength(0)
+  })
+
+  it("preserves trusted local recipient records when compatibility lookup is disabled", async () => {
+    const context = fixture()
+    await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    context.input.allowProviderCompatibility = false
+    expect(
+      await verifySavedMerchantCheckoutSparkRecipients(context.input)
+    ).toBe("complete")
+    expect(context.fetches()).toBe(1)
+    expect(context.records).toHaveLength(1)
+  })
+
   it("independently attributes the existing invoice without changing payment state", async () => {
     const context = fixture()
     const original = JSON.stringify(context.input.state)

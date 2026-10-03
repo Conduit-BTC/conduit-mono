@@ -4,11 +4,14 @@
  */
 export function isCheckoutSparkLocalRouterCanaryContext(input: {
   dev: boolean
+  deploymentProfile?: string
   flag: string | undefined
   hostname: string | undefined
 }): boolean {
   return (
     input.dev === true &&
+    (input.deploymentProfile === undefined ||
+      input.deploymentProfile === "local") &&
     input.flag === "true" &&
     (input.hostname === "localhost" ||
       input.hostname === "127.0.0.1" ||
@@ -21,6 +24,7 @@ export function isCheckoutSparkLocalRouterCanaryContext(input: {
 export function canUseCheckoutSparkLocalRouterCanary(): boolean {
   return isCheckoutSparkLocalRouterCanaryContext({
     dev: import.meta.env.DEV === true,
+    deploymentProfile: import.meta.env.VITE_DEPLOYMENT_PROFILE ?? "unknown",
     flag: import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY,
     hostname:
       typeof window === "undefined" ? undefined : window.location.hostname,
@@ -48,6 +52,7 @@ export function checkoutSparkSettledTimingForContext(
 export function getCheckoutSparkSettledTiming() {
   return checkoutSparkSettledTimingForContext({
     dev: import.meta.env.DEV === true,
+    deploymentProfile: import.meta.env.VITE_DEPLOYMENT_PROFILE ?? "unknown",
     flag: import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY,
     hostname:
       typeof window === "undefined" ? undefined : window.location.hostname,

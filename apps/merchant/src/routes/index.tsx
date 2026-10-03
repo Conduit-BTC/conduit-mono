@@ -8,6 +8,7 @@ import {
   getCachedMerchantStorefront,
   getMerchantConversationList,
   getMerchantStorefront,
+  isQuantumRouterEnabled,
   selectProtectedReadRows,
   useAuth,
   useProfiles,
@@ -49,7 +50,6 @@ import {
 import { parseMerchantAuthHandoffSearch } from "../lib/market-links"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useCheckoutSparkOrderSettlements } from "../hooks/useCheckoutSparkOrderSettlements"
-import { isLocalCheckoutSparkRecoveryRehearsal } from "../lib/checkout-spark-settled-recovery"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import {
   getMerchantConversationQueue,
@@ -379,16 +379,10 @@ function DashboardPage() {
       cachedConversationsQuery.data?.data
     )
   }, [signerConnected, conversationsQuery.data, cachedConversationsQuery.data])
-  const checkoutSparkRehearsalEnabled = isLocalCheckoutSparkRecoveryRehearsal({
-    dev: import.meta.env.DEV === true,
-    rehearsalFlag: import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL,
-    routerCanaryFlag: import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY,
-    hostname:
-      typeof window === "undefined" ? undefined : window.location.hostname,
-  })
+  const quantumRouterEnabled = isQuantumRouterEnabled()
   const { bindings: orderSettlementBindings, getOrderSettlement } =
     useCheckoutSparkOrderSettlements({
-      enabled: checkoutSparkRehearsalEnabled && signerConnected,
+      enabled: quantumRouterEnabled && signerConnected,
       pubkey,
       authGeneration,
       isAuthGenerationCurrent,

@@ -38,6 +38,7 @@ import {
   openMerchantCheckoutSparkRecoveryWallet,
   proveMerchantCheckoutSparkReturnedPayout,
 } from "./checkout-spark-settled-recovery"
+import { assertMerchantCheckoutSparkDispatchPlan } from "./checkout-spark-recovery-policy"
 
 type Store = Pick<
   DexieCheckoutSparkSettledRepository,
@@ -429,6 +430,7 @@ export async function continueMerchantCheckoutSparkSettledPayout(
     const { plan } = initial
     const assertEligible = () => {
       assertCurrent()
+      assertMerchantCheckoutSparkDispatchPlan(plan)
       if (
         dependencies.shouldContinue?.() === false ||
         now() < plan.takeoverAt

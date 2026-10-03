@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { getProductAddAvailability } from "../lib/cart-model"
 import {
   coordinationPricingEnabled,
+  canEstimateCheckoutCoordinationListing,
   getFeeInclusiveListingPriceDisplay,
 } from "../lib/checkout-coordination-pricing"
 import {
@@ -154,7 +155,9 @@ export function ProductGridCard({
   const merchantName =
     merchantNameOverride ||
     getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
-  const feeInclusive = coordinationPricingEnabled()
+  const feeInclusive =
+    coordinationPricingEnabled() &&
+    canEstimateCheckoutCoordinationListing(selectedProduct)
   const selectedPriceDisplay = getFeeInclusiveListingPriceDisplay(
     selectedProduct,
     pricePreference,

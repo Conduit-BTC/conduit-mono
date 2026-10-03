@@ -12,6 +12,7 @@ import {
 
 import { getSparkWalletManager } from "./spark-sdk"
 import type { SparkWalletManager } from "./spark-wallet"
+import { assertMarketCheckoutSparkDispatchPlan } from "./checkout-spark-dispatch-policy"
 
 export type { CheckoutSparkSettledLegPreparationInput }
 
@@ -69,6 +70,7 @@ export async function prepareCheckoutSparkSettledOutgoingLeg(
       )
     },
     assertAuthority(state, nowMs) {
+      assertMarketCheckoutSparkDispatchPlan(state.plan)
       const current = state.legs.find((leg) => leg.legId === input.legId)
       // Re-ACK an immutable existing intent after takeover, but never prepare
       // a new invoice after buyer authority has ended.

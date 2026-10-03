@@ -12,6 +12,7 @@ import {
   appendConduitClientTag,
   clearProtectedReadAuthenticationSuppression,
   config,
+  isQuantumRouterEnabled,
   db,
   DexieCheckoutSparkSettledRepository,
   encodeEventMarketNaddr,
@@ -201,7 +202,6 @@ import {
   getCheckoutPaymentTargetValue,
 } from "../lib/checkout-payment-target"
 import { assertLegacyOrderPaymentAllowed } from "../lib/checkout-spark-order-admission"
-import { canUseCheckoutSparkLocalRouterCanary } from "../lib/checkout-spark-local-router-canary"
 import {
   acknowledgeOrRetryCheckoutSparkSettledSnapshot,
   getCheckoutSparkRecoveryDelivery,
@@ -240,13 +240,6 @@ type RouterConfirmation = {
   >
   external: boolean
   payerValue: string
-}
-
-function settledRouterRehearsalEnabled(): boolean {
-  return (
-    import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL === "true" &&
-    canUseCheckoutSparkLocalRouterCanary()
-  )
 }
 
 function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
@@ -1040,7 +1033,7 @@ function OrderDetail({
       buyerPubkey,
       authGeneration,
     ],
-    enabled: routerBinding !== undefined && settledRouterRehearsalEnabled(),
+    enabled: routerBinding !== undefined && isQuantumRouterEnabled(),
     queryFn: readSettledRouterControl,
     refetchOnWindowFocus: false,
   })
@@ -1147,7 +1140,7 @@ function OrderDetail({
   function canContinueRouterSession(): boolean {
     const current = currentViewRef.current
     return (
-      settledRouterRehearsalEnabled() &&
+      isQuantumRouterEnabled() &&
       viewMountedRef.current &&
       document.visibilityState === "visible" &&
       actionsReady &&
@@ -1169,7 +1162,7 @@ function OrderDetail({
   function canContinueRouterCleanupSession(): boolean {
     const current = currentViewRef.current
     return (
-      settledRouterRehearsalEnabled() &&
+      isQuantumRouterEnabled() &&
       viewMountedRef.current &&
       actionsReady &&
       authGenerationRef.current === authGeneration &&
@@ -2323,7 +2316,7 @@ function OrderDetail({
         </StatusNotice>
       )}
 
-      {routerBinding && !settledRouterRehearsalEnabled() && (
+      {routerBinding && !isQuantumRouterEnabled() && (
         <StatusNotice
           variant="warning"
           title="Private Spark checkout unavailable"
@@ -2335,7 +2328,7 @@ function OrderDetail({
         </StatusNotice>
       )}
 
-      {routerBinding && settledRouterRehearsalEnabled() && (
+      {routerBinding && isQuantumRouterEnabled() && (
         <StatusNotice
           variant={
             settledRouterControl?.status === "complete" &&
@@ -3586,7 +3579,7 @@ function OrdersPage() {
     return currentIdentity
   }
   const canReadRouterSettlement =
-    settledRouterRehearsalEnabled() &&
+    isQuantumRouterEnabled() &&
     (guestIdentity
       ? getCurrentSettlementGuestIdentity() !== null
       : signerConnected && isAuthGenerationCurrent(authGeneration))

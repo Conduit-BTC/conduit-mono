@@ -3,14 +3,12 @@ import {
   calculateConduitCheckoutFeeSats,
   calculateCheckoutSparkSettledGrossFundingSats,
   checkoutSparkConduitFeeRecipient,
-  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   getNdk,
   getShippingDestinationEligibility,
   isSatsLikeCurrency,
   matchesCheckoutSparkOrderShippingSnapshot,
   matchesCheckoutSparkOrderPickupSnapshot,
   orderSchema,
-  parseShippingOptionAddress,
   resolveCheckoutSparkSignedShipping,
   resolveCheckoutSparkSignedPickup,
   shippingAddressSchema,
@@ -41,7 +39,12 @@ import {
 import type { CheckoutSparkQuoteAuthority } from "./checkout-spark-quote-authority"
 import type { CheckoutSparkRecoverySigningIdentity } from "./checkout-spark-recovery-handoff"
 import { isCurrentGuestOrderSigningIdentity } from "./guest-order-identity"
-import { getMixedFulfillmentBlockingMessage, type CartItem } from "./cart-model"
+import { getMixedFulfillmentBlockingMessage } from "./cart-model"
+
+export {
+  isCheckoutSparkSettledCart,
+  isCheckoutSparkSettledDigitalCart,
+} from "./checkout-spark-settled-cart"
 
 export interface PrepareCheckoutSparkSettledOrderInput {
   checkoutId: string
@@ -62,85 +65,6 @@ export type PrepareCheckoutSparkSettledDigitalOrderInput =
   PrepareCheckoutSparkSettledOrderInput
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/
-/** UI routing only; preparation independently validates every signed term. */
-export function isCheckoutSparkSettledDigitalCart(
-  items: readonly Pick<
-    CartItem,
-    "merchantPubkey" | "format" | "currency" | "sourcePrice" | "fulfillment"
-  >[]
-): boolean {
-  const merchantPubkey = items[0]?.merchantPubkey
-  return (
-    !!merchantPubkey &&
-    HEX_PUBKEY.test(merchantPubkey) &&
-    items.every(
-      (item) =>
-        item.merchantPubkey === merchantPubkey &&
-        item.format === "digital" &&
-        item.currency === "SATS" &&
-        (item.sourcePrice === undefined ||
-          isSatsLikeCurrency(item.sourcePrice.normalizedCurrency)) &&
-        (item.fulfillment === undefined || item.fulfillment.type === "digital")
-    )
-  )
-}
-
-/** Admission hint only: exact signed fulfillment is rechecked before funding. */
-export function isCheckoutSparkSettledCart(
-  items: readonly Pick<
-    CartItem,
-    | "merchantPubkey"
-    | "format"
-    | "currency"
-    | "sourcePrice"
-    | "fulfillment"
-    | "familyProductId"
-    | "selectedSpecifications"
-    | "shippingOptionId"
-    | "shippingOptionLaunchUnsupported"
-  >[]
-): boolean {
-  const merchantPubkey = items[0]?.merchantPubkey
-  return (
-    !!merchantPubkey &&
-    HEX_PUBKEY.test(merchantPubkey) &&
-    !getMixedFulfillmentBlockingMessage([...items]) &&
-    items.every((item) => {
-      if (
-        item.merchantPubkey !== merchantPubkey ||
-        item.currency !== "SATS" ||
-        item.familyProductId !== undefined ||
-        item.selectedSpecifications !== undefined ||
-        (item.sourcePrice !== undefined &&
-          !isSatsLikeCurrency(item.sourcePrice.normalizedCurrency))
-      )
-        return false
-      if (item.format === "digital")
-        return (
-          item.fulfillment === undefined || item.fulfillment.type === "digital"
-        )
-      if (item.fulfillment?.type === "pickup") {
-        return (
-          item.format === "physical" &&
-          item.fulfillment.handoffMode === "merchant_handoff" &&
-          item.fulfillment.handlerPubkey === merchantPubkey
-        )
-      }
-      const address =
-        item.shippingOptionId &&
-        parseShippingOptionAddress(item.shippingOptionId)
-      return (
-        item.format === "physical" &&
-        (item.fulfillment === undefined ||
-          item.fulfillment.type === "shipping") &&
-        item.shippingOptionLaunchUnsupported !== true &&
-        !!address &&
-        address.pubkey === merchantPubkey &&
-        address.dTag !== CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG
-      )
-    })
-  )
-}
 
 export interface PreparedCheckoutSparkSettledOrder {
   prepared: PreparedCheckoutSparkSettledFunding
@@ -194,7 +118,7 @@ type Dependencies = {
 }
 
 /**
- * V3 branch rehearsal: freeze signed commerce endpoints, not short-lived
+ * V3 checkout: freeze signed commerce endpoints, not short-lived
  * payout invoices. The buyer's ordinary gross invoice remains unexposed until
  * the exact wallet/plan recovery wrap is persisted and relay-acknowledged.
  */
@@ -260,7 +184,7 @@ export async function prepareCheckoutSparkSettledOrder(
     !Number.isSafeInteger(quote.pricing.totalSats * 1_000)
   ) {
     throw new Error(
-      "This settled checkout rehearsal supports current SAT-priced simple items from one merchant only."
+      "Quantum Router supports current SAT-priced simple items from one merchant only."
     )
   }
 

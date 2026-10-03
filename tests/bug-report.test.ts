@@ -14,6 +14,7 @@ const buildInfo: ConduitBuildInfo = {
   publicFeatures: {
     dmCompatibilityOrderRoutingEnabled: true,
     livePresenceEnabled: true,
+    quantumRouterEnabled: true,
   },
 }
 

@@ -9,7 +9,7 @@
 - **Owner:** payment-boundary maintainers
 - **Started:** 2026-10-01
 - **Next review:** 2026-11-01
-- **Rollout control:** existing development, loopback, rehearsal and router-canary
+- **Rollout control:** local deployment profile plus development, loopback, rehearsal and router-canary
   gates; no production activation or provider-domain configuration
 - **Activation state:** disabled outside the local rehearsal
 
@@ -18,6 +18,10 @@ receipt. LUD-06/LUD-16 resolution does not provide a portable receiving-account
 attestation. The buyer's authenticated recovery message preserves intent but
 cannot independently prove which account owns its invoice. Strict device-local
 origin checks therefore leave some otherwise paid cold recoveries unattributed.
+
+The shared public Quantum Router capability does not activate this adapter.
+Hosted routing and local receiving-provider compatibility have separate runtime
+admission checks; see [deployment capability](quantum-router-deployment.md).
 
 On the source baseline below, Coinos exposes a canonical invoice record with
 the BOLT11, payment hash, amount, receiving user identifier and user name. Source

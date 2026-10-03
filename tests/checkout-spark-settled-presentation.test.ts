@@ -62,13 +62,13 @@ describe("settled router buyer presentation", () => {
     )
   })
 
-  it("requires the local canary and settled flag at both route entry and saved-plan action", () => {
+  it("requires the shared deployment capability at route entry and saved-plan actions", () => {
     for (const route of [checkoutRoute, ordersRoute]) {
-      expect(route).toMatch(
-        /VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL === "true" &&\s*canUseCheckoutSparkLocalRouterCanary\(\)/
-      )
+      expect(route).toContain("isQuantumRouterEnabled")
+      expect(route).not.toContain("VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL")
+      expect(route).not.toContain("canUseCheckoutSparkLocalRouterCanary")
     }
-    expect(checkoutRoute).toContain("!settledRouterRehearsalEnabled() ||")
+    expect(checkoutRoute).toContain("!isQuantumRouterEnabled() ||")
     const preparationGuard = checkoutRoute.slice(
       checkoutRoute.indexOf("const canContinueSettledPreparation = () =>"),
       checkoutRoute.indexOf(
@@ -77,13 +77,13 @@ describe("settled router buyer presentation", () => {
       )
     )
     expect(preparationGuard).toMatch(
-      /if \(!shouldContinueBuyerSession\(\) \|\| !settledRouterRehearsalEnabled\(\)\) \{\s*return false/
+      /if \(!shouldContinueBuyerSession\(\) \|\| !isQuantumRouterEnabled\(\)\) \{\s*return false/
     )
     expect(checkoutRoute).toContain(
       "shouldContinue: canContinueSettledPreparation"
     )
     expect(ordersRoute).toMatch(
-      /function canContinueRouterSession\(\): boolean \{[\s\S]*?settledRouterRehearsalEnabled\(\)/
+      /function canContinueRouterSession\(\): boolean \{[\s\S]*?isQuantumRouterEnabled\(\)/
     )
     expect(ordersRoute).toContain("shouldContinue: approvedSessionIsCurrent")
     expect(shopperAdvance).toContain("assertBeforeSend: async (target)")

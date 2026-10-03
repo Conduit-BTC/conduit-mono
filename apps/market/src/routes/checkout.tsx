@@ -29,6 +29,7 @@ import {
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
   config,
+  isQuantumRouterEnabled,
   fetchLnurlPayMetadata,
   formatNpub,
   getPriceSats,
@@ -241,7 +242,6 @@ import {
 import type { CheckoutPaymentTarget } from "../lib/payment-rails"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import { buildCheckoutSparkQuoteAuthority } from "../lib/checkout-spark-quote-authority"
-import { canUseCheckoutSparkLocalRouterCanary } from "../lib/checkout-spark-local-router-canary"
 import { withCheckoutSparkRouterPreparationLock } from "../lib/checkout-spark-router-preparation-lock"
 import {
   createCheckoutSparkPurchaseClaimDigest,
@@ -276,14 +276,6 @@ type PriceFormatter = (
 ) => ShopperPriceDisplay
 
 type CheckoutStep = "shipping" | "payment" | "signing" | "sending"
-
-/** Both gates are required for this local-only, unfunded-by-default branch UI. */
-function settledRouterRehearsalEnabled(): boolean {
-  return (
-    import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL === "true" &&
-    canUseCheckoutSparkLocalRouterCanary()
-  )
-}
 
 type CheckoutSearch = {
   merchant?: string
@@ -1593,9 +1585,6 @@ function CheckoutPage() {
   const rawCheckoutItems = useMemo(() => {
     return selectedPurchase?.items ?? []
   }, [selectedPurchase])
-  const routerBranchTargetCheckout =
-    settledRouterRehearsalEnabled() &&
-    isCheckoutSparkSettledCart(rawCheckoutItems)
   // Checkout consumes the same prepared per-merchant readiness the HUD and
   // cart warmed, so arriving within the freshness lease starts no new
   // blocking read. The authoritative live refresh still happens immediately
@@ -1755,6 +1744,10 @@ function CheckoutPage() {
   )
   const verifiedZeroCostPickup =
     pricingPreview.status === "ok" && !pricingPreview.paymentRequired
+  const routerBranchTargetCheckout =
+    isQuantumRouterEnabled() &&
+    !verifiedZeroCostPickup &&
+    isCheckoutSparkSettledCart(rawCheckoutItems)
   const paymentRequired =
     pricingPreview.status !== "ok" || pricingPreview.paymentRequired
   const paymentPathEnabled =
@@ -2610,10 +2603,10 @@ function CheckoutPage() {
 
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
-  /** Explicit local rehearsal preparation; this action never submits payment. */
+  /** Explicit checkout preparation; this action never submits payment. */
   async function prepareSettledRouterOrder(): Promise<void> {
     if (
-      !settledRouterRehearsalEnabled() ||
+      !isQuantumRouterEnabled() ||
       !routerBranchTargetCheckout ||
       !selectedMerchant ||
       !selectedPurchase ||
@@ -2668,7 +2661,7 @@ function CheckoutPage() {
     const orderId = crypto.randomUUID()
     let guestIdentity: GuestOrderSigningIdentity | null = null
     const canContinueSettledPreparation = () => {
-      if (!shouldContinueBuyerSession() || !settledRouterRehearsalEnabled()) {
+      if (!shouldContinueBuyerSession() || !isQuantumRouterEnabled()) {
         return false
       }
       if (!guestIdentity) return true
@@ -2690,10 +2683,8 @@ function CheckoutPage() {
     try {
       await withCheckoutSparkRouterPreparationLock(
         async () => {
-          if (!settledRouterRehearsalEnabled()) {
-            throw new Error(
-              "The local settled router rehearsal is unavailable."
-            )
+          if (!isQuantumRouterEnabled()) {
+            throw new Error("Quantum Router is unavailable in this deployment.")
           }
           const claim = await cart.capturePurchase(
             selectedPurchase.id,
@@ -2714,10 +2705,8 @@ function CheckoutPage() {
           lockedPurchaseClaimDigest = digest
         },
         async () => {
-          if (!settledRouterRehearsalEnabled()) {
-            throw new Error(
-              "The local settled router rehearsal is unavailable."
-            )
+          if (!isQuantumRouterEnabled()) {
+            throw new Error("Quantum Router is unavailable in this deployment.")
           }
           const rateInput = await getFreshPricingRateInput(checkoutItems)
           const authorization = await assertCheckoutItemsAvailable(
@@ -2726,7 +2715,7 @@ function CheckoutPage() {
           )
           if (!canContinueSettledPreparation()) {
             throw new Error(
-              "Buyer session or local router rehearsal changed before preparation."
+              "Buyer session or router availability changed before preparation."
             )
           }
           const quoteAuthority = buildCheckoutSparkQuoteAuthority({
@@ -2775,7 +2764,7 @@ function CheckoutPage() {
           clearCheckoutShippingSession()
           if (!canContinueSettledPreparation()) {
             throw new Error(
-              "The private order was accepted, but the buyer session or local rehearsal changed. Continue it in Orders; do not start another checkout."
+              "The private order was accepted, but the buyer session or router availability changed. Continue it in Orders; do not start another checkout."
             )
           }
           if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
@@ -2841,7 +2830,7 @@ function CheckoutPage() {
   async function placeOrder(): Promise<void> {
     if (routerBranchTargetCheckout) {
       setError(
-        "This local rehearsal requires the private router order. Direct checkout is disabled for this purchase."
+        "This purchase requires the private router order. Direct checkout is disabled for this purchase."
       )
       return
     }
@@ -3283,7 +3272,7 @@ function CheckoutPage() {
   ): Promise<void> {
     if (routerBranchTargetCheckout) {
       setError(
-        "This local rehearsal requires the private router order. Direct payment is disabled for this purchase."
+        "This purchase requires the private router order. Direct payment is disabled for this purchase."
       )
       return
     }
@@ -3983,7 +3972,7 @@ function CheckoutPage() {
     if (routerBranchTargetCheckout) {
       autoZapAuthorizationGenerationRef.current = null
       setAutoZapAuthorization(null)
-      setError("Direct zap out is disabled for this local router rehearsal.")
+      setError("Direct zap out is disabled for this routed purchase.")
       return
     }
     if (!signerConnected) {
@@ -5072,8 +5061,8 @@ function CheckoutPage() {
                         {getCheckoutSparkSettledTiming().fundingExpirySecs / 60}{" "}
                         minutes. Recipients and the funding amount are fixed
                         before payment. Recovery is sent privately to the
-                        merchant; relay acceptance does not prove receipt. This
-                        preview uses the configured test fee destination.
+                        merchant; relay acceptance does not prove receipt. The
+                        coordination fee is included in the payment total.
                       </p>
                     </div>
                   )}

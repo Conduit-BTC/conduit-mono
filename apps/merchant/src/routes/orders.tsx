@@ -34,6 +34,7 @@ import {
   isInvoiceCompatibleWithCurrentNetwork,
   isValidLud16Address,
   isMerchantOrderPaid,
+  isQuantumRouterEnabled,
   normalizeCurrencyAmount,
   normalizeSafeHttpUrl,
   publishMerchantOrderMessage,
@@ -154,7 +155,6 @@ import {
 } from "../lib/order-action-view"
 import { prepareShippingUpdate } from "../lib/shipping-update"
 import { formatMerchantOrderAmount } from "../lib/order-summary-display"
-import { isLocalCheckoutSparkRecoveryRehearsal } from "../lib/checkout-spark-settled-recovery"
 import { useCheckoutSparkOrderSettlements } from "../hooks/useCheckoutSparkOrderSettlements"
 import {
   createDefaultMerchantInvoiceModule,
@@ -990,20 +990,14 @@ function OrdersWorkspace() {
       ),
     [cachedOrdersQuery.data, ordersQuery.data]
   )
-  const checkoutSparkRehearsalEnabled = isLocalCheckoutSparkRecoveryRehearsal({
-    dev: import.meta.env.DEV === true,
-    rehearsalFlag: import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL,
-    routerCanaryFlag: import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY,
-    hostname:
-      typeof window === "undefined" ? undefined : window.location.hostname,
-  })
+  const quantumRouterEnabled = isQuantumRouterEnabled()
   const {
     getOrderSettlement,
     refresh: refreshCheckoutSparkProjection,
     isRefreshing: checkoutSparkSettlementRefreshing,
     unavailable: checkoutSparkSettlementUnavailable,
   } = useCheckoutSparkOrderSettlements({
-    enabled: checkoutSparkRehearsalEnabled && signerConnected,
+    enabled: quantumRouterEnabled && signerConnected,
     pubkey,
     authGeneration,
     isAuthGenerationCurrent,
@@ -3397,7 +3391,7 @@ function OrdersWorkspace() {
         />
       )}
 
-      {signerConnected && pubkey && checkoutSparkRehearsalEnabled && (
+      {signerConnected && pubkey && quantumRouterEnabled && (
         <CheckoutSparkRecoveryPanel
           key={`${pubkey}:${authGeneration}`}
           principalPubkey={pubkey}
@@ -3418,9 +3412,9 @@ function OrdersWorkspace() {
           onSettlementChange={refreshCheckoutSparkProjection}
           settlementRefreshing={checkoutSparkSettlementRefreshing}
           settlementReadUnavailable={checkoutSparkSettlementUnavailable}
-          allowAutomaticPayouts={checkoutSparkRehearsalEnabled}
+          allowAutomaticPayouts={quantumRouterEnabled}
           startAutomatically={shouldStartMerchantOrderRecoveryAutomatically(
-            checkoutSparkRehearsalEnabled,
+            quantumRouterEnabled,
             recoveryMode
           )}
           isSessionCurrent={() => isAuthGenerationCurrent(authGeneration)}

@@ -41,6 +41,18 @@ describe("Market verified zero-cost pickup route contract", () => {
 
   it("routes signed-in and guest free pickup through merchant-only order-first", async () => {
     const checkout = await source("apps/market/src/routes/checkout.tsx")
+    const routerAdmission = checkout.slice(
+      checkout.indexOf("const routerBranchTargetCheckout ="),
+      checkout.indexOf("const paymentRequired =")
+    )
+    expect(routerAdmission).toContain("isQuantumRouterEnabled()")
+    expect(routerAdmission).toContain("!verifiedZeroCostPickup")
+    expect(routerAdmission).toContain(
+      "isCheckoutSparkSettledCart(rawCheckoutItems)"
+    )
+    expect(checkout.indexOf("const verifiedZeroCostPickup =")).toBeLessThan(
+      checkout.indexOf("const routerBranchTargetCheckout =")
+    )
     const placeOrderStart = checkout.indexOf(
       "async function placeOrder(): Promise<void>"
     )

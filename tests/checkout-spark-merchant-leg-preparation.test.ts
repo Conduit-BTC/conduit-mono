@@ -13,6 +13,7 @@ import {
   createCheckoutSparkMerchantProgress,
   createCheckoutSparkSettledReconciliation,
   createCheckoutSparkSettledRecoveryPayload,
+  checkoutSparkConduitFeeRecipient,
   deriveCheckoutSparkSettledTransferId,
   freezeCheckoutSparkSettledPlan,
   prepareCheckoutSparkSettledLeg,
@@ -25,6 +26,7 @@ import {
   type CheckoutSparkSettledReconciliation,
   type CheckoutSparkMerchantProgressPayload,
   type SignedPublicNostrEvent,
+  type CheckoutSparkConduitDestinationPolicy,
 } from "@conduit/core"
 import { getNdk } from "../packages/core/src/protocol/ndk"
 import {
@@ -39,6 +41,7 @@ import {
   continueMerchantCheckoutSparkSettledPayout,
   reviewMerchantCheckoutSparkSettledPayout,
 } from "../apps/merchant/src/lib/checkout-spark-settled-continuation"
+import { assertMerchantCheckoutSparkDispatchPlan } from "../apps/merchant/src/lib/checkout-spark-recovery-policy"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -67,10 +70,11 @@ type Dependencies = NonNullable<
 function invoice(
   amountSats: number,
   hashByte: number,
-  createdAt = CREATED_AT / 1_000
+  createdAt = CREATED_AT / 1_000,
+  network: "mainnet" | "regtest" = "mainnet"
 ) {
   return makeSignedBolt11Fixture({
-    hrp: `lnbc${amountSats * 10}n`,
+    hrp: `ln${network === "mainnet" ? "bc" : "bcrt"}${amountSats * 10}n`,
     createdAt,
     fields: [
       bolt11PaymentHashField(new Uint8Array(32).fill(hashByte)),
@@ -80,14 +84,17 @@ function invoice(
   })
 }
 
-function fixture() {
+function fixture(
+  destinationPolicy: CheckoutSparkConduitDestinationPolicy = "production",
+  network: "mainnet" | "regtest" = "mainnet"
+) {
   const product = `30402:${MERCHANT}:preparation-fixture`
   const plan = freezeCheckoutSparkSettledPlan({
     checkoutId: "merchant-preparation-checkout",
     orderId: "merchant-preparation-order",
     merchantPubkey: MERCHANT,
     walletId: "merchant-preparation-wallet",
-    network: "mainnet",
+    network,
     createdAt: CREATED_AT,
     takeoverAt: TAKEOVER_AT,
     commerceQuote: {
@@ -105,7 +112,7 @@ function fixture() {
     },
     funding: {
       requestId: "merchant-preparation-receive",
-      paymentRequest: invoice(1_113, 3),
+      paymentRequest: invoice(1_113, 3, CREATED_AT / 1_000, network),
       paymentHash: "03".repeat(32),
       receiverIdentityPublicKey: IDENTITY,
       grossFundingSats: 1_113,
@@ -129,14 +136,14 @@ function fixture() {
       },
       {
         kind: "conduit",
-        recipientId: "conduit-tester@rizful.com",
+        recipientId: checkoutSparkConduitFeeRecipient(destinationPolicy),
         weightSats: 111,
         destination: {
           type: "lightning_address",
-          value: "conduit-tester@rizful.com",
+          value: checkoutSparkConduitFeeRecipient(destinationPolicy),
           source: {
             type: "conduit_allowlist",
-            policy: "local_router_canary",
+            policy: destinationPolicy,
           },
         },
       },
@@ -202,8 +209,10 @@ function fixture() {
   return { plan, state, payload, witness, selected }
 }
 
-async function harness() {
-  const value = fixture()
+async function harness(
+  destinationPolicy: CheckoutSparkConduitDestinationPolicy = "production"
+) {
+  const value = fixture(destinationPolicy)
   const database = new ConduitDB(
     `merchant-preparation-${crypto.randomUUID()}`,
     { indexedDB, IDBKeyRange }
@@ -733,6 +742,119 @@ async function renewedContinuation(test: Awaited<ReturnType<typeof harness>>) {
       ),
   }
 }
+
+describe("Merchant hosted recovery destination policy", () => {
+  it("accepts only the canonical production destination outside a local rehearsal", () => {
+    const production = fixture("production")
+    expect(() =>
+      assertMerchantCheckoutSparkDispatchPlan(production.plan, false)
+    ).not.toThrow()
+    const canary = fixture("local_router_canary")
+    expect(() =>
+      assertMerchantCheckoutSparkDispatchPlan(canary.plan, false)
+    ).toThrow("recovery destination is unavailable")
+    expect(() =>
+      assertMerchantCheckoutSparkDispatchPlan(canary.plan, true)
+    ).not.toThrow()
+    // The rejected historical record is neither mutated nor rebound to production.
+    expect(canary.plan.recipients.at(-1)?.destination.source).toEqual({
+      type: "conduit_allowlist",
+      policy: "local_router_canary",
+    })
+  })
+
+  it("does not accept an imported canary relabeled as production", () => {
+    const canary = fixture("local_router_canary")
+    const changed = structuredClone(canary.plan)
+    const source = changed.recipients.at(-1)!.destination.source
+    if (source.type !== "conduit_allowlist") throw new Error("Fixture invalid")
+    Object.assign(source, { policy: "production" })
+    expect(() =>
+      assertMerchantCheckoutSparkDispatchPlan(changed, false)
+    ).toThrow()
+  })
+
+  it("keeps imported regtest plans read-only in hosted mainnet recovery", () => {
+    const regtest = fixture("production", "regtest")
+    expect(regtest.plan.network).toBe("regtest")
+    expect(() =>
+      assertMerchantCheckoutSparkDispatchPlan(regtest.plan, false)
+    ).toThrow("recovery destination is unavailable")
+    expect(() =>
+      assertMerchantCheckoutSparkDispatchPlan(regtest.plan, true)
+    ).not.toThrow()
+    expect(regtest.plan.network).toBe("regtest")
+  })
+
+  it("rejects a hosted canary before opening a wallet, quoting fees or creating an invoice", async () => {
+    const test = await harness("local_router_canary")
+    try {
+      await expect(test.run()).rejects.toThrow(
+        "recovery destination is unavailable"
+      )
+      expect(test.calls.opens).toBe(0)
+      expect(test.calls.derives).toBe(0)
+      expect(test.calls.invoices).toHaveLength(0)
+      expect(test.calls.fees).toHaveLength(0)
+      expect(test.calls.publishes).toHaveLength(0)
+      const retained = await test.stored.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(retained.status).toBe("active")
+    } finally {
+      await test.close()
+    }
+  })
+
+  it("rejects direct saved-payout continuation of an imported canary before wallet access", async () => {
+    const test = await harness("local_router_canary")
+    try {
+      const state = prepared(credited(test.state))
+      test.setPayload(
+        createCheckoutSparkSettledRecoveryPayload({
+          state,
+          senderPubkey: BUYER,
+          mnemonic: MNEMONIC,
+          accountNumber: 0,
+          preparedAt: CREATED_AT + 4_000,
+        })
+      )
+      const leg = state.legs[0]!
+      const review = {
+        checkoutId: test.plan.checkoutId,
+        planDigest: test.plan.planDigest,
+        legId: leg.legId,
+        recipientId: test.plan.recipients[0]!.recipientId,
+        destination: test.plan.recipients[0]!.destination.value,
+        allocationSats: leg.allocationSats!,
+        intent: leg.intent!,
+      }
+      await expect(
+        continueMerchantCheckoutSparkSettledPayout(
+          MERCHANT,
+          test.selected,
+          review,
+          {
+            repository: test.stored,
+            consumeRecovery: test.dependencies.consumeRecovery,
+            openWallet: test.dependencies.openWallet,
+            deriveIdentity: test.dependencies.deriveIdentity,
+            now: test.dependencies.now,
+            shouldContinue: () => true,
+            lockManager: null,
+            requireCrossTabLock: false,
+          }
+        )
+      ).rejects.toThrow("recovery destination is unavailable")
+      expect(test.calls.opens).toBe(0)
+      expect(test.calls.derives).toBe(0)
+      expect(test.calls.publishes).toHaveLength(0)
+    } finally {
+      await test.close()
+    }
+  })
+})
 
 describe("Merchant renewed signed-progress continuation", () => {
   it.each(["closed_returned", "unavailable", "refund_mismatch"] as const)(

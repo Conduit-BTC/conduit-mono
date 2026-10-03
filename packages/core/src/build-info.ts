@@ -11,6 +11,7 @@ export interface ConduitBuildInfo {
   publicFeatures: {
     dmCompatibilityOrderRoutingEnabled: boolean
     livePresenceEnabled: boolean
+    quantumRouterEnabled: boolean
   }
 }
 
@@ -50,6 +51,9 @@ export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
     ),
     livePresenceEnabled: ["1", "true", "on"].includes(
       (import.meta.env.VITE_LIVE_PRESENCE_ENABLED ?? "").trim().toLowerCase()
+    ),
+    quantumRouterEnabled: ["1", "true", "on"].includes(
+      (import.meta.env.VITE_QUANTUM_ROUTER_ENABLED ?? "").trim().toLowerCase()
     ),
   }),
 })

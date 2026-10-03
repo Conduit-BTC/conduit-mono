@@ -21,7 +21,8 @@ invoice, erase its recovery material, or infer nonpayment from an empty read.
 For an explicitly opted-in loopback development rehearsal only,
 `VITE_CHECKOUT_SPARK_DEMO_FAST_HANDOFF=true` selects a three-minute handoff
 and requests a two-minute funding invoice for new orders. It also requires
-the existing local-router and settled-rehearsal flags. Production builds,
+the local deployment profile and existing local-router and settled-rehearsal
+flags. Public preview/production profiles, production builds,
 non-loopback hosts, and development sessions without all three flags retain
 the normal timings. The 60-second buyer preparation cutoff is unchanged;
 Merchant always follows the deadline frozen in the recovered plan, not its

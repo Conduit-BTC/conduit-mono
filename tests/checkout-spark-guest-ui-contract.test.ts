@@ -15,18 +15,27 @@ function section(source: string, start: string, end: string): string {
   return source.slice(startIndex, endIndex)
 }
 
-describe("local settled router guest UI contracts", () => {
-  it("admits guests only through the local same-merchant SAT supported router target", () => {
+describe("settled router guest UI contracts", () => {
+  it("admits guests through an enabled same-merchant SAT supported router target", () => {
     const target = section(
       checkout,
       "const routerBranchTargetCheckout =",
-      "const checkoutReadiness ="
+      "const paymentRequired ="
     )
-    expect(target).toContain("settledRouterRehearsalEnabled()")
+    expect(target).toContain("isQuantumRouterEnabled()")
     expect(target).toContain("isCheckoutSparkSettledCart(rawCheckoutItems)")
+    expect(target).toContain("!verifiedZeroCostPickup")
     expect(target).not.toContain("!isGuestCheckout")
-    expect(checkout).toContain("canUseCheckoutSparkLocalRouterCanary()")
-    expect(orders).toContain("canUseCheckoutSparkLocalRouterCanary()")
+    expect(checkout).not.toContain("canUseCheckoutSparkLocalRouterCanary()")
+    expect(orders).not.toContain("canUseCheckoutSparkLocalRouterCanary()")
+  })
+
+  it("describes hosted pricing without a local test destination claim", () => {
+    expect(checkout).not.toContain("configured test fee destination")
+    expect(checkout).not.toContain("local router rehearsal")
+    expect(checkout).toContain(
+      "coordination fee is included in the payment total."
+    )
   })
 
   it("uses one same-tab order identity and structured private guest contact", () => {

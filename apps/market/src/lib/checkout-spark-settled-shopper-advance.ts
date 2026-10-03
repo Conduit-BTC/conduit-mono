@@ -23,6 +23,7 @@ import {
   loadAuthorizedCheckoutSparkSettledFunding,
 } from "./checkout-spark-settled-preparation"
 import { getSparkConfiguration, getSparkWalletManager } from "./spark-sdk"
+import { assertMarketCheckoutSparkDispatchPlan } from "./checkout-spark-dispatch-policy"
 import {
   isCurrentGuestOrderSigningIdentity,
   type GuestOrderSigningIdentity,
@@ -133,6 +134,7 @@ export async function advanceCheckoutSparkSettledShopper(
   )(input.checkoutId, { repository, now })
   assertSession()
   const { plan } = prepared
+  assertMarketCheckoutSparkDispatchPlan(plan)
   if (
     plan.schemaVersion !== 3 ||
     plan.checkoutId !== input.checkoutId ||

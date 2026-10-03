@@ -40,6 +40,7 @@ import {
   openMerchantCheckoutSparkRecoveryWallet,
   proveMerchantCheckoutSparkReturnedPayout,
 } from "./checkout-spark-settled-recovery"
+import { assertMerchantCheckoutSparkDispatchPlan } from "./checkout-spark-recovery-policy"
 
 type Store = Pick<
   DexieCheckoutSparkSettledRepository,
@@ -142,6 +143,7 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
     const assertEligible = () => {
       assertActive()
       assertCurrent()
+      assertMerchantCheckoutSparkDispatchPlan(plan)
       assertCheckoutSparkSettledMerchantPreparationWindow(signedState, now())
     }
     const assertState = (value: CheckoutSparkSettledReconciliation) => {

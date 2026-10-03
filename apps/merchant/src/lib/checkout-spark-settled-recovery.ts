@@ -594,9 +594,12 @@ export function isLocalCheckoutSparkRecoveryRehearsal(input: {
   rehearsalFlag: string | undefined
   routerCanaryFlag: string | undefined
   hostname: string | undefined
+  deploymentProfile?: string
 }): boolean {
   return (
     input.dev === true &&
+    (input.deploymentProfile === undefined ||
+      input.deploymentProfile === "local") &&
     input.rehearsalFlag === "true" &&
     input.routerCanaryFlag === "true" &&
     (input.hostname === "localhost" ||
