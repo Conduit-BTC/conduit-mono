@@ -905,9 +905,18 @@ test("configured backup failure retains primary, retries the backup, and recover
   await expect(edit.getByLabel("Primary image URL")).toHaveValue(
     primary.resourceUrls[0]
   )
-  await expect(
-    edit.getByRole("img", { name: "Redundant image listing", exact: true })
-  ).toHaveAttribute("src", backup.resourceUrls[0])
+  const editPreview = edit.getByRole("img", {
+    name: "Redundant image listing",
+    exact: true,
+  })
+  // WebKit starts lazy image requests only after the preview enters view.
+  await editPreview.scrollIntoViewIfNeeded()
+  await expect(editPreview).toHaveAttribute("src", backup.resourceUrls[0])
+  await expect
+    .poll(() =>
+      editPreview.evaluate((image: HTMLImageElement) => image.naturalWidth)
+    )
+    .toBeGreaterThan(0)
   await edit.screenshot({ path: "/private/tmp/conduit-media-backup-edit.png" })
   const dTag = event.tags.find((tag) => tag[0] === "d")![1]
   const marketUrl =
@@ -918,11 +927,16 @@ test("configured backup failure retains primary, retries the backup, and recover
   await expect(
     page.getByRole("heading", { name: "Redundant image listing", exact: true })
   ).toBeVisible({ timeout: 20_000 })
-  await expect(
-    page
-      .getByRole("img", { name: "Redundant image listing", exact: true })
-      .first()
-  ).toHaveAttribute("src", backup.resourceUrls[0])
+  const marketImage = page
+    .getByRole("img", { name: "Redundant image listing", exact: true })
+    .first()
+  await marketImage.scrollIntoViewIfNeeded()
+  await expect(marketImage).toHaveAttribute("src", backup.resourceUrls[0])
+  await expect
+    .poll(() =>
+      marketImage.evaluate((image: HTMLImageElement) => image.naturalWidth)
+    )
+    .toBeGreaterThan(0)
   await page.screenshot({
     path: "/private/tmp/conduit-media-backup-market.png",
   })
