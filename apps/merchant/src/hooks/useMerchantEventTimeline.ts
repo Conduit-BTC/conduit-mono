@@ -32,15 +32,21 @@ export const MERCHANT_EVENT_TIMELINE_REFRESH_INTERVAL_MS = 60_000
 const EMPTY_MARKET_READS: EventMarketRosterReadResult[] = []
 
 export interface MerchantEventTimelineDiscovery {
-  organizerPubkeys: string[] | undefined
-  relationshipMarkets: EventMarketRosterReadResult[]
-  relationshipPending: boolean
-  relationshipIncomplete: boolean
-  isInitialLoading: boolean
-  isFetching: boolean
-  isRefreshStale: boolean
-  error: unknown
-  refetch: () => void
+  perspective: {
+    organizerPubkeys: string[] | undefined
+    isInitialLoading: boolean
+    isFetching: boolean
+    incomplete: boolean
+    refetch: () => void
+  }
+  relationships: {
+    markets: EventMarketRosterReadResult[]
+    isInitialLoading: boolean
+    isFetching: boolean
+    incomplete: boolean
+    unavailable: boolean
+    refetch: () => void
+  }
 }
 
 function retainedSupersedesLive(
@@ -291,41 +297,36 @@ export function useMerchantEventTimeline(input: {
   const refreshConduit = conduitQuery.refetch
   const refreshProducts = productsQuery.refetch
   const refreshExact = exactQuery.refetch
-  const refetch = useCallback(() => {
+  const refetchPerspective = useCallback(() => {
     if (followingEnabled) void refreshFollowing()
     if (conduitEnabled) void refreshConduit()
+  }, [followingEnabled, conduitEnabled, refreshFollowing, refreshConduit])
+  const refetchRelationships = useCallback(() => {
     if (merchantPubkey) void refreshProducts()
     if (productReferences.length > 0) void refreshExact()
-  }, [
-    followingEnabled,
-    conduitEnabled,
-    merchantPubkey,
-    productReferences.length,
-    refreshFollowing,
-    refreshConduit,
-    refreshProducts,
-    refreshExact,
-  ])
+  }, [merchantPubkey, productReferences.length, refreshProducts, refreshExact])
   return {
-    organizerPubkeys: authorPubkeys,
-    relationshipMarkets: exactQuery.data?.markets ?? EMPTY_MARKET_READS,
-    relationshipPending:
-      productsQuery.isPending ||
-      (productReferences.length > 0 && exactQuery.isPending),
-    relationshipIncomplete,
-    isInitialLoading: authorPubkeys === undefined,
-    isFetching:
-      followingQuery.isFetching ||
-      conduitQuery.isFetching ||
-      productsQuery.isFetching ||
-      exactQuery.isFetching,
-    isRefreshStale:
-      followingQuery.isError || conduitQuery.isError || relationshipIncomplete,
-    error:
-      followingQuery.error ??
-      conduitQuery.error ??
-      productsQuery.error ??
-      exactQuery.error,
-    refetch,
+    perspective: {
+      organizerPubkeys: authorPubkeys,
+      isInitialLoading: authorPubkeys === undefined,
+      isFetching: followingQuery.isFetching || conduitQuery.isFetching,
+      incomplete:
+        followingQuery.isError ||
+        conduitQuery.isError ||
+        (followingEnabled &&
+          isCommerceReadIncomplete(followingQuery.data?.meta)) ||
+        (conduitEnabled && isCommerceReadIncomplete(conduitQuery.data?.meta)),
+      refetch: refetchPerspective,
+    },
+    relationships: {
+      markets: exactQuery.data?.markets ?? EMPTY_MARKET_READS,
+      isInitialLoading:
+        productsQuery.isPending ||
+        (productReferences.length > 0 && exactQuery.isPending),
+      isFetching: productsQuery.isFetching || exactQuery.isFetching,
+      incomplete: relationshipIncomplete,
+      unavailable: productsQuery.isError || exactQuery.isError,
+      refetch: refetchRelationships,
+    },
   }
 }

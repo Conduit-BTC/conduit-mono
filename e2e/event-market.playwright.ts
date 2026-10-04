@@ -1442,12 +1442,18 @@ test("Merchant links an approved shop product and Market discovers it without pi
       ["alt", "Open Markets event merchant authorization"],
     ],
   })
-  relay.seed(
-    calendar,
-    market,
-    grant,
-    createMerchantTemplateProductEvent(createdAt)
-  )
+  const original = createMerchantTemplateProductEvent(createdAt)
+  const shopProduct = signEvent(MERCHANT_SECRET, {
+    kind: original.kind,
+    created_at: original.created_at,
+    content: original.content,
+    tags: [
+      ...original.tags,
+      ["shipping_option", `30406:${MERCHANT_PUBKEY}:older-shipping`],
+      ["a", `30409:${ORGANIZER_PUBKEY}:another-fair`],
+    ],
+  })
+  relay.seed(calendar, market, grant, shopProduct)
   const marketNaddr = nip19.naddrEncode({
     kind: 30409,
     pubkey: ORGANIZER_PUBKEY,
@@ -1455,21 +1461,21 @@ test("Merchant links an approved shop product and Market discovers it without pi
   })
   const productPath = `/products?eventMarket=${marketNaddr}`
   await gotoAs(page, merchantUrl, productPath, "merchant")
-  await page.getByRole("button", { name: "Add to event", exact: true }).click()
-  const editor = page.getByRole("dialog", { name: "Edit listing" })
-  await expect(
-    editor.getByRole("checkbox", { name: "Offer this product at this event" })
-  ).toBeChecked()
   // Retained calendar evidence alone is stale and must not authorize linking.
+  await expect(
+    page.getByRole("button", { name: "Add to event", exact: true })
+  ).toBeEnabled()
   relay.remove(calendar)
   const publicationStart = relay.publications.length
-  await editor
-    .getByRole("button", { name: "Save changes", exact: true })
-    .click()
+  await page.getByRole("button", { name: "Add to event", exact: true }).click()
+  await expect(page.getByRole("dialog", { name: "Edit listing" })).toHaveCount(
+    0
+  )
   await expect(
-    editor.getByText(
-      /Current organizer-signed Event Market approval and grant could not be confirmed/
-    )
+    page.getByRole("alert").filter({
+      hasText:
+        /Current organizer-signed Event Market approval and grant could not be confirmed/,
+    })
   ).toBeVisible()
   expect(
     relay.publications
@@ -1481,9 +1487,10 @@ test("Merchant links an approved shop product and Market discovers it without pi
   relay.seed(calendar)
   relay.incompleteReadsForKind(30409)
   relay.incompleteReadsForKind(31923)
-  await editor
-    .getByRole("button", { name: "Save changes", exact: true })
-    .click()
+  await page.getByRole("button", { name: "Add to event", exact: true }).click()
+  await expect(
+    page.getByText("Added to Merchant Fair.", { exact: true })
+  ).toBeVisible()
   await expect
     .poll(
       () =>
@@ -1497,6 +1504,12 @@ test("Merchant links an approved shop product and Market discovers it without pi
   )
   const updated = published.find((event) => event.kind === 30402)!
   expect(updated.tags).toContainEqual(["a", eventCoordinate(market)])
+  expect(updated.content).toBe(shopProduct.content)
+  expect(
+    updated.tags.filter(
+      (tag) => tag[0] !== "a" || tag[1] !== eventCoordinate(market)
+    )
+  ).toEqual(shopProduct.tags)
   expect(
     published.some((event) => event.kind === 30406 || event.kind === 30405)
   ).toBe(false)
@@ -1532,19 +1545,13 @@ test("Merchant links an approved shop product and Market discovers it without pi
   await expect(page.getByText(/Merchant booth: Booth 7/)).toBeVisible()
 
   await gotoAs(page, merchantUrl, productPath, "merchant")
+  const untagStart = relay.publications.length
   await page
     .getByRole("button", { name: "Remove from event", exact: true })
     .click()
-  const untagEditor = page.getByRole("dialog", { name: "Edit listing" })
-  await expect(
-    untagEditor.getByRole("checkbox", {
-      name: "Offer this product at this event",
-    })
-  ).not.toBeChecked()
-  const untagStart = relay.publications.length
-  await untagEditor
-    .getByRole("button", { name: "Save changes", exact: true })
-    .click()
+  await expect(page.getByRole("dialog", { name: "Edit listing" })).toHaveCount(
+    0
+  )
   await expect
     .poll(
       () =>
@@ -2611,7 +2618,7 @@ test("merchant directory separates open collapsible My Events and All Events wit
   ).toHaveAttribute("aria-pressed", "true")
 })
 
-test("merchant personal timeline shows unavailable discovery with an unrelated product-linked event @merchant", async ({
+test("merchant personal timeline scopes unavailable discovery with an unrelated product-linked event @merchant", async ({
   page,
 }) => {
   const relay = createRelayHarness()
@@ -2662,17 +2669,17 @@ test("merchant personal timeline shows unavailable discovery with an unrelated p
   ).toHaveCount(0)
   await my.getByRole("button", { name: "Selling At", exact: true }).click()
   await expect(
-    my.getByRole("heading", { name: "Couldn’t connect to your relays" })
+    my.getByRole("heading", { name: "No selling events found yet" })
   ).toBeVisible()
   await expect(
     my.getByRole("heading", { name: "You aren’t selling at any events" })
   ).toHaveCount(0)
   relay.rejectMarketDiscovery(false)
   await expect(
-    page.getByRole("button", { name: "Refresh events", exact: true })
+    page.getByRole("button", { name: "Refresh All Events", exact: true })
   ).toBeEnabled()
   await page
-    .getByRole("button", { name: "Refresh events", exact: true })
+    .getByRole("button", { name: "Refresh All Events", exact: true })
     .click()
   await expect(
     my.getByRole("heading", { name: "You aren’t selling at any events" })
@@ -2680,6 +2687,172 @@ test("merchant personal timeline shows unavailable discovery with an unrelated p
   await expect(
     all.getByRole("button", { name: /^Open Unrelated Fair/ })
   ).toBeVisible()
+})
+
+test("merchant directory resolves Organizing and Selling At while calendar discovery is held at 390px @merchant", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  relay.seed(
+    createFollowList(
+      "merchant",
+      [ORGANIZER_PUBKEY],
+      Math.floor(Date.now() / 1000)
+    )
+  )
+  const held = relay.holdRelayRequests((request) =>
+    request.filters.some(
+      (filter) =>
+        filter.kinds?.includes(30409) &&
+        filter.authors?.includes(ORGANIZER_PUBKEY)
+    )
+  )
+  try {
+    await gotoAs(page, merchantUrl, "/events", "merchant")
+    await held.captured
+    const my = page.getByRole("region", { name: "My Events timeline" })
+    const all = page.getByRole("region", { name: "All Events timeline" })
+    await expect(
+      my.getByRole("heading", { name: "You aren’t organizing any events" })
+    ).toBeVisible()
+    await expect(
+      all.getByRole("status", { name: "Loading events" })
+    ).toBeVisible()
+    const skeleton = await all
+      .getByRole("status", { name: "Loading events" })
+      .boundingBox()
+    expect(skeleton!.height).toBeLessThanOrEqual(140)
+    const organizing = page.getByRole("button", {
+      name: "Refresh Organizing",
+      exact: true,
+    })
+    await expect(organizing).toBeEnabled()
+    await expect(
+      page.getByRole("button", { name: "Refresh All Events", exact: true })
+    ).toBeDisabled()
+    const heading = await page
+      .getByRole("heading", { name: /^My Events/ })
+      .boundingBox()
+    const refresh = await organizing.boundingBox()
+    expect(Math.abs(heading!.y - refresh!.y)).toBeLessThan(12)
+    const empty = await my
+      .getByRole("heading", { name: "You aren’t organizing any events" })
+      .locator("../..")
+      .boundingBox()
+    expect(empty!.height).toBeLessThanOrEqual(160)
+    await expect(
+      page.getByText("Some relay checks did not finish.")
+    ).toHaveCount(0)
+    // Capture only the empty directory, excluding account controls and protocol fixtures.
+    await page
+      .getByRole("heading", { name: "Events", exact: true })
+      .locator("../../..")
+      .screenshot({
+        path: test.info().outputPath("events-mobile-390.png"),
+      })
+    const beforeOwnRefresh = relay.requests.length
+    await organizing.click()
+    await expect
+      .poll(() => relay.requests.length)
+      .toBeGreaterThan(beforeOwnRefresh)
+    await expect(organizing).toBeEnabled()
+    const ownRequests = relay.requests.slice(beforeOwnRefresh)
+    expect(
+      ownRequests.some((request) =>
+        request.filters.some(
+          (filter) =>
+            filter.kinds?.includes(30409) &&
+            filter.authors?.includes(MERCHANT_PUBKEY)
+        )
+      )
+    ).toBe(true)
+    expect(
+      ownRequests.some((request) =>
+        request.filters.some(
+          (filter) => filter.kinds?.includes(3) || filter.kinds?.includes(30402)
+        )
+      )
+    ).toBe(false)
+    await my.getByRole("button", { name: "Selling At", exact: true }).click()
+    await expect(
+      my.getByRole("heading", { name: "No selling events found yet" })
+    ).toBeVisible()
+    const selling = page.getByRole("button", {
+      name: "Refresh Selling At",
+      exact: true,
+    })
+    await expect(selling).toBeEnabled()
+    const beforeSellingRefresh = relay.requests.length
+    await selling.click()
+    await expect
+      .poll(() => relay.requests.length)
+      .toBeGreaterThan(beforeSellingRefresh)
+    await expect(selling).toBeEnabled()
+    const sellingRequests = relay.requests.slice(beforeSellingRefresh)
+    expect(
+      sellingRequests.some((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(30402))
+      )
+    ).toBe(true)
+    expect(
+      sellingRequests.some((request) =>
+        request.filters.some(
+          (filter) => filter.kinds?.includes(3) || filter.kinds?.includes(30409)
+        )
+      )
+    ).toBe(false)
+  } finally {
+    held.release()
+  }
+})
+
+test("merchant directory All Events resolves and refreshes without waiting for merchant products @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const held = relay.holdRelayRequests((request) =>
+    request.filters.some(
+      (filter) =>
+        filter.kinds?.includes(30402) &&
+        filter.authors?.includes(MERCHANT_PUBKEY)
+    )
+  )
+  try {
+    await gotoAs(page, merchantUrl, "/events", "merchant")
+    await held.captured
+    const my = page.getByRole("region", { name: "My Events timeline" })
+    const all = page.getByRole("region", { name: "All Events timeline" })
+    await expect(
+      my.getByRole("heading", { name: "You aren’t organizing any events" })
+    ).toBeVisible()
+    await expect(
+      all.getByRole("heading", { name: "No events found on your relays" })
+    ).toBeVisible()
+    await my.getByRole("button", { name: "Selling At", exact: true }).click()
+    await expect(
+      my.getByRole("status", { name: "Loading events" })
+    ).toBeVisible()
+    const refresh = page.getByRole("button", {
+      name: "Refresh All Events",
+      exact: true,
+    })
+    await expect(refresh).toBeEnabled()
+    const before = relay.requests.length
+    await refresh.click()
+    await expect(refresh).toBeEnabled()
+    expect(
+      relay.requests
+        .slice(before)
+        .some((request) =>
+          request.filters.some((filter) => filter.kinds?.includes(30402))
+        )
+    ).toBe(false)
+  } finally {
+    held.release()
+  }
 })
 
 for (const monthly of [false, true])
@@ -3620,14 +3793,9 @@ test("a host and merchant create, request, approve and offer through the screens
     .click()
   await expect(page).toHaveURL(/\/products\?eventMarket=/)
   await page.getByRole("button", { name: "Add to event", exact: true }).click()
-  const editor = page.getByRole("dialog", { name: "Edit listing" })
-  await expect(
-    editor.getByRole("checkbox", { name: "Offer this product at this event" })
-  ).toBeChecked()
-  await editor
-    .getByRole("button", { name: "Save changes", exact: true })
-    .click()
-  await expect(editor).not.toBeVisible()
+  await expect(page.getByRole("dialog", { name: "Edit listing" })).toHaveCount(
+    0
+  )
   await expect(
     page.getByText("Offered at this event", { exact: true })
   ).toBeVisible()

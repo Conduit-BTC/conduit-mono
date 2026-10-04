@@ -28,6 +28,7 @@ import {
   recordBrowserTelemetryEvent,
   readEventMarketAuthorization,
   readEventMarketRoster,
+  publishEventMarketProductAssociation,
   waitForVisibleDocument,
   type CommerceResult,
   type ListingSafetyEvaluation,
@@ -1248,6 +1249,19 @@ function ProductsPage() {
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProductFamily | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
+  const [associationRetry, setAssociationRetry] = useState<{
+    coordinate: string
+    merchantPubkey: string
+    marketReference: string
+    enabled: boolean
+    products: { coordinate: string; eventId: string }[]
+    savedEvents: SignedPublicNostrEvent[]
+  } | null>(null)
+  const activeAssociationRetry =
+    associationRetry?.merchantPubkey === accountPubkey &&
+    associationRetry.marketReference === eventContextReference
+      ? associationRetry
+      : null
   const [showListingAreaPicker, setShowListingAreaPicker] = useState(false)
   const [shippingCacheUnavailable, setShippingCacheUnavailable] =
     useState(false)
@@ -1525,6 +1539,76 @@ function ProductsPage() {
       setProductDeliveryNotice(buildLocalProductDeliveryNotice(action))
     }
   }
+
+  const associationMutation = useMutation({
+    mutationFn: async (variables: {
+      item: MerchantProductFamily
+      enabled: boolean
+      generation: number
+      merchantPubkey: string
+      marketReference: string
+    }) => {
+      const shouldContinue = () =>
+        authGenerationRef.current === variables.generation &&
+        isCurrentProductOwner(variables.merchantPubkey)
+      const saved =
+        activeAssociationRetry?.coordinate === variables.item.addressId &&
+        activeAssociationRetry.merchantPubkey === variables.merchantPubkey &&
+        activeAssociationRetry.marketReference === variables.marketReference
+          ? activeAssociationRetry
+          : null
+      const products =
+        saved?.products ??
+        [variables.item, ...variables.item.variations].map((record) => ({
+          coordinate: record.addressId,
+          eventId: record.eventId,
+        }))
+      const result = await publishEventMarketProductAssociation({
+        merchantPubkey: variables.merchantPubkey,
+        authenticatedPubkey,
+        marketReference: variables.marketReference,
+        products,
+        enabled: saved?.enabled ?? variables.enabled,
+        shouldContinue,
+        savedEvents: saved?.savedEvents,
+        onSignedLocal: async (savedEvents) => {
+          if (!shouldContinue())
+            throw new Error("Product signer session changed.")
+          setAssociationRetry({
+            coordinate: variables.item.addressId,
+            merchantPubkey: variables.merchantPubkey,
+            marketReference: variables.marketReference,
+            enabled: variables.enabled,
+            products,
+            savedEvents,
+          })
+        },
+      })
+      if (!shouldContinue()) throw new Error("Product signer session changed.")
+      await showLocalProductProjection("publish", variables.merchantPubkey)
+      if (
+        result.deliveries.some(
+          (delivery) => delivery.successfulRelayUrls.length === 0
+        )
+      )
+        throw new Error(
+          "Event association is saved locally. Retry delivery to make it available on your relays."
+        )
+      return result
+    },
+    onSuccess: async (_result, variables) => {
+      if (
+        authGenerationRef.current !== variables.generation ||
+        !isCurrentProductOwner(variables.merchantPubkey)
+      )
+        return
+      setAssociationRetry(null)
+      await refreshProductQueries(variables.merchantPubkey)
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-event-timeline-products"],
+      })
+    },
+  })
 
   function productPublishPayloadIsAuthorized(
     payload: ProductPublishMutationPayload
@@ -2769,13 +2853,11 @@ function ProductsPage() {
               const unavailable =
                 item.product.format !== "physical"
                   ? "Digital products cannot use event pickup"
-                  : !item.variationForm.supported
-                    ? "This product's options need repair before editing"
-                    : item.product.stock === 0
-                      ? "Out of stock"
-                      : !item.safety.marketVisible
-                        ? "Hidden or unavailable in your shop"
-                        : null
+                  : item.product.stock === 0
+                    ? "Out of stock"
+                    : !item.safety.marketVisible
+                      ? "Hidden or unavailable in your shop"
+                      : null
               return (
                 <div
                   key={item.addressId}
@@ -2793,19 +2875,39 @@ function ProductsPage() {
                       variant="outline"
                       disabled={
                         item.product.format !== "physical" ||
-                        !item.variationForm.supported
+                        associationMutation.isPending ||
+                        (!!activeAssociationRetry &&
+                          activeAssociationRetry.coordinate !==
+                            item.addressId) ||
+                        !authenticatedPubkey ||
+                        !!remoteSignerRecovery ||
+                        isSaving ||
+                        (!associated && !!unavailable)
                       }
                       onClick={() => {
-                        if (openEditDialog(item))
-                          setForm((previous) => ({
-                            ...previous,
-                            futureEventMarketReference: associated
-                              ? ""
-                              : eventContextCoordinate,
-                          }))
+                        if (!accountPubkey || !eventContextReference) return
+                        associationMutation.mutate({
+                          item,
+                          enabled:
+                            activeAssociationRetry?.coordinate ===
+                            item.addressId
+                              ? activeAssociationRetry.enabled
+                              : !associated,
+                          generation: authGeneration,
+                          merchantPubkey: accountPubkey,
+                          marketReference: eventContextReference,
+                        })
                       }}
                     >
-                      {associated ? "Remove from event" : "Add to event"}
+                      {activeAssociationRetry?.coordinate === item.addressId
+                        ? "Retry event association"
+                        : associationMutation.isPending &&
+                            associationMutation.variables?.item.addressId ===
+                              item.addressId
+                          ? "Saving…"
+                          : associated
+                            ? "Remove from event"
+                            : "Add to event"}
                     </Button>
                     <Button
                       variant="ghost"
@@ -2817,6 +2919,27 @@ function ProductsPage() {
                       Edit product
                     </Button>
                   </div>
+                  {associationMutation.variables?.item.addressId ===
+                    item.addressId &&
+                  associationMutation.variables.marketReference ===
+                    eventContextReference &&
+                  associationMutation.variables.generation ===
+                    authGeneration ? (
+                    associationMutation.isError ? (
+                      <p role="alert" className="w-full text-sm text-error">
+                        {associationMutation.error.message}
+                      </p>
+                    ) : associationMutation.isSuccess ? (
+                      <p
+                        role="status"
+                        className="w-full text-sm text-[var(--text-secondary)]"
+                      >
+                        {associationMutation.variables.enabled
+                          ? `Added to ${contextName ?? "this event"}.`
+                          : `Removed from ${contextName ?? "this event"}.`}
+                      </p>
+                    ) : null
+                  ) : null}
                 </div>
               )
             })}

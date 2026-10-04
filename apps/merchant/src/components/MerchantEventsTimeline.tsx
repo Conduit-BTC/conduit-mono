@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, ChevronDown, Plus, RefreshCw } from "lucide-react"
+import { useQuery } from "@tanstack/react-query"
 import {
   useProgressiveEventMarketDiscovery,
   encodeEventMarketNaddr,
@@ -7,6 +8,7 @@ import {
   useAuth,
   useConduitSession,
   useProfiles,
+  readEventMarketRoster,
 } from "@conduit/core"
 import {
   Button,
@@ -15,7 +17,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
   EventTimelineEntry,
-  EventTimelineLoading,
   EventTimelineViewport,
   paginateEventTimeline,
   SegmentedControl,
@@ -24,7 +25,10 @@ import {
   useTimeBoundaryNow,
 } from "@conduit/ui"
 import { useMerchantEventTimeline } from "../hooks/useMerchantEventTimeline"
-import { mergeMerchantTimelineMarketReads } from "../lib/merchant-event-relationship-hydration"
+import {
+  hydrateMerchantProductMarkets,
+  mergeMerchantTimelineMarketReads,
+} from "../lib/merchant-event-relationship-hydration"
 
 import {
   getNextMerchantEventTimelineLimit,
@@ -76,16 +80,32 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     merchantPubkey,
     source: "combined",
   })
+  const ownQuery = useProgressiveEventMarketDiscovery({
+    queryKey: [
+      "merchant-owned-event-timeline",
+      session.relayScope,
+      authenticatedPubkey,
+      authGeneration,
+      merchantPubkey,
+    ],
+    discoveryInput: {
+      organizerPubkeys: [merchantPubkey],
+      authenticatedPubkey,
+      shouldContinue: () => authGenerationRef.current === authGeneration,
+    },
+    enabled: session.relaySettingsReady && !!merchantPubkey,
+    refetchInterval: 60_000,
+  })
   const futureAuthors = useMemo(
     () =>
       Array.from(
         new Set(
-          [merchantPubkey, ...(discovery.organizerPubkeys ?? [])].filter(
-            Boolean
+          (discovery.perspective.organizerPubkeys ?? []).filter(
+            (author) => author !== merchantPubkey
           )
         )
       ),
-    [discovery.organizerPubkeys, merchantPubkey]
+    [discovery.perspective.organizerPubkeys, merchantPubkey]
   )
   const futureQuery = useProgressiveEventMarketDiscovery({
     queryKey: [
@@ -100,39 +120,129 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       authenticatedPubkey,
       shouldContinue: () => authGenerationRef.current === authGeneration,
     },
-    enabled: session.relaySettingsReady && !!merchantPubkey,
+    enabled:
+      session.relaySettingsReady &&
+      !!merchantPubkey &&
+      futureAuthors.length > 0,
     refetchInterval: 60_000,
   })
   const marketReads = useMemo(
     () =>
       mergeMerchantTimelineMarketReads(
-        futureQuery.data?.markets ?? [],
-        discovery.relationshipMarkets
+        mergeMerchantTimelineMarketReads(
+          ownQuery.data?.markets ?? [],
+          futureQuery.data?.markets ?? []
+        ),
+        discovery.relationships.markets
       ),
-    [futureQuery.data?.markets, discovery.relationshipMarkets]
+    [
+      ownQuery.data?.markets,
+      futureQuery.data?.markets,
+      discovery.relationships.markets,
+    ]
   )
-  const futureOccurrences = useMemo(
-    () => marketReads.flatMap(projectFutureMerchantTimelineOccurrences),
-    [marketReads]
-  )
-  return {
+  const sellingCoordinates = marketReads
+    .filter((read) =>
+      matchesMerchantEventRelationship(read, merchantPubkey, "selling")
+    )
+    .map((read) => read.coordinate)
+    .sort()
+  const sellingQuery = useQuery({
+    queryKey: [
+      "merchant-selling-event-refresh",
+      session.relayScope,
+      authenticatedPubkey,
+      authGeneration,
+      sellingCoordinates.join(","),
+    ],
+    queryFn: ({ signal }) =>
+      hydrateMerchantProductMarkets({
+        references: sellingCoordinates,
+        signal,
+        shouldContinue: () => authGenerationRef.current === authGeneration,
+        read: (reference, marketSignal) =>
+          readEventMarketRoster({
+            reference,
+            authenticatedPubkey,
+            signal: marketSignal,
+            shouldContinue: () =>
+              !signal.aborted && authGenerationRef.current === authGeneration,
+          }),
+      }),
+    enabled: false,
+    retry: false,
+  })
+  const allReads = mergeMerchantTimelineMarketReads(
     marketReads,
-    futureOccurrences,
-    initialLoading:
-      !!merchantPubkey &&
-      (discovery.isInitialLoading ||
-        discovery.relationshipPending ||
-        futureQuery.isPending),
-    isFetching: discovery.isFetching || futureQuery.isFetching,
-    unavailable:
-      futureQuery.isError || futureQuery.data?.coverage === "unavailable",
-    limited:
-      discovery.isRefreshStale ||
-      (!!futureQuery.data && futureQuery.data.coverage !== "complete"),
-    refetch() {
-      discovery.refetch()
-      void futureQuery.refetch()
-    },
+    sellingQuery.data?.markets ?? []
+  )
+  const section = (
+    reads: typeof marketReads,
+    initialLoading: boolean,
+    isFetching: boolean,
+    unavailable: boolean,
+    limited: boolean,
+    refetch: () => void
+  ) => ({
+    marketReads: reads,
+    futureOccurrences: reads.flatMap(projectFutureMerchantTimelineOccurrences),
+    initialLoading,
+    isFetching,
+    unavailable,
+    limited,
+    refetch,
+  })
+  const networkPending =
+    discovery.perspective.isInitialLoading ||
+    (futureAuthors.length > 0 && futureQuery.isPending)
+  const networkLimited =
+    networkPending ||
+    discovery.perspective.incomplete ||
+    (!!futureQuery.data && futureQuery.data.coverage !== "complete")
+  return {
+    organizing: section(
+      ownQuery.data?.markets ?? [],
+      ownQuery.isPending,
+      ownQuery.isFetching,
+      ownQuery.isError || ownQuery.data?.coverage === "unavailable",
+      !!ownQuery.data && ownQuery.data.coverage !== "complete",
+      () => {
+        void ownQuery.refetch()
+      }
+    ),
+    selling: section(
+      allReads,
+      discovery.relationships.isInitialLoading,
+      discovery.relationships.isFetching || sellingQuery.isFetching,
+      discovery.relationships.unavailable,
+      networkLimited ||
+        ownQuery.isPending ||
+        (!!ownQuery.data && ownQuery.data.coverage !== "complete") ||
+        discovery.relationships.incomplete ||
+        (sellingQuery.data?.failedCount ?? 0) > 0,
+      () => {
+        discovery.relationships.refetch()
+        if (sellingCoordinates.length) void sellingQuery.refetch()
+      }
+    ),
+    all: section(
+      allReads,
+      networkPending || ownQuery.isPending,
+      discovery.perspective.isFetching ||
+        futureQuery.isFetching ||
+        ownQuery.isFetching,
+      futureQuery.isError ||
+        futureQuery.data?.coverage === "unavailable" ||
+        ownQuery.isError ||
+        ownQuery.data?.coverage === "unavailable",
+      networkLimited ||
+        (!!ownQuery.data && ownQuery.data.coverage !== "complete"),
+      () => {
+        discovery.perspective.refetch()
+        void ownQuery.refetch()
+        if (futureAuthors.length) void futureQuery.refetch()
+      }
+    ),
     accountPubkey,
     authenticatedPubkey,
     authGeneration,
@@ -155,35 +265,16 @@ export function MerchantEventsTimeline(props: MerchantEventsTimelineProps) {
   const relationship =
     props.search.relation === "selling" ? "selling" : "organizing"
   return (
-    <div className="space-y-8">
-      <div className="flex justify-end">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          aria-label="Refresh events"
-          disabled={data.isFetching}
-          onClick={data.refetch}
-        >
-          <RefreshCw
-            className={cn(
-              "size-4",
-              data.isFetching && "animate-spin motion-reduce:animate-none"
-            )}
-            aria-hidden="true"
-          />
-          Refresh
-        </Button>
-      </div>
+    <div className="space-y-6">
       <MerchantEventTimelineSection
         {...props}
-        data={data}
+        data={{ ...data, ...data[relationship] }}
         title="My Events"
         relationship={relationship}
       />
       <MerchantEventTimelineSection
         {...props}
-        data={data}
+        data={{ ...data, ...data.all }}
         title="All Events"
         relationship="all"
       />
@@ -203,7 +294,8 @@ function MerchantEventTimelineSection({
 }: MerchantEventsTimelineProps & {
   relationship: MerchantEventRelationshipFilter
   title: string
-  data: ReturnType<typeof useMerchantEventTimelineData>
+  data: ReturnType<typeof useMerchantEventTimelineData> &
+    ReturnType<typeof useMerchantEventTimelineData>["all"]
 }) {
   const {
     marketReads,
@@ -382,23 +474,43 @@ function MerchantEventTimelineSection({
       }}
       className="space-y-4"
     >
-      <h2>
-        <CollapsibleTrigger className="group flex w-full items-center gap-3 rounded-lg py-2 text-left text-xl font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
-          <ChevronDown
-            className="size-5 shrink-0 group-data-[state=closed]:-rotate-90"
+      <div className="flex items-center gap-2">
+        <h2 className="min-w-0 flex-1">
+          <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-lg py-2 text-left text-lg font-semibold text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:text-xl">
+            <ChevronDown
+              className="size-5 shrink-0 group-data-[state=closed]:-rotate-90"
+              aria-hidden="true"
+            />
+            <span className="text-balance">{title}</span>
+            <span
+              className="ml-auto text-sm font-normal tabular-nums text-[var(--text-muted)]"
+              aria-live="polite"
+            >
+              {initialLoading
+                ? "Loading"
+                : `${visibleFutureOccurrences.length} ${visibleFutureOccurrences.length === 1 ? "event" : "events"}`}
+            </span>
+          </CollapsibleTrigger>
+        </h2>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-label={`Refresh ${relationship === "all" ? "All Events" : RELATIONSHIP_LABELS[relationship]}`}
+          disabled={data.isFetching}
+          onClick={data.refetch}
+          className="shrink-0"
+        >
+          <RefreshCw
+            className={cn(
+              "size-4",
+              data.isFetching && "animate-spin motion-reduce:animate-none"
+            )}
             aria-hidden="true"
           />
-          {title}
-          <span
-            className="ml-auto text-sm font-normal tabular-nums text-[var(--text-muted)]"
-            aria-live="polite"
-          >
-            {initialLoading
-              ? "Loading events"
-              : `${visibleFutureOccurrences.length} ${visibleFutureOccurrences.length === 1 ? "event" : "events"}`}
-          </span>
-        </CollapsibleTrigger>
-      </h2>
+          Refresh
+        </Button>
+      </div>
       <CollapsibleContent
         className="space-y-4"
         role="region"
@@ -419,7 +531,23 @@ function MerchantEventTimelineSection({
           </SegmentedControl>
         ) : null}
         {initialLoading ? (
-          <EventTimelineLoading />
+          <div
+            role="status"
+            aria-label="Loading events"
+            className="space-y-2 rounded-xl border border-[var(--border)] p-3"
+          >
+            <span className="sr-only">Loading events</span>
+            {[0, 1].map((row) => (
+              <div
+                key={row}
+                aria-hidden="true"
+                className="flex h-10 items-center gap-3"
+              >
+                <div className="size-8 shrink-0 rounded bg-[var(--surface-elevated)]" />
+                <div className="h-3 w-2/3 rounded bg-[var(--surface-elevated)]" />
+              </div>
+            ))}
+          </div>
         ) : visibleFutureOccurrences.length > 0 ? (
           <>
             {futureDateReadIncomplete ? (
@@ -481,11 +609,17 @@ export function MerchantEventTimelineEmptyState({
     ? "Event dates are unavailable"
     : unavailable
       ? "Couldn’t connect to your relays"
-      : relationship === "organizing"
-        ? "You aren’t organizing any events"
-        : relationship === "selling"
-          ? "You aren’t selling at any events"
-          : "No events found on your relays"
+      : limited
+        ? relationship === "organizing"
+          ? "No organizing events found yet"
+          : relationship === "selling"
+            ? "No selling events found yet"
+            : "No events found yet"
+        : relationship === "organizing"
+          ? "You aren’t organizing any events"
+          : relationship === "selling"
+            ? "You aren’t selling at any events"
+            : "No events found on your relays"
   const description = datesUnavailable
     ? "An event was found, but its dates could not be read. Use Refresh to check again."
     : unavailable
@@ -496,25 +630,19 @@ export function MerchantEventTimelineEmptyState({
           ? "Create an event to get started."
           : "Events available through your relays will appear here."
   return (
-    <div className="rounded-xl border border-dashed border-[var(--border)] px-6 py-10 text-center">
-      <CalendarDays
-        className="mx-auto size-8 text-[var(--text-muted)]"
-        aria-hidden="true"
-      />
-      <h3 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
-        {title}
-      </h3>
-      <p className="mx-auto mt-2 max-w-xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
+    <div className="rounded-xl border border-dashed border-[var(--border)] p-4">
+      <div className="flex items-center gap-2">
+        <CalendarDays
+          className="size-5 shrink-0 text-[var(--text-muted)]"
+          aria-hidden="true"
+        />
+        <h3 className="text-balance text-sm font-semibold text-[var(--text-primary)] sm:text-base">
+          {title}
+        </h3>
+      </div>
+      <p className="mt-2 max-w-xl text-pretty text-sm text-[var(--text-secondary)]">
         {description}
       </p>
-      {limited && !unavailable && !datesUnavailable ? (
-        <p
-          role="status"
-          className="mt-2 text-pretty text-xs text-[var(--text-muted)]"
-        >
-          Some relay checks did not finish.
-        </p>
-      ) : null}
       {relationship === "organizing" &&
       !unavailable &&
       !datesUnavailable &&
@@ -522,7 +650,7 @@ export function MerchantEventTimelineEmptyState({
         <Button
           type="button"
           size="sm"
-          className="mt-4"
+          className="mt-3"
           onClick={onCreate}
           disabled={createDisabled}
         >
