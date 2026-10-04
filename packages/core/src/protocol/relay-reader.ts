@@ -38,6 +38,9 @@ export interface PublicRelayReadSocket {
 export interface PublicRelayReadSocketScope {
   createWebSocket: (url: string) => PublicRelayReadSocket
 }
+// The standard readyState value also applies to injected socket implementations.
+const WEBSOCKET_OPEN = 1
+
 export interface PublicRelayReadOptions {
   /** Separate public-only pool for injected transports; never an authenticated socket. */
   socketScope?: PublicRelayReadSocketScope
@@ -1029,7 +1032,7 @@ function readRelayEvents(
       if (fetchTimer) clearTimeout(fetchTimer)
       if (signal && onAbort) signal.removeEventListener("abort", onAbort)
       conn.subs.delete(subId)
-      if (!conn.closed && conn.ws.readyState === WebSocket.OPEN) {
+      if (!conn.closed && conn.ws.readyState === WEBSOCKET_OPEN) {
         try {
           conn.ws.send(JSON.stringify(["CLOSE", subId]))
         } catch {
@@ -1167,7 +1170,7 @@ function readRelayEvents(
           connectTimer = undefined
         }
         if (settled) return
-        if (conn.closed || conn.ws.readyState !== WebSocket.OPEN) {
+        if (conn.closed || conn.ws.readyState !== WEBSOCKET_OPEN) {
           finish(false)
           return
         }

@@ -238,6 +238,60 @@ afterEach(() => {
 })
 
 describe("NDK-neutral relay executor NIP-42 state machine", () => {
+  for (const phase of ["before connect", "after REQ"] as const) {
+    it(`completes injected public reads without global WebSocket ${phase}`, async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        "WebSocket"
+      )
+      let deadline: ReturnType<typeof setTimeout> | undefined
+      const harness = new FakeRelayHarness().at("wss://public.example", {
+        onSend: (socket, frame) => {
+          if (frame[0] !== "REQ") return
+          if (phase === "after REQ")
+            Reflect.deleteProperty(globalThis, "WebSocket")
+          queueMicrotask(() => socket.relay(["EOSE", frame[1]]))
+        },
+      })
+      const executor = createExecutor(harness)
+
+      try {
+        if (phase === "before connect")
+          Reflect.deleteProperty(globalThis, "WebSocket")
+        const result = await Promise.race([
+          executor.query(publicRequest()),
+          new Promise<never>((_, reject) => {
+            deadline = setTimeout(
+              () => reject(new Error("Injected public read did not settle")),
+              1_000
+            )
+          }),
+        ])
+
+        expect(result.status).toBe("success")
+        expect(source(result)).toMatchObject({
+          status: "success",
+          eventCount: 0,
+        })
+        expect(result.observations).toContainEqual({
+          type: "eose",
+          relayIndex: 0,
+        })
+        const frames = harness.sockets[0].sent
+        const request = frames.find((frame) => frame[0] === "REQ")
+        expect(request).toBeDefined()
+        expect(frames).toContainEqual(["CLOSE", request![1]])
+        expect(frames.some((frame) => frame[0] === "AUTH")).toBe(false)
+      } finally {
+        if (deadline) clearTimeout(deadline)
+        if (descriptor)
+          Object.defineProperty(globalThis, "WebSocket", descriptor)
+        else Reflect.deleteProperty(globalThis, "WebSocket")
+        executor.dispose()
+      }
+    })
+  }
+
   it("forces explicit executor reads onto loopback during E2E isolation", async () => {
     const isolatedRelayUrl = "ws://127.0.0.1:7777"
     Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
