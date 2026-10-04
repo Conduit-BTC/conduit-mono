@@ -6,9 +6,22 @@ shared Core readers in `event-market-roster-read.ts` and the scoped
 
 ## Timeline and catalog
 
-Timeline discovery starts with retained signed headers and a bounded organizer
-scan. Current bounds are 64 organizer authors, 128 market coordinates and four
-concurrent header reads. Hitting a bound remains incomplete coverage. Account,
+Timeline discovery starts with retained signed headers and one shared public
+relay plan. Following and curated perspectives scan every organizer in batches
+of 64; 64 is a request size, not an audience limit. Market guests browse kind
+30409 candidates without an author filter on the selected public relays. An
+empty Following list remains an empty audience.
+
+Candidate reads run four at a time with a budget of 128 requests per pass.
+Saturated pages descend by signed creation time, checking the entire final
+timestamp before moving to older records. A saturated same-second range stays
+partial and retryable because NIP-01 offers no event-ID cursor. Partial or failed
+pages retain their position. Exact roster and calendar hydration runs four at a
+time, for up to 128 coordinates per pass. Only discovered or retained coordinates
+need organizer relay planning. Observed relay sources accompany exact reads.
+Remaining pages and coordinates are scoped continuations exposed by Market's
+Find more events action; refreshing starts a new scan at the newest records.
+These are bounded reads, not proof of global Nostr absence. Account,
 relay, perspective and authentication generation belong to the query scope;
 cancelled or superseded progress cannot update the active view. Unrefreshed
 retained rows are marked stale, not promoted to fresh authority.

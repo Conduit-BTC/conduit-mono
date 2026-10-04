@@ -13,6 +13,7 @@ import {
 import {
   decodeEventMarketReference,
   getEventMarketReadPlan,
+  getEventMarketDiscoveryReadPlan,
   isEventMarketAddressableRevisionDeleted,
   parseAddressableCoordinate,
   parseEventMarketCalendarEvent,
@@ -28,6 +29,10 @@ import {
   type EventMarketRosterResolution,
 } from "./event-market-roster"
 import { EVENT_KINDS } from "./kinds"
+import {
+  scanEventMarketCandidates,
+  type EventMarketDiscoveryContinuation,
+} from "./event-market-candidates"
 import {
   resolveEventMarketOccurrence,
   resolveEventMarketSeries,
@@ -335,29 +340,28 @@ export async function retainSignedEventMarketEvidence(
 
 const defaultDependencies: RosterReadDependencies & {
   loadDiscovered: (
-    authors: readonly string[]
+    authors: readonly string[] | undefined
   ) => Promise<SignedPublicNostrEvent[]>
+  planDiscovery: typeof getEventMarketDiscoveryReadPlan
 } = {
   plan: getEventMarketReadPlan,
+  planDiscovery: getEventMarketDiscoveryReadPlan,
   fetch: fetchSigned,
   load: loadRetained,
   retain: retainSigned,
   authorization: readEventMarketAuthorization,
-  loadDiscovered: async (authors: readonly string[]) =>
-    (
-      await Promise.all(
-        authors.map((author) =>
-          db.eventMarketRosterEvidence
-            .where("marketCoordinate")
-            .startsWith(`30409:${author}:`)
-            .filter((row) => row.signedEvent.kind === EVENT_KINDS.EVENT_MARKET)
-            .limit(128)
-            .toArray()
-        )
+  loadDiscovered: async (authors) => {
+    const authorSet = authors === undefined ? undefined : new Set(authors)
+    const rows = await db.eventMarketRosterEvidence
+      .filter(
+        (row) =>
+          row.signedEvent.kind === EVENT_KINDS.EVENT_MARKET &&
+          (!authorSet || authorSet.has(row.signedEvent.pubkey))
       )
-    )
-      .flat()
-      .map((row) => row.signedEvent),
+      .limit(2_048)
+      .toArray()
+    return rows.map((row) => row.signedEvent)
+  },
 }
 
 function fanoutOptions(
@@ -1665,41 +1669,51 @@ export async function readEventMarketCatalog(
 export interface FutureEventMarketDiscoveryResult {
   markets: EventMarketRosterReadResult[]
   coverage: EventMarketRosterReadCoverage
+  continuation?: EventMarketDiscoveryContinuation
 }
 
-/** Bounded organizer discovery; each exact signed result can paint independently. */
+/** Discover signed candidates in author batches, then hydrate only known coordinates. */
 export async function discoverFutureEventMarkets(
   input: {
-    organizerPubkeys: readonly string[]
+    /** Undefined browses public relays; an empty list discovers no organizers. */
+    organizerPubkeys?: readonly string[]
     authenticatedPubkey?: string | null
+    continuation?: EventMarketDiscoveryContinuation
     shouldContinue?: () => boolean
     signal?: AbortSignal
     onProgress?: (result: FutureEventMarketDiscoveryResult) => void
   },
   dependencies: RosterReadDependencies & {
+    planDiscovery?: typeof getEventMarketDiscoveryReadPlan
     loadDiscovered?: (
-      authors: readonly string[]
+      authors: readonly string[] | undefined
     ) => Promise<SignedPublicNostrEvent[]>
   } = defaultDependencies
 ): Promise<FutureEventMarketDiscoveryResult> {
-  const requestedAuthors = [
-    ...new Set(
-      input.organizerPubkeys.filter((value) => /^[0-9a-f]{64}$/.test(value))
-    ),
-  ]
-  const authors = requestedAuthors.slice(0, 64)
-  const authorSet = new Set(authors)
+  const authors =
+    input.organizerPubkeys === undefined
+      ? undefined
+      : [
+          ...new Set(
+            input.organizerPubkeys.filter((value) =>
+              /^[0-9a-f]{64}$/.test(value)
+            )
+          ),
+        ].sort()
+  const authorSet = authors === undefined ? undefined : new Set(authors)
   const results = new Map<string, EventMarketRosterReadResult>()
   const scheduled = new Map<string, Promise<void>>()
+  const pending = new Set<string>()
   const liveCompleted = new Set<string>()
-  const broadObserved = new Set<string>()
   const coordinateGenerations = new Map<string, number>()
-  const plans = new Map<string, EventMarketReadPlan>()
+  const hints = new Map<string, Set<string>>()
+  const observedIds = new Set<string>()
   let incomplete =
-    requestedAuthors.length > 64 ||
-    input.organizerPubkeys.some((author) => !/^[0-9a-f]{64}$/.test(author))
-  let availableSources = 0
+    input.organizerPubkeys?.some((author) => !/^[0-9a-f]{64}$/.test(author)) ??
+    false
+  let availableSources = false
   let finished = false
+  let continuation: EventMarketDiscoveryContinuation | undefined
   function assertCurrent(): void {
     if (input.signal?.aborted || input.shouldContinue?.() === false)
       throw new DOMException(
@@ -1714,50 +1728,52 @@ export async function discoverFutureEventMarkets(
       left.coordinate.localeCompare(right.coordinate)
     ),
     coverage,
+    ...(continuation ? { continuation } : {}),
   })
   function emit(): void {
     assertCurrent()
     if (!finished && results.size) input.onProgress?.(snapshot("partial"))
   }
-  // Bound both organizer plans and exact roster pipelines. Queued reads do not
-  // postpone a completed organizer behind an unrelated held organizer.
-  function limiter(limit: number) {
-    let active = 0
-    const queue: Array<() => void> = []
-    return async (task: () => Promise<void>) => {
-      if (active >= limit)
-        await new Promise<void>((resolve) => queue.push(resolve))
-      else active++
-      try {
-        assertCurrent()
-        await task()
-      } finally {
-        const next = queue.shift()
-        if (next) next()
-        else active--
-      }
+  let active = 0
+  const queue: Array<() => void> = []
+  async function exactLimit(task: () => Promise<void>): Promise<void> {
+    if (active >= 4) await new Promise<void>((resolve) => queue.push(resolve))
+    else active++
+    try {
+      assertCurrent()
+      await task()
+    } finally {
+      const next = queue.shift()
+      if (next) next()
+      else active--
     }
   }
-  const exactLimit = limiter(4)
   function coordinateFor(event: SignedPublicNostrEvent): string | null {
     if (
       event.kind !== EVENT_KINDS.EVENT_MARKET ||
-      !authorSet.has(event.pubkey) ||
+      (authorSet && !authorSet.has(event.pubkey)) ||
       !isValidSignedPublicNostrEvent(event)
     )
       return null
     const dTags = event.tags.filter((tag) => tag[0] === "d")
     return dTags.length === 1 && dTags[0]?.[1]
-      ? `${EVENT_KINDS.EVENT_MARKET}:${event.pubkey}:${dTags[0][1]}`
+      ? (parseAddressableCoordinate(
+          `30409:${event.pubkey}:${dTags[0][1]}`,
+          [30409]
+        )?.coordinate ?? null)
       : null
   }
   function scheduleExact(coordinate: string, refresh = false): Promise<void> {
+    const parsed = parseAddressableCoordinate(coordinate, [30409])
+    if (!parsed || (authorSet && !authorSet.has(parsed.authorPubkey)))
+      return Promise.resolve()
     const prior = scheduled.get(coordinate)
     if (prior && !refresh) return prior
     if (!prior && scheduled.size >= 128) {
-      incomplete = true
+      pending.add(coordinate)
       return Promise.resolve()
     }
+    pending.delete(coordinate)
     const generation = (coordinateGenerations.get(coordinate) ?? 0) + 1
     coordinateGenerations.set(coordinate, generation)
     const execute = () =>
@@ -1771,8 +1787,14 @@ export async function discoverFutureEventMarkets(
           },
           {
             ...dependencies,
-            plan: async (options) =>
-              plans.get(options.organizerPubkey) ?? dependencies.plan(options),
+            plan: (options) =>
+              dependencies.plan({
+                ...options,
+                relayHints: [
+                  ...(hints.get(coordinate) ?? []),
+                  ...(options.relayHints ?? []),
+                ],
+              }),
           }
         )
         assertCurrent()
@@ -1783,16 +1805,14 @@ export async function discoverFutureEventMarkets(
         }
       })
     const read = prior ? prior.then(execute) : execute()
-    // Cancellation/errors are observed when the joined discovery settles.
-    // Attaching immediately prevents an early failing exact read from becoming
-    // an unhandled rejection while a sibling organizer is still pending.
     void read.catch(() => {})
     scheduled.set(coordinate, read)
     return read
   }
   assertCurrent()
   const cached = (async () => {
-    if (!dependencies.loadDiscovered) return
+    // Continuations spend their hydration budget on the remaining coordinates.
+    if (!dependencies.loadDiscovered || input.continuation) return
     let events: SignedPublicNostrEvent[]
     try {
       events = await dependencies.loadDiscovered(authors)
@@ -1802,16 +1822,14 @@ export async function discoverFutureEventMarkets(
       return
     }
     assertCurrent()
-    const cachedCoordinates = [
+    const coordinates = [
       ...new Set(
         events.map(coordinateFor).filter((value): value is string => !!value)
       ),
     ]
-    if (cachedCoordinates.length >= 128) incomplete = true
-    const coordinates = cachedCoordinates.slice(0, 128)
     for (const coordinate of coordinates) {
       assertCurrent()
-      if (!liveCompleted.has(coordinate) && !broadObserved.has(coordinate)) {
+      if (!liveCompleted.has(coordinate)) {
         const preview = await readEventMarketRoster(
           {
             reference: coordinate,
@@ -1836,8 +1854,7 @@ export async function discoverFutureEventMarkets(
           }
         )
         assertCurrent()
-        // A cache load finishing after a live deletion never resurrects it.
-        if (!liveCompleted.has(coordinate) && !broadObserved.has(coordinate)) {
+        if (!liveCompleted.has(coordinate)) {
           results.set(coordinate, preview)
           emit()
         }
@@ -1845,68 +1862,75 @@ export async function discoverFutureEventMarkets(
       void scheduleExact(coordinate)
     }
   })()
-  const authorLimit = limiter(4)
-  const live = Promise.all(
-    authors.map((author) =>
-      authorLimit(async () => {
-        let plan: EventMarketReadPlan
-        try {
-          plan = await dependencies.plan({
-            organizerPubkey: author,
-            authenticatedPubkey: input.authenticatedPubkey,
-            shouldContinue: input.shouldContinue,
-            signal: input.signal,
-          })
-          assertCurrent()
-          plans.set(author, plan)
-          const broad = await dependencies.fetch(
-            {
-              kinds: [EVENT_KINDS.EVENT_MARKET as NDKKind],
-              authors: [author],
-              limit: 128,
-            },
-            fanoutOptions(plan, input)
-          )
-          assertCurrent()
-          if (broad.relays.some((relay) => relay.status !== "failed"))
-            availableSources++
-          if (
-            plan.relayHintTruncated ||
-            broad.events.length >= 128 ||
-            !broad.relays.length ||
-            broad.relays.some((relay) => relay.status !== "success")
-          )
+  // Observe both branches immediately so cancellation never leaks a rejection.
+  const live = (async () => {
+    const plan = await (
+      dependencies.planDiscovery ?? getEventMarketDiscoveryReadPlan
+    )(input)
+    assertCurrent()
+    const scope = JSON.stringify([
+      input.authenticatedPubkey ?? null,
+      authors ?? null,
+      plan.relayUrls,
+    ])
+    if (input.continuation?.scope === scope)
+      for (const coordinate of input.continuation.pendingCoordinates) {
+        hints.set(coordinate, new Set(plan.relayUrls))
+        void scheduleExact(coordinate)
+      }
+    const scan = await scanEventMarketCandidates({
+      authors,
+      accountPubkey: input.authenticatedPubkey,
+      plan,
+      options: fanoutOptions(plan, input),
+      continuation: input.continuation,
+      fetch: dependencies.fetch,
+      assertCurrent,
+      observe: async (events, relayUrl) => {
+        const records = new Map<string, SignedPublicNostrEvent[]>()
+        for (const event of events) {
+          const coordinate = coordinateFor(event)
+          if (!coordinate) {
             incomplete = true
-          const records = new Map<string, SignedPublicNostrEvent[]>()
-          for (const event of broad.events) {
-            const coordinate = coordinateFor(event)
-            if (!coordinate) continue
-            records.set(coordinate, [...(records.get(coordinate) ?? []), event])
+            continue
           }
-          for (const [coordinate, evidence] of records) {
-            try {
-              await dependencies.retain(coordinate, evidence)
-            } catch {
-              incomplete = true
-            }
-            assertCurrent()
-            broadObserved.add(coordinate)
-            void scheduleExact(coordinate, true)
-          }
-        } catch {
-          assertCurrent()
-          incomplete = true
+          records.set(coordinate, [...(records.get(coordinate) ?? []), event])
         }
-      })
-    )
-  )
+        for (const [coordinate, evidence] of records) {
+          try {
+            await dependencies.retain(coordinate, evidence)
+          } catch {
+            incomplete = true
+          }
+          assertCurrent()
+          const sources = hints.get(coordinate) ?? new Set<string>()
+          sources.add(relayUrl)
+          hints.set(coordinate, sources)
+          const changed = evidence.some((event) => !observedIds.has(event.id))
+          evidence.forEach((event) => observedIds.add(event.id))
+          // Refresh a cache pipeline once, after live candidates have been retained.
+          void scheduleExact(coordinate, changed)
+        }
+      },
+    })
+    incomplete ||= scan.incomplete
+    availableSources = scan.available
+    return scan
+  })()
   try {
-    await Promise.all([cached, live])
+    const [, scan] = await Promise.all([cached, live])
     await Promise.all(scheduled.values())
     assertCurrent()
+    if (scan.pages.length || pending.size)
+      continuation = {
+        scope: scan.scope,
+        pages: scan.pages,
+        pendingCoordinates: [...pending],
+      }
     finished = true
     const coverage =
       incomplete ||
+      continuation ||
       [...results.values()].some((read) => read.coverage !== "complete")
         ? availableSources || results.size
           ? "partial"

@@ -77,8 +77,21 @@ export function fixture(count = 2) {
       relayListState: "missing",
       relayHintTruncated: false,
     }),
+    planDiscovery: async () => ({
+      relayUrls: [relay],
+      candidateRelayUrls: [relay],
+      ownerSelectedRelayUrls: [],
+      appRelayUrls: [relay],
+      personalRelayUrls: [],
+      independentRelayUrls: [],
+      relayListState: "missing",
+      relayHintTruncated: false,
+    }),
     fetch: async (filter) => ({
-      events: live.filter((event) => matchFilter(filter as Filter, event)),
+      events: live
+        .filter((event) => matchFilter(filter as Filter, event))
+        .sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id))
+        .slice(0, filter.limit ?? Infinity),
       relays: [{ relayUrl: relay, status: "success" }],
     }),
     load: async (coordinate) => retained.get(coordinate) ?? [],

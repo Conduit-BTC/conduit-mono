@@ -38,6 +38,8 @@ export interface EventTimelineDiscoveryResult {
   isRefreshStale: boolean
   error: unknown
   refetch: () => void
+  hasMore: boolean
+  loadMore: () => void
 }
 
 function uniquePubkeys(pubkeys: readonly string[] | undefined): string[] {
@@ -56,10 +58,11 @@ export function useEventTimeline(
   }, [authGeneration])
   const session = useConduitSession()
   const connected = status === "connected" && !!pubkey
+  const publicAudience = status === "disconnected" || status === "error"
   const effectiveSource = connected ? requestedSource : "conduit"
   const authenticatedPubkey = connected ? pubkey : null
   const guestMarket = useGuestMarketDiscovery({
-    enabled: effectiveSource !== "following",
+    enabled: connected && effectiveSource !== "following",
   })
   const perspectivePubkey = connected ? pubkey : guestMarket.perspectivePubkey
   const normalizedPerspectivePubkey = normalizePubkey(perspectivePubkey)
@@ -238,6 +241,7 @@ export function useEventTimeline(
     session.relayScope ?? "no-relay-scope",
     authenticatedPubkey,
     authGeneration,
+    publicAudience ? "public-relays" : "perspective-authors",
     effectiveSource,
     normalizedPerspectivePubkey,
     organizerKey,
@@ -249,11 +253,14 @@ export function useEventTimeline(
   const futureQuery = useProgressiveEventMarketDiscovery({
     queryKey: ["future-market-event-timeline", ...discoveryQueryKey],
     discoveryInput: {
-      organizerPubkeys: organizerPubkeys ?? [],
+      organizerPubkeys: publicAudience ? undefined : (organizerPubkeys ?? []),
       authenticatedPubkey,
       shouldContinue: () => authGenerationRef.current === authGeneration,
     },
-    enabled: session.relaySettingsReady && organizerPubkeys !== undefined,
+    enabled:
+      session.relaySettingsReady &&
+      (connected || publicAudience) &&
+      (publicAudience || organizerPubkeys !== undefined),
     refetchInterval: MARKET_EVENT_TIMELINE_REFRESH_INTERVAL_MS,
   })
   const profileRelayHintsByPubkey = useMemo(
@@ -299,7 +306,10 @@ export function useEventTimeline(
     profileRelayHintsByPubkey,
     authorSource: authorResolution.source,
     effectiveSource,
-    isInitialLoading: organizerPubkeys === undefined || futureQuery.isPending,
+    isInitialLoading:
+      (!connected && !publicAudience) ||
+      (!publicAudience && organizerPubkeys === undefined) ||
+      futureQuery.isPending,
     isFetching:
       futureQuery.isFetching ||
       firstDegreeQuery.isFetching ||
@@ -308,8 +318,10 @@ export function useEventTimeline(
       futureQuery.isError ||
       futureQuery.data?.coverage !== "complete" ||
       followRefreshStale ||
-      (effectiveSource !== "following" && guestMarket.stale),
+      (!publicAudience && effectiveSource !== "following" && guestMarket.stale),
     error: futureQuery.error,
     refetch,
+    hasMore: futureQuery.hasMore,
+    loadMore: futureQuery.loadMore,
   }
 }

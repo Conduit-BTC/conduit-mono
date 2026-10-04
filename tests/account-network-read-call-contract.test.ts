@@ -446,6 +446,14 @@ describe("account network read call contract", () => {
     const dependencies: NonNullable<
       Parameters<typeof discoverFutureEventMarkets>[1]
     > = {
+      planDiscovery: () =>
+        getEventMarketReadPlan({
+          organizerPubkey: thirdParty,
+          authenticatedPubkey: ACCOUNT,
+          shouldContinue,
+          signal: controller.signal,
+          accountNetworkLocalStateRepository: repository,
+        }),
       plan: (input) =>
         getEventMarketReadPlan({
           ...input,

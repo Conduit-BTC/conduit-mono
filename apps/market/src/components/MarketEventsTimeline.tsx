@@ -345,6 +345,12 @@ export function MarketEventsTimeline({
         </div>
       </div>
 
+      {!connected && (
+        <p className="text-sm text-[var(--text-muted)]">
+          Browsing public events from your selected relays.
+        </p>
+      )}
+
       <section
         aria-label="Event filters"
         className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
@@ -496,6 +502,18 @@ export function MarketEventsTimeline({
           onRetry={discovery.refetch}
           retrying={discovery.isFetching}
         />
+      )}
+      {discovery.hasMore && (
+        <div className="mt-6 text-center">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={discovery.isFetching}
+            onClick={discovery.loadMore}
+          >
+            Find more events
+          </Button>
+        </div>
       )}
     </section>
   )
