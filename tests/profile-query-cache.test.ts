@@ -8,6 +8,7 @@ import type {
 } from "@conduit/core"
 import { reconcileProfileFormDraft } from "../packages/core/src/protocol/profiles"
 import { updateProfileQueryCache } from "../packages/core/src/hooks/useUpdateProfile"
+import { getProfileRelayHintKey } from "../packages/core/src/hooks/useProfiles"
 
 const PUBKEY = "a".repeat(64)
 
@@ -31,6 +32,48 @@ function selectedContext(
 }
 
 describe("profile query cache", () => {
+  it("keeps profile reads stable when unrelated catalog relay hints arrive", () => {
+    const otherPubkey = "b".repeat(64)
+    const current = { [PUBKEY]: ["wss://visible.example"] }
+    const key = getProfileRelayHintKey([PUBKEY], current)
+
+    expect(
+      getProfileRelayHintKey([PUBKEY], {
+        ...current,
+        [otherPubkey]: ["wss://other.example"],
+      })
+    ).toBe(key)
+    expect(
+      getProfileRelayHintKey([PUBKEY], {
+        [PUBKEY]: ["wss://updated.example"],
+      })
+    ).not.toBe(key)
+    expect(
+      getProfileRelayHintKey([PUBKEY], {
+        [otherPubkey]: ["wss://other.example"],
+      })
+    ).toBe(getProfileRelayHintKey([PUBKEY], undefined))
+  })
+
+  it("normalizes requested profile and relay hint order without restarting reads", () => {
+    const otherPubkey = "b".repeat(64)
+    expect(
+      getProfileRelayHintKey([otherPubkey, PUBKEY, PUBKEY], {
+        [PUBKEY]: [
+          "wss://second.example",
+          "wss://first.example",
+          "wss://first.example",
+        ],
+        [otherPubkey]: ["wss://other.example"],
+      })
+    ).toBe(
+      getProfileRelayHintKey([PUBKEY, otherPubkey], {
+        [PUBKEY]: ["wss://first.example", "wss://second.example"],
+        [otherPubkey]: ["wss://other.example"],
+      })
+    )
+  })
+
   it("replaces published projection and selected authority together without retaining fresh-read metadata", () => {
     const meta = {
       stale: false,

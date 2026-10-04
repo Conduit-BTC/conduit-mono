@@ -54,7 +54,9 @@ assessment. Visibility, usable images, variation context, explicit review
 decisions, signed revisions, expiration, and deletion checks remain separate.
 
 Products hydrate the visible merchants first. Store-menu identities and
-seller-name search hydrate when those surfaces are used. Long directory/menu
+seller-name search hydrate when those surfaces are used. Profile query keys
+include relay hints only for their requested merchants, so unrelated catalog
+arrivals do not restart those reads. Long directory/menu
 lists mount avatar images near the viewport; profile banners mount on the
 profile route. Kind-0 profile metadata is a complete event, so fetching names
 also receives other metadata fields, but receiving an image URL does not
