@@ -1,6 +1,6 @@
 # Buyer coordination pricing
 
-The local settled-router lane presents four inline totals: item subtotal,
+The capability-enabled settled-router lane presents four inline totals: item subtotal,
 shipping subtotal, coordination fee, and order total. It does not disclose
 supplier identities, individual recipient shares, or payout destinations.
 Hiding those UI details does not make public signed listing terms private.
@@ -38,7 +38,8 @@ Buyer payment history aggregates recorded payouts and fees without individual
 recipient rows. Those records are not a live wallet balance, proof of delivery,
 or permission to discard recovery data.
 
-The estimate is gated to the same local canary as the router. Disabled and
-production direct-payment lanes keep their existing prices. Isolated browser
+The estimate follows the shared Quantum Router deployment capability, including
+enabled mainnet preview and production builds. Unsupported and disabled
+direct-payment lanes keep their existing prices. Isolated browser
 tests cover price continuity, supplier UI privacy, automatic routing, and
 pause/resume; they do not replace funded provider or physical-device testing.

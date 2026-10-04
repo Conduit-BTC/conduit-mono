@@ -43,6 +43,24 @@ async function readDocumentMarker(
   }
 }
 
+const REPLACEMENT_MARKER_RETRY_DELAYS_MS = [0, 25, 75] as const
+
+async function readSettledDocumentMarker(
+  frame: Frame,
+  documentKey: string
+): Promise<string | null> {
+  let marker = await readDocumentMarker(frame, documentKey)
+  for (const delayMs of REPLACEMENT_MARKER_RETRY_DELAYS_MS) {
+    if (marker !== null) return marker
+    // A cross-document commit can briefly destroy the old execution context
+    // before the init-script marker is readable in its replacement. Yield only
+    // at most 100 ms of retry delay, then still require a positive marker.
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+    marker = await readDocumentMarker(frame, documentKey)
+  }
+  return marker
+}
+
 function createResourceDocumentTracker(documentKey: string) {
   const states = new WeakMap<Frame, FrameDocumentState>()
   const observedPages = new WeakSet<Page>()
@@ -115,7 +133,7 @@ async function isAbandonedResourceDocument(
   try {
     if (source.frame.isDetached() || source.frame.page().isClosed()) return true
     if (source.marker === null) return false
-    const current = await readDocumentMarker(source.frame, documentKey)
+    const current = await readSettledDocumentMarker(source.frame, documentKey)
     return current !== null && current !== source.marker
   } catch {
     return false

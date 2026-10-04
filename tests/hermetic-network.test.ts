@@ -384,6 +384,79 @@ describe("local resource failure remains scoped to its source document", () => {
     expect(fallbackAttempts).toBe(0)
   })
 
+  test.each([
+    { scenario: "distinct replacement", abandoned: true },
+    { scenario: "same document", abandoned: false },
+  ])(
+    "transient marker reads remain fail-closed for $scenario",
+    async ({ abandoned }) => {
+      let handler: ((route: Route) => Promise<void>) | undefined
+      const frameNavigationListeners = new Set<(frame: unknown) => void>()
+      const originalMarker = randomUUID()
+      const replacementMarker = abandoned ? randomUUID() : originalMarker
+      let markerReads = 0
+      const sourcePage = {
+        isClosed: () => false,
+        frames: () => [sourceFrame],
+        on: (event: string, listener: (frame: unknown) => void) => {
+          if (event === "framenavigated") frameNavigationListeners.add(listener)
+        },
+      }
+      const sourceFrame = {
+        page: () => sourcePage,
+        isDetached: () => false,
+        evaluate: async () => {
+          markerReads += 1
+          if (markerReads === 1) return originalMarker
+          if (markerReads <= 3) {
+            throw new Error("Replacement execution context is not ready.")
+          }
+          return replacementMarker
+        },
+      }
+      await installHermeticCommerceNetwork(
+        {
+          addInitScript: async () => {},
+          route: async (_match: string, value: typeof handler) => {
+            handler = value
+          },
+          routeWebSocket: async () => {},
+        } as unknown as BrowserContext,
+        options
+      )
+      let abortAttempts = 0
+      let fallbackAttempts = 0
+      const oldResource = handler!({
+        request: () => ({
+          url: () => `${options.appUrls[0]}/old-document-module.js`,
+          method: () => "GET",
+          isNavigationRequest: () => false,
+          frame: () => sourceFrame,
+        }),
+        fetch: async () => {
+          for (const listener of frameNavigationListeners) listener(sourceFrame)
+          throw new Error("Old document resource was cancelled.")
+        },
+        abort: async () => {
+          abortAttempts += 1
+        },
+        continue: async () => {
+          fallbackAttempts += 1
+        },
+      } as unknown as Route)
+
+      if (abandoned) await expect(oldResource).resolves.toBeUndefined()
+      else {
+        await expect(oldResource).rejects.toThrow(
+          "Isolated local application request failed."
+        )
+      }
+      expect(markerReads).toBe(4)
+      expect(abortAttempts).toBe(abandoned ? 1 : 0)
+      expect(fallbackAttempts).toBe(0)
+    }
+  )
+
   test("does not lend a stale positive marker to a new-document resource", async () => {
     let handler: ((route: Route) => Promise<void>) | undefined
     const frameNavigationListeners = new Set<(frame: unknown) => void>()

@@ -1,6 +1,6 @@
 # Merchant checkout reconciliation
 
-The development-only Merchant recovery surface composes three separate sources
+The capability-enabled Merchant recovery surface composes three separate sources
 of evidence. It is not a second payment engine.
 
 1. Declared-inbox discovery finds signed checkout recovery envelopes and the
@@ -44,11 +44,14 @@ undo a claim already made by SDK initialization. Cleanup is drained before a
 manual action starts. A timeout must not release an unresolved operation and
 launch another wallet session alongside it.
 
-The gated Orders rehearsal starts eligible foreground recovery automatically.
+The capability-enabled Orders surface starts eligible foreground recovery automatically.
 Opening that page can prepare and send remaining payments after the frozen
-handoff time; it is not a read-only wallet inspection. The existing development,
-loopback, rehearsal and canary gates control this mode. The reusable panel's
-automatic-start input defaults to false; only the gated Orders route opts in.
+handoff time; it is not a read-only wallet inspection. Managed mainnet preview
+and production builds enable this through the shared Quantum Router capability.
+Local fee destinations, provider compatibility and accelerated timing remain
+separately development/loopback-gated; see [deployment capability](quantum-router-deployment.md).
+The reusable panel's automatic-start input defaults to false; only the
+capability-enabled Orders route opts in.
 This does not change order, payout, recipient or provider authority checks.
 The selected order shows one payment card; healthy technical controls remain
 hidden. Unfinished coordination fees remain separate from commerce readiness.
@@ -156,7 +159,7 @@ reuse the saved timestamp and wrapper. An account or local-state change during
 awaited work stops further preparation. This recovery delivery is not an
 application ACK, distributed lease, or new funding gate.
 
-The development recovery panel exposes preparation as a separate explicit
+The recovery panel exposes preparation as a separate explicit
 action. It stops and drains both discovery and provider-history work before
 loading the exact active Merchant/order/plan binding. Selection uses the first
 unpaid obligation in plan order, including an existing unresolved intent; it
@@ -209,7 +212,7 @@ retains the minimal attribution result with settlement facts; it does not
 invent missing evidence from a zero balance or imported paid status.
 
 Local origin is device-local assurance, not portable recipient attestation.
-Merchant now has a named mainnet Coinos compatibility adapter: a bounded
+Merchant has a named, local-rehearsal-only mainnet Coinos compatibility adapter: a bounded
 credentialless request to Coinos's fixed canonical invoice endpoint must match
 the exact BOLT11, payment hash, amount and receiving user for the frozen address.
 An opaque runtime proof permits digest-only local persistence. Imported recovery
@@ -315,7 +318,7 @@ independently establish the private SSP server's divergent-invoice behavior.
 
 ### Bounded renewal after a full unpaid return
 
-The [wallet contract](../specs/wallets.md#closed-attempt-invoice-renewal) permits
+The [wallet contract](../specs/wallets.md#lightning-closed-attempt-invoice-renewal) permits
 one Merchant-only successor attempt after positive, exact provider evidence of a
 closed unpaid transfer with its full debit returned and spendable. The first
 implementation does not renew a partial return, charged failure, missing record,
@@ -394,8 +397,8 @@ relay accepts every bounded message.
 
 This is backward-read compatibility, not old-reader forward compatibility:
 older strict schema-v2 readers do not understand the added source field. The
-settled producer and consumers must roll out together behind the same rehearsal
-gate. Previously staged wraps remain unchanged, including source-less ones;
+settled producer and consumers must roll out together with compatible schemas
+and the same deployment capability. Previously staged wraps remain unchanged, including source-less ones;
 retry never rebuilds an acknowledged initial handoff to add sources. Source
 bundles reduce dependence on pruned public revisions, but do not guarantee
 continued availability of the private recovery wrap itself.
@@ -426,7 +429,24 @@ order caches, logs, or telemetry. The scheduler holds no recovery material.
 Deterministic scheduling, repository, and provider-adapter fixtures do not prove
 live relay delivery, SDK behavior, mobile suspension, or real payment settlement.
 Those require separate browser/device and funded validation before release.
-The current integration remains behind the local development rehearsal gate.
+Hosted preview and production activation are separate from that validation;
+local compatibility exceptions do not become public dispatch authority.
+
+### Native final collection
+
+New version-four plans created with an approved Spark treasury address keep
+merchant and supplier payouts on Lightning, then collect Conduit's settled
+allocation and unused authorized commerce reserves in one native Spark payment.
+The exact final amount comes from independently verified funding credit less
+verified commerce debits, not an aggregate wallet balance. Unknown activity,
+pending returns, nonzero native fees and uncertain attempts pause collection.
+Claimed terminal provider evidence, not a submitted response, is the receipt.
+Commerce remains paid while final collection needs attention.
+
+Without a configured address, new plans keep the Lightning fee rail. Historical
+funded plans are never migrated. Native completion and retirement require their
+own exact evidence; see [native final collection](checkout-spark-native-treasury.md)
+and the [wallet contract](../specs/wallets.md#native-final-treasury-allocation).
 
 ## Buyer-local presentation
 

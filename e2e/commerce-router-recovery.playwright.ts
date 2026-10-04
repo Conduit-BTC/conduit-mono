@@ -550,14 +550,7 @@ async function rehearseRouter(
     )
     await expect(page.getByText(/Current payout details/)).toHaveCount(0)
     await expect(page.locator("vite-error-overlay")).toHaveCount(0)
-    // Capture only the identity-free payment panel, never order contents,
-    // actor identifiers, recovery material, or a revealed funding invoice.
-    const paymentPanel = paymentPlan.locator("xpath=ancestor::section[1]")
-    await expect(paymentPanel).toHaveCount(1)
-    await paymentPanel.screenshot({
-      path: test.info().outputPath("buyer-inline-desktop.png"),
-      style: "header { visibility: hidden !important; }",
-    })
+    // Responsive assertions stay content-free; do not capture payment panels.
     await page.setViewportSize({ width: 390, height: 844 })
     await external.scrollIntoViewIfNeeded()
     await expect(external).toBeInViewport()
@@ -566,10 +559,6 @@ async function rehearseRouter(
         () => document.documentElement.scrollWidth <= window.innerWidth
       )
     ).toBe(true)
-    await paymentPanel.screenshot({
-      path: test.info().outputPath("buyer-inline-mobile.png"),
-      style: "header { visibility: hidden !important; }",
-    })
     await page.setViewportSize({ width: 1280, height: 720 })
     const beforeConsent = control().snapshot()
     await expect(

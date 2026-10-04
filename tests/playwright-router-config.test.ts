@@ -229,6 +229,14 @@ describe("isolated router Playwright config", () => {
     expect(result.stdout.toString().trim()).toBe("true")
   })
 
+  it("does not bypass disabled router artifacts with direct screenshot calls", async () => {
+    const source = await Bun.file(
+      new URL("../e2e/commerce-router-recovery.playwright.ts", import.meta.url)
+    ).text()
+    // A failure must not dump the synthetic payment/identity fixture source.
+    expect(/\.\s*screenshot\s*\(/.test(source)).toBe(false)
+  })
+
   it("selects only the router recovery smoke with one serial Chromium worker and no captured artifacts", () => {
     const config = createPlaywrightRouterConfig({})
     expect(config.testDir).toBe("./e2e")
