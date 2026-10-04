@@ -16,6 +16,10 @@ import {
 
 export const publicKinds = new Set([0, 5, 10002, 10050, 30402])
 const usage = `Read-only Nostr debugging with pinned Deed ${DEED_VERSION}
+  bun run nostr:debug:agent doctor
+  bun run nostr:debug:agent req --relay <public-wss-origin> --kind <n> [--limit <1..100>] [--timeout <100..30000>]
+
+Developer-only local commands (never use identity-bearing inputs in agent tools):
   bun run nostr:debug doctor
   bun run nostr:debug decode <npub|note|nprofile|nevent|naddr> [--save <name.json>]
   bun run nostr:debug verify <public-events.jsonl>
@@ -24,6 +28,15 @@ const usage = `Read-only Nostr debugging with pinned Deed ${DEED_VERSION}
 Public kinds: 0, 5, 10002, 10050, 30402. One explicit relay per query.
 Queries print counts only. --save writes raw public events to ignored context/nostr-debug/.
 No signing, publishing, key access, encrypted events, authentication, or unbounded streams.
+Run bun run nostr:debug:setup if Deed is missing.`
+
+const agentUsage = `Aggregate-only Nostr debugging with pinned Deed ${DEED_VERSION}
+  bun run nostr:debug:agent doctor
+  bun run nostr:debug:agent req --relay <public-wss-origin> --kind <n> [--limit <1..100>] [--timeout <100..30000>]
+
+Public kinds: 0, 5, 10002, 10050, 30402. Use a public relay origin without personal data.
+No targeted filters, reference decoding, file input, captures, or raw output.
+Never put identities into agent prompts or tool arguments; rejection happens after invocation is recorded.
 Run bun run nostr:debug:setup if Deed is missing.`
 
 export interface DebugPlan {
@@ -48,6 +61,7 @@ function integer(
 }
 
 export function planDebug(argv: string[]): DebugPlan {
+  if (argv[0] === "agent") return planAgentDebug(argv.slice(1))
   const [command, ...rest] = argv
   if (command === "doctor" && rest.length === 0) {
     return { command, args: ["version"], timeout: 5_000 }
@@ -145,6 +159,31 @@ export function planDebug(argv: string[]): DebugPlan {
   return { command, args, timeout: timeout + 6_000, save }
 }
 
+function planAgentDebug(argv: string[]): DebugPlan {
+  const [command, ...rest] = argv
+  if (command === "doctor" && rest.length === 0) return planDebug(argv)
+  if (command !== "req")
+    throw new Error(
+      "Agent debugging supports only doctor and aggregate queries."
+    )
+  const supported = new Set(["--relay", "--kind", "--limit", "--timeout"])
+  for (let index = 0; index < rest.length; index += 2) {
+    if (!supported.has(rest[index]))
+      throw new Error(
+        "Agent queries accept only relay, kind, limit, and timeout."
+      )
+    // Check the literal input too: URL normalization must not hide a path.
+    if (
+      rest[index] === "--relay" &&
+      !/^wss:\/\/[a-zA-Z0-9.-]+(?::[0-9]+)?\/?$/.test(rest[index + 1] ?? "")
+    )
+      throw new Error(
+        "Agent queries require a public relay origin without a path."
+      )
+  }
+  return planDebug(argv)
+}
+
 export function readPublicEvents(path: string): string {
   const metadata = statSync(path)
   if (!metadata.isFile() || metadata.size > 8 * 1024 * 1024)
@@ -169,11 +208,13 @@ export function runDebug(
   binary = deedBinary,
   root = repoRoot
 ): number {
+  const agent = argv[0] === "agent"
+  const commandArgs = agent ? argv.slice(1) : argv
   if (
-    argv.length === 0 ||
-    (argv.length === 1 && ["--help", "help"].includes(argv[0]))
+    commandArgs.length === 0 ||
+    (commandArgs.length === 1 && ["--help", "help"].includes(commandArgs[0]))
   ) {
-    console.log(usage)
+    console.log(agent ? agentUsage : usage)
     return 0
   }
   const plan = planDebug(argv)
@@ -187,7 +228,7 @@ export function runDebug(
   })
   if (result.error || result.signal) {
     console.error(
-      "Deed unavailable, timed out, or exceeded the output bound. Run nostr:debug:setup and nostr:debug doctor."
+      `Deed unavailable, timed out, or exceeded the output bound. Run nostr:debug:setup and ${agent ? "nostr:debug:agent" : "nostr:debug"} doctor.`
     )
     return 1
   }
@@ -233,7 +274,7 @@ if (import.meta.main) {
     process.exitCode = runDebug(process.argv.slice(2))
   } catch {
     console.error(
-      "Invalid debug request or local input. Use nostr:debug --help; no raw input or upstream diagnostics are printed."
+      `Invalid debug request or local input. Use ${process.argv[2] === "agent" ? "nostr:debug:agent" : "nostr:debug"} --help; no raw input or upstream diagnostics are printed.`
     )
     process.exitCode = 2
   }

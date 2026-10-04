@@ -25,6 +25,8 @@ executable into this checkout's ignored `context/` directory. Then run
 `bun run nostr:debug doctor` or `bun run nostr:debug --help`. It is optional and
 is not included in app builds. See [the debugging guide](docs/knowledge/deed-debugging.md)
 for public-event queries, local captures, limits, and the repo-local agent skill.
+Agents use `nostr:debug:agent` for aggregate observations only. Targeted queries,
+reference decoding, verification files, and captures require developer-local use.
 
 ## Development Workflow
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test"
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -41,6 +42,106 @@ const query = [
 ]
 
 describe("public Deed harness", () => {
+  test("agent queries retain public-kind, target, and duration bounds", () => {
+    expect(planDebug(["agent", ...query])).toEqual(planDebug(query))
+    expect(planDebug(["agent", "doctor"]).args).toEqual(["version"])
+    for (const options of [
+      ["--limit", "101"],
+      ["--timeout", "30001"],
+      ["--limit", "1", "--limit", "2"],
+    ])
+      expect(() => planDebug(["agent", ...query, ...options])).toThrow()
+    for (const kind of ["4", "1059"])
+      expect(() => planDebug(["agent", ...query.slice(0, -1), kind])).toThrow()
+  })
+  test("agent identity and file modes are rejected before executing Deed", () => {
+    const { root, binary } = fixture()
+    writeFileSync(binary, '#!/bin/sh\nprintf executed > "$0.args"\n')
+    for (const args of [
+      [...query, "--author", "public-identity-marker"],
+      [...query, "--id", "public-event-marker"],
+      [...query, "--save", "events.jsonl"],
+      ["decode", "encoded-identity-marker"],
+      ["verify", "events.jsonl"],
+      ["doctor", "public-identity-marker"],
+      ["agent", ...query],
+    ])
+      expect(() => runDebug(["agent", ...args], binary, root)).toThrow()
+    expect(existsSync(`${binary}.args`)).toBe(false)
+  })
+  test("agent relay origins cannot carry identity paths or normalized path aliases", () => {
+    for (const relay of [
+      "wss://relay.conduit.market/public-identity-marker",
+      "wss://relay.conduit.market/private/..",
+      "wss://relay.conduit.market/%2e",
+      "wss://public-identity-marker@relay.conduit.market",
+      "wss://relay.conduit.market?identity=public-marker",
+      "wss://relay.conduit.market#public-marker",
+      "wss://localhost",
+      "wss://127.0.0.1",
+    ])
+      expect(() =>
+        planDebug(["agent", "req", "--relay", relay, "--kind", "30402"])
+      ).toThrow()
+  })
+  test("skill examples invoke the aggregate entry point without identity inputs, raw output, or captures", () => {
+    const skill = readFileSync(".agents/skills/deed-debug/SKILL.md", "utf8")
+    const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts
+    const examples = [...skill.matchAll(/^bun run (nostr:debug\S*) (.+)$/gm)]
+    expect(examples.length).toBeGreaterThan(0)
+    const { root, binary } = fixture()
+    writeFileSync(
+      binary,
+      [
+        "#!/bin/sh",
+        'printf \'%s\\n\' "$@" > "$0.args"',
+        'if [ "$1" = version ]; then',
+        "  printf 'deed 0.3.2\\n'",
+        "else",
+        '  printf \'%s\\n\' \'{"kind":30402,"pubkey":"public identity marker","content":"personal content marker"}\'',
+        "  printf 'relay personal diagnostic marker' >&2",
+        "  exit 1",
+        "fi",
+      ].join("\n")
+    )
+    const output = mock((message: string) => {
+      void message
+    })
+    const original = console.log
+    console.log = output
+    try {
+      for (const [, script, command] of examples) {
+        expect(script).toBe("nostr:debug:agent")
+        const invocation = [
+          ...scripts[script].split(" ").slice(2),
+          ...command.split(" "),
+        ]
+        expect(invocation[0]).toBe("agent")
+        expect(invocation.join(" ")).not.toMatch(
+          /--author|--id|--save|decode|verify|[a-f0-9]{64}|(?:npub|nprofile|nevent|naddr|note)1/
+        )
+        expect([0, 1]).toContain(runDebug(invocation, binary, root))
+      }
+      const childArguments = readFileSync(`${binary}.args`, "utf8")
+      expect(childArguments).not.toMatch(/public identity|personal|^-a$|^-i$/m)
+      expect(childArguments).toContain("30402")
+      expect(existsSync(join(root, "context", "nostr-debug"))).toBe(false)
+      const transcript = JSON.stringify(output.mock.calls)
+      expect(transcript).not.toMatch(
+        /public identity|personal content|personal diagnostic/
+      )
+      expect(JSON.parse(output.mock.calls.at(-1)![0])).toEqual({
+        command: "req",
+        exitCode: 1,
+        eventCount: 1,
+        diagnosticsPresent: true,
+        coverage: "not_established",
+        saved: false,
+      })
+    } finally {
+      console.log = original
+    }
+  })
   test("constructs an explicit bounded public query", () => {
     expect(planDebug(query)).toEqual({
       command: "req",

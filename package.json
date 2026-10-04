@@ -66,6 +66,7 @@
     "test:e2e:areas": "bun scripts/ci/validate_playwright_smoke_areas.ts",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules",
     "nostr:debug": "bun scripts/dev/nostr-debug.ts",
+    "nostr:debug:agent": "bun scripts/dev/nostr-debug.ts agent",
     "nostr:debug:setup": "bun scripts/dev/setup-deed.ts"
   },
   "dependencies": {

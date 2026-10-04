@@ -23,7 +23,7 @@ checks its version, then installs into ignored `context/tools/deed/0.3.2/`.
 A failed setup preserves any existing executable. No remote installer is run.
 There is no PATH or environment override that silently selects another binary.
 
-To investigate a known listing, add `--author <64-character-public-hex>` or
+For developer-local inspection only, investigate a known listing with `--author <64-character-public-hex>` or
 `--id <64-character-event-id>`. Each query has one explicit `wss://` hostname;
 credentials, URL query strings, fragments, IP literals, and local-host forms
 are refused. Relay hints from events or decoded references are not dialed
@@ -38,7 +38,34 @@ Queries print only command, exit code, count, diagnostic presence, and
 absence. A nonzero result or diagnostic flag needs investigation, even if some
 events were received. Raw relay text is never forwarded to the console.
 
-## Local inspection
+## Agent aggregate observations
+
+Agents use the separate aggregate entry point:
+
+```sh
+bun run nostr:debug:agent doctor
+bun run nostr:debug:agent --help
+bun run nostr:debug:agent req --relay wss://relay.conduit.market --kind 30402 --limit 20
+```
+
+It accepts only `doctor` and bounded `req` options for relay, kind, limit, and
+timeout. Use a known public relay hostname without personal data. Paths,
+identity filters, decoding, verification files, and captures are refused before
+Deed runs. Output contains aggregate status and counts only.
+
+Never place public keys, encoded identities, event identifiers, raw events, or
+personal data into agent prompts, tool arguments, logs, or artifacts. A rejected
+invocation has already been recorded, so the runtime boundary does not make an
+identity-bearing input safe. For targeted inspection, a developer uses the local
+commands below and shares only aggregate status or counts with an agent. Agents
+must not read raw captures or use the developer entry point.
+
+## Developer-only local inspection
+
+Run these commands in a human-controlled local terminal outside agent tools and
+recorded automation. Targeted filters, reference decoding, verification inputs,
+and captures can contain public identities or personal data. Console redaction
+does not remove inputs already recorded in prompts, tool arguments, or logs.
 
 ```sh
 bun run nostr:debug req --relay wss://relay.conduit.market --kind 30402 --limit 5 --save listings.jsonl
@@ -71,8 +98,9 @@ Use the existing `smoke:nip42` command for protected-read validation.
 Codex discovers the repo-local skill from `.agents/skills/`. Other harnesses
 should follow the routing link in `AGENTS.md` and read the same skill when the
 investigation calls for public Nostr inspection. The skill does not grant
-additional authority or enforce restrictions; the wrapper enforces its command
-boundary. Agents should check `doctor` before relying on the tool.
+additional authority. The agent entry point enforces aggregate-only commands;
+the skill keeps identifiers out of recorded inputs before execution. Agents
+should check `nostr:debug:agent doctor` before relying on the tool.
 
 To update Deed, review the upstream release and source, replace the version and
 all four archive digests together, rerun harness tests, and exercise setup,
