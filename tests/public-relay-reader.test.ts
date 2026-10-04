@@ -5,6 +5,7 @@ import {
   fetchSignedEventsFanoutDetailed,
   fetchPublicEventsProgressive,
   PublicRelayReadCancelledError,
+  refreshPublicRelayConnectionsWhenIdle,
   type PublicRelayReadResult,
 } from "../packages/core/src/protocol/relay-reader"
 
@@ -62,6 +63,39 @@ afterEach(() => {
   __resetPublicReaderTestState()
   if (descriptor) Object.defineProperty(globalThis, "WebSocket", descriptor)
   else Reflect.deleteProperty(globalThis, "WebSocket")
+})
+
+it("idle refresh waits for a scoped read's asynchronous progress callback", async () => {
+  install((socket, id) => socket.emit(["EOSE", id]))
+  let entered!: () => void
+  let finishProgress!: () => void
+  const progressEntered = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  const progressReleased = new Promise<void>((resolve) => {
+    finishProgress = resolve
+  })
+  const pending = fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    {
+      ...options(),
+      reuseRelayConnections: true,
+      socketScope: { createWebSocket: (url) => new Socket(url) },
+      onRelayProgress: async () => {
+        entered()
+        await progressReleased
+      },
+    }
+  )
+  await progressEntered
+  refreshPublicRelayConnectionsWhenIdle()
+  try {
+    expect(sockets[0].readyState).toBe(Socket.OPEN)
+  } finally {
+    finishProgress()
+  }
+  await expect(pending).resolves.toMatchObject({ readCoverage: "complete" })
+  expect(sockets[0].readyState).toBe(3)
 })
 
 it("keeps duplicate provenance before deduplication and exposes only signed wire data", async () => {

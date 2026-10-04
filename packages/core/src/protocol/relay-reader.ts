@@ -239,6 +239,12 @@ type RelayReadWaiter = {
   onAbort?: () => void
 }
 const relayReadWaiters: RelayReadWaiter[] = []
+// A read owns its pool before it owns an execution slot, and through progress
+// callbacks after that slot is released. Retirement must cover that lifetime.
+const publicReadOperations = new Map<
+  AbortController,
+  PublicRelayReadSocketScope | undefined
+>()
 
 function abortError(): Error {
   const error = new Error("The operation was aborted.")
@@ -302,10 +308,7 @@ function releaseRelayReadSlot(): void {
     return
   }
   activeRelayReads = Math.max(0, activeRelayReads - 1)
-  if (activeRelayReads === 0 && relaySettingsRefreshPending) {
-    relaySettingsRefreshPending = false
-    closeAllRelayConnections()
-  }
+  flushPendingRelaySettingsRefresh()
 }
 
 type RawNostrEvent = {
@@ -606,6 +609,7 @@ export function __resetPublicReaderTestState(): void {
     waiter.reject(abortError())
   }
   activeRelayReads = 0
+  publicReadOperations.clear()
 }
 
 function getVerifyWorker(): Worker | null {
@@ -953,6 +957,7 @@ function closeRelayConnections(
 
 function closeAllRelayConnections(): void {
   relaySettingsRefreshPending = false
+  for (const controller of [...publicReadOperations.keys()]) controller.abort()
   closeRelayConnections(relayConnections)
   for (const connections of scopedPublicConnections.values())
     closeRelayConnections(connections)
@@ -960,11 +965,25 @@ function closeAllRelayConnections(): void {
 }
 
 function refreshRelayConnectionsWhenIdle(): void {
-  if (activeRelayReads > 0 || relayReadWaiters.length > 0) {
+  if (
+    publicReadOperations.size > 0 ||
+    activeRelayReads > 0 ||
+    relayReadWaiters.length > 0
+  ) {
     relaySettingsRefreshPending = true
     return
   }
   closeAllRelayConnections()
+}
+
+function flushPendingRelaySettingsRefresh(): void {
+  if (
+    relaySettingsRefreshPending &&
+    publicReadOperations.size === 0 &&
+    activeRelayReads === 0 &&
+    relayReadWaiters.length === 0
+  )
+    closeAllRelayConnections()
 }
 
 function readRelayEvents(
@@ -1614,8 +1633,7 @@ export async function fetchSignedEventsFanoutDetailed(
     options.reuseRelayConnections === false
       ? new Map<string, RelayConnection>()
       : sharedConnections
-  const { relayUrls, rateLimitedRelayUrls } =
-    await resolveFanoutRelayPlan(options)
+  let relayUrls: string[] = []
   const merged = new Map<string, SignedPublicNostrEvent>()
   const results: FetchEventsFromRelayResult[] = []
   const attempted = new Set<string>()
@@ -1680,7 +1698,16 @@ export async function fetchSignedEventsFanoutDetailed(
       globalAbsence: false,
     }
   }
+  const callerSignal = options.signal
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  if (callerSignal?.aborted) controller.abort()
+  else callerSignal?.addEventListener("abort", abort, { once: true })
+  publicReadOperations.set(controller, options.socketScope)
+  options = { ...options, signal: controller.signal }
   try {
+    const plan = await resolveFanoutRelayPlan(options)
+    relayUrls = plan.relayUrls
     throwIfAborted(options.signal)
     const settled = await runBoundedRelayAttempts(
       relayUrls,
@@ -1697,7 +1724,7 @@ export async function fetchSignedEventsFanoutDetailed(
             onAdmission: (url) => admitted.add(url),
             onAttempt: (url) => attempted.add(url),
           },
-          rateLimitedRelayUrls.has(relayUrl)
+          plan.rateLimitedRelayUrls.has(relayUrl)
         )
         if (!result) return null
         results.push(result)
@@ -1725,7 +1752,11 @@ export async function fetchSignedEventsFanoutDetailed(
       throw new PublicRelayReadCancelledError(snapshot("terminal", true))
     throw error
   } finally {
+    controller.abort()
     if (connections !== sharedConnections) closeRelayConnections(connections)
+    callerSignal?.removeEventListener("abort", abort)
+    publicReadOperations.delete(controller)
+    flushPendingRelaySettingsRefresh()
   }
 }
 
@@ -1775,6 +1806,8 @@ export function closePublicRelayConnections(
   scope?: PublicRelayReadSocketScope
 ): void {
   if (scope) {
+    for (const [controller, operationScope] of publicReadOperations)
+      if (operationScope === scope) controller.abort()
     const connections = scopedPublicConnections.get(scope)
     if (connections) closeRelayConnections(connections)
     scopedPublicConnections.delete(scope)

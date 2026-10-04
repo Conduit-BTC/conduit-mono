@@ -38,6 +38,12 @@ before closing their scoped sockets. Teardown leaves sibling executors alone;
 a fresh read after `closeAll()` may create a new pool. Both query results and
 observation streams retain cancellation evidence.
 
+The shared reader tracks each operation from planning through verification and
+asynchronous progress callbacks, independently of the eight execution slots.
+An idle settings refresh waits for those operations to settle before retiring
+their pools. Explicit scoped or global retirement cancels owned operations
+before removing their pools, so pending work cannot open a detached socket.
+
 The generic public executor projects source URLs back to their stable requested
 relay indices and emits verified event/duplicate and malformed/unusable counts
 as each source finishes. Connection timeouts keep their connect phase. The

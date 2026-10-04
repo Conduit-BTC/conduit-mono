@@ -22,6 +22,10 @@ import {
 } from "../packages/core/src/protocol/relay-executor"
 import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
 import {
+  refreshNdkRelaySettingsWhenIdle,
+  disconnectNdk,
+} from "../packages/core/src/protocol/ndk"
+import {
   applyAccountNetworkRelayExclusion,
   createInMemoryAccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
@@ -238,6 +242,79 @@ afterEach(() => {
 })
 
 describe("NDK-neutral relay executor NIP-42 state machine", () => {
+  for (const teardown of ["closeAll", "dispose"] as const) {
+    it(`idle refresh during planning preserves ownership until ${teardown}`, async () => {
+      let started!: () => void
+      const requestStarted = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      const harness = new FakeRelayHarness().at("wss://public.example", {
+        onSend: (_, frame) => {
+          if (frame[0] === "REQ") started()
+        },
+      })
+      const executor = createExecutor(harness)
+      const pending = executor.query(publicRequest())
+      refreshNdkRelaySettingsWhenIdle()
+      await requestStarted
+
+      executor[teardown]()
+      await expect(pending).resolves.toMatchObject({ status: "aborted" })
+      expect(harness.sockets).toHaveLength(1)
+      expect(harness.sockets[0].closed).toBe(true)
+    })
+  }
+
+  it("idle refresh waits for planning reads to finish and then retires their pools", async () => {
+    let started!: () => void
+    const requestsStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    let requestCount = 0
+    let completeImmediately = false
+    const subscriptions: Array<[FakeRelaySocket, unknown]> = []
+    const harness = new FakeRelayHarness().at("wss://public.example", {
+      onSend: (socket, frame) => {
+        if (frame[0] !== "REQ") return
+        if (completeImmediately) {
+          socket.relay(["EOSE", frame[1]])
+          return
+        }
+        subscriptions.push([socket, frame[1]])
+        if (++requestCount === 2) started()
+      },
+    })
+    const executor = createExecutor(harness)
+    const sibling = createExecutor(harness)
+    const first = executor.query(publicRequest())
+    const second = sibling.query(publicRequest())
+    refreshNdkRelaySettingsWhenIdle()
+    await requestsStarted
+
+    subscriptions[0][0].relay(["EOSE", subscriptions[0][1]])
+    await expect(first).resolves.toMatchObject({ status: "success" })
+    expect(harness.sockets.every((socket) => !socket.closed)).toBe(true)
+
+    subscriptions[1][0].relay(["EOSE", subscriptions[1][1]])
+    await expect(second).resolves.toMatchObject({ status: "success" })
+    expect(harness.sockets.every((socket) => socket.closed)).toBe(true)
+    completeImmediately = true
+    await expect(executor.query(publicRequest())).resolves.toMatchObject({
+      status: "success",
+    })
+    expect(harness.sockets).toHaveLength(3)
+  })
+
+  it("global retirement cancels planning reads before they can open detached sockets", async () => {
+    const harness = new FakeRelayHarness().at("wss://public.example", {})
+    const executor = createExecutor(harness)
+    const pending = executor.query(publicRequest(), { queryTimeoutMs: 100 })
+    disconnectNdk()
+
+    await expect(pending).resolves.toMatchObject({ status: "aborted" })
+    expect(harness.sockets).toHaveLength(0)
+  })
+
   it("closeAll aborts active public reads and permits a fresh read", async () => {
     let complete = false
     let started!: () => void
