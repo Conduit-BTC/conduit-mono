@@ -3,18 +3,13 @@ import { describe, expect, it } from "bun:test"
 const eventBannerConsumers = [
   {
     label: "shopper event catalog",
-    path: "apps/market/src/routes/events/$collectionRef.tsx",
-    imageSource: "imageUrl={calendar.image ?? collection.image}",
+    path: "apps/market/src/components/FutureEventMarketPage.tsx",
+    imageSource: "imageUrl={calendar.image}",
   },
   {
-    label: "merchant participation view",
-    path: "apps/merchant/src/components/MerchantEventMarketPanel.tsx",
-    imageSource: "imageUrl={market.imageUrl}",
-  },
-  {
-    label: "organizer event view",
-    path: "apps/merchant/src/components/OrganizerEventMarketPanel.tsx",
-    imageSource: "imageUrl={market.imageUrl}",
+    label: "host and merchant event view",
+    path: "apps/merchant/src/components/FutureEventMarketManager.tsx",
+    imageSource: "imageUrl={selectedCalendar?.image ?? calendar?.image}",
   },
 ] as const
 
@@ -41,7 +36,7 @@ describe("event banner presentation", () => {
 
   it("gives organizers dimensions and safe-area guidance", async () => {
     const editor = await Bun.file(
-      "apps/merchant/src/components/OrganizerEventMarketEditor.tsx"
+      "apps/merchant/src/components/EventAuthoringFields.tsx"
     ).text()
 
     expect(editor).toContain("3:1")

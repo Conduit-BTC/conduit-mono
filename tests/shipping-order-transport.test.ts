@@ -21,6 +21,12 @@ import {
   type ShippingPolicy,
 } from "../packages/core/src/protocol/shipping-policy"
 import { orderSchema } from "../packages/core/src/schemas"
+import {
+  publishPrivateMessage,
+  wrapPrivateMessage,
+} from "../packages/core/src/protocol/messaging"
+import { parseProductEvent } from "../packages/core/src/protocol/products"
+import { plainTestSigner } from "./helpers/plain-signer"
 
 import { buildUSShippingStarter } from "../apps/merchant/src/lib/usShippingStarter"
 
@@ -30,6 +36,7 @@ const utf8Bytes = (value: string): number =>
 function shippingOrder(
   productCount: number,
   version: 1 | 2 = 1,
+  productContent = "a".repeat(4096),
   starterPolicy?: ShippingPolicy
 ) {
   const merchantSecret = generateSecretKey()
@@ -67,7 +74,7 @@ function shippingOrder(
       {
         kind: 30402,
         created_at: 90,
-        content: summary,
+        content: productContent,
         tags: [
           ["d", `product-${index}`],
           ["title", `Product ${index}`],
@@ -144,6 +151,7 @@ function shippingOrder(
   })
   if (result.status !== "quoted") throw new Error(result.status)
   return {
+    policy,
     buyer,
     merchantSigner: new NDKPrivateKeySigner(merchantSecret),
     merchantPubkey,
@@ -153,13 +161,19 @@ function shippingOrder(
   }
 }
 
-async function encryptedOrder(
+async function prepareOrder(
   productCount: number,
   compact = false,
   version: 1 | 2 = 1,
+  productContent?: string,
   starterPolicy?: ShippingPolicy
 ) {
-  const fixture = shippingOrder(productCount, version, starterPolicy)
+  const fixture = shippingOrder(
+    productCount,
+    version,
+    productContent,
+    starterPolicy
+  )
   const merchant = fixture.merchantSigner
   const buyerUser = await fixture.buyer.user()
   const shippingTotal =
@@ -219,8 +233,27 @@ async function encryptedOrder(
       ? serializeOrderRumorContent(order)
       : JSON.stringify(order),
   })
-  const wrapped = await giftWrap(rumor, recipient, fixture.buyer)
-  const unwrapped = await giftUnwrap(wrapped, undefined, merchant)
+  return { order, rumor, recipient, fixture }
+}
+
+async function encryptedOrder(
+  productCount: number,
+  compact = false,
+  version: 1 | 2 = 1,
+  starterPolicy?: ShippingPolicy
+) {
+  const { order, rumor, recipient, fixture } = await prepareOrder(
+    productCount,
+    compact,
+    version,
+    undefined,
+    starterPolicy
+  )
+  // Legacy inline fixtures measure the old wire format, including oversize controls.
+  const wrapped = compact
+    ? await wrapPrivateMessage(rumor, recipient, plainTestSigner(fixture.buyer))
+    : await giftWrap(rumor, recipient, fixture.buyer)
+  const unwrapped = await giftUnwrap(wrapped, undefined, fixture.merchantSigner)
   return {
     order,
     unwrapped,
@@ -273,6 +306,260 @@ describe("shipping order transport", () => {
       `Largest US starter six-item relay message: ${metrics.relayMessageBytes} bytes`
     )
   }, 30_000)
+  for (const version of [1, 2] as const) {
+    it(`rejects omitted same-table lines in v${version} orders and compact recipient parsing`, async () => {
+      const { order, fixture, rumor } = await prepareOrder(2, true, version)
+      const single = quoteShippingPolicy({
+        ...fixture.quote,
+        policy: fixture.policy,
+        items: fixture.quoteItems.slice(0, 1),
+        rateInput: fixture.quote.pricingRate,
+      })
+      if (single.status !== "quoted") throw new Error(single.status)
+      const amount = single.quote.amountSats ?? single.quote.amountMinor
+      const omitted = {
+        ...order,
+        shippingCostSats: amount,
+        items: order.items.map((item, index) => ({
+          ...item,
+          shippingPolicyQuote: index === 0 ? single.quote : undefined,
+          shippingAllocatedCostSats: index === 0 ? amount : undefined,
+        })),
+      }
+      expect(orderSchema.safeParse(order).success).toBe(true)
+      expect(orderSchema.safeParse(omitted).success).toBe(false)
+      const compact = JSON.parse(serializeOrderRumorContent(order))
+      compact.shippingPolicyQuotes.groups[0] = single.quote
+      compact.shippingCostSats = amount
+      compact.items[0].shippingAllocatedCostSats = amount
+      delete compact.items[1].shippingPolicyQuoteRef
+      delete compact.items[1].shippingAllocatedCostSats
+      rumor.content = JSON.stringify(compact)
+      expect(() => parseOrderRumorEvent(rumor)).toThrow()
+      const nextRevision = await plainTestSigner(
+        fixture.merchantSigner
+      ).signEvent({
+        ...buildShippingPolicyEventDraft({ policy: fixture.policy }),
+        pubkey: fixture.merchantPubkey,
+        created_at: 101,
+      })
+      const second = quoteShippingPolicy({
+        ...fixture.quote,
+        policy: fixture.policy,
+        policyEvent: nextRevision,
+        policyEventId: nextRevision.id,
+        policyCreatedAt: nextRevision.created_at,
+        items: fixture.quoteItems.slice(1),
+        rateInput: fixture.quote.pricingRate,
+      })
+      if (second.status !== "quoted") throw new Error(second.status)
+      const secondAmount = second.quote.amountSats ?? second.quote.amountMinor
+      expect(
+        orderSchema.safeParse({
+          ...order,
+          shippingCostSats: amount + secondAmount,
+          items: order.items.map((item, index) => ({
+            ...item,
+            shippingPolicyQuote: index === 0 ? single.quote : second.quote,
+            shippingAllocatedCostSats: index === 0 ? amount : secondAmount,
+          })),
+        }).success
+      ).toBe(false)
+      expect(
+        orderSchema.safeParse({
+          ...order,
+          items: [
+            ...order.items,
+            {
+              productId: "digital-extra",
+              format: "digital",
+              quantity: 1,
+              priceAtPurchase: 0,
+              currency: "SATS",
+              shippingOptionId: fixture.policyCoordinate,
+            },
+          ],
+        }).success
+      ).toBe(true)
+      expect(
+        orderSchema.safeParse({
+          ...order,
+          shippingCostSats: order.shippingCostSats! + 25,
+          items: [
+            ...order.items,
+            {
+              productId: "fixed-extra",
+              format: "physical",
+              quantity: 1,
+              priceAtPurchase: 0,
+              currency: "SATS",
+              shippingOptionId: `30406:${fixture.merchantPubkey}:fixed-extra`,
+              shippingCostSats: 25,
+            },
+          ],
+        }).success
+      ).toBe(true)
+      const manual = {
+        ...order,
+        shippingCostStatus: "manual",
+        shippingCostSats: undefined,
+        items: order.items.map((item) => ({
+          ...item,
+          shippingPolicyQuote: undefined,
+          shippingAllocatedCostSats: undefined,
+        })),
+      }
+      expect(orderSchema.safeParse(manual).success).toBe(true)
+      expect(
+        orderSchema.safeParse({
+          ...manual,
+          shippingCostStatus: "priced",
+          shippingCostSats: 0,
+        }).success
+      ).toBe(false)
+    })
+  }
+  it("delivers the last supported NIP-44 padding bucket and rejects its next byte", async () => {
+    const rumorBytes = (rumor: NDKEvent, pubkey: string) =>
+      utf8Bytes(
+        JSON.stringify({
+          pubkey,
+          kind: rumor.kind,
+          created_at: rumor.created_at,
+          tags: rumor.tags,
+          content: rumor.content,
+          id: "0".repeat(64),
+        })
+      )
+    const empty = await prepareOrder(1, true, 1, "")
+    // Above 224 KiB, the two padding layers push the outer frame over 512 KiB.
+    const maxRumorBytes = 224 * 1024
+    const contentChars =
+      maxRumorBytes - rumorBytes(empty.rumor, empty.order.buyerPubkey)
+    const { order, rumor, recipient, fixture } = await prepareOrder(
+      1,
+      true,
+      1,
+      "x".repeat(contentChars)
+    )
+    rumor.pubkey = order.buyerPubkey
+    expect(rumorBytes(rumor, order.buyerPubkey)).toBe(maxRumorBytes)
+    const signer = plainTestSigner(fixture.buyer)
+    const wrapped = await wrapPrivateMessage(rumor, recipient, signer)
+    expect(
+      JSON.stringify(["EVENT", "0".repeat(64), wrapped.rawEvent()]).length
+    ).toBeLessThan(512 * 1024)
+    const unwrapped = await giftUnwrap(
+      wrapped,
+      undefined,
+      fixture.merchantSigner
+    )
+    expect(parseOrderRumorEvent(unwrapped)).toEqual(order)
+    // UTF-8 and JSON escaping count too; displayed character counts are insufficient.
+    for (const extra of ["xx", "界", '"', "\n"]) {
+      const oversized = await prepareOrder(
+        1,
+        true,
+        1,
+        "x".repeat(contentChars - 1) + extra
+      )
+      oversized.rumor.pubkey = oversized.order.buyerPubkey
+      expect(
+        rumorBytes(oversized.rumor, oversized.order.buyerPubkey)
+      ).toBeGreaterThan(maxRumorBytes)
+      const outcome = await wrapPrivateMessage(
+        oversized.rumor,
+        oversized.recipient,
+        plainTestSigner(oversized.fixture.buyer)
+      ).then(
+        () => "accepted",
+        (error: Error) => error.message
+      )
+      expect(outcome).toContain("too large to send securely")
+    }
+  })
+  it.each([1, 2])(
+    "rejects an oversized %s-product order before routing, encryption, signing or delivery staging",
+    async (productCount) => {
+      const { order, rumor, recipient, fixture } = await prepareOrder(
+        productCount,
+        true,
+        1,
+        "a".repeat(productCount === 1 ? 300000 : 150000)
+      )
+      const source = fixture.quoteItems[0]!.productEvent
+      expect(
+        JSON.stringify(["EVENT", "subscription", source]).length
+      ).toBeLessThan(512 * 1024)
+      expect(parseProductEvent(new NDKEvent(undefined, source)).id).toBe(
+        fixture.quoteItems[0]!.productId
+      )
+      expect(orderSchema.parse(order)).toEqual(order)
+      const buyer = plainTestSigner(fixture.buyer)
+      let encryptions = 0
+      let signatures = 0
+      let routes = 0
+      let writes = 0
+      let persisted = 0
+      const signer = {
+        ...buyer,
+        pubkey: order.buyerPubkey,
+        getPublicKey: () => buyer.getPublicKey(),
+        signEvent: async (draft: Parameters<typeof buyer.signEvent>[0]) => {
+          signatures += 1
+          return buyer.signEvent(draft)
+        },
+        encryptNip44: async (peer: string, plaintext: string) => {
+          encryptions += 1
+          return buyer.encryptNip44(peer, plaintext)
+        },
+      }
+      rumor.pubkey = order.buyerPubkey
+      const outcome = await publishPrivateMessage({
+        rumor,
+        senderPubkey: order.buyerPubkey,
+        recipientPubkey: recipient.pubkey,
+        signer,
+        rumorKind: 16,
+        selfCopy: false,
+        resolveInboxRelays: async () => {
+          routes += 1
+          throw new Error("Routing was reached")
+        },
+        publishFn: async () => {
+          writes += 1
+          throw new Error("Publishing was reached")
+        },
+        onWrapped: () => {
+          persisted += 1
+        },
+        onRecipientPrepared: () => {
+          persisted += 1
+        },
+      }).then(
+        () => "accepted",
+        (error: Error) => error.message
+      )
+      expect(outcome).toContain("too large to send securely")
+      expect({ encryptions, signatures, routes, writes, persisted }).toEqual({
+        encryptions: 0,
+        signatures: 0,
+        routes: 0,
+        writes: 0,
+        persisted: 0,
+      })
+      const direct = await wrapPrivateMessage(rumor, recipient, signer).then(
+        () => "accepted",
+        (error: Error) => error.message
+      )
+      expect(direct).toContain("too large to send securely")
+      expect({ encryptions, signatures }).toEqual({
+        encryptions: 0,
+        signatures: 0,
+      })
+    }
+  )
+
   it("imports the shipping-policy submodule in a fresh runtime", () => {
     const path = new URL(
       "../packages/core/src/protocol/shipping-policy.ts",

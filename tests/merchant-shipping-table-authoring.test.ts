@@ -12,6 +12,10 @@ import {
   type ShippingPolicyV1,
   parseShippingOptionEvent,
   productSchema,
+  parseProductEvent,
+  quoteShippingPolicy,
+  shippingMoneyToMinorUnits,
+  getCurrencyFractionDigits,
   type ShippingPolicy,
 } from "../packages/core/src"
 import {
@@ -34,6 +38,7 @@ import { getMerchantSetupReadiness } from "../apps/merchant/src/lib/readiness"
 import { validateProductPublishForm } from "../apps/merchant/src/lib/productForm"
 import {
   buildShippingPolicyFromDraft,
+  changeShippingPolicyOrigin,
   createShippingPolicyDraft,
   getProductShippingMeasurements,
   shippingPolicyToDraft,
@@ -98,6 +103,224 @@ const dependencies = {
 }
 
 describe("merchant shipping table authoring", () => {
+  test("changing origin clears domestic constraints and requires custom areas to be remapped", () => {
+    const original = shippingPolicyToDraft({
+      ...policy,
+      domestic: {
+        rules: [
+          policy.domestic!.rules[0]!,
+          {
+            country: "US",
+            subdivision: "US-CA",
+            postalPrefix: "94",
+            bands: [{ maxWeightGrams: 1000, priceMinor: 900 }],
+          },
+          {
+            country: "US",
+            postalPrefix: "98",
+            bands: [{ maxWeightGrams: 1000, priceMinor: 700 }],
+          },
+        ],
+      },
+      international: null,
+    })
+    expect(changeShippingPolicyOrigin(original, "US")).toBe(original)
+    const changed = changeShippingPolicyOrigin(original, "CA")
+    expect(changed.domestic.rules[1]).toMatchObject({
+      country: "CA",
+      customArea: true,
+      subdivision: "",
+      postalPrefix: "",
+    })
+    expect(changed.domestic.rules[2]).toMatchObject({
+      country: "CA",
+      customArea: true,
+      subdivision: "",
+      postalPrefix: "",
+    })
+    expect(changed.domestic.rules[1]!.bands).toEqual(
+      original.domestic.rules[1]!.bands
+    )
+    expect(changed.international).toBe(original.international)
+    expect(() => buildShippingPolicyFromDraft(changed)).toThrow(
+      "Choose a state or enter a postal prefix"
+    )
+    expect(original.domestic.rules[1]!.postalPrefix).toBe("94")
+    changed.domestic.rules[1]!.subdivision = "BC"
+    changed.domestic.rules[2]!.postalPrefix = "V6"
+    const remapped = buildShippingPolicyFromDraft(changed)
+    expect(remapped.domestic!.rules[1]).toMatchObject({
+      country: "CA",
+      subdivision: "CABC",
+    })
+    expect(remapped.domestic!.rules[2]).toMatchObject({
+      country: "CA",
+      postalPrefix: "V6",
+    })
+    const removed = changeShippingPolicyOrigin(original, "CA")
+    removed.domestic.rules = removed.domestic.rules.filter(
+      (rule) => !rule.customArea
+    )
+    expect(buildShippingPolicyFromDraft(removed).domestic!.rules).toHaveLength(
+      1
+    )
+  })
+
+  test.each(["7", "0"])(
+    "rejects fixed variation charge %s under a table before publication planning",
+    (shippingCost) => {
+      const state = generateProductVariationRows({
+        ...createEmptyProductVariationForm(),
+        enabled: true,
+        axes: [createProductVariationAxis("Size", "Small", 0)],
+      })
+      state.rows[0] = {
+        ...state.rows[0]!,
+        inheritShipping: false,
+        shippingCost,
+      }
+      const restored = parseProductVariationFormState(
+        JSON.parse(JSON.stringify(state))
+      )!
+      const message =
+        "Small: Fixed variation prices cannot be combined with table shipping. Select Use table, clear the variation shipping price to coordinate after ordering, or change Shipping pricing to Fixed price per item."
+      expect(
+        getProductVariationFormError(restored, "USD", {
+          shippingPricingMode: "weight_table",
+          baseFormat: "physical",
+        })
+      ).toBe(message)
+      expect(() =>
+        buildProductFamilyChangePlan({
+          parentDTag: "one",
+          baseProduct: product,
+          variations: restored,
+          currency: "USD",
+          fulfillmentIntent: tableIntent,
+          authoringCountries: [],
+        })
+      ).toThrow(message)
+      expect(
+        getProductVariationFormError(restored, "USD", {
+          shippingPricingMode: "weight_table",
+          baseFormat: "physical",
+          preserveExistingFulfillment: true,
+        })
+      ).toBeNull()
+    }
+  )
+
+  test.each(["table", "coordinate", "digital"] as const)(
+    "recovers an unsupported override by choosing %s",
+    async (choice) => {
+      const state = generateProductVariationRows({
+        ...createEmptyProductVariationForm(),
+        enabled: true,
+        shareShippingMeasurements: true,
+        axes: [createProductVariationAxis("Size", "Small", 0)],
+      })
+      state.rows[0] = {
+        ...state.rows[0]!,
+        inheritShipping: choice === "table",
+        shippingCost: choice === "coordinate" ? "" : "7",
+        format: choice === "digital" ? "digital" : "inherit",
+      }
+      expect(
+        getProductVariationFormError(state, "USD", {
+          shippingPricingMode: "weight_table",
+          baseFormat: "physical",
+        })
+      ).toBeNull()
+      const plan = buildProductFamilyChangePlan({
+        parentDTag: "one",
+        baseProduct: product,
+        variations: state,
+        currency: "USD",
+        fulfillmentIntent: tableIntent,
+        authoringCountries: [],
+      })
+      const prepared = await prepareProductPublicationListings(
+        plan.publish,
+        { merchantPubkey: pubkey },
+        dependencies
+      )
+      const child = prepared.find(
+        ({ product }) => product.type === "variation"
+      )!
+      expect(child.fulfillmentIntent.kind).toBe(
+        choice === "table"
+          ? "weight_table"
+          : choice === "coordinate"
+            ? "coordinate_after_order"
+            : "digital"
+      )
+      const published = applyProductFulfillmentIntentForPublication({
+        product: child.product,
+        merchantPubkey: pubkey,
+        productDTag: child.dTag,
+        intent: child.fulfillmentIntent,
+      })
+      const signed = finalizeEvent(
+        {
+          ...buildProductListingEventDraft({
+            product: published,
+            dTag: child.dTag,
+          }),
+          created_at: 21,
+        },
+        secret
+      )
+      expect(
+        signed.tags.filter(([name]) => name === "shipping_option")
+      ).toEqual(
+        choice === "table"
+          ? [["shipping_option", tableIntent.policyCoordinate]]
+          : []
+      )
+    }
+  )
+
+  test("switching to fixed shipping keeps the explicit variation price and destinations", () => {
+    const state = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("Size", "Small", 0)],
+    })
+    state.rows[0] = {
+      ...state.rows[0]!,
+      inheritShipping: false,
+      shippingCost: "7",
+    }
+    expect(
+      getProductVariationFormError(state, "USD", {
+        shippingPricingMode: "fixed",
+        baseFormat: "physical",
+      })
+    ).toBeNull()
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "one",
+      baseProduct: product,
+      variations: state,
+      currency: "USD",
+      fulfillmentIntent: {
+        kind: "fixed_standard",
+        amount: 5,
+        currency: "USD",
+        countries: ["US"],
+      },
+      authoringCountries: ["US"],
+    })
+    expect(
+      plan.desired.find(({ product }) => product.type === "variation")!
+        .fulfillmentIntent
+    ).toEqual({
+      kind: "fixed_standard",
+      amount: 7,
+      currency: "USD",
+      countries: ["US"],
+    })
+  })
+
   test("round-trips editable domestic and international rate cards with exact minor-unit money", () => {
     expect(buildShippingPolicyFromDraft(shippingPolicyToDraft(policy))).toEqual(
       policy
@@ -106,6 +329,56 @@ describe("merchant shipping table authoring", () => {
     form.domestic.rules[0]!.bands[0]!.price = "0.001"
     expect(() => buildShippingPolicyFromDraft(form)).toThrow()
   })
+  test.each(["SATS", "MSATS", "JPY", "USD", "KWD", "BTC"])(
+    "preserves %s prices and thresholds through edit and signed republication",
+    (currency) => {
+      for (const minor of [
+        0,
+        1,
+        12345,
+        Number.MAX_SAFE_INTEGER - 1,
+        Number.MAX_SAFE_INTEGER,
+      ]) {
+        const exactPolicy: ShippingPolicy = {
+          ...policy,
+          currency,
+          domestic: {
+            rules: [
+              {
+                country: "US",
+                bands: [{ maxWeightGrams: 500, priceMinor: minor }],
+              },
+            ],
+            freeShippingThresholdMinor: minor,
+          },
+          international: {
+            rules: [
+              {
+                country: "CA",
+                bands: [{ maxWeightGrams: 500, priceMinor: minor }],
+              },
+            ],
+            freeShippingThresholdMinor: minor,
+          },
+        }
+        const editable = shippingPolicyToDraft(exactPolicy)
+        editable.title = "Updated title"
+        const rebuilt = buildShippingPolicyFromDraft(editable)
+        expect(rebuilt).toEqual({ ...exactPolicy, title: "Updated title" })
+        const republished = finalizeEvent(
+          {
+            ...buildShippingPolicyEventDraft({ policy: rebuilt }),
+            created_at: 30,
+          },
+          secret
+        )
+        expect(
+          parseShippingOptionEvent(new NDKEvent(undefined, republished))
+            ?.shippingPolicy
+        ).toEqual(rebuilt)
+      }
+    }
+  )
   test("upgrading old tables removes policy buffers while existing product terms remain preserved", () => {
     const oldPolicy: ShippingPolicyV1 = {
       ...policy,
@@ -123,6 +396,132 @@ describe("merchant shipping table authoring", () => {
       shippingHandling: product.shippingHandling,
     })
   })
+  test.each(["SATS", "MSATS", "JPY", "USD", "KWD", "CLF", "BTC"])(
+    "preserves every accepted %s handling minor unit through signed product parsing and quoting",
+    (currency) => {
+      const digits = getCurrencyFractionDigits(currency)
+      const exactText = (minor: number) => {
+        const text = String(minor).padStart(digits + 1, "0")
+        return digits
+          ? `${text.slice(0, -digits)}.${text.slice(-digits)}`
+          : text
+      }
+      const losesMaximum = ["USD", "KWD", "BTC"].includes(currency)
+      if (losesMaximum) {
+        expect(() =>
+          getProductShippingMeasurements({
+            currency,
+            shippingHandling: exactText(Number.MAX_SAFE_INTEGER),
+          })
+        ).toThrow("preserve exactly")
+      }
+      const exactPolicy: ShippingPolicy = {
+        version: 2,
+        title: "Handling boundary",
+        originCountry: "US",
+        currency,
+        domestic: {
+          rules: [
+            {
+              country: "US",
+              bands: [{ maxWeightGrams: 500_000, priceMinor: 0 }],
+            },
+          ],
+        },
+        international: null,
+      }
+      const policyEvent = finalizeEvent(
+        {
+          ...buildShippingPolicyEventDraft({ policy: exactPolicy }),
+          created_at: 30,
+        },
+        secret
+      )
+      for (const minor of [
+        0,
+        1,
+        12345,
+        Number.MAX_SAFE_INTEGER - 1,
+        ...(losesMaximum ? [] : [Number.MAX_SAFE_INTEGER]),
+      ]) {
+        const measurements = getProductShippingMeasurements({
+          currency,
+          shippingWeightGrams: "250",
+          shippingHandling: exactText(minor),
+        })
+        expect(
+          shippingMoneyToMinorUnits(
+            measurements.shippingHandling!.amount,
+            currency
+          )
+        ).toBe(minor)
+        const price = currency === "MSATS" ? 1000 : 1
+        const quantity = currency === "MSATS" && minor === 1 ? 1000 : 1
+        const signed = finalizeEvent(
+          {
+            ...buildProductListingEventDraft({
+              product: {
+                ...product,
+                ...measurements,
+                price,
+                currency,
+                shippingWeightAllowanceGrams: undefined,
+                shippingOptionId: tableIntent.policyCoordinate,
+              },
+              dTag: "one",
+            }),
+            created_at: 31,
+          },
+          secret
+        )
+        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+        expect(
+          shippingMoneyToMinorUnits(parsed.shippingHandling!.amount, currency)
+        ).toBe(minor)
+        const result = quoteShippingPolicy({
+          policy: exactPolicy,
+          policyCoordinate: tableIntent.policyCoordinate,
+          policyEventId: policyEvent.id,
+          policyCreatedAt: policyEvent.created_at,
+          merchantPubkey: pubkey,
+          policyEvent,
+          destination: { country: "US" },
+          rateInput: {
+            rate: minor <= 12345 ? 10_000 : 1_000_000_000_000,
+            fetchedAt: Date.now(),
+            source: "env",
+            fiatUsdRates: { JPY: 1, KWD: 1, CLF: 1 },
+            fiatSource: "env",
+          },
+          items: [
+            {
+              productId: parsed.id,
+              productEventId: signed.id,
+              productCreatedAt: signed.created_at,
+              productEvent: signed,
+              currency,
+              quantity,
+              weightGrams: parsed.shippingWeightGrams,
+              shippingHandling: parsed.shippingHandling,
+              subtotalMinor:
+                shippingMoneyToMinorUnits(price, currency) * quantity,
+            },
+          ],
+        })
+        expect(result.status).toBe("quoted")
+        if (result.status !== "quoted") throw new Error(result.status)
+        expect(result.quote.handlingMinor).toBe(minor * quantity)
+        expect(result.quote.amountMinor).toBe(minor * quantity)
+        if (result.quote.version !== 2) throw new Error("Expected v2 terms")
+        expect(
+          shippingMoneyToMinorUnits(
+            result.quote.items[0]!.shippingHandling!.amount,
+            currency
+          )
+        ).toBe(minor)
+      }
+    }
+  )
   test("validates product packing weights and exact handling precision in the product currency", () => {
     expect(
       getProductShippingMeasurements({
@@ -333,6 +732,172 @@ describe("merchant shipping table authoring", () => {
     // Shared policy remains unchanged; switching one product generates no withdrawal.
     expect(option.eventId).toBe(event.id)
   })
+  test.each(["repair", "remove"] as const)(
+    "explicitly %ss malformed parent and variation adjustments before signed republication",
+    async (action) => {
+      const terms: ShippingPolicy = {
+        version: 2,
+        title: "Repair rates",
+        originCountry: "US",
+        currency: "SATS",
+        domestic: {
+          rules: [
+            {
+              country: "US",
+              bands: [{ maxWeightGrams: 1000, priceMinor: 100 }],
+            },
+          ],
+        },
+        international: null,
+      }
+      const policyEvent = finalizeEvent(
+        { ...buildShippingPolicyEventDraft({ policy: terms }), created_at: 20 },
+        secret
+      )
+      const current = parseShippingOptionEvent(
+        new NDKEvent(undefined, policyEvent)
+      )!
+      current.readSource = "relay"
+      current.readCoverage = "complete"
+      const records = ["one", "one-small"].map((dTag, index) => {
+        const source = {
+          ...product,
+          id: `30402:${pubkey}:${dTag}`,
+          type: index === 0 ? ("variable" as const) : ("variation" as const),
+          parentProductId: index === 0 ? undefined : `30402:${pubkey}:one`,
+          specifications: index === 0 ? [] : [{ key: "Size", value: "Small" }],
+          price: 1000,
+          currency: "SATS",
+          sourcePrice: undefined,
+          shippingWeightAllowanceGrams: undefined,
+          shippingHandling: undefined,
+          shippingOptionId: tableIntent.policyCoordinate,
+        }
+        const draft = buildProductListingEventDraft({ product: source, dTag })
+        const signed = finalizeEvent(
+          {
+            ...draft,
+            tags: [...draft.tags, ["conduit_shipping_adjustments", "1", "{"]],
+            created_at: 21,
+          },
+          secret
+        )
+        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+        expect(parsed.shippingAdjustmentsMalformed).toBe(true)
+        return {
+          product: parsed,
+          dTag,
+          addressId: parsed.id,
+          eventId: signed.id,
+          eventCreatedAt: signed.created_at,
+        }
+      })
+      const family = {
+        root: records[0]!,
+        variations: records.slice(1),
+        orphanVariation: false,
+      }
+      const restored = getProductVariationFormState(
+        family.root,
+        family.variations
+      )
+      expect(restored.supported).toBe(true)
+      expect(() =>
+        buildProductFamilyChangePlan({
+          parentDTag: "one",
+          baseProduct: { ...family.root.product, title: "Title-only edit" },
+          variations: restored.state,
+          currency: "SATS",
+          fulfillmentIntent: {
+            kind: "preserve_existing",
+            baseline: family.root.product,
+          },
+          authoringCountries: [],
+          existing: family,
+        })
+      ).toThrow("repair or remove")
+      const fields = {
+        shippingWeightGrams: "250",
+        shippingWeightAllowanceGrams: action === "repair" ? "50" : "",
+        shippingHandling: action === "repair" ? "25" : "",
+      }
+      const change = buildProductFamilyChangePlan({
+        parentDTag: "one",
+        baseProduct: {
+          ...family.root.product,
+          ...getProductShippingMeasurements({ ...fields, currency: "SATS" }),
+          shippingAdjustmentsMalformed: undefined,
+        },
+        variations: {
+          ...restored.state,
+          rows: restored.state.rows.map((row) => ({ ...row, ...fields })),
+        },
+        currency: "SATS",
+        fulfillmentIntent: { ...tableIntent, policyEventId: policyEvent.id },
+        authoringCountries: [],
+        existing: family,
+      })
+      expect(change.publish).toHaveLength(2)
+      const prepared = await prepareProductPublicationListings(
+        change.publish,
+        { merchantPubkey: pubkey },
+        { ...dependencies, getShippingOptions: async () => [current] }
+      )
+      const items = prepared.map((target) => {
+        expect(target.product.shippingAdjustmentsMalformed).toBeUndefined()
+        const signed = finalizeEvent(
+          {
+            ...buildProductListingEventDraft({
+              product: applyProductFulfillmentIntentForPublication({
+                product: target.product,
+                merchantPubkey: pubkey,
+                productDTag: target.dTag,
+                intent: target.fulfillmentIntent,
+              }),
+              dTag: target.dTag,
+            }),
+            created_at: 22,
+          },
+          secret
+        )
+        const parsed = parseProductEvent(new NDKEvent(undefined, signed))!
+        expect(parsed.shippingAdjustmentsMalformed).toBeUndefined()
+        expect(parsed.shippingHandling?.amount).toBe(
+          action === "repair" ? 25 : undefined
+        )
+        expect(parsed.shippingWeightAllowanceGrams).toBe(
+          action === "repair" ? 50 : undefined
+        )
+        return {
+          productId: parsed.id,
+          productEventId: signed.id,
+          productCreatedAt: signed.created_at,
+          productEvent: signed,
+          currency: "SATS",
+          quantity: 1,
+          weightGrams: parsed.shippingWeightGrams,
+          shippingWeightAllowanceGrams: parsed.shippingWeightAllowanceGrams,
+          shippingHandling: parsed.shippingHandling,
+          subtotalMinor: 1000,
+        }
+      })
+      const result = quoteShippingPolicy({
+        policy: terms,
+        policyCoordinate: tableIntent.policyCoordinate,
+        policyEventId: policyEvent.id,
+        policyCreatedAt: policyEvent.created_at,
+        merchantPubkey: pubkey,
+        policyEvent,
+        destination: { country: "US" },
+        rateInput: { rate: 10000, fetchedAt: Date.now(), source: "env" },
+        items,
+      })
+      expect(result.status).toBe("quoted")
+      if (result.status !== "quoted") throw new Error(result.status)
+      expect(result.quote.handlingMinor).toBe(action === "repair" ? 50 : 0)
+      expect(result.quote.amountMinor).toBe(action === "repair" ? 150 : 100)
+    }
+  )
   test("table variations share measurements only with an explicit authoring choice", async () => {
     const state = generateProductVariationRows({
       ...createEmptyProductVariationForm(),

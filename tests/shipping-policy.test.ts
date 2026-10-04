@@ -21,8 +21,8 @@ import {
   parseShippingPolicy,
   previewShippingPolicy,
   quoteShippingPolicy,
-  shippingAmountToMinor,
-  shippingMinorToAmount,
+  shippingMoneyToMinorUnits,
+  shippingMinorUnitsToAmount,
   convertShippingMinor,
   type ShippingPolicyV2,
   type BtcUsdRateQuote,
@@ -136,7 +136,7 @@ function quote(
         weightGrams: 200,
         currency: value.currency,
         subtotalMinor:
-          shippingAmountToMinor(
+          shippingMoneyToMinorUnits(
             value.currency === "MSATS" ? 20000 : 20,
             value.currency
           ) * 2,
@@ -537,22 +537,53 @@ describe("shipping policy arithmetic", () => {
     ).toEqual({ status: "currency_mismatch" })
   })
   it("converts fiat, sats, and tiny BTC amounts with currency precision", () => {
-    expect(shippingAmountToMinor("1.23", "USD")).toBe(123)
-    expect(shippingAmountToMinor(0.00000001, "BTC")).toBe(1)
-    expect(shippingAmountToMinor("10", "SATS")).toBe(10)
-    expect(shippingAmountToMinor("10", "JPY")).toBe(10)
-    expect(shippingMinorToAmount(1, "BTC")).toBe(0.00000001)
-    expect(() => shippingAmountToMinor("1.234", "USD")).toThrow()
-    expect(() => shippingAmountToMinor("1.1", "SATS")).toThrow()
+    expect(shippingMoneyToMinorUnits("1.23", "USD")).toBe(123)
+    expect(shippingMoneyToMinorUnits(0.00000001, "BTC")).toBe(1)
+    expect(shippingMoneyToMinorUnits("10", "SATS")).toBe(10)
+    expect(shippingMoneyToMinorUnits("10", "JPY")).toBe(10)
+    expect(shippingMinorUnitsToAmount(1, "BTC")).toBe(0.00000001)
+    expect(() => shippingMoneyToMinorUnits("1.234", "USD")).toThrow()
+    expect(() => shippingMoneyToMinorUnits("1.1", "SATS")).toThrow()
   })
 })
 
 describe("shipping signed terms and product wire tags", () => {
-  it("uses human content, canonical summary tags, and an explicit versioned tag", () => {
+  it("does not offer a fixed amount to readers that ignore table extensions", () => {
+    const event = signedPolicy()
+    const standardNames = new Set([
+      "d",
+      "title",
+      "price",
+      "country",
+      "service",
+      "client",
+    ])
+    // A standard-only reader ignores unknown tags rather than rejecting them.
+    const standardView = parseShippingOptionEvent({
+      ...event,
+      tags: event.tags.filter((tag) => standardNames.has(tag[0]!)),
+    } as never)
+    expect(standardView).toBeNull()
+    const product = parseProductEvent(new NDKEvent(undefined, signedProduct()))!
+    expect(
+      resolveProductFulfillment(product, standardView ? [standardView] : [])
+    ).toMatchObject({
+      status: "order_first",
+      reason: "unresolved",
+    })
+    const awareView = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+    expect(resolveProductFulfillment(product, [awareView])).toMatchObject({
+      intent: "weight_table",
+      status: "ready",
+    })
+    expect(quote().amountMinor).toBe(550)
+    expect(event.tags.some((tag) => tag[0] === "price")).toBe(false)
+  })
+  it("uses human content and an explicit table capability without a fixed price", () => {
     const draft = buildShippingPolicyEventDraft({ policy })
     expect(draft.content.startsWith("{")).toBe(false)
     expect(draft.tags).toContainEqual(["d", "conduit-shipping-policy"])
-    expect(draft.tags).toContainEqual(["price", "5.00", "USD"])
+    expect(draft.tags.some((tag) => tag[0] === "price")).toBe(false)
     const event = signedPolicy()
     const parsed = parseShippingOptionEvent(new NDKEvent(undefined, event))!
     expect(parsed.shippingPolicy).toEqual(policy)
@@ -563,9 +594,8 @@ describe("shipping signed terms and product wire tags", () => {
   it("rejects missing, duplicated, unsupported, and contradictory extension metadata", () => {
     const event = signedPolicy()
     for (const tags of [
-      event.tags.map((tag) =>
-        tag[0] === "price" ? ["price", "0", "USD"] : tag
-      ),
+      [...event.tags, ["price", "0", "USD"]],
+      [...event.tags, ["price", "5.00", "USD"], ["price", "5.00", "USD"]],
       [...event.tags, ["conduit_shipping_table", "1", JSON.stringify(policy)]],
       event.tags.map((tag) =>
         tag[0] === "conduit_shipping_table"
@@ -579,6 +609,36 @@ describe("shipping signed terms and product wire tags", () => {
           new NDKEvent(undefined, finalizeEvent({ ...event, tags }, secret))
         )
       ).toBeNull()
+  })
+  it("preserves historical signed table revisions with the old price summary", () => {
+    const version2: ShippingPolicyV2 = {
+      version: 2,
+      title: policy.title,
+      originCountry: policy.originCountry,
+      currency: policy.currency,
+      domestic: policy.domestic,
+      international: policy.international,
+    }
+    for (const value of [policy, version2]) {
+      const draft = buildShippingPolicyEventDraft({ policy: value })
+      const event = finalizeEvent(
+        {
+          ...draft,
+          tags: [...draft.tags, ["price", "5.00", "USD"]],
+          created_at: 10,
+        },
+        secret
+      )
+      const parsed = parseShippingOptionEvent(new NDKEvent(undefined, event))!
+      expect(parsed.shippingPolicy).toEqual(parseShippingPolicy(value))
+      const historical = quote(value, {
+        policyEvent: event,
+        policyEventId: event.id,
+        rateInput: 50_000,
+      })
+      expect(shippingPolicyQuoteSchema.safeParse(historical).success).toBe(true)
+      expect(historical.policyEvent).toEqual(JSON.parse(JSON.stringify(event)))
+    }
   })
   it("retains exact policy and product revisions and rejects forged result fields", () => {
     const snapshot = quote()
@@ -946,23 +1006,97 @@ describe("shipping policy read evidence", () => {
     })
   })
 
-  it("uses NIP-01 lowest id tie and ignores foreign-author deletion", () => {
+  it("rejects same-timestamp conflicts while accepting duplicate evidence and ignoring foreign-author deletion", () => {
     const first = signedPolicy(policy, 10)
     const second = signedPolicy({ ...policy, handlingMinor: 0 }, 10)
-    const expected = [first, second].sort((a, b) =>
-      a.id.localeCompare(b.id)
-    )[0]!
     const foreign = finalizeEvent(
       { kind: 5, created_at: 11, content: "", tags: [["a", coordinate]] },
       generateSecretKey()
     )
+    expect(selectLatestShippingOptions([first, second], [foreign])).toEqual([])
+    expect(selectLatestShippingOptions([second, first])).toEqual([])
     expect(
-      selectLatestShippingOptions([first, second], [foreign])[0]?.eventId
-    ).toBe(expected.id)
+      selectLatestShippingOptions([first, first], [foreign])[0]?.eventId
+    ).toBe(first.id)
   })
 })
 
 describe("shipping policy publication", () => {
+  for (const reason of ["conflicting", "invalid_policy"] as const) {
+    it(`replaces a reviewed complete ${reason} revision strictly later but rejects incomplete or changed evidence before signing`, async () => {
+      cacheOverrides()
+      const signer = setTestAccountSigner(new NDKPrivateKeySigner(secret))
+      let events = [
+        signedPolicy(policy, 10),
+        reason === "conflicting"
+          ? signedPolicy({ ...policy, handlingMinor: 0 }, 10)
+          : finalizeEvent(
+              {
+                ...buildShippingPolicyEventDraft({ policy }),
+                created_at: 11,
+                tags: [
+                  ["d", "conduit-shipping-policy"],
+                  ["conduit_shipping_table", "2", "bad"],
+                ],
+              },
+              secret
+            ),
+      ]
+      let complete = true
+      __setShippingTestOverrides({
+        fetchEventsFanoutDetailed: async (filter, options = {}) =>
+          fanoutResult(
+            filter.kinds?.includes(30406) ? events : [],
+            options,
+            complete
+          ),
+      })
+      const conflict = await fetchMerchantShippingPolicy(merchant)
+      expect(conflict).toMatchObject({
+        state: "unavailable",
+        reason,
+        coverageComplete: true,
+      })
+      if (conflict.state !== "unavailable" || !conflict.revision)
+        throw new Error("Expected conflict revision")
+      let signCount = 0
+      const sign = signer.signEvent.bind(signer)
+      signer.signEvent = async (draft) => {
+        signCount++
+        return sign(draft)
+      }
+      const replace = () =>
+        publishMerchantShippingPolicy({
+          pubkey: merchant,
+          policy,
+          acceptedRevision: conflict.revision,
+          dependencies: {
+            signer,
+            now: () => 1000,
+            fetchPolicy: (pubkey) => fetchMerchantShippingPolicy(pubkey),
+            publishEvent: (async (event: NDKEvent) => {
+              events.push(event.rawEvent() as SignedPublicNostrEvent)
+              return { successfulRelayUrls: ["wss://shipping.example"] }
+            }) as typeof publishWithPlanner,
+          },
+        })
+      complete = false
+      await expect(replace()).rejects.toThrow("could not be read completely")
+      expect(signCount).toBe(0)
+      complete = true
+      const replacement = await replace()
+      expect(replacement.createdAt).toBe(reason === "conflicting" ? 11 : 12)
+      expect(signCount).toBe(1)
+      expect(await fetchMerchantShippingPolicy(merchant)).toMatchObject({
+        state: "found",
+        policy,
+        revision: replacement,
+        source: "relay",
+      })
+      await expect(replace()).rejects.toThrow("Shipping changed")
+      expect(signCount).toBe(1)
+    })
+  }
   it("uses the active account signer and checks current revision and ACK before returning signed terms", async () => {
     cacheOverrides()
     const legacySigner = NDKPrivateKeySigner.generate()
@@ -1201,7 +1335,7 @@ describe("shipping policy v2 signed adjustments and currency snapshots", () => {
       quantity,
       weightGrams: 200,
       currency,
-      subtotalMinor: shippingAmountToMinor(amount, currency) * quantity,
+      subtotalMinor: shippingMoneyToMinorUnits(amount, currency) * quantity,
       shippingWeightAllowanceGrams: allowance,
       shippingHandling: handling,
     }

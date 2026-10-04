@@ -9,9 +9,251 @@ import {
   publishTestRelayEvents,
   readTestRelayEvents,
   seedTestRelayIdentity,
+  TEST_RELAY_URL,
 } from "./helpers/auth"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
+
+for (const { reopen, invalid } of [
+  { reopen: false, invalid: false },
+  { reopen: true, invalid: false },
+  { reopen: false, invalid: true },
+  { reopen: true, invalid: true },
+]) {
+  test(`${invalid ? "malformed" : "conflicting"} shipping rates require explicit replacement${reopen ? " after reopening" : " while editing"} @merchant`, async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(90_000)
+    const secretKey = generateSecretKey()
+    const pubkey = getPublicKey(secretKey)
+    await seedTestRelayIdentity(secretKey)
+    const createdAt = Math.floor(Date.now() / 1000) - 10
+    function signedRates(priceMinor: number) {
+      const policy = {
+        version: 2,
+        title: "Rates",
+        originCountry: "US",
+        currency: "SATS",
+        domestic: {
+          rules: [
+            { country: "US", bands: [{ maxWeightGrams: 1000, priceMinor }] },
+          ],
+        },
+        international: null,
+      }
+      return finalizeEvent(
+        {
+          kind: 30406,
+          created_at: createdAt,
+          content: "Synthetic rates",
+          tags: [
+            ["d", "conduit-shipping-policy"],
+            ["title", "Rates"],
+            ["price", String(priceMinor), "SATS"],
+            ["country", "US"],
+            ["service", "standard"],
+            ["conduit_shipping_table", "2", JSON.stringify(policy)],
+          ],
+        },
+        secretKey
+      )
+    }
+    // The relay replaces equal-timestamp events by ID. Observe both in sequence
+    // so the retained frontier must preserve the conflict even after reopening.
+    const [conflicting, initial] = [signedRates(100), signedRates(200)].sort(
+      (a, b) => a.id.localeCompare(b.id)
+    )
+    function malformedRevision(timestamp: number) {
+      const event = signedRates(100)
+      return finalizeEvent(
+        {
+          ...event,
+          created_at: timestamp,
+          tags: event.tags.map((tag) =>
+            tag[0] === "conduit_shipping_table" ? [tag[0], "2", "bad"] : tag
+          ),
+        },
+        secretKey
+      )
+    }
+    let incompleteReads = false
+    if (invalid) {
+      await page.routeWebSocket(TEST_RELAY_URL, (socket) => {
+        const server = socket.connectToServer()
+        const policySubscriptions = new Set<string>()
+        socket.onMessage((message) => {
+          const frame = JSON.parse(message.toString())
+          if (
+            frame[0] === "REQ" &&
+            frame
+              .slice(2)
+              .some((filter: { kinds?: number[] }) =>
+                filter.kinds?.some((kind) => kind === 30406 || kind === 5)
+              )
+          )
+            policySubscriptions.add(frame[1])
+          server.send(message)
+        })
+        server.onMessage((message) => {
+          const frame = JSON.parse(message.toString())
+          if (
+            incompleteReads &&
+            frame[0] === "EOSE" &&
+            policySubscriptions.has(frame[1])
+          )
+            socket.send(
+              JSON.stringify([
+                "CLOSED",
+                frame[1],
+                "Synthetic incomplete shipping read",
+              ])
+            )
+          else socket.send(message)
+        })
+      })
+    }
+    await publishTestRelayEvents([initial!])
+    await installTestSigner(page, pubkey, { secretKey })
+    await page.goto(`${merchantUrl}/shipping`)
+    const price = page.getByLabel("Shipping price", { exact: true }).first()
+    await expect(price).toHaveValue(
+      initial!.tags.find((tag) => tag[0] === "price")![1]!
+    )
+    await price.fill("300")
+    await publishTestRelayEvents([
+      invalid ? malformedRevision(createdAt + 1) : conflicting!,
+    ])
+    async function activate(control: Locator) {
+      if (testInfo.project.use.hasTouch) await control.tap()
+      else await control.click()
+    }
+    await activate(
+      page.getByRole("button", { name: "Check for updates", exact: true })
+    )
+    const replace = page.getByRole("button", {
+      name: invalid ? "Replace invalid rates" : "Replace conflicting rates",
+      exact: true,
+    })
+    await expect(replace).toBeEnabled()
+    await expect(price).toHaveValue("300")
+    if (reopen) {
+      await page.reload()
+      await expect(replace).toBeEnabled()
+      await expect(price).toHaveValue("")
+      await chooseCountry(page, "Origin country", "United States")
+      await page.getByLabel("Shipping currency", { exact: true }).click()
+      await page.getByRole("option", { name: "SATS", exact: true }).click()
+      await page
+        .getByLabel("Up to weight", { exact: true })
+        .first()
+        .fill("1000")
+      await price.fill("300")
+    }
+    const publish = page.getByRole("button", {
+      name: "Publish shipping rates",
+      exact: true,
+    })
+    await expect(publish).toBeDisabled()
+    await page.screenshot({
+      path: testInfo.outputPath("shipping-conflict-review.png"),
+      fullPage: true,
+    })
+    await page.evaluate(() => {
+      const signer = (
+        window as unknown as {
+          nostr: { signEvent: (...args: unknown[]) => Promise<unknown> }
+        }
+      ).nostr
+      const sign = signer.signEvent.bind(signer)
+      const state = window as unknown as { shippingSignCount: number }
+      state.shippingSignCount = 0
+      signer.signEvent = async (...args) => {
+        state.shippingSignCount++
+        return sign(...args)
+      }
+      document
+        .querySelector('section[aria-label="Shipping rates"] form')!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
+    })
+    const signCount = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { shippingSignCount: number }).shippingSignCount
+      )
+    expect(await signCount()).toBe(0)
+    if (invalid) {
+      incompleteReads = true
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toBeDisabled()
+      await expect(publish).toBeDisabled()
+      expect(await signCount()).toBe(0)
+      incompleteReads = false
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toBeEnabled()
+    }
+    await activate(replace)
+    await expect(price).toHaveValue("300")
+    await expect(publish).toBeEnabled()
+    expect(await signCount()).toBe(0)
+    if (invalid) {
+      incompleteReads = true
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toBeDisabled()
+      await expect(publish).toBeDisabled()
+      await page.evaluate(() => {
+        document
+          .querySelector('section[aria-label="Shipping rates"] form')!
+          .dispatchEvent(
+            new Event("submit", { bubbles: true, cancelable: true })
+          )
+      })
+      expect(await signCount()).toBe(0)
+      incompleteReads = false
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toHaveCount(0)
+      await expect(publish).toBeEnabled()
+      await publishTestRelayEvents([malformedRevision(createdAt + 2)])
+      await activate(
+        page.getByRole("button", { name: "Check for updates", exact: true })
+      )
+      await expect(replace).toBeEnabled()
+      await expect(publish).toBeDisabled()
+      expect(await signCount()).toBe(0)
+      await activate(replace)
+      await expect(publish).toBeEnabled()
+    }
+    await activate(publish)
+    await expect(
+      page.getByText("Shipping rates published.", { exact: true })
+    ).toBeVisible({ timeout: 20_000 })
+    expect(await signCount()).toBe(1)
+    const [replacement] = await readTestRelayEvents({
+      kinds: [30406],
+      authors: [pubkey],
+      "#d": ["conduit-shipping-policy"],
+    })
+    expect(replacement!.created_at).toBeGreaterThan(
+      createdAt + (invalid ? 2 : 0)
+    )
+    expect(replacement!.tags.some((tag) => tag[0] === "price")).toBe(false)
+    const replacementPolicy = JSON.parse(
+      replacement!.tags.find((tag) => tag[0] === "conduit_shipping_table")![2]!
+    )
+    expect(replacementPolicy.domestic.rules[0].bands[0].priceMinor).toBe(300)
+    await page.reload()
+    await expect(price).toHaveValue("300")
+    await expect(replace).toHaveCount(0)
+    await expect(page.getByText("Published", { exact: true })).toBeVisible()
+  })
+}
 
 async function chooseCountry(page: Page, label: string, country: string) {
   await page.getByLabel(label, { exact: true }).click()
@@ -76,17 +318,23 @@ test("digital drafts publish after their unused shipping table is withdrawn @mer
     .getByLabel("Title", { exact: true })
     .fill("Synthetic digital listing")
   await dialog.getByLabel("Price", { exact: true }).fill("1000")
-  await dialog.getByLabel("Fulfillment", { exact: true }).click()
+  await dialog.getByLabel("Shop fulfillment", { exact: true }).click()
   await page.getByRole("option", { name: "Digital", exact: true }).click()
+  await expect(
+    dialog.getByLabel("Shop fulfillment", { exact: true })
+  ).toHaveText("Digital")
   await dialog.getByRole("button", { name: "Add by URL" }).click()
   await dialog
     .getByLabel("Primary image URL")
     .fill("https://media.conduit.market/synthetic-digital.png")
   const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
-  for (const tag of ["digital", "shipping", "test"]) {
-    await tags.fill(tag)
-    await tags.press("Enter")
-  }
+  await tags.fill("digital, shipping, test")
+  await tags.press("Tab")
+  for (const tag of ["digital", "shipping", "test"])
+    await expect(
+      dialog.getByRole("button", { name: `Remove ${tag} tag`, exact: true })
+    ).toBeVisible()
+  await expect(tags).toHaveValue("")
   await publishTestRelayEvents([
     finalizeEvent(
       {
@@ -310,6 +558,42 @@ for (const [viewportName, width, height] of [
     })
     await custom.getByLabel("Shipping price").first().fill("300")
     await custom.getByLabel("Shipping price").nth(1).fill("600")
+    await chooseCountry(page, "Origin country", "Canada")
+    const remapped = domestic.getByRole("group", {
+      name: "Canada custom area",
+      exact: true,
+    })
+    await expect(
+      remapped.getByLabel("State / region", { exact: true })
+    ).toHaveValue("")
+    await expect(
+      remapped.getByLabel("Postal prefix", { exact: true })
+    ).toHaveValue("")
+    await expect(remapped.getByLabel("Shipping price").first()).toHaveValue(
+      "300"
+    )
+    const blockedPublish = page.getByRole("button", {
+      name: "Publish shipping rates",
+      exact: true,
+    })
+    await expect(blockedPublish).toBeDisabled()
+    await expect(page.locator("#shipping-policy-error")).toContainText(
+      "Choose a state or enter a postal prefix"
+    )
+    await page
+      .locator("form")
+      .filter({ has: blockedPublish })
+      .dispatchEvent("submit")
+    expect(
+      await readTestRelayEvents({ kinds: [30406], authors: [pubkey] })
+    ).toHaveLength(0)
+    await remapped.getByLabel("State / region", { exact: true }).fill("BC")
+    await expect(blockedPublish).toBeEnabled()
+    await chooseCountry(page, "Origin country", "United States")
+    await expect(blockedPublish).toBeDisabled()
+    await domestic.getByLabel("State", { exact: true }).click()
+    await page.getByRole("option", { name: "California", exact: true }).click()
+    await domestic.getByLabel("Postal prefix", { exact: true }).fill("94")
     await domestic.getByLabel("Free shipping from").fill("10000")
     await page.getByRole("checkbox", { name: "Enable international" }).check()
     const international = page.getByRole("region", {
@@ -361,6 +645,7 @@ for (const [viewportName, width, height] of [
       "#d": ["conduit-shipping-policy"],
     })
     expect(events).toHaveLength(1)
+    expect(events[0]!.tags.some((tag) => tag[0] === "price")).toBe(false)
     expect(events[0]!.content).not.toMatch(/^\s*\{/)
     const policy = JSON.parse(
       events[0]!.tags.find((tag) => tag[0] === "conduit_shipping_table")![2]!
@@ -450,10 +735,13 @@ for (const [viewportName, width, height] of [
         .getByLabel("Primary image URL")
         .fill(`https://media.conduit.market/shipping-table-${index}.png`)
       const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
-      for (const tag of ["shipping", "table", "test"]) {
-        await tags.fill(tag)
-        await tags.press("Enter")
-      }
+      await tags.fill("shipping, table, test")
+      await tags.press("Tab")
+      for (const tag of ["shipping", "table", "test"])
+        await expect(
+          dialog.getByRole("button", { name: `Remove ${tag} tag`, exact: true })
+        ).toBeVisible()
+      await expect(tags).toHaveValue("")
       if (index === 2 && viewportName === "mobile") {
         await dialog
           .getByLabel("Shipping weight", { exact: true })
@@ -587,6 +875,9 @@ for (const [viewportName, width, height] of [
     await expect(
       second.getByRole("button", { name: "Publish rate changes" })
     ).toBeVisible({ timeout: 20_000 })
+    await expect(second.locator('aside a[href="/shipping"]')).toHaveText(
+      "Shipping"
+    )
     await expect(second.getByLabel("Up to weight").first()).toHaveValue("454")
     await expect(second.getByLabel("Shipping price").first()).toHaveValue("200")
     await second.getByLabel("Shipping price").first().fill("201")
@@ -610,6 +901,10 @@ for (const [viewportName, width, height] of [
     await expect(second.getByText(/Shipping policy withdrawn\./)).toBeVisible({
       timeout: 20_000,
     })
+    await expect(second.locator('aside a[href="/shipping"]')).toContainText(
+      "Needs completion",
+      { timeout: 20_000 }
+    )
     const deletions = await readTestRelayEvents({
       kinds: [5],
       authors: [pubkey],

@@ -31,12 +31,7 @@ import {
   type SourcePriceQuote,
 } from "@conduit/core"
 import type { StatusStepperRow, StatusStepperRowStatus } from "@conduit/ui"
-import type {
-  CartItem,
-  CartItemFulfillment,
-  CartPickupFulfillment,
-} from "./cart-model"
-import { getPickupHandoffSummary } from "./pickup-handoff"
+import type { CartItem, CartItemFulfillment } from "./cart-model"
 
 /** Show controlled copy, never an arbitrary provider response saved in lastError. */
 export function getOrderPaymentFailureDetail(
@@ -132,7 +127,10 @@ export interface OrderViewModel {
   /** False only when every item was explicitly snapshotted as digital. */
   requiresShipping: boolean
   requiresPickup: boolean
-  pickupFulfillments: CartPickupFulfillment[]
+  futureMarketFulfillments: Extract<
+    CartItemFulfillment,
+    { type: "event_market_pickup" }
+  >[]
   totalSats: number | null
   currency: string
   shippingAddress: OrderSummary["shippingAddress"]
@@ -283,7 +281,7 @@ export function isZeroCostPickupOrder(
     vm.items.length > 0 &&
     vm.items.every((item) => {
       const fulfillment = item.fulfillment
-      if (fulfillment?.type !== "pickup") return false
+      if (fulfillment?.type !== "event_market_pickup") return false
       const productZero = getPriceSats(
         {
           price: item.priceAtPurchase,
@@ -294,22 +292,11 @@ export function isZeroCostPickupOrder(
         null,
         { allowZero: true }
       )
-      const pickupSourceMatchesSnapshot =
-        item.sourceShippingCost?.amount === fulfillment.sourceCost.amount &&
-        item.sourceShippingCost.currency === fulfillment.sourceCost.currency &&
-        item.sourceShippingCost.normalizedCurrency ===
-          fulfillment.sourceCost.normalizedCurrency
-      const exactZeroPickupCost =
-        item.shippingCostSats === 0 &&
-        fulfillment.costSats === 0 &&
-        fulfillment.sourceCost.amount === 0 &&
-        pickupSourceMatchesSnapshot
       return (
-        fulfillment.handoffMode !== undefined &&
-        fulfillment.handlerPubkey !== undefined &&
         productZero?.sats === 0 &&
         productZero.approximate === false &&
-        exactZeroPickupCost
+        item.shippingCostSats === 0 &&
+        fulfillment.payeePubkey === fulfillment.merchantPubkey
       )
     })
   )
@@ -617,11 +604,11 @@ export function buildOrderViewModel(
           : {}),
       }))
 
-  const pickupFulfillments = Array.from(
+  const futureMarketFulfillments = Array.from(
     new Map(
       items.flatMap((item) =>
-        item.fulfillment?.type === "pickup"
-          ? [[item.fulfillment.option.coordinate, item.fulfillment] as const]
+        item.fulfillment?.type === "event_market_pickup"
+          ? [[item.fulfillment.market.coordinate, item.fulfillment] as const]
           : []
       )
     ).values()
@@ -719,7 +706,7 @@ export function buildOrderViewModel(
     paymentStatus === "ambiguous" && zapReceiptStatus === "receipt_not_observed"
   const zeroCostPickupOrder = isZeroCostPickupOrder({
     totalSats,
-    requiresPickup: pickupFulfillments.length > 0,
+    requiresPickup: futureMarketFulfillments.length > 0,
     items,
   })
   const actionNeeded =
@@ -760,10 +747,11 @@ export function buildOrderViewModel(
       items.length === 0 ||
       items.some(
         (item) =>
-          item.format !== "digital" && item.fulfillment?.type !== "pickup"
+          item.format !== "digital" &&
+          item.fulfillment?.type !== "event_market_pickup"
       ),
-    requiresPickup: pickupFulfillments.length > 0,
-    pickupFulfillments,
+    requiresPickup: futureMarketFulfillments.length > 0,
+    futureMarketFulfillments,
     totalSats,
     currency: lifecycle?.currency ?? summary?.currency ?? "SATS",
     shippingAddress:
@@ -1077,9 +1065,8 @@ export function buildOrderTimeline(
     `${sats.toLocaleString()} sats`
 ): StatusStepperRow[] {
   const statuses = computeOrderTimelineStatuses(vm)
-  const pickupHandoff = vm.pickupFulfillments[0]
-    ? getPickupHandoffSummary(vm.pickupFulfillments[0])
-    : null
+  const futureHandoff = vm.futureMarketFulfillments[0]
+  const organizerHandoff = futureHandoff?.mode === "organizer_handoff"
   const rowOrder: readonly OrderTimelineRowKey[] = isZeroCostPickupOrder(vm)
     ? ["order_sent", "merchant_confirmation", "fulfillment", "complete"]
     : vm.buyerIdentityKind === "guest_ephemeral"
@@ -1101,11 +1088,13 @@ export function buildOrderTimeline(
       title =
         status === "complete"
           ? "Pickup complete"
-          : (pickupHandoff?.label ?? "Event pickup")
+          : organizerHandoff
+            ? "Pickup from event organizer"
+            : "Pickup from merchant booth"
       subtitle =
         status === "complete"
           ? "The pickup order was marked complete."
-          : pickupHandoff?.mode === "organizer_handoff"
+          : organizerHandoff
             ? isZeroCostPickupOrder(vm)
               ? "No payment is required. The organizer handles pickup after the merchant sends the minimal private pickup receipt."
               : "The organizer handles pickup after the merchant confirms payment and sends the minimal private pickup receipt."

@@ -44,6 +44,7 @@ import {
   MERCHANT_SHIPPING_POLICY_D_TAG,
   SHIPPING_POLICY_EXTENSION_TAG,
   parseShippingPolicyEventTags,
+  shippingMinorUnitsToAmount,
   type ShippingPolicy,
   type ShippingPolicyQuote,
 } from "./shipping-policy"
@@ -396,18 +397,22 @@ export interface ParsedShippingOption {
   signedEvent?: SignedPublicNostrEvent
   readSource?: "relay" | "retained"
   readCoverage?: "complete" | "partial" | "unavailable"
+  /** The option lookup hit its event budget; observed terms may be truncated. */
+  optionReadSaturated?: boolean
 }
 
 /** A retained policy is display/recovery evidence, not authority for new terms.
  * Partial reads may authorize when the selected revision was observed now;
- * missing deletion coverage alone does not veto that positive evidence. */
+ * missing deletion coverage alone does not veto that positive evidence.
+ * A capped option lookup cannot establish current terms. */
 export function hasCurrentShippingPolicyEvidence(
   option: ParsedShippingOption
 ): boolean {
   return (
     !!option.shippingPolicy &&
     !!option.signedEvent &&
-    option.readSource === "relay"
+    option.readSource === "relay" &&
+    option.optionReadSaturated !== true
   )
 }
 
@@ -527,6 +532,13 @@ export function parseShippingOptionEvent(
   event: Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">
 ): ParsedShippingOption | null {
   const tags = event.tags ?? []
+  const hasPolicyMarker = tags.some(
+    (tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG
+  )
+  const shippingPolicy = hasPolicyMarker
+    ? parseShippingPolicyEventTags(tags)
+    : undefined
+  if (hasPolicyMarker && !shippingPolicy) return null
 
   const getUniqueTag = (name: string): string[] | null => {
     const matches = tags.filter((tag) => tag[0] === name)
@@ -541,7 +553,7 @@ export function parseShippingOptionEvent(
   if (
     dTagEntry?.length !== 2 ||
     titleTag?.length !== 2 ||
-    priceTag?.length !== 3 ||
+    (!shippingPolicy && priceTag?.length !== 3) ||
     serviceTag?.length !== 2 ||
     clientTags.length > 1 ||
     clientTags.some(
@@ -558,11 +570,22 @@ export function parseShippingOptionEvent(
   if (dTag !== dTag.trim() || serviceValue !== serviceValue.trim()) return null
 
   // ["price", amount, currency]
-  const priceAmount = priceTag[1] ?? ""
-  const priceCurrency = priceTag[2] ?? ""
-  if (!FIXED_STANDARD_PRICE_AMOUNT.test(priceAmount)) return null
+  const priceAmount = priceTag?.[1] ?? ""
+  const priceCurrency = shippingPolicy?.currency ?? priceTag?.[2] ?? ""
+  if (!shippingPolicy && !FIXED_STANDARD_PRICE_AMOUNT.test(priceAmount))
+    return null
   if (!priceCurrency || priceCurrency !== priceCurrency.trim()) return null
-  const price = Number(priceAmount)
+  // This display summary is never a fixed shipping quote. Table fulfillment
+  // always prices the full signed policy for the actual shipment.
+  const firstRule =
+    shippingPolicy?.domestic?.rules[0] ??
+    shippingPolicy?.international?.rules[0]
+  const price = shippingPolicy
+    ? shippingMinorUnitsToAmount(
+        firstRule!.bands[0]!.priceMinor,
+        shippingPolicy.currency
+      )
+    : Number(priceAmount)
   const currency = normalizeCurrencyCode(priceCurrency)
   if (
     !Number.isFinite(price) ||
@@ -614,13 +637,6 @@ export function parseShippingOptionEvent(
         .filter(Boolean) ?? [],
   }))
 
-  const hasPolicyMarker = tags.some(
-    (tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG
-  )
-  const shippingPolicy = hasPolicyMarker
-    ? parseShippingPolicyEventTags(tags)
-    : undefined
-  if (hasPolicyMarker && !shippingPolicy) return null
   let signedEvent: SignedPublicNostrEvent | undefined
   if ("rawEvent" in event && typeof event.rawEvent === "function") {
     const raw = event.rawEvent() as SignedPublicNostrEvent
@@ -1796,10 +1812,9 @@ export function selectLatestShippingOptions(
     const newest = candidates.filter(
       (candidate) => (candidate.created_at ?? 0) === newestCreatedAt
     )
-    if (
-      new Set(newest.map((candidate) => candidate.id)).size !== 1 &&
-      !coordinate.endsWith(`:${MERCHANT_SHIPPING_POLICY_D_TAG}`)
-    ) {
+    // Payment terms need an unambiguous revision. A relay's NIP-01 ID
+    // tie-break must not erase a known conflict in the retained frontier.
+    if (new Set(newest.map((candidate) => candidate.id)).size !== 1) {
       continue
     }
     const event = [...newest].sort((a, b) => a.id.localeCompare(b.id))[0]!
@@ -2027,6 +2042,7 @@ async function readShippingOptionsByCoordinates(
 ): Promise<ShippingOptionsDetailedResult> {
   let coverage: ShippingOptionsDetailedResult["coverage"] = "complete"
   const observedIds = new Set<string>()
+  const saturatedCoordinates = new Set<string>()
   const inspectRead = (
     result: FetchEventsFanoutResult,
     relayUrls: readonly string[],
@@ -2123,28 +2139,39 @@ async function readShippingOptionsByCoordinates(
       const executableIndependentRelayUrls = (
         readPlan.independentRelayUrls ?? []
       ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
+      const optionRead = await runShippingFetchEventsFanoutDetailed(
+        {
+          kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
+          authors: [batch.pubkey],
+          "#d": batch.dTags,
+          limit: SHIPPING_OPTION_READ_LIMIT,
+        },
+        {
+          relayUrls,
+          accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
+          authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
+          ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
+          appRelayUrls: executableAppRelayUrls,
+          personalRelayUrls: executablePersonalRelayUrls,
+          independentRelayUrls: executableIndependentRelayUrls,
+          accountNetworkLocalStateRepository:
+            options.accountNetworkLocalStateRepository,
+          shouldContinue: options.shouldContinue,
+          signal: options.signal,
+        }
+      )
+      if (
+        optionRead.relays.some(
+          (relay) =>
+            relay.eventCount + (relay.rejectedEventCount ?? 0) >=
+            SHIPPING_OPTION_READ_LIMIT
+        )
+      ) {
+        for (const coordinate of batch.coordinates)
+          saturatedCoordinates.add(coordinate)
+      }
       const observedShippingEvents = inspectRead(
-        await runShippingFetchEventsFanoutDetailed(
-          {
-            kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
-            authors: [batch.pubkey],
-            "#d": batch.dTags,
-            limit: SHIPPING_OPTION_READ_LIMIT,
-          },
-          {
-            relayUrls,
-            accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
-            authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-            ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-            appRelayUrls: executableAppRelayUrls,
-            personalRelayUrls: executablePersonalRelayUrls,
-            independentRelayUrls: executableIndependentRelayUrls,
-            accountNetworkLocalStateRepository:
-              options.accountNetworkLocalStateRepository,
-            shouldContinue: options.shouldContinue,
-            signal: options.signal,
-          }
-        ),
+        optionRead,
         relayUrls,
         SHIPPING_OPTION_READ_LIMIT
       )
@@ -2254,6 +2281,7 @@ async function readShippingOptionsByCoordinates(
           ? ("relay" as const)
           : ("retained" as const),
         readCoverage: coverage,
+        optionReadSaturated: saturatedCoordinates.has(option.id),
       })),
     coverage,
     signedEvents: shippingEvents.map(
@@ -2408,8 +2436,6 @@ export function applyPreparedProductFulfillment(
     canonicalShippingResolved: false,
     shippingOptionCreatedAt: undefined,
     shippingOptionLaunchUnsupported: undefined,
-    shippingPolicy: undefined,
-    shippingPolicyQuote: undefined,
   }
   if (
     (prepared.intent !== "fixed_standard" &&
@@ -2429,9 +2455,9 @@ export function applyPreparedProductFulfillment(
   const option = prepared.option
   return {
     ...withoutShipping,
-    ...(option.shippingPolicy
-      ? { shippingPolicy: option.shippingPolicy }
-      : canonicalizeShippingCost(option.price, option.currency)),
+    ...(!option.shippingPolicy
+      ? canonicalizeShippingCost(option.price, option.currency)
+      : {}),
     shippingOptionId: option.id,
     shippingOptionDTag: option.dTag,
     shippingCountries: [...option.countries],

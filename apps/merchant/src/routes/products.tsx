@@ -28,9 +28,8 @@ import {
   isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
-  readEventMarketRoster,
   readEventMarketAuthorization,
-  resolveEventMarketOrganizerInbox,
+  readEventMarketRoster,
   waitForVisibleDocument,
   type CommerceResult,
   type ListingSafetyEvaluation,
@@ -111,7 +110,6 @@ import {
 } from "../lib/productDraftReturn"
 import {
   buildProductShippingMetadata,
-  canUseZeroProductPrice,
   canSubmitProductForm,
   getProductShippingPricingMode,
   isProductUsingPresetShippingZone,
@@ -163,7 +161,6 @@ import {
   deliverSignedProductWriteBundle,
   getProductPreservedFulfillmentFields,
   type ProductPublicationFulfillmentIntent,
-  getProductSignerRequestCount,
   getProductSignerRequestMessage,
   getRelayPublishDiagnosticsError,
   signAndPublishProductWriteBundle,
@@ -171,28 +168,7 @@ import {
   type ProductSignerRequestProgress,
   type SignedProductWriteBundle,
 } from "../lib/product-publishing"
-import {
-  listOrganizerEventMarkets,
-  resolveOrganizerEventMarket,
-  type MerchantOrganizerEventMarket,
-} from "../lib/event-market"
-import {
-  expectedOrganizerEventMarketTitleFrontiers,
-  rememberDiscoveredEventMarket,
-} from "../lib/event-market-workflow"
-import { ensureMerchantBoothPickup } from "../lib/event-market-pickup"
 import { setEventMarketProductAssociation } from "../lib/event-market-product"
-import {
-  getMerchantProductEventContext,
-  type MerchantProductEventContext,
-} from "../lib/merchant-product-event-context"
-import {
-  buildProductLocalPickupMetadata,
-  getMerchantBoothPickupFormError,
-  getProductEventParticipationState,
-  getProductFulfillmentProjection,
-  getProductLocalPickupEvidenceError,
-} from "../lib/product-local-pickup"
 import {
   getProductFamilyStockDisplay,
   getProductStockDisplay,
@@ -227,8 +203,17 @@ import {
 } from "../lib/productVariations"
 
 export const Route = createFileRoute("/products")({
-  beforeLoad: () => {
-    requireAuth()
+  validateSearch: (
+    search: Record<string, unknown>
+  ): { eventMarket?: string } => ({
+    eventMarket:
+      typeof search.eventMarket === "string" &&
+      decodeEventMarketReference(search.eventMarket, [30409])
+        ? search.eventMarket
+        : undefined,
+  }),
+  beforeLoad: ({ search }) => {
+    requireAuth({ event: search.eventMarket })
   },
   component: ProductsPage,
 })
@@ -255,6 +240,7 @@ type ProductFormState = MerchantProductFormValues
 type ProductPublishMutationPayload = {
   merchantPubkey: string
   form: ProductFormState
+  associationContext?: string
   presetShippingConfig: ShippingConfig
   dTag: string
   existing?: MerchantProductFamily
@@ -305,13 +291,7 @@ function createEmptyProductForm(
     currency: shippingPolicy?.currency ?? "USD",
     format: "physical",
     fulfillment: "ship",
-    eventMarketReference: "",
     futureEventMarketReference: "",
-    eventHandoffMode: "merchant_handoff",
-    merchantPickupTitle: "Merchant booth pickup",
-    merchantPickupLocation: "",
-    merchantPickupGeohash: "",
-    merchantPickupCountry: "US",
     shippingPricingMode: shippingPolicy ? "weight_table" : "fixed",
     shippingCost: "",
     shippingWeightGrams: "",
@@ -322,6 +302,7 @@ function createEmptyProductForm(
     shippingHeightCm: "",
     usePresetShippingZone,
     customShippingConfig: { countries: [] },
+    eventGuestContactOptional: false,
     publicZapEnabled: true,
     zapMessagePolicy: "generic_only",
     images: [],
@@ -442,7 +423,7 @@ function productToForm(
     shippingHandling:
       product.shippingHandling === undefined
         ? ""
-        : String(product.shippingHandling.amount),
+        : formatProductAmountInput(product.shippingHandling.amount),
     shippingLengthCm: product.shippingDimensionsCm
       ? String(product.shippingDimensionsCm.length)
       : "",
@@ -453,13 +434,7 @@ function productToForm(
       ? String(product.shippingDimensionsCm.height)
       : "",
     fulfillment: "preserve",
-    eventMarketReference: product.collectionRefs?.[0] ?? "",
     futureEventMarketReference: product.eventMarketRefs?.[0] ?? "",
-    eventHandoffMode: "merchant_handoff",
-    merchantPickupTitle: "Merchant booth pickup",
-    merchantPickupLocation: "",
-    merchantPickupGeohash: "",
-    merchantPickupCountry: "US",
     shippingCost:
       typeof sourceShippingCost?.amount === "number"
         ? formatProductAmountInput(sourceShippingCost.amount)
@@ -471,6 +446,7 @@ function productToForm(
       presetAvailable
     ),
     customShippingConfig: productShippingConfigFromProduct(product),
+    eventGuestContactOptional: product.eventGuestContactOptional === true,
     publicZapEnabled: product.publicZapPolicyKnown
       ? product.publicZapEnabled
       : false,
@@ -777,46 +753,6 @@ function ListingSafetySummary({
   )
 }
 
-function EventProductManagementSummary({
-  context,
-  eventTitle,
-  onOpenEvent,
-}: {
-  context: MerchantProductEventContext
-  eventTitle?: string
-  onOpenEvent: () => void
-}) {
-  return (
-    <article className="rounded-xl border border-primary-500/30 bg-primary-500/10 p-4 text-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="font-semibold text-[var(--text-primary)]">
-            {eventTitle ?? "Linked event catalog"}
-          </div>
-          <p className="mt-2 leading-6 text-[var(--text-secondary)]">
-            Hidden from the ordinary Market. Available through this event after
-            the organizer accepts it.
-          </p>
-        </div>
-        <StatusPill variant="info" className="text-[10px]">
-          Event product
-        </StatusPill>
-      </div>
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-        <span
-          className="font-mono text-xs text-[var(--text-muted)]"
-          title={context.collectionCoordinate}
-        >
-          {context.referenceLabel}
-        </span>
-        <Button variant="outline" size="sm" onClick={onOpenEvent}>
-          View event
-        </Button>
-      </div>
-    </article>
-  )
-}
-
 async function fetchMerchantProducts(
   merchantPubkey: string,
   accountPubkey: string,
@@ -883,7 +819,8 @@ async function publishProduct(
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
   onSignerRequestsComplete?: () => void,
   authenticatedPubkey?: string | null,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  associationContext?: string
 ): Promise<PublishWithPlannerResult> {
   const preserveFulfillment = form.fulfillment === "preserve"
   if (preserveFulfillment && !existing) {
@@ -891,24 +828,19 @@ async function publishProduct(
       "Existing fulfillment can only be kept for an existing product."
     )
   }
-  const localPickup = form.fulfillment === "local_pickup"
+
   const formValidation = validateProductPublishForm(
-    localPickup || preserveFulfillment
+    preserveFulfillment
       ? { ...form, shippingPricingMode: "coordinate_after_order" }
       : form,
     {
       hasPresetShippingZone: isShippingComplete(presetShippingConfig),
       presetShippingConfig,
       preserveExistingFulfillment: preserveFulfillment,
-      skipShippingMeasurements: localPickup,
       allowZeroPrice:
-        (preserveFulfillment &&
-          !!existing &&
-          (existing.product.sourcePrice?.amount ?? existing.product.price) ===
-            0) ||
-        (localPickup &&
-          (form.eventHandoffMode === "merchant_handoff" ||
-            form.eventHandoffMode === "organizer_handoff")),
+        preserveFulfillment &&
+        !!existing &&
+        (existing.product.sourcePrice?.amount ?? existing.product.price) === 0,
     }
   )
   if (!formValidation.canPublish) {
@@ -954,115 +886,41 @@ async function publishProduct(
             authoringCountries: [] as string[],
             metadata: {},
           }
-        : localPickup
-          ? {
-              intent: { kind: "coordinate_after_order" as const },
-              authoringCountries: [] as string[],
-              metadata: {},
-            }
-          : form.shippingPricingMode === "weight_table"
-            ? await (async () => {
-                const read = await fetchMerchantShippingPolicy(signerPubkey, {
-                  accountPubkey: signerPubkey,
-                  authenticatedPubkey,
-                  shouldContinue,
-                })
-                if (read.state !== "found")
-                  throw new Error(
-                    "Publish your shipping table before assigning it to a product."
-                  )
-                return {
-                  intent: {
-                    kind: "weight_table" as const,
-                    policyCoordinate:
-                      getMerchantShippingPolicyCoordinate(signerPubkey),
-                    policyEventId: read.revision.eventId,
-                  },
-                  authoringCountries: [],
-                  metadata: {},
-                }
-              })()
-            : buildShippingMetadata(
-                signerPubkey,
-                dTag,
-                form,
-                presetShippingConfig
-              )
-  let shippingMetadata: Pick<
-    ProductSchema,
-    | "shippingOptionId"
-    | "shippingOptionDTag"
-    | "shippingOptionRefs"
-    | "collectionRefs"
-    | "shippingCountries"
-    | "shippingCountryRules"
-  > = publicationFulfillment.metadata
-  let localPickupEvidenceVerified = false
-  let verifiedLocalPickupMarket: MerchantOrganizerEventMarket | null = null
-  let merchantBoothPickupInput:
-    Parameters<typeof ensureMerchantBoothPickup>[0] | null = null
-  if (localPickup) {
-    if (!form.eventMarketReference.trim()) {
-      throw new Error(
-        "Import an organizer event catalog before publishing local pickup."
-      )
-    }
-    const eventMarket = await resolveOrganizerEventMarket(
-      form.eventMarketReference,
-      undefined,
-      authenticatedPubkey,
-      undefined,
-      shouldContinue
-    )
-    verifiedLocalPickupMarket = eventMarket
-    localPickupEvidenceVerified = true
-  }
-  const zeroPriceAuthorized =
-    (preserveFulfillment &&
-      !!existing &&
-      (existing.product.sourcePrice?.amount ?? existing.product.price) === 0) ||
-    canUseZeroProductPrice({
-      fulfillment: form.fulfillment,
-      handoffMode: form.eventHandoffMode,
-      evidenceVerified: localPickupEvidenceVerified,
-    })
+        : form.shippingPricingMode === "weight_table"
+          ? await (async () => {
+              const read = await fetchMerchantShippingPolicy(signerPubkey, {
+                accountPubkey: signerPubkey,
+                authenticatedPubkey,
+                shouldContinue,
+              })
+              if (read.state !== "found")
+                throw new Error(
+                  "Publish your shipping table before assigning it to a product."
+                )
+              return {
+                intent: {
+                  kind: "weight_table" as const,
+                  policyCoordinate:
+                    getMerchantShippingPolicyCoordinate(signerPubkey),
+                  policyEventId: read.revision.eventId,
+                },
+                authoringCountries: [],
+                metadata: {},
+              }
+            })()
+          : buildShippingMetadata(
+              signerPubkey,
+              dTag,
+              form,
+              presetShippingConfig
+            )
+  const shippingMetadata = publicationFulfillment.metadata
   const normalizedPrice = normalizePublishableProductPrice(price, currency, {
-    allowZero: zeroPriceAuthorized,
+    allowZero:
+      preserveFulfillment &&
+      !!existing &&
+      (existing.product.sourcePrice?.amount ?? existing.product.price) === 0,
   })
-  if (localPickup) {
-    const eventMarket = verifiedLocalPickupMarket
-    if (!eventMarket) {
-      throw new Error("Local pickup evidence could not be verified.")
-    }
-    if (form.eventHandoffMode === "organizer_handoff") {
-      shippingMetadata = buildProductLocalPickupMetadata(eventMarket, {
-        handoffMode: "organizer_handoff",
-      })
-    } else {
-      const existingProjection = existing
-        ? getProductFulfillmentProjection(existing.product, eventMarket)
-        : null
-      const existingPickupCoordinate =
-        existingProjection?.handoffMode === "merchant_handoff"
-          ? existingProjection.pickupCoordinate
-          : undefined
-      const pickupDTag = existingPickupCoordinate
-        ? existingPickupCoordinate.split(":").slice(2).join(":")
-        : `${dTag}-event-pickup`
-      merchantBoothPickupInput = {
-        authorPubkey: signerPubkey,
-        dTag: pickupDTag,
-        title: form.merchantPickupTitle.trim(),
-        location: form.merchantPickupLocation.trim() || undefined,
-        geohash: form.merchantPickupGeohash.trim() || undefined,
-        country: form.merchantPickupCountry.trim().toUpperCase(),
-      }
-      shippingMetadata = buildProductLocalPickupMetadata(eventMarket, {
-        handoffMode: "merchant_handoff",
-        merchantPickupCoordinate: `${EVENT_KINDS.SHIPPING_OPTION}:${signerPubkey}:${pickupDTag}`,
-      })
-    }
-  }
   const hasShippingZone =
     (shippingMetadata.shippingCountries?.length ?? 0) > 0 ||
     (shippingMetadata.shippingCountryRules?.length ?? 0) > 0
@@ -1096,10 +954,10 @@ async function publishProduct(
     parentProductId: undefined,
     specifications: [],
     format: isDigital ? "digital" : "physical",
-    ...(!isDigital && !localPickup ? getProductShippingMeasurements(form) : {}),
+    ...(!isDigital ? getProductShippingMeasurements(form) : {}),
     ...shippingCost,
     ...shippingMetadata,
-    visibility: localPickup ? "private" : "public",
+    visibility: existing?.product.visibility ?? "public",
     ...(preserveFulfillment && existing
       ? getProductPreservedFulfillmentFields(existing.product)
       : {}),
@@ -1107,6 +965,8 @@ async function publishProduct(
     stock: parseProductStockInput(form.stock),
     images: prepareProductImages(form.images),
     tags,
+    eventGuestContactOptional:
+      !isDigital && form.eventGuestContactOptional === true,
     publicZapEnabled: form.publicZapEnabled,
     zapMessagePolicy: form.zapMessagePolicy,
     publicZapPolicyKnown: true,
@@ -1127,45 +987,49 @@ async function publishProduct(
       ...product,
       eventMarketRefs: [
         decoded.coordinate,
-        ...existingMarketRefs
-          .slice(1)
-          .filter((ref) => ref !== decoded.coordinate),
+        ...existingMarketRefs.filter((ref) => ref !== decoded.coordinate),
       ],
     }
     if (!existingMarketRefs.includes(decoded.coordinate)) {
-      const marketRead = await readEventMarketRoster({
-        reference: decoded.coordinate,
-        authenticatedPubkey,
-        shouldContinue,
-      })
+      const [marketRead, authorizationRead] = await Promise.all([
+        readEventMarketRoster({
+          reference: decoded.coordinate,
+          authenticatedPubkey,
+          shouldContinue,
+        }),
+        readEventMarketAuthorization({
+          marketCoordinate: decoded.coordinate,
+          merchantPubkey: signerPubkey,
+          authenticatedPubkey,
+          shouldContinue,
+        }),
+      ])
       if (
         marketRead.resolution.state !== "current" ||
-        marketRead.coverage !== "complete" ||
-        marketRead.calendarCoverage !== "complete" ||
+        !["complete", "partial"].includes(marketRead.coverage) ||
+        !["complete", "partial"].includes(marketRead.calendarCoverage ?? "") ||
         !marketRead.calendar ||
-        !marketRead.retained
+        !marketRead.retained ||
+        authorizationRead.resolution.state !== "active" ||
+        !authorizationRead.actionable
       ) {
         throw new Error(
-          "Current signed Event Market approval could not be confirmed. Retry before linking this product."
+          "Current organizer-signed Event Market approval and grant could not be confirmed. Retry before linking this product."
         )
       }
-      const authorization = await readEventMarketAuthorization({
-        marketCoordinate: decoded.coordinate,
-        merchantPubkey: signerPubkey,
-        authenticatedPubkey,
-        shouldContinue,
-      })
       product = setEventMarketProductAssociation({
         product,
         market: marketRead.resolution.market,
-        authorization,
         enabled: true,
+        authorizationActive: true,
       })
     }
   } else if (existingMarketRefs.length > 0) {
     product = {
       ...product,
-      eventMarketRefs: existingMarketRefs.slice(1),
+      eventMarketRefs: associationContext
+        ? existingMarketRefs.filter((ref) => ref !== associationContext)
+        : existingMarketRefs.slice(1),
     }
   }
 
@@ -1196,27 +1060,6 @@ async function publishProduct(
     fulfillmentIntent: target.fulfillmentIntent,
   }))
   const deletions = buildProductRemovalDeletionTargets(plan.remove)
-  const bundleSignerRequestTotal = getProductSignerRequestCount({
-    listings,
-    deletions,
-  })
-  let signerRequestOffset = 0
-  if (merchantBoothPickupInput) {
-    await ensureMerchantBoothPickup({
-      ...merchantBoothPickupInput,
-      authenticatedPubkey,
-      shouldContinue,
-      onSignerRequest: () => {
-        signerRequestOffset = 1
-        onSignerRequest?.({
-          kind: "shipping",
-          current: 1,
-          total: bundleSignerRequestTotal + 1,
-        })
-      },
-    })
-  }
-
   return signAndPublishProductWriteBundle({
     merchantPubkey,
     authenticatedPubkey,
@@ -1226,8 +1069,8 @@ async function publishProduct(
     onSignerRequest: (progress) =>
       onSignerRequest?.({
         ...progress,
-        current: progress.current + signerRequestOffset,
-        total: progress.total + signerRequestOffset,
+        current: progress.current,
+        total: progress.total,
       }),
     onSignerRequestsComplete,
     onSignedLocal: async (bundle) => {
@@ -1347,6 +1190,33 @@ function ProductsPage() {
   const session = useConduitSession()
   const authenticatedPubkey = authStatus === "connected" ? pubkey : null
   const navigate = useNavigate()
+  const { eventMarket: eventContextReference } = Route.useSearch()
+  const eventContextCoordinate = eventContextReference
+    ? decodeEventMarketReference(eventContextReference, [30409])?.coordinate
+    : undefined
+  const [eventProductFilter, setEventProductFilter] = useState<
+    "all" | "associated" | "available"
+  >("all")
+  const eventContext = useQuery({
+    queryKey: [
+      "merchant-products-event-context",
+      eventContextReference,
+      authenticatedPubkey,
+      authGeneration,
+    ],
+    queryFn: () =>
+      readEventMarketRoster({
+        reference: eventContextReference!,
+        authenticatedPubkey,
+        shouldContinue: () => authGenerationRef.current === authGeneration,
+      }),
+    enabled: !!eventContextReference,
+    retry: false,
+  })
+  const contextName =
+    eventContext.data?.schedule?.kind === "series"
+      ? eventContext.data.schedule.series.title
+      : eventContext.data?.calendar?.title
   const queryClient = useQueryClient()
   const btcUsdRateQuery = useBtcUsdRate()
   const productDialogReturnFocusRef = useRef<HTMLElement | null>(null)
@@ -1442,72 +1312,6 @@ function ProductsPage() {
       ),
     refetchInterval: 15_000,
   })
-  const localPickupQuery = useQuery({
-    queryKey: [
-      "merchant-product-event-market",
-      session.relayScope ?? "no-relay-scope",
-      authenticatedPubkey ?? "disconnected",
-      form.eventMarketReference || "none",
-    ],
-    enabled:
-      productDialogOpen &&
-      form.fulfillment === "local_pickup" &&
-      !!form.eventMarketReference,
-    queryFn: ({ signal }) =>
-      resolveOrganizerEventMarket(
-        form.eventMarketReference,
-        undefined,
-        authenticatedPubkey,
-        signal,
-        () => !signal.aborted && authGenerationRef.current === authGeneration
-      ),
-    retry: false,
-    staleTime: 15_000,
-  })
-  const organizerEventMarketsQuery = useQuery({
-    queryKey: [
-      "merchant-product-organizer-events",
-      session.relayScope ?? "no-relay-scope",
-      accountPubkey ?? "none",
-      authenticatedPubkey ?? "disconnected",
-    ],
-    enabled:
-      productDialogOpen &&
-      form.fulfillment === "local_pickup" &&
-      !!accountPubkey,
-    queryFn: ({ signal }) =>
-      listOrganizerEventMarkets(
-        accountPubkey!,
-        authenticatedPubkey,
-        signal,
-        () => !signal.aborted && authGenerationRef.current === authGeneration
-      ),
-    retry: false,
-    staleTime: 15_000,
-  })
-  const organizerInboxQuery = useQuery({
-    queryKey: [
-      "merchant-product-organizer-inbox",
-      session.relayScope ?? "no-relay-scope",
-      accountPubkey ?? "anonymous",
-      authStatus,
-      localPickupQuery.data?.organizerPubkey ?? "none",
-    ],
-    enabled:
-      productDialogOpen &&
-      form.fulfillment === "local_pickup" &&
-      !!localPickupQuery.data?.organizerPubkey,
-    queryFn: ({ signal }) =>
-      resolveEventMarketOrganizerInbox(localPickupQuery.data!.organizerPubkey, {
-        requestingAccountPubkey: accountPubkey,
-        authenticatedPubkey,
-        signal,
-        shouldContinue: () =>
-          !signal.aborted && authGenerationRef.current === authGeneration,
-      }),
-    retry: false,
-    staleTime: 30_000,
-  })
   const cachedProductsQuery = useQuery({
     queryKey: ["merchant-products", accountPubkey ?? "none"],
     enabled: !!accountPubkey,
@@ -1575,63 +1379,6 @@ function ProductsPage() {
       }),
     [merchantProductReadMeta, merchantProductRecords]
   )
-  const eventProductContexts = useMemo(() => {
-    const contexts = new Map<string, MerchantProductEventContext>()
-    for (const item of merchantProducts) {
-      const context = getMerchantProductEventContext(item.product)
-      if (context) contexts.set(item.addressId, context)
-    }
-    return contexts
-  }, [merchantProducts])
-  const eventProductCollectionCoordinates = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          Array.from(eventProductContexts.values()).map(
-            (context) => context.collectionCoordinate
-          )
-        )
-      ).sort(),
-    [eventProductContexts]
-  )
-  const eventProductMarketsQuery = useQuery({
-    queryKey: [
-      "merchant-product-event-context",
-      session.relayScope ?? "no-relay-scope",
-      accountPubkey ?? "none",
-      authenticatedPubkey ?? "disconnected",
-      eventProductCollectionCoordinates,
-    ],
-    enabled: !!accountPubkey && eventProductCollectionCoordinates.length > 0,
-    queryFn: async ({ signal }) => {
-      const markets = await Promise.allSettled(
-        eventProductCollectionCoordinates.map((reference) =>
-          resolveOrganizerEventMarket(
-            reference,
-            undefined,
-            authenticatedPubkey,
-            signal,
-            () =>
-              !signal.aborted && authGenerationRef.current === authGeneration
-          )
-        )
-      )
-      return Object.fromEntries(
-        markets.flatMap((result, index) =>
-          result.status === "fulfilled"
-            ? [
-                [
-                  eventProductCollectionCoordinates[index]!,
-                  result.value,
-                ] as const,
-              ]
-            : []
-        )
-      )
-    },
-    retry: false,
-    staleTime: 30_000,
-  })
   const shippingConfig = loadShippingConfig(accountPubkey)
   const signedPolicyQuery = useQuery({
     queryKey: ["merchant-shipping-policy", accountPubkey ?? "none"],
@@ -1695,6 +1442,7 @@ function ProductsPage() {
 
     const draftTarget = getProductDraftTarget(accountPubkey)
     const loadedDraft = productDraftStoreRef.current.load(draftTarget)
+    if (loadedDraft.error) setDraftContinuationError(loadedDraft.error)
     const loadedReturnIntent = loadProductDraftReturnIntent(accountPubkey)
     setHasResumableCreateDraft(!!loadedDraft.draft)
     setDraftStorageAvailable(
@@ -1893,7 +1641,8 @@ function ProductsPage() {
             }
           },
           authStatus === "connected" ? pubkey : null,
-          () => authGenerationRef.current === authGeneration
+          () => authGenerationRef.current === authGeneration,
+          payload.associationContext
         )
       } catch (error) {
         if (fallbackMovePrepared && !signedLocally) {
@@ -2336,34 +2085,6 @@ function ProductsPage() {
     productImageUploadScopeId,
     productDialogOpen,
   ])
-  const localPickupEvidenceError =
-    form.fulfillment === "local_pickup"
-      ? getProductLocalPickupEvidenceError({
-          reference: form.eventMarketReference,
-          market: localPickupQuery.data,
-          handoffMode: form.eventHandoffMode,
-          resolving: localPickupQuery.isFetching,
-          readFailed: localPickupQuery.isError,
-        })
-      : null
-  const merchantBoothPickupError =
-    form.fulfillment === "local_pickup" &&
-    form.eventHandoffMode === "merchant_handoff" &&
-    localPickupQuery.data
-      ? getMerchantBoothPickupFormError({
-          title: form.merchantPickupTitle,
-          location: form.merchantPickupLocation,
-          geohash: form.merchantPickupGeohash,
-          country: form.merchantPickupCountry,
-        })
-      : null
-  const organizerInboxState = !localPickupQuery.data
-    ? ("idle" as const)
-    : organizerInboxQuery.isFetching || organizerInboxQuery.isPending
-      ? ("checking" as const)
-      : organizerInboxQuery.data?.state === "ready"
-        ? ("ready" as const)
-        : ("unavailable" as const)
   const productTableError =
     form.fulfillment === "ship" && form.shippingPricingMode === "weight_table"
       ? signedPolicyQuery.data?.state !== "found"
@@ -2377,23 +2098,13 @@ function ProductsPage() {
     signedPolicyQuery.data.policy.currency !== form.currency
       ? `Shipping uses ${signedPolicyQuery.data.policy.currency}; this product uses ${form.currency}.`
       : null
-  const productFulfillmentError =
-    localPickupEvidenceError ?? merchantBoothPickupError ?? productTableError
   const preservingFulfillment = !!editing && form.fulfillment === "preserve"
   const zeroPriceFormAuthorized =
-    (preservingFulfillment &&
-      (editing.product.sourcePrice?.amount ?? editing.product.price) === 0) ||
-    canUseZeroProductPrice({
-      fulfillment: form.fulfillment,
-      handoffMode: form.eventHandoffMode,
-      evidenceVerified:
-        form.fulfillment === "local_pickup" &&
-        !!localPickupQuery.data &&
-        !productFulfillmentError,
-    })
+    preservingFulfillment &&
+    (editing.product.sourcePrice?.amount ?? editing.product.price) === 0
   const productFormValidation = useMemo(() => {
     const validation = validateProductPublishForm(
-      form.fulfillment === "local_pickup" || preservingFulfillment
+      preservingFulfillment
         ? { ...form, shippingPricingMode: "coordinate_after_order" }
         : form,
       {
@@ -2401,23 +2112,22 @@ function ProductsPage() {
         presetShippingConfig: effectiveShippingConfig,
         allowZeroPrice: zeroPriceFormAuthorized,
         preserveExistingFulfillment: preservingFulfillment,
-        skipShippingMeasurements: form.fulfillment === "local_pickup",
       }
     )
-    return productFulfillmentError
+    return productTableError
       ? {
           ...validation,
           canPublish: false,
-          firstError: validation.firstError ?? productFulfillmentError,
+          firstError: validation.firstError ?? productTableError,
         }
       : validation
   }, [
     form,
     hasPresetShippingZone,
-    productFulfillmentError,
     effectiveShippingConfig,
     zeroPriceFormAuthorized,
     preservingFulfillment,
+    productTableError,
   ])
   const productTagFieldError =
     productFormValidation.errors.tags &&
@@ -2449,6 +2159,21 @@ function ProductsPage() {
   const visibleProducts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
     const filtered = merchantProducts.filter((item) => {
+      const associated =
+        !!eventContextCoordinate &&
+        item.product.eventMarketRefs?.includes(eventContextCoordinate)
+      if (
+        eventContextCoordinate &&
+        eventProductFilter === "associated" &&
+        !associated
+      )
+        return false
+      if (
+        eventContextCoordinate &&
+        eventProductFilter === "available" &&
+        (associated || item.product.format !== "physical")
+      )
+        return false
       const tagMatch =
         selectedTag === "all" || item.product.tags.includes(selectedTag)
       if (!tagMatch) return false
@@ -2494,7 +2219,14 @@ function ProductsPage() {
           return b.eventCreatedAt - a.eventCreatedAt
       }
     })
-  }, [merchantProducts, searchQuery, selectedTag, sortOrder])
+  }, [
+    merchantProducts,
+    searchQuery,
+    selectedTag,
+    sortOrder,
+    eventContextCoordinate,
+    eventProductFilter,
+  ])
 
   const itemCountLabel = useMemo(() => {
     const count = merchantProducts.length
@@ -2531,7 +2263,6 @@ function ProductsPage() {
       ? `These options create ${productVariationCartesianCount} combinations. Reduce the values to review at most ${MAX_PRODUCT_VARIATION_COUNT}; existing available combinations are preserved.`
       : null
   const productIsDigital = form.fulfillment === "digital"
-  const productIsLocalPickup = form.fulfillment === "local_pickup"
   const productCoordinatesShipping =
     form.fulfillment === "ship" &&
     form.shippingPricingMode === "coordinate_after_order"
@@ -2543,11 +2274,6 @@ function ProductsPage() {
     form.fulfillment !== "ship" ||
     productCoordinatesShipping ||
     !hasPresetShippingZone
-  const localPickupParticipation = getProductEventParticipationState(
-    editing?.product ?? null,
-    localPickupQuery.data ?? null
-  )
-
   function persistCurrentProductDraft(): boolean {
     if (
       !activeProductDraftTarget ||
@@ -2584,11 +2310,17 @@ function ProductsPage() {
         inboxReadinessEnabled
       )
     ) {
-      startProductSave(payload)
+      startProductSave({
+        ...payload,
+        associationContext: eventContextCoordinate,
+      })
       return
     }
 
-    setPendingProductPublish(payload)
+    setPendingProductPublish({
+      ...payload,
+      associationContext: eventContextCoordinate,
+    })
   }
 
   function publishPendingProduct(): void {
@@ -2758,13 +2490,16 @@ function ProductsPage() {
       setProductDialogOpen(true)
       return
     }
-    const emptyForm = createEmptyProductForm(
-      hasPresetShippingZone,
-      effectiveShippingConfig.shipsFrom,
-      signedPolicyQuery.data?.state === "found"
-        ? signedPolicyQuery.data.policy
-        : null
-    )
+    const emptyForm = {
+      ...createEmptyProductForm(
+        hasPresetShippingZone,
+        effectiveShippingConfig.shipsFrom,
+        signedPolicyQuery.data?.state === "found"
+          ? signedPolicyQuery.data.policy
+          : null
+      ),
+      futureEventMarketReference: eventContextCoordinate ?? "",
+    }
     const draftTarget = accountPubkey
       ? getProductDraftTarget(accountPubkey)
       : null
@@ -2781,6 +2516,8 @@ function ProductsPage() {
           )
         : emptyForm
     )
+    if ("error" in loaded && loaded.error)
+      setDraftContinuationError(loaded.error)
     setDraftStorageAvailable(loaded.storageAvailable)
     setHasResumableCreateDraft(!!loaded.draft)
     setProductDialogOpen(true)
@@ -2799,6 +2536,8 @@ function ProductsPage() {
     const loaded = productDraftStoreRef.current.load(draftTarget)
     if (!loaded.draft) {
       setHasResumableCreateDraft(false)
+      if ("error" in loaded && loaded.error)
+        setDraftContinuationError(loaded.error)
       setDraftStorageAvailable(loaded.storageAvailable)
       return
     }
@@ -2808,13 +2547,15 @@ function ProductsPage() {
     setForm(
       reconcileProductFormShippingPreset(loaded.draft, hasPresetShippingZone)
     )
+    if ("error" in loaded && loaded.error)
+      setDraftContinuationError(loaded.error)
     setDraftStorageAvailable(loaded.storageAvailable)
     setHasResumableCreateDraft(true)
     setProductDialogOpen(true)
   }
 
-  function openEditDialog(item: MerchantProductFamily): void {
-    if (!item.variationForm.supported) return
+  function openEditDialog(item: MerchantProductFamily): boolean {
+    if (!item.variationForm.supported) return false
     rememberProductDialogTrigger()
     setSignerRestoredForDraft(false)
     saveMutation.reset()
@@ -2826,12 +2567,12 @@ function ProductsPage() {
       !isDiscardedProductDraft(activeProductDraftTarget)
     ) {
       setProductDialogOpen(true)
-      return
+      return true
     }
 
     if (!persistCurrentProductDraft()) {
       setProductDialogOpen(true)
-      return
+      return false
     }
     const draftTarget = accountPubkey
       ? getProductDraftTarget(accountPubkey, item)
@@ -2839,6 +2580,8 @@ function ProductsPage() {
     const loaded = draftTarget
       ? productDraftStoreRef.current.load(draftTarget)
       : { draft: null, storageAvailable: false }
+    if ("error" in loaded && loaded.error)
+      setDraftContinuationError(loaded.error)
     const authored = accountPubkey
       ? loadProductVariationAuthoringState(
           getProductVariationAuthoringTarget(accountPubkey, item)
@@ -2867,11 +2610,24 @@ function ProductsPage() {
       : null
     setEditing(editingItem)
     setActiveProductDraftTarget(draftTarget)
-    setForm(restoredForm ?? productToForm(editingItem, hasPresetShippingZone))
+    setForm({
+      ...(restoredForm ?? productToForm(editingItem, hasPresetShippingZone)),
+      ...(eventContextCoordinate
+        ? {
+            futureEventMarketReference:
+              editingItem.product.eventMarketRefs?.includes(
+                eventContextCoordinate
+              )
+                ? eventContextCoordinate
+                : "",
+          }
+        : {}),
+    })
     setDraftStorageAvailable(
       loaded.storageAvailable && authored.storageAvailable
     )
     setProductDialogOpen(true)
+    return true
   }
 
   function changeExistingProductFulfillment(): void {
@@ -2895,12 +2651,6 @@ function ProductsPage() {
       shippingCost: baseline.shippingCost,
       usePresetShippingZone: baseline.usePresetShippingZone,
       customShippingConfig: baseline.customShippingConfig,
-      eventMarketReference: baseline.eventMarketReference,
-      eventHandoffMode: baseline.eventHandoffMode,
-      merchantPickupTitle: baseline.merchantPickupTitle,
-      merchantPickupLocation: baseline.merchantPickupLocation,
-      merchantPickupGeohash: baseline.merchantPickupGeohash,
-      merchantPickupCountry: baseline.merchantPickupCountry,
       variations: {
         ...current.variations,
         rows: current.variations.rows.map((row) => {
@@ -2956,6 +2706,119 @@ function ProductsPage() {
           </Button>
         </div>
       </div>
+
+      {eventContextReference ? (
+        <section className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+          <h2 className="text-xl font-semibold">
+            Products for {contextName ?? "this Event Market"}
+          </h2>
+          <p className="text-sm text-[var(--text-muted)]">
+            Choose existing products below or add a new product. Removing an
+            event association keeps the shop product. Stock is shared with your
+            shop and every event date.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="outline">
+              <a href={`/events/${encodeURIComponent(eventContextReference)}`}>
+                Back to event
+              </a>
+            </Button>
+            <Select
+              value={eventProductFilter}
+              onValueChange={(value) =>
+                setEventProductFilter(value as typeof eventProductFilter)
+              }
+            >
+              <SelectTrigger className="w-56" aria-label="Event product filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All shop products</SelectItem>
+                <SelectItem value="associated">
+                  Offered at this event
+                </SelectItem>
+                <SelectItem value="available">Available to add</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {eventContext.isError ? (
+            <p role="alert">
+              Event details could not be checked. Return to the event and
+              refresh your approval.
+            </p>
+          ) : null}
+          <div className="space-y-3" aria-label="Choose event products">
+            {visibleProducts.map((item) => {
+              const associated =
+                !!eventContextCoordinate &&
+                item.product.eventMarketRefs?.includes(eventContextCoordinate)
+              const unavailable =
+                item.product.format !== "physical"
+                  ? "Digital products cannot use event pickup"
+                  : !item.variationForm.supported
+                    ? "This product's options need repair before editing"
+                    : item.product.stock === 0
+                      ? "Out of stock"
+                      : !item.safety.marketVisible
+                        ? "Hidden or unavailable in your shop"
+                        : null
+              return (
+                <div
+                  key={item.addressId}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--border)] p-3"
+                >
+                  <div>
+                    <p className="font-medium">{item.product.title}</p>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      {associated ? "Offered at this event" : "Shop product"}
+                      {unavailable ? ` · ${unavailable}` : ""}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      disabled={
+                        item.product.format !== "physical" ||
+                        !item.variationForm.supported
+                      }
+                      onClick={() => {
+                        if (openEditDialog(item))
+                          setForm((previous) => ({
+                            ...previous,
+                            futureEventMarketReference: associated
+                              ? ""
+                              : eventContextCoordinate,
+                          }))
+                      }}
+                    >
+                      {associated ? "Remove from event" : "Add to event"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={!item.variationForm.supported}
+                      onClick={() => {
+                        openEditDialog(item)
+                      }}
+                    >
+                      Edit product
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+            {visibleProducts.length === 0 ? (
+              <p className="text-sm text-[var(--text-muted)]">
+                No products match. Choose All shop products or create a new
+                product.
+              </p>
+            ) : null}
+          </div>
+          <p className="text-xs text-[var(--text-muted)]">
+            Add and remove open the product editor. Review and save to publish
+            your choice.
+          </p>
+        </section>
+      ) : null}
 
       {!accountPubkey && (
         <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
@@ -3174,7 +3037,13 @@ function ProductsPage() {
             </div>
           )}
 
-        <div className="grid auto-rows-fr gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div
+          className={
+            eventContextReference
+              ? "hidden"
+              : "grid auto-rows-fr gap-4 sm:grid-cols-2 xl:grid-cols-3"
+          }
+        >
           {visibleProducts.map((item) => {
             const priceProduct =
               item.family?.priceSummary.minimum?.product ?? item.product
@@ -3190,124 +3059,6 @@ function ProductsPage() {
             const stockDisplay = item.family
               ? getProductFamilyStockDisplay(item.family.inventorySummary)
               : getProductStockDisplay(item.product.stock)
-            const eventProductContext = eventProductContexts.get(item.addressId)
-
-            if (!item.safety.marketVisible && eventProductContext) {
-              const eventMarket =
-                eventProductMarketsQuery.data?.[
-                  eventProductContext.collectionCoordinate
-                ]
-              return (
-                <div key={item.addressId} className="grid gap-2">
-                  <EventProductManagementSummary
-                    context={eventProductContext}
-                    eventTitle={eventMarket?.title}
-                    onOpenEvent={() => {
-                      if (!accountPubkey) return
-                      const titleFrontiers =
-                        expectedOrganizerEventMarketTitleFrontiers(eventMarket)
-                      rememberDiscoveredEventMarket(accountPubkey, {
-                        reference: eventProductContext.naddr,
-                        ...(titleFrontiers.titleCollectionEventId &&
-                        titleFrontiers.titleCalendarEventId
-                          ? {
-                              title: eventMarket?.title,
-                              ...titleFrontiers,
-                            }
-                          : {}),
-                        savedAt: Date.now(),
-                      })
-                      const eventUrl = new URL(
-                        "/events",
-                        window.location.origin
-                      )
-                      eventUrl.searchParams.set(
-                        "event",
-                        eventProductContext.naddr
-                      )
-                      window.location.assign(eventUrl)
-                    }}
-                  />
-                  <ProductCard
-                    title={item.product.title}
-                    titleAside={
-                      <div className="flex flex-col items-end gap-1">
-                        <StatusPill variant="info" className="text-[10px]">
-                          Event product
-                        </StatusPill>
-                        <StatusPill
-                          variant={stockDisplay.variant}
-                          className="text-[10px]"
-                          noIcon={stockDisplay.variant === "neutral"}
-                        >
-                          {stockDisplay.label}
-                        </StatusPill>
-                        <DoubleSideStatusPill
-                          left={zapBadge.left}
-                          right={zapBadge.right}
-                        />
-                      </div>
-                    }
-                    merchantName={
-                      eventMarket?.title
-                        ? `Event: ${eventMarket.title}`
-                        : "Event-only listing"
-                    }
-                    images={getProductImageCandidates(item.product)}
-                    primaryPrice={
-                      item.family?.priceSummary.varies
-                        ? `From ${primary}`
-                        : primary
-                    }
-                    secondaryPrice={secondary}
-                    imageLoading="lazy"
-                    action={
-                      <div className="flex gap-1">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          disabled={!item.variationForm.supported}
-                          onClick={(event) => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            if (!item.variationForm.supported) return
-                            openEditDialog(item)
-                          }}
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          disabled={isDeleting}
-                          onClick={(event) => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            const targetCount = 1 + item.variations.length
-                            const ok = window.confirm(
-                              targetCount > 1
-                                ? `Delete "${item.product.title}" and its ${item.variations.length} variations?`
-                                : `Delete "${item.product.title}"?`
-                            )
-                            if (ok) {
-                              deleteMutation.mutate({
-                                merchantPubkey: item.product.pubkey,
-                                product: item,
-                              })
-                            }
-                          }}
-                        >
-                          {isDeleting ? "..." : "Delete"}
-                        </Button>
-                      </div>
-                    }
-                  />
-                </div>
-              )
-            }
-
             if (!item.safety.marketVisible) {
               return (
                 <div key={item.addressId} className="grid gap-2">
@@ -3622,10 +3373,9 @@ function ProductsPage() {
                       Current fulfillment is kept
                     </p>
                     <p className="text-xs leading-5 text-[var(--text-muted)]">
-                      You can edit this product without changing its shipping or
-                      event pickup. Direct event pickup is rechecked before your
-                      signer opens; organizer calendar and collection
-                      availability stay outside this save.
+                      You can edit this product without changing its shop
+                      shipping. Event pickup follows your approved merchant
+                      assignment.
                     </p>
                     <Button
                       type="button"
@@ -3638,43 +3388,15 @@ function ProductsPage() {
                 ) : (
                   <ProductFulfillmentEditor
                     intent={form.fulfillment}
-                    reference={form.eventMarketReference}
-                    handoffMode={form.eventHandoffMode}
-                    merchantPickupTitle={form.merchantPickupTitle}
-                    merchantPickupLocation={form.merchantPickupLocation}
-                    merchantPickupGeohash={form.merchantPickupGeohash}
-                    merchantPickupCountry={form.merchantPickupCountry}
-                    market={localPickupQuery.data}
-                    organizerInboxState={organizerInboxState}
-                    availableMarkets={(
-                      organizerEventMarketsQuery.data?.markets ?? []
-                    ).filter((market) => market.state === "active")}
-                    resolving={localPickupQuery.isFetching}
-                    readFailed={localPickupQuery.isError}
-                    participation={localPickupParticipation}
-                    onIntentChange={(fulfillment) => {
-                      setForm((prev) => ({
-                        ...prev,
+                    onIntentChange={(fulfillment) =>
+                      setForm((previous) => ({
+                        ...previous,
                         fulfillment,
                         format:
                           fulfillment === "digital" ? "digital" : "physical",
                         usePresetShippingZone:
                           fulfillment === "ship" && hasPresetShippingZone,
-                        eventHandoffMode:
-                          fulfillment === "local_pickup" &&
-                          prev.fulfillment !== "local_pickup"
-                            ? "merchant_handoff"
-                            : prev.eventHandoffMode,
                       }))
-                    }}
-                    onReferenceChange={(eventMarketReference) =>
-                      setForm((prev) => ({ ...prev, eventMarketReference }))
-                    }
-                    onHandoffModeChange={(eventHandoffMode) =>
-                      setForm((prev) => ({ ...prev, eventHandoffMode }))
-                    }
-                    onMerchantPickupChange={(field, value) =>
-                      setForm((prev) => ({ ...prev, [field]: value }))
                     }
                   />
                 )}
@@ -3708,9 +3430,7 @@ function ProductsPage() {
                             : ""
                         }
                         disabled={
-                          productIsDigital ||
-                          productIsLocalPickup ||
-                          productCoordinatesShipping
+                          productIsDigital || productCoordinatesShipping
                         }
                         aria-invalid={
                           !!productFormValidation.errors.shippingCost
@@ -3726,11 +3446,9 @@ function ProductsPage() {
                         placeholder={
                           productIsDigital
                             ? "Not required"
-                            : productIsLocalPickup
-                              ? "Set by event pickup"
-                              : productCoordinatesShipping
-                                ? "Set after order"
-                                : "0 or fixed amount"
+                            : productCoordinatesShipping
+                              ? "Set after order"
+                              : "0 or fixed amount"
                         }
                       />
                     </div>
@@ -3782,7 +3500,7 @@ function ProductsPage() {
                     {productFormValidation.errors.price}
                   </p>
                 )}
-                {form.format === "physical" && !productIsLocalPickup && (
+                {form.format === "physical" && (
                   <div className="sm:col-span-4">
                     <ProductShippingMeasurements
                       disabled={preservingFulfillment}
@@ -3794,63 +3512,61 @@ function ProductsPage() {
                     />
                   </div>
                 )}
-                {!preservingFulfillment &&
-                  !productIsDigital &&
-                  !productIsLocalPickup && (
-                    <div className="space-y-1.5 sm:col-span-4">
-                      <Label htmlFor="product-shipping-method">
-                        Shipping pricing
-                      </Label>
-                      <Select
-                        value={form.shippingPricingMode}
-                        onValueChange={(value) =>
-                          setForm((current) => ({
-                            ...current,
-                            shippingPricingMode:
-                              value as ProductFormState["shippingPricingMode"],
-                          }))
-                        }
+                {!preservingFulfillment && !productIsDigital && (
+                  <div className="space-y-1.5 sm:col-span-4">
+                    <Label htmlFor="product-shipping-method">
+                      Shipping pricing
+                    </Label>
+                    <Select
+                      value={form.shippingPricingMode}
+                      onValueChange={(value) =>
+                        setForm((current) => ({
+                          ...current,
+                          shippingPricingMode:
+                            value as ProductFormState["shippingPricingMode"],
+                        }))
+                      }
+                    >
+                      <SelectTrigger id="product-shipping-method">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="weight_table">
+                          Use my shipping table
+                        </SelectItem>
+                        <SelectItem value="fixed">
+                          Fixed price per item
+                        </SelectItem>
+                        <SelectItem value="coordinate_after_order">
+                          Coordinate after the order
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {form.shippingPricingMode === "weight_table" && (
+                      <p className="text-pretty text-xs text-[var(--text-secondary)]">
+                        <Link to="/shipping" className="underline">
+                          Edit shipping rates
+                        </Link>
+                      </p>
+                    )}
+                    {productTableWarning && (
+                      <p
+                        role="status"
+                        className="text-pretty text-xs text-warning"
                       >
-                        <SelectTrigger id="product-shipping-method">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="weight_table">
-                            Use my shipping table
-                          </SelectItem>
-                          <SelectItem value="fixed">
-                            Fixed price per item
-                          </SelectItem>
-                          <SelectItem value="coordinate_after_order">
-                            Coordinate after the order
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {form.shippingPricingMode === "weight_table" && (
-                        <p className="text-pretty text-xs text-[var(--text-secondary)]">
-                          <Link to="/shipping" className="underline">
-                            Edit shipping rates
-                          </Link>
-                        </p>
-                      )}
-                      {productTableWarning && (
-                        <p
-                          role="status"
-                          className="text-pretty text-xs text-warning"
-                        >
-                          {productTableWarning}
-                        </p>
-                      )}
-                      {productTableError && (
-                        <p
-                          role="alert"
-                          className="text-pretty text-sm text-error"
-                        >
-                          {productTableError}
-                        </p>
-                      )}
-                    </div>
-                  )}
+                        {productTableWarning}
+                      </p>
+                    )}
+                    {productTableError && (
+                      <p
+                        role="alert"
+                        className="text-pretty text-sm text-error"
+                      >
+                        {productTableError}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {!preservingFulfillment &&
                   form.shippingPricingMode !== "weight_table" && (
                     <>
@@ -3864,31 +3580,29 @@ function ProductsPage() {
                         )}
                       >
                         {productFormValidation.errors.shippingCost ??
-                          (productIsLocalPickup
-                            ? "Pickup cost comes from the verified organizer option."
-                            : getProductShippingCostHelpText(
-                                form.shippingCost,
-                                form.format,
-                                form.currency,
-                                form.shippingPricingMode
-                              ))}
+                          getProductShippingCostHelpText(
+                            form.shippingCost,
+                            form.format,
+                            form.currency,
+                            form.shippingPricingMode
+                          )}
                       </div>
                       <label
                         className={cn(
                           "flex items-start gap-3 rounded-xl border p-3 text-sm sm:col-span-4",
-                          productIsDigital || productIsLocalPickup
+                          productIsDigital
                             ? "cursor-not-allowed border-dashed border-[var(--border)] bg-[var(--surface-elevated)] opacity-60"
                             : "cursor-pointer",
                           productCoordinatesShipping
                             ? "border-warning/40 bg-warning/10"
                             : "border-[var(--border)] bg-[var(--surface-elevated)]"
                         )}
-                        aria-disabled={productIsDigital || productIsLocalPickup}
+                        aria-disabled={productIsDigital}
                       >
                         <input
                           type="checkbox"
                           checked={productCoordinatesShipping}
-                          disabled={productIsDigital || productIsLocalPickup}
+                          disabled={productIsDigital}
                           aria-labelledby="product-coordinate-shipping-label"
                           aria-describedby="product-coordinate-shipping-help"
                           onChange={(event) =>
@@ -3919,9 +3633,7 @@ function ProductsPage() {
                           >
                             {productIsDigital
                               ? "Digital products do not need shipping coordination."
-                              : productIsLocalPickup
-                                ? "Local pickup uses the organizer's signed public option."
-                                : "Only choose this if you cannot set a checkout amount. Fast checkout will be unavailable, and you’ll need to follow up on every order message before the buyer can pay."}
+                              : "Only choose this if you cannot set a checkout amount. Fast checkout will be unavailable, and you’ll need to follow up on every order message before the buyer can pay."}
                           </span>
                         </span>
                       </label>
@@ -3938,7 +3650,6 @@ function ProductsPage() {
                           type="checkbox"
                           checked={
                             !productIsDigital &&
-                            !productIsLocalPickup &&
                             !productCoordinatesShipping &&
                             hasPresetShippingZone &&
                             form.usePresetShippingZone
@@ -3963,15 +3674,13 @@ function ProductsPage() {
                           >
                             {productIsDigital
                               ? "Digital products do not need shipping zones."
-                              : productIsLocalPickup
-                                ? "Local pickup does not evaluate buyer shipping destinations."
-                                : productCoordinatesShipping
-                                  ? "Shipping destinations will be agreed with the buyer after the order."
-                                  : hasPresetShippingZone
-                                    ? form.usePresetShippingZone
-                                      ? "Direct checkout will use your published shipping countries and postal rules."
-                                      : "Use custom destinations for this product instead of the published preset."
-                                    : "No preset shipping zone is available. Add custom destinations for this product below."}
+                              : productCoordinatesShipping
+                                ? "Shipping destinations will be agreed with the buyer after the order."
+                                : hasPresetShippingZone
+                                  ? form.usePresetShippingZone
+                                    ? "Direct checkout will use your published shipping countries and postal rules."
+                                    : "Use custom destinations for this product instead of the published preset."
+                                  : "No preset shipping zone is available. Add custom destinations for this product below."}
                           </span>
                         </span>
                       </label>
@@ -4031,6 +3740,33 @@ function ProductsPage() {
                   </span>
                 </label>
 
+                {form.format === "physical" ? (
+                  <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] p-3">
+                    <input
+                      type="checkbox"
+                      checked={form.eventGuestContactOptional === true}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          eventGuestContactOptional: event.target.checked,
+                        }))
+                      }
+                      className="mt-1 h-4 w-4 accent-secondary-500"
+                    />
+                    <span>
+                      <span className="font-medium">
+                        Allow contact-free event handoff
+                      </span>
+                      <span className="mt-1 block text-xs text-[var(--text-muted)]">
+                        At your booth during an event, guests may use a name or
+                        pseudonym and retain a receipt. You cannot contact them
+                        later. Shipping and organizer pickup still require
+                        contact details. Refunds and rebates must be arranged
+                        manually with the receipt holder.
+                      </span>
+                    </span>
+                  </label>
+                ) : null}
                 <div className="grid gap-1.5">
                   <Label htmlFor="product-zap-message-policy">
                     Zap message policy
@@ -4201,27 +3937,45 @@ function ProductsPage() {
                 }
               />
 
-              <div className="grid gap-1.5">
-                <Label htmlFor="product-future-event-market">
-                  Future Event Market
-                </Label>
-                <Input
-                  id="product-future-event-market"
-                  value={form.futureEventMarketReference ?? ""}
-                  onChange={(event) =>
-                    setForm((previous) => ({
-                      ...previous,
-                      futureEventMarketReference: event.target.value,
-                    }))
-                  }
-                  placeholder="Event Market naddr or 30409 coordinate"
-                />
-                <p className="text-xs leading-5 text-[var(--text-muted)]">
-                  Your product joins when the organizer has approved your shop.
-                  The organizer sets the booth or pickup assignment. Clear this
-                  field to remove the product from that event; ordinary shop
-                  shipping stays the same.
-                </p>
+              <div className="grid gap-2 rounded-xl border border-[var(--border)] p-3">
+                <Label>Event participation</Label>
+                {eventContextCoordinate ? (
+                  <>
+                    <p className="text-sm">
+                      {contextName ?? "Selected Event Market"}
+                    </p>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={!!form.futureEventMarketReference}
+                        disabled={form.format !== "physical"}
+                        onChange={(event) =>
+                          setForm((previous) => ({
+                            ...previous,
+                            futureEventMarketReference: event.target.checked
+                              ? eventContextCoordinate
+                              : "",
+                          }))
+                        }
+                      />
+                      Offer this product at this event
+                    </label>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      Saving checks your current signed approval. Clear the
+                      checkbox to remove this event association. Other events
+                      and shop shipping are preserved.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      Open an approved event to choose products for it.
+                    </p>
+                    <Button asChild variant="outline">
+                      <a href="/events">Choose an event</a>
+                    </Button>
+                  </>
+                )}
               </div>
 
               <div className="grid gap-1.5">

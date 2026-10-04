@@ -4,6 +4,7 @@ import {
   type SourcePriceQuote,
   shippingMoneyToMinorUnits,
   shippingMinorUnitsToAmount,
+  getCurrencyFractionDigits,
   type ShippingPolicy,
   type ShippingPolicyRule,
   type ShippingPolicyTable,
@@ -63,6 +64,29 @@ export function createShippingPolicyDraft(): ShippingPolicyDraft {
   }
 }
 
+/** Preserve prices while requiring custom domestic areas to be selected again. */
+export function changeShippingPolicyOrigin(
+  draft: ShippingPolicyDraft,
+  originCountry: string
+): ShippingPolicyDraft {
+  if (originCountry === draft.originCountry) return draft
+  return {
+    ...draft,
+    originCountry,
+    domestic: {
+      ...draft.domestic,
+      rules: draft.domestic.rules.map((rule) => ({
+        ...rule,
+        country: originCountry,
+        customArea:
+          !!rule.customArea || !!rule.subdivision || !!rule.postalPrefix,
+        subdivision: "",
+        postalPrefix: "",
+      })),
+    },
+  }
+}
+
 function parseGrams(value: string, label: string, optional = false): number {
   if (optional && !value.trim()) return 0
   const grams = parsePlainDecimalAmount(value, label)
@@ -77,11 +101,16 @@ function parseGrams(value: string, label: string, optional = false): number {
 export function buildShippingPolicyFromDraft(
   draft: ShippingPolicyDraft
 ): ShippingPolicy {
-  const money = (value: string, label: string) =>
-    shippingMoneyToMinorUnits(
-      parsePlainDecimalAmount(value, label),
-      draft.currency
-    )
+  const money = (value: string, label: string) => {
+    try {
+      return shippingMoneyToMinorUnits(value, draft.currency)
+    } catch (error) {
+      throw new Error(
+        `${label}: ${error instanceof Error ? error.message : "Invalid amount."}`,
+        { cause: error }
+      )
+    }
+  }
   const table = (
     input: ShippingTableDraft,
     domestic: boolean
@@ -151,8 +180,15 @@ export function buildShippingPolicyFromDraft(
 export function shippingPolicyToDraft(
   policy: ShippingPolicy
 ): ShippingPolicyDraft {
-  const money = (minor: number) =>
-    String(shippingMinorUnitsToAmount(minor, policy.currency))
+  const money = (minor: number) => {
+    if (!Number.isSafeInteger(minor) || minor < 0)
+      throw new Error("Invalid minor-unit amount.")
+    const digits = getCurrencyFractionDigits(policy.currency)
+    const text = String(minor).padStart(digits + 1, "0")
+    if (!digits) return text
+    const fraction = text.slice(-digits).replace(/0+$/, "")
+    return `${text.slice(0, -digits)}${fraction ? `.${fraction}` : ""}`
+  }
   const table = (input: ShippingPolicyTable | null): ShippingTableDraft => ({
     enabled: input !== null,
     freeShippingThreshold:
@@ -213,12 +249,15 @@ export function getProductShippingMeasurements(form: {
   }
   if (form.shippingHandling?.trim()) {
     const currency = form.currency ?? "SATS"
-    const minor = shippingMoneyToMinorUnits(
-      parsePlainDecimalAmount(form.shippingHandling, "Handling charge"),
-      currency
-    )
+    const minor = shippingMoneyToMinorUnits(form.shippingHandling, currency)
+    const amount = shippingMinorUnitsToAmount(minor, currency)
+    if (shippingMoneyToMinorUnits(amount, currency) !== minor) {
+      throw new Error(
+        "Handling charge is too large to preserve exactly. Enter a smaller amount."
+      )
+    }
     result.shippingHandling = {
-      amount: shippingMinorUnitsToAmount(minor, currency),
+      amount,
       currency,
       normalizedCurrency: normalizeCurrencyIdentity(currency),
     }

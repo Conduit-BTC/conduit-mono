@@ -1,15 +1,11 @@
 import {
-  EVENT_KINDS,
   getPriceSats,
   getProductImageCandidates,
   getShippingCostSats,
-  hasSamePickupFulfillmentGraph,
   hasExactLiveProductAvailabilityEvidence,
-  isFiatCurrencyCode,
   normalizeProductCoordinate,
   orderItemFulfillmentSchema,
   parseAddressableCoordinate,
-  resolveOrderPickupHandoffAuthority,
   resolveCartShippingCost,
   type CommerceQueryMeta,
   type ProductAvailabilityDiagnostic,
@@ -18,9 +14,7 @@ import {
   type PricingRateInput,
   type Product,
   type ProductSpecification,
-  type OrderPickupFulfillmentSchema,
   type OrderEventMarketPickupFulfillmentSchema,
-  type PickupEvidenceCoordinateSchema,
   type ShippingPolicyQuote,
   type SourcePriceQuote,
   type SignedPublicNostrEvent,
@@ -58,6 +52,8 @@ export type CartItem = {
    * carts omit this field and continue to resolve from `format` as shipment or
    * digital delivery.
    */
+  /** Cart-only navigation context; never serialized into an order. */
+  eventMarketContext?: { marketCoordinate: string; calendarCoordinate: string }
   fulfillment?: CartItemFulfillment
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats?: number
@@ -97,40 +93,15 @@ export type CartItem = {
   quantity: number
 }
 
-export type PickupEvidenceCoordinate = PickupEvidenceCoordinateSchema
-
 /** Shared protocol snapshot; Market only persists and displays this shape. */
-export type CartPickupFulfillment = OrderPickupFulfillmentSchema
 export type CartEventMarketPickupFulfillment =
   OrderEventMarketPickupFulfillmentSchema
 
-/**
- * Reversible shopper intent while the exact signed event pickup graph is being
- * resolved. This cart-only shape is deliberately excluded from order schemas.
- */
-export type CartPendingEventPickupFulfillment = {
-  type: "event_pickup_pending"
-  collectionCoordinate: string
-}
-
 export type CartItemFulfillment =
-  | { type: "digital" }
-  | { type: "shipping" }
-  | CartPendingEventPickupFulfillment
-  | CartPickupFulfillment
-  | CartEventMarketPickupFulfillment
-
-export type PendingEventPickupCartItem = CartItem & {
-  fulfillment: CartPendingEventPickupFulfillment
-}
+  { type: "digital" } | { type: "shipping" } | CartEventMarketPickupFulfillment
 
 export type CartFulfillmentLane =
-  | "empty"
-  | "digital"
-  | "shipping"
-  | "pickup"
-  | "event_pickup_pending"
-  | "mixed_shipping_pickup"
+  "empty" | "digital" | "shipping" | "pickup" | "mixed_shipping_pickup"
 
 export type CartState = {
   items: CartItem[]
@@ -148,15 +119,6 @@ export type CartItemInput = Omit<
   "cartLineId" | "merchantAddedAt" | "quantity"
 >
 
-export type CartEventPickupUpgradeInput = Omit<
-  CartItemInput,
-  "fulfillment" | "productUpdatedAt" | "productEventId"
-> & {
-  fulfillment: CartPickupFulfillment
-  productUpdatedAt: number
-  productEventId: string
-}
-
 export type ParsedPersistedCart = {
   state: CartState
   shouldPersist: boolean
@@ -170,9 +132,7 @@ export type MerchantCartGroup = {
   merchantAddedAt: number
 }
 
-export type CartPurchaseItem = Omit<CartItem, "fulfillment"> & {
-  fulfillment?: Exclude<CartItemFulfillment, CartPendingEventPickupFulfillment>
-}
+export type CartPurchaseItem = CartItem
 
 export type CartPurchaseGroup = Omit<MerchantCartGroup, "items"> & {
   id: string
@@ -269,9 +229,7 @@ export function createCartItemFromProduct(
     (product.format === "digital"
       ? ({ type: "digital" } as const)
       : ({ type: "shipping" } as const))
-  const pickup =
-    resolvedFulfillment.type === "pickup" ? resolvedFulfillment : null
-  const pickupPending = resolvedFulfillment.type === "event_pickup_pending"
+  const eventMarketPickup = resolvedFulfillment.type === "event_market_pickup"
   return {
     productId: product.id,
     selectedSpecifications:
@@ -288,36 +246,44 @@ export function createCartItemFromProduct(
     tags: product.tags,
     format: product.format,
     fulfillment: resolvedFulfillment,
-    shippingCostSats: pickupPending
+    ...(resolvedFulfillment.type === "event_market_pickup"
+      ? {
+          eventMarketContext: {
+            marketCoordinate: resolvedFulfillment.market.coordinate,
+            calendarCoordinate: resolvedFulfillment.calendar.coordinate,
+          },
+        }
+      : {}),
+    shippingCostSats: eventMarketPickup ? 0 : product.shippingCostSats,
+    sourceShippingCost: eventMarketPickup
       ? undefined
-      : (pickup?.costSats ?? product.shippingCostSats),
-    sourceShippingCost: pickupPending
+      : product.sourceShippingCost,
+    shippingOptionId: eventMarketPickup ? undefined : product.shippingOptionId,
+    shippingOptionDTag: eventMarketPickup
       ? undefined
-      : (pickup?.sourceCost ?? product.sourceShippingCost),
-    shippingOptionId: pickupPending
+      : product.shippingOptionDTag,
+    shippingOptionLaunchUnsupported: eventMarketPickup
       ? undefined
-      : (pickup?.option.coordinate ?? product.shippingOptionId),
-    shippingOptionDTag: pickupPending
-      ? undefined
-      : pickup?.option.coordinate.split(":").slice(2).join(":") ||
-        product.shippingOptionDTag,
-    shippingOptionLaunchUnsupported:
-      pickup || pickupPending
-        ? undefined
-        : product.shippingOptionLaunchUnsupported,
-    shippingCountries: pickup || pickupPending ? [] : product.shippingCountries,
-    shippingCountryRules:
-      pickup || pickupPending ? [] : product.shippingCountryRules,
+      : product.shippingOptionLaunchUnsupported,
+    shippingCountries: eventMarketPickup ? [] : product.shippingCountries,
+    shippingCountryRules: eventMarketPickup ? [] : product.shippingCountryRules,
+    productUpdatedAt:
+      resolvedFulfillment.type === "event_market_pickup"
+        ? resolvedFulfillment.product.createdAt
+        : product.updatedAt,
+    productEventId:
+      resolvedFulfillment.type === "event_market_pickup"
+        ? resolvedFulfillment.product.eventId
+        : product.sourceEventId,
+    canonicalShippingResolved: eventMarketPickup
+      ? false
+      : canonicalShippingResolved,
     shippingWeightGrams: product.shippingWeightGrams,
     shippingWeightAllowanceGrams: product.shippingWeightAllowanceGrams,
     shippingHandling: product.shippingHandling
       ? { ...product.shippingHandling }
       : undefined,
-    productUpdatedAt: product.updatedAt,
-    productEventId: product.sourceEventId,
     signedProductEvent: product.signedProductEvent,
-    canonicalShippingResolved:
-      pickup || pickupPending ? false : canonicalShippingResolved,
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
@@ -325,29 +291,11 @@ export function createCartItemFromProduct(
   }
 }
 
-export function createPendingEventPickupFulfillment(
-  collectionCoordinate: string
-): CartPendingEventPickupFulfillment | null {
-  const parsed = parseAddressableCoordinate(collectionCoordinate, [
-    EVENT_KINDS.PRODUCT_COLLECTION,
-  ])
-  return parsed
-    ? {
-        type: "event_pickup_pending",
-        collectionCoordinate: parsed.coordinate,
-      }
-    : null
-}
-
 export function getCartItemFulfillmentType(
   item: Pick<CartItem, "format" | "fulfillment">
 ): CartItemFulfillment["type"] {
-  if (item.fulfillment?.type === "pickup") return "pickup"
   if (item.fulfillment?.type === "event_market_pickup")
     return "event_market_pickup"
-  if (item.fulfillment?.type === "event_pickup_pending") {
-    return "event_pickup_pending"
-  }
   if (item.format === "digital" || item.fulfillment?.type === "digital") {
     return "digital"
   }
@@ -357,37 +305,22 @@ export function getCartItemFulfillmentType(
 export function isPickupCartItem(
   item: Pick<CartItem, "format" | "fulfillment">
 ): item is Pick<CartItem, "format" | "fulfillment"> & {
-  fulfillment: CartPickupFulfillment
+  fulfillment: CartEventMarketPickupFulfillment
 } {
-  return item.fulfillment?.type === "pickup"
-}
-
-export function isPendingEventPickupCartItem<
-  T extends Pick<CartItem, "fulfillment">,
->(item: T): item is T & { fulfillment: CartPendingEventPickupFulfillment } {
-  return item.fulfillment?.type === "event_pickup_pending"
-}
-
-export function getPendingEventPickupCartItems(
-  items: readonly CartItem[]
-): PendingEventPickupCartItem[] {
-  return items.filter(isPendingEventPickupCartItem)
+  return item.fulfillment?.type === "event_market_pickup"
 }
 
 export function getCartFulfillmentLane(
   items: Array<Pick<CartItem, "format" | "fulfillment">>
 ): CartFulfillmentLane {
   if (items.length === 0) return "empty"
-  if (items.some(isPendingEventPickupCartItem)) {
-    return "event_pickup_pending"
-  }
 
   let hasShipping = false
   let hasPickup = false
   for (const item of items) {
     const type = getCartItemFulfillmentType(item)
     if (type === "shipping") hasShipping = true
-    if (type === "pickup" || type === "event_market_pickup") hasPickup = true
+    if (type === "event_market_pickup") hasPickup = true
   }
 
   if (hasShipping && hasPickup) return "mixed_shipping_pickup"
@@ -399,25 +332,8 @@ export function getCartFulfillmentLane(
 export function getMixedFulfillmentBlockingMessage(
   items: Array<Pick<CartItem, "format" | "fulfillment">>
 ): string | null {
-  if (items.some((item) => item.fulfillment?.type === "event_market_pickup")) {
-    return "This Event Market needs current signed participation verification before checkout."
-  }
-  if (items.some(isPendingEventPickupCartItem)) {
-    return "Event pickup is still being verified. Review it after verification finishes."
-  }
   if (getCartFulfillmentLane(items) === "mixed_shipping_pickup") {
     return "Shipping and event pickup cannot be combined in one merchant order yet. Place them as separate orders."
-  }
-
-  const pickupItems = items.filter(isPickupCartItem)
-  const firstPickup = pickupItems[0]?.fulfillment
-  if (
-    firstPickup &&
-    pickupItems.some(
-      (item) => !hasSamePickupFulfillmentGraph(firstPickup, item.fulfillment)
-    )
-  ) {
-    return "These items have different pickup handlers or event pickup records. Place them as separate orders."
   }
 
   const marketItems = items.filter(
@@ -430,11 +346,28 @@ export function getMixedFulfillmentBlockingMessage(
       (item) =>
         item.fulfillment?.type !== "event_market_pickup" ||
         item.fulfillment.market.coordinate !== firstMarket.market.coordinate ||
+        item.fulfillment.calendar.coordinate !==
+          firstMarket.calendar.coordinate ||
         item.fulfillment.merchantPubkey !== firstMarket.merchantPubkey
     )
   ) {
     return "These items belong to different Event Markets. Place them as separate orders."
   }
+
+  if (
+    firstMarket?.type === "event_market_pickup" &&
+    marketItems.some((item) => {
+      const current = item.fulfillment
+      return (
+        current?.type !== "event_market_pickup" ||
+        current.calendar.eventId !== firstMarket.calendar.eventId ||
+        current.grant.eventId !== firstMarket.grant.eventId ||
+        current.mode !== firstMarket.mode ||
+        current.assignment !== firstMarket.assignment
+      )
+    })
+  )
+    return "Review these items against the same current signed Event Market terms before checkout."
 
   return null
 }
@@ -446,31 +379,19 @@ export function isSameCartFulfillment(
   const leftType = getCartItemFulfillmentType(left)
   const rightType = getCartItemFulfillmentType(right)
   if (leftType !== rightType) return false
-  if (leftType === "event_pickup_pending") {
-    return (
-      left.fulfillment?.type === "event_pickup_pending" &&
-      right.fulfillment?.type === "event_pickup_pending" &&
-      left.fulfillment.collectionCoordinate ===
-        right.fulfillment.collectionCoordinate
-    )
-  }
   if (leftType === "event_market_pickup") {
     return (
       left.fulfillment?.type === "event_market_pickup" &&
       right.fulfillment?.type === "event_market_pickup" &&
       left.fulfillment.market.coordinate ===
         right.fulfillment.market.coordinate &&
+      left.fulfillment.calendar.coordinate ===
+        right.fulfillment.calendar.coordinate &&
       left.fulfillment.merchantPubkey === right.fulfillment.merchantPubkey &&
       left.fulfillment.payeePubkey === right.fulfillment.payeePubkey
     )
   }
-  if (leftType !== "pickup" || rightType !== "pickup") return true
-
-  return (
-    left.fulfillment?.type === "pickup" &&
-    right.fulfillment?.type === "pickup" &&
-    hasSamePickupFulfillmentGraph(left.fulfillment, right.fulfillment)
-  )
+  return true
 }
 
 export function getCartProductAvailability(
@@ -871,24 +792,27 @@ function parseCartItem(value: unknown): CartItem | null {
       : undefined
   let fulfillment: CartItemFulfillment | undefined
   if (value.fulfillment !== undefined) {
-    if (
-      isRecord(value.fulfillment) &&
-      value.fulfillment.type === "event_pickup_pending"
-    ) {
-      const pending = createPendingEventPickupFulfillment(
-        nonemptyString(value.fulfillment.collectionCoordinate) ?? ""
-      )
-      if (!pending || format === "digital") return null
-      fulfillment = pending
-    } else {
-      const fulfillmentResult = orderItemFulfillmentSchema.safeParse(
-        value.fulfillment
-      )
-      if (!fulfillmentResult.success) return null
-      fulfillment = fulfillmentResult.data
-    }
+    const fulfillmentResult = orderItemFulfillmentSchema.safeParse(
+      value.fulfillment
+    )
+    if (!fulfillmentResult.success) return null
+    fulfillment = fulfillmentResult.data
   }
-  const pickupPending = fulfillment?.type === "event_pickup_pending"
+  const marketContext = isRecord(value.eventMarketContext)
+    ? value.eventMarketContext
+    : null
+  const marketCoordinate =
+    marketContext && typeof marketContext.marketCoordinate === "string"
+      ? parseAddressableCoordinate(marketContext.marketCoordinate, [30409])
+          ?.coordinate
+      : undefined
+  const calendarCoordinate =
+    marketContext && typeof marketContext.calendarCoordinate === "string"
+      ? parseAddressableCoordinate(
+          marketContext.calendarCoordinate,
+          [31922, 31923]
+        )?.coordinate
+      : undefined
   const zapMessagePolicy = normalizeCartZapMessagePolicy(value.zapMessagePolicy)
 
   return {
@@ -909,8 +833,8 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(tags ? { tags } : {}),
     ...(format ? { format } : {}),
     ...(fulfillment ? { fulfillment } : {}),
-    ...(!pickupPending && shippingCostSats !== undefined
-      ? { shippingCostSats }
+    ...(marketCoordinate && calendarCoordinate
+      ? { eventMarketContext: { marketCoordinate, calendarCoordinate } }
       : {}),
     ...(shippingWeightGrams !== undefined &&
     Number.isSafeInteger(shippingWeightGrams) &&
@@ -925,31 +849,29 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(parsedPolicyQuote.success
       ? { shippingPolicyQuote: parsedPolicyQuote.data }
       : {}),
+    ...(shippingCostSats !== undefined ? { shippingCostSats } : {}),
     ...(stock !== undefined ? { stock } : {}),
-    ...(!pickupPending && sourceShippingCost ? { sourceShippingCost } : {}),
-    ...(!pickupPending && nonemptyString(value.shippingOptionId)
+    ...(sourceShippingCost ? { sourceShippingCost } : {}),
+    ...(nonemptyString(value.shippingOptionId)
       ? { shippingOptionId: String(value.shippingOptionId) }
       : {}),
-    ...(!pickupPending && nonemptyString(value.shippingOptionDTag)
+    ...(nonemptyString(value.shippingOptionDTag)
       ? { shippingOptionDTag: String(value.shippingOptionDTag) }
       : {}),
-    ...(!pickupPending &&
-    typeof value.shippingOptionLaunchUnsupported === "boolean"
+    ...(typeof value.shippingOptionLaunchUnsupported === "boolean"
       ? {
           shippingOptionLaunchUnsupported:
             value.shippingOptionLaunchUnsupported,
         }
       : {}),
-    ...(!pickupPending && shippingCountries ? { shippingCountries } : {}),
-    ...(!pickupPending && shippingCountryRules ? { shippingCountryRules } : {}),
+    ...(shippingCountries ? { shippingCountries } : {}),
+    ...(shippingCountryRules ? { shippingCountryRules } : {}),
     ...(productUpdatedAt !== undefined ? { productUpdatedAt } : {}),
     ...(productEventId ? { productEventId } : {}),
     ...(signedProductEvent ? { signedProductEvent } : {}),
-    ...(pickupPending
-      ? { canonicalShippingResolved: false }
-      : typeof value.canonicalShippingResolved === "boolean"
-        ? { canonicalShippingResolved: value.canonicalShippingResolved }
-        : {}),
+    ...(typeof value.canonicalShippingResolved === "boolean"
+      ? { canonicalShippingResolved: value.canonicalShippingResolved }
+      : {}),
     ...(typeof value.publicZapEnabled === "boolean"
       ? { publicZapEnabled: value.publicZapEnabled }
       : {}),
@@ -980,17 +902,6 @@ export function selectCartItem(
   identity: CartItemIdentity
 ): CartItem | undefined {
   return items.find((item) => isSameCartItem(item, identity))
-}
-
-function getCartPickupHandoffFingerprint(fulfillment: CartPickupFulfillment): {
-  handoffMode: string
-  handlerPubkey: string
-} {
-  const authority = resolveOrderPickupHandoffAuthority(fulfillment)
-  return {
-    handoffMode: authority.mode,
-    handlerPubkey: authority.handlerPubkey,
-  }
 }
 
 function shippingQuoteTermsFingerprint(
@@ -1032,51 +943,9 @@ export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
         sourcePrice: item.sourcePrice ?? null,
         format: item.format ?? "physical",
         fulfillment:
-          item.fulfillment?.type === "pickup"
-            ? {
-                type: "pickup",
-                organizerPubkey: item.fulfillment.organizerPubkey,
-                product: {
-                  coordinate: item.fulfillment.product.coordinate,
-                  eventId: item.fulfillment.product.eventId,
-                  createdAt: item.fulfillment.product.createdAt,
-                  merchantPubkey: item.fulfillment.product.merchantPubkey,
-                },
-                calendar: {
-                  coordinate: item.fulfillment.calendar.coordinate,
-                  eventId: item.fulfillment.calendar.eventId,
-                  createdAt: item.fulfillment.calendar.createdAt,
-                },
-                collection: {
-                  coordinate: item.fulfillment.collection.coordinate,
-                  eventId: item.fulfillment.collection.eventId,
-                  createdAt: item.fulfillment.collection.createdAt,
-                },
-                option: {
-                  coordinate: item.fulfillment.option.coordinate,
-                  eventId: item.fulfillment.option.eventId,
-                  createdAt: item.fulfillment.option.createdAt,
-                  title: item.fulfillment.option.title,
-                  location: item.fulfillment.option.location ?? null,
-                  geohash: item.fulfillment.option.geohash ?? null,
-                },
-                ...getCartPickupHandoffFingerprint(item.fulfillment),
-                costSats: item.fulfillment.costSats,
-                sourceCost: {
-                  amount: item.fulfillment.sourceCost.amount,
-                  currency: item.fulfillment.sourceCost.currency,
-                  normalizedCurrency:
-                    item.fulfillment.sourceCost.normalizedCurrency,
-                },
-              }
-            : item.fulfillment?.type === "event_market_pickup"
-              ? { ...item.fulfillment }
-              : item.fulfillment?.type === "event_pickup_pending"
-                ? {
-                    type: "event_pickup_pending",
-                    collectionCoordinate: item.fulfillment.collectionCoordinate,
-                  }
-                : getCartItemFulfillmentType(item),
+          item.fulfillment?.type === "event_market_pickup"
+            ? { ...item.fulfillment }
+            : getCartItemFulfillmentType(item),
         shippingWeightGrams: item.shippingWeightGrams ?? null,
         shippingWeightAllowanceGrams: item.shippingWeightAllowanceGrams ?? null,
         shippingHandling: item.shippingHandling ?? null,
@@ -1132,6 +1001,7 @@ export function rebuildCurrentCartItems(
               ...specification,
             }))
           : undefined,
+      eventMarketContext: item.eventMarketContext,
       quantity: item.quantity,
     })
   }
@@ -1148,30 +1018,10 @@ export function cartItemsMatchCurrentProducts(
     products,
     currentFulfillmentByProductId
   )
-  const getCurrentTermsFingerprint = (entries: readonly CartItem[]) =>
-    getCartCommerceFingerprint(
-      entries.map((item) => {
-        if (
-          item.fulfillment?.type !== "pickup" ||
-          !item.sourceShippingCost ||
-          !pickupCostSatsAreQuoteDerived(item.sourceShippingCost)
-        ) {
-          return item
-        }
-        // Fiat pickup conversions are refreshed at checkout. Their signed
-        // source amount remains authoritative while this cached sats value may
-        // legitimately move with the quote.
-        return {
-          ...item,
-          fulfillment: { ...item.fulfillment, costSats: 0 },
-          shippingCostSats: undefined,
-        }
-      })
-    )
   return (
     currentItems !== null &&
-    getCurrentTermsFingerprint(currentItems) ===
-      getCurrentTermsFingerprint(items)
+    getCartCommerceFingerprint(currentItems) ===
+      getCartCommerceFingerprint(items)
   )
 }
 
@@ -1350,59 +1200,6 @@ export function groupCartItems(items: CartItem[]): MerchantCartGroup[] {
     })
 }
 
-function getPickupPurchaseCompatibilityKey(
-  fulfillment: CartPickupFulfillment
-): string {
-  const authority = resolveOrderPickupHandoffAuthority(fulfillment)
-  const coordinateIdentity = (coordinate: string) => {
-    const [kind, author, ...identifier] = coordinate.split(":")
-    return `${kind}:${author?.toLowerCase()}:${identifier.join(":")}`
-  }
-  const evidence = (entry: PickupEvidenceCoordinate) => [
-    coordinateIdentity(entry.coordinate),
-    entry.eventId.toLowerCase(),
-    entry.createdAt,
-  ]
-  return JSON.stringify([
-    "pickup",
-    fulfillment.organizerPubkey.toLowerCase(),
-    evidence(fulfillment.calendar),
-    evidence(fulfillment.collection),
-    evidence(fulfillment.option),
-    authority.mode,
-    authority.handlerPubkey,
-  ])
-}
-
-function getPickupLineFulfillmentKey(
-  fulfillment: CartPickupFulfillment
-): string {
-  return JSON.stringify([
-    getPickupPurchaseCompatibilityKey(fulfillment),
-    fulfillment.product.coordinate,
-    fulfillment.product.eventId.toLowerCase(),
-    fulfillment.product.createdAt,
-    fulfillment.product.merchantPubkey.toLowerCase(),
-    fulfillment.option.title,
-    fulfillment.option.location ?? null,
-    fulfillment.option.geohash ?? null,
-    pickupCostSatsAreQuoteDerived(fulfillment.sourceCost)
-      ? null
-      : fulfillment.costSats,
-    fulfillment.sourceCost.amount,
-    fulfillment.sourceCost.currency,
-    fulfillment.sourceCost.normalizedCurrency,
-  ])
-}
-
-function pickupCostSatsAreQuoteDerived(
-  sourceCost: CartPickupFulfillment["sourceCost"]
-): boolean {
-  return (
-    sourceCost.amount > 0 && isFiatCurrencyCode(sourceCost.normalizedCurrency)
-  )
-}
-
 /**
  * Exact local line identity. This intentionally remains stricter than order
  * grouping so a future compatibility expansion cannot rebind quantities that
@@ -1411,23 +1208,15 @@ function pickupCostSatsAreQuoteDerived(
 export function getCartLineFulfillmentId(
   item: Pick<CartItem, "format" | "fulfillment">
 ): string {
-  if (item.fulfillment?.type === "pickup") {
-    return getPickupLineFulfillmentKey(item.fulfillment)
-  }
   if (item.fulfillment?.type === "event_market_pickup") {
     return JSON.stringify([
       "event_market_pickup",
       item.fulfillment.market.coordinate,
+      item.fulfillment.calendar.coordinate,
       item.fulfillment.product.coordinate,
       item.fulfillment.product.eventId,
       item.fulfillment.mode,
       item.fulfillment.assignment,
-    ])
-  }
-  if (item.fulfillment?.type === "event_pickup_pending") {
-    return JSON.stringify([
-      "event_pickup_pending",
-      item.fulfillment.collectionCoordinate,
     ])
   }
   return getCartItemFulfillmentType(item)
@@ -1458,32 +1247,16 @@ export function getCartPurchaseGroupId(
   item: Pick<CartItem, "merchantPubkey" | "format" | "fulfillment">
 ): string {
   const compatibility =
-    item.fulfillment?.type === "pickup"
-      ? getPickupPurchaseCompatibilityKey(item.fulfillment)
-      : item.fulfillment?.type === "event_market_pickup"
-        ? JSON.stringify([
-            "event_market_pickup",
-            item.fulfillment.market.coordinate,
-            item.fulfillment.merchantPubkey,
-            item.fulfillment.payeePubkey,
-          ])
-        : item.fulfillment?.type === "event_pickup_pending"
-          ? getCartLineFulfillmentId(item)
-          : "delivery"
+    item.fulfillment?.type === "event_market_pickup"
+      ? JSON.stringify([
+          "event_market_pickup",
+          item.fulfillment.market.coordinate,
+          item.fulfillment.calendar.coordinate,
+          item.fulfillment.merchantPubkey,
+          item.fulfillment.payeePubkey,
+        ])
+      : "delivery"
   return JSON.stringify([item.merchantPubkey, compatibility])
-}
-
-function getCartPickupRevisionPurchaseGroupId(
-  item: Pick<
-    CartItem,
-    "merchantPubkey" | "productId" | "format" | "fulfillment"
-  >
-): string {
-  return JSON.stringify([
-    getCartPurchaseGroupId(item),
-    item.productId,
-    getCartLineFulfillmentId(item),
-  ])
 }
 
 /** Stable, display-only cue for distinguishing otherwise identical choices. */
@@ -1512,29 +1285,15 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
   for (let index = 0; index < items.length; index++) {
     const item = items[index]
     if (!item) continue
-    // Pending pickup is a reversible cart intent, not a purchase partition.
-    // It becomes purchasable only after an atomic upgrade to exact fulfillment.
-    if (isPendingEventPickupCartItem(item)) continue
-    const purchaseItem = item as CartPurchaseItem
-    const kind =
-      isPickupCartItem(item) || item.fulfillment?.type === "event_market_pickup"
-        ? "pickup"
-        : "delivery"
+    const purchaseItem = item
+    const kind = isPickupCartItem(item) ? "pickup" : "delivery"
     const compatibleGroups = groups.filter(
       (group) =>
         group.merchantPubkey === item.merchantPubkey &&
         group.kind === kind &&
         (kind === "delivery" || isSameCartFulfillment(group.items[0]!, item))
     )
-    // A purchase readiness read is keyed by product coordinate. Preserve
-    // distinct signed pickup revisions as distinct lines and purchases so its
-    // evidence remains one-to-one rather than coalescing either snapshot.
-    const existing = compatibleGroups.find(
-      (group) =>
-        kind === "delivery" ||
-        item.fulfillment?.type === "event_market_pickup" ||
-        !group.items.some((entry) => entry.productId === item.productId)
-    )
+    const existing = compatibleGroups[0]
     if (existing) {
       existing.items.push(purchaseItem)
       existing.totalItems += purchaseItem.quantity
@@ -1542,10 +1301,7 @@ export function groupCartPurchases(items: CartItem[]): CartPurchaseGroup[] {
     }
 
     groups.push({
-      id:
-        kind === "pickup" && item.fulfillment?.type !== "event_market_pickup"
-          ? getCartPickupRevisionPurchaseGroupId(item)
-          : getCartPurchaseGroupId(item),
+      id: getCartPurchaseGroupId(item),
       kind,
       merchantPubkey: item.merchantPubkey,
       items: [purchaseItem],
@@ -1588,12 +1344,11 @@ export function getCartCostSummary(
   let itemPricesAvailable = true
   const shippingResolvableItems = items.map((item) => {
     const hasShippingZone =
-      !isPendingEventPickupCartItem(item) &&
-      (item.format === "digital" ||
-        isPickupCartItem(item) ||
-        (item.canonicalShippingResolved === true &&
-          !!item.shippingOptionId &&
-          (item.shippingCountryRules?.length ?? 0) > 0))
+      item.format === "digital" ||
+      isPickupCartItem(item) ||
+      (item.canonicalShippingResolved === true &&
+        !!item.shippingOptionId &&
+        (item.shippingCountryRules?.length ?? 0) > 0)
 
     return hasShippingZone
       ? item

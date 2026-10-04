@@ -5,9 +5,14 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure"
+import { buildEventMarketRosterDraft } from "../packages/core/src/protocol/event-market-roster"
+import { buildEventMarketAuthorizationDraft } from "../packages/core/src/protocol/event-market-authorization"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
+
+const ORGANIZER_SECRET = generateSecretKey()
+const ORGANIZER = getPublicKey(ORGANIZER_SECRET)
 
 const MERCHANT_SECRETS = Array.from({ length: 10 }, () => generateSecretKey())
 const MERCHANTS = MERCHANT_SECRETS.map(getPublicKey)
@@ -31,48 +36,131 @@ function cartSeed(merchantCount: number) {
   }
 }
 
-function sameMerchantFulfillmentCartSeed() {
-  const organizer = "a".repeat(64)
+function sameMerchantFulfillmentCartSeed(): { version: 2; items: CartItem[] } {
   const merchant = MERCHANT_A
-  const pickup = (input: {
-    productEvent: string
-    market: string
-    option: string
-    title: string
-    product: string
-    location: string
-  }) => ({
-    type: "pickup",
-    organizerPubkey: organizer,
-    product: {
-      coordinate: `30402:${merchant}:${input.product}`,
-      eventId: input.productEvent,
-      createdAt: 100,
+  const pickup = (revision: number): CartItem => {
+    const coordinate = `30402:${merchant}:pickup-main`
+    const calendarCoordinate = `31923:${ORGANIZER}:event-main-${revision}`
+    const marketCoordinate = `30409:${ORGANIZER}:market-main`
+    const start = 1_900_000_000
+    const end = start + 3_600
+    const market = finalizeEvent(
+      {
+        ...buildEventMarketRosterDraft({
+          dTag: "market-main",
+          organizerPubkey: ORGANIZER,
+          calendarCoordinate,
+          state: "open",
+          merchants: [
+            {
+              pubkey: merchant,
+              mode: "organizer_handoff",
+              assignment: "Test location",
+            },
+          ],
+        }),
+        created_at: 100 + revision,
+      },
+      ORGANIZER_SECRET
+    )
+    const calendar = finalizeEvent(
+      {
+        kind: 31923,
+        created_at: 100,
+        content: "",
+        tags: [
+          ["d", `event-main-${revision}`],
+          ["title", "Merchant pickup"],
+          ["start", String(start)],
+          ["end", String(end)],
+          ["start_tzid", "UTC"],
+          ["end_tzid", "UTC"],
+          ["location", "Test location"],
+          ["D", String(Math.floor(start / 86_400))],
+        ],
+      },
+      ORGANIZER_SECRET
+    )
+    const grant = finalizeEvent(
+      {
+        ...buildEventMarketAuthorizationDraft({
+          marketCoordinate,
+          merchantPubkey: merchant,
+          state: "active",
+          sequence: 0,
+          parentIds: [],
+        }),
+        created_at: 99,
+      },
+      ORGANIZER_SECRET
+    )
+    const product = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: 101 + revision,
+        content: "Main entrance item",
+        tags: [
+          ["d", "pickup-main"],
+          ["title", "Main entrance item"],
+          ["price", "1200", "SATS"],
+          ["type", "simple", "physical"],
+          ["a", marketCoordinate],
+        ],
+      },
+      MERCHANT_SECRETS[0]!
+    )
+    return {
+      productId: coordinate,
       merchantPubkey: merchant,
-    },
-    calendar: {
-      coordinate: `31922:${organizer}:event-${input.market}`,
-      eventId: "f".repeat(64),
-      createdAt: 101,
-    },
-    collection: {
-      coordinate: `30405:${organizer}:market-${input.market}`,
-      eventId: "e".repeat(64),
-      createdAt: 102,
-    },
-    option: {
-      coordinate: `30406:${organizer}:pickup-${input.option}`,
-      eventId: "d".repeat(64),
-      createdAt: 103,
-      title: input.title,
-      location: input.location,
-    },
-    handoffMode: "organizer_handoff",
-    handlerPubkey: organizer,
-    costSats: 0,
-    sourceCost: { amount: 0, currency: "SAT", normalizedCurrency: "SAT" },
-  })
-
+      merchantAddedAt: 100 + revision,
+      title: "Main entrance item",
+      price: 1_200,
+      currency: "SATS",
+      priceSats: 1_200,
+      format: "physical",
+      quantity: 1,
+      productEventId: product.id,
+      productUpdatedAt: product.created_at * 1_000,
+      eventMarketContext: { marketCoordinate, calendarCoordinate },
+      fulfillment: {
+        type: "event_market_pickup",
+        organizerPubkey: ORGANIZER,
+        merchantPubkey: merchant,
+        payeePubkey: merchant,
+        market: {
+          coordinate: marketCoordinate,
+          eventId: market.id,
+          createdAt: market.created_at * 1_000,
+          signedEvent: market,
+        },
+        calendar: {
+          coordinate: calendarCoordinate,
+          eventId: calendar.id,
+          createdAt: calendar.created_at * 1_000,
+          start: start * 1_000,
+          end: end * 1_000,
+          signedEvent: calendar,
+        },
+        grant: {
+          kind: 3841,
+          pubkey: ORGANIZER,
+          eventId: grant.id,
+          createdAt: grant.created_at * 1_000,
+          ancestryEventIds: [grant.id],
+          observedDeletionEventIds: [],
+          signedEvidence: { tip: grant, ancestry: [grant], deletions: [] },
+        },
+        product: {
+          coordinate,
+          eventId: product.id,
+          createdAt: product.created_at * 1_000,
+          signedEvent: product,
+        },
+        mode: "organizer_handoff",
+        assignment: "Test location",
+      },
+    }
+  }
   return {
     version: 2,
     items: [
@@ -88,46 +176,8 @@ function sameMerchantFulfillmentCartSeed() {
         fulfillment: { type: "shipping" },
         quantity: 1,
       },
-      {
-        productId: `30402:${merchant}:pickup-main`,
-        merchantPubkey: merchant,
-        merchantAddedAt: 101,
-        title: "Main entrance item",
-        price: 1_200,
-        currency: "SATS",
-        priceSats: 1_200,
-        format: "physical",
-        fulfillment: pickup({
-          productEvent: "1".repeat(64),
-          market: "main",
-          option: "main",
-          title: "Merchant pickup",
-          product: "pickup-main",
-          location: "Test location",
-        }),
-        productEventId: "1".repeat(64),
-        quantity: 1,
-      },
-      {
-        productId: `30402:${merchant}:pickup-main`,
-        merchantPubkey: merchant,
-        merchantAddedAt: 102,
-        title: "Main entrance item",
-        price: 1_200,
-        currency: "SATS",
-        priceSats: 1_200,
-        format: "physical",
-        fulfillment: pickup({
-          productEvent: "2".repeat(64),
-          market: "main",
-          option: "main",
-          title: "Merchant pickup",
-          product: "pickup-main",
-          location: "Test location",
-        }),
-        productEventId: "2".repeat(64),
-        quantity: 1,
-      },
+      pickup(1),
+      pickup(2),
     ],
   }
 }

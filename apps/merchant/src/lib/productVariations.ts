@@ -861,6 +861,19 @@ function getUnresolvedVariationShippingError(
   return `${label} shipping could not be verified from the current relay read. Refresh products before saving this family.`
 }
 
+function getTableVariationPriceError(
+  row: ProductVariationRow,
+  baseFormat: string | undefined
+): string | null {
+  if (
+    (row.format === "inherit" ? baseFormat : row.format) !== "physical" ||
+    row.inheritShipping ||
+    !row.shippingCost.trim()
+  )
+    return null
+  return `${getCombinationLabel(row.specifications)}: Fixed variation prices cannot be combined with table shipping. Select Use table, clear the variation shipping price to coordinate after ordering, or change Shipping pricing to Fixed price per item.`
+}
+
 export function getProductVariationFormError(
   state: ProductVariationFormState,
   currency: string,
@@ -919,6 +932,16 @@ export function getProductVariationFormError(
 
   const seenIdentities = new Set<string>()
   for (const row of includedRows) {
+    if (
+      !options.preserveExistingFulfillment &&
+      options.shippingPricingMode === "weight_table"
+    ) {
+      const tablePriceError = getTableVariationPriceError(
+        row,
+        options.baseFormat
+      )
+      if (tablePriceError) return tablePriceError
+    }
     if (
       !options.preserveExistingFulfillment &&
       (row.shippingResolution === "unresolved" ||
@@ -1273,7 +1296,9 @@ export function getProductVariationFormState<
         shippingHandling:
           variation.product.shippingHandling === undefined
             ? ""
-            : String(variation.product.shippingHandling.amount),
+            : formatProductAmountInput(
+                variation.product.shippingHandling.amount
+              ),
         shippingLengthCm: variation.product.shippingDimensionsCm
           ? String(variation.product.shippingDimensionsCm.length)
           : "",
@@ -1530,6 +1555,13 @@ function buildVariationProduct(
   listingAreaMode: "preserve" | "apply" = "apply",
   shareShippingMeasurements = false
 ): ProductSchema {
+  if (
+    !preserveExistingFulfillment &&
+    hasMerchantShippingTableReference(parent)
+  ) {
+    const tablePriceError = getTableVariationPriceError(row, parent.format)
+    if (tablePriceError) throw new Error(tablePriceError)
+  }
   const dTag =
     row.dTag ??
     buildProductVariationDTag(parentDTag, {
@@ -1657,6 +1689,9 @@ function buildVariationProduct(
     })
   }
 
+  if (!preserveExistingFulfillment) {
+    product.shippingAdjustmentsMalformed = undefined
+  }
   if (product.format === "digital") {
     product = copyShippingProjection(product, {
       shippingCostSats: undefined,
@@ -1935,6 +1970,7 @@ export function buildProductFamilyChangePlan<
   }
   const publish = desired.filter((target) => {
     if (!target.existing?.dTag) return true
+    if (target.existing.product.shippingAdjustmentsMalformed) return true
     const existingFulfillmentIntent =
       resolvePublishedProductFulfillmentIntentForTarget(target.existing.product)
     if (!existingFulfillmentIntent) return true

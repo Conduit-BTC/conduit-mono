@@ -1241,7 +1241,7 @@ describe("merchant product variation planning", () => {
     ).toEqual(digitalPlan.desired.map(() => ({ kind: "digital" })))
   })
 
-  it("propagates event visibility across an existing variable family in both directions", () => {
+  it("propagates visibility and current event associations without changing family shipping", () => {
     const initialPlan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
       baseProduct: baseProduct(),
@@ -1254,23 +1254,14 @@ describe("merchant product variation planning", () => {
       publicFamily.root,
       publicFamily.variations
     ).state
-    const collectionCoordinate = `30405:${ORGANIZER_PUBKEY}:conduit-event`
-    const pickupCoordinate = `30406:${ORGANIZER_PUBKEY}:conduit-event-pickup`
+    const marketCoordinate = `30409:${ORGANIZER_PUBKEY}:conduit-event`
 
     const eventPlan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
       baseProduct: {
         ...publicFamily.root.product,
         visibility: "private",
-        shippingCostSats: undefined,
-        sourceShippingCost: undefined,
-        shippingOptionId: pickupCoordinate,
-        shippingOptionDTag: undefined,
-        shippingOptionRefs: [{ coordinate: pickupCoordinate }],
-        collectionRefs: [collectionCoordinate],
-        shippingCountries: undefined,
-        shippingCountryRules: undefined,
-        canonicalShippingResolved: undefined,
+        eventMarketRefs: [marketCoordinate],
       },
       variations: publicVariationState,
       currency: "USD",
@@ -1292,14 +1283,17 @@ describe("merchant product variation planning", () => {
       )
     ).toBe(true)
 
+    expect(
+      eventPlan.desired.every(
+        ({ product }) => product.eventMarketRefs?.[0] === marketCoordinate
+      )
+    ).toBe(true)
+    expect(
+      eventPlan.desired.map(({ product }) => product.shippingCostSats)
+    ).toEqual(
+      initialPlan.desired.map(({ product }) => product.shippingCostSats)
+    )
     const eventFamily = toFamily(eventPlan)
-    eventFamily.variations = eventFamily.variations.map((variation) => ({
-      ...variation,
-      product: {
-        ...variation.product,
-        canonicalShippingResolved: undefined,
-      },
-    }))
     const fixedShippingCoordinate = `30406:${MERCHANT_PUBKEY}:conduit-tee-shipping-standard`
     const ordinaryPlan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
@@ -1311,7 +1305,7 @@ describe("merchant product variation planning", () => {
         shippingOptionId: fixedShippingCoordinate,
         shippingOptionDTag: "conduit-tee-shipping-standard",
         shippingOptionRefs: [{ coordinate: fixedShippingCoordinate }],
-        collectionRefs: undefined,
+        eventMarketRefs: undefined,
         shippingCountries: ["US"],
         shippingCountryRules: undefined,
         canonicalShippingResolved: true,
@@ -1322,6 +1316,11 @@ describe("merchant product variation planning", () => {
       now: NOW + 120_000,
     })
 
+    expect(
+      ordinaryPlan.desired.every(
+        ({ product }) => !product.eventMarketRefs?.length
+      )
+    ).toBe(true)
     expect(
       ordinaryPlan.desired.map(({ product }) => product.visibility)
     ).toEqual(ordinaryPlan.desired.map(() => "public"))

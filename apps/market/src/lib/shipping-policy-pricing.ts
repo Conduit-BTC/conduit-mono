@@ -21,7 +21,6 @@ export function allocateShippingPolicyCosts(
     if (
       !quote ||
       item.format === "digital" ||
-      item.fulfillment?.type === "pickup" ||
       item.fulfillment?.type === "event_market_pickup"
     )
       continue

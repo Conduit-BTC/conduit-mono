@@ -7,8 +7,8 @@ certify a deployment or another client's compatibility.
 
 **Last checked:** 2026-09-27. **Owner:** Commerce/Core maintainers.
 Client baseline: [`d6aa7863`](https://github.com/Conduit-BTC/conduit-mono/tree/d6aa786301cf8adcfcf834435c2ca7301cef4d30),
-including the merged experimental Event Market foundation. The pending client
-checkout cutover is listed separately below.
+including the merged experimental Event Market foundation. The Event Market
+sections below describe the current client cutover; this is not deployment evidence.
 
 ## Sources and scope
 
@@ -41,9 +41,9 @@ Local tests below establish bounded behavior, not cross-client certification.
 | Surface                                      | Shop / Sell behavior on the client baseline                                                                                                | Limits and evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Product listings, `30402`                    | Shop reads; Sell reads and publishes Markdown descriptions and structured tags, including explicit product format and variation references | [Builder/parser](../packages/core/src/protocol/products.ts), [publication tests](../tests/merchant-product-publishing.test.ts). Product identity is the full `30402:author:d` coordinate.                                                                                                                                                                                                                                                                                                                  |
-| Collection-based event commerce, `30405`     | Both resolve event-linked collections; Sell authors them through the explicit event workflow                                               | This includes Conduit extensions below, not general collection-management support. [Event helpers](../packages/core/src/protocol/event-market.ts), [fixtures](../tests/event-market-protocol.test.ts).                                                                                                                                                                                                                                                                                                     |
-| Experimental Event Markets, `30409` / `3841` | Shop reads the signed catalog; Sell manages merchant roster and causal authorization and associates products                               | Foundation merged in #550; future checkout remains disabled. [Roster/catalog readers](../packages/core/src/protocol/event-market-roster-read.ts), [authorization](../packages/core/src/protocol/event-market-authorization.ts), [roster tests](../tests/event-market-roster.test.ts).                                                                                                                                                                                                                      |
-| Shipping options, `30406`                    | Shop resolves; Sell publishes fixed standard shipping, one reusable destination/weight policy, and explicit event pickup options           | Fixed shipping retains country-level rules. Conduit table extensions support state/postal overrides, combined weight, independent currencies, and product packing adjustments; they are not upstream destination-schema adoption. Carrier APIs, packaging optimization, and selectable methods remain outside this slice. [Shipping helpers](../packages/core/src/protocol/shipping.ts), [table interoperability](knowledge/merchant-shipping-tables.md), [table tests](../tests/shipping-policy.test.ts). |
+| Retired collection-based event commerce      | Old event links request reposting; no legacy reader, writer, checkout or handoff path                                                      | Ordinary collections and standard shipping remain separate. [Cutover contract](specs/event-markets.md#compatibility-and-validation).                                                                                                                                                                                                                                                                                                                                                                       |
+| Experimental Event Markets, `30409` / `3841` | Market supports current checkout; Merchant manages admission, association and private handoff                                              | Finite recurrence, fulfillment choices and optional immediate contact-free pickup compose with the current model. [Contract](specs/event-markets.md), [validation](knowledge/event-market-validation-evidence.md).                                                                                                                                                                                                                                                                                         |
+| Shipping options, `30406`                    | Shop resolves; Sell publishes product-scoped fixed standard shipping and one reusable destination/weight policy                            | Fixed shipping retains country-level rules. Conduit table extensions support state/postal overrides, combined weight, independent currencies, and product packing adjustments; they are not upstream destination-schema adoption. Carrier APIs, packaging optimization, and selectable methods remain outside this slice. [Shipping helpers](../packages/core/src/protocol/shipping.ts), [table interoperability](knowledge/merchant-shipping-tables.md), [table tests](../tests/shipping-policy.test.ts). |
 | Profiles and payment discovery, `0`          | Both use profile metadata; Shop reads current Lightning-address evidence for supported payment paths                                       | This is not a general implementation of Open Markets `payment_preference` values or eCash settlement. [Profile reads](../packages/core/src/protocol/commerce.ts), [payment-readiness tests](../tests/market-merchant-payment-readiness.test.ts).                                                                                                                                                                                                                                                           |
 | Application handlers, `31990`                | Operator script publishes Shop/Sell descriptors; clients attach NIP-89 attribution                                                         | A descriptor or kind constant does not establish merchant `31989` recommendation handling or service-assisted checkout. [Descriptors](../packages/core/src/protocol/nip89.ts), [publisher](../scripts/publish_nip89_handlers.ts), [tests](../tests/nip89.test.ts).                                                                                                                                                                                                                                         |
 | Private conversation and orders              | Both exchange NIP-17/44/59 encrypted messages; commerce uses kind-16 rumors                                                                | **Conduit order payloads differ from the working specification.** See the private-order boundary below. [Parser](../packages/core/src/protocol/orders.ts), [messaging](../packages/core/src/protocol/messaging.ts), [order tests](../tests/order-publish.test.ts).                                                                                                                                                                                                                                         |
@@ -80,48 +80,25 @@ private-commerce messages. They do not grant an organizer merchant authority
 or expose a full buyer order. Their contract remains in
 [event markets](specs/event-markets.md).
 
-### Experimental Event Market foundation
+### Experimental Event Markets
 
-The merged client foundation uses dedicated kind `30409` markets linked to
-same-author NIP-52 calendars and immutable kind `3841` merchant authorization.
-Sell can manage an existing version-2 market's roster and paired authorization
-and associate merchant products with its market coordinate. Shop resolves the
-signed catalog through a separate authority path. The
-[Shop surface](../apps/market/src/components/FutureEventMarketPage.tsx) explicitly
-disables purchases; the complete checkout and private handoff cutover remains
-in unmerged client PR #554 below.
+The current client uses dedicated kind `30409` markets linked to same-author
+NIP-52 calendars or finite schedules and immutable kind `3841` merchant grants.
+Merchant manages roster admission and product association. Market displays fast
+provisional catalog candidates and rechecks exact signed authority before adding
+or purchasing a selected product. Created orders retain accepted signed terms.
+Private organizer handoff conveys physical release authority only.
 
-This is an implementation of experimental upstream PR #15, not accepted Open
-Markets default-branch behavior. Its contract and retained-history rules remain
-in [event markets](specs/event-markets.md); its roster and authorization evidence
-is covered by [catalog tests](../tests/event-market-roster.test.ts) and
-[authorization tests](../tests/event-market-authorization.test.ts). It does not
-reinterpret existing collection-based events or prove deployment.
+This remains an experimental implementation of upstream PR #15, not accepted
+Open Markets default-branch behavior. The proposal head was rechecked on
+2026-09-28 at `b2c20adce43598a17d67ea450d137f820fb08570`. See the
+[contract](specs/event-markets.md) and [current evidence index](knowledge/event-market-validation-evidence.md).
 
-### Collection-based event commerce
-
-The retained collection-based workflows use NIP-52 `31922`/`31923` calendars, `30405`
-collections, merchant `30402` products, and optional `30406` pickup. The six
-collection clarifications implemented within this boundary are:
-
-1. A collection can link a NIP-52 calendar coordinate.
-2. An upcoming collection can contain zero products.
-3. Official participation needs current product-to-collection and
-   collection-to-product references; a merchant request alone is not approval.
-4. Matching calendar/collection authors establish organizer provenance;
-   pickup authorship identifies the handoff party, not the merchant or payee.
-5. A product can select exact pickup directly or through the collection's
-   exact `shipping_option`; membership alone does not select fulfillment.
-6. Pickup orders select the shipping coordinate without requiring a buyer
-   delivery address; private contact follows the client workflow contract.
-
-These are Conduit extensions to the reviewed working source. The bounded writer,
-preview activation, evidence rules, and removal gate remain in the
-[collection compatibility exception](knowledge/event-market-collection-extension.md).
-The versioned `conduit_event_market` open/closed declaration is a further
-Conduit extension documented in [event lifecycle](knowledge/event-market-lifecycle.md).
-Neither establishes support in unrelated clients. This collection model is
-not the current shape of upstream PR #15, described below.
+Collection-based Event Market readers, writers, pickup checkout and private
+handoff compatibility are removed. Old links request reposting; there is no
+automatic conversion or fallback. Ordinary product collections and standard
+shipping are independent. Both event and merchant QR signs, including Print /
+Save as PDF and selected occurrence links, remain supported.
 
 ### Other differences worth knowing
 
@@ -139,23 +116,24 @@ This is the single proposal-status inventory for these documents. Status was
 checked on the date above; links and exact revisions make later comparison
 possible. None of these upstream PRs is accepted default-branch text.
 
-| Upstream proposal                                                                              | Checked revision / status                                                                                                                     | Conduit relationship                                                                                                                                                                                                                                                           |
-| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [#1: specification navigation](https://github.com/OpenMarketsFoundation/specification/pull/1)  | [`40a8d22d`](https://github.com/OpenMarketsFoundation/specification/tree/40a8d22d9bce1f8740d60bbf0dc4e25f6b7ef192), open, not draft           | Proposes `SPEC.md` and pillar navigation without changing the compatibility snapshot. Keep canonical links on default-branch `README.md` until accepted.                                                                                                                       |
-| [#13: destination constraints](https://github.com/OpenMarketsFoundation/specification/pull/13) | [`dba6ad71`](https://github.com/OpenMarketsFoundation/specification/tree/dba6ad71889d6da56938887599ad6c597ad6badd), open draft, stacked on #1 | Proposal only. The current fixed writer does not emit `destination_schema`/`destination`; event pickup explicitly rejects those tags. Country-level shipping is not adoption of this grammar.                                                                                  |
-| [#14: offer-code commitments](https://github.com/OpenMarketsFoundation/specification/pull/14)  | [`427b1eea`](https://github.com/OpenMarketsFoundation/specification/tree/427b1eea6eab39ff1e65b996b685b11e8d2daa40), open, stacked on #1       | Proposal only. No current client offer-code commitment or redemption workflow.                                                                                                                                                                                                 |
-| [#15: Event Markets](https://github.com/OpenMarketsFoundation/specification/pull/15)           | [`b2c20adc`](https://github.com/OpenMarketsFoundation/specification/tree/b2c20adce43598a17d67ea450d137f820fb08570), open, stacked on #1       | Proposes dedicated `30409` markets, causal `3841` merchant authorization, and finite schedule linkage. The experimental foundation is merged in client #550; checkout and handoff cutover remains in #554 below. Collection-based events remain a separate compatibility path. |
+| Upstream proposal                                                                              | Checked revision / status                                                                                                                     | Conduit relationship                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [#1: specification navigation](https://github.com/OpenMarketsFoundation/specification/pull/1)  | [`40a8d22d`](https://github.com/OpenMarketsFoundation/specification/tree/40a8d22d9bce1f8740d60bbf0dc4e25f6b7ef192), open, not draft           | Proposes `SPEC.md` and pillar navigation without changing the compatibility snapshot. Keep canonical links on default-branch `README.md` until accepted.                                                                                                                                  |
+| [#13: destination constraints](https://github.com/OpenMarketsFoundation/specification/pull/13) | [`dba6ad71`](https://github.com/OpenMarketsFoundation/specification/tree/dba6ad71889d6da56938887599ad6c597ad6badd), open draft, stacked on #1 | Proposal only. The current fixed writer does not emit `destination_schema`/`destination`; event pickup explicitly rejects those tags. Country-level shipping is not adoption of this grammar.                                                                                             |
+| [#14: offer-code commitments](https://github.com/OpenMarketsFoundation/specification/pull/14)  | [`427b1eea`](https://github.com/OpenMarketsFoundation/specification/tree/427b1eea6eab39ff1e65b996b685b11e8d2daa40), open, stacked on #1       | Proposal only. No current client offer-code commitment or redemption workflow.                                                                                                                                                                                                            |
+| [#15: Event Markets](https://github.com/OpenMarketsFoundation/specification/pull/15)           | [`b2c20adc`](https://github.com/OpenMarketsFoundation/specification/tree/b2c20adce43598a17d67ea450d137f820fb08570), open, stacked on #1       | Proposes dedicated `30409` markets, causal `3841` merchant authorization, and finite schedule linkage. The client implements current checkout and handoff on this foundation. Collection-based event commerce is retired; old events must be reposted. The proposal remains experimental. |
 
 Client implementation checked separately:
 
 - [#550: causal merchant authorization](https://github.com/Conduit-BTC/conduit-mono/pull/550),
   merged at [`d6aa7863`](https://github.com/Conduit-BTC/conduit-mono/commit/d6aa786301cf8adcfcf834435c2ca7301cef4d30).
-  The current client baseline includes its experimental market/authorization
-  foundation; future checkout remains disabled.
+  That foundation originally left current-model checkout disabled; the current
+  implementation connects checkout and private handoff.
 - [#554: future checkout and handoff](https://github.com/Conduit-BTC/conduit-mono/pull/554),
   head [`09750c1a`](https://github.com/Conduit-BTC/conduit-mono/tree/09750c1a4abf143766bb75fa1cced06c1c83ddb1),
-  open and unmerged, based on merged #550. Proposes the future commerce cutover
-  while retaining existing event/order recovery.
+  open and unmerged, based on merged #550. The current implementation integrates
+  its checkout and handoff behavior with recurrence, fulfillment choices and
+  optional contact-free pickup, and removes collection-event compatibility.
 - Those PRs identify upstream PR #15 revision
   [`d5601ce`](https://github.com/OpenMarketsFoundation/specification/tree/d5601ce00103fe0dc1f8874ed84d47622ac74c9c)
   as their source baseline. That is distinct from the upstream head checked

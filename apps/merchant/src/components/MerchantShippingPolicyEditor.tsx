@@ -37,6 +37,7 @@ import {
 } from "@conduit/ui"
 import {
   buildShippingPolicyFromDraft,
+  changeShippingPolicyOrigin,
   createShippingPolicyDraft,
   shippingPolicyToDraft,
   type ShippingPolicyDraft,
@@ -111,12 +112,34 @@ export function MerchantShippingPolicyEditor() {
   const needsUpgrade = remote?.policy.version === 1
   const [acceptedRevision, setAcceptedRevision] =
     useState<ShippingPolicyRevision | null>(null)
+  const [acceptedReplacementRevision, setAcceptedReplacementRevision] =
+    useState<ShippingPolicyRevision | null>(null)
   const observedRevision =
     query.data && query.data.state !== "not_found"
       ? (query.data.revision ?? null)
       : null
   const revisionChanged =
     (observedRevision?.eventId ?? null) !== (acceptedRevision?.eventId ?? null)
+  const hasConflict =
+    query.data?.state === "unavailable" && query.data.reason === "conflicting"
+  const hasInvalidPolicy =
+    query.data?.state === "unavailable" &&
+    query.data.reason === "invalid_policy"
+  const needsReplacement = hasConflict || hasInvalidPolicy
+  const canReviewReplacement =
+    needsReplacement && query.data?.coverageComplete && !!observedRevision
+  const replacementNeedsReview =
+    needsReplacement &&
+    (!canReviewReplacement ||
+      acceptedReplacementRevision?.eventId !== observedRevision?.eventId)
+  function acceptReplacement() {
+    if (!canReviewReplacement || busy || query.isFetching || query.isError)
+      return
+    setAcceptedRevision(observedRevision)
+    setAcceptedReplacementRevision(observedRevision)
+    setDirty(true)
+    setStatus({ state: "idle" })
+  }
   function loadLatestRates() {
     setDraft(
       remote
@@ -124,6 +147,7 @@ export function MerchantShippingPolicyEditor() {
         : createShippingPolicyDraft()
     )
     setAcceptedRevision(observedRevision)
+    setAcceptedReplacementRevision(null)
     setDirty(false)
     setStatus({ state: "idle" })
   }
@@ -136,6 +160,7 @@ export function MerchantShippingPolicyEditor() {
         : createShippingPolicyDraft()
     )
     setAcceptedRevision(observedRevision)
+    setAcceptedReplacementRevision(null)
   }, [remote, dirty, query.data, revisionChanged, observedRevision])
   function update(update: Partial<ShippingPolicyDraft>) {
     setDraft((current) => ({ ...current, ...update }))
@@ -156,6 +181,7 @@ export function MerchantShippingPolicyEditor() {
       !policy ||
       busy ||
       revisionChanged ||
+      replacementNeedsReview ||
       query.isPending ||
       authStatus !== "connected"
     )
@@ -177,7 +203,12 @@ export function MerchantShippingPolicyEditor() {
         state: "success",
         message: "Shipping rates published.",
       })
-      await queryClient.invalidateQueries({ queryKey })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-shipping-options", pubkey],
+        }),
+      ])
     } catch (error) {
       if (generationRef.current === authGeneration)
         setStatus({ state: "error", message: errorMessage(error) })
@@ -204,7 +235,12 @@ export function MerchantShippingPolicyEditor() {
         message:
           "Shipping policy withdrawn. New orders need coordination until rates are published again.",
       })
-      await queryClient.invalidateQueries({ queryKey })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-shipping-options", pubkey],
+        }),
+      ])
     } catch (error) {
       if (generationRef.current === authGeneration)
         setStatus({ state: "error", message: errorMessage(error) })
@@ -245,8 +281,35 @@ export function MerchantShippingPolicyEditor() {
           <p className="text-pretty text-sm text-warning">
             {query.data?.state === "withdrawn"
               ? "These rates were withdrawn. Publish new rates when you are ready to ship."
-              : "The latest shipping policy could not be confirmed. Check the relay connection before publishing changes."}
+              : hasConflict
+                ? "Conflicting shipping rates were found. New checkouts need coordination until you publish replacement rates. Your draft will be kept."
+                : hasInvalidPolicy
+                  ? "The published shipping rates are invalid. New checkouts need coordination until you publish replacement rates. Your draft will be kept."
+                  : "The latest shipping policy could not be confirmed. Check the relay connection before publishing changes."}
           </p>
+          {needsReplacement &&
+            (replacementNeedsReview ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={
+                  !canReviewReplacement ||
+                  busy ||
+                  query.isFetching ||
+                  query.isError
+                }
+                onClick={acceptReplacement}
+              >
+                {hasInvalidPolicy
+                  ? "Replace invalid rates"
+                  : "Replace conflicting rates"}
+              </Button>
+            ) : (
+              <p className="text-pretty text-sm text-[var(--text-secondary)]">
+                Review your draft, then publish it as the new shipping rates.
+              </p>
+            ))}
           <Button
             type="button"
             size="sm"
@@ -257,7 +320,7 @@ export function MerchantShippingPolicyEditor() {
           </Button>
         </div>
       )}
-      {dirty && revisionChanged && (
+      {dirty && revisionChanged && !needsReplacement && (
         <div
           role="alert"
           className="space-y-2 rounded-xl border border-warning/40 p-3"
@@ -288,7 +351,9 @@ export function MerchantShippingPolicyEditor() {
                 options={countryOptions}
                 placeholder="Choose origin country"
                 searchPlaceholder="Search countries"
-                onValueChange={(originCountry) => update({ originCountry })}
+                onValueChange={(originCountry) =>
+                  update(changeShippingPolicyOrigin(draft, originCountry))
+                }
               />
             </div>
             <div className="space-y-1.5">
@@ -399,6 +464,7 @@ export function MerchantShippingPolicyEditor() {
               busy ||
               query.isPending ||
               revisionChanged ||
+              replacementNeedsReview ||
               authStatus !== "connected" ||
               (!dirty && !!remote && !needsUpgrade)
             }

@@ -164,10 +164,12 @@ describe("merchant order stock UI", () => {
       source.indexOf("const confirmPaymentMutation =")
     )
     expect(mutation).toContain("prepareOrderStockUpdate({")
-    expect(mutation).not.toContain("verifyMerchantPickupOrderAuthorization({")
+    expect(mutation).not.toContain(
+      "verifyFutureEventMarketOrderAuthorization({"
+    )
     expect(mutation).not.toContain("resolveStockUpdateFulfillmentIntent")
     expect(mutation).toContain("isOrderStockAdjustmentMutationDisabled({")
-    expect(source).toContain("verifyMerchantPickupOrderAuthorization({")
+    expect(source).toContain("verifyFutureEventMarketOrderAuthorization({")
   })
 
   it("clears transient blockers only after a stock decision is durable", async () => {

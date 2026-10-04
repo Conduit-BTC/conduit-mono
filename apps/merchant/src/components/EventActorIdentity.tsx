@@ -3,7 +3,7 @@ import { Check, Copy, ExternalLink } from "lucide-react"
 import {
   formatNpub,
   pubkeyToNpub,
-  type EventMarketHandoffMode,
+  type OrderEventMarketPickupFulfillmentSchema,
   type Profile,
 } from "@conduit/core"
 import { Button } from "@conduit/ui"
@@ -83,18 +83,18 @@ export function EventActorProvenance({
 }
 
 export function EventPickupHandlerIdentity({
-  handoffMode,
+  mode,
   handlerPubkey,
   profile,
 }: {
-  handoffMode: EventMarketHandoffMode
+  mode: OrderEventMarketPickupFulfillmentSchema["mode"]
   handlerPubkey: string
   profile?: Profile
 }) {
   return (
     <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1">
       <span>
-        {handoffMode === "organizer_handoff"
+        {mode === "organizer_handoff"
           ? "Organizer hands out"
           : "Merchant hands out"}
       </span>
