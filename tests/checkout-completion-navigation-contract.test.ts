@@ -170,7 +170,7 @@ describe("checkout completion navigation contracts", () => {
       /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode,\s*freshPricingRate\s*\)/
     )
     const signedOrderReady = payNowSource.indexOf(
-      "orderRumor.content = JSON.stringify(orderPayload)"
+      "orderRumor.content = serializeOrderRumorContent("
     )
     const orderPublish = payNowSource.indexOf("await publishBuyerOrderMessage(")
     const paymentStarted = payNowSource.indexOf("directPaymentStarted = true")

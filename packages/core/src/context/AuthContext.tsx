@@ -73,6 +73,8 @@ export interface AuthContextValue {
   authGeneration: number
   /** Check provider-owned authority even after the calling route unmounts. */
   isAuthGenerationCurrent: (generation: number) => boolean
+  /** Account-scoped authority for replaying already signed private wraps only. */
+  isExactDeliveryRetryCurrent: (generation: number, ownerPubkey: string) => boolean
   /** Check that an anonymous checkout has not acquired or switched accounts. */
   isGuestGenerationCurrent: (generation: number) => boolean
   method: AuthMethod | null
@@ -243,6 +245,47 @@ export function getRetainedAuthAccountPubkey(
   return preserveSessionIdentity && session?.type === "nip46"
     ? session.userPubkey
     : null
+}
+
+export function isExactDeliveryRetryScopeCurrent(input: {
+  owner: string
+  generation: number
+  currentGeneration: number
+  connected: boolean
+  connecting: boolean
+  activeSession: AuthSession | null
+  recoverySession: AuthSession | null
+  recoveryAvailable: boolean
+  retirementBlocked: boolean
+  retainedRevision: string | null
+  currentRevision: string
+  storedSession: AuthSession | null
+}): boolean {
+  if (
+    input.generation !== input.currentGeneration ||
+    input.connecting ||
+    input.retirementBlocked
+  )
+    return false
+  if (input.connected) {
+    const active = input.activeSession
+    return Boolean(
+      active &&
+        active.userPubkey === input.owner &&
+        active.authClaim === input.currentRevision &&
+        (active.type !== "nip46" ||
+          authSessionsEqual(active, input.storedSession))
+    )
+  }
+  const recovery = input.recoverySession
+  return Boolean(
+    input.recoveryAvailable &&
+      recovery?.type === "nip46" &&
+      recovery.userPubkey === input.owner &&
+      input.retainedRevision &&
+      input.retainedRevision === input.currentRevision &&
+      authSessionsEqual(recovery, input.storedSession)
+  )
 }
 
 function isSameRemoteSignerCredential(
@@ -573,10 +616,31 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       connected.current && authEpoch.current === generation,
     []
   )
+  const isExactDeliveryRetryCurrent = useCallback(
+    (generation: number, ownerPubkey: string) =>
+      isExactDeliveryRetryScopeCurrent({
+        owner: ownerPubkey,
+        generation,
+        currentGeneration: authEpoch.current,
+        connected: connected.current,
+        connecting: connecting.current,
+        activeSession: activeSession.current,
+        recoverySession: recoverySession.current,
+        recoveryAvailable: remoteSignerRecoveryRef.current !== null,
+        retirementBlocked:
+          retirementBlockedSession.current !== null ||
+          authorityDisplacedSession.current !== null,
+        retainedRevision: exactDeliveryRetryRevision.current,
+        currentRevision: readAuthRevision(),
+        storedSession: readAuthSession(),
+      }),
+    []
+  )
   const remoteSignerRecoveryRef = useRef<RemoteSignerRecoveryState | null>(
     null
   )
   const recoverySession = useRef<AuthSession | null>(null)
+  const exactDeliveryRetryRevision = useRef<string | null>(null)
   const authorityDisplacedSession = useRef<AuthSession | null>(null)
   const retirementBlockedSession = useRef<AuthSession | null>(null)
   const remoteConnection = useRef<RemoteSignerConnection | null>(null)
@@ -658,6 +722,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     setStatus("disconnected")
     setError(null)
     recoverySession.current = null
+    exactDeliveryRetryRevision.current = null
     updateRemoteSignerRecovery(null)
     setRemoteSignerState("none")
     setAuthUrl(null)
@@ -708,6 +773,9 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     const nextRecovery = options.remoteSignerRecovery ?? null
     recoverySession.current =
       nextRecovery && session?.type === "nip46" ? session : null
+    exactDeliveryRetryRevision.current = recoverySession.current
+      ? readAuthRevision()
+      : null
     updateRemoteSignerRecovery(nextRecovery)
     const preservesRemoteAccount =
       options.preserveSessionIdentity && session?.type === "nip46"
@@ -1153,6 +1221,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       setMethod(session.type)
       setRememberedMethod(session.type)
       recoverySession.current = null
+      exactDeliveryRetryRevision.current = null
       authorityDisplacedSession.current = null
       updateRemoteSignerRecovery(null)
       setStatus("connected")
@@ -1866,6 +1935,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         signer,
         authGeneration,
         isAuthGenerationCurrent,
+        isExactDeliveryRetryCurrent,
         isGuestGenerationCurrent,
         method,
         rememberedMethod,

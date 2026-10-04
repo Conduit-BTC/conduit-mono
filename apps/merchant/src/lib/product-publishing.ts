@@ -6,12 +6,13 @@ import {
   cacheSignedProductListingEvent,
   compileProductFulfillmentIntent,
   EVENT_KINDS,
-  getEventMarketPickupsByCoordinates,
+  getMerchantShippingPolicyCoordinate,
   getAccountSigner,
-  getProductEventMarketFulfillmentClaims,
+  type UnsignedNostrEvent,
   getProductShippingOptionAddress,
   getProductShippingOptionDTag,
   getShippingOptionsByCoordinates,
+  hasCurrentShippingPolicyEvidence,
   isValidSignedPublicNostrEvent,
   normalizeCurrencyCode,
   normalizeCurrencyIdentity,
@@ -20,7 +21,6 @@ import {
   resolveProductFulfillment,
   waitForVisibleDocument,
   type ParsedShippingOption,
-  type ParsedEventMarketPickup,
   type ProductDeletionEventTarget,
   type ProductFulfillmentIntent,
   type ProductSchema,
@@ -205,6 +205,11 @@ export function getProductPreservedFulfillmentFields(product: ProductSchema) {
     shippingOptionLaunchUnsupported: product.shippingOptionLaunchUnsupported,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
+    shippingWeightGrams: product.shippingWeightGrams,
+    shippingDimensionsCm: product.shippingDimensionsCm,
+    shippingWeightAllowanceGrams: product.shippingWeightAllowanceGrams,
+    shippingHandling: product.shippingHandling,
+    shippingAdjustmentsMalformed: product.shippingAdjustmentsMalformed,
     canonicalShippingResolved: product.canonicalShippingResolved,
     shippingOptionCreatedAt: product.shippingOptionCreatedAt,
   }
@@ -217,20 +222,9 @@ export interface ProductListingPublishTarget {
   fulfillmentIntent: ProductPublicationFulfillmentIntent
 }
 
-const VERIFIED_EVENT_PICKUP = Symbol("verified-event-pickup")
-
-type PreparedProductListingPublishTarget = ProductListingPublishTarget & {
-  [VERIFIED_EVENT_PICKUP]?: true
-}
+type PreparedProductListingPublishTarget = ProductListingPublishTarget
 
 export interface ProductPublicationDependencies {
-  getEventMarketPickups: (
-    coordinates: readonly string[],
-    options: {
-      authenticatedPubkey?: string | null
-      shouldContinue?: () => boolean
-    }
-  ) => Promise<ParsedEventMarketPickup[]>
   getShippingOptions: (
     coordinates: readonly string[],
     options: {
@@ -316,19 +310,6 @@ function getProductShippingDestinations(
   }))
 }
 
-function hasEventPickupReferences(
-  product: Pick<
-    ProductSchema,
-    "canonicalShippingResolved" | "collectionRefs" | "shippingOptionRefs"
-  >
-): boolean {
-  return (
-    product.canonicalShippingResolved !== true &&
-    (product.collectionRefs?.length ?? 0) > 0 &&
-    (product.shippingOptionRefs?.length ?? 0) > 0
-  )
-}
-
 function hasCanonicalProductShippingReference(
   product: Pick<
     ProductSchema,
@@ -366,28 +347,6 @@ function hasCanonicalProductShippingReference(
   )
 }
 
-function getEventProductPreservationStrategy(
-  product: ProductSchema
-): "product_event" | "event_pickup" | null {
-  const reference = product.shippingOptionRefs?.[0]
-  const hasExactReference =
-    product.visibility !== "public" &&
-    product.canonicalShippingResolved !== true &&
-    product.shippingOptionRefs?.length === 1 &&
-    !!product.shippingOptionId &&
-    reference?.coordinate === product.shippingOptionId &&
-    reference.extraCostMalformed !== true
-  if (!hasExactReference) return null
-
-  const claims = getProductEventMarketFulfillmentClaims(product)
-  if (claims.length === 0) return null
-  return claims.some((claim) =>
-    claim.directPickupCoordinates.includes(product.shippingOptionId!)
-  )
-    ? "event_pickup"
-    : "product_event"
-}
-
 function hasLegacyInlineShipping(
   product: Pick<
     ProductSchema,
@@ -411,11 +370,7 @@ function hasLegacyInlineShipping(
 }
 
 type PreservedFulfillmentStrategy =
-  | "product_event"
-  | "event_pickup"
-  | "canonical_fixed"
-  | "legacy_upgrade"
-  | "explicit_change"
+  "product_event" | "canonical_fixed" | "legacy_upgrade" | "explicit_change"
 
 function getPreservedFulfillmentStrategy(
   product: ProductSchema,
@@ -426,8 +381,6 @@ function getPreservedFulfillmentStrategy(
     return "canonical_fixed"
   }
   if (hasLegacyInlineShipping(product)) return "legacy_upgrade"
-  const eventStrategy = getEventProductPreservationStrategy(product)
-  if (eventStrategy) return eventStrategy
   return product.shippingOptionId ? "explicit_change" : "product_event"
 }
 
@@ -453,13 +406,104 @@ function getCanonicalPreservationError(
   )
 }
 
-function getEventPickupPreservationError(): Error {
-  return new Error(
-    "Event pickup could not be verified safely. Try again or choose Change fulfillment before saving."
-  )
+export async function prepareProductPublicationListings(
+  listings: readonly ProductListingPublishTarget[],
+  input: {
+    merchantPubkey: string
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+  },
+  dependencies: Pick<ProductPublicationDependencies, "getShippingOptions">
+): Promise<PreparedProductListingPublishTarget[]> {
+  if (listings.some(({ product }) => product.shippingAdjustmentsMalformed)) {
+    throw new Error(
+      "Change fulfillment to repair or remove invalid shipping adjustments before publishing."
+    )
+  }
+  const coordinate = getMerchantShippingPolicyCoordinate(input.merchantPubkey)
+  const isTable = (listing: ProductListingPublishTarget) =>
+    listing.fulfillmentIntent.kind === "weight_table" ||
+    (listing.fulfillmentIntent.kind === "preserve_existing" &&
+      listing.fulfillmentIntent.baseline.shippingOptionId === coordinate)
+  const tableListings = listings.filter(isTable)
+  if (!tableListings.length)
+    return prepareFixedProductPublicationListings(listings, input, dependencies)
+  const options = await dependencies.getShippingOptions([coordinate], {
+    accountPubkey: input.merchantPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+  })
+  if (input.shouldContinue?.() === false)
+    throw new Error("Product signer session changed.")
+  const option = options.find((candidate) => candidate.id === coordinate)
+  if (
+    !option?.shippingPolicy ||
+    !option.signedEvent ||
+    !hasCurrentShippingPolicyEvidence(option) ||
+    option.pubkey !== input.merchantPubkey ||
+    !isValidSignedPublicNostrEvent(option.signedEvent)
+  ) {
+    throw new Error(
+      "The shipping table could not be verified. Check Shipping before publishing."
+    )
+  }
+  const currentPolicy = option.shippingPolicy
+  const prepared = listings.map((listing): ProductListingPublishTarget => {
+    if (!isTable(listing)) return listing
+    const product =
+      listing.fulfillmentIntent.kind === "preserve_existing"
+        ? applyProductFulfillmentIntentForPublication({
+            product: listing.product,
+            merchantPubkey: input.merchantPubkey,
+            productDTag: listing.dTag,
+            intent: listing.fulfillmentIntent,
+          })
+        : listing.product
+    if (product.format === "digital")
+      return { ...listing, fulfillmentIntent: { kind: "digital" } }
+    if (
+      currentPolicy.version === 1 &&
+      (normalizeCurrencyIdentity(
+        product.sourcePrice?.currency ?? product.currency
+      ) !== currentPolicy.currency ||
+        product.shippingWeightAllowanceGrams !== undefined ||
+        product.shippingHandling !== undefined)
+    ) {
+      throw new Error(
+        "These shipping rates do not support a different product currency or per-product packing and handling. Save Shipping to upgrade your rates before publishing, or use the table currency and remove packing and handling adjustments."
+      )
+    }
+    if (
+      !Number.isSafeInteger(product.shippingWeightGrams) ||
+      product.shippingWeightGrams! <= 0
+    ) {
+      throw new Error(
+        "Add a positive shipping weight before publishing a product with table shipping."
+      )
+    }
+    if (
+      listing.fulfillmentIntent.kind === "weight_table" &&
+      (listing.fulfillmentIntent.policyCoordinate !== coordinate ||
+        listing.fulfillmentIntent.policyEventId !== option.eventId)
+    ) {
+      throw new Error(
+        "Shipping rates changed. Review the current rates before publishing this product."
+      )
+    }
+    return {
+      ...listing,
+      product,
+      fulfillmentIntent: {
+        kind: "weight_table",
+        policyCoordinate: coordinate,
+        policyEventId: option.eventId,
+      },
+    }
+  })
+  return prepareFixedProductPublicationListings(prepared, input, dependencies)
 }
 
-async function prepareProductPublicationListings(
+async function prepareFixedProductPublicationListings(
   listings: readonly ProductListingPublishTarget[],
   input: {
     merchantPubkey: string
@@ -498,10 +542,7 @@ async function prepareProductPublicationListings(
       )
     }
     return {
-      kind:
-        strategy === "event_pickup"
-          ? ("pickup" as const)
-          : ("canonical" as const),
+      kind: "canonical" as const,
       baseline,
       listing,
       product,
@@ -510,22 +551,13 @@ async function prepareProductPublicationListings(
   const evidenceRequired = prepared.filter(
     (
       entry
-    ): entry is Extract<
-      (typeof prepared)[number],
-      { kind: "pickup" | "canonical" }
-    > => entry.kind === "pickup" || entry.kind === "canonical"
+    ): entry is Extract<(typeof prepared)[number], { kind: "canonical" }> =>
+      entry.kind === "canonical"
   )
   if (evidenceRequired.length === 0) {
     return prepared.map((entry) => entry.listing)
   }
 
-  const pickupCoordinates = Array.from(
-    new Set(
-      evidenceRequired
-        .filter((entry) => entry.kind === "pickup")
-        .map((entry) => entry.baseline.shippingOptionId!)
-    )
-  )
   const canonicalCoordinates = Array.from(
     new Set(
       evidenceRequired
@@ -533,20 +565,6 @@ async function prepareProductPublicationListings(
         .map((entry) => entry.baseline.shippingOptionId!)
     )
   )
-  let eventPickups: ParsedEventMarketPickup[] = []
-  if (pickupCoordinates.length > 0) {
-    try {
-      eventPickups = await dependencies.getEventMarketPickups(
-        pickupCoordinates,
-        {
-          authenticatedPubkey: input.authenticatedPubkey,
-          shouldContinue: input.shouldContinue,
-        }
-      )
-    } catch {
-      throw getEventPickupPreservationError()
-    }
-  }
   let shippingOptions: ParsedShippingOption[]
   if (canonicalCoordinates.length > 0) {
     try {
@@ -569,18 +587,6 @@ async function prepareProductPublicationListings(
 
   return prepared.map((entry): PreparedProductListingPublishTarget => {
     if (entry.kind === "ready") return entry.listing
-
-    if (entry.kind === "pickup") {
-      const pickup = eventPickups.find(
-        (option) => option.coordinate === entry.baseline.shippingOptionId
-      )
-      if (!pickup) throw getEventPickupPreservationError()
-      return {
-        ...entry.listing,
-        product: entry.product,
-        [VERIFIED_EVENT_PICKUP]: true,
-      }
-    }
 
     const fulfillment = resolveProductFulfillment(
       entry.baseline,
@@ -632,10 +638,8 @@ export function resolveProductFulfillmentIntentForTarget(input: {
   authoringCountries: readonly string[]
 }): ProductFulfillmentIntent {
   if (input.product.format === "digital") return { kind: "digital" }
-  if (hasEventPickupReferences(input.product)) {
-    return { kind: "coordinate_after_order" }
-  }
 
+  if (input.fallbackIntent.kind === "weight_table") return input.fallbackIntent
   const amount =
     input.product.sourceShippingCost?.amount ?? input.product.shippingCostSats
   if (typeof amount !== "number") return input.fallbackIntent
@@ -679,9 +683,6 @@ export function resolvePublishedProductFulfillmentIntentForTarget(
   >
 ): ProductFulfillmentIntent | null {
   if (product.format === "digital") return { kind: "digital" }
-  if (hasEventPickupReferences(product)) {
-    return { kind: "coordinate_after_order" }
-  }
   if (product.shippingOptionLaunchUnsupported) return null
   if (product.shippingOptionId && product.canonicalShippingResolved !== true) {
     return null
@@ -780,7 +781,9 @@ export function applyProductFulfillmentIntentForPublication(input: {
       normalizeCurrencyIdentity(currency) ===
       normalizeCurrencyIdentity(previousCurrency)
     if (price === 0 && (previousPrice !== 0 || !sameCurrencyUnit)) {
-      throw new Error("Verify local pickup before setting a new zero price")
+      throw new Error(
+        "Existing free prices may be kept; a new zero price is not supported."
+      )
     }
     if (
       !sameCurrencyUnit &&
@@ -811,26 +814,41 @@ export function applyProductFulfillmentIntentForPublication(input: {
     }
     return { ...input.product }
   }
-  if (input.intent.kind !== "fixed_standard") {
-    const preserveEventPickup =
-      input.intent.kind === "coordinate_after_order" &&
-      hasEventPickupReferences(input.product)
+  if (input.intent.kind === "weight_table") {
+    if (
+      input.intent.policyCoordinate !==
+      getMerchantShippingPolicyCoordinate(input.merchantPubkey)
+    ) {
+      throw new Error("Shipping policy must belong to this merchant.")
+    }
     return {
       ...input.product,
       shippingCostSats: undefined,
       sourceShippingCost: undefined,
-      shippingOptionId: preserveEventPickup
-        ? input.product.shippingOptionId
-        : undefined,
-      shippingOptionDTag: preserveEventPickup
-        ? input.product.shippingOptionDTag
-        : undefined,
-      shippingOptionRefs: preserveEventPickup
-        ? input.product.shippingOptionRefs
-        : undefined,
-      collectionRefs: preserveEventPickup
-        ? input.product.collectionRefs
-        : undefined,
+      shippingOptionId: input.intent.policyCoordinate,
+      shippingOptionDTag: "conduit-shipping-policy",
+      shippingOptionRefs: [
+        {
+          coordinate: input.intent.policyCoordinate,
+          dTag: "conduit-shipping-policy",
+        },
+      ],
+      shippingOptionLaunchUnsupported: false,
+      shippingCountries: undefined,
+      shippingCountryRules: undefined,
+      canonicalShippingResolved: false,
+      shippingOptionCreatedAt: undefined,
+    }
+  }
+  if (input.intent.kind !== "fixed_standard") {
+    return {
+      ...input.product,
+      shippingCostSats: undefined,
+      sourceShippingCost: undefined,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingOptionRefs: undefined,
+      collectionRefs: undefined,
       shippingOptionLaunchUnsupported: undefined,
       shippingCountries: undefined,
       shippingCountryRules: undefined,
@@ -898,9 +916,9 @@ async function signProductWrite(
   listing: PreparedProductListingPublishTarget,
   now: number,
   signEvent: (
-    event: SignedPublicNostrEvent,
+    event: UnsignedNostrEvent,
     kind: ProductSignerRequestKind
-  ) => Promise<void>
+  ) => Promise<SignedPublicNostrEvent>
 ): Promise<SignedProductWrite> {
   if (listing.product.pubkey !== merchantPubkey) {
     throw new Error("Product pubkey does not match current merchant pubkey")
@@ -910,10 +928,7 @@ async function signProductWrite(
       listing.fulfillmentIntent.baseline,
       listing.dTag
     )
-    if (
-      strategy !== "product_event" &&
-      (strategy !== "event_pickup" || listing[VERIFIED_EVENT_PICKUP] !== true)
-    ) {
+    if (strategy !== "product_event") {
       throw new Error(
         "Existing fulfillment must be prepared before requesting a signature"
       )
@@ -934,19 +949,11 @@ async function signProductWrite(
     dTag: listing.dTag,
     clientAppId: "merchant",
   })
-  const productEvent: SignedPublicNostrEvent = {
-    id: "",
-    sig: "",
+  const productEventDraft: UnsignedNostrEvent = {
+    ...productDraft,
     pubkey: merchantPubkey,
-    kind: 0,
     created_at: createdAt,
-    tags: [],
-    content: "",
   }
-  productEvent.kind = productDraft.kind
-  productEvent.created_at = createdAt
-  productEvent.content = productDraft.content
-  productEvent.tags = productDraft.tags
 
   let shippingEvent: SignedPublicNostrEvent | null = null
   if (listing.fulfillmentIntent.kind === "fixed_standard") {
@@ -955,22 +962,12 @@ async function signProductWrite(
       intent: listing.fulfillmentIntent,
       clientAppId: "merchant",
     })
-    shippingEvent = {
-      id: "",
-      sig: "",
-      pubkey: merchantPubkey,
-      kind: 0,
-      created_at: createdAt,
-      tags: [],
-      content: "",
-    }
-    shippingEvent.kind = shippingDraft.kind
-    shippingEvent.created_at = createdAt
-    shippingEvent.content = shippingDraft.content
-    shippingEvent.tags = shippingDraft.tags
-    await signEvent(shippingEvent, "shipping")
+    shippingEvent = await signEvent(
+      { ...shippingDraft, pubkey: merchantPubkey, created_at: createdAt },
+      "shipping"
+    )
   }
-  await signEvent(productEvent, "product")
+  const productEvent = await signEvent(productEventDraft, "product")
   return { productEvent, shippingEvent }
 }
 
@@ -1098,9 +1095,6 @@ export async function signAndPublishProductWriteBundle(
       shouldContinue: input.shouldContinue,
     },
     {
-      getEventMarketPickups:
-        dependencies.getEventMarketPickups ??
-        getEventMarketPickupsByCoordinates,
       getShippingOptions:
         dependencies.getShippingOptions ?? getShippingOptionsByCoordinates,
     }
@@ -1114,9 +1108,9 @@ export async function signAndPublishProductWriteBundle(
     input.waitForSignerVisibility ?? waitForVisibleDocument
   let signerRequestCurrent = 0
   const signEvent = async (
-    event: SignedPublicNostrEvent,
+    event: UnsignedNostrEvent,
     kind: ProductSignerRequestKind
-  ): Promise<void> => {
+  ): Promise<SignedPublicNostrEvent> => {
     assertSignerSessionCurrent()
     signerRequestCurrent += 1
     input.onSignerRequest?.({
@@ -1126,27 +1120,16 @@ export async function signAndPublishProductWriteBundle(
     })
     await waitForSignerVisibility()
     assertSignerSessionCurrent()
-    event.pubkey = signerPubkey
-    event.created_at ??= Math.floor(Date.now() / 1000)
-    Object.assign(
-      event,
-      await signer.signEvent({
-        kind: event.kind,
-        pubkey: event.pubkey,
-        created_at: event.created_at,
-        tags: event.tags,
-        content: event.content,
-      })
-    )
-    const signed = event
+    const signed = await signer.signEvent(event)
     if (
       !isValidSignedPublicNostrEvent(signed) ||
       signed.pubkey !== signerPubkey
     ) {
       throw new Error("Signer returned invalid product event evidence.")
     }
-    await input.onSignedEvent?.(event, kind)
+    await input.onSignedEvent?.(signed, kind)
     assertSignerSessionCurrent()
+    return signed
   }
 
   const writes: SignedProductWrite[] = []
@@ -1163,20 +1146,14 @@ export async function signAndPublishProductWriteBundle(
       targets: input.deletions ?? [],
       clientAppId: "merchant",
     })
-    const deletion: SignedPublicNostrEvent = {
-      id: "",
-      sig: "",
-      pubkey: signerPubkey,
-      kind: 0,
-      created_at: 0,
-      tags: [],
-      content: "",
-    }
-    deletion.kind = draft.kind
-    deletion.created_at = Math.floor(Date.now() / 1000)
-    deletion.content = draft.content
-    deletion.tags = draft.tags
-    await signEvent(deletion, "deletion")
+    const deletion = await signEvent(
+      {
+        ...draft,
+        pubkey: signerPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+      },
+      "deletion"
+    )
     events.push(deletion)
   }
 

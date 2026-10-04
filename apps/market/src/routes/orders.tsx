@@ -14,6 +14,9 @@ import {
   config,
   db,
   encodeEventMarketNaddr,
+  formatEventMarketPickupClaimCode,
+  formatEventMarketPickupDate,
+  getFutureMarketClaimRef,
   deriveProtectedReadPresentationState,
   EVENT_KINDS,
   formatNpub,
@@ -78,7 +81,6 @@ import {
   Check,
   ChevronRight,
   LoaderCircle,
-  MapPin,
   MessageCircle,
   ReceiptText,
   RotateCw,
@@ -123,12 +125,8 @@ import {
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
-import { verifyPickupCartFreshness } from "../lib/event-market-adapter"
-import {
-  assertCartPickupHandlerReady,
-  getOrganizerPickupClaimCode,
-  getPickupHandoffSummary,
-} from "../lib/pickup-handoff"
+import { assertCreatedEventMarketPickupTerms } from "../lib/order-pickup-retry"
+import { assertCartPickupHandlerReady } from "../lib/pickup-handoff"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import {
   authorizeCheckoutWithAnonSigner,
@@ -579,9 +577,7 @@ function OrderItemsSection({
               sourcePrice: item.sourcePrice,
             },
             {
-              allowZero:
-                isZeroCostPickupOrder(vm) &&
-                item.fulfillment?.type === "pickup",
+              allowZero: item.fulfillment?.type === "event_market_pickup",
             }
           )
           return (
@@ -732,13 +728,15 @@ function OrderDetail({
   const eventActorPubkeys = useMemo(
     () =>
       Array.from(
-        new Set(
-          vm.pickupFulfillments.map(
-            (pickup) => getPickupHandoffSummary(pickup).handlerPubkey
-          )
-        )
+        new Set([
+          ...vm.futureMarketFulfillments.map((pickup) =>
+            pickup.mode === "organizer_handoff"
+              ? pickup.organizerPubkey
+              : pickup.merchantPubkey
+          ),
+        ])
       ),
-    [vm.pickupFulfillments]
+    [vm.futureMarketFulfillments]
   )
   const eventActorProfiles = useProfiles(eventActorPubkeys, {
     accountPubkey,
@@ -1000,13 +998,31 @@ function OrderDetail({
   )
 
   async function verifyRetryFreshness(): Promise<void> {
-    const pickupFreshness = await verifyPickupCartFreshness(
-      row.lifecycle?.items ?? [],
-      row.lifecycle?.merchantPubkey ?? row.merchantPubkey,
-      authenticatedPubkey,
-      () => authGenerationRef.current === authGeneration
-    )
-    if (!pickupFreshness.fresh) throw new Error(pickupFreshness.reason)
+    assertCreatedEventMarketPickupTerms({
+      id: row.orderId,
+      buyerPubkey,
+      merchantPubkey: row.merchantPubkey,
+      items: (row.lifecycle?.items ?? vm.items).map((item) => ({
+        productId: item.productId,
+        familyProductId: item.familyProductId,
+        selectedSpecifications: item.selectedSpecifications,
+        format: item.format ?? "physical",
+        quantity: item.quantity,
+        priceAtPurchase: item.priceAtPurchase,
+        currency: item.currency,
+        fulfillment:
+          item.fulfillment?.type === "event_market_pickup"
+            ? item.fulfillment
+            : undefined,
+        sourcePrice: item.sourcePrice,
+        shippingCostSats: item.shippingCostSats,
+        sourceShippingCost: item.sourceShippingCost,
+      })),
+      subtotal: row.lifecycle?.totalSats ?? vm.totalSats ?? 0,
+      currency: row.lifecycle?.currency ?? vm.currency,
+      shippingCostSats: row.lifecycle?.shippingCostSats ?? 0,
+      createdAt: row.lifecycle?.createdAt ?? vm.createdAt,
+    })
     await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
       requestingAccountPubkey: authenticatedPubkey,
       authenticatedPubkey,
@@ -2262,72 +2278,72 @@ function OrderDetail({
               />
             </div>
 
-            {/* Shipping address */}
-            {vm.pickupFulfillments.map((pickup) => {
-              const handoff = getPickupHandoffSummary(pickup)
-              const pickupClaimCode = getOrganizerPickupClaimCode(
-                row.orderId,
-                pickup
-              )
-              const collectionRef = encodeEventMarketNaddr(
-                pickup.collection.coordinate
-              )
+            {vm.futureMarketFulfillments.map((pickup) => {
+              const marketRef = encodeEventMarketNaddr(pickup.market.coordinate)
+              const handlerPubkey =
+                pickup.mode === "organizer_handoff"
+                  ? pickup.organizerPubkey
+                  : pickup.merchantPubkey
+              const claimCode =
+                pickup.mode === "organizer_handoff"
+                  ? formatEventMarketPickupClaimCode(
+                      getFutureMarketClaimRef({
+                        orderId: vm.orderId,
+                        merchantPubkey: vm.merchantPubkey,
+                        organizerPubkey: pickup.organizerPubkey,
+                        marketCoordinate: pickup.market.coordinate,
+                      })
+                    )
+                  : null
               return (
                 <section
-                  key={pickup.option.coordinate}
+                  key={pickup.market.coordinate}
                   className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+                  data-testid="future-market-order-pickup"
                 >
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-400">
-                      <MapPin className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                        {handoff.label}
-                      </h3>
-                      <div className="mt-2 text-sm font-medium text-[var(--text-primary)]">
-                        {pickup.option.title}
-                      </div>
-                      <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
-                        {pickup.option.location ??
-                          pickup.option.geohash ??
-                          "Public pickup location was not published."}
-                      </div>
-                      <div className="mt-2 text-xs text-[var(--text-muted)]">
-                        Handled by{" "}
-                        <EventActorName
-                          identity={eventActorIdentity(handoff.handlerPubkey)}
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    Event pickup
+                  </h3>
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    {pickup.assignment}
+                  </p>
+                  <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                    Selected date: {formatEventMarketPickupDate(pickup)}
+                  </p>
+                  <p className="mt-2 text-xs text-[var(--text-muted)]">
+                    Handled by{" "}
+                    <EventActorName
+                      identity={eventActorIdentity(handlerPubkey)}
+                    />
+                  </p>
+                  {claimCode && (
+                    <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
+                      <span className="text-[var(--text-secondary)]">
+                        Pickup code
+                      </span>
+                      <span className="flex items-center gap-2 font-mono font-semibold tracking-wide text-[var(--text-primary)]">
+                        {claimCode}
+                        <CopyButton
+                          value={claimCode}
+                          npub={false}
+                          label="Copy organizer pickup code"
                         />
-                      </div>
-                      {pickupClaimCode && (
-                        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
-                          <span className="text-[var(--text-secondary)]">
-                            Pickup code
-                          </span>
-                          <span className="flex items-center gap-2 font-mono font-semibold tracking-wide text-[var(--text-primary)]">
-                            {pickupClaimCode}
-                            <CopyButton
-                              value={pickupClaimCode}
-                              npub={false}
-                              label="Copy organizer pickup code"
-                            />
-                          </span>
-                        </div>
-                      )}
-                      <Button asChild variant="outline" className="mt-4 h-9">
-                        <Link
-                          to="/events/$collectionRef"
-                          params={{ collectionRef }}
-                        >
-                          View event catalog
-                        </Link>
-                      </Button>
+                      </span>
                     </div>
-                  </div>
+                  )}
+                  <Button asChild variant="outline" className="mt-4 h-9">
+                    <Link
+                      to="/events/$collectionRef"
+                      params={{ collectionRef: marketRef }}
+                    >
+                      View event market
+                    </Link>
+                  </Button>
                 </section>
               )
             })}
 
+            {/* Shipping address */}
             {/* Shipping address */}
             {vm.shippingAddress && (
               <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">

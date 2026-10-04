@@ -192,6 +192,8 @@ export function assertStagedOrderLifecycleMatchesRumor(
     priceAtPurchase: item.priceAtPurchase,
     currency: item.currency,
     shippingCostSats: item.shippingCostSats,
+    shippingPolicyQuote: item.shippingPolicyQuote,
+    shippingAllocatedCostSats: item.shippingAllocatedCostSats,
     sourceShippingCost: item.sourceShippingCost
       ? { ...item.sourceShippingCost }
       : undefined,

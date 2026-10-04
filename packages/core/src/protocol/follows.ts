@@ -1342,23 +1342,17 @@ export async function publishContactListUpdate({
   })
 
   const draft: UnsignedNostrEvent = {
-    kind: 0,
-    pubkey: "",
-    created_at: 0,
-    tags: [],
-    content: "",
+    kind: EVENT_KINDS.CONTACT_LIST,
+    pubkey: normalizedOwnerPubkey,
+    created_at: Math.max(
+      Math.floor(Date.now() / 1000),
+      (latest?.created_at ?? -1) + 1
+    ),
+    tags: appendConduitClientTag(nextTags, appId),
+    content: latest?.content ?? "",
   }
-  draft.kind = EVENT_KINDS.CONTACT_LIST
-  draft.created_at = Math.max(
-    Math.floor(Date.now() / 1000),
-    (latest?.created_at ?? -1) + 1
-  )
-  draft.content = latest?.content ?? ""
-  draft.tags = appendConduitClientTag(nextTags, appId)
-
   assertSafeReplaceablePublish(draft, replaceableSafety)
   assertCurrentSignerSession()
-  draft.pubkey = normalizedOwnerPubkey
   const event = await signer.signEvent(draft)
   assertCurrentSignerSession()
   const signedEvent = event

@@ -889,17 +889,12 @@ export async function publishShopperPresets({
     dependencies.randomBytes
   )
   const draft: UnsignedNostrEvent = {
-    kind: 0,
-    pubkey: "",
-    created_at: 0,
-    tags: [],
-    content: "",
+    kind: EVENT_KINDS.APPLICATION_DATA,
+    pubkey: owner,
+    created_at: createdAt,
+    tags: appendConduitClientTag([["d", SHOPPER_PRESETS_D_TAG]], appId),
+    content: serializeShopperPresetsEnvelope(envelope),
   }
-  draft.kind = EVENT_KINDS.APPLICATION_DATA
-  draft.pubkey = owner
-  draft.created_at = createdAt
-  draft.tags = appendConduitClientTag([["d", SHOPPER_PRESETS_D_TAG]], appId)
-  draft.content = serializeShopperPresetsEnvelope(envelope)
   const event = await signer.signEvent(draft)
 
   const publishEvent = dependencies.publishEvent ?? publishWithPlanner

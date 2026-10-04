@@ -29,39 +29,32 @@ const contracts = [
     calls: [{ intent: "author_event", identity: "owner", count: 1 }],
   },
   {
-    path: "packages/core/src/protocol/event-market.ts",
+    path: "packages/core/src/protocol/event-market-calendar-retry.ts",
     calls: [
       {
         intent: "commerce_author_event",
-        authorIdentity: "input.organizerPubkey",
-        authenticatedPattern:
-          "authenticatedPubkey\\s*===\\s*input\\.organizerPubkey\\s*\\?\\s*authenticatedPubkey\\s*:\\s*null",
-        accountIdentity: "input.organizerPubkey",
+        authorIdentity: "organizerPubkey",
+        authenticatedIdentity: "organizerPubkey",
+        accountIdentity: "organizerPubkey",
         count: 1,
       },
     ],
     guards: [
-      "signerPubkey\\s*!==\\s*input\\.organizerPubkey",
-      "return\\s*\\{\\s*signedEvent:\\s*signed,\\s*authenticatedPubkey:\\s*signerPubkey\\s*\\}",
+      "\\(await signer\\.getPublicKey\\(\\)\\)\\.toLowerCase\\(\\) !== organizerPubkey",
     ],
   },
   {
-    path: "packages/core/src/protocol/event-market-handoff.ts",
+    path: "packages/core/src/protocol/future-market-handoff.ts",
     calls: [
       {
         intent: "recipient_event",
-        authorIdentity: "input.record.senderPubkey",
-        authenticatedIdentity: "authenticatedOwnerPubkey",
-        accountIdentity: "accountPubkey",
-        accountPropertyPattern: "accountPubkey",
+        authorIdentity: "record.senderPubkey",
+        authenticatedIdentity: "input.authenticatedOwnerPubkey",
+        accountIdentity: "record.senderPubkey",
         count: 2,
       },
     ],
-    guards: [
-      "const\\s+accountPubkey\\s*=\\s*input\\.record\\.senderPubkey\\.trim\\(\\)\\.toLowerCase\\(\\)",
-      "const\\s+authenticatedOwnerPubkey\\s*=\\s*matchingAuthenticatedDeliveryOwner\\(\\s*input\\.record\\.senderPubkey,\\s*input\\.authenticatedOwnerPubkey\\s*\\)",
-    ],
-    privateMessageIdentity: "expectedSender(input.payload)",
+    guards: ["record\\.senderPubkey !== input\\.authenticatedOwnerPubkey"],
   },
   {
     path: "apps/merchant/src/lib/product-publishing.ts",
@@ -135,15 +128,19 @@ describe("account network publish call contract", () => {
           expect(source).toMatch(new RegExp(guard))
         }
       }
-
-      if ("privateMessageIdentity" in contract) {
-        const escapedIdentity = escapeRegExp(contract.privateMessageIdentity)
-        const matchingPrivateMessageCall = new RegExp(
-          `senderPubkey: ${escapedIdentity},\\s+accountPubkey: ${escapedIdentity},\\s+authenticatedPubkey: input\\.transport\\?\\.authenticatedPubkey,\\s+recipientPubkey:`,
-          "g"
-        )
-        expect(source.match(matchingPrivateMessageCall) ?? []).toHaveLength(1)
-      }
     }
+  })
+  it("binds current private publication and both exact-wrap retries to authenticated owners", async () => {
+    const source = await Bun.file(
+      "packages/core/src/protocol/future-market-handoff.ts"
+    ).text()
+    expect(source).toMatch(
+      /senderPubkey: sender\(payload\),\s+recipientPubkey: recipient\(payload\),\s+accountPubkey: sender\(payload\),\s+authenticatedPubkey: input\.authenticatedPubkey,/
+    )
+    expect(
+      source.match(
+        /authenticatedPubkey: input\.authenticatedOwnerPubkey,\s+shouldContinue: input\.shouldContinue,/g
+      )
+    ).toHaveLength(2)
   })
 })

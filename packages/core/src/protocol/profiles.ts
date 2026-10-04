@@ -371,22 +371,14 @@ export async function publishProfileContext(
     latestContent: latest.frontier?.rawContent,
   })
   const draft: UnsignedNostrEvent = {
-    kind: 0,
-    pubkey: "",
-    created_at: 0,
-    tags: [],
-    content: "",
+    kind: EVENT_KINDS.PROFILE,
+    pubkey: pubkey,
+    created_at: getNextProfileEventCreatedAt(latest.frontier?.eventCreatedAt),
+    tags: appendConduitClientTag([], appId),
+    content: JSON.stringify(content),
   }
-  draft.kind = EVENT_KINDS.PROFILE
-  draft.created_at = getNextProfileEventCreatedAt(
-    latest.frontier?.eventCreatedAt
-  )
-  draft.content = JSON.stringify(content)
-  draft.tags = appendConduitClientTag([], appId)
-
   assertSafeReplaceablePublish(draft)
   assertCurrentSession()
-  draft.pubkey = pubkey
   const event = await signer.signEvent(draft)
   assertCurrentSession()
   await publishWithPlanner(event, {

@@ -24,12 +24,6 @@ export function setFixturePublisher(
 ): void {
   publishers.set(event.id, publish)
 }
-export function plainFixtureEvent(
-  _ndk: unknown,
-  event: SignedPublicNostrEvent
-): SignedPublicNostrEvent {
-  return event
-}
 let queue: Array<{
   relayUrl: string
   signedEvent: SignedPublicNostrEvent

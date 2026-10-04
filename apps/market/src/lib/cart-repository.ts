@@ -8,15 +8,12 @@ import {
   type StoredShoppingCart,
 } from "@conduit/core"
 import {
-  createPendingEventPickupFulfillment,
   getCartCommerceFingerprint,
   getCartItemKey,
   getCartLineFulfillmentId,
   groupCartPurchases,
-  isPendingEventPickupCartItem,
   isSameCartLineFulfillment,
   parsePersistedCart,
-  type CartEventPickupUpgradeInput,
   type CartItem,
   type CartItemIdentity,
   type CartItemInput,
@@ -196,22 +193,6 @@ function refreshQuoteDerivedFields(
     )
   ) {
     next = { ...next, shippingCostSats: candidate.shippingCostSats }
-  }
-  if (
-    current.fulfillment?.type === "pickup" &&
-    candidate.fulfillment?.type === "pickup" &&
-    hasSameQuoteDerivedSource(
-      current.fulfillment.sourceCost,
-      candidate.fulfillment.sourceCost
-    )
-  ) {
-    next = {
-      ...next,
-      fulfillment: {
-        ...current.fulfillment,
-        costSats: candidate.fulfillment.costSats,
-      },
-    }
   }
   return next
 }
@@ -694,14 +675,118 @@ function removeAllocatedBatches(
   return changed
 }
 
+function productQuantity(
+  record: CanonicalCartRecord,
+  item: CartItemIdentity
+): number {
+  return record.lines
+    .filter(
+      (line) =>
+        line.item.productId === item.productId &&
+        line.item.merchantPubkey === item.merchantPubkey
+    )
+    .reduce(
+      (sum, line) =>
+        sum + line.batches.reduce((n, batch) => n + batch.quantity, 0),
+      0
+    )
+}
+
+/** Moved quantities get new batch identities so prior claims cannot consume them. */
+export function changeCartRepositoryFulfillment(
+  identity: CartItemIdentity,
+  input: CartItemInput,
+  expectedRevision: number
+): Promise<CartMutationResult> {
+  return mutateCart((record) => {
+    if (record.revision !== expectedRevision || !identity.cartLineId)
+      return false
+    const index = findLineIndex(record, identity)
+    if (index < 0) return false
+    const line = record.lines[index]!
+    if (
+      input.productId !== line.item.productId ||
+      input.merchantPubkey !== line.item.merchantPubkey ||
+      input.format !== "physical" ||
+      hasStrictlyOlderProductRevision(line.item, input) ||
+      !input.eventMarketContext
+    )
+      return false
+    const parsed = orderItemFulfillmentSchema.safeParse(input.fulfillment)
+    if (
+      !parsed.success ||
+      (parsed.data.type !== "shipping" &&
+        parsed.data.type !== "event_market_pickup")
+    )
+      return false
+    if (
+      parsed.data.type === "event_market_pickup" &&
+      (parsed.data.product.coordinate !== input.productId ||
+        parsed.data.product.eventId !== input.productEventId ||
+        parsed.data.market.coordinate !==
+          input.eventMarketContext.marketCoordinate ||
+        parsed.data.calendar.coordinate !==
+          input.eventMarketContext.calendarCoordinate)
+    )
+      return false
+    if (
+      parsed.data.type === "shipping" &&
+      (!input.shippingOptionId || input.shippingOptionLaunchUnsupported)
+    )
+      return false
+    if (
+      typeof input.stock === "number" &&
+      productQuantity(record, input) > input.stock
+    )
+      return false
+    if (isSameCartLineFulfillment(line.item, input)) return false
+    const quantity = line.batches.reduce(
+      (sum, batch) => sum + batch.quantity,
+      0
+    )
+    const nextItem = sanitizeCartItemImage({
+      ...input,
+      fulfillment: parsed.data,
+      quantity,
+      merchantAddedAt: line.item.merchantAddedAt,
+    })
+    const target = record.lines.find(
+      (candidate) =>
+        candidate !== line &&
+        candidate.item.productId === input.productId &&
+        candidate.item.merchantPubkey === input.merchantPubkey &&
+        isSameCartLineFulfillment(candidate.item, nextItem)
+    )
+    if (target) {
+      if (hasStrictlyOlderProductRevision(target.item, nextItem)) return false
+      const mergedItem = selectCartItemSnapshot(target.item, nextItem)
+      if (
+        typeof mergedItem.stock === "number" &&
+        productQuantity(record, input) > mergedItem.stock
+      )
+        return false
+      target.item = mergedItem
+      // Keep existing destination allocations valid, but give the moved
+      // quantity a new batch so neither earlier claim can consume it.
+      appendBatch(record, target, quantity)
+      record.lines.splice(index, 1)
+      return true
+    }
+    line.id = takeId(record, "line")
+    line.item = nextItem
+    line.batches = [{ id: takeId(record, "batch"), quantity }]
+    return true
+  })
+}
+
 export function addCartRepositoryItem(
   input: CartItemInput & { merchantAddedAt?: number },
   quantity = 1
 ): Promise<CartMutationResult> {
   return mutateCart((record) => {
     if (
-      input.fulfillment?.type === "event_pickup_pending" &&
-      input.format === "digital"
+      input.fulfillment !== undefined &&
+      !orderItemFulfillmentSchema.safeParse(input.fulfillment).success
     ) {
       return false
     }
@@ -715,15 +800,11 @@ export function addCartRepositoryItem(
     )
     if (index >= 0) {
       const line = record.lines[index]!
-      const current = line.batches.reduce(
-        (sum, batch) => sum + batch.quantity,
-        0
-      )
       const nextItem = selectCartItemSnapshot(line.item, sanitized)
       if (
         nextItem.stock === 0 ||
         (typeof nextItem.stock === "number" &&
-          current + requested > nextItem.stock)
+          productQuantity(record, input) + requested > nextItem.stock)
       ) {
         return false
       }
@@ -734,7 +815,8 @@ export function addCartRepositoryItem(
 
     if (
       sanitized.stock === 0 ||
-      (typeof sanitized.stock === "number" && requested > sanitized.stock)
+      (typeof sanitized.stock === "number" &&
+        productQuantity(record, input) + requested > sanitized.stock)
     ) {
       return false
     }
@@ -780,8 +862,7 @@ export async function installCheckoutIntentPurchase(
           item.quantity < 1 ||
           item.quantity > 99 ||
           item.merchantPubkey !== incoming[0]?.merchantPubkey ||
-          item.fulfillment?.type === "pickup" ||
-          item.fulfillment?.type === "event_pickup_pending" ||
+          item.fulfillment?.type === "event_market_pickup" ||
           (item.stock !== undefined && item.quantity > item.stock)
       ) ||
       proposed.reduce((sum, item) => sum + item.quantity, 0) > 100
@@ -905,7 +986,6 @@ export function incrementCartRepositoryItem(
     const index = findLineIndex(record, identity)
     if (index < 0) return false
     const line = record.lines[index]!
-    const current = line.batches.reduce((sum, batch) => sum + batch.quantity, 0)
     const requested = Math.max(1, Math.floor(quantity))
     const stock =
       currentStockEvidence === undefined
@@ -916,7 +996,10 @@ export function incrementCartRepositoryItem(
           : currentStockEvidence.stock === undefined
             ? line.item.stock
             : Math.min(line.item.stock, currentStockEvidence.stock)
-    if (typeof stock === "number" && current + requested > stock) {
+    if (
+      typeof stock === "number" &&
+      productQuantity(record, identity) + requested > stock
+    ) {
       return false
     }
     appendBatch(record, line, requested)
@@ -958,125 +1041,13 @@ export function refreshAndIncrementCartRepositoryItem(
     if (
       nextItem.stock === 0 ||
       (typeof nextItem.stock === "number" &&
-        current + requested > nextItem.stock)
+        productQuantity(record, input) + requested > nextItem.stock)
     ) {
       return false
     }
 
     line.item = nextItem
     appendBatch(record, line, requested)
-    return true
-  })
-}
-
-/**
- * Replace one exact pending cart-line incarnation with current signed pickup
- * fulfillment. The read, validation, quantity preservation, and optional merge
- * with a concurrently added exact line all happen in the canonical mutation.
- */
-export function upgradePendingEventPickupCartRepositoryItem(
-  identity: CartItemIdentity,
-  input: CartEventPickupUpgradeInput
-): Promise<CartMutationResult> {
-  return mutateCart((record) => {
-    if (!identity.cartLineId || input.format === "digital") return false
-    const parsedFulfillment = orderItemFulfillmentSchema.safeParse(
-      input.fulfillment
-    )
-    if (
-      !parsedFulfillment.success ||
-      parsedFulfillment.data.type !== "pickup"
-    ) {
-      return false
-    }
-    const fulfillment = parsedFulfillment.data
-    const pendingIndex = findLineIndex(record, identity)
-    if (pendingIndex < 0) return false
-
-    const pendingLine = record.lines[pendingIndex]!
-    if (!isPendingEventPickupCartItem(pendingLine.item)) return false
-
-    const candidateCollection = createPendingEventPickupFulfillment(
-      fulfillment.collection.coordinate
-    )
-    if (
-      input.merchantPubkey !== pendingLine.item.merchantPubkey ||
-      input.productId !== pendingLine.item.productId ||
-      fulfillment.product.coordinate !== input.productId ||
-      fulfillment.product.merchantPubkey.toLowerCase() !==
-        input.merchantPubkey.toLowerCase() ||
-      fulfillment.product.createdAt !== input.productUpdatedAt ||
-      fulfillment.product.eventId.toLowerCase() !==
-        input.productEventId.toLowerCase() ||
-      candidateCollection?.collectionCoordinate !==
-        pendingLine.item.fulfillment.collectionCoordinate
-    ) {
-      return false
-    }
-
-    const pendingQuantity = pendingLine.batches.reduce(
-      (sum, batch) => sum + batch.quantity,
-      0
-    )
-    const sanitized = sanitizeCartItemImage({
-      ...input,
-      format: "physical",
-      fulfillment,
-      shippingCostSats: fulfillment.costSats,
-      sourceShippingCost: fulfillment.sourceCost,
-      shippingOptionId: fulfillment.option.coordinate,
-      shippingOptionDTag: fulfillment.option.coordinate
-        .split(":")
-        .slice(2)
-        .join(":"),
-      shippingOptionLaunchUnsupported: undefined,
-      shippingCountries: [],
-      shippingCountryRules: [],
-      canonicalShippingResolved: false,
-      quantity: pendingQuantity,
-    })
-    if (hasStrictlyOlderProductRevision(pendingLine.item, sanitized)) {
-      return false
-    }
-
-    const upgradedItem: CartItem = {
-      ...pendingLine.item,
-      ...sanitized,
-      merchantAddedAt: pendingLine.item.merchantAddedAt,
-    }
-    const exactIndex = record.lines.findIndex(
-      (line, index) =>
-        index !== pendingIndex &&
-        line.item.merchantPubkey === upgradedItem.merchantPubkey &&
-        line.item.productId === upgradedItem.productId &&
-        isSameCartLineFulfillment(line.item, upgradedItem)
-    )
-
-    if (exactIndex < 0) {
-      if (
-        typeof upgradedItem.stock === "number" &&
-        pendingQuantity > upgradedItem.stock
-      ) {
-        return false
-      }
-      pendingLine.item = upgradedItem
-      return true
-    }
-
-    const exactLine = record.lines[exactIndex]!
-    const mergedItem = selectCartItemSnapshot(exactLine.item, upgradedItem)
-    const mergedQuantity =
-      pendingQuantity +
-      exactLine.batches.reduce((sum, batch) => sum + batch.quantity, 0)
-    if (
-      typeof mergedItem.stock === "number" &&
-      mergedQuantity > mergedItem.stock
-    ) {
-      return false
-    }
-    exactLine.item = mergedItem
-    exactLine.batches.push(...pendingLine.batches)
-    record.lines.splice(pendingIndex, 1)
     return true
   })
 }

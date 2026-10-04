@@ -80,10 +80,11 @@ function EventsTimelinePage() {
         source={effectiveSource}
         search={search}
         onSearchChange={updateSearch}
-        onOpen={(collectionRef) => {
+        onOpen={(collectionRef, occurrence) => {
           void navigate({
             to: "/events/$collectionRef",
             params: { collectionRef },
+            search: occurrence ? { occurrence } : {},
           })
         }}
       />

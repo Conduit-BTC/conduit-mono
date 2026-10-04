@@ -1,14 +1,12 @@
 import {
   fixtureWrite,
   fixturePublisher,
-  plainFixtureEvent,
   setFixturePublisher,
   resetFixturePublishers,
 } from "./helpers/plain-publisher"
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import {
-  NDKEvent,
   NDKPrivateKeySigner,
   type NDKSigner,
   type NostrEvent,
@@ -32,6 +30,7 @@ import {
   type ProductDeletionOutboxRepository,
   type ProductSchema,
   type PublishWithPlannerResult,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 import type {
   CachedProduct,
@@ -169,24 +168,21 @@ function makeSignedEvent(kind: number) {
 function makeSignedProductEvent(input: {
   dTag: string
   acceptedRelayUrl: string
-}): NDKEvent {
+}): SignedPublicNostrEvent {
   const product = makeProduct(input.dTag)
   const draft = buildProductListingEventDraft({
     product,
     dTag: input.dTag,
     clientAppId: "merchant",
   })
-  const event = plainFixtureEvent(
-    undefined,
-    finalizeEvent(
-      {
-        kind: draft.kind,
-        created_at: Math.floor(NOW / 1000),
-        content: draft.content,
-        tags: draft.tags,
-      },
-      MERCHANT_SECRET
-    )
+  const event = finalizeEvent(
+    {
+      kind: draft.kind,
+      created_at: Math.floor(NOW / 1000),
+      content: draft.content,
+      tags: draft.tags,
+    },
+    MERCHANT_SECRET
   )
   setFixturePublisher(event, (async (relaySet: unknown) => {
     const attemptedRelayUrls = [
@@ -201,27 +197,24 @@ function makeSignedProductEvent(input: {
 function makeSignedProductEventWithShippingTags(input: {
   dTag: string
   shippingTags: string[][]
-}): NDKEvent {
+}): SignedPublicNostrEvent {
   const product = makeProduct(input.dTag)
   const draft = buildProductListingEventDraft({
     product,
     dTag: input.dTag,
     clientAppId: "merchant",
   })
-  return plainFixtureEvent(
-    undefined,
-    finalizeEvent(
-      {
-        kind: draft.kind,
-        created_at: Math.floor(NOW / 1000),
-        content: draft.content,
-        tags: [
-          ...draft.tags.filter((tag) => tag[0] !== "shipping_option"),
-          ...input.shippingTags,
-        ],
-      },
-      MERCHANT_SECRET
-    )
+  return finalizeEvent(
+    {
+      kind: draft.kind,
+      created_at: Math.floor(NOW / 1000),
+      content: draft.content,
+      tags: [
+        ...draft.tags.filter((tag) => tag[0] !== "shipping_option"),
+        ...input.shippingTags,
+      ],
+    },
+    MERCHANT_SECRET
   )
 }
 
@@ -317,17 +310,14 @@ describe("merchant product event delivery", () => {
       },
       dTag,
     })
-    const event = plainFixtureEvent(
-      undefined,
-      finalizeEvent(
-        {
-          kind: draft.kind,
-          created_at: Math.floor(NOW / 1000),
-          content: draft.content,
-          tags: draft.tags,
-        },
-        MERCHANT_SECRET
-      )
+    const event = finalizeEvent(
+      {
+        kind: draft.kind,
+        created_at: Math.floor(NOW / 1000),
+        content: draft.content,
+        tags: draft.tags,
+      },
+      MERCHANT_SECRET
     )
     await cacheSignedProductListingEvent(event)
     expect(cachedProducts[0]).toMatchObject({
@@ -345,23 +335,20 @@ describe("merchant product event delivery", () => {
   })
   it("preserves a signed legacy content location through cache reload and title editing", async () => {
     const dTag = "legacy-content-location"
-    const event = plainFixtureEvent(
-      undefined,
-      finalizeEvent(
-        {
-          kind: EVENT_KINDS.PRODUCT,
-          created_at: Math.floor(NOW / 1000),
-          content: JSON.stringify({
-            ...makeProduct(dTag),
-            location: "Legacy nearby town",
-          }),
-          tags: [
-            ["d", dTag],
-            ["price", "10", "USD"],
-          ],
-        },
-        MERCHANT_SECRET
-      )
+    const event = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: Math.floor(NOW / 1000),
+        content: JSON.stringify({
+          ...makeProduct(dTag),
+          location: "Legacy nearby town",
+        }),
+        tags: [
+          ["d", dTag],
+          ["price", "10", "USD"],
+        ],
+      },
+      MERCHANT_SECRET
     )
     await cacheSignedProductListingEvent(event)
     const reloaded = await readProductAfterCacheReload(
@@ -374,17 +361,14 @@ describe("merchant product event delivery", () => {
       dTag,
     })
     expect(edited.tags).toContainEqual(["location", "Legacy nearby town"])
-    const updated = plainFixtureEvent(
-      undefined,
-      finalizeEvent(
-        {
-          kind: edited.kind,
-          created_at: Math.floor(NOW / 1000) + 1,
-          content: edited.content,
-          tags: edited.tags,
-        },
-        MERCHANT_SECRET
-      )
+    const updated = finalizeEvent(
+      {
+        kind: edited.kind,
+        created_at: Math.floor(NOW / 1000) + 1,
+        content: edited.content,
+        tags: edited.tags,
+      },
+      MERCHANT_SECRET
     )
     expect(parseProductEvent(updated).location).toBe("Legacy nearby town")
   })
@@ -447,10 +431,7 @@ describe("merchant product event delivery", () => {
         parkedRelayUrls: [],
       }),
     })
-    const event = plainFixtureEvent(
-      undefined,
-      makeSignedEvent(EVENT_KINDS.PRODUCT)
-    )
+    const event = makeSignedEvent(EVENT_KINDS.PRODUCT)
     const publish = spyOn(fixturePublisher, "publish").mockResolvedValue(
       new Set([{ url: `${relayUrl}/` }]) as never
     )
@@ -591,17 +572,14 @@ describe("merchant product event delivery", () => {
       },
       dTag,
     })
-    const event = plainFixtureEvent(
-      undefined,
-      finalizeEvent(
-        {
-          kind: draft.kind,
-          created_at: Math.floor(NOW / 1000),
-          content: draft.content,
-          tags: draft.tags,
-        },
-        MERCHANT_SECRET
-      )
+    const event = finalizeEvent(
+      {
+        kind: draft.kind,
+        created_at: Math.floor(NOW / 1000),
+        content: draft.content,
+        tags: draft.tags,
+      },
+      MERCHANT_SECRET
     )
     await cacheSignedProductListingEvent(event)
     expect(cachedProducts[0]?.eventMarketRefs).toEqual([marketReference])
@@ -1219,7 +1197,7 @@ describe("merchant product event delivery", () => {
     const delegate = new NDKPrivateKeySigner(MERCHANT_SECRET)
     let authorityCurrent = true
     let signRequests = 0
-    let signedEvent: NDKEvent | null = null
+    let signedEvent: SignedPublicNostrEvent | null = null
     setSigner({
       pubkey: delegate.pubkey,
       user: () => delegate.user(),
@@ -1241,7 +1219,7 @@ describe("merchant product event delivery", () => {
     })
     const publishedIds: string[] = []
     const publishSpy = spyOn(fixturePublisher, "publish").mockImplementation(
-      async function (this: NDKEvent) {
+      async function (this: SignedPublicNostrEvent) {
         publishedIds.push(this.id)
         return new Set([
           { url: "wss://relay.fixture.conduit.market/" },
@@ -1443,7 +1421,7 @@ describe("merchant product event delivery", () => {
       }),
     })
     const publishSpy = spyOn(fixturePublisher, "publish").mockImplementation(
-      async function (this: NDKEvent) {
+      async function (this: SignedPublicNostrEvent) {
         publishAttempts.push(this.kind ?? -1)
         return new Set()
       }
@@ -1512,19 +1490,16 @@ describe("merchant product event delivery", () => {
     ).rejects.toThrow("exact signed merchant deletion")
 
     const otherMerchantPubkey = getPublicKey(OTHER_MERCHANT_SECRET)
-    const wrongMerchantDeletion = plainFixtureEvent(
-      undefined,
-      finalizeEvent(
-        {
-          kind: EVENT_KINDS.DELETION,
-          created_at: Math.floor(NOW / 1000),
-          content: "Listing removed",
-          tags: [
-            ["a", `${EVENT_KINDS.PRODUCT}:${otherMerchantPubkey}:variation`],
-          ],
-        },
-        OTHER_MERCHANT_SECRET
-      )
+    const wrongMerchantDeletion = finalizeEvent(
+      {
+        kind: EVENT_KINDS.DELETION,
+        created_at: Math.floor(NOW / 1000),
+        content: "Listing removed",
+        tags: [
+          ["a", `${EVENT_KINDS.PRODUCT}:${otherMerchantPubkey}:variation`],
+        ],
+      },
+      OTHER_MERCHANT_SECRET
     )
 
     await expect(
@@ -1557,8 +1532,8 @@ function publishResult(
   }
 }
 
-function event(kind: number): NDKEvent {
-  return { kind } as NDKEvent
+function event(kind: number): SignedPublicNostrEvent {
+  return { kind } as SignedPublicNostrEvent
 }
 
 describe("canonical product publication ordering", () => {
@@ -1743,77 +1718,54 @@ describe("canonical product publication ordering", () => {
     })
   })
 
-  it("preserves signed event pickup references while publishing a stock update", () => {
+  it("does not reinterpret retired direct or collection pickup references as ordinary fulfillment", () => {
     const collectionCoordinate = `30405:${MERCHANT_PUBKEY}:event`
-    const pickupCoordinate = `30406:${MERCHANT_PUBKEY}:event-pickup`
-    const product = {
-      ...makeProduct("event-listing"),
-      stock: 1,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: pickupCoordinate,
-      shippingOptionRefs: [
-        {
-          coordinate: pickupCoordinate,
-          relayHints: ["wss://relay.fixture.conduit.market"],
-        },
-      ],
-      canonicalShippingResolved: false,
+    for (const shippingOptionId of [
+      `30406:${MERCHANT_PUBKEY}:event-pickup`,
+      collectionCoordinate,
+    ]) {
+      const product = {
+        ...makeProduct("old-event-listing"),
+        collectionRefs: [collectionCoordinate],
+        shippingOptionId,
+        shippingOptionRefs: [{ coordinate: shippingOptionId }],
+        canonicalShippingResolved: false,
+      }
+      expect(
+        resolvePublishedProductFulfillmentIntentForTarget(product)
+      ).toBeNull()
     }
-
-    const intent = resolvePublishedProductFulfillmentIntentForTarget(product)
-    expect(intent).toEqual({ kind: "coordinate_after_order" })
-
-    const { prepared, parsed } = publishAndParse(
-      { ...product, stock: 0 },
-      "event-listing",
-      intent!
-    )
-    expect(prepared).toMatchObject({
-      stock: 0,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: pickupCoordinate,
-      shippingOptionRefs: [
-        {
-          coordinate: pickupCoordinate,
-          relayHints: ["wss://relay.fixture.conduit.market"],
-        },
-      ],
-      canonicalShippingResolved: false,
-    })
-
-    expect(parsed).toMatchObject({
-      stock: 0,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: pickupCoordinate,
-      shippingOptionRefs: [
-        {
-          coordinate: pickupCoordinate,
-          dTag: "event-pickup",
-        },
-      ],
-    })
   })
 
-  it("preserves a collection-level pickup reference while publishing stock", () => {
-    const collectionCoordinate = `30405:${MERCHANT_PUBKEY}:event`
+  it("an explicit ordinary fulfillment change clears retired pickup references and keeps current event associations", () => {
+    const marketCoordinate = `30409:${MERCHANT_PUBKEY}:current-event`
+    const shippingOptionId = `30405:${MERCHANT_PUBKEY}:old-event`
     const product = {
-      ...makeProduct("collection-pickup-listing"),
+      ...makeProduct("updated-event-listing"),
       stock: 0,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: collectionCoordinate,
-      shippingOptionRefs: [{ coordinate: collectionCoordinate }],
+      collectionRefs: [shippingOptionId],
+      shippingOptionId,
+      shippingOptionRefs: [{ coordinate: shippingOptionId }],
       canonicalShippingResolved: false,
+      eventMarketRefs: [marketCoordinate],
     }
-    const { parsed } = publishAndParse(product, "collection-pickup-listing", {
-      kind: "coordinate_after_order",
+    const { prepared, parsed } = publishAndParse(
+      product,
+      "updated-event-listing",
+      { kind: "coordinate_after_order" }
+    )
+    expect(prepared).toMatchObject({
+      shippingOptionId: undefined,
+      shippingOptionRefs: undefined,
+      collectionRefs: undefined,
+      eventMarketRefs: [marketCoordinate],
     })
-
     expect(parsed).toMatchObject({
       stock: 0,
-      collectionRefs: [collectionCoordinate],
-      shippingOptionId: collectionCoordinate,
-      shippingOptionRefs: [{ coordinate: collectionCoordinate, dTag: "event" }],
+      shippingOptionRefs: [],
+      eventMarketRefs: [marketCoordinate],
     })
+    expect(parsed.shippingOptionId).toBeUndefined()
   })
 
   it("uses a variation's fixed shipping override under an order-first root", () => {

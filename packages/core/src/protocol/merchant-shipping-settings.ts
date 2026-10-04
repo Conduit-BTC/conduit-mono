@@ -446,17 +446,12 @@ export async function publishMerchantShippingSettings(input: {
     (input.acceptedRevision?.createdAt ?? 0) + 1
   )
   const draft: UnsignedNostrEvent = {
-    kind: 0,
-    pubkey: "",
-    created_at: 0,
-    tags: [],
-    content: "",
+    kind: EVENT_KINDS.APPLICATION_DATA,
+    pubkey: owner,
+    created_at: createdAt,
+    tags: [["d", MERCHANT_SHIPPING_SETTINGS_D_TAG]],
+    content: serializeMerchantShippingSettings(input.settings),
   }
-  draft.kind = EVENT_KINDS.APPLICATION_DATA
-  draft.pubkey = owner
-  draft.created_at = createdAt
-  draft.tags = [["d", MERCHANT_SHIPPING_SETTINGS_D_TAG]]
-  draft.content = serializeMerchantShippingSettings(input.settings)
   const event = await signer.signEvent(draft)
   await (input.dependencies?.publishEvent ?? publishWithPlanner)(event, {
     intent: "author_event",

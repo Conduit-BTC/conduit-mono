@@ -97,10 +97,13 @@ Public NIP-44 remains v2. Future v3 messaging capability work requires public
 references and explicit capability detection; this change does not alter
 encryption or envelope construction.
 
-Organizer delivery projections preserve `auth_required`, `cancelled`,
-`policy_blocked`, and `error` separately from rejection and timeout. Merchant
-recovery storage retains these outcomes even alongside an ACK, and exact retry
-remains available after reload. The delivery UI identifies signer authentication,
-Network policy, stopped delivery, and local errors with the corresponding recovery
-guidance. Unclassified legacy failures remain errors rather than fabricated
-timeouts.
+Current Event Market roster, authorization and calendar publications pass plain
+signed events to the shared writer. Saved enrollment and private-handoff retries
+also pass their retained signed wraps directly. NDK adapters remain only where
+the existing envelope construction and authenticated unwrapping require them.
+The retired collection-based Event Market publishers and panels stay removed;
+publication does not restore their former recovery or fulfillment model.
+
+Shipping-policy creation and withdrawal use plain unsigned drafts and validated
+signer results. Their current-revision checks and signed-evidence retention remain
+owned by the shipping workflow.

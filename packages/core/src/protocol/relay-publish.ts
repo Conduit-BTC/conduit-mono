@@ -519,7 +519,6 @@ export async function publishSignedEventPlan(input: {
     attempted: boolean
   ) => void
   shouldAuthenticate?: () => boolean
-  onSignerFailure?: () => void
   relayUrls: readonly string[]
   /** Bound attempts after live account source-policy filtering. */
   maxRelayAttempts?: number
@@ -627,7 +626,6 @@ export async function publishSignedEventPlan(input: {
                   shouldContinue: input.shouldContinue,
                   onSignerFailure: () => {
                     signerFailureSuppressed = true
-                    input.onSignerFailure?.()
                   },
                 }
               : undefined,
@@ -721,12 +719,7 @@ async function resolveRelayPublishTargets(input: {
   >
 }): Promise<{
   candidateRelayUrls: string[]
-  orderedCandidateRelayUrls: string[]
   blockedRelayUrls: string[]
-  accountNetworkLocalStateRepository?: Pick<
-    AccountNetworkLocalStateRepository,
-    "get"
-  >
   relayUrls: string[]
 }> {
   const candidateRelayUrls =
@@ -804,8 +797,6 @@ async function resolveRelayPublishTargets(input: {
   const eligibleSet = new Set(eligibleRelayUrls)
   return {
     candidateRelayUrls,
-    orderedCandidateRelayUrls,
-    accountNetworkLocalStateRepository,
     relayUrls,
     blockedRelayUrls: candidateRelayUrls.filter((url) => !eligibleSet.has(url)),
   }
