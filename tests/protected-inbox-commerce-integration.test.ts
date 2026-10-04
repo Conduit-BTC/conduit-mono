@@ -1,4 +1,13 @@
-import { plainTestSigner } from "./helpers/plain-signer"
+import {
+  plainTestSigner,
+  setTestAccountSigner,
+  removeTestAccountSigner,
+} from "./helpers/plain-signer"
+import { NDKPrivateKeySigner, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
+import {
+  __resetFutureMarketHandoffTestState,
+  readFutureMarketReadyReceipts,
+} from "@conduit/core/protocol/future-market-handoff"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 import {
@@ -12,6 +21,7 @@ import {
   getDirectMessageConversationList,
   getMerchantConversationList,
   getEventMarketPrivateMessageList,
+  getNdk,
   fetchSignedEventsFanoutDetailed,
   type CachedOrderMessage,
 } from "@conduit/core"
@@ -614,19 +624,8 @@ describe("Market and Merchant protected inbox integration", () => {
   })
 })
 
-it("reads the paginated strict Event Market inbox through production protected transport", async () => {
-  paginatedWraps = Array.from({ length: 401 }, (_, index) =>
-    finalizeEvent(
-      {
-        kind: 1059,
-        created_at: 1700000500 - index,
-        tags: [["p", BUYER]],
-        content: `fixture-${index}`,
-      },
-      WRAP_KEY
-    )
-  )
-  const readyRumor = buildFutureMarketPrivateRumor(
+function eventMarketReadyRumor() {
+  return buildFutureMarketPrivateRumor(
     futureMarketReadyReceiptSchema.parse({
       version: 2,
       type: "future_market_ready",
@@ -658,6 +657,21 @@ it("reads the paginated strict Event Market inbox through production protected t
       issuedAt: 1_700_000_100,
     })
   )
+}
+
+it("reads the paginated strict Event Market inbox through production protected transport", async () => {
+  paginatedWraps = Array.from({ length: 401 }, (_, index) =>
+    finalizeEvent(
+      {
+        kind: 1059,
+        created_at: 1700000500 - index,
+        tags: [["p", BUYER]],
+        content: `fixture-${index}`,
+      },
+      WRAP_KEY
+    )
+  )
+  const readyRumor = eventMarketReadyRumor()
   const unwrapped = new Set<string>()
   __setCommerceTestOverrides({
     getAccountSigner: () => plainTestSigner({} as never),
@@ -720,4 +734,90 @@ it("reads the paginated strict Event Market inbox through production protected t
       { relayUrls: [RELAY_URL] }
     )
   ).rejects.toThrow("protected inbox")
+})
+
+it("canonicalizes protected wire extras before authenticated handoff storage and reload recovery", async () => {
+  const rumor = eventMarketReadyRumor()
+  rumor.ndk = getNdk()
+  const wrap = await giftWrap(
+    rumor,
+    new NDKUser({ pubkey: BUYER }),
+    new NDKPrivateKeySigner(Buffer.from(MERCHANT_KEY).toString("hex")),
+    { rumorKind: rumor.kind }
+  )
+  const signed = wrap.rawEvent() as SignedNostrEvent
+  paginatedWraps = [
+    {
+      ...signed,
+      padding: "x".repeat(1024 * 1024 + 1),
+      __conduitSourceRelayUrls: ["wss://forged.example"],
+      rawEvent: "hostile",
+    } as SignedNostrEvent,
+  ]
+  const values = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value)
+    },
+    removeItem: (key: string) => {
+      values.delete(key)
+    },
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage")
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: storage,
+  })
+  const lease = setTestAccountSigner(
+    new NDKPrivateKeySigner(Buffer.from(BUYER_KEY).toString("hex"))
+  )
+  installProtectedReadSigner(lease, BUYER, () => true)
+  __setCommerceTestOverrides({ resolveInboxRelayUrls: async () => [RELAY_URL] })
+  try {
+    const read = await getEventMarketPrivateMessageList(BUYER)
+    expect(read.messages.map((message) => message.id)).toEqual([rumor.id])
+    // Exercise the actual storage budget before checking the projection: the
+    // signed wrap is small even though its unsigned wire padding exceeds 1 MiB.
+    const first = await readFutureMarketReadyReceipts({
+      organizerPubkey: BUYER,
+    })
+    expect(first.claims).toHaveLength(1)
+    const canonicalKeys = [
+      "id",
+      "pubkey",
+      "created_at",
+      "kind",
+      "tags",
+      "content",
+      "sig",
+    ].sort()
+    expect(Object.keys(read.authenticatedWraps![rumor.id]).sort()).toEqual(
+      canonicalKeys
+    )
+    expect(read.authenticatedWraps![rumor.id]).toEqual(
+      JSON.parse(JSON.stringify(signed))
+    )
+    const stored = JSON.parse(
+      storage.getItem(`conduit:future-market-handoff-observed:v2:${BUYER}`) ??
+        "{}"
+    )
+    expect(Object.keys(stored[rumor.id]).sort()).toEqual(canonicalKeys)
+    expect(stored[rumor.id]).toEqual(JSON.parse(JSON.stringify(signed)))
+    __resetFutureMarketHandoffTestState()
+    // Restart with no relay copy: independently decrypt the retained signed
+    // ciphertext through the account signer instead of an unwrap stub.
+    __setCommerceTestOverrides({ resolveInboxRelayUrls: async () => [] })
+    const recovered = await readFutureMarketReadyReceipts({
+      organizerPubkey: BUYER,
+    })
+    expect(recovered.claims).toHaveLength(1)
+    expect(recovered.claims[0].receipt.id).toBe(rumor.id)
+  } finally {
+    __resetFutureMarketHandoffTestState()
+    removeTestAccountSigner(lease)
+    if (descriptor)
+      Object.defineProperty(globalThis, "localStorage", descriptor)
+    else Reflect.deleteProperty(globalThis, "localStorage")
+  }
 })

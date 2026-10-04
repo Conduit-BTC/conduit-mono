@@ -1494,37 +1494,56 @@ async function fetchEventsFromRelay(
 async function runBoundedRelayAttempts(
   relayUrls: readonly string[],
   maxRelayAttempts: number | undefined,
-  attempt: (relayUrl: string) => Promise<FetchEventsFromRelayResult | null>
+  attempt: (relayUrl: string) => Promise<FetchEventsFromRelayResult | null>,
+  retire: (reason: unknown) => void
 ): Promise<FetchEventsFromRelayResult[]> {
+  let failure: { reason: unknown } | undefined
+  const runAttempt = async (relayUrl: string) => {
+    try {
+      return await attempt(relayUrl)
+    } catch (reason) {
+      if (!failure) {
+        failure = { reason }
+        // Stop sibling sockets and queued work immediately, but keep awaiting
+        // every started attempt, including its cooperative progress callback.
+        retire(reason)
+      }
+      return null
+    }
+  }
+  let results: FetchEventsFromRelayResult[]
   if (
     maxRelayAttempts === undefined ||
     !Number.isSafeInteger(maxRelayAttempts) ||
     maxRelayAttempts <= 0
   ) {
-    return (await Promise.all(relayUrls.map(attempt))).filter(
+    results = (await Promise.all(relayUrls.map(runAttempt))).filter(
       (result): result is FetchEventsFromRelayResult => result !== null
     )
+  } else {
+    let nextIndex = 0
+    const workerCount = Math.min(maxRelayAttempts, relayUrls.length)
+    const workers = await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        const observations: FetchEventsFromRelayResult[] = []
+        while (!failure && nextIndex < relayUrls.length) {
+          const relayUrl = relayUrls[nextIndex]
+          nextIndex += 1
+          const result = await runAttempt(relayUrl)
+          // Only an actual attempt consumes this worker's bounded slot. Keep
+          // throttle diagnostics while backfilling from later eligible sources.
+          if (result === null) continue
+          observations.push(result)
+          if (!result.requestSuppressed) break
+        }
+        return observations
+      })
+    )
+    results = workers.flat()
   }
-
-  let nextIndex = 0
-  const workerCount = Math.min(maxRelayAttempts, relayUrls.length)
-  const results = await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      const observations: FetchEventsFromRelayResult[] = []
-      while (nextIndex < relayUrls.length) {
-        const relayUrl = relayUrls[nextIndex]
-        nextIndex += 1
-        const result = await attempt(relayUrl)
-        // Only an actual attempt consumes this worker's bounded slot. Keep
-        // throttle diagnostics while backfilling from later eligible sources.
-        if (result === null) continue
-        observations.push(result)
-        if (!result.requestSuppressed) break
-      }
-      return observations
-    })
-  )
-  return results.flat()
+  // Preserve the first failure rather than the aborts it caused in siblings.
+  if (failure) throw failure.reason
+  return results
 }
 
 function resolveFanoutRelayUrls(options: PublicRelayReadOptions): string[] {
@@ -1747,6 +1766,7 @@ export async function fetchSignedEventsFanoutDetailed(
   if (callerSignal?.aborted) controller.abort()
   else callerSignal?.addEventListener("abort", abort, { once: true })
   publicReadOperations.set(controller, options.socketScope)
+  let cancellationAtFailure: boolean | undefined
   options = { ...options, signal: controller.signal }
   try {
     const plan = await resolveFanoutRelayPlan(options)
@@ -1789,13 +1809,21 @@ export async function fetchSignedEventsFanoutDetailed(
           if (options.shouldContinue?.() === false) throw abortError()
         }
         return result
+      },
+      (reason) => {
+        cancellationAtFailure =
+          isAbortError(reason) || controller.signal.aborted
+        controller.abort()
       }
     )
     throwIfAborted(options.signal)
     results.splice(0, results.length, ...settled)
     return snapshot("terminal")
   } catch (error) {
-    if (isAbortError(error) || options.signal?.aborted)
+    if (
+      isAbortError(error) ||
+      (cancellationAtFailure ?? options.signal?.aborted)
+    )
       throw new PublicRelayReadCancelledError(snapshot("terminal", true))
     throw error
   } finally {

@@ -51,7 +51,9 @@ asynchronous progress callbacks, independently of the eight execution slots.
 An idle settings refresh waits for those operations to settle before retiring
 their pools. Already-started asynchronous caller callbacks are cooperative;
 retirement closes sockets and cancels queued work immediately, while read
-settlement waits for those callbacks. Explicit scoped or global retirement cancels owned operations
+settlement waits for those callbacks, including when another source rejects. A
+callback failure cancels sibling I/O and retains its original error after all
+started attempts drain. Explicit scoped or global retirement cancels owned operations
 before removing their pools, so pending work cannot open a detached socket.
 
 The generic public executor projects source URLs back to their stable requested
@@ -115,3 +117,10 @@ reads, recording only counts, event kinds and timings. Equal-topology baseline
 comparison is required before making a performance claim. Fixtures do not prove
 real external signer/device behavior, protected relay enforcement, global
 coverage, payment settlement or production operation.
+
+Protected inbox execution applies the same signed-field boundary: verified
+outputs contain only the seven NIP-01 fields with detached tags. Unsigned wire
+padding cannot enter authenticated handoff evidence or consume its recovery
+storage budget. The composed regression uses local encrypted gift wraps and
+signer-backed storage recovery; it does not establish live relay or device
+interoperability.

@@ -601,6 +601,138 @@ if (!reference) {
     expect(await pending).toMatchObject({ name: "AbortError" })
   })
 
+  for (const maxRelayAttempts of [undefined, 2]) {
+    for (const retirement of ["caller", "scope"] as const) {
+      it(`CON-06 ${retirement} retirement drains a started callback across sibling cancellation (attempts=${maxRelayAttempts ?? "all"})`, async () => {
+        const entered = barrier()
+        const released = barrier()
+        const siblingStarted = barrier()
+        install((socket, id) => {
+          if (socket.url === A) socket.emit(["EOSE", id])
+          else if (socket.url === B) siblingStarted.release()
+        })
+        const controller = new AbortController()
+        const scope = { createWebSocket: (url: string) => new Socket(url) }
+        let settled = false
+        let callbackFinished = false
+        const pending = read(
+          { kinds: [0] },
+          {
+            ...options([A, B, C]),
+            maxRelayAttempts,
+            signal: controller.signal,
+            socketScope: scope,
+            reuseRelayConnections: true,
+            onRelayProgress: async () => {
+              entered.release()
+              await released.promise
+              callbackFinished = true
+            },
+          }
+        ).then(
+          () => {
+            settled = true
+            return null
+          },
+          (error: unknown) => {
+            settled = true
+            return error
+          }
+        )
+        try {
+          await Promise.all([entered.promise, siblingStarted.promise])
+          refreshPublicRelayConnectionsWhenIdle()
+          if (retirement === "caller") controller.abort()
+          else closePublicRelayConnections(scope)
+          // Drain sibling cancellation and its promise reactions without
+          // releasing the already-started callback.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0))
+          expect(settled).toBe(false)
+          expect(callbackFinished).toBe(false)
+          expect(sockets.every((socket) => socket.readyState === 3)).toBe(
+            retirement === "scope"
+          )
+          if (maxRelayAttempts !== undefined)
+            expect(sockets.some((socket) => socket.url === C)).toBe(false)
+        } finally {
+          released.release()
+          await pending
+        }
+        expect(callbackFinished).toBe(true)
+        expect(await pending).toMatchObject({ name: "AbortError" })
+        expect(sockets.every((socket) => socket.readyState === 3)).toBe(true)
+      })
+    }
+  }
+
+  it("CON-06 callback failure cancels sibling I/O, drains started callbacks and preserves the original error", async () => {
+    const entered = barrier()
+    const released = barrier()
+    const failingSource = barrier()
+    const idleSource = barrier()
+    const failure = new Error("fixture progress failure")
+    let failingSocket: Socket
+    let failingId = ""
+    install((socket, id) => {
+      if (socket.url === A) socket.emit(["EOSE", id])
+      else if (socket.url === B) {
+        failingSocket = socket
+        failingId = id
+        failingSource.release()
+      } else idleSource.release()
+    })
+    const scope = { createWebSocket: (url: string) => new Socket(url) }
+    let settled = false
+    let callbackFinished = false
+    const pending = read(
+      { kinds: [0] },
+      {
+        ...options([A, B, C]),
+        socketScope: scope,
+        reuseRelayConnections: true,
+        onRelayProgress: async ({ relayUrl }) => {
+          if (relayUrl === B) throw failure
+          entered.release()
+          await released.promise
+          callbackFinished = true
+        },
+      }
+    ).then(
+      () => {
+        settled = true
+        return null
+      },
+      (error: unknown) => {
+        settled = true
+        return error
+      }
+    )
+    try {
+      await Promise.all([
+        entered.promise,
+        failingSource.promise,
+        idleSource.promise,
+      ])
+      refreshPublicRelayConnectionsWhenIdle()
+      failingSocket!.emit(["EOSE", failingId])
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      expect(settled).toBe(false)
+      expect(callbackFinished).toBe(false)
+      expect(
+        sockets
+          .find((socket) => socket.url === C)
+          ?.sent.some((frame) => frame[0] === "CLOSE")
+      ).toBe(true)
+      expect(sockets.every((socket) => socket.readyState === 1)).toBe(true)
+    } finally {
+      released.release()
+      await pending
+    }
+    expect(callbackFinished).toBe(true)
+    expect(await pending).toBe(failure)
+    expect(sockets.every((socket) => socket.readyState === 3)).toBe(true)
+  })
+
   it("CON-06 refresh plus saturated queue retirement preserves sibling ownership and reuse", async () => {
     const eightStarted = barrier()
     const callbackEntered = barrier()

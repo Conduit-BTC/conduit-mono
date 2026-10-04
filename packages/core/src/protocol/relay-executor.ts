@@ -392,9 +392,16 @@ function asSignedEvent(value: unknown): SignedNostrEvent | null {
   if (!value || typeof value !== "object") return null
   const event = value as SignedNostrEvent
   if (!isValidSignedPublicNostrEvent(event)) return null
+  // Relay metadata is unsigned and must not enter authenticated evidence or
+  // consume downstream storage budgets. Preserve the valid signed event.
   return {
-    ...event,
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
     tags: event.tags.map((tag) => [...tag]),
+    content: event.content,
+    sig: event.sig,
   }
 }
 
