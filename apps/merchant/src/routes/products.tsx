@@ -4739,6 +4739,20 @@ function ProductsPage() {
                 </Button>
                 <Button
                   type="submit"
+                  data-product-submit-blockers={[
+                    !pubkey && "account-missing",
+                    !signerReady && "signer-unready",
+                    isSaving && "save-pending",
+                    productImageUpload.isBusy && "upload-busy",
+                    !productCanSubmit &&
+                      (productTableError
+                        ? "shipping-policy-unavailable"
+                        : productFormValidation.canPublish
+                          ? "draft-unchanged"
+                          : "form-invalid"),
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   disabled={
                     !pubkey ||
                     !signerReady ||

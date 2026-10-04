@@ -68,6 +68,16 @@ pubkeys, npubs, nsecs, invoices, payment hashes, NWC URIs, signer codes,
 wallet recovery material, order and message contents, addresses, contact
 details, IPs, fingerprints, and private dashboard exports.
 
+Shipping-table smoke failures may also report static product-submit blocker
+categories: missing account, signer unready, save pending, upload busy, shipping
+policy unavailable, invalid form, unchanged draft, or diagnostic unavailable.
+These describe the rendered state sampled after the failed readiness assertion;
+they do not prove signer authorization or relay state. The smoke reporter accepts
+only a bounded in-memory attachment from that test file and revalidates the
+categories before output. It never reads attachment paths or preserves field
+values, error messages, or arbitrary attachment data. A successful retry still
+fails first-attempt acceptance.
+
 ## Human ownership
 
 Humans own risk classification when the evidence is uncertain, high-risk

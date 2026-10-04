@@ -3,6 +3,12 @@ import { createHash } from "node:crypto"
 
 import ts from "typescript"
 
+import {
+  decodeProductSubmitDiagnostic,
+  productSubmitDiagnosticAttachment,
+  type ProductSubmitBlocker,
+} from "./product_submit_diagnostics"
+
 import type {
   FullConfig,
   FullResult,
@@ -31,6 +37,7 @@ type SafeLocation = {
 }
 
 type SafeResult = {
+  productSubmitBlockers?: ProductSubmitBlocker[]
   duration: number
   error?: { location: SafeLocation }
   retry: number
@@ -311,12 +318,32 @@ export class PrivacySafeSmokeReporter implements Reporter {
       `end completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s duration=${Math.max(0, Math.round(result.duration))}ms retry=${Math.max(0, result.retry)} status=${result.status} project=${safeProject(test)} ${file}:${test.location.line}`
     )
     const existing = this.specs.get(test.id)
+    // Accept one bounded in-memory attachment from the shipping smoke only.
+    // Never read attachment paths or serialize arbitrary names/body fields.
+    const attachments = (result.attachments ?? []).filter(
+      (attachment) =>
+        attachment.name === productSubmitDiagnosticAttachment &&
+        attachment.contentType === "application/json"
+    )
+    const blockers =
+      file === "e2e/merchant-shipping-tables.playwright.ts" &&
+      result.status !== "passed" &&
+      result.status !== "skipped" &&
+      attachments.length === 1
+        ? decodeProductSubmitDiagnostic(attachments[0]!.body)
+        : null
+    if (blockers) {
+      this.progress(
+        `submit-readiness retry=${Math.max(0, result.retry)} project=${safeProject(test)} ${file}:${test.location.line} blockers=${blockers.join(",") || "none"}`
+      )
+    }
     const location = safeLocation(result.error?.location)
     const safeResult: SafeResult = {
       duration: Math.max(0, Math.round(result.duration)),
       retry: Math.max(0, result.retry),
       status: result.status,
       ...(location ? { error: { location } } : {}),
+      ...(blockers ? { productSubmitBlockers: blockers } : {}),
     }
     if (existing) {
       existing.ok = test.ok()
