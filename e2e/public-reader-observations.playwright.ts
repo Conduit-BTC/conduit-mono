@@ -87,7 +87,7 @@ for (const app of ["market", "merchant"] as const) {
     ).toBeVisible()
     await expect.poll(() => kinds[10002] ?? 0).toBeGreaterThan(0)
     await expect.poll(() => kinds[0] ?? 0).toBeGreaterThan(0)
-    await expect.poll(() => completions).toBe(requests)
+    await expect.poll(() => requests - completions).toBe(0)
     console.log(
       JSON.stringify({
         publicReaderObservation: app,
