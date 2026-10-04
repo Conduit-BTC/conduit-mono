@@ -197,6 +197,15 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
     if (!current.state.legs.some((leg) => leg.legId === input.legId)) {
       throw new Error("Checkout Spark payout leg is not in this plan.")
     }
+    if (
+      plan.schemaVersion === 4 &&
+      plan.recipients.find((recipient) => recipient.legId === input.legId)
+        ?.kind === "conduit"
+    ) {
+      throw new Error(
+        "Use native treasury finalization, not Lightning invoice preparation."
+      )
+    }
     const signer =
       dependencies.signer === undefined
         ? getAccountSigner()

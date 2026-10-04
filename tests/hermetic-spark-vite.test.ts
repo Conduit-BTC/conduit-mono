@@ -64,6 +64,7 @@ it("links the pinned pure SDK as self-contained browser ESM without app crypto r
       "manifestFeeSats",
       "ReceiveQuoteAmountBasis",
       "decodeSparkAddress",
+      "encodeSparkAddress",
       "getNetworkFromSparkAddress",
       "isValidSparkAddress",
     ].sort()
@@ -79,6 +80,16 @@ it("links the pinned pure SDK as self-contained browser ESM without app crypto r
   expect(
     module.UUID.parse("01234567-89ab-7def-8123-456789abcdef").toString()
   ).toBe("01234567-89ab-7def-8123-456789abcdef")
+  const address = module.encodeSparkAddress({
+    network: "REGTEST",
+    identityPublicKey:
+      "0379be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+  })
+  expect(
+    module.decodeSparkAddress(address, "REGTEST").sparkInvoiceFields
+  ).toBeUndefined()
+  const facade = await plugin.load(plugin.resolveId("@buildonspark/spark-sdk")!)
+  expect(facade).toContain("decodeSparkAddress, encodeSparkAddress")
 })
 
 it("permits only isolated loopback serve mode with both router flags", () => {

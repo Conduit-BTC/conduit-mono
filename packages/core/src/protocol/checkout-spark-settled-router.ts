@@ -8,6 +8,13 @@ import {
 } from "./checkout-spark-settled-returned"
 import { checkoutSparkProviderSendWindowEndsAt } from "./checkout-spark-invoice-expiry"
 import {
+  createCheckoutSparkNativeTreasuryFinalization,
+  restoreCheckoutSparkNativeTreasuryFinalization,
+  restoreCheckoutSparkNativeTreasuryPlan,
+  type CheckoutSparkNativeTreasuryFinalization,
+  type CheckoutSparkNativeTreasuryPlan,
+} from "./checkout-spark-treasury-finalization"
+import {
   assertCheckoutSparkMerchantPayoutRecipient,
   freezeCheckoutSparkCommerceQuote,
   type CheckoutSparkCommerceQuote,
@@ -98,7 +105,8 @@ export interface FreezeCheckoutSparkSettledPlanInput {
 
 /** V3 freezes identities, endpoints and weights, but no outgoing invoice. */
 export interface CheckoutSparkSettledPlan extends FreezeCheckoutSparkSettledPlanInput {
-  readonly schemaVersion: 3
+  readonly schemaVersion: 3 | 4
+  readonly nativeTreasury?: CheckoutSparkNativeTreasuryPlan
   readonly planDigest: string
   readonly recipients: readonly CheckoutSparkSettledRecipient[]
 }
@@ -157,7 +165,8 @@ export interface CheckoutSparkSettledClosedGeneration {
 }
 
 export interface CheckoutSparkSettledReconciliation {
-  readonly schemaVersion: 3 | 4
+  readonly schemaVersion: 3 | 4 | 5
+  readonly treasuryFinalization?: CheckoutSparkNativeTreasuryFinalization
   readonly plan: CheckoutSparkSettledPlan
   /** Exact invoice-attributed credit; never a wallet-balance inference. */
   readonly credit: CheckoutSparkSettledCreditEvidence | null
@@ -286,7 +295,9 @@ function canonicalPlanValue(
   plan: Omit<CheckoutSparkSettledPlan, "planDigest">
 ): unknown {
   return [
-    PLAN_DOMAIN,
+    plan.schemaVersion === 4
+      ? "conduit:checkout-spark-settled-plan:v4"
+      : PLAN_DOMAIN,
     plan.schemaVersion,
     plan.checkoutId,
     plan.orderId,
@@ -345,12 +356,27 @@ function canonicalPlanValue(
         : ["conduit_allowlist", recipient.destination.source.policy],
       recipient.weightSats,
     ]),
+    ...(plan.schemaVersion === 4
+      ? [
+          [
+            plan.nativeTreasury!.schemaVersion,
+            plan.nativeTreasury!.sparkAddress,
+            plan.nativeTreasury!.receiverIdentityPublicKey,
+            plan.nativeTreasury!.senderIdentityPublicKey,
+            plan.nativeTreasury!.invoiceId,
+            plan.nativeTreasury!.invoiceRequest,
+            plan.nativeTreasury!.feePolicy,
+            plan.nativeTreasury!.residualPolicy,
+          ],
+        ]
+      : []),
   ]
 }
 
 function freezeCheckoutSparkSettledPlanInternal(
   input: FreezeCheckoutSparkSettledPlanInput,
-  allowPreAllowanceV3: boolean
+  allowPreAllowanceV3: boolean,
+  nativeTreasury?: CheckoutSparkNativeTreasuryPlan
 ): CheckoutSparkSettledPlan {
   const checkoutId = text(input.checkoutId, "Checkout id")
   const orderId = text(input.orderId, "Order id")
@@ -509,7 +535,7 @@ function freezeCheckoutSparkSettledPlanInternal(
     throw new Error("Checkout Spark recipients differ from commerce quote.")
   }
   const unsigned = {
-    schemaVersion: 3 as const,
+    schemaVersion: nativeTreasury ? (4 as const) : (3 as const),
     checkoutId,
     orderId,
     merchantPubkey,
@@ -520,6 +546,21 @@ function freezeCheckoutSparkSettledPlanInternal(
     commerceQuote,
     funding,
     recipients: Object.freeze(recipients),
+    ...(nativeTreasury
+      ? {
+          nativeTreasury: restoreCheckoutSparkNativeTreasuryPlan(
+            nativeTreasury,
+            {
+              checkoutId,
+              orderId,
+              walletId,
+              network: input.network,
+              createdAt,
+              funding,
+            }
+          ),
+        }
+      : {}),
   }
   return Object.freeze({
     ...unsigned,
@@ -534,10 +575,27 @@ export function freezeCheckoutSparkSettledPlan(
   return freezeCheckoutSparkSettledPlanInternal(input, false)
 }
 
+/** V4 freezes a native final allocation before funding; commerce remains LN. */
+export function freezeCheckoutSparkSettledTreasuryPlan(
+  input: FreezeCheckoutSparkSettledPlanInput & {
+    readonly nativeTreasury: CheckoutSparkNativeTreasuryPlan
+  }
+): CheckoutSparkSettledPlan {
+  return freezeCheckoutSparkSettledPlanInternal(
+    input,
+    false,
+    input.nativeTreasury
+  )
+}
+
 export function restoreCheckoutSparkSettledPlan(
   plan: CheckoutSparkSettledPlan
 ): CheckoutSparkSettledPlan {
-  if (plan.schemaVersion !== 3) {
+  if (
+    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
+    (plan.schemaVersion === 3 && Object.hasOwn(plan, "nativeTreasury")) ||
+    (plan.schemaVersion === 4 && !plan.nativeTreasury)
+  ) {
     throw new Error("Checkout Spark settled plan version is invalid.")
   }
   // Existing v3 plans bind the prior gross to the original invoice and digest.
@@ -555,7 +613,8 @@ export function restoreCheckoutSparkSettledPlan(
       funding: plan.funding,
       recipients: plan.recipients,
     },
-    true
+    plan.schemaVersion === 3,
+    plan.nativeTreasury
   )
   if (
     canonical.planDigest !== plan.planDigest ||
@@ -576,6 +635,14 @@ export function deriveCheckoutSparkSettledTransferId(
   legId: string
 ): string {
   const canonical = restoreCheckoutSparkSettledPlan(plan)
+  if (
+    canonical.schemaVersion === 4 &&
+    canonical.recipients.find((leg) => leg.legId === legId)?.kind === "conduit"
+  ) {
+    throw new Error(
+      "Checkout Spark native treasury has no local provider transfer ID."
+    )
+  }
   if (!canonical.recipients.some((recipient) => recipient.legId === legId)) {
     throw new Error("Checkout Spark settled leg is out of scope.")
   }
@@ -671,6 +738,9 @@ function allocatedLegs(
         observedAt: null,
         finalFeeSats: null,
         finalDebitSats: null,
+        ...(plan.schemaVersion === 4
+          ? { generation: 0 as const, closedGenerations: [] }
+          : {}),
       })
     })
   )
@@ -681,6 +751,16 @@ function freezeState(
 ): CheckoutSparkSettledReconciliation {
   return Object.freeze({
     ...state,
+    ...(state.treasuryFinalization
+      ? {
+          treasuryFinalization: Object.freeze({
+            ...state.treasuryFinalization,
+            intent: state.treasuryFinalization.intent
+              ? Object.freeze({ ...state.treasuryFinalization.intent })
+              : null,
+          }),
+        }
+      : {}),
     credit: state.credit ? Object.freeze({ ...state.credit }) : null,
     legs: Object.freeze(
       state.legs.map((leg) =>
@@ -711,7 +791,7 @@ export function createCheckoutSparkSettledReconciliation(
 ): CheckoutSparkSettledReconciliation {
   const canonical = restoreCheckoutSparkSettledPlan(plan)
   return freezeState({
-    schemaVersion: 3,
+    schemaVersion: canonical.schemaVersion === 4 ? 5 : 3,
     plan: canonical,
     credit: null,
     legs: canonical.recipients.map((recipient) => ({
@@ -722,7 +802,15 @@ export function createCheckoutSparkSettledReconciliation(
       observedAt: null,
       finalFeeSats: null,
       finalDebitSats: null,
+      ...(canonical.schemaVersion === 4
+        ? { generation: 0 as const, closedGenerations: [] }
+        : {}),
     })),
+    ...(canonical.schemaVersion === 4
+      ? {
+          treasuryFinalization: createCheckoutSparkNativeTreasuryFinalization(),
+        }
+      : {}),
     updatedAt: canonical.createdAt,
   })
 }
@@ -730,10 +818,20 @@ export function createCheckoutSparkSettledReconciliation(
 export function restoreCheckoutSparkSettledReconciliation(
   state: CheckoutSparkSettledReconciliation
 ): CheckoutSparkSettledReconciliation {
-  if (state.schemaVersion !== 3 && state.schemaVersion !== 4) {
+  if (
+    state.schemaVersion !== 3 &&
+    state.schemaVersion !== 4 &&
+    state.schemaVersion !== 5
+  ) {
     throw new Error("Checkout Spark settled state version is invalid.")
   }
   const plan = restoreCheckoutSparkSettledPlan(state.plan)
+  if (
+    (plan.schemaVersion === 4) !== (state.schemaVersion === 5) ||
+    (state.schemaVersion !== 5 && Object.hasOwn(state, "treasuryFinalization"))
+  ) {
+    throw new Error("Checkout Spark treasury state version is invalid.")
+  }
   time(state.updatedAt, "Checkout Spark settled update time")
   if (
     state.updatedAt < plan.createdAt ||
@@ -755,7 +853,7 @@ export function restoreCheckoutSparkSettledReconciliation(
       (state.schemaVersion === 3 &&
         (Object.hasOwn(leg, "generation") ||
           Object.hasOwn(leg, "closedGenerations"))) ||
-      (state.schemaVersion === 4 &&
+      (state.schemaVersion !== 3 &&
         (![0, 1].includes(leg.generation!) ||
           !Array.isArray(leg.closedGenerations) ||
           leg.closedGenerations.length !== generation))
@@ -768,6 +866,21 @@ export function restoreCheckoutSparkSettledReconciliation(
     ) {
       throw new Error("Checkout Spark settled allocation is invalid.")
     }
+    if (
+      plan.schemaVersion === 4 &&
+      plan.recipients[position]!.kind === "conduit"
+    ) {
+      if (
+        leg.intent !== null ||
+        generation !== 0 ||
+        leg.closedGenerations!.length !== 0
+      ) {
+        throw new Error(
+          "Checkout Spark native treasury cannot contain Lightning intents."
+        )
+      }
+      return { ...leg, generation: 0 as const, closedGenerations: [] }
+    }
     if (leg.intent === null) {
       if (
         leg.status !== "unprepared" ||
@@ -779,7 +892,7 @@ export function restoreCheckoutSparkSettledReconciliation(
       }
       if (generation !== 0)
         throw new Error("Checkout Spark renewed leg lacks its intent.")
-      return state.schemaVersion === 4
+      return state.schemaVersion !== 3
         ? { ...baseline, generation: 0 as const, closedGenerations: [] }
         : baseline
     }
@@ -866,7 +979,7 @@ export function restoreCheckoutSparkSettledReconciliation(
     return Object.freeze({
       ...leg,
       intent,
-      ...(state.schemaVersion === 4
+      ...(state.schemaVersion !== 3
         ? { generation, closedGenerations: closed ? [closed] : [] }
         : {}),
     })
@@ -883,7 +996,14 @@ export function restoreCheckoutSparkSettledReconciliation(
       0
     )
     const debit = historical + (leg.finalDebitSats ?? 0)
-    if (!Number.isSafeInteger(debit) || debit > (leg.allocationSats ?? 0))
+    const native =
+      plan.schemaVersion === 4 &&
+      plan.recipients.find((recipient) => recipient.legId === leg.legId)
+        ?.kind === "conduit"
+    if (
+      !Number.isSafeInteger(debit) ||
+      (!native && debit > (leg.allocationSats ?? 0))
+    )
       throw new Error("Checkout Spark cumulative debit exceeds its allocation.")
     return total + debit
   }, 0)
@@ -900,12 +1020,35 @@ export function restoreCheckoutSparkSettledReconciliation(
   if (state.updatedAt < latest) {
     throw new Error("Checkout Spark settled state timestamp is stale.")
   }
+  const treasuryFinalization =
+    state.schemaVersion === 5
+      ? restoreCheckoutSparkNativeTreasuryFinalization(
+          state.treasuryFinalization!,
+          { ...state, plan, credit, legs }
+        )
+      : undefined
+  if (treasuryFinalization) {
+    const nativeLeg = legs.find(
+      (leg) =>
+        plan.recipients.find((recipient) => recipient.legId === leg.legId)
+          ?.kind === "conduit"
+    )!
+    if (
+      nativeLeg.status !== treasuryFinalization.status ||
+      nativeLeg.observedAt !== treasuryFinalization.observedAt ||
+      nativeLeg.finalFeeSats !== treasuryFinalization.finalFeeSats ||
+      nativeLeg.finalDebitSats !== treasuryFinalization.finalDebitSats
+    ) {
+      throw new Error("Checkout Spark native treasury mirror is invalid.")
+    }
+  }
   return freezeState({
     schemaVersion: state.schemaVersion,
     plan,
     credit,
     legs,
     updatedAt: state.updatedAt,
+    ...(treasuryFinalization ? { treasuryFinalization } : {}),
   })
 }
 
@@ -1026,6 +1169,15 @@ export function prepareCheckoutSparkSettledLeg(
   input: CheckoutSparkSettledLegIntentInput
 ): CheckoutSparkSettledReconciliation {
   const current = restoreCheckoutSparkSettledReconciliation(state)
+  if (
+    current.plan.schemaVersion === 4 &&
+    current.plan.recipients.find((leg) => leg.legId === input.legId)?.kind ===
+      "conduit"
+  ) {
+    throw new Error(
+      "Checkout Spark native treasury cannot prepare a Lightning invoice."
+    )
+  }
   const position = current.legs.findIndex((leg) => leg.legId === input.legId)
   if (position < 0 || !current.credit) {
     throw new Error("Checkout Spark settled leg is not funded.")
@@ -1125,7 +1277,7 @@ export function renewCheckoutSparkSettledLeg(
   }
   return restoreCheckoutSparkSettledReconciliation({
     ...current,
-    schemaVersion: 4,
+    schemaVersion: current.plan.schemaVersion === 4 ? 5 : 4,
     legs: current.legs.map((item) =>
       item.legId === input.legId
         ? {

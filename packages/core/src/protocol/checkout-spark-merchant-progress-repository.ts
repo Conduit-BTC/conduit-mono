@@ -116,7 +116,9 @@ export class DexieMerchantCheckoutSparkProgressRepository {
       !active ||
       retired ||
       active.checkoutId !== checkoutId ||
-      (active.state.schemaVersion !== 3 && active.state.schemaVersion !== 4) ||
+      (active.state.schemaVersion !== 3 &&
+        active.state.schemaVersion !== 4 &&
+        active.state.schemaVersion !== 5) ||
       !Number.isSafeInteger(active.revision) ||
       active.revision < 1
     ) {

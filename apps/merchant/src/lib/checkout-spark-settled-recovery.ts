@@ -7,6 +7,11 @@ import {
   checkoutSparkSettledOutgoingStatusObservation,
   classifyCheckoutSparkSettledExactOutgoingHistory,
   collectCheckoutSparkNativeRetirementEvidence,
+  createCheckoutSparkNativeTreasurySdkAdapter,
+  CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
+  deriveCheckoutSparkNativeTreasuryBudget,
+  proveCheckoutSparkNativeTreasuryHistory,
+  recordCheckoutSparkNativeTreasuryStatus,
   ensureSparkPrivateModeReady,
   getCheckoutSparkSettledClosedGeneration,
   getCheckoutSparkSettledLegGeneration,
@@ -41,7 +46,9 @@ import {
   type SparkCheckoutLightningReturnedInspectionInput,
   type SparkCheckoutLightningClosedReturnedInspection,
   type SparkCheckoutLightningClosedReturnedInspectionInput,
+  type CheckoutSparkMerchantSettlementRecord,
 } from "@conduit/core"
+import merchantPackage from "../../package.json"
 
 type RecoveryStore = Pick<
   DexieCheckoutSparkSettledRepository,
@@ -220,6 +227,9 @@ export async function proveMerchantCheckoutSparkClosedReturnedPayout(
 }
 
 export interface MerchantSparkRecoveryWallet {
+  nativeTreasury?: ReturnType<
+    typeof createCheckoutSparkNativeTreasurySdkAdapter
+  >
   ensurePrivateReady(): Promise<void>
   getIdentityPublicKey(): Promise<string>
   getLightningReceiveRequest(
@@ -287,7 +297,16 @@ interface RecoveryCreditDependencies extends RecoveryKeyVerificationDependencies
     | "loadMerchantOrderWitness"
     | "recordMerchantCredit"
     | "recordMerchantPayout"
-  >
+  > &
+    Partial<
+      Pick<
+        DexieCheckoutSparkSettledRepository,
+        | "loadMerchantSettlement"
+        | "recordMerchantTreasury"
+        | "assertLocalInvoiceOrigin"
+        | "assertInvoiceRecipient"
+      >
+    >
   openWallet?: (input: {
     mnemonic: string
     accountNumber: number
@@ -357,8 +376,8 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
   renewal?: true
   retirement?: true
 }): Promise<MerchantSparkRecoveryWallet> {
-  const { SparkReadonlyClient, SparkWallet, DefaultSparkSigner, UUID } =
-    await import("@buildonspark/spark-sdk")
+  const module = await import("@buildonspark/spark-sdk")
+  const { SparkReadonlyClient, SparkWallet, DefaultSparkSigner, UUID } = module
   const nativeNetwork = input.network === "mainnet" ? "MAINNET" : "REGTEST"
   const wallet = await initializeMerchantSparkWalletWithCleanup<
     InstanceType<typeof SparkWallet>
@@ -387,7 +406,49 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
     }
   }
   let retirementReader: RetirementReadonlyClient | undefined
+  let closed = false
   return {
+    nativeTreasury: createCheckoutSparkNativeTreasurySdkAdapter({
+      network: nativeNetwork,
+      isClosed: () => closed,
+      read: (read) => readWithTimeout(read(), 5_000, "Treasury provider read"),
+      codec: {
+        ...(merchantPackage.dependencies["@buildonspark/spark-sdk"] === "0.12.1"
+          ? {
+              nativeTreasuryPolicy:
+                CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
+            }
+          : {}),
+        parseTransferId: (value) => UUID.parse(value),
+        encodeSparkAddress: module.encodeSparkAddress,
+        decodeSparkAddress: module.decodeSparkAddress,
+        isValidSparkAddress: module.isValidSparkAddress,
+        getNetworkFromSparkAddress: module.getNetworkFromSparkAddress,
+      },
+      wallet: {
+        getIdentityPublicKey: () => wallet.getIdentityPublicKey(),
+        getBalance: () => wallet.getBalance(),
+        getTransfer: (id) => wallet.getTransfer(id),
+        querySparkInvoices: (invoices) =>
+          wallet.querySparkInvoices(
+            invoices as import("@buildonspark/spark-sdk").SparkAddressFormat[]
+          ),
+        ...(input.outgoing
+          ? {
+              fulfillSparkInvoice: (
+                invoices: Array<{ invoice: string; amount: bigint }>
+              ) =>
+                wallet.fulfillSparkInvoice(
+                  invoices.map(({ invoice, amount }) => ({
+                    invoice:
+                      invoice as import("@buildonspark/spark-sdk").SparkAddressFormat,
+                    amount,
+                  }))
+                ),
+            }
+          : {}),
+      },
+    }),
     ensurePrivateReady: () =>
       ensureSparkPrivateModeReady({
         wallet,
@@ -421,7 +482,7 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
             ),
         }
       : {}),
-    ...(input.retirement
+    ...(input.retirement || input.outgoing
       ? {
           inspectReturnedInvoiceClosure: (
             request: SparkCheckoutLightningClosedReturnedInspectionInput,
@@ -496,6 +557,7 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
       }
     },
     async cleanup() {
+      closed = true
       try {
         await wallet.cleanup()
       } finally {
@@ -548,6 +610,157 @@ async function readWithTimeout<T>(
   } finally {
     if (timer !== undefined) clearTimeout(timer)
   }
+}
+
+/** Fresh exact commerce and closed-history proofs for one invoice residual. */
+export async function proveMerchantCheckoutSparkNativeCommerce(input: {
+  state: CheckoutSparkSettledReconciliation
+  wallet: MerchantSparkRecoveryWallet
+  repository: Pick<
+    DexieCheckoutSparkSettledRepository,
+    | "recordMerchantCredit"
+    | "recordMerchantPayout"
+    | "loadMerchantSettlement"
+    | "assertLocalInvoiceOrigin"
+  > &
+    Partial<Pick<DexieCheckoutSparkSettledRepository, "assertInvoiceRecipient">>
+  assertCurrent(): void
+  now(): number
+  proofMode?: "pre_send" | "receipt"
+}): Promise<CheckoutSparkMerchantSettlementRecord> {
+  const { state, wallet, repository, assertCurrent, now } = input
+  const { plan } = state
+  assertCurrent()
+  if (
+    plan.schemaVersion !== 4 ||
+    !state.credit ||
+    (input.proofMode !== "receipt" && !wallet.openRetirementReader)
+  )
+    throw new Error("Native treasury commerce proof is unavailable.")
+  const identity = (await wallet.getIdentityPublicKey()).toLowerCase()
+  assertCurrent()
+  if (identity !== plan.funding.receiverIdentityPublicKey)
+    throw new Error("Checkout Spark wallet identity changed.")
+  const receive = await wallet.getLightningReceiveRequest(
+    plan.funding.requestId
+  )
+  assertCurrent()
+  if (
+    !receive ||
+    receive.status !== "TRANSFER_COMPLETED" ||
+    !receive.transfer?.sparkId
+  )
+    throw new Error("Checkout Spark funding proof is unavailable.")
+  const transfer = await wallet.getTransfer(receive.transfer.sparkId)
+  assertCurrent()
+  if (!transfer)
+    throw new Error("Checkout Spark funding transfer is unavailable.")
+  const proof = proveSparkCheckoutReceiveCredit({
+    expectedRequest: {
+      id: plan.funding.requestId,
+      network: plan.network,
+      paymentRequest: plan.funding.paymentRequest,
+      paymentHash: plan.funding.paymentHash,
+      grossFundingSats: plan.funding.grossFundingSats,
+    },
+    expectedReceive: { mode: "ordinary_v3" },
+    walletIdentityPublicKey: identity,
+    receive,
+    transfer,
+  })
+  if (
+    proof.transferId !== state.credit.transferId ||
+    proof.creditedSats !== state.credit.creditedSats
+  )
+    throw new Error("Checkout Spark attributed credit changed.")
+  await repository.recordMerchantCredit(plan, proof, now(), assertCurrent)
+  assertCurrent()
+  const expectedTransferIds = [proof.transferId]
+  const closedReturnedProofs: CheckoutSparkSettledClosedReturnedProof[] = []
+  for (const leg of state.legs) {
+    const recipient = plan.recipients.find(
+      (candidate) => candidate.legId === leg.legId
+    )!
+    if (recipient.kind === "conduit") continue
+    if (!leg.intent || leg.status !== "paid" || leg.allocationSats === null)
+      throw new Error("Checkout Spark commerce is not independently paid.")
+    const target: CheckoutSparkSettledOutgoingTarget = {
+      walletId: plan.walletId,
+      network: plan.network,
+      legId: leg.legId,
+      recipientId: recipient.recipientId,
+      allocationSats: leg.allocationSats,
+      unpaidAllocationSats: leg.allocationSats,
+      generation: getCheckoutSparkSettledLegGeneration(leg),
+      intent: leg.intent,
+    }
+    await (
+      repository.assertInvoiceRecipient ?? repository.assertLocalInvoiceOrigin
+    ).call(repository, plan, target, assertCurrent)
+    assertCurrent()
+    const observation = await inspectExactMerchantPayout(
+      plan,
+      target,
+      wallet,
+      assertCurrent
+    )
+    if (
+      observation.status !== "paid" ||
+      observation.finalFeeSats !== leg.finalFeeSats ||
+      observation.finalDebitSats !== leg.finalDebitSats
+    )
+      throw new Error("Checkout Spark commerce evidence changed.")
+    await repository.recordMerchantPayout(
+      plan,
+      target,
+      observation,
+      now(),
+      assertCurrent
+    )
+    assertCurrent()
+    expectedTransferIds.push(leg.intent.transferId)
+    if (getCheckoutSparkSettledClosedGeneration(leg)) {
+      closedReturnedProofs.push(
+        await proveMerchantCheckoutSparkClosedReturnedPayout(
+          state,
+          leg.legId,
+          wallet,
+          assertCurrent,
+          now
+        )
+      )
+      assertCurrent()
+    }
+  }
+  const record = await repository.loadMerchantSettlement(
+    plan.merchantPubkey,
+    plan.checkoutId,
+    plan.planDigest
+  )
+  assertCurrent()
+  if (!record)
+    throw new Error("Checkout Spark independent ledger is unavailable.")
+  const budget = deriveCheckoutSparkNativeTreasuryBudget(state, record)
+  if (input.proofMode === "receipt") return record
+  const session = await wallet.openRetirementReader!()
+  assertCurrent()
+  if (
+    !(await proveCheckoutSparkNativeTreasuryHistory({
+      authenticatedReader: session.reader,
+      sparkAddress: session.sparkAddress,
+      walletId: plan.walletId,
+      network: plan.network,
+      stateUpdatedAt: state.updatedAt,
+      expectedTransferIds,
+      closedReturnedProofs,
+      authorizedDebitSats: budget.authorizedDebitSats,
+      now,
+      assertCurrent,
+    }))
+  )
+    throw new Error("Checkout Spark native residual history is unavailable.")
+  assertCurrent()
+  return record
 }
 
 /** Derive identity locally without initializing a provider wallet. */
@@ -1100,7 +1313,16 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
     retirementStatus = "pending"
     if (
       !state.credit ||
-      state.legs.some((leg) => leg.status !== "paid" || !leg.intent)
+      state.legs.some(
+        (leg) =>
+          leg.status !== "paid" ||
+          (!leg.intent &&
+            !(
+              plan.schemaVersion === 4 &&
+              plan.recipients.find((recipient) => recipient.legId === leg.legId)
+                ?.kind === "conduit"
+            ))
+      )
     )
       return
     const derivedIdentity = await deriveIdentity(
@@ -1204,6 +1426,7 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
         const recipient = plan.recipients.find(
           (entry) => entry.legId === leg.legId
         )
+        if (plan.schemaVersion === 4 && recipient?.kind === "conduit") continue
         if (!recipient || !leg.intent || leg.allocationSats === null) return
         const target: CheckoutSparkSettledOutgoingTarget = {
           walletId: plan.walletId,
@@ -1263,6 +1486,40 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
           return
         }
       }
+      if (plan.schemaVersion === 4) {
+        const native = state.treasuryFinalization!
+        if (
+          !native.intent ||
+          !native.providerTransferId ||
+          !wallet.nativeTreasury ||
+          !repository.recordMerchantTreasury
+        )
+          return
+        const observation = await wallet.nativeTreasury.inspectCheckoutTreasury(
+          {
+            network: plan.network,
+            nativeTreasury: plan.nativeTreasury!,
+            amountSats: native.intent.amountSats,
+            authorizedDebitSats: native.intent.authorizedDebitSats,
+            providerTransferId: native.providerTransferId,
+          }
+        )
+        assertEligible()
+        if (
+          observation.status !== "paid" ||
+          observation.providerTransferId !== native.providerTransferId ||
+          observation.finalFeeSats !== native.finalFeeSats ||
+          observation.finalDebitSats !== native.finalDebitSats
+        )
+          return
+        await repository.recordMerchantTreasury(
+          state,
+          { ...observation, status: "paid", observedAt: now() },
+          assertEligible
+        )
+        assertEligible()
+        expectedTransferIds.push(observation.providerTransferId!)
+      }
       const session = await wallet.openRetirementReader()
       assertEligible()
       const evidence = await collectCheckoutSparkNativeRetirementEvidence({
@@ -1272,6 +1529,9 @@ export async function retireMerchantCheckoutSparkSettledRecovery(
         network: plan.network,
         stateUpdatedAt: state.updatedAt,
         expectedTransferIds,
+        ...(plan.schemaVersion === 4
+          ? { requireExactHistoryScope: true as const }
+          : {}),
         ...(closedReturnedProofs.length > 0 ? { closedReturnedProofs } : {}),
         now,
         assertCurrent: assertEligible,
@@ -1483,8 +1743,17 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
       throw new Error("Save the exact checkout recovery state first.")
     }
     assertCheckoutSparkSettledRecoveryProgression(state, imported.state)
+    const nativeIntent = imported.state.treasuryFinalization?.intent
     const withoutIntentLegs = imported.state.legs.filter(
-      (leg) => leg.intent === null
+      (leg) =>
+        leg.intent === null &&
+        !(
+          imported.state.plan.schemaVersion === 4 &&
+          nativeIntent &&
+          imported.state.plan.recipients.find(
+            (recipient) => recipient.legId === leg.legId
+          )?.kind === "conduit"
+        )
     ).length
     const frozenLegs = imported.state.legs.filter((leg) => leg.intent !== null)
     const base = {
@@ -1498,7 +1767,7 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
       payoutHistory = { ...base, status: "credit_needed" }
       return
     }
-    if (frozenLegs.length === 0) {
+    if (frozenLegs.length === 0 && !nativeIntent) {
       payoutHistory = { ...base, status: "no_intents" }
       return
     }
@@ -1518,6 +1787,9 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
       mnemonic: initial.wallet.mnemonic,
       accountNumber: initial.wallet.accountNumber,
       network: initial.wallet.network,
+      ...(initial.plan.schemaVersion === 4
+        ? { retirement: true as const }
+        : {}),
     })
     try {
       assertEligible()
@@ -1656,6 +1928,77 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
           summary.newlyConfirmedLegs += 1
         } else {
           summary.unresolvedLegs += 1
+        }
+      }
+      if (nativeIntent) {
+        summary.checkedLegs += 1
+        const current = await repository.load(plan.checkoutId, plan.planDigest)
+        assertEligible()
+        if (
+          current.status !== "active" ||
+          !wallet.nativeTreasury ||
+          !repository.recordMerchantTreasury ||
+          !repository.loadMerchantSettlement ||
+          (!repository.assertInvoiceRecipient &&
+            !repository.assertLocalInvoiceOrigin)
+        ) {
+          summary.unresolvedLegs += 1
+        } else {
+          const native = current.state.treasuryFinalization!
+          const observation =
+            await wallet.nativeTreasury.inspectCheckoutTreasury({
+              network: plan.network,
+              nativeTreasury: plan.nativeTreasury!,
+              amountSats: nativeIntent.amountSats,
+              authorizedDebitSats: nativeIntent.authorizedDebitSats,
+              providerTransferId: native.providerTransferId,
+            })
+          assertEligible()
+          if (
+            observation.status !== "paid" ||
+            (native.status === "paid" &&
+              (observation.finalDebitSats !== native.finalDebitSats ||
+                observation.finalFeeSats !== native.finalFeeSats))
+          ) {
+            summary.unresolvedLegs += 1
+          } else {
+            try {
+              await proveMerchantCheckoutSparkNativeCommerce({
+                state: current.state,
+                wallet,
+                repository: repository as typeof repository &
+                  Parameters<
+                    typeof proveMerchantCheckoutSparkNativeCommerce
+                  >[0]["repository"],
+                assertCurrent: assertEligible,
+                now,
+                proofMode: "receipt",
+              })
+              await repository.recordMerchantTreasury(
+                current.state,
+                { ...observation, status: "paid", observedAt: now() },
+                assertEligible
+              )
+              assertEligible()
+              if (native.status === "paid") summary.alreadyPaidLegs += 1
+              else {
+                await repository.save(
+                  recordCheckoutSparkNativeTreasuryStatus(current.state, {
+                    ...observation,
+                    status: "paid",
+                    observedAt: Math.max(now(), current.state.updatedAt + 1),
+                  }),
+                  current.revision,
+                  assertEligible
+                )
+                assertEligible()
+                summary.newlyConfirmedLegs += 1
+              }
+            } catch {
+              assertEligible()
+              summary.unresolvedLegs += 1
+            }
+          }
         }
       }
       payoutHistory = { ...summary, status: "inspected" }

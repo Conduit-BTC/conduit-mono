@@ -47,6 +47,8 @@ import { prepareNextMerchantCheckoutSparkSettledPayout } from "../apps/merchant/
 import { advanceMerchantCheckoutSparkOrder } from "../apps/merchant/src/lib/checkout-spark-order-reconciliation"
 import {
   deriveMerchantCheckoutSparkRecoveryIdentity,
+  inspectMerchantCheckoutSparkSettledPayoutHistory,
+  reconcileMerchantCheckoutSparkSettledCredit,
   retireMerchantCheckoutSparkSettledRecovery,
   type MerchantSparkRecoveryWallet,
 } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
@@ -268,10 +270,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
             recipientInboxRelays: [INBOX],
             accountNetworkLocalStateRepository: { get: async () => undefined },
             publishFn: async (event) => {
-              relayEvents.set(
-                event.id,
-                event.rawEvent() as SignedPublicNostrEvent
-              )
+              relayEvents.set(event.id, event as SignedPublicNostrEvent)
               return relayAccepted
             },
           },
@@ -443,7 +442,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
                 (entry) => entry.record.signedRecipientWrap.id === event.id
               )
             ).toBe(true)
-            const raw = event.rawEvent() as SignedPublicNostrEvent
+            const raw = event as SignedPublicNostrEvent
             const opened = await openCheckoutSparkMerchantProgressWrap({
               signedRecipientWrap: raw,
               signer: merchantSigner,
@@ -748,11 +747,33 @@ describe("offline cold Merchant guest supplier recovery", () => {
         expect(calls.sends).toHaveLength(3)
         now += 1_000
         const retireCandidate = await discover()
+        const offlineChecks = {
+          checkCredit: (
+            ...args: Parameters<
+              typeof reconcileMerchantCheckoutSparkSettledCredit
+            >
+          ) =>
+            reconcileMerchantCheckoutSparkSettledCredit(args[0], args[1], {
+              ...dependencies,
+              ...args[2],
+            }),
+          inspectPayouts: (
+            ...args: Parameters<
+              typeof inspectMerchantCheckoutSparkSettledPayoutHistory
+            >
+          ) =>
+            inspectMerchantCheckoutSparkSettledPayoutHistory(args[0], args[1], {
+              ...dependencies,
+              ...args[2],
+            }),
+          notifySuppliers: () => {},
+        }
         const retired = await advanceMerchantCheckoutSparkOrder(
           plan.merchantPubkey,
           retireCandidate,
           () => {},
           {
+            ...offlineChecks,
             repository,
             now: () => now,
             requestRescan: () => {
@@ -786,6 +807,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
             retireCandidate,
             () => {},
             {
+              ...offlineChecks,
               repository,
               now: () => now,
               requestRescan: () => {
@@ -807,6 +829,8 @@ describe("offline cold Merchant guest supplier recovery", () => {
         await database.delete()
       }
     },
-    45_000
+    // Multiple full signed recovery, payout, replay and retirement loops take
+    // about 35s per case alone; retain bounded headroom under full-suite load.
+    90_000
   )
 })

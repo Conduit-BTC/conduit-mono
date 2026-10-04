@@ -127,7 +127,10 @@ async function publishProductListingRelay(
       options
     )
   }
-  return { status }
+  // Keep the durable exact frame retryable while relay authentication is pending.
+  return {
+    status: status === "acked" || status === "rejected" ? status : "timed_out",
+  }
 }
 
 /** Never let a late ACK or stale worker snapshot restore a superseded intent. */

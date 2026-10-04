@@ -4,7 +4,10 @@ import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import { ConduitDB } from "@conduit/core/db"
 import {
   DexieCheckoutSparkSettledRepository,
+  deriveCheckoutSparkNativeTreasuryInvoiceId,
+  prepareCheckoutSparkNativeTreasury,
   projectCheckoutSparkMerchantSettlement,
+  type CheckoutSparkMerchantSettlementRecord,
   type CheckoutSparkSettledOutgoingObservation,
   type CheckoutSparkSettledOutgoingTarget,
 } from "@conduit/core"
@@ -13,6 +16,7 @@ import {
   createCheckoutSparkSettledReconciliation,
   deriveCheckoutSparkSettledTransferId,
   freezeCheckoutSparkSettledPlan,
+  freezeCheckoutSparkSettledTreasuryPlan,
   prepareCheckoutSparkSettledLeg,
   recordCheckoutSparkSettledCredit,
   recordCheckoutSparkSettledLegStatus,
@@ -177,6 +181,162 @@ function fixture(takeoverAt = NOW + 60_000) {
     routerWalletOpen: true,
   }
   return { plan, input }
+}
+
+function nativeFixture(takeoverAt = NOW + 60_000) {
+  const ordinary = fixture(takeoverAt)
+  const nativeTreasuryIdentity = `03${"e".repeat(64)}`
+  const nativeTreasuryBase = {
+    schemaVersion: 1 as const,
+    sparkAddress: "spark-treasury.fixture",
+    receiverIdentityPublicKey: nativeTreasuryIdentity,
+    senderIdentityPublicKey: ordinary.plan.funding.receiverIdentityPublicKey,
+    invoiceRequest: "spark-invoice.fixture",
+    feePolicy: "zero_required" as const,
+    residualPolicy: "unused_commerce_reserves" as const,
+  }
+  const plan = freezeCheckoutSparkSettledTreasuryPlan({
+    checkoutId: ordinary.plan.checkoutId,
+    orderId: ordinary.plan.orderId,
+    merchantPubkey: ordinary.plan.merchantPubkey,
+    walletId: ordinary.plan.walletId,
+    network: ordinary.plan.network,
+    createdAt: ordinary.plan.createdAt,
+    takeoverAt: ordinary.plan.takeoverAt,
+    commerceQuote: ordinary.plan.commerceQuote,
+    funding: ordinary.plan.funding,
+    recipients: ordinary.plan.recipients.map((recipient) => ({
+      kind: recipient.kind,
+      recipientId: recipient.recipientId,
+      destination: recipient.destination,
+      weightSats: recipient.weightSats,
+    })),
+    nativeTreasury: {
+      ...nativeTreasuryBase,
+      invoiceId: deriveCheckoutSparkNativeTreasuryInvoiceId({
+        checkoutId: ordinary.plan.checkoutId,
+        orderId: ordinary.plan.orderId,
+        walletId: ordinary.plan.walletId,
+        network: ordinary.plan.network,
+        createdAt: ordinary.plan.createdAt,
+        sparkAddress: nativeTreasuryBase.sparkAddress,
+        receiverIdentityPublicKey: nativeTreasuryIdentity,
+        senderIdentityPublicKey:
+          ordinary.plan.funding.receiverIdentityPublicKey,
+      }),
+    },
+  })
+  const lifecycle = {
+    ...ordinary.input.lifecycle,
+    checkoutSparkRouterBinding: {
+      checkoutId: plan.checkoutId,
+      planDigest: plan.planDigest,
+      walletId: plan.walletId,
+    },
+  }
+  const preparation = {
+    ...ordinary.input.preparation,
+    planDigest: plan.planDigest,
+  }
+  const state = createCheckoutSparkSettledReconciliation(plan)
+  return {
+    plan,
+    input: {
+      ...ordinary.input,
+      lifecycle,
+      preparation,
+      snapshot: { status: "active" as const, revision: 1, state },
+    },
+  }
+}
+
+function preparedNativeFixture() {
+  const { plan, input } = nativeFixture()
+  let state = recordCheckoutSparkSettledCredit(input.snapshot.state, {
+    requestId: plan.funding.requestId,
+    paymentHash: plan.funding.paymentHash,
+    transferId: "native-funding-transfer",
+    receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+    grossSats: 1_113,
+    creditedSats: 1_110,
+    observedAt: NOW + 2,
+  })
+  const merchant = plan.recipients.find(
+    (recipient) => recipient.kind === "merchant"
+  )!
+  const transferId = deriveCheckoutSparkSettledTransferId(plan, merchant.legId)
+  state = prepareCheckoutSparkSettledLeg(state, {
+    legId: merchant.legId,
+    transferId,
+    paymentRequest: invoice(995, 4),
+    paymentHash: "04".repeat(32),
+    invoiceAmountSats: 995,
+    maxFeeSats: 5,
+    preparedAt: NOW + 3,
+  })
+  state = recordCheckoutSparkSettledLegStatus(state, {
+    legId: merchant.legId,
+    transferId,
+    paymentHash: "04".repeat(32),
+    status: "paid",
+    finalFeeSats: 1,
+    finalDebitSats: 996,
+    observedAt: NOW + 4,
+  })
+  const settlement = {
+    schemaVersion: 2 as const,
+    nativeTreasury: null,
+    merchantPubkey: plan.merchantPubkey,
+    orderId: plan.orderId,
+    checkoutId: plan.checkoutId,
+    planDigest: plan.planDigest,
+    merchantLegId: merchant.legId,
+    requiredCommerceLegIds: [merchant.legId],
+    feeLegId: plan.recipients.find((recipient) => recipient.kind === "conduit")!
+      .legId,
+    credit: {
+      transferId: state.credit!.transferId,
+      creditedSats: state.credit!.creditedSats,
+      observedAt: state.credit!.observedAt,
+    },
+    paidLegs: [
+      {
+        legId: merchant.legId,
+        transferId,
+        allocationSats: state.legs[0]!.allocationSats!,
+        finalDebitSats: 996,
+        finalFeeSats: 1,
+        observedAt: NOW + 4,
+        recipientVerified: true as const,
+      },
+    ],
+  } satisfies CheckoutSparkMerchantSettlementRecord
+  const commercePaidState = state
+  state = prepareCheckoutSparkNativeTreasury(state, {
+    settlement,
+    preparedAt: NOW + 5,
+  })
+  return {
+    plan,
+    input: {
+      ...input,
+      lifecycle: {
+        ...input.lifecycle,
+        paymentStatus: "paid" as const,
+      },
+      now: NOW + 6,
+      snapshot: { ...input.snapshot, state },
+    },
+    commercePaidInput: {
+      ...input,
+      lifecycle: {
+        ...input.lifecycle,
+        paymentStatus: "paid" as const,
+      },
+      now: NOW + 5,
+      snapshot: { ...input.snapshot, state: commercePaidState },
+    },
+  }
 }
 
 function externalFundingActionFixture() {
@@ -563,6 +723,108 @@ describe("settled Spark buyer order control", () => {
     expect(control.grossFundingSats).toBe(1_113)
   })
 
+  it("reviews the approved native treasury policy before funding without exposing provider material", () => {
+    const { input } = nativeFixture()
+    const control = assessCheckoutSparkSettledOrderControl(input)
+    if (control.status !== "pay_funding")
+      throw new Error("Expected native funding review")
+    expect(control).toMatchObject({
+      nativeTreasury: {
+        estimatedBaseConduitAllocationSats: 111,
+        fixedCheckoutTotalSats: 1_113,
+        prepared: null,
+      },
+    })
+    expect(JSON.stringify(control)).not.toContain("spark-treasury.fixture")
+    expect(JSON.stringify(control)).not.toContain("spark-invoice.fixture")
+  })
+
+  it("routes the prepared native final leg without Lightning review or expiry", () => {
+    const { plan, input } = preparedNativeFixture()
+    const control = assessCheckoutSparkSettledOrderControl(input)
+    expect(control).toMatchObject({
+      status: "route_payout",
+      recipientKind: "conduit",
+      payoutReview: null,
+      sendWindowEndsAt: null,
+      nativeTreasury: {
+        estimatedBaseConduitAllocationSats: 111,
+        fixedCheckoutTotalSats: 1_113,
+        prepared: {
+          baseConduitAllocationSats: 110,
+          unusedCommerceReserveSats: 4,
+          totalSats: 114,
+          sparkFeeCapSats: 0,
+        },
+      },
+    })
+    if (control.status !== "route_payout")
+      throw new Error("Expected native treasury routing")
+    expect(
+      control.nativeTreasury!.prepared!.unusedCommerceReserveSats
+    ).toBeGreaterThan(control.priceSummary.networkAllowanceSats)
+    expect(control.nativeTreasury!.prepared!.totalSats).toBeGreaterThan(
+      control.priceSummary.coordinationFeeSats
+    )
+    expect(
+      control.nativeTreasury!.prepared!.baseConduitAllocationSats
+    ).not.toBe(control.nativeTreasury!.estimatedBaseConduitAllocationSats)
+    expect(control.intentFingerprint).toMatch(/^[0-9a-f]{64}$/)
+    expect(
+      matchesCheckoutSparkSettledOrderControl({
+        displayed: control,
+        current: control,
+        bindingPlanDigest: plan.planDigest,
+      })
+    ).toBe(true)
+  })
+
+  it("prepares the native final leg after paid commerce without requiring a Lightning invoice", () => {
+    const { commercePaidInput } = preparedNativeFixture()
+    expect(
+      assessCheckoutSparkSettledOrderControl(commercePaidInput)
+    ).toMatchObject({
+      status: "prepare_payout",
+      recipientKind: "conduit",
+      payoutReview: null,
+      sendWindowEndsAt: null,
+      nativeTreasury: {
+        prepared: null,
+      },
+    })
+  })
+
+  it("keeps only the exact native final leg actionable after commerce completes the order lifecycle", () => {
+    const { plan, commercePaidInput } = preparedNativeFixture()
+    const completed = {
+      ...commercePaidInput,
+      lifecycle: {
+        ...commercePaidInput.lifecycle,
+        phase: "completed" as const,
+        paymentStatus: "paid" as const,
+      },
+    }
+    expect(assessCheckoutSparkSettledOrderControl(completed)).toMatchObject({
+      status: "prepare_payout",
+      recipientKind: "conduit",
+      paidLegs: 1,
+      totalLegs: 2,
+      nativeTreasury: { prepared: null },
+    })
+    for (const candidate of [
+      {
+        ...completed,
+        lifecycle: { ...completed.lifecycle, phase: "cancelled" as const },
+      },
+      { ...completed, now: plan.takeoverAt },
+      { ...completed, routerWalletOpen: false },
+    ]) {
+      expect(assessCheckoutSparkSettledOrderControl(candidate).status).toBe(
+        "blocked"
+      )
+    }
+  })
+
   it("shows exact retired state without restoring a wallet or claiming payout proof", () => {
     const { plan, input } = fixture()
     const current = assessCheckoutSparkSettledOrderControl({
@@ -732,6 +994,7 @@ describe("settled Spark buyer order control", () => {
         totalLegs: 2,
         priceSummary:
           "priceSummary" in result ? result.priceSummary : undefined,
+        nativeTreasury: null,
         retirement: null,
       })
     }

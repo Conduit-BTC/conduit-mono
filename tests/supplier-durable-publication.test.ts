@@ -253,7 +253,7 @@ describe("supplier terms through durable Merchant publication", () => {
           ],
           waitForSignerVisibility: async () => {},
           onSignedLocal: async (bundle) => {
-            signed = bundle.events[0]!.rawEvent() as SignedPublicNostrEvent
+            signed = bundle.events[0]!
             expect(publishes).toHaveLength(before)
             expect(
               (

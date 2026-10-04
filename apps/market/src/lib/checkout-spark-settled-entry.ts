@@ -7,10 +7,8 @@ import {
   getShippingDestinationEligibility,
   isSatsLikeCurrency,
   matchesCheckoutSparkOrderShippingSnapshot,
-  matchesCheckoutSparkOrderPickupSnapshot,
   orderSchema,
   resolveCheckoutSparkSignedShipping,
-  resolveCheckoutSparkSignedPickup,
   shippingAddressSchema,
   snapshotCheckoutSparkPlanSourceEvents,
   validateAddressConsistency,
@@ -149,6 +147,11 @@ export async function prepareCheckoutSparkSettledOrder(
   }
   assertCurrent()
   const commerceQuote = buildCheckoutSparkCommerceEvidence(quote)
+  // Old event-pickup snapshots are recovery-only after the event-model cutover.
+  // The new event-market flow needs its own current signed admission proof.
+  if (commerceQuote.lines.some((line) => line.pickup)) {
+    throw new Error("Historical pickup checkout terms cannot fund a new order.")
+  }
   if (
     !HEX_PUBKEY.test(buyer.pubkey) ||
     !HEX_PUBKEY.test(merchantPubkey) ||
@@ -219,32 +222,6 @@ export async function prepareCheckoutSparkSettledOrder(
     )!
     const event = product.supplierAllocation?.revisionEvent
     if (!event) throw new Error("Checkout Spark product source is unavailable.")
-    if (line.pickup) {
-      const pickup = resolveCheckoutSparkSignedPickup({
-        productEvent: event,
-        line,
-        sourceEvents: quote.pickupSourceEvents ?? [],
-        acceptedAtMs: input.nowMs,
-      })
-      if (
-        !pickup ||
-        pickup.handoffMode !== "merchant_handoff" ||
-        pickup.handlerPubkey !== merchantPubkey ||
-        priced.format !== "physical" ||
-        priced.fulfillment?.type !== "pickup" ||
-        !matchesCheckoutSparkOrderPickupSnapshot(
-          { ...priced, fulfillment: priced.fulfillment },
-          pickup
-        )
-      ) {
-        throw new Error(
-          "Checkout Spark requires verified merchant pickup terms."
-        )
-      }
-      hasPhysicalFulfillment = true
-      shippingTotalSats += line.unitShippingSats * line.quantity
-      continue
-    }
     const option = resolveCheckoutSparkSignedShipping({
       productEvent: event,
       line,

@@ -170,7 +170,7 @@ describe("checkout completion navigation contracts", () => {
       /await assertCheckoutItemsAvailable\(\s*requestedCheckoutMode,\s*freshPricingRate\s*\)/
     )
     const signedOrderReady = payNowSource.indexOf(
-      "orderRumor.content = JSON.stringify(orderPayload)"
+      "orderRumor.content = serializeOrderRumorContent("
     )
     const orderPublish = payNowSource.indexOf("await publishBuyerOrderMessage(")
     const paymentStarted = payNowSource.indexOf("directPaymentStarted = true")
@@ -332,7 +332,9 @@ describe("checkout completion navigation contracts", () => {
     expect(orderPublish).toContain("ackOnly: true, releaseLease: false")
     expect(orderPublish).toContain("ackOnly: false,")
     expect(orderPublish).toContain("releaseLease: true")
-    expect(orderPublish).toContain("pending.has(relayUrl)")
+    expect(orderPublish).toContain('outcome === "pending"')
+    expect(orderPublish).toContain("getRelayPublishTargetStatus(")
+    expect(orderPublish).toContain("recipientDelivery?.relayAttempts?.map(")
     expect(checkoutRoute).toContain("delivery.startPostAcceptanceWork ?? null")
     expect(checkoutRoute).toContain("isAuthGenerationCurrent(authGeneration)")
     expect(checkoutRoute).toContain(

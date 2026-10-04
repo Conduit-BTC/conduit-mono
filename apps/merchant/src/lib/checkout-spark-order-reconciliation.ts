@@ -11,6 +11,7 @@ import {
 } from "./checkout-spark-settled-recovery"
 import {
   continueMerchantCheckoutSparkSettledPayout,
+  continueMerchantCheckoutSparkNativeTreasury,
   selectMerchantCheckoutSparkSignedNextPayout,
 } from "./checkout-spark-settled-continuation"
 import { prepareNextMerchantCheckoutSparkSettledPayout } from "./checkout-spark-settled-leg-preparation"
@@ -36,6 +37,8 @@ interface ReconciliationDependencies {
         | "recordInvoiceRecipientVerification"
         | "assertInvoiceRecipient"
         | "saveRenewedWithInvoiceOrigin"
+        | "saveTreasuryPrepared"
+        | "recordMerchantTreasury"
       >
     >
   checkCredit?: typeof reconcileMerchantCheckoutSparkSettledCredit
@@ -193,7 +196,11 @@ async function inspectMerchantCheckoutSparkOrder(
     return {
       ...projectCheckoutSparkMerchantSettlement(record),
       allCommerceProviderPaid,
-      allProviderPaid: allCommerceProviderPaid && paid.has(record.feeLegId),
+      allProviderPaid:
+        allCommerceProviderPaid &&
+        (record.schemaVersion === 2
+          ? record.nativeTreasury !== null
+          : paid.has(record.feeLegId)),
     }
   }
   const originNeedsAttention = (
@@ -263,6 +270,7 @@ interface AdvancementDependencies extends ReconciliationDependencies {
   selectPayout?: typeof selectMerchantCheckoutSparkSignedNextPayout
   preparePayout?: typeof prepareNextMerchantCheckoutSparkSettledPayout
   continuePayout?: typeof continueMerchantCheckoutSparkSettledPayout
+  continueNativeTreasury?: typeof continueMerchantCheckoutSparkNativeTreasury
   retireWallet?: typeof retireMerchantCheckoutSparkSettledRecovery
   /** Queue discovery; never await or drain the worker calling this adapter. */
   requestRescan: () => void
@@ -318,6 +326,26 @@ export async function advanceMerchantCheckoutSparkOrder(
   const shouldContinue = () => {
     assertActive()
     return true
+  }
+  if (selection.status === "native_treasury") {
+    if (!repository.saveTreasuryPrepared || !repository.recordMerchantTreasury)
+      return "unavailable"
+    const result = await (
+      dependencies.continueNativeTreasury ??
+      continueMerchantCheckoutSparkNativeTreasury
+    )(principal, candidate, {
+      repository: repository as NonNullable<
+        Parameters<typeof continueMerchantCheckoutSparkNativeTreasury>[2]
+      >["repository"],
+      now,
+      shouldContinue,
+    })
+    assertActive()
+    if (result.status !== "consumed" || !result.payout) return "unavailable"
+    dependencies.requestRescan()
+    return result.payout.reason === "zero_remainder"
+      ? "needs_attention"
+      : "progress_pending"
   }
   if (
     selection.status === "preparation_needed" ||

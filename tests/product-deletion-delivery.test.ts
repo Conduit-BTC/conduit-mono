@@ -1682,6 +1682,46 @@ describe("durable product deletion delivery", () => {
     expect(published).toEqual([])
   })
 
+  it("retains local error evidence after reload and retries the same deletion", async () => {
+    const storage = new Map<string, ProductDeletionDeliveryJob>()
+    const repository = new MemoryProductDeletionOutbox(storage)
+    const event = signedDeletionEvent()
+    const created = await persistProductDeletionDelivery(
+      {
+        signedEvent: event,
+        currentWriteRelayUrls: ["wss://relay.conduit.market"],
+        sourceRelayUrls: [],
+        canonicalConduitRelayUrl: "wss://relay.conduit.market",
+      },
+      { repository, now: tickingClock() }
+    )
+    await deliverProductDeletionJob(
+      created.id,
+      async () => ({ status: "error" }),
+      withEligibleAccountRelays({
+        repository,
+        now: tickingClock(),
+        retryDelayMs: 1,
+      })
+    )
+    const restored = new MemoryProductDeletionOutbox(storage)
+    const failed = await restored.get(created.id)
+    expect(failed?.relayDelivery[0]?.status).toBe("error")
+    expect(failed?.relayDelivery[0]?.timedOutAt).toBeUndefined()
+    const retried = await deliverProductDeletionJob(
+      created.id,
+      async ({ signedEvent }) => {
+        expect(signedEvent).toEqual(event)
+        return { status: "acked" }
+      },
+      withEligibleAccountRelays({
+        repository: restored,
+        now: tickingClock(NOW + 20_000),
+      })
+    )
+    expect(retried?.state).toBe("delivered")
+  })
+
   it("survives reload and retries the same event on only unacked relays", async () => {
     const durableStorage = new Map<string, ProductDeletionDeliveryJob>()
     const beforeReload = new MemoryProductDeletionOutbox(durableStorage)

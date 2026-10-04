@@ -4,10 +4,7 @@ import type {
   Product,
   SignedPublicNostrEvent,
 } from "@conduit/core"
-import {
-  orderPickupFulfillmentSchema,
-  resolveCheckoutSparkSignedPickup,
-} from "@conduit/core"
+import { orderEventMarketPickupFulfillmentSchema } from "@conduit/core"
 import { getCartCommerceFingerprint, type CartItem } from "./cart-model"
 import { prepareCartFulfillment } from "./cart-shipping-options"
 import type { CheckoutAuthorizationResult } from "./checkout-authorization"
@@ -100,9 +97,9 @@ function requireMatchingProduct(
     resolved.shippingOptionDTag !== listing.shippingOptionDTag ||
     resolved.shippingOptionLaunchUnsupported !==
       listing.shippingOptionLaunchUnsupported ||
-    (item.fulfillment?.type !== "pickup" &&
-      (item.shippingOptionLaunchUnsupported === true) !==
-        (listing.shippingOptionLaunchUnsupported === true)) ||
+    (item.fulfillment?.type !== "event_market_pickup" &&
+      item.shippingOptionLaunchUnsupported !==
+        listing.shippingOptionLaunchUnsupported) ||
     JSON.stringify(resolved.shippingOptionRefs) !==
       JSON.stringify(listing.shippingOptionRefs) ||
     JSON.stringify(resolved.collectionRefs) !==
@@ -133,10 +130,10 @@ function requireMatchingProduct(
 
 /**
  * Admit only a fresh, direct-payable quote from the checkout's current signed
- * 30402 and 30406 reads. Pickup catalog projections may differ for browsing,
- * but router funding cannot start until both sources agree on one exact
- * product revision. Core's read boundary remains responsible for verifying
- * signatures, deletion frontiers, and pickup graph authority.
+ * 30402 and ordinary shipping 30406 reads. Router funding requires both
+ * projections to agree on one exact product revision. Current Event Market
+ * pickup retains its signed roster, date and grant snapshot without inventing
+ * a shipping option. Core's live read remains responsible for current authority.
  */
 export function buildCheckoutSparkQuoteAuthority(input: {
   authorization: AuthorizedItems
@@ -193,16 +190,19 @@ export function buildCheckoutSparkQuoteAuthority(input: {
     if (usedProducts.has(item.productId)) invalidEvidence()
     usedProducts.add(item.productId)
 
-    if (item.fulfillment?.type === "event_pickup_pending") invalidEvidence()
-    if (item.fulfillment?.type === "pickup") {
+    if (item.fulfillment?.type === "event_market_pickup") {
+      const fulfillment = item.fulfillment
       if (
-        authorization.shippingOptionEvidence.status !== "not_required" ||
-        item.fulfillment.product.coordinate !== item.productId ||
-        item.fulfillment.product.eventId !== listing.sourceEventId ||
-        item.fulfillment.product.merchantPubkey !== item.merchantPubkey ||
-        item.shippingOptionId !== item.fulfillment.option.coordinate ||
-        !EVENT_ID.test(item.fulfillment.option.eventId) ||
-        !authorization.pickupSourceEvents?.length
+        !orderEventMarketPickupFulfillmentSchema.safeParse(fulfillment)
+          .success ||
+        fulfillment.product.coordinate !== item.productId ||
+        fulfillment.product.eventId !== listing.sourceEventId ||
+        fulfillment.product.createdAt !== listing.updatedAt ||
+        fulfillment.merchantPubkey !== item.merchantPubkey ||
+        fulfillment.payeePubkey !== item.merchantPubkey ||
+        item.shippingOptionId !== undefined ||
+        item.sourceShippingCost !== undefined ||
+        (item.shippingCostSats !== undefined && item.shippingCostSats !== 0)
       ) {
         invalidEvidence()
       }
@@ -211,20 +211,6 @@ export function buildCheckoutSparkQuoteAuthority(input: {
         productEventId: listing.sourceEventId!,
         merchantPubkey: item.merchantPubkey,
         quantity: item.quantity,
-        shippingOption: {
-          coordinate: item.fulfillment.option.coordinate,
-          eventId: item.fulfillment.option.eventId,
-        },
-        pickup: {
-          calendar: {
-            coordinate: item.fulfillment.calendar.coordinate,
-            eventId: item.fulfillment.calendar.eventId,
-          },
-          collection: {
-            coordinate: item.fulfillment.collection.coordinate,
-            eventId: item.fulfillment.collection.eventId,
-          },
-        },
       }
     }
 
@@ -298,67 +284,10 @@ export function buildCheckoutSparkQuoteAuthority(input: {
     invalidEvidence()
   }
 
-  const pickupSources = new Map<string, SignedPublicNostrEvent>()
-  for (const line of lines) {
-    if (!line.pickup) continue
-    const item = authorization.items.find(
-      (candidate) => candidate.productId === line.productCoordinate
-    )!
-    const priced = pricing.items.find(
-      (candidate) => candidate.productId === line.productCoordinate
-    )!
-    const productEvent = listingByCoordinate.get(line.productCoordinate)
-      ?.supplierAllocation?.revisionEvent
-    if (!productEvent) invalidEvidence()
-    try {
-      const snapshot = resolveCheckoutSparkSignedPickup({
-        productEvent,
-        line: {
-          ...line,
-          unitMerchandiseSats: priced.priceAtPurchase,
-          unitShippingSats: priced.shippingCostSats ?? 0,
-        },
-        sourceEvents: authorization.pickupSourceEvents ?? [],
-        acceptedAtMs: input.nowMs ?? Date.now(),
-      })
-      if (
-        !snapshot ||
-        JSON.stringify(orderPickupFulfillmentSchema.parse(snapshot)) !==
-          JSON.stringify(orderPickupFulfillmentSchema.parse(item.fulfillment))
-      ) {
-        invalidEvidence()
-      }
-      for (const id of [
-        line.pickup.calendar.eventId,
-        line.pickup.collection.eventId,
-        line.shippingOption!.eventId,
-      ]) {
-        const event = authorization.pickupSourceEvents!.find(
-          (source) => source.id === id
-        )
-        if (!event) invalidEvidence()
-        pickupSources.set(id, {
-          id: event.id,
-          pubkey: event.pubkey,
-          kind: event.kind,
-          created_at: event.created_at,
-          tags: event.tags.map((tag) => [...tag]),
-          content: event.content,
-          sig: event.sig,
-        })
-      }
-    } catch {
-      invalidEvidence()
-    }
-  }
-
   return freezeDeep({
     pricing: structuredClone(pricing),
     products: structuredClone(authorization.listingReadProducts),
     lines: structuredClone(lines),
-    ...(pickupSources.size > 0
-      ? { pickupSourceEvents: structuredClone([...pickupSources.values()]) }
-      : {}),
     ...(selectedShipping.size > 0
       ? {
           shippingSourceEvents: structuredClone(

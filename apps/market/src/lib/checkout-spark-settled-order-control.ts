@@ -29,6 +29,18 @@ export interface CheckoutSparkSettledPayoutReview {
   readonly allocationSats: number
 }
 
+/** Buyer-approved accounting only; provider destinations and requests stay private. */
+export interface CheckoutSparkSettledNativeTreasuryReview {
+  readonly estimatedBaseConduitAllocationSats: number
+  readonly fixedCheckoutTotalSats: number
+  readonly prepared: null | {
+    readonly baseConduitAllocationSats: number
+    readonly unusedCommerceReserveSats: number
+    readonly totalSats: number
+    readonly sparkFeeCapSats: 0
+  }
+}
+
 export type CheckoutSparkSettledOrderControlState =
   | { status: "blocked"; reason: string }
   /** A cleanup tombstone is not evidence that any recipient was paid. */
@@ -38,6 +50,7 @@ export type CheckoutSparkSettledOrderControlState =
       paidLegs: number
       totalLegs: number
       priceSummary: CheckoutSparkBuyerPrice
+      nativeTreasury: CheckoutSparkSettledNativeTreasuryReview | null
       /** Eligibility to inspect only; this does not authorize retirement. */
       retirement: {
         checkoutId: string
@@ -66,6 +79,7 @@ export type CheckoutSparkSettledOrderControlState =
       recipientKind: "merchant" | "supplier" | "organizer" | "conduit" | null
       allocationSats: number | null
       payoutReview: CheckoutSparkSettledPayoutReview | null
+      nativeTreasury: CheckoutSparkSettledNativeTreasuryReview | null
       /** Internal exact-intent comparison; not presentation data. */
       intentFingerprint: string | null
       fundingExpiresAt: number
@@ -152,7 +166,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   }
   const { plan } = state
   if (
-    plan.schemaVersion !== 3 ||
+    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
     plan.checkoutId !== binding.checkoutId ||
     plan.planDigest !== binding.planDigest ||
     plan.walletId !== binding.walletId ||
@@ -203,12 +217,34 @@ export function assessCheckoutSparkSettledOrderControl(input: {
       conduitFeeSats,
     minimumApplies: conduitFeeSats === calculateConduitCheckoutFeeSats(1),
   })
+  const treasuryFinalization = state.treasuryFinalization ?? null
+  if (plan.schemaVersion === 4 && !treasuryFinalization) {
+    return blocked("The saved native treasury state is unavailable.")
+  }
+  const nativeTreasury: CheckoutSparkSettledNativeTreasuryReview | null =
+    plan.schemaVersion === 4
+      ? {
+          estimatedBaseConduitAllocationSats: conduitFeeSats,
+          fixedCheckoutTotalSats: priceSummary.totalSats,
+          prepared: treasuryFinalization!.intent
+            ? {
+                baseConduitAllocationSats:
+                  treasuryFinalization!.intent.baseConduitAllocationSats,
+                unusedCommerceReserveSats:
+                  treasuryFinalization!.intent.unusedCommerceReserveSats,
+                totalSats: treasuryFinalization!.intent.amountSats,
+                sparkFeeCapSats: 0,
+              }
+            : null,
+        }
+      : null
   if (paidLegs === totalLegs) {
     return {
       status: "complete",
       paidLegs,
       totalLegs,
       priceSummary,
+      nativeTreasury,
       retirement:
         input.routerWalletOpen && now < plan.takeoverAt
           ? {
@@ -219,7 +255,17 @@ export function assessCheckoutSparkSettledOrderControl(input: {
           : null,
     }
   }
-  if (lifecycle.phase === "completed" || lifecycle.paymentStatus === "paid") {
+  const nativeTreasuryPending =
+    plan.schemaVersion === 4 &&
+    state.legs.every((leg, index) =>
+      plan.recipients[index]!.kind === "conduit"
+        ? leg.status !== "paid"
+        : leg.status === "paid"
+    )
+  if (
+    (lifecycle.phase === "completed" || lifecycle.paymentStatus === "paid") &&
+    !nativeTreasuryPending
+  ) {
     return blocked("This order no longer has an active buyer checkout session.")
   }
   if (now >= plan.takeoverAt) {
@@ -239,6 +285,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
     network: plan.network,
     grossFundingSats: plan.funding.grossFundingSats,
     priceSummary,
+    nativeTreasury,
     creditedSats: state.credit?.creditedSats ?? null,
     paidLegs,
     totalLegs,
@@ -289,8 +336,17 @@ export function assessCheckoutSparkSettledOrderControl(input: {
       "This payout needs manual recovery. Do not create another invoice or send it again."
     )
   }
-  if (leg.status === "prepared" && !leg.intent) {
+  const nativeTreasuryLeg =
+    plan.schemaVersion === 4 && recipient.kind === "conduit"
+  if (leg.status === "prepared" && !leg.intent && !nativeTreasuryLeg) {
     return blocked("The saved payout invoice is unavailable. Do not send it.")
+  }
+  if (
+    nativeTreasuryLeg &&
+    leg.status !== "unprepared" &&
+    !treasuryFinalization?.intent
+  ) {
+    return blocked("The saved native treasury intent is unavailable.")
   }
   const sendWindowAvailable =
     leg.status === "prepared" &&
@@ -324,9 +380,11 @@ export function assessCheckoutSparkSettledOrderControl(input: {
         }
       : null
   const intentFingerprint =
-    leg.status === "prepared" && leg.intent
-      ? fingerprintCheckoutSparkSettledLegIntent(leg.intent)
-      : null
+    nativeTreasuryLeg && treasuryFinalization?.intent
+      ? treasuryFinalization.intent.accountingDigest
+      : leg.status === "prepared" && leg.intent
+        ? fingerprintCheckoutSparkSettledLegIntent(leg.intent)
+        : null
   const siblingPossibleSend = state.legs.some(
     (sibling) =>
       sibling.legId !== leg.legId &&
@@ -341,7 +399,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
       : leg.status === "prepared"
         ? siblingPossibleSend
           ? "check_payout"
-          : sendWindowAvailable
+          : nativeTreasuryLeg || sendWindowAvailable
             ? "route_payout"
             : "payout_window_insufficient"
         : "check_payout"
@@ -383,6 +441,24 @@ export function matchesCheckoutSparkSettledOrderControl(input: {
   if (displayed.status !== "route_payout") return true
   const reviewed = displayed.payoutReview
   const fresh = current.payoutReview
+  if (displayed.nativeTreasury?.prepared || current.nativeTreasury?.prepared) {
+    return Boolean(
+      displayed.nativeTreasury?.prepared &&
+      current.nativeTreasury?.prepared &&
+      displayed.intentFingerprint &&
+      displayed.intentFingerprint === current.intentFingerprint &&
+      displayed.nativeTreasury.estimatedBaseConduitAllocationSats ===
+        current.nativeTreasury.estimatedBaseConduitAllocationSats &&
+      displayed.nativeTreasury.fixedCheckoutTotalSats ===
+        current.nativeTreasury.fixedCheckoutTotalSats &&
+      displayed.nativeTreasury.prepared.baseConduitAllocationSats ===
+        current.nativeTreasury.prepared.baseConduitAllocationSats &&
+      displayed.nativeTreasury.prepared.unusedCommerceReserveSats ===
+        current.nativeTreasury.prepared.unusedCommerceReserveSats &&
+      displayed.nativeTreasury.prepared.totalSats ===
+        current.nativeTreasury.prepared.totalSats
+    )
+  }
   return Boolean(
     reviewed &&
     fresh &&

@@ -64,13 +64,6 @@ export function isCheckoutSparkSettledCart(
         return (
           item.fulfillment === undefined || item.fulfillment.type === "digital"
         )
-      if (item.fulfillment?.type === "pickup") {
-        return (
-          item.format === "physical" &&
-          item.fulfillment.handoffMode === "merchant_handoff" &&
-          item.fulfillment.handlerPubkey === merchantPubkey
-        )
-      }
       const address =
         item.shippingOptionId &&
         parseShippingOptionAddress(item.shippingOptionId)

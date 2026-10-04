@@ -316,7 +316,8 @@ export function createGuestCheckoutSparkRecoverySigner(
         payload = parseCheckoutSparkRecoveryRumor(rumor)
         if (
           payload.schemaVersion === 1 ||
-          payload.plan.schemaVersion !== 3 ||
+          (payload.plan.schemaVersion !== 3 &&
+            payload.plan.schemaVersion !== 4) ||
           payload.senderPubkey !== pubkey ||
           payload.merchantPubkey !== merchantPubkey ||
           payload.plan.orderId !== orderId ||

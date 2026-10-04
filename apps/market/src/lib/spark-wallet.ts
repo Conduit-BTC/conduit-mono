@@ -5,8 +5,12 @@ import {
   isAmountlessLightningInvoice,
   normalizeLightningInvoice,
   type CheckoutSparkNativeRetirementReader,
+  type CheckoutSparkNativeTreasuryPlan,
+  type CheckoutSparkNativeTreasuryObservation,
   type SparkCheckoutLightningReturnedInspection,
   type SparkCheckoutLightningReturnedInspectionInput,
+  type SparkCheckoutLightningClosedReturnedInspection,
+  type SparkCheckoutLightningClosedReturnedInspectionInput,
   type WalletPaymentFeeApproval,
 } from "@conduit/core"
 
@@ -65,6 +69,53 @@ export interface SparkFundsState {
   ownedSats: number
   incomingSats: number
   observedAt: number
+}
+
+/** Unsigned request; authority is the independently approved static address. */
+export type SparkCheckoutTreasuryRequest = CheckoutSparkNativeTreasuryPlan
+
+export interface SparkCheckoutTreasuryPrepareInput {
+  readonly network: SparkWalletNetwork
+  readonly sparkAddress: string
+  readonly receiverIdentityPublicKey?: string
+  readonly senderIdentityPublicKey: string
+  /** Derived and saved by Core before the funding request is exposed. */
+  readonly invoiceId: string
+}
+
+export interface SparkCheckoutTreasuryDestination {
+  readonly sparkAddress: string
+  readonly receiverIdentityPublicKey: string
+}
+
+export interface SparkCheckoutTreasuryInput {
+  readonly network: SparkWalletNetwork
+  readonly nativeTreasury: SparkCheckoutTreasuryRequest
+  readonly amountSats: number
+  readonly authorizedDebitSats: number
+  readonly providerTransferId?: string | null
+}
+
+export type SparkCheckoutTreasuryObservation =
+  CheckoutSparkNativeTreasuryObservation
+
+export type SparkCheckoutTreasuryPreflight =
+  | "ready"
+  | "fee_over_cap"
+  | "insufficient_funds"
+  | "unavailable"
+  | "recipient_unverified"
+
+export interface SparkCheckoutTreasurySendInput extends SparkCheckoutTreasuryInput {
+  /** True after any previous provider admission, including a lost response. */
+  readonly priorSendMayHaveOccurred: boolean
+  /** Rechecks durable authority and commerce proof immediately before admission. */
+  readonly assertBeforeSend?: () => Promise<void>
+}
+
+/** Neither a fulfill response nor an empty history query is settlement proof. */
+export type SparkCheckoutTreasurySendResult = {
+  readonly status: "submitted" | "ambiguous" | "not_sent"
 }
 
 export interface SparkCheckoutRetirementTarget {
@@ -249,6 +300,11 @@ export interface SparkSdkClient {
     request: SparkCheckoutLightningReturnedInspectionInput,
     assertCurrent?: () => void
   ): Promise<SparkCheckoutLightningReturnedInspection>
+  /** Terminal history only; no spendable-leaf or renewal authority. */
+  inspectCheckoutLightningClosedReturnedAttempt?(
+    request: SparkCheckoutLightningClosedReturnedInspectionInput,
+    assertCurrent?: () => void
+  ): Promise<SparkCheckoutLightningClosedReturnedInspection>
   preflightCheckoutLightningObligation?(
     request: SparkCheckoutLightningObligationInput
   ): Promise<SparkCheckoutLightningObligationPreflight>
@@ -258,6 +314,15 @@ export interface SparkSdkClient {
   sendCheckoutLightningObligation?(
     request: SparkCheckoutLightningObligationInput
   ): Promise<SparkCheckoutLightningObligationSendResult>
+  inspectCheckoutTreasury?(
+    request: SparkCheckoutTreasuryInput
+  ): Promise<SparkCheckoutTreasuryObservation>
+  preflightCheckoutTreasury?(
+    request: SparkCheckoutTreasuryInput
+  ): Promise<SparkCheckoutTreasuryPreflight>
+  sendCheckoutTreasury?(
+    request: SparkCheckoutTreasurySendInput
+  ): Promise<SparkCheckoutTreasurySendResult>
   receivePayment(request: {
     paymentMethod:
       | {
@@ -291,6 +356,13 @@ export interface SparkSdkClient {
 
 export interface SparkSdkFactory {
   readonly network: SparkWalletNetwork
+  validateCheckoutTreasuryDestination?(
+    input: Pick<SparkCheckoutTreasuryPrepareInput, "network" | "sparkAddress">
+  ): Promise<SparkCheckoutTreasuryDestination>
+  /** Pure encoding/validation; must not open a wallet or contact a provider. */
+  prepareCheckoutTreasuryRequest?(
+    input: SparkCheckoutTreasuryPrepareInput
+  ): Promise<SparkCheckoutTreasuryRequest>
   open(input: {
     walletId: string
     mnemonic: string
@@ -1247,6 +1319,72 @@ export class SparkWalletManager {
     return client.preflightCheckoutLightningObligation(request)
   }
 
+  /** Freeze the request without unlocking or initializing any wallet. */
+  async prepareCheckoutTreasuryRequest(
+    input: SparkCheckoutTreasuryPrepareInput
+  ): Promise<SparkCheckoutTreasuryRequest> {
+    if (input.network !== this.#factory.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    if (!this.#factory.prepareCheckoutTreasuryRequest) {
+      throw new Error("This Spark adapter cannot freeze a treasury request.")
+    }
+    return this.#factory.prepareCheckoutTreasuryRequest(input)
+  }
+
+  async validateCheckoutTreasuryDestination(
+    input: Pick<SparkCheckoutTreasuryPrepareInput, "network" | "sparkAddress">
+  ): Promise<SparkCheckoutTreasuryDestination> {
+    if (input.network !== this.#factory.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    if (!this.#factory.validateCheckoutTreasuryDestination) {
+      throw new Error("This Spark adapter cannot validate a treasury address.")
+    }
+    return this.#factory.validateCheckoutTreasuryDestination(input)
+  }
+
+  async inspectCheckoutTreasury(
+    walletId: string,
+    request: SparkCheckoutTreasuryInput
+  ): Promise<SparkCheckoutTreasuryObservation> {
+    const client = this.#checkoutTreasuryClient(walletId, request)
+    if (!client.inspectCheckoutTreasury) {
+      return {
+        invoiceId: request.nativeTreasury.invoiceId,
+        status: "lookup_unavailable",
+      }
+    }
+    return client.inspectCheckoutTreasury(request)
+  }
+
+  async preflightCheckoutTreasury(
+    walletId: string,
+    request: SparkCheckoutTreasuryInput
+  ): Promise<SparkCheckoutTreasuryPreflight> {
+    const client = this.#checkoutTreasuryClient(walletId, request)
+    return client.preflightCheckoutTreasury?.(request) ?? "unavailable"
+  }
+
+  async sendCheckoutTreasury(
+    walletId: string,
+    request: SparkCheckoutTreasurySendInput
+  ): Promise<SparkCheckoutTreasurySendResult> {
+    const client = this.#checkoutTreasuryClient(walletId, request)
+    if (!client.sendCheckoutTreasury) return { status: "not_sent" }
+    return client.sendCheckoutTreasury(request)
+  }
+
+  #checkoutTreasuryClient(
+    walletId: string,
+    request: SparkCheckoutTreasuryInput
+  ): SparkSdkClient {
+    if (request.network !== this.#factory.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    return this.#getClient(walletId)
+  }
+
   /** Explicit native renewal inspection; not a passive history/preview read. */
   async inspectCheckoutLightningReturnedAttempt(
     walletId: string,
@@ -1261,6 +1399,23 @@ export class SparkWalletManager {
       return { status: "unavailable" }
     }
     return client.inspectCheckoutLightningReturnedAttempt(
+      request,
+      assertCurrent
+    )
+  }
+
+  /** Re-prove old return generations after their successor consumed the leaves. */
+  async inspectCheckoutLightningClosedReturnedAttempt(
+    walletId: string,
+    request: SparkCheckoutLightningClosedReturnedInspectionInput,
+    assertCurrent?: () => void
+  ): Promise<SparkCheckoutLightningClosedReturnedInspection> {
+    if (request.network !== this.#factory.network)
+      return { status: "conflicting" }
+    const client = this.#getClient(walletId)
+    if (!client.inspectCheckoutLightningClosedReturnedAttempt)
+      return { status: "unavailable" }
+    return client.inspectCheckoutLightningClosedReturnedAttempt(
       request,
       assertCurrent
     )

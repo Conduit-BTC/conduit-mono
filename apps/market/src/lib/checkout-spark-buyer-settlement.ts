@@ -115,7 +115,7 @@ export function assessCheckoutSparkBuyerSettlement(input: {
     const state = restoreCheckoutSparkSettledReconciliation(snapshot.state)
     const { plan } = state
     if (
-      plan.schemaVersion !== 3 ||
+      (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
       plan.checkoutId !== binding.checkoutId ||
       plan.planDigest !== binding.planDigest ||
       plan.walletId !== binding.walletId ||

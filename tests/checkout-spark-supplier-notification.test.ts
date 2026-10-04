@@ -624,7 +624,7 @@ describe("verified supplier payment notifications", () => {
           published.length === 0 ? SUPPLIER_INBOX : MERCHANT_INBOX,
         ])
         expect(options.appRelayUrls).toEqual([])
-        published.push(event)
+        published.push(new NDKEvent(undefined, event))
         return delivery(options.exclusiveRelayUrls!)
       }),
     })

@@ -1,18 +1,22 @@
 import {
   DexieCheckoutSparkSettledRepository,
   classifyCheckoutSparkSettledExactOutgoingHistory,
+  assertCheckoutSparkSettledClosedReturnedProof,
+  proveCheckoutSparkSettledClosedReturnedTransfer,
   collectCheckoutSparkNativeRetirementEvidence,
   getOrderLifecycle,
   isGuestOrderDataExpired,
   requireCheckoutSparkSettledExactOutgoingRequest,
   type CheckoutSparkBuyerOrderBinding,
   type CheckoutSparkSettledOutgoingTarget,
+  type CheckoutSparkSettledClosedReturnedProof,
   type OrderLifecycle,
 } from "@conduit/core"
 import type { AdvanceCheckoutSparkSettledShopperInput } from "./checkout-spark-settled-shopper-advance"
 import { isCurrentGuestOrderSigningIdentity } from "./guest-order-identity"
 import { getSparkWalletManager } from "./spark-sdk"
 import type { SparkWalletManager } from "./spark-wallet"
+import { inspectBuyerCheckoutSparkTreasuryCommerce } from "./checkout-spark-native-treasury"
 
 export type RetireCheckoutSparkSettledShopperInput = Pick<
   AdvanceCheckoutSparkSettledShopperInput,
@@ -40,6 +44,8 @@ export interface RetireCheckoutSparkSettledShopperDependencies {
     | "assertLocalInvoiceOrigin"
     | "recordMerchantCredit"
     | "recordMerchantPayout"
+    | "loadMerchantSettlement"
+    | "recordMerchantTreasury"
     | "retire"
   >
   readOrder?: (orderId: string) => Promise<OrderLifecycle | undefined>
@@ -48,6 +54,8 @@ export interface RetireCheckoutSparkSettledShopperDependencies {
     | "isOpen"
     | "attestCheckoutReceiveCredit"
     | "reconcileInvoiceAttempt"
+    | "inspectCheckoutLightningClosedReturnedAttempt"
+    | "inspectCheckoutTreasury"
     | "openCheckoutRetirementReader"
   > | null
   now?: () => number
@@ -166,7 +174,7 @@ export async function retireCheckoutSparkSettledShopper(
     const { state } = snapshot
     const { plan } = state
     if (
-      plan.schemaVersion !== 3 ||
+      (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
       plan.checkoutId !== input.checkoutId ||
       plan.planDigest !== input.planDigest ||
       plan.orderId !== input.orderId ||
@@ -178,7 +186,16 @@ export async function retireCheckoutSparkSettledShopper(
       return { status: "unavailable" }
     if (
       !state.credit ||
-      state.legs.some((leg) => leg.status !== "paid" || !leg.intent)
+      state.legs.some(
+        (leg) =>
+          leg.status !== "paid" ||
+          (!leg.intent &&
+            !(
+              plan.nativeTreasury &&
+              plan.recipients.find((recipient) => recipient.legId === leg.legId)
+                ?.kind === "conduit"
+            ))
+      )
     ) {
       return { status: "retirement_pending" }
     }
@@ -201,83 +218,178 @@ export async function retireCheckoutSparkSettledShopper(
       assertActive()
     }
     await assertAuthority()
-    const credit = await readWithTimeout(
-      manager.attestCheckoutReceiveCredit(plan.walletId, {
-        walletId: plan.walletId,
-        network: plan.network,
-        id: plan.funding.requestId,
-        paymentRequest: plan.funding.paymentRequest,
-        paymentHash: plan.funding.paymentHash,
-        providerStatus: "PERSISTED",
-        requiredNetSats: plan.funding.grossFundingSats,
-        grossFundingSats: plan.funding.grossFundingSats,
-        expirySecs: (plan.funding.expiresAt - plan.funding.createdAt) / 1_000,
-        createdAt: plan.funding.createdAt,
-        expiresAt: plan.funding.expiresAt,
-        receiveSettledPolicy: "ordinary-exact-credit-v3",
-        receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+    let expectedTransferIds: string[]
+    const closedReturnedProofs: CheckoutSparkSettledClosedReturnedProof[] = []
+    if (plan.nativeTreasury) {
+      const inspection = await inspectBuyerCheckoutSparkTreasuryCommerce({
+        state,
+        manager,
+        repository,
+        now,
+        assertAuthority,
+        assertCurrent: assertActive,
       })
-    )
-    await assertAuthority()
-    if (
-      !credit ||
-      credit.transferId !== state.credit.transferId ||
-      credit.creditedSats !== state.credit.creditedSats
-    ) {
-      return { status: "retirement_pending" }
-    }
-    await repository.recordMerchantCredit(plan, credit, now(), assertActive)
-    await assertAuthority()
-    const expectedTransferIds = [credit.transferId]
-    for (const leg of state.legs) {
-      const recipient = plan.recipients.find(
-        (candidate) => candidate.legId === leg.legId
+      expectedTransferIds = inspection.expectedTransferIds
+      closedReturnedProofs.push(...inspection.closedReturnedProofs)
+      const native = state.treasuryFinalization
+      if (
+        native?.status !== "paid" ||
+        !native.intent ||
+        !native.providerTransferId
       )
-      if (!recipient || !leg.intent || leg.allocationSats === null)
-        return { status: "unavailable" }
-      const target: CheckoutSparkSettledOutgoingTarget = {
-        walletId: plan.walletId,
-        network: plan.network,
-        legId: leg.legId,
-        recipientId: recipient.recipientId,
-        allocationSats: leg.allocationSats,
-        unpaidAllocationSats: leg.allocationSats,
-        intent: leg.intent,
-      }
-      await repository.assertLocalInvoiceOrigin(plan, target, assertActive)
-      await assertAuthority()
-      const request = requireCheckoutSparkSettledExactOutgoingRequest(
-        plan,
-        target
-      )
-      const history = await readWithTimeout(
-        manager.reconcileInvoiceAttempt(plan.walletId, {
-          schemaVersion: 1,
-          walletId: plan.walletId,
-          ...request,
-          createdAt: leg.intent.preparedAt,
+        return { status: "retirement_pending" }
+      const observation = await readWithTimeout(
+        manager.inspectCheckoutTreasury(plan.walletId, {
+          network: plan.network,
+          nativeTreasury: plan.nativeTreasury,
+          amountSats: native.intent.amountSats,
+          authorizedDebitSats: native.intent.authorizedDebitSats,
+          providerTransferId: native.providerTransferId,
         })
       )
       await assertAuthority()
-      const observation =
-        await classifyCheckoutSparkSettledExactOutgoingHistory(target, history)
-      await assertAuthority()
       if (
         observation.status !== "paid" ||
-        observation.finalFeeSats !== leg.finalFeeSats ||
-        observation.finalDebitSats !== leg.finalDebitSats
-      ) {
+        observation.providerTransferId !== native.providerTransferId ||
+        observation.finalFeeSats !== 0 ||
+        observation.finalDebitSats !== native.intent.amountSats
+      )
         return { status: "retirement_pending" }
-      }
-      await repository.recordMerchantPayout(
-        plan,
-        target,
-        observation,
-        now(),
+      await repository.recordMerchantTreasury(
+        state,
+        { ...observation, observedAt: now() },
         assertActive
       )
       await assertAuthority()
-      expectedTransferIds.push(leg.intent.transferId)
+      expectedTransferIds.push(native.providerTransferId)
+    } else {
+      const credit = await readWithTimeout(
+        manager.attestCheckoutReceiveCredit(plan.walletId, {
+          walletId: plan.walletId,
+          network: plan.network,
+          id: plan.funding.requestId,
+          paymentRequest: plan.funding.paymentRequest,
+          paymentHash: plan.funding.paymentHash,
+          providerStatus: "PERSISTED",
+          requiredNetSats: plan.funding.grossFundingSats,
+          grossFundingSats: plan.funding.grossFundingSats,
+          expirySecs: (plan.funding.expiresAt - plan.funding.createdAt) / 1_000,
+          createdAt: plan.funding.createdAt,
+          expiresAt: plan.funding.expiresAt,
+          receiveSettledPolicy: "ordinary-exact-credit-v3",
+          receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+        })
+      )
+      await assertAuthority()
+      if (
+        !credit ||
+        credit.transferId !== state.credit.transferId ||
+        credit.creditedSats !== state.credit.creditedSats
+      ) {
+        return { status: "retirement_pending" }
+      }
+      await repository.recordMerchantCredit(plan, credit, now(), assertActive)
+      await assertAuthority()
+      expectedTransferIds = [credit.transferId]
+      for (const leg of state.legs) {
+        const recipient = plan.recipients.find(
+          (candidate) => candidate.legId === leg.legId
+        )
+        if (!recipient || !leg.intent || leg.allocationSats === null)
+          return { status: "unavailable" }
+        const target: CheckoutSparkSettledOutgoingTarget = {
+          walletId: plan.walletId,
+          network: plan.network,
+          legId: leg.legId,
+          recipientId: recipient.recipientId,
+          allocationSats: leg.allocationSats,
+          unpaidAllocationSats: leg.allocationSats,
+          intent: leg.intent,
+          ...(leg.generation === 1
+            ? { generation: 1, closedGenerations: leg.closedGenerations }
+            : {}),
+        }
+        for (const closed of leg.closedGenerations ?? []) {
+          const previous = {
+            ...target,
+            intent: closed.intent,
+            generation: 0 as const,
+          }
+          const previousRequest =
+            requireCheckoutSparkSettledExactOutgoingRequest(plan, previous)
+          const returned = await readWithTimeout(
+            manager.inspectCheckoutLightningClosedReturnedAttempt(
+              plan.walletId,
+              {
+                ...previousRequest,
+                paymentHash: closed.intent.paymentHash,
+                receiverIdentityPublicKey:
+                  plan.funding.receiverIdentityPublicKey,
+              },
+              assertActive
+            )
+          )
+          await assertAuthority()
+          if (returned.status !== "closed_returned")
+            return { status: "retirement_pending" }
+          const proof = proveCheckoutSparkSettledClosedReturnedTransfer({
+            plan,
+            target: previous,
+            evidence: returned.evidence,
+          })
+          const fresh = assertCheckoutSparkSettledClosedReturnedProof(proof, {
+            walletId: plan.walletId,
+            network: plan.network,
+            nowMs: now(),
+          })
+          if (
+            Object.entries(closed.closure).some(
+              ([key, value]) =>
+                key !== "observedAt" &&
+                fresh[key as keyof typeof fresh] !== value
+            )
+          )
+            return { status: "retirement_pending" }
+          closedReturnedProofs.push(proof)
+        }
+        await repository.assertLocalInvoiceOrigin(plan, target, assertActive)
+        await assertAuthority()
+        const request = requireCheckoutSparkSettledExactOutgoingRequest(
+          plan,
+          target
+        )
+        const history = await readWithTimeout(
+          manager.reconcileInvoiceAttempt(plan.walletId, {
+            schemaVersion: 1,
+            walletId: plan.walletId,
+            ...request,
+            createdAt: leg.intent.preparedAt,
+          })
+        )
+        await assertAuthority()
+        const observation =
+          await classifyCheckoutSparkSettledExactOutgoingHistory(
+            target,
+            history
+          )
+        await assertAuthority()
+        if (
+          observation.status !== "paid" ||
+          observation.finalFeeSats !== leg.finalFeeSats ||
+          observation.finalDebitSats !== leg.finalDebitSats
+        ) {
+          return { status: "retirement_pending" }
+        }
+        await repository.recordMerchantPayout(
+          plan,
+          target,
+          observation,
+          now(),
+          assertActive
+        )
+        await assertAuthority()
+        expectedTransferIds.push(leg.intent.transferId)
+      }
     }
     const session = await manager.openCheckoutRetirementReader(plan.walletId, {
       network: plan.network,
@@ -295,6 +407,10 @@ export async function retireCheckoutSparkSettledShopper(
         network: plan.network,
         stateUpdatedAt: state.updatedAt,
         expectedTransferIds,
+        closedReturnedProofs,
+        ...(plan.nativeTreasury
+          ? { requireExactHistoryScope: true as const }
+          : {}),
         now,
         assertCurrent: assertActive,
       })

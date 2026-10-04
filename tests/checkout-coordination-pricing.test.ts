@@ -242,8 +242,9 @@ describe("combined cart estimates", () => {
       shippingPending: false,
     })
   })
-  it("keeps a resolved free merchant pickup outside payment estimates", () => {
-    const freePickup: CartItem = {
+  it("rejects retired generic pickup from new checkout pricing and admission", () => {
+    // Historical order/recovery decoding does not re-admit the removed cart shape.
+    const freePickup = {
       ...item(),
       price: 0,
       priceSats: 0,
@@ -293,18 +294,15 @@ describe("combined cart estimates", () => {
           normalizedCurrency: "SATS",
         },
       },
-    }
-    expect(isCheckoutSparkSettledCart([freePickup])).toBe(true)
+    } as unknown as CartItem
+    expect(isCheckoutSparkSettledCart([freePickup])).toBe(false)
     expect(buildCheckoutPricingIntent([freePickup], null)).toMatchObject({
-      status: "ok",
-      paymentRequired: false,
-      totalSats: 0,
+      status: "error",
+      code: "unpriced_items",
     })
     expect(getCartCoordinationEstimate([freePickup], null)).toBeNull()
-    expect(getCartCoordinationEstimate([freePickup, item("b")], null)).toEqual({
-      totalSats: 1_113,
-      coordinationFeeSats: 113,
-      shippingPending: false,
-    })
+    expect(
+      getCartCoordinationEstimate([freePickup, item("b")], null)
+    ).toBeNull()
   })
 })

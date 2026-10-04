@@ -183,6 +183,7 @@ function hasRetryablePublicTarget(
   return delivery.relayDelivery.some(
     (target) =>
       target.status !== "acked" &&
+      target.status !== "policy_blocked" &&
       normalizePublicWebSocketUrl(target.relayUrl) !== null &&
       (delivery.route !== "compatibility_order" ||
         isApprovedCompatibilityOrderRelayPlan([target.relayUrl]))
@@ -579,7 +580,10 @@ export async function beginOrderRelayDeliveryAttempt(
 
     const outstandingRelayUrls = relayUrls.filter((relayUrl) =>
       delivery.relayDelivery.some(
-        (target) => target.relayUrl === relayUrl && target.status !== "acked"
+        (target) =>
+          target.relayUrl === relayUrl &&
+          target.status !== "acked" &&
+          target.status !== "policy_blocked"
       )
     )
     if (outstandingRelayUrls.length === 0) {
@@ -707,13 +711,16 @@ export async function recordOrderRelayDeliveryOutcomes(
       }
     })
     const anyAcked = relayDelivery.some((target) => target.status === "acked")
-    const allAcked = relayDelivery.every((target) => target.status === "acked")
+    const retryable = relayDelivery.some(
+      (target) =>
+        target.status !== "acked" && target.status !== "policy_blocked"
+    )
     let nextDelivery = {
       ...delivery,
       relayDelivery,
-      nextRetryAt: allAcked
-        ? undefined
-        : timestamp + (input.retryDelayMs ?? FOREGROUND_RETRY_DELAY_MS),
+      nextRetryAt: retryable
+        ? timestamp + (input.retryDelayMs ?? FOREGROUND_RETRY_DELAY_MS)
+        : undefined,
       updatedAt: timestamp,
     }
     if (
@@ -795,6 +802,7 @@ export async function retryOrderRelayDelivery(
     const outstanding = claimed.orderRelayDelivery.relayDelivery.filter(
       (target) =>
         target.status !== "acked" &&
+        target.status !== "policy_blocked" &&
         normalizePublicWebSocketUrl(target.relayUrl) !== null &&
         (claimed.orderRelayDelivery?.route !== "compatibility_order" ||
           isApprovedCompatibilityOrderRelayPlan([target.relayUrl]))
@@ -894,7 +902,7 @@ export async function retryOrderRelayDelivery(
       delete released.deliveryLeaseExpiresAt
       if (
         released.nextRetryAt === undefined &&
-        released.relayDelivery.some((target) => target.status !== "acked")
+        hasRetryablePublicTarget(released)
       ) {
         released.nextRetryAt = now() + RETRY_DELAY_MS
       }

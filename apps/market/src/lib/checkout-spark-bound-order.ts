@@ -159,6 +159,22 @@ async function publishBoundOrderFromFrozenPlan(
   const buyerPubkey = input.buyer.pubkey.toLowerCase()
   const merchantPubkey = plan.merchantPubkey.toLowerCase()
   const guest = input.buyer.kind === "guest_ephemeral" ? input.buyer : null
+  const historicalPickup = order.items.some(
+    (item) => item.fulfillment?.type === "pickup"
+  )
+  const currentFulfillmentItems = order.items.flatMap((item) =>
+    item.fulfillment?.type === "pickup"
+      ? []
+      : [{ format: item.format, fulfillment: item.fulfillment }]
+  )
+  const mixedHistoricalFulfillment =
+    historicalPickup &&
+    order.items.some(
+      (item) =>
+        item.fulfillment?.type === "event_market_pickup" ||
+        item.fulfillment?.type === "shipping" ||
+        (!item.fulfillment && item.format !== "digital")
+    )
   if (
     !/^[0-9a-f]{64}$/.test(buyerPubkey) ||
     (input.buyer.kind !== undefined &&
@@ -185,7 +201,8 @@ async function publishBoundOrderFromFrozenPlan(
     (!guest && order.guestContact !== undefined) ||
     order.subtotal !== plan.commerceQuote.commerceTotalSats ||
     order.items.length !== plan.commerceQuote.lines.length ||
-    getMixedFulfillmentBlockingMessage(order.items) !== null
+    mixedHistoricalFulfillment ||
+    getMixedFulfillmentBlockingMessage(currentFulfillmentItems) !== null
   ) {
     throw new Error("Checkout Spark order does not match its frozen plan.")
   }

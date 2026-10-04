@@ -2,6 +2,7 @@ import {
   DexieCheckoutSparkSettledRepository,
   getOrderLifecycle,
   runCheckoutSparkSettledOutgoingStep,
+  runCheckoutSparkNativeTreasuryStep,
   type CheckoutSparkSettledOutgoingObservation,
   type CheckoutSparkSettledOutgoingProvider,
   type CheckoutSparkSettledOutgoingTarget,
@@ -24,6 +25,10 @@ import {
 } from "./checkout-spark-settled-preparation"
 import { getSparkConfiguration, getSparkWalletManager } from "./spark-sdk"
 import { assertMarketCheckoutSparkDispatchPlan } from "./checkout-spark-dispatch-policy"
+import {
+  createBuyerCheckoutSparkNativeTreasuryProvider,
+  proveBuyerCheckoutSparkTreasuryCommerce,
+} from "./checkout-spark-native-treasury"
 import {
   isCurrentGuestOrderSigningIdentity,
   type GuestOrderSigningIdentity,
@@ -69,6 +74,10 @@ export interface AdvanceCheckoutSparkSettledShopperDependencies {
     | "savePreparedWithInvoiceOrigin"
     | "assertLocalInvoiceOrigin"
     | "recordMerchantPayout"
+    | "recordMerchantCredit"
+    | "loadMerchantSettlement"
+    | "saveTreasuryPrepared"
+    | "recordMerchantTreasury"
   >
   sparkConfiguration?: typeof getSparkConfiguration
   sparkManager?: typeof getSparkWalletManager
@@ -76,6 +85,7 @@ export interface AdvanceCheckoutSparkSettledShopperDependencies {
   prepareLeg?: typeof prepareCheckoutSparkSettledOutgoingLeg
   outgoingStep?: typeof runCheckoutSparkSettledOutgoingStep
   outgoingProvider?: typeof createCheckoutSparkSettledOutgoingProvider
+  treasuryStep?: typeof runCheckoutSparkNativeTreasuryStep
   now?: () => number
 }
 
@@ -136,7 +146,7 @@ export async function advanceCheckoutSparkSettledShopper(
   const { plan } = prepared
   assertMarketCheckoutSparkDispatchPlan(plan)
   if (
-    plan.schemaVersion !== 3 ||
+    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
     plan.checkoutId !== input.checkoutId ||
     plan.planDigest !== input.planDigest ||
     plan.orderId !== input.orderId ||
@@ -158,6 +168,10 @@ export async function advanceCheckoutSparkSettledShopper(
     const configuration = (
       dependencies.sparkConfiguration ?? getSparkConfiguration
     )()
+    const completingNativeTreasury =
+      Boolean(plan.nativeTreasury) &&
+      input.legId ===
+        plan.recipients.find((recipient) => recipient.kind === "conduit")?.legId
     if (
       !lifecycle ||
       lifecycle.buyerIdentityKind !==
@@ -168,8 +182,8 @@ export async function advanceCheckoutSparkSettledShopper(
       lifecycle.merchantPubkey !== plan.merchantPubkey ||
       lifecycle.orderDeliveryStatus !== "sent" ||
       lifecycle.phase === "cancelled" ||
-      lifecycle.phase === "completed" ||
-      lifecycle.paymentStatus === "paid" ||
+      (lifecycle.phase === "completed" && !completingNativeTreasury) ||
+      (lifecycle.paymentStatus === "paid" && !completingNativeTreasury) ||
       binding?.checkoutId !== plan.checkoutId ||
       binding.planDigest !== plan.planDigest ||
       binding.walletId !== plan.walletId ||
@@ -244,6 +258,55 @@ export async function advanceCheckoutSparkSettledShopper(
     await assertAuthority()
     await input.acknowledgeRecoverySnapshot(state)
     await assertAuthority()
+  }
+  if (
+    plan.nativeTreasury &&
+    plan.recipients.find((recipient) => recipient.legId === nextLeg.legId)
+      ?.kind === "conduit"
+  ) {
+    const provider = createBuyerCheckoutSparkNativeTreasuryProvider({
+      checkoutId: plan.checkoutId,
+      manager,
+      repository,
+      assertAuthority,
+      assertCurrent: assertSession,
+      now,
+    })
+    const step = await (
+      dependencies.treasuryStep ?? runCheckoutSparkNativeTreasuryStep
+    )({
+      checkoutId: plan.checkoutId,
+      planDigest: plan.planDigest,
+      legId: nextLeg.legId,
+      actor: "shopper",
+      inspectionOnly: input.inspectionOnly,
+      now,
+      store: {
+        load: repository.load.bind(repository),
+        save: (state, revision) =>
+          repository.save(state, revision, assertSession),
+        savePrepared: (state, revision, settlement) =>
+          repository.saveTreasuryPrepared(
+            state,
+            revision,
+            settlement,
+            assertSession
+          ),
+      },
+      provider,
+      proveCommerce: (state) =>
+        proveBuyerCheckoutSparkTreasuryCommerce({
+          state,
+          manager,
+          repository,
+          now,
+          assertAuthority,
+          assertCurrent: assertSession,
+        }),
+      acknowledgeRecoverySnapshot,
+    })
+    await assertAuthority()
+    return { status: "outgoing_step", step }
   }
   if (!nextLeg.intent) {
     if (input.inspectionOnly) {

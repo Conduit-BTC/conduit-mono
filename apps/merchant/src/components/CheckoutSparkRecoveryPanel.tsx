@@ -35,6 +35,7 @@ import {
 } from "../lib/checkout-spark-automatic-session"
 import { createMerchantCheckoutSparkPayoutReviewSelection } from "../lib/checkout-spark-payout-review-selection"
 import {
+  continueMerchantCheckoutSparkNativeTreasury,
   continueMerchantCheckoutSparkSettledPayout,
   reviewMerchantCheckoutSparkSettledPayout,
   type MerchantCheckoutSparkPayoutReview,
@@ -122,7 +123,7 @@ export function CheckoutSparkRecoveryPanel({
   )
 }
 
-/** Loopback recovery; automatic dispatch still requires each frozen plan's authority. */
+/** Account-scoped recovery; automatic dispatch still requires the frozen plan authority. */
 function CheckoutSparkRecoveryPanelForPrincipal({
   principalPubkey,
   selectedOrderId,
@@ -823,6 +824,66 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     }
   }
 
+  async function finalizeNativeTreasury(
+    candidate: MerchantCheckoutSparkRecoveryCandidate
+  ): Promise<void> {
+    if (busy || confirmation) return
+    if (Date.now() < candidate.takeoverAt) {
+      setNoticeOrderId(candidate.orderId)
+      setNotice(
+        "Conduit payment finalization is available after the shopper handoff time."
+      )
+      return
+    }
+    const current = beginManualAction(candidate.orderId)
+    if (current === null) return
+    setNotice(null)
+    try {
+      await stopDiscovery()
+      if (!current.isCurrent()) return
+      const continued = await continueMerchantCheckoutSparkNativeTreasury(
+        principalPubkey,
+        candidate,
+        { shouldContinue: current.isCurrent }
+      )
+      if (!current.isCurrent()) return
+      await refreshVerifiedStatus([candidate], current)
+      if (!current.isCurrent()) return
+      if (continued.status !== "consumed") {
+        setNotice(
+          "Fresh recovery evidence is incomplete or changed. Check recoveries again; no Conduit payment was attempted."
+        )
+      } else if (
+        continued.payout?.outcome === "paid" ||
+        continued.payout?.outcome === "already_paid"
+      ) {
+        setNotice(
+          "Spark confirms the exact native Conduit payment. Recipient payments and delivery confirmation remain separate."
+        )
+      } else if (continued.payout?.reason === "zero_remainder") {
+        setNotice(
+          "No approved checkout credit remains for the final Conduit payment. No payment was sent; this checkout needs manual attention."
+        )
+      } else if (continued.payout?.reason === "prerequisite_unpaid") {
+        setNotice(
+          "Recipient payments must be verified first. No Conduit payment was sent."
+        )
+      } else {
+        setNotice(
+          "The native Conduit payment is still unresolved. Inspect exact payout history before another attempt."
+        )
+      }
+      setDiscoveryRefresh((previous) => previous + 1)
+    } catch {
+      if (!current.isCurrent()) return
+      setNotice(
+        "Native Conduit finalization could not finish. Funds may have moved; inspect exact payout history before trying again."
+      )
+    } finally {
+      if (current.isCurrent()) setBusy(false)
+    }
+  }
+
   async function reviewPayout(
     candidate: MerchantCheckoutSparkRecoveryCandidate
   ) {
@@ -1046,6 +1107,14 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                 onClick={() => void inspectPayoutHistory(candidate)}
               >
                 Inspect exact payout history
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={manualControlsDisabled || confirmation !== null}
+                onClick={() => void finalizeNativeTreasury(candidate)}
+              >
+                Finalize Conduit payment
               </Button>
               <Button
                 type="button"

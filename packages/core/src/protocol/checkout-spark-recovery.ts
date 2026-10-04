@@ -261,9 +261,11 @@ function canonicalSettledState(
   state: CheckoutSparkSettledReconciliation
 ): CheckoutSparkSettledReconciliation {
   try {
-    // Buyer handoff/progress retain their original v3-state wire contract.
-    // Merchant renewal is carried only by the separate Merchant progress v2.
-    if (state.schemaVersion !== 3) throw new Error("unsupported buyer state")
+    // The envelope is unchanged. New native plans use an explicitly versioned
+    // nested state; older clients fail closed at the nested plan decoder.
+    // Historical Lightning renewal remains Merchant-only.
+    if (state.schemaVersion !== 3 && state.schemaVersion !== 5)
+      throw new Error("unsupported buyer state")
     const plan = restoreCheckoutSparkSettledPlan(state.plan)
     const restored = restoreCheckoutSparkSettledReconciliation(state)
     if (JSON.stringify(restored.plan) !== JSON.stringify(plan)) {
@@ -1060,7 +1062,7 @@ export async function retryCheckoutSparkRecoveryDelivery(input: {
   if (pendingRelayUrls.length > 0) {
     try {
       recipientDelivery = await (input.publishFn ?? publishWithPlanner)(
-        new NDKEvent(getNdk(), input.record.signedRecipientWrap),
+        input.record.signedRecipientWrap,
         {
           intent: "recipient_event",
           authorPubkey: input.record.senderPubkey,

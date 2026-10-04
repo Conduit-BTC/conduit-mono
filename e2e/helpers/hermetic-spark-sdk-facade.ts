@@ -23,6 +23,7 @@ type PureSdk = Pick<
   | "manifestFeeSats"
   | "ReceiveQuoteAmountBasis"
   | "decodeSparkAddress"
+  | "encodeSparkAddress"
   | "getNetworkFromSparkAddress"
   | "isValidSparkAddress"
 >
@@ -96,14 +97,14 @@ export function createHermeticSparkSdkFacade(input: {
     private async call<K extends WalletMethod>(
       method: K,
       args: unknown[]
-    ): Promise<Awaited<ReturnType<SparkNativeWallet[K]>>> {
+    ): Promise<Awaited<ReturnType<NonNullable<SparkNativeWallet[K]>>>> {
       if (this.#closed || !this.#handle) unavailable()
       return (await input.request({
         type: "wallet.call",
         handle: this.#handle,
         method,
         args,
-      })) as Awaited<ReturnType<SparkNativeWallet[K]>>
+      })) as Awaited<ReturnType<NonNullable<SparkNativeWallet[K]>>>
     }
     on() {
       if (this.#closed) unavailable()
@@ -138,8 +139,41 @@ export function createHermeticSparkSdkFacade(input: {
     getTransfer(id: string) {
       return this.call("getTransfer", [id])
     }
+    async querySparkInvoices(invoices: string[]) {
+      const result = await this.call("querySparkInvoices", [invoices])
+      return {
+        invoiceStatuses: result.invoiceStatuses.map((entry) => ({
+          ...entry,
+          ...(entry.transferType?.$case === "satsTransfer"
+            ? {
+                transferType: {
+                  $case: "satsTransfer" as const,
+                  satsTransfer: {
+                    transferId: Uint8Array.from(
+                      entry.transferType.satsTransfer.transferId
+                    ),
+                  },
+                },
+              }
+            : {}),
+        })),
+      }
+    }
+    fulfillSparkInvoice(invoices: Array<{ invoice: string; amount: bigint }>) {
+      return this.call("fulfillSparkInvoice", [
+        invoices.map((item) => ({ ...item, amount: item.amount.toString() })),
+      ])
+    }
     getTransferFromSsp(id: string) {
       return this.call("getTransferFromSsp", [id])
+    }
+    queryHTLC(
+      request: Parameters<NonNullable<SparkNativeWallet["queryHTLC"]>>[0]
+    ) {
+      return this.call("queryHTLC", [request])
+    }
+    getLeaves() {
+      return this.call("getLeaves", [])
     }
     createLightningInvoice(
       request: Parameters<SparkNativeWallet["createLightningInvoice"]>[0]
@@ -305,6 +339,7 @@ export function createHermeticSparkSdkFacade(input: {
     manifestFeeSats: input.pureSdk.manifestFeeSats,
     ReceiveQuoteAmountBasis: input.pureSdk.ReceiveQuoteAmountBasis,
     decodeSparkAddress: input.pureSdk.decodeSparkAddress,
+    encodeSparkAddress: input.pureSdk.encodeSparkAddress,
     getNetworkFromSparkAddress: input.pureSdk.getNetworkFromSparkAddress,
     isValidSparkAddress: input.pureSdk.isValidSparkAddress,
   }

@@ -18,7 +18,7 @@ describe("isolated router Playwright launcher", () => {
     const marketOrigin = `http://127.0.0.1:${ports.marketPort}`
     const merchantOrigin = `http://127.0.0.1:${ports.merchantPort}`
     const reference = encodeEventMarketNaddr(
-      `30405:${"a".repeat(64)}:isolated-market`
+      `30409:${"a".repeat(64)}:isolated-market`
     )
     const share = buildMarketEventCatalogUrl(marketOrigin, reference)
     expect(new URL(share).origin).toBe(marketOrigin)

@@ -1,5 +1,6 @@
 import {
   checkoutSparkConduitFeeRecipient,
+  assertCheckoutSparkTreasuryAddressAllowed,
   type CheckoutSparkSettledPlan,
 } from "@conduit/core"
 import { isLocalCheckoutSparkRecoveryRehearsal } from "./checkout-spark-settled-recovery"
@@ -30,6 +31,14 @@ export function assertMerchantCheckoutSparkDispatchPlan(
   plan: CheckoutSparkSettledPlan,
   allowLocalCanary = canUseMerchantCheckoutSparkRecipientCompatibility()
 ): void {
+  if (plan.schemaVersion === 4) {
+    if (!plan.nativeTreasury)
+      throw new Error("Checkout Spark native treasury is unavailable.")
+    assertCheckoutSparkTreasuryAddressAllowed(
+      plan.network,
+      plan.nativeTreasury.sparkAddress
+    )
+  }
   const conduit = plan.recipients.find(
     (recipient) => recipient.kind === "conduit"
   )

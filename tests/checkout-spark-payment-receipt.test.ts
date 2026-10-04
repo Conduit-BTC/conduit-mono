@@ -49,7 +49,143 @@ function fixture() {
   return { summary, record }
 }
 
+function nativeFixture() {
+  const merchantLegId = "1".repeat(64)
+  const conduitLegId = "2".repeat(64)
+  const nativeTreasury = {
+    invoiceId: "11111111-1111-5111-8111-111111111111",
+    providerTransferId: "native-transfer",
+    principalSats: 113,
+    finalFeeSats: 0 as const,
+    finalDebitSats: 113,
+    baseConduitAllocationSats: 111,
+    unusedCommerceReserveSats: 2,
+    authorizedDebitSats: 113,
+    accountingDigest: "c".repeat(64),
+  }
+  const summary: CheckoutSparkRetiredSettlementSummary = {
+    schemaVersion: 3,
+    nativeTreasury,
+    checkoutId: "native-receipt-checkout",
+    planDigest: "a".repeat(64),
+    orderId: "native-receipt-order",
+    merchantPubkey: "b".repeat(64),
+    walletId: "native-receipt-wallet",
+    commerceTotalSats: 1_000,
+    credit: { transferId: "native-receipt-credit", creditedSats: 1_113 },
+    legs: [
+      {
+        kind: "merchant",
+        legId: merchantLegId,
+        transferId: "merchant-transfer",
+        allocationSats: 1_002,
+        generation: 0,
+        closedTransferIds: [],
+        historicalNetDebitSats: 0,
+      },
+      {
+        kind: "conduit",
+        legId: conduitLegId,
+        transferId: nativeTreasury.providerTransferId,
+        allocationSats: 111,
+        generation: 0,
+        closedTransferIds: [],
+        historicalNetDebitSats: 0,
+      },
+    ],
+  }
+  const record: CheckoutSparkMerchantSettlementRecord = {
+    schemaVersion: 2,
+    nativeTreasury: { ...nativeTreasury, observedAt: 103 },
+    checkoutId: summary.checkoutId,
+    planDigest: summary.planDigest,
+    orderId: summary.orderId,
+    merchantPubkey: summary.merchantPubkey,
+    merchantLegId,
+    requiredCommerceLegIds: [merchantLegId],
+    feeLegId: conduitLegId,
+    credit: { ...summary.credit!, observedAt: 100 },
+    paidLegs: [
+      {
+        legId: merchantLegId,
+        transferId: "merchant-transfer",
+        allocationSats: 1_002,
+        finalDebitSats: 1_000,
+        finalFeeSats: 1,
+        observedAt: 102,
+        recipientVerified: true,
+      },
+    ],
+  }
+  return { summary, record }
+}
+
 describe("recorded checkout payment receipt", () => {
+  it("records the exact completed native treasury debit and residual breakdown", () => {
+    const { summary, record } = nativeFixture()
+
+    expect(createCheckoutSparkPaymentReceipt(summary, record)).toEqual({
+      creditedSats: 1_113,
+      rows: [
+        {
+          legId: "1".repeat(64),
+          kind: "merchant",
+          allocationSats: 1_002,
+          payment: {
+            invoiceAmountSats: 999,
+            feeSats: 1,
+            debitSats: 1_000,
+            recipientVerified: true,
+            observedAt: 102,
+          },
+        },
+        {
+          legId: "2".repeat(64),
+          kind: "conduit",
+          allocationSats: 111,
+          payment: {
+            invoiceAmountSats: 113,
+            feeSats: 0,
+            debitSats: 113,
+            recipientVerified: true,
+            observedAt: 103,
+          },
+        },
+      ],
+      recordedPaidSats: 1_112,
+      recordedFeeSats: 1,
+      recordedDebitSats: 1_113,
+      recordedUnspentSats: 0,
+      allPayoutsRecorded: true,
+      nativeTreasury: {
+        baseConduitAllocationSats: 111,
+        unusedCommerceReserveSats: 2,
+        principalSats: 113,
+        feeSats: 0,
+        debitSats: 113,
+        observedAt: 103,
+      },
+    })
+  })
+
+  it("does not claim the native treasury payment from a summary without its exact provider record", () => {
+    const { summary, record } = nativeFixture()
+    const receipt = createCheckoutSparkPaymentReceipt(summary, {
+      ...record,
+      nativeTreasury: null,
+    })
+
+    expect(receipt).toMatchObject({
+      recordedPaidSats: 999,
+      recordedFeeSats: 1,
+      recordedDebitSats: 1_000,
+      recordedUnspentSats: null,
+      allPayoutsRecorded: false,
+      nativeTreasury: null,
+    })
+    expect(receipt?.rows[1]?.payment).toBeNull()
+  })
+
   it("uses actual below-budget debits and zero fees for every frozen recipient role", () => {
     const { summary, record } = fixture()
     expect(createCheckoutSparkPaymentReceipt(summary, record)).toEqual({

@@ -370,3 +370,7 @@ export {
   useUpdateProfile,
   type UseUpdateProfileOptions,
 } from "./hooks/useUpdateProfile"
+export {
+  useProgressiveEventMarketDiscovery,
+  createProgressiveEventMarketDiscoveryQuery,
+} from "./hooks/useProgressiveEventMarketDiscovery"

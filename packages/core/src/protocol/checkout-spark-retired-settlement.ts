@@ -10,7 +10,7 @@ import {
 } from "./checkout-spark-merchant-settlement"
 
 const HEX_64 = /^[0-9a-f]{64}$/
-const invalid = (): never => {
+function invalid(): never {
   throw new Error("Checkout Spark retained settlement binding is invalid.")
 }
 const validId = (value: unknown): value is string =>
@@ -44,7 +44,18 @@ export interface CheckoutSparkBuyerOrderBinding {
 
 /** No wallet credential, invoice, destination, order body, or payment hash. */
 export interface CheckoutSparkRetiredSettlementSummary {
-  readonly schemaVersion: 1 | 2
+  readonly schemaVersion: 1 | 2 | 3
+  readonly nativeTreasury?: null | {
+    readonly invoiceId: string
+    readonly providerTransferId: string | null
+    readonly principalSats: number
+    readonly finalFeeSats: number | null
+    readonly finalDebitSats: number | null
+    readonly baseConduitAllocationSats: number
+    readonly unusedCommerceReserveSats: number
+    readonly authorizedDebitSats: number
+    readonly accountingDigest: string
+  }
   readonly checkoutId: string
   readonly planDigest: string
   readonly orderId: string
@@ -59,7 +70,7 @@ export interface CheckoutSparkRetiredSettlementSummary {
   readonly legs: readonly {
     readonly legId: string
     readonly kind: "merchant" | "supplier" | "organizer" | "conduit"
-    readonly transferId: string
+    readonly transferId: string | null
     readonly allocationSats: number
     readonly generation?: 0 | 1
     readonly closedTransferIds?: readonly string[]
@@ -100,13 +111,36 @@ export function createCheckoutSparkRetiredSettlementSummary(
 ): CheckoutSparkRetiredSettlementSummary {
   const state = restoreCheckoutSparkSettledReconciliation(input)
   const summary: CheckoutSparkRetiredSettlementSummary = {
-    schemaVersion: state.schemaVersion === 4 ? 2 : 1,
+    schemaVersion:
+      state.schemaVersion === 5 ? 3 : state.schemaVersion === 4 ? 2 : 1,
     checkoutId: state.plan.checkoutId,
     planDigest: state.plan.planDigest,
     orderId: state.plan.orderId,
     merchantPubkey: state.plan.merchantPubkey,
     walletId: state.plan.walletId,
     commerceTotalSats: state.plan.commerceQuote.commerceTotalSats,
+    ...(state.schemaVersion === 5
+      ? {
+          nativeTreasury: state.treasuryFinalization!.intent
+            ? {
+                invoiceId: state.treasuryFinalization!.intent.invoiceId,
+                providerTransferId:
+                  state.treasuryFinalization!.providerTransferId,
+                principalSats: state.treasuryFinalization!.intent.amountSats,
+                finalFeeSats: state.treasuryFinalization!.finalFeeSats,
+                finalDebitSats: state.treasuryFinalization!.finalDebitSats,
+                baseConduitAllocationSats:
+                  state.treasuryFinalization!.intent.baseConduitAllocationSats,
+                unusedCommerceReserveSats:
+                  state.treasuryFinalization!.intent.unusedCommerceReserveSats,
+                authorizedDebitSats:
+                  state.treasuryFinalization!.intent.authorizedDebitSats,
+                accountingDigest:
+                  state.treasuryFinalization!.intent.accountingDigest,
+              }
+            : null,
+        }
+      : {}),
     credit: state.credit
       ? {
           transferId: state.credit.transferId,
@@ -125,11 +159,16 @@ export function createCheckoutSparkRetiredSettlementSummary(
         legId: recipient.legId,
         kind: recipient.kind,
         transferId:
-          state.schemaVersion === 4 && leg?.intent
-            ? leg.intent.transferId
-            : deriveCheckoutSparkSettledTransferId(state.plan, recipient.legId),
+          state.schemaVersion === 5 && recipient.kind === "conduit"
+            ? state.treasuryFinalization!.providerTransferId
+            : state.schemaVersion !== 3 && leg?.intent
+              ? leg.intent.transferId
+              : deriveCheckoutSparkSettledTransferId(
+                  state.plan,
+                  recipient.legId
+                ),
         allocationSats,
-        ...(state.schemaVersion === 4
+        ...(state.schemaVersion !== 3
           ? {
               generation: getCheckoutSparkSettledLegGeneration(leg!),
               closedTransferIds: (leg!.closedGenerations ?? []).map(
@@ -158,9 +197,12 @@ export function restoreCheckoutSparkRetiredSettlementSummary(
     "commerceTotalSats",
     "credit",
     "legs",
+    ...(value.schemaVersion === 3 ? ["nativeTreasury"] : []),
   ])
   if (
-    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
+    (value.schemaVersion !== 1 &&
+      value.schemaVersion !== 2 &&
+      value.schemaVersion !== 3) ||
     !validId(value.checkoutId) ||
     !HEX_64.test(value.planDigest) ||
     !validId(value.orderId) ||
@@ -195,18 +237,18 @@ export function restoreCheckoutSparkRetiredSettlementSummary(
       "kind",
       "transferId",
       "allocationSats",
-      ...(value.schemaVersion === 2
+      ...(value.schemaVersion !== 1
         ? ["generation", "closedTransferIds", "historicalNetDebitSats"]
         : []),
     ])
     if (
-      value.schemaVersion === 2 &&
+      value.schemaVersion !== 1 &&
       (![0, 1].includes(leg.generation!) ||
         !Array.isArray(leg.closedTransferIds) ||
         leg.closedTransferIds.length !== leg.generation ||
         leg.historicalNetDebitSats !== 0 ||
         leg.closedTransferIds.some(
-          (id) => !validId(id) || id === leg.transferId
+          (id: string) => !validId(id) || id === leg.transferId
         ) ||
         new Set(leg.closedTransferIds).size !== leg.closedTransferIds.length)
     )
@@ -215,7 +257,9 @@ export function restoreCheckoutSparkRetiredSettlementSummary(
       !HEX_64.test(leg.legId) ||
       seen.has(leg.legId) ||
       !["merchant", "supplier", "organizer", "conduit"].includes(leg.kind) ||
-      !validId(leg.transferId) ||
+      !(value.schemaVersion === 3 && leg.kind === "conduit"
+        ? leg.transferId === null || validId(leg.transferId)
+        : validId(leg.transferId)) ||
       !validAllocation(leg.allocationSats)
     )
       invalid()
@@ -224,6 +268,49 @@ export function restoreCheckoutSparkRetiredSettlementSummary(
     if (leg.kind === "conduit") fees += 1
   }
   if (merchants !== 1 || fees !== 1) invalid()
+  if (value.schemaVersion === 3) {
+    const native = value.nativeTreasury
+    const fee = value.legs.find((leg) => leg.kind === "conduit")!
+    if (native === null) {
+      if (fee.transferId !== null) invalid()
+    } else {
+      if (!native || typeof native !== "object" || Array.isArray(native))
+        invalid()
+      exactKeys(native, [
+        "invoiceId",
+        "providerTransferId",
+        "principalSats",
+        "finalFeeSats",
+        "finalDebitSats",
+        "baseConduitAllocationSats",
+        "unusedCommerceReserveSats",
+        "authorizedDebitSats",
+        "accountingDigest",
+      ])
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          native.invoiceId
+        ) ||
+        !HEX_64.test(native.accountingDigest) ||
+        !validSats(native.principalSats) ||
+        !validAllocation(native.baseConduitAllocationSats) ||
+        !validAllocation(native.unusedCommerceReserveSats) ||
+        native.authorizedDebitSats !== native.principalSats ||
+        native.baseConduitAllocationSats + native.unusedCommerceReserveSats !==
+          native.authorizedDebitSats ||
+        native.baseConduitAllocationSats !== fee.allocationSats ||
+        native.providerTransferId !== fee.transferId ||
+        (native.providerTransferId !== null &&
+          !validId(native.providerTransferId)) ||
+        (native.finalFeeSats === null) !== (native.finalDebitSats === null) ||
+        (native.finalFeeSats !== null &&
+          (native.finalFeeSats !== 0 ||
+            native.finalDebitSats !== native.principalSats ||
+            !native.providerTransferId))
+      )
+        invalid()
+    }
+  }
   if (
     value.credit &&
     value.legs.reduce(
@@ -237,10 +324,17 @@ export function restoreCheckoutSparkRetiredSettlementSummary(
     credit: value.credit ? { ...value.credit } : null,
     legs: value.legs.map((leg) => ({
       ...leg,
-      ...(value.schemaVersion === 2
+      ...(value.schemaVersion !== 1
         ? { closedTransferIds: Object.freeze([...leg.closedTransferIds!]) }
         : {}),
     })),
+    ...(value.schemaVersion === 3
+      ? {
+          nativeTreasury: value.nativeTreasury
+            ? { ...value.nativeTreasury }
+            : null,
+        }
+      : {}),
   }
 }
 
@@ -256,6 +350,7 @@ export function validateCheckoutSparkRetiredSettlementRecord(
   const commerce = summary.legs.filter((leg) => leg.kind !== "conduit")
   if (
     record.checkoutId !== summary.checkoutId ||
+    record.schemaVersion !== (summary.schemaVersion === 3 ? 2 : 1) ||
     record.planDigest !== summary.planDigest ||
     record.orderId !== summary.orderId ||
     record.merchantPubkey !== summary.merchantPubkey ||
@@ -276,5 +371,29 @@ export function validateCheckoutSparkRetiredSettlementRecord(
     )
   )
     invalid()
+  if (summary.schemaVersion === 3 && record.nativeTreasury) {
+    const native = summary.nativeTreasury
+    if (
+      !native ||
+      Object.entries(native).some(
+        ([key, value]) =>
+          record.nativeTreasury![key as keyof typeof record.nativeTreasury] !==
+          value
+      ) ||
+      !record.credit ||
+      !commerce.every((leg) =>
+        record.paidLegs.some(
+          (paid) => paid.legId === leg.legId && paid.recipientVerified === true
+        )
+      ) ||
+      BigInt(record.credit.creditedSats) -
+        record.paidLegs.reduce(
+          (total, paid) => total + BigInt(paid.finalDebitSats),
+          0n
+        ) !==
+        BigInt(record.nativeTreasury.finalDebitSats)
+    )
+      invalid()
+  }
   return record
 }

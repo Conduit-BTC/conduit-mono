@@ -162,7 +162,7 @@ function exactReturnedClosure(input: {
   if (target.generation === 1) invalid()
   const recipient = plan.recipients.find((item) => item.legId === target.legId)
   if (
-    plan.schemaVersion !== 3 ||
+    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
     !recipient ||
     target.walletId !== plan.walletId ||
     target.network !== plan.network ||

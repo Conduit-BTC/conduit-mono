@@ -249,7 +249,16 @@ function normalizeRelayOutcomes(
   if (outcomes.length !== publishRelayUrls.length) {
     throw new Error("Owner relay-list outcomes must match its immutable plan")
   }
-  const publishStatuses = new Set(["pending", "acked", "rejected", "timed_out"])
+  const publishStatuses = new Set([
+    "pending",
+    "acked",
+    "rejected",
+    "timed_out",
+    "auth_required",
+    "cancelled",
+    "policy_blocked",
+    "error",
+  ])
   const readbackStatuses = new Set([
     "pending",
     "observed",

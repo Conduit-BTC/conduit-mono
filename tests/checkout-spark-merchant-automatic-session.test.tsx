@@ -289,7 +289,7 @@ describe("Merchant automatic recovery session activation", () => {
       source.match(
         /const current = beginManualAction\((?:reviewed\.)?candidate\.orderId\)/g
       )
-    ).toHaveLength(7)
+    ).toHaveLength(8)
     expect(source).toContain("if (automaticPayouts) assertAutomaticCurrent()")
     const actions = source.slice(
       source.indexOf("async function refreshVerifiedStatus"),
@@ -301,11 +301,27 @@ describe("Merchant automatic recovery session activation", () => {
       actions.match(
         /await stopDiscovery\(\)\s+if \(!current.isCurrent\(\)\) return/g
       )
-    ).toHaveLength(6)
+    ).toHaveLength(7)
     expect(actions.match(/assertActive: current.assertCurrent/g)).toHaveLength(
       2
     )
-    expect(actions.match(/shouldContinue: current.isCurrent/g)).toHaveLength(2)
+    expect(actions.match(/shouldContinue: current.isCurrent/g)).toHaveLength(3)
+    const nativeAction = actions.slice(
+      actions.indexOf("async function finalizeNativeTreasury"),
+      actions.indexOf(
+        "async function reviewPayout",
+        actions.indexOf("async function finalizeNativeTreasury")
+      )
+    )
+    expect(nativeAction).toContain(
+      "continueMerchantCheckoutSparkNativeTreasury"
+    )
+    expect(nativeAction).toContain("await stopDiscovery()")
+    expect(nativeAction).toContain("shouldContinue: current.isCurrent")
+    expect(nativeAction).toContain("if (!current.isCurrent()) return")
+    expect(nativeAction).not.toContain(
+      "reviewMerchantCheckoutSparkSettledPayout"
+    )
     const refresh = actions.slice(0, actions.indexOf("function inspect"))
     expect(refresh.match(/if \(!current.isCurrent\(\)\) return/g)).toHaveLength(
       2

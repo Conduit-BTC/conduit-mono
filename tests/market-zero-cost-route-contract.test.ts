@@ -6,33 +6,55 @@ async function source(path: string): Promise<string> {
 
 describe("Market verified zero-cost pickup route contract", () => {
   it("keeps zero-price display separate from exact purchase authority", async () => {
-    const [card, resolvedCard, eventRoute, detail, cart, checkout, orders] =
-      await Promise.all([
-        source("apps/market/src/components/ProductGridCard.tsx"),
-        source("apps/market/src/components/ResolvedProductGridCard.tsx"),
-        source("apps/market/src/routes/events/$collectionRef.tsx"),
-        source("apps/market/src/routes/products/$productId.tsx"),
-        source("apps/market/src/routes/cart.tsx"),
-        source("apps/market/src/routes/checkout.tsx"),
-        source("apps/market/src/routes/orders.tsx"),
-      ])
+    const [
+      card,
+      resolvedCard,
+      eventRoute,
+      eventPage,
+      detail,
+      cart,
+      checkout,
+      orders,
+    ] = await Promise.all([
+      source("apps/market/src/components/ProductGridCard.tsx"),
+      source("apps/market/src/components/ResolvedProductGridCard.tsx"),
+      source("apps/market/src/routes/events/$collectionRef.tsx"),
+      source("apps/market/src/components/FutureEventMarketPage.tsx"),
+      source("apps/market/src/routes/products/$productId.tsx"),
+      source("apps/market/src/routes/cart.tsx"),
+      source("apps/market/src/routes/checkout.tsx"),
+      source("apps/market/src/routes/orders.tsx"),
+    ])
 
     expect(card).toContain("allowZeroPrice = false")
     expect(card).toContain("{ allowZero: allowZeroPrice }")
-    expect(resolvedCard).toContain(
-      'allowZeroPrice={resolution?.status === "pickup"}'
-    )
+    expect(resolvedCard).toContain('resolution?.status === "standard"')
+    expect(resolvedCard).not.toContain("allowZeroPrice=")
+    expect(eventRoute).toContain("<FutureEventMarketPage")
     expect(eventRoute).toContain(
-      "allowZeroPrice={pickupFulfillment !== null || pendingEvidenceMayRecover}"
+      "decodeEventMarketReference(collectionRef, [30409])"
     )
-    expect(eventRoute).toContain("getEventCatalogPickupGate")
-    expect(eventRoute).toContain("cartActionDisabled={!cartAction.enabled}")
+    expect(eventPage).toContain(
+      'allowZeroPrice={choice === "event_market_pickup" && canPurchase}'
+    )
+    expect(eventPage).toContain("cartActionDisabled={checking || !canAdd}")
+    expect(eventPage).toContain(
+      'choice === "shipping" ? hasEventShippingChoice(product) : canPurchase'
+    )
+    expect(eventPage).toContain('productRead.resolution.state !== "eligible"')
+    expect(eventPage).toContain("!productRead.actionable")
+    expect(eventPage).toContain("createEventMarketPickupSnapshot({")
+    expect(
+      eventPage.indexOf("const productRead = await readEventMarketProduct({")
+    ).toBeLessThan(eventPage.lastIndexOf("await cart.addItem("))
     expect(detail).toContain(
-      'allowZero: productCartResolution?.status === "pickup"'
+      'productCartCandidate?.fulfillment?.type === "event_market_pickup"'
     )
-    expect(cart).toContain("allowZero: allowZeroPrice && pickup !== undefined")
+    expect(cart).toMatch(
+      /allowZero:\s*allowZeroPrice && futurePickup !== undefined/
+    )
     expect(checkout).toContain(
-      'item.fulfillment?.type === "event_pickup_pending"'
+      'item.fulfillment?.type === "event_market_pickup"'
     )
     expect(checkout).toContain("{ allowZero: !pricing.paymentRequired }")
     expect(orders).toContain("allowZero: zeroCostPickupOrder")
@@ -67,6 +89,8 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(placeOrder).toContain("guestIdentity ?? signedBuyerIdentity")
     expect(placeOrder).toContain("guestContact")
     expect(placeOrder).toContain('checkoutMode: "pay_later"')
+    expect(placeOrder).toContain('["p", selectedMerchant]')
+    expect(placeOrder).not.toContain('["p", pickupHandoff')
     expect(placeOrder).not.toContain("runOrderPayment")
     expect(checkout).toContain('"Send order"')
     expect(checkout).not.toContain("What happens next")
@@ -78,7 +102,7 @@ describe("Market verified zero-cost pickup route contract", () => {
     const payNowStart = checkout.indexOf("async function payNow(")
     const payNow = checkout.slice(payNowStart)
     const freshZeroGuard = payNow.indexOf("if (!pricingIntent.paymentRequired)")
-    const orderIdentity = payNow.indexOf("const orderId = crypto.randomUUID()")
+    const orderIdentity = payNow.indexOf("const orderId =")
     const paymentService = payNow.indexOf("void runOrderPayment(serviceCtx)")
 
     expect(checkout).toContain("const paymentPathEnabled =")
@@ -95,6 +119,8 @@ describe("Market verified zero-cost pickup route contract", () => {
       'if (pricingPreview.status === "ok" && !pricingPreview.paymentRequired)'
     )
     expect(freshZeroGuard).toBeGreaterThan(-1)
+    expect(orderIdentity).toBeGreaterThan(-1)
+    expect(paymentService).toBeGreaterThan(-1)
     expect(freshZeroGuard).toBeLessThan(orderIdentity)
     expect(orderIdentity).toBeLessThan(paymentService)
     expect(checkout).toContain(
@@ -131,6 +157,8 @@ describe("Market verified zero-cost pickup route contract", () => {
 
     expect(card).toContain("allowZeroPrice = false")
     expect(checkoutPricing).toContain('code: "invalid_total"')
-    expect(checkoutPricing).toContain('item.fulfillment?.type === "pickup"')
+    expect(checkoutPricing).toContain(
+      'item.fulfillment?.type === "event_market_pickup"'
+    )
   })
 })

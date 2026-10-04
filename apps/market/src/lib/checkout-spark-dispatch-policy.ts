@@ -1,5 +1,6 @@
 import {
   checkoutSparkConduitFeeRecipient,
+  assertCheckoutSparkTreasuryAddressAllowed,
   type CheckoutSparkSettledPlan,
 } from "@conduit/core"
 import { canUseCheckoutSparkLocalRouterCanary } from "./checkout-spark-local-router-canary"
@@ -10,9 +11,18 @@ import { canUseCheckoutSparkLocalRouterCanary } from "./checkout-spark-local-rou
  * live payment authority validation at the shared execution boundary.
  */
 export function assertMarketCheckoutSparkDispatchPlan(
-  plan: Pick<CheckoutSparkSettledPlan, "network" | "recipients">,
+  plan: Pick<
+    CheckoutSparkSettledPlan,
+    "network" | "recipients" | "nativeTreasury"
+  >,
   allowLocalCanary = canUseCheckoutSparkLocalRouterCanary()
 ): void {
+  if (plan.nativeTreasury) {
+    assertCheckoutSparkTreasuryAddressAllowed(
+      plan.network,
+      plan.nativeTreasury.sparkAddress
+    )
+  }
   if (allowLocalCanary) return
   const conduit = plan.recipients.find(
     (recipient) => recipient.kind === "conduit"

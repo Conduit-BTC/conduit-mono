@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import * as core from "@conduit/core"
 import {
   finalizeEvent,
@@ -323,7 +324,7 @@ describe("merchant-owned order stock mutation", () => {
       expect(() => prepare(override)).toThrow()
   })
 
-  it("uses the current product fulfillment even when an order carries an obsolete pickup snapshot", () => {
+  it("uses current merchant product fulfillment instead of historical pickup terms", () => {
     const baseline = record({
       collectionRefs: [],
       shippingOptionId: `30406:${MERCHANT}:current`,
@@ -333,10 +334,7 @@ describe("merchant-owned order stock mutation", () => {
       {
         productId: ADDRESS,
         quantity: 3,
-        fulfillment: {
-          type: "pickup",
-          product: { coordinate: `30402:${ORGANIZER}:wrong` },
-        },
+        fulfillment: createEventMarketOrderFixture().fulfillment,
       },
     ] as OrderSummary["items"]
     expect(prepare({ record: baseline, items }).fulfillmentIntent).toEqual({

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import {
   getCartCostSummary,
   getCartFulfillmentLane,
@@ -6,7 +7,7 @@ import {
   isSameCartFulfillment,
   isSameCartLineFulfillment,
   type CartItem,
-  type CartPickupFulfillment,
+  type CartEventMarketPickupFulfillment,
 } from "../apps/market/src/lib/cart-model"
 import {
   bindCartItemsToFreshProductPricing,
@@ -23,80 +24,46 @@ import {
 } from "../apps/market/src/lib/order-view"
 import { orderSchema, type OrderLifecycle, type Product } from "@conduit/core"
 
-function pickup(event = "market-a"): CartPickupFulfillment {
-  return {
-    type: "pickup",
-    organizerPubkey: "a".repeat(64),
-    product: {
-      coordinate: `30402:${"e".repeat(64)}:coffee`,
-      eventId: "f".repeat(64),
-      createdAt: 99,
-      merchantPubkey: "e".repeat(64),
-    },
-    calendar: {
-      coordinate: `31923:${"a".repeat(64)}:${event}`,
-      eventId: "b".repeat(64),
-      createdAt: 100,
-    },
-    collection: {
-      coordinate: `30405:${"a".repeat(64)}:${event}`,
-      eventId: "c".repeat(64),
-      createdAt: 101,
-    },
-    option: {
-      coordinate: `30406:${"a".repeat(64)}:${event}-pickup`,
-      eventId: "d".repeat(64),
-      createdAt: 102,
-      title: "Event pickup",
-      location: "Public hall entrance",
-    },
-    handoffMode: "organizer_handoff",
-    handlerPubkey: "a".repeat(64),
-    costSats: 0,
-    sourceCost: {
-      amount: 0,
-      currency: "SATS",
-      normalizedCurrency: "SATS",
-    },
-  }
+function pickup(event = "market-a"): CartEventMarketPickupFulfillment {
+  return createEventMarketOrderFixture({ dTag: event, price: 2_000 })
+    .fulfillment
 }
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
+  const fixture = createEventMarketOrderFixture({
+    dTag: "market-a",
+    price: overrides.price ?? 2_000,
+  })
+  const terms = fixture.order.items[0]!
   return {
-    productId: `30402:${"e".repeat(64)}:coffee`,
-    merchantPubkey: "e".repeat(64),
+    productId: terms.productId,
+    merchantPubkey: fixture.merchant,
     title: "Coffee",
-    price: 2_000,
-    priceSats: 2_000,
+    price: terms.priceAtPurchase,
+    priceSats: terms.priceAtPurchase,
     currency: "SATS",
-    sourcePrice: {
-      amount: 2_000,
-      currency: "SATS",
-      normalizedCurrency: "SATS",
-    },
+    sourcePrice: terms.sourcePrice,
     format: "physical",
-    fulfillment: pickup(),
-    shippingOptionId: pickup().option.coordinate,
+    fulfillment: fixture.fulfillment,
     shippingCostSats: 0,
-    sourceShippingCost: pickup().sourceCost,
     quantity: 1,
     ...overrides,
   }
 }
 
 function signedProduct(overrides: Partial<Product> = {}): Product {
+  const fixture = createEventMarketOrderFixture({
+    dTag: "market-a",
+    price: overrides.price ?? 2_000,
+  })
   return {
-    id: `30402:${"e".repeat(64)}:coffee`,
-    pubkey: "e".repeat(64),
+    id: fixture.fulfillment.product.coordinate,
+    pubkey: fixture.merchant,
     title: "Coffee",
     price: 2_000,
     priceSats: 2_000,
     currency: "SATS",
-    sourcePrice: {
-      amount: 2_000,
-      currency: "SATS",
-      normalizedCurrency: "SATS",
-    },
+    sourcePrice: fixture.order.items[0]!.sourcePrice,
     type: "simple",
     format: "physical",
     visibility: "public",
@@ -105,8 +72,8 @@ function signedProduct(overrides: Partial<Product> = {}): Product {
     publicZapEnabled: false,
     zapMessagePolicy: "generic_only",
     publicZapPolicyKnown: true,
-    createdAt: 99,
-    updatedAt: 99,
+    createdAt: 101_000,
+    updatedAt: 101_000,
     ...overrides,
   }
 }
@@ -147,158 +114,101 @@ describe("Market event pickup fulfillment", () => {
     ).toContain("separate orders")
   })
 
-  it("blocks pickup lines from different organizer event graphs before checkout", () => {
+  it("blocks pickup lines from different exact Event Market terms before checkout", () => {
     const first = item()
-    const secondProductId = `30402:${"e".repeat(64)}:tea`
-    const sameGraphFulfillment: CartPickupFulfillment = {
-      ...pickup(),
-      product: {
-        ...pickup().product,
-        coordinate: secondProductId,
-        eventId: "1".repeat(64),
-      },
-      costSats: 250,
-      sourceCost: {
-        amount: 250,
-        currency: "SATS",
-        normalizedCurrency: "SATS",
-      },
-    }
-    const sameGraph = item({
-      productId: secondProductId,
-      title: "Tea",
-      fulfillment: sameGraphFulfillment,
-      shippingOptionId: sameGraphFulfillment.option.coordinate,
-      shippingCostSats: 250,
-      sourceShippingCost: sameGraphFulfillment.sourceCost,
+    const second = createEventMarketOrderFixture({
+      dTag: "market-a",
+      productDTag: "market-a-tea",
+      price: 2_000,
+    }).fulfillment
+    const sameMarket = item({
+      productId: second.product.coordinate,
+      fulfillment: second,
     })
     const digital = item({
-      productId: `30402:${"e".repeat(64)}:guide`,
+      productId: `30402:${second.merchantPubkey}:guide`,
       format: "digital",
       fulfillment: { type: "digital" },
-      shippingOptionId: undefined,
       shippingCostSats: undefined,
-      sourceShippingCost: undefined,
     })
-
     expect(
-      getMixedFulfillmentBlockingMessage([first, sameGraph, digital])
+      getMixedFulfillmentBlockingMessage([first, sameMarket, digital])
     ).toBeNull()
-
-    const differentGraphs: CartPickupFulfillment[] = [
-      {
-        ...sameGraphFulfillment,
-        organizerPubkey: "b".repeat(64),
-      },
-      {
-        ...sameGraphFulfillment,
-        calendar: {
-          ...sameGraphFulfillment.calendar,
-          coordinate: `31923:${"a".repeat(64)}:another-market`,
-        },
-      },
-      {
-        ...sameGraphFulfillment,
-        collection: {
-          ...sameGraphFulfillment.collection,
-          coordinate: `30405:${"a".repeat(64)}:another-catalog`,
-        },
-      },
-      {
-        ...sameGraphFulfillment,
-        option: {
-          ...sameGraphFulfillment.option,
-          coordinate: `30406:${"a".repeat(64)}:another-pickup`,
-        },
-      },
-      {
-        ...sameGraphFulfillment,
-        collection: {
-          ...sameGraphFulfillment.collection,
-          eventId: "9".repeat(64),
-        },
-      },
-    ]
-
-    for (const fulfillment of differentGraphs) {
-      const conflicting = item({
-        productId: secondProductId,
-        fulfillment,
-        shippingOptionId: fulfillment.option.coordinate,
-        shippingCostSats: fulfillment.costSats,
-      })
+    for (const fulfillment of [
+      pickup("market-b"),
+      createEventMarketOrderFixture({
+        dTag: "market-a",
+        calendarDTag: "other-date",
+        price: 2_000,
+      }).fulfillment,
+      createEventMarketOrderFixture({
+        dTag: "market-a",
+        assignment: "Other organizer table",
+        price: 2_000,
+      }).fulfillment,
+    ]) {
       expect(
-        getMixedFulfillmentBlockingMessage([first, conflicting])
-      ).toContain("separate orders")
+        getMixedFulfillmentBlockingMessage([
+          first,
+          item({ productId: fulfillment.product.coordinate, fulfillment }),
+        ])
+      ).toContain(
+        fulfillment.market.coordinate !== pickup().market.coordinate ||
+          fulfillment.calendar.coordinate !== pickup().calendar.coordinate
+          ? "separate orders"
+          : "Review"
+      )
     }
   })
 
-  it("blocks one merchant order when pickup handlers differ", () => {
-    const merchantHandoff: CartPickupFulfillment = {
-      ...pickup(),
-      option: {
-        ...pickup().option,
-        coordinate: `30406:${"e".repeat(64)}:merchant-booth`,
-      },
-      handoffMode: "merchant_handoff",
-      handlerPubkey: "e".repeat(64),
-    }
-    const merchantItem = item({
-      productId: `30402:${"e".repeat(64)}:merchant-item`,
-      fulfillment: {
-        ...merchantHandoff,
-        product: {
-          ...merchantHandoff.product,
-          coordinate: `30402:${"e".repeat(64)}:merchant-item`,
-        },
-      },
-      shippingOptionId: merchantHandoff.option.coordinate,
-    })
-
+  it("blocks one merchant order when signed pickup handlers differ", () => {
+    const merchantPickup = createEventMarketOrderFixture({
+      dTag: "market-a",
+      mode: "merchant_present",
+      assignment: "Booth 12",
+      price: 2_000,
+    }).fulfillment
     expect(
-      getMixedFulfillmentBlockingMessage([item(), merchantItem])
-    ).toContain("different pickup handlers")
+      getMixedFulfillmentBlockingMessage([
+        item(),
+        item({ fulfillment: merchantPickup }),
+      ])
+    ).toContain("Review")
   })
 
-  it("identifies incompatible fulfillment snapshots as distinct cart lines", () => {
+  it("keeps dates separate and signed product or roster revisions distinct as cart lines", () => {
     const existing = item()
-    const differentEvent = item({ fulfillment: pickup("market-b") })
-    const differentRevision = item({
-      fulfillment: {
-        ...pickup(),
-        collection: {
-          ...pickup().collection,
-          eventId: "9".repeat(64),
-        },
-      },
+    const otherDate = item({
+      fulfillment: createEventMarketOrderFixture({
+        dTag: "market-a",
+        calendarDTag: "other-date",
+        price: 2_000,
+      }).fulfillment,
     })
-    const newerProductRevision = item({
-      fulfillment: {
-        ...pickup(),
-        product: {
-          ...pickup().product,
-          eventId: "8".repeat(64),
-          createdAt: 199,
-        },
-      },
+    const changedAssignment = item({
+      fulfillment: createEventMarketOrderFixture({
+        dTag: "market-a",
+        assignment: "Other organizer table",
+        price: 2_000,
+      }).fulfillment,
+    })
+    const newerProduct = item({
+      fulfillment: createEventMarketOrderFixture({
+        dTag: "market-a",
+        productCreatedAt: 199,
+        price: 2_000,
+      }).fulfillment,
     })
     const shipped = item({ fulfillment: { type: "shipping" } })
-
-    expect(isSameCartFulfillment(existing, differentEvent)).toBe(false)
-    expect(isSameCartFulfillment(existing, differentRevision)).toBe(false)
-    expect(isSameCartFulfillment(existing, newerProductRevision)).toBe(true)
-    expect(isSameCartLineFulfillment(existing, newerProductRevision)).toBe(
-      false
-    )
-    for (const incompatible of [
-      differentEvent,
-      differentRevision,
-      newerProductRevision,
-      shipped,
-    ]) {
-      expect(isSameCartLineFulfillment(existing, incompatible)).toBe(false)
-    }
+    expect(isSameCartFulfillment(existing, otherDate)).toBe(false)
+    expect(isSameCartFulfillment(existing, changedAssignment)).toBe(true)
+    expect(isSameCartFulfillment(existing, newerProduct)).toBe(true)
+    for (const other of [otherDate, changedAssignment, newerProduct, shipped])
+      expect(isSameCartLineFulfillment(existing, other)).toBe(false)
     expect(isSameCartLineFulfillment(existing, item())).toBe(true)
+    expect(
+      getMixedFulfillmentBlockingMessage([existing, changedAssignment])
+    ).toContain("Review")
   })
 
   it("treats a signed zero-cost pickup as resolved checkout cost", () => {
@@ -315,8 +225,8 @@ describe("Market event pickup fulfillment", () => {
       items: [
         {
           fulfillment: {
-            type: "pickup",
-            option: { title: "Event pickup" },
+            type: "event_market_pickup",
+            assignment: "Organizer table",
           },
         },
       ],
@@ -349,7 +259,6 @@ describe("Market event pickup fulfillment", () => {
       price: 0,
       priceSats: 0,
       sourcePrice: zeroSource,
-      shippingOptionDTag: "market-a-pickup",
     })
     const binding = bindCartItemsToFreshProductPricing(
       [zeroItem],
@@ -385,7 +294,7 @@ describe("Market event pickup fulfillment", () => {
     expect(
       orderSchema.parse({
         id: "zero-cost-order",
-        merchantPubkey: "e".repeat(64),
+        merchantPubkey: zeroItem.merchantPubkey,
         buyerPubkey: "f".repeat(64),
         buyerIdentityKind: "guest_ephemeral",
         items: intent.items,
@@ -498,22 +407,22 @@ describe("Market event pickup fulfillment", () => {
     }
   })
 
-  it("skips signed-in pickup contact and requires both guest contact methods", () => {
+  it("skips signed-in pickup contact and requires one guest contact method", () => {
     expect(validatePickupContactFields(contact())).toEqual([])
 
     const missing = validateGuestPickupContactFields(contact())
-    expect(missing.map((error) => error.field)).toEqual(["phone", "email"])
+    expect(missing.map((error) => error.field)).toEqual(["email"])
 
     expect(
       validateGuestPickupContactFields(
         contact({ email: "buyer@example.com" })
       ).map((error) => error.field)
-    ).toEqual(["phone"])
+    ).toEqual([])
     expect(
       validateGuestPickupContactFields(contact({ phone: "+14155552671" })).map(
         (error) => error.field
       )
-    ).toEqual(["email"])
+    ).toEqual([])
     expect(
       validateGuestPickupContactFields(
         contact({
@@ -565,10 +474,10 @@ describe("Market event pickup fulfillment", () => {
 
     expect(vm.requiresShipping).toBe(false)
     expect(vm.requiresPickup).toBe(true)
-    expect(vm.pickupFulfillments[0]?.option.location).toBe(
-      "Public hall entrance"
+    expect(vm.futureMarketFulfillments[0]?.assignment).toBe("Organizer table")
+    expect(vm.futureMarketFulfillments[0]?.product.eventId).toBe(
+      pickup().product.eventId
     )
-    expect(vm.pickupFulfillments[0]?.product.eventId).toBe("f".repeat(64))
     expect(buildOrderTimeline(vm).map((row) => row.key)).toContain(
       "fulfillment"
     )

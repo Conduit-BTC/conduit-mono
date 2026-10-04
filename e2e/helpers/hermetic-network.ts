@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto"
-import type { BrowserContext, Frame, Request, Route } from "@playwright/test"
+import type {
+  BrowserContext,
+  Frame,
+  Page,
+  Request,
+  Route,
+} from "@playwright/test"
 import type { HermeticLnurlResponder } from "./hermetic-lnurl"
 
 type HermeticCommerceNetworkOptions = {
@@ -11,6 +17,12 @@ type HermeticCommerceNetworkOptions = {
 }
 
 type ResourceDocument = { frame: Frame; marker: string | null }
+
+type FrameDocumentState = {
+  marker: string | null
+  revision: number
+  settled: Promise<void>
+}
 
 async function abortStoppedRoute(route: Route): Promise<void> {
   // A route may already be cancelled by its own source/context teardown.
@@ -31,17 +43,67 @@ async function readDocumentMarker(
   }
 }
 
-async function captureResourceDocument(
-  request: Request,
-  documentKey: string
-): Promise<ResourceDocument | null> {
-  try {
-    // A failing document navigation is never a harmless old resource.
-    if (request.isNavigationRequest()) return null
-    const frame = request.frame()
-    return { frame, marker: await readDocumentMarker(frame, documentKey) }
-  } catch {
-    return null
+function createResourceDocumentTracker(documentKey: string) {
+  const states = new WeakMap<Frame, FrameDocumentState>()
+  const observedPages = new WeakSet<Page>()
+
+  const refresh = (frame: Frame): FrameDocumentState => {
+    const revision = (states.get(frame)?.revision ?? 0) + 1
+    let settle!: () => void
+    const state: FrameDocumentState = {
+      marker: null,
+      revision,
+      settled: new Promise<void>((resolve) => {
+        settle = resolve
+      }),
+    }
+    states.set(frame, state)
+    void readDocumentMarker(frame, documentKey)
+      .then((marker) => {
+        if (states.get(frame) === state) state.marker = marker
+      })
+      .finally(settle)
+    return state
+  }
+
+  const observePage = (page: Page): boolean => {
+    if (observedPages.has(page)) return true
+    // Unit fakes without page events retain the conservative direct-read path.
+    // Real Playwright pages always expose both methods.
+    if (typeof page.on !== "function" || typeof page.frames !== "function") {
+      return false
+    }
+    observedPages.add(page)
+    page.on("framenavigated", refresh)
+    page.on("framedetached", (frame) => states.delete(frame))
+    for (const frame of page.frames()) {
+      if (!states.has(frame)) refresh(frame)
+    }
+    return true
+  }
+
+  return async (request: Request): Promise<ResourceDocument | null> => {
+    try {
+      const frame = request.frame()
+      const tracked = observePage(frame.page())
+      // A failing document navigation is never a harmless old resource, but it
+      // must install tracking before commit so old subresources retain their
+      // exact initiating document identity.
+      if (request.isNavigationRequest()) return null
+      if (!tracked) {
+        return { frame, marker: await readDocumentMarker(frame, documentKey) }
+      }
+      const state = states.get(frame) ?? refresh(frame)
+      if (state.marker !== null) return { frame, marker: state.marker }
+      await state.settled
+      // A commit during the first marker read provides no positive original
+      // identity. Preserve the fail-closed null marker instead of rebinding the
+      // request to whichever document is current after the await.
+      if (states.get(frame) !== state) return { frame, marker: null }
+      return { frame, marker: state.marker }
+    } catch {
+      return null
+    }
   }
 }
 
@@ -143,11 +205,17 @@ export async function installHermeticCommerceNetwork(
   await context.addInitScript((key) => {
     Object.defineProperty(window, key, { value: crypto.randomUUID() })
   }, documentKey)
+  const captureResourceDocument = createResourceDocumentTracker(documentKey)
   await context.route("**/*", async (route) => {
     if (tearingDown) return abortStoppedRoute(route)
     try {
       const request = route.request()
       const url = request.url()
+      // Capture the initiating document before any asynchronous fixture work.
+      // A navigation can commit while an LNURL responder is resolving; reading
+      // the frame marker afterward would bind an old resource to the new
+      // document and turn its expected cancellation into a false fatal error.
+      const sourceDocument = await captureResourceDocument(request)
       if (lnurl) {
         try {
           const response = await lnurl({ url, method: request.method() })
@@ -177,7 +245,6 @@ export async function installHermeticCommerceNetwork(
       }
       // Route handlers do not intercept every redirected request. Never let a
       // local server redirect this isolated scenario onto a public endpoint.
-      const sourceDocument = await captureResourceDocument(request, documentKey)
       if (tearingDown) return abortStoppedRoute(route)
       try {
         const response = await route.fetch({ maxRedirects: 0 })

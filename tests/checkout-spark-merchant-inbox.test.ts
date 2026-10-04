@@ -2641,7 +2641,21 @@ describe("Merchant checkout Spark exact credit recovery", () => {
   })
 })
 
+const registerPayoutHistoryTest = it
+
 describe("Merchant checkout Spark payout history inspection", () => {
+  // Signed recovery replay, receipt verification and repeated recovery cross
+  // several crypto/storage boundaries; allow bounded Windows harness time.
+  const it = Object.assign(
+    (name: string, run: () => void | Promise<void>) =>
+      registerPayoutHistoryTest(name, run, 15_000),
+    {
+      each:
+        <T>(cases: readonly T[]) =>
+        (name: string, run: (value: T) => void | Promise<void>) =>
+          registerPayoutHistoryTest.each([...cases])(name, run, 15_000),
+    }
+  )
   async function preparedHistoryFixture(
     repository: DexieCheckoutSparkSettledRepository,
     input: { merchantPrepared?: boolean; localOrigin?: boolean } = {}
@@ -3017,7 +3031,7 @@ describe("Merchant checkout Spark payout history inspection", () => {
           expect(options.exclusiveRelayUrls).toEqual([progressInbox])
           expect(options.appRelayUrls).toEqual([])
           expect(options.personalRelayUrls).toEqual([])
-          published.push(event.rawEvent() as SignedPublicNostrEvent)
+          published.push(event as SignedPublicNostrEvent)
           return {
             attemptedRelayUrls: [progressInbox],
             successfulRelayUrls: [progressInbox],

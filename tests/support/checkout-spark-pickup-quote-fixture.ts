@@ -1,21 +1,12 @@
 import {
-  evaluateListingSafety,
   parseProductEvent,
-  resolveEventMarketEvidence,
-  type ProductsByIdsResult,
+  resolveCheckoutSparkSignedPickup,
 } from "@conduit/core"
-import { authorizeCurrentCheckoutItems } from "../../apps/market/src/lib/checkout-authorization"
-import { createCartItemFromProduct } from "../../apps/market/src/lib/cart-model"
-import { buildCheckoutSparkQuoteAuthority } from "../../apps/market/src/lib/checkout-spark-quote-authority"
-import { assertCartPickupHandlerReady } from "../../apps/market/src/lib/pickup-handoff"
-import {
-  getProductEventMarketCandidates,
-  projectRawEventCatalog,
-  resolveProductCartFulfillmentFromCatalogs,
-} from "../../apps/market/src/lib/event-market-adapter"
+import type { CartItem } from "../../apps/market/src/lib/cart-model"
+import type { CheckoutSparkQuoteAuthority } from "../../apps/market/src/lib/checkout-spark-quote-authority"
 import { createCheckoutSparkPickupFixture } from "./checkout-spark-pickup-fixture"
 
-/** Real signed graph, catalog projection, submit authorization and SAT quote. */
+/** Historical exact signed quote only; never new public checkout admission. */
 export async function createCheckoutSparkPickupQuoteFixture(
   options: Parameters<typeof createCheckoutSparkPickupFixture>[0] = {}
 ) {
@@ -24,86 +15,77 @@ export async function createCheckoutSparkPickupQuoteFixture(
     ...parseProductEvent(f.productEvent),
     sourceEventId: f.productEvent.id,
   }
-  const result: ProductsByIdsResult = {
-    data: [
-      {
-        product,
-        addressId: product.id,
-        eventId: f.productEvent.id,
-        eventCreatedAt: f.productEvent.created_at,
-        dTag: "coffee",
-        safety: evaluateListingSafety(product),
-      },
-    ],
-    diagnostics: [
-      {
-        productId: product.id,
-        addressId: product.id,
-        issue: null,
-        coverage: { listing: "complete", deletion: "complete" },
-      },
-    ],
-    meta: {
-      source: "commerce",
-      degraded: false,
-      stale: false,
-      capped: false,
-      fetchedAt: f.acceptedAtMs,
-      capabilities: {
-        sortModes: [],
-        textSearch: false,
-        protectedSummaries: false,
-        canonicalFreshness: true,
-        cursorPagination: false,
-      },
-    },
-  }
-  const catalog = projectRawEventCatalog({
-    reference: f.line.pickup!.collection.coordinate,
-    complete: true,
-    result,
-    resolution: resolveEventMarketEvidence({
-      reference: f.line.pickup!.collection.coordinate,
-      events: f.sourceEvents,
-      productRequestEvents: [f.productEvent],
-      livePickupEventIds: new Set([f.pickup.id]),
-      nowMs: f.acceptedAtMs,
-    }),
-  })
-  const resolve = () =>
-    resolveProductCartFulfillmentFromCatalogs(product, [
-      {
-        candidate: getProductEventMarketCandidates(product)[0]!,
-        catalog,
-      },
-    ])
-  const resolved = resolve()
-  if (resolved.status !== "pickup")
-    throw new Error("Expected current signed pickup")
-  const item = {
-    ...createCartItemFromProduct(product, resolved.fulfillment),
+  const fulfillment = resolveCheckoutSparkSignedPickup(f)!
+  const sourceShippingCost = { ...fulfillment.sourceCost }
+  const item: CartItem = {
+    productId: product.id,
+    merchantPubkey: f.merchantPubkey,
+    title: product.title,
+    price: product.price,
+    currency: product.currency,
+    priceSats: product.priceSats,
+    sourcePrice: product.sourcePrice,
+    format: "physical",
     quantity: f.line.quantity,
+    fulfillment: fulfillment as unknown as CartItem["fulfillment"],
+    shippingCostSats: f.line.unitShippingSats,
+    sourceShippingCost,
+    shippingOptionId: f.line.shippingOption!.coordinate,
+    shippingOptionDTag: "booth",
+    productEventId: f.productEvent.id,
+    productUpdatedAt: product.updatedAt,
+    signedProductEvent: f.productEvent,
+    stock: product.stock,
+    publicZapEnabled: product.publicZapEnabled,
+    zapMessagePolicy: product.zapMessagePolicy,
+    publicZapPolicyKnown: product.publicZapPolicyKnown,
+    canonicalShippingResolved: true,
   }
-  const authorization = await authorizeCurrentCheckoutItems({
-    mode: "direct_payment",
-    reviewedItems: [item],
-    rawItems: [item],
-    refreshedProducts: [product],
-    resolveProductFulfillment: async () => resolve(),
-    readShippingOptions: async () => [],
-    authorizePickupHandlers: (items) =>
-      assertCartPickupHandlerReady(items, async (organizerPubkey) => ({
-        state: "ready",
-        organizerPubkey,
-        relayUrls: ["wss://organizer.inbox.relay.dev"],
-      })),
-  })
-  if (authorization.status !== "ok")
-    throw new Error("Expected authorized pickup")
-  const quote = buildCheckoutSparkQuoteAuthority({
-    authorization,
-    rateInput: null,
-    nowMs: f.acceptedAtMs,
-  })
+  const totalSats =
+    f.line.quantity * (f.line.unitMerchandiseSats + f.line.unitShippingSats)
+  const quote: CheckoutSparkQuoteAuthority = {
+    pricing: {
+      status: "ok",
+      itemSubtotalSats: f.line.quantity * f.line.unitMerchandiseSats,
+      totalSats,
+      totalMsats: totalSats * 1000,
+      approximate: false,
+      paymentRequired: true,
+      shippingCost: {
+        status: f.line.unitShippingSats === 0 ? "included" : "priced",
+        totalSats: f.line.quantity * f.line.unitShippingSats,
+        missingProductIds: [],
+      },
+      items: [
+        {
+          productId: product.id,
+          title: product.title,
+          format: "physical",
+          quantity: f.line.quantity,
+          priceAtPurchase: f.line.unitMerchandiseSats,
+          currency: "SATS",
+          shippingCostSats: f.line.unitShippingSats,
+          sourceShippingCost,
+          shippingOptionId: f.line.shippingOption!.coordinate,
+          shippingOptionDTag: "booth",
+          sourcePrice: product.sourcePrice,
+          fulfillment: fulfillment as unknown as CartItem["fulfillment"],
+        },
+      ],
+    },
+    products: [product],
+    lines: [
+      {
+        productCoordinate: f.line.productCoordinate,
+        productEventId: f.line.productEventId,
+        merchantPubkey: f.line.merchantPubkey,
+        quantity: f.line.quantity,
+        shippingOption: f.line.shippingOption,
+        pickup: f.line.pickup,
+      },
+    ],
+    shippingSourceEvents: [f.pickup],
+    pickupSourceEvents: f.sourceEvents,
+  }
   return { ...f, product, item, quote }
 }

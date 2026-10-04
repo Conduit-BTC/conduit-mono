@@ -1,4 +1,5 @@
 import type { ProductSupplierAllocation } from "@conduit/core"
+import { isShippingWeightUnit } from "./shippingWeightUnits"
 import {
   getMerchantProductSupplierAllocationFormState,
   type MerchantProductFormValues,
@@ -20,7 +21,7 @@ import {
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 11
+const PRODUCT_DRAFT_VERSION = 13
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const PRODUCT_VARIATION_AUTHORING_STORAGE_PREFIX =
   "conduit:merchant:product_variation_authoring:v1"
@@ -69,6 +70,7 @@ interface StoredProductDraft {
 export interface ProductDraftLoadResult {
   draft: MerchantProductFormValues | null
   storageAvailable: boolean
+  error?: string
   /** Restore this edit's supplier fields from its matching signed baseline. */
   supplierAllocationAuthority?: "legacy_edit_unknown"
 }
@@ -169,6 +171,8 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         candidate.version !== 8 &&
         candidate.version !== 9 &&
         candidate.version !== 10 &&
+        candidate.version !== 11 &&
+        candidate.version !== 12 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -219,6 +223,8 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     if (!images) return null
     if (
       (form.format !== "physical" && form.format !== "digital") ||
+      (form.eventGuestContactOptional !== undefined &&
+        typeof form.eventGuestContactOptional !== "boolean") ||
       typeof form.usePresetShippingZone !== "boolean" ||
       typeof form.publicZapEnabled !== "boolean" ||
       (form.zapMessagePolicy !== "generic_only" &&
@@ -234,7 +240,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
           ? "coordinate_after_order"
           : "fixed"
         : form.shippingPricingMode === "fixed" ||
-            form.shippingPricingMode === "coordinate_after_order"
+            form.shippingPricingMode === "coordinate_after_order" ||
+            (candidate.version >= 11 &&
+              form.shippingPricingMode === "weight_table")
           ? form.shippingPricingMode
           : null
     if (!shippingPricingMode) return null
@@ -250,7 +258,6 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     const fulfillment = hasEventMarketDraftFields
       ? form.fulfillment === "digital" ||
         form.fulfillment === "ship" ||
-        form.fulfillment === "local_pickup" ||
         (form.fulfillment === "preserve" &&
           typeof candidate.baseEventId === "string")
         ? form.fulfillment
@@ -258,38 +265,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       : form.format === "digital"
         ? "digital"
         : "ship"
-    const eventMarketReference = hasEventMarketDraftFields
-      ? typeof form.eventMarketReference === "string"
-        ? form.eventMarketReference
-        : null
-      : ""
-    if (!fulfillment || eventMarketReference === null) return null
-    const eventHandoffMode =
-      hasEventMarketDraftFields && candidate.version >= 5
-        ? form.eventHandoffMode === "merchant_handoff" ||
-          form.eventHandoffMode === "organizer_handoff"
-          ? form.eventHandoffMode
-          : form.eventHandoffMode === undefined
-            ? "merchant_handoff"
-            : null
-        : "merchant_handoff"
-    const merchantPickupFields = [
-      "merchantPickupTitle",
-      "merchantPickupLocation",
-      "merchantPickupGeohash",
-      "merchantPickupCountry",
-    ] as const
-    if (
-      !eventHandoffMode ||
-      (hasEventMarketDraftFields &&
-        candidate.version >= 5 &&
-        merchantPickupFields.some(
-          (field) =>
-            form[field] !== undefined && typeof form[field] !== "string"
-        ))
-    ) {
-      return null
-    }
+    if (!fulfillment) return null
 
     const price =
       candidate.version === 1
@@ -313,9 +289,10 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         : createEmptyProductVariationForm()
     if (!variations) return null
 
-    // Supplier authoring first used versions 8/9 on its own branch. Main used
-    // those versions for listing areas, so recognize explicit supplier fields
-    // instead of reinterpreting every old draft as an allocation draft.
+    // Supplier authoring used versions 8/9/11 on its own branch. Main used
+    // versions 8-12 for listing areas, shipping, and Event Markets, so recognize
+    // explicit supplier fields instead of reinterpreting old main drafts as
+    // allocation drafts. Version 13 is the first combined format.
     const hasSupplierFields =
       candidate.version >= 8 &&
       [
@@ -326,10 +303,11 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         "supplierAllocations",
       ].some((field) => Object.hasOwn(form, field))
     const legacyEditUnknown =
-      candidate.version < 11 &&
+      candidate.version < PRODUCT_DRAFT_VERSION &&
       !hasSupplierFields &&
       typeof candidate.baseEventId === "string"
-    const readSupplierFields = candidate.version >= 11 || hasSupplierFields
+    const readSupplierFields =
+      candidate.version === PRODUCT_DRAFT_VERSION || hasSupplierFields
     const supplierAllocationEnabled = readSupplierFields
       ? typeof form.supplierAllocationEnabled === "boolean"
         ? form.supplierAllocationEnabled
@@ -512,33 +490,32 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         currency: form.currency as string,
         format: form.format,
         fulfillment,
-        eventMarketReference,
         futureEventMarketReference:
           typeof form.futureEventMarketReference === "string"
             ? form.futureEventMarketReference
             : "",
-        eventHandoffMode,
-        merchantPickupTitle:
-          candidate.version >= 5 && typeof form.merchantPickupTitle === "string"
-            ? (form.merchantPickupTitle as string)
-            : "Merchant booth pickup",
-        merchantPickupLocation:
-          candidate.version >= 5 &&
-          typeof form.merchantPickupLocation === "string"
-            ? (form.merchantPickupLocation as string)
-            : "",
-        merchantPickupGeohash:
-          candidate.version >= 5 &&
-          typeof form.merchantPickupGeohash === "string"
-            ? (form.merchantPickupGeohash as string)
-            : "",
-        merchantPickupCountry:
-          candidate.version >= 5 &&
-          typeof form.merchantPickupCountry === "string"
-            ? (form.merchantPickupCountry as string)
-            : "US",
+        ...(typeof form.eventGuestContactOptional === "boolean"
+          ? { eventGuestContactOptional: form.eventGuestContactOptional }
+          : {}),
         shippingPricingMode,
         shippingCost,
+        ...(candidate.version >= 11
+          ? Object.fromEntries(
+              [
+                "shippingWeightGrams",
+                "shippingWeightAllowanceGrams",
+                "shippingHandling",
+                "shippingLengthCm",
+                "shippingWidthCm",
+                "shippingHeightCm",
+              ]
+                .filter((field) => typeof form[field] === "string")
+                .map((field) => [field, form[field]])
+            )
+          : {}),
+        ...(isShippingWeightUnit(form.shippingWeightUnit)
+          ? { shippingWeightUnit: form.shippingWeightUnit }
+          : {}),
         usePresetShippingZone: form.usePresetShippingZone,
         customShippingConfig: parseShippingConfig(
           JSON.stringify(form.customShippingConfig ?? null)
@@ -575,6 +552,28 @@ export function loadProductDraft(
       return { draft: null, storageAvailable: true }
     }
 
+    let candidate: unknown
+    try {
+      candidate = JSON.parse(raw)
+    } catch {
+      /* The draft parser below handles malformed JSON as an invalid draft. */
+    }
+    if (
+      candidate &&
+      typeof candidate === "object" &&
+      "form" in candidate &&
+      candidate.form &&
+      typeof candidate.form === "object" &&
+      "fulfillment" in candidate.form &&
+      candidate.form.fulfillment === "local_pickup"
+    ) {
+      return {
+        draft: null,
+        storageAvailable: true,
+        error:
+          "This saved event pickup draft uses the retired event model. Create an ordinary product and choose a current Event Market instead.",
+      }
+    }
     const stored = parseStoredProductDraft(raw)
     const expectedBaseEventId = target.productAddressId?.trim()
       ? (target.baseEventId?.trim() ?? null)

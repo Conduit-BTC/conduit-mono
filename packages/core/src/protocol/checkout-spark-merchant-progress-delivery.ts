@@ -1,4 +1,3 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   buildCheckoutSparkMerchantProgressRumor,
   parseCheckoutSparkMerchantProgress,
@@ -9,7 +8,6 @@ import {
   publishPrivateMessage,
   type PublishPrivateMessageInput,
 } from "./messaging"
-import { getNdk } from "./ndk"
 import type { NostrKeySigner } from "./nostr-event-signer"
 import { waitForVisibleDocument } from "./interactive-signer"
 import {
@@ -220,7 +218,7 @@ async function publishStoredMerchantCheckoutSparkProgress(input: {
   let delivery: PublishWithPlannerResult
   try {
     delivery = await (transport?.publishFn ?? publishWithPlanner)(
-      new NDKEvent(getNdk(), record.signedRecipientWrap),
+      record.signedRecipientWrap,
       {
         intent: "recipient_event",
         authorPubkey: record.merchantPubkey,

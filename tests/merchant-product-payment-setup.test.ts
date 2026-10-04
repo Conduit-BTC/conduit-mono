@@ -53,12 +53,13 @@ describe("merchant product payment setup guidance", () => {
     const products = await Bun.file(
       "apps/merchant/src/routes/products.tsx"
     ).text()
-    const eventPublisher = await Bun.file(
-      "apps/merchant/src/components/EventProductPublisherDialog.tsx"
+    const participation = await Bun.file(
+      "apps/merchant/src/components/FutureEventMerchantParticipation.tsx"
     ).text()
 
     expect(products).toContain("<ProductPaymentSetupNotice")
-    expect(eventPublisher).toContain("<ProductPaymentSetupNotice")
+    expect(participation).toContain("/products?eventMarket=")
+    expect(products).toContain("eventContextReference")
     expect(notice).toContain(
       "You can still publish and arrange payment manually"
     )

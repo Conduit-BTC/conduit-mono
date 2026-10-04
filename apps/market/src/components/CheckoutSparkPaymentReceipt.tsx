@@ -51,6 +51,38 @@ export function CheckoutSparkPaymentReceipt({
             sats={receipt.recordedDebitSats}
           />
         </dl>
+        {receipt.nativeTreasury && (
+          <section
+            aria-label="Completed native Spark payment"
+            className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+          >
+            <h3 className="text-sm font-medium text-[var(--text-primary)]">
+              Completed native Spark payment
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+              The final Conduit payment is recorded from its exact completed
+              transfer. The approved order total did not increase.
+            </p>
+            <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+              <Amount
+                label="Base Conduit allocation"
+                sats={receipt.nativeTreasury.baseConduitAllocationSats}
+              />
+              <Amount
+                label="Unused recipient fee reserves included"
+                sats={receipt.nativeTreasury.unusedCommerceReserveSats}
+              />
+              <Amount
+                label="Final Conduit payment"
+                sats={receipt.nativeTreasury.debitSats}
+              />
+              <Amount
+                label="Actual native Spark fee"
+                sats={receipt.nativeTreasury.feeSats}
+              />
+            </dl>
+          </section>
+        )}
         <div className="mt-4 border-t border-[var(--border)] pt-4">
           {receipt.recordedUnspentSats !== null ? (
             <dl>

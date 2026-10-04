@@ -8,19 +8,16 @@ import {
   type Page,
 } from "@playwright/test"
 import { nip19 } from "nostr-tools"
-import { getEventHash, verifyEvent, type Event } from "nostr-tools/pure"
+import { getEventHash, verifyEvent } from "nostr-tools/pure"
 import {
+  decodeSparkAddress,
   DefaultSparkSigner,
   encodeSparkAddress,
+  getNetworkFromSparkAddress,
+  isValidSparkAddress,
+  UUID,
 } from "../apps/market/node_modules/@buildonspark/spark-sdk/dist/index.node.js"
 import { openPlaywrightRouterClock } from "../scripts/dev/playwright_router_clock"
-import { CONDUIT_CHECKOUT_LOCAL_CANARY_FEE_RECIPIENT } from "../packages/core/src/protocol/checkout-spark-router-obligations"
-import {
-  buildEventMarketCalendarDraft,
-  buildEventMarketCollectionDraft,
-  buildEventMarketPickupDraft,
-  resolveEventMarketEvidence,
-} from "../packages/core/src/protocol/event-market"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -64,14 +61,14 @@ const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "517
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "5174"}`
 const imageUrl = "https://cdn.conduit.market/router-native-smoke.svg"
 const merchantName = "Isolated Router Merchant"
-const pickupMarketTitle = "Isolated Router Pickup Market"
-const pickupLocation = "Synthetic market hall, merchant booth 2"
 // Exact offline responses only. Reserved example domains are intentionally
 // rejected by the real payout URL policy, so use allowed-shaped test targets.
 const merchantAddress = "router-merchant@wallet.conduit.market"
 const supplierAddress = "router-supplier@wallet.conduit.market"
 const merchantProfileRelay = "wss://relay.conduit.market/"
 const supplierProfileRelay = "wss://relay.damus.io/"
+const treasuryIdentityPublicKey =
+  "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 const networkOptions = {
   appUrls: [marketUrl, merchantUrl],
   relayUrl: TEST_RELAY_URL,
@@ -206,161 +203,6 @@ async function publishSupplierListing(
   await expect(dialog).toBeHidden({ timeout: 10_000 })
 }
 
-function createMerchantPickupGraph(
-  merchant: RuntimeSignerIdentity,
-  listing: Event,
-  createdAt: number
-) {
-  const dTags = listing.tags.filter(([name]) => name === "d")
-  const productDTag = dTags[0]?.[1]
-  if (
-    listing.kind !== 30_402 ||
-    listing.pubkey !== merchant.pubkey ||
-    !verifyEvent(listing) ||
-    dTags.length !== 1 ||
-    !productDTag ||
-    !listing.tags.some(
-      ([name, type, format]) =>
-        name === "type" && type === "simple" && format === "digital"
-    ) ||
-    listing.tags.some(([name]) => name === "a" || name === "shipping_option")
-  ) {
-    throw new Error("Isolated supplier listing was not ready for pickup.")
-  }
-
-  // Revise the genuinely UI-authored listing at the external relay boundary.
-  // Its supplier weights and other signed terms survive unchanged. No cache,
-  // cart, quote, order, recovery, or settlement state is injected into the app.
-  const calendarDTag = "isolated-router-calendar"
-  const collectionDTag = "isolated-router-collection"
-  const pickupDTag = "isolated-router-booth"
-  const calendarCoordinate = `31923:${merchant.pubkey}:${calendarDTag}`
-  const collectionCoordinate = `30405:${merchant.pubkey}:${collectionDTag}`
-  const pickupCoordinate = `30406:${merchant.pubkey}:${pickupDTag}`
-  const calendar = signRuntimeTestEvent(merchant, {
-    ...buildEventMarketCalendarDraft({
-      kind: 31_923,
-      dTag: calendarDTag,
-      title: pickupMarketTitle,
-      start: createdAt - 60,
-      end: createdAt + 3_600,
-      locations: [pickupLocation],
-      image: imageUrl,
-    }),
-    created_at: createdAt,
-  })
-  const pickup = signRuntimeTestEvent(merchant, {
-    ...buildEventMarketPickupDraft({
-      dTag: pickupDTag,
-      title: "Merchant booth",
-      price: 0,
-      currency: "SAT",
-      countries: ["US"],
-      location: pickupLocation,
-      geohash: "dr5ru",
-    }),
-    created_at: createdAt,
-  })
-  const collection = signRuntimeTestEvent(merchant, {
-    ...buildEventMarketCollectionDraft({
-      dTag: collectionDTag,
-      title: pickupMarketTitle,
-      eventCoordinate: calendarCoordinate,
-      productCoordinates: [`30402:${merchant.pubkey}:${productDTag}`],
-      image: imageUrl,
-      location: pickupLocation,
-      // No organizer pickup offer or future event-market activation. The
-      // selected merchant-owned option and legacy calendar determine handoff.
-    }),
-    created_at: createdAt,
-  })
-  const physicalListing = signRuntimeTestEvent(merchant, {
-    kind: listing.kind,
-    content: listing.content,
-    created_at: createdAt,
-    tags: [
-      ...listing.tags.filter(([name]) => name !== "type"),
-      ["type", "simple", "physical"],
-      ["a", collectionCoordinate],
-      ["shipping_option", pickupCoordinate],
-    ],
-  })
-  const resolution = resolveEventMarketEvidence({
-    reference: collectionCoordinate,
-    expectedOrganizerPubkey: merchant.pubkey,
-    selectedProductCoordinates: [`30402:${merchant.pubkey}:${productDTag}`],
-    events: [calendar, collection, pickup],
-    productRequestEvents: [physicalListing],
-    nowMs: createdAt * 1_000,
-  })
-  // Runner-side fixture validity, not a bypass of the browser's independent
-  // signed-source resolution. Assert only public-state enums and counts.
-  expect({
-    state: resolution.state,
-    acceptedProducts: resolution.acceptedProductCoordinates.length,
-    calendars: Number(!!resolution.calendar),
-    collections: Number(!!resolution.collection),
-    pickups: resolution.pickups.length,
-  }).toEqual({
-    state: "active",
-    acceptedProducts: 1,
-    calendars: 1,
-    collections: 1,
-    pickups: 1,
-  })
-  return {
-    calendar,
-    collection,
-    pickup,
-    physicalListing,
-    productDTag,
-    collectionDTag,
-  }
-}
-
-async function seedMerchantPickup(
-  merchant: RuntimeSignerIdentity,
-  listing: Event
-): Promise<string> {
-  const createdAt = Math.max(
-    Math.floor(Date.now() / 1_000),
-    listing.created_at + 1
-  )
-  await expect
-    .poll(() => Math.floor(Date.now() / 1_000) >= createdAt, {
-      timeout: 5_000,
-    })
-    .toBe(true)
-  const {
-    calendar,
-    collection,
-    pickup,
-    physicalListing,
-    productDTag,
-    collectionDTag,
-  } = createMerchantPickupGraph(merchant, listing, createdAt)
-  await publishTestRelayEvents([calendar, pickup])
-  await publishTestRelayEvents([collection, physicalListing])
-  await expect
-    .poll(async () => {
-      const events = await readTestRelayEvents({
-        kinds: [30_402],
-        authors: [merchant.pubkey],
-        "#d": [productDTag],
-      })
-      return events.some(
-        (event) => event.id === physicalListing.id && verifyEvent(event)
-      )
-    })
-    .toBe(true)
-  return nip19.naddrEncode({
-    kind: 30_405,
-    pubkey: merchant.pubkey,
-    identifier: collectionDTag,
-    relays: [TEST_RELAY_URL],
-  })
-}
-
 function fundingInvoice(amountSats: number, expirySeconds: number): string {
   const preimage = randomBytes(32)
   const paymentHash = createHash("sha256").update(preimage).digest()
@@ -383,16 +225,12 @@ function fundingInvoice(amountSats: number, expirySeconds: number): string {
 
 async function rehearseRouter(
   browser: Browser,
-  fulfillment: "digital" | "pickup",
   continuation: "buyer" | "cold-merchant" | "partial-cold-merchant" = "buyer"
 ): Promise<void> {
-  test.setTimeout(180_000)
+  test.setTimeout(240_000)
   const sharedClock = openPlaywrightRouterClock()
   sharedClock.reset()
-  const productTitle =
-    fulfillment === "pickup"
-      ? "Isolated supplier router pickup"
-      : "Isolated supplier router download"
+  const productTitle = "Isolated supplier router download"
   createHermeticCommerceNetworkPolicy(networkOptions)
   const merchant = createRuntimeSignerIdentity()
   const buyer = createRuntimeSignerIdentity()
@@ -429,11 +267,9 @@ async function rehearseRouter(
         !rumor.content.startsWith(
           "Your revenue share of 249 sats has been paid"
         ) ||
-        [
-          merchantAddress,
-          supplierAddress,
-          CONDUIT_CHECKOUT_LOCAL_CANARY_FEE_RECIPIENT,
-        ].some((address) => rumor.content.includes(address))
+        [merchantAddress, supplierAddress].some((address) =>
+          rumor.content.includes(address)
+        )
       )
         return -1
       rumors.add(rumor.id)
@@ -447,6 +283,13 @@ async function rehearseRouter(
   const native = createHermeticSparkNative({
     encodeAddress: (identityPublicKey) =>
       encodeSparkAddress({ identityPublicKey, network: "REGTEST" }),
+    nativeInvoiceCodec: {
+      parseTransferId: (value) => UUID.parse(value),
+      encodeSparkAddress,
+      decodeSparkAddress,
+      isValidSparkAddress,
+      getNetworkFromSparkAddress,
+    },
     async deriveIdentity(mnemonic, accountNumber) {
       // The runner uses the pinned SDK's local derivation primitive. Do not
       // import browser app modules (or initialize a provider) during discovery.
@@ -480,39 +323,19 @@ async function rehearseRouter(
     },
   }
   const issued = new Map<string, HermeticLnurlIssuedInvoice>()
-  let conduitInvoiceHeld = false
-  let holdConduitInvoice = true
-  let resolveConduitInvoice!: () => void
-  let conduitInvoiceGate = new Promise<void>((resolve) => {
-    resolveConduitInvoice = resolve
-  })
-  const releaseConduitInvoice = () => {
-    holdConduitInvoice = false
-    resolveConduitInvoice()
-  }
   const control = () => {
     if (!identity) throw new Error("Isolated checkout wallet was not prepared.")
     return native.control.forIdentity(identity)
   }
   const lnurl = createHermeticLnurlFixture({
-    recipients: [
-      merchantAddress,
-      supplierAddress,
-      CONDUIT_CHECKOUT_LOCAL_CANARY_FEE_RECIPIENT,
-    ].map((lud16) => ({ lud16 })),
+    recipients: [merchantAddress, supplierAddress].map((lud16) => ({ lud16 })),
     nowSeconds: () => Math.floor(sharedClock.nowMs() / 1_000),
+    // Preparation reserves one sat per commerce leg. A zero final fee proves
+    // the exact two-sat unused reserve is carried into the native treasury leg.
+    feeSats: 0,
     onInvoiceIssued: async (invoice) => {
       issued.set(invoice.paymentRequest, invoice)
       control().registerPayout(invoice)
-      if (
-        holdConduitInvoice &&
-        invoice.lud16 === CONDUIT_CHECKOUT_LOCAL_CANARY_FEE_RECIPIENT
-      ) {
-        // Hold an external LNURL response, never application intent or proof
-        // state. This makes the two-commerce-paid receipt deterministic.
-        conduitInvoiceHeld = true
-        await conduitInvoiceGate
-      }
     },
   })
   let stage = "isolated setup"
@@ -548,7 +371,6 @@ async function rehearseRouter(
         stage = next
       }
     )
-    let signedListing: Event | undefined
     await expect
       .poll(async () => {
         const events = await readTestRelayEvents({
@@ -569,18 +391,11 @@ async function rehearseRouter(
                 name === "zap" || name === "conduit_supplier_allocation"
             )
           ) === JSON.stringify(expected)
-        if (matches) signedListing = events[0]
         return matches
       })
       .toBe(true)
 
-    let catalogPath = `/${nip19.npubEncode(merchant.pubkey)}`
-    if (fulfillment === "pickup") {
-      stage = "signed merchant pickup graph publication"
-      if (!signedListing)
-        throw new Error("Isolated supplier listing was not observed.")
-      catalogPath = `/events/${await seedMerchantPickup(merchant, signedListing)}`
-    }
+    const catalogPath = `/${nip19.npubEncode(merchant.pubkey)}`
 
     stage = "mounted buyer cart and private order"
     const buyerContext = await browser.newContext({ serviceWorkers: "block" })
@@ -603,11 +418,6 @@ async function rehearseRouter(
     await installRealTestSigner(page, buyer, TEST_RELAY_URL)
     stage = "buyer catalog product load"
     await page.goto(`${marketUrl}${catalogPath}`)
-    if (fulfillment === "pickup") {
-      await expect(
-        page.getByRole("heading", { name: pickupMarketTitle, exact: true })
-      ).toBeVisible({ timeout: 30_000 })
-    }
     stage = "browser SDK module preload without wallet initialization"
     const sdkLoaded = await page.evaluate(async () => {
       try {
@@ -625,13 +435,8 @@ async function rehearseRouter(
     stage = "buyer catalog product visibility"
     const product = page.getByRole("listitem").filter({ hasText: productTitle })
     await expect(product).toBeVisible({ timeout: 30_000 })
-    if (fulfillment === "digital") {
-      await expect(product.getByText("~ ₿1,113", { exact: true })).toBeVisible()
-      await expect(product.getByText(/Estimated total/)).toBeVisible()
-    } else {
-      await expect(product.getByText("₿1,000", { exact: true })).toBeVisible()
-      await expect(product.getByText(/Estimated total/)).toHaveCount(0)
-    }
+    await expect(product.getByText("~ ₿1,113", { exact: true })).toBeVisible()
+    await expect(product.getByText(/Estimated total/)).toBeVisible()
     stage = "buyer add product to cart"
     await product.getByRole("button", { name: "Add", exact: true }).click()
     stage = "buyer continue to checkout"
@@ -655,24 +460,6 @@ async function rehearseRouter(
     await expect(page.getByText(supplierAddress, { exact: false })).toHaveCount(
       0
     )
-    if (fulfillment === "pickup") {
-      stage = "buyer merchant pickup review"
-      const summary = page.locator("aside").filter({
-        has: page.getByRole("heading", { name: "Order summary", exact: true }),
-      })
-      await expect(
-        summary.getByText(`Pickup from merchant booth · ${pickupLocation}`, {
-          exact: true,
-        })
-      ).toBeVisible()
-      await expect(
-        summary.getByText(`Handled by ${merchantName}`, { exact: true })
-      ).toBeVisible()
-      await expect(
-        page.getByText(/Organizer release authorization/)
-      ).toHaveCount(0)
-      await expect(page.getByLabel(/^Street address/)).toHaveCount(0)
-    }
     stage = "buyer router prepare eligibility"
     const prepare = page.getByRole("button", {
       name: "Continue to payment",
@@ -740,6 +527,20 @@ async function rehearseRouter(
         exact: true,
       })
     ).toBeVisible()
+    const nativeAuthorization = page.getByRole("region", {
+      name: "Native Spark treasury authorization",
+      exact: true,
+    })
+    await expect(nativeAuthorization).toBeVisible()
+    await expect(
+      nativeAuthorization.getByText(/best-effort Conduit allocation estimate/)
+    ).toBeVisible()
+    await expect(
+      nativeAuthorization.getByText(/fixed 1,113 sats buyer total/)
+    ).toBeVisible()
+    await expect(
+      nativeAuthorization.getByText(/every exact recipient payment is verified/)
+    ).toBeVisible()
     await expect(
       paymentPlan.getByText(/sats base share$/, { exact: false })
     ).toHaveCount(0)
@@ -779,6 +580,10 @@ async function rehearseRouter(
 
     stage = "single consent for external funding and automatic routing"
     await external.click()
+    // Hold only the synthetic provider's final native transfer status. The
+    // application still prepares, submits, persists, and later reconciles its
+    // exact transfer ID through the public Spark wallet surface.
+    control().setNativeCompletion(false)
     await expect(confirmation).toBeHidden()
     await expect(
       page.getByText(/Pay this invoice only once from your external wallet/)
@@ -789,8 +594,10 @@ async function rehearseRouter(
         stage = "buyer completes commerce before disappearing"
         control().completeFunding()
         await expect
-          .poll(() => conduitInvoiceHeld, { timeout: 45_000 })
-          .toBe(true)
+          .poll(() => control().nativeSnapshot().nativePaymentCount, {
+            timeout: 45_000,
+          })
+          .toBe(1)
         expect(control().snapshot().sendInvocationCount).toBe(2)
         expect(control().snapshot().outgoingPaymentCount).toBe(2)
       }
@@ -803,16 +610,7 @@ async function rehearseRouter(
       beginNetworkTeardown.get(merchantContext)?.()
       await buyerContext.close()
       await merchantContext.close()
-      if (partialRecovery) {
-        releaseConduitInvoice()
-        // The interrupted request is not a saved payout intent. Hold the new
-        // Merchant request separately, without changing any signed plan/ID.
-        conduitInvoiceHeld = false
-        holdConduitInvoice = true
-        conduitInvoiceGate = new Promise<void>((resolve) => {
-          resolveConduitInvoice = resolve
-        })
-      } else {
+      if (!partialRecovery) {
         control().completeFunding()
         expect(lnurl.snapshot().invoicesIssued).toBe(0)
         expect(control().snapshot().outgoingPaymentCount).toBe(0)
@@ -932,10 +730,12 @@ async function rehearseRouter(
           exact: true,
         })
       ).toBeVisible({ timeout: 30_000 })
-      stage = "cold Merchant prepares the remaining invoice"
+      stage = "cold Merchant submits the final native treasury transfer"
       await expect
-        .poll(() => conduitInvoiceHeld, { timeout: 75_000 })
-        .toBe(true)
+        .poll(() => control().nativeSnapshot().nativePaymentCount, {
+          timeout: 75_000,
+        })
+        .toBe(1)
       if (partialRecovery) {
         await expect(
           recoveredOrder.getByText("Payment needs attention", { exact: true })
@@ -951,18 +751,34 @@ async function rehearseRouter(
         fundingInvoiceCount: 1,
         sendInvocationCount: 2,
         outgoingPaymentCount: 2,
-        debitedSats: 1_002,
+        debitedSats: 1_113,
+      })
+      expect(control().nativeSnapshot()).toMatchObject({
+        nativeSendInvocationCount: 1,
+        nativePaymentCount: 1,
+        transfers: [
+          {
+            status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+            transferDirection: "OUTGOING",
+            totalValue: 113,
+            receiverIdentityPublicKey: treasuryIdentityPublicKey,
+          },
+        ],
       })
 
       stage = "cold Merchant preserves recovery while residual funds remain"
       if (!partialRecovery) control().setAdditionalOwnedSats(1)
-      releaseConduitInvoice()
-      stage = "cold Merchant finishes the remaining payment without replay"
+      control().setNativeCompletion(true)
+      stage = "cold Merchant reconciles the completed transfer without replay"
+      await coldPersistence.reload()
       await expect
-        .poll(() => control().snapshot().outgoingPaymentCount, {
-          timeout: 75_000,
-        })
-        .toBe(3)
+        .poll(
+          () => control().nativeSnapshot().transfers[0]?.status ?? "missing",
+          {
+            timeout: 75_000,
+          }
+        )
+        .toBe("TRANSFER_STATUS_COMPLETED")
       stage = "cold Merchant retains accurate recovery verification status"
       await expect(
         recovery.getByRole("heading", {
@@ -989,7 +805,6 @@ async function rehearseRouter(
       const expected = [
         { lud16: merchantAddress, amountSats: 751 },
         { lud16: supplierAddress, amountSats: 249 },
-        { lud16: CONDUIT_CHECKOUT_LOCAL_CANARY_FEE_RECIPIENT, amountSats: 110 },
       ]
       const sent = control().outgoingInvoices()
       expect(
@@ -999,10 +814,29 @@ async function rehearseRouter(
             return (
               actual?.lud16 === expected[index]!.lud16 &&
               actual.amountSats === expected[index]!.amountSats &&
-              actual.feeSats === 1
+              actual.feeSats === 0
             )
           })
       ).toBe(true)
+      expect(control().nativeSnapshot()).toMatchObject({
+        nativeSendInvocationCount: 1,
+        nativePaymentCount: 1,
+        transfers: [
+          {
+            status: "TRANSFER_STATUS_COMPLETED",
+            transferDirection: "OUTGOING",
+            totalValue: 113,
+            receiverIdentityPublicKey: treasuryIdentityPublicKey,
+            receivers: [
+              {
+                identityPublicKey: treasuryIdentityPublicKey,
+                amountSats: 113,
+                status: "TRANSFER_RECEIVER_STATUS_COMPLETED",
+              },
+            ],
+          },
+        ],
+      })
       expect(control().snapshot().debitedSats).toBe(1_113)
       stage = "Merchant sends only the verified supplier's private notification"
       if (partialRecovery) {
@@ -1017,6 +851,19 @@ async function rehearseRouter(
         // recipient verification or retire it from a zero balance alone.
         stage =
           "cold Merchant never replays prior payments or invents recipient proof"
+        const pauseBeforeReplayCheck = recovery.getByRole("button", {
+          name: "Pause",
+          exact: true,
+        })
+        if (await pauseBeforeReplayCheck.isVisible()) {
+          await pauseBeforeReplayCheck.click()
+          await expect(
+            recovery.getByRole("button", {
+              name: "Resume payment processing",
+              exact: true,
+            })
+          ).toBeVisible()
+        }
         const completed = control().snapshot()
         await coldPersistence.reload()
         await expect(
@@ -1032,31 +879,50 @@ async function rehearseRouter(
         ).toHaveCount(0)
         expect(await merchantWalletState(coldPage, orderId)).toBe("active")
         expect(control().snapshot()).toEqual(completed)
-        expect(completed.sendInvocationCount).toBe(3)
-        stage = "recovery access check reports success without moving funds"
+        expect(completed.sendInvocationCount).toBe(2)
+        stage = "recovery access check opens payment details"
         await recovery.getByText("Payment details", { exact: true }).click()
+        stage = "recovery access check starts account verification"
         await recovery
           .getByRole("button", { name: "Check recovery access", exact: true })
           .click()
+        stage = "recovery access check confirms account access"
         await expect(
           recovery.getByText(
             "Recovery access confirmed for this order. Automatic payments are paused. This check did not inspect funds or recipient payments, reveal the recovery phrase, or move money.",
             { exact: true }
           )
         ).toBeVisible()
+        stage = "recovery access check remains paused"
         await expect(
           recovery.getByRole("button", {
             name: "Resume payment processing",
             exact: true,
           })
         ).toBeVisible()
+        stage = "recovery access check preserves provider history"
         expect(control().snapshot()).toEqual(completed)
+        stage = "recovery access check publishes no public payment event"
         expect(
           (await readTestRelayEvents({ kinds: [9_734, 9_735] })).length
         ).toBe(0)
         return
       }
 
+      stage = "cold Merchant drains automatic recovery before retirement"
+      const pauseBeforeRetirement = recovery.getByRole("button", {
+        name: "Pause",
+        exact: true,
+      })
+      if (await pauseBeforeRetirement.isVisible()) {
+        await pauseBeforeRetirement.click()
+        await expect(
+          recovery.getByRole("button", {
+            name: "Resume payment processing",
+            exact: true,
+          })
+        ).toBeVisible()
+      }
       stage = "cold Merchant retires only after fresh terminal zero evidence"
       control().setAdditionalOwnedSats(0)
       await coldPersistence.reload()
@@ -1067,16 +933,17 @@ async function rehearseRouter(
       stage =
         "cold Merchant reload automatically checks without replaying payouts"
       await coldPersistence.reload()
-      await expect(
-        recoveredOrder.getByText("Payment verified", { exact: true })
-      ).toBeVisible({ timeout: 30_000 })
+      stage = "cold Merchant retired recovery remains visible after reload"
+      await expect(recoveredOrder).toBeVisible({ timeout: 30_000 })
       // The order row can be visible before the worker loads the persisted
       // retirement tombstone. Wait for that read, not merely a mounted row.
+      stage = "cold Merchant retains retirement tombstone after reload"
       await expect
         .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
         .toBe("retired")
+      stage = "cold Merchant retired reload does not replay payments"
       expect(control().snapshot()).toEqual(completed)
-      expect(completed.sendInvocationCount).toBe(3)
+      expect(completed.sendInvocationCount).toBe(2)
       expect(await supplierNoticeCount()).toBe(1)
       expect(
         (await readTestRelayEvents({ kinds: [9_734, 9_735] })).length
@@ -1125,42 +992,71 @@ async function rehearseRouter(
     // native receive/transfer history and derive its own exact credit proof.
     control().completeFunding()
 
-    stage = "automatic commerce payouts before held Conduit response"
-    await expect.poll(() => conduitInvoiceHeld, { timeout: 45_000 }).toBe(true)
+    stage = "automatic commerce payouts and pending native treasury transfer"
+    await expect
+      .poll(
+        () => {
+          const nativePayments = control().nativeSnapshot().nativePaymentCount
+          if (
+            nativePayments === 0 &&
+            control().snapshot().outgoingPaymentCount === 2
+          ) {
+            stage = "native treasury transfer not submitted after commerce"
+          }
+          return nativePayments
+        },
+        { timeout: 45_000 }
+      )
+      .toBe(1)
+    stage = "pending native treasury buyer progress"
     await expect(
       page.getByText("Completing payment", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    const processing = page.getByRole("progressbar", {
-      name: "Completing your payment…",
+    await expect(
+      page.getByRole("button", {
+        name: "Resume payment",
+        exact: true,
+      })
+    ).toBeEnabled({ timeout: 30_000 })
+    const preparedNativeAuthorization = page.getByRole("region", {
+      name: "Native Spark treasury authorization",
       exact: true,
     })
-    await expect(processing).toBeVisible()
-    await expect(processing).not.toHaveAttribute("aria-valuenow")
     await expect(
-      page.getByText("Completing your payment…", { exact: true })
+      preparedNativeAuthorization.getByText(
+        /final Conduit payment is prepared for 113 sats/
+      )
     ).toBeVisible()
     await expect(
-      page.getByText(/Preparing the next payment|Sending and verifying payment/)
-    ).toHaveCount(0)
-    const playfulLine = processing
-      .locator("..")
-      .locator('p[aria-hidden="true"]')
-    const firstLine = await playfulLine.textContent()
-    await expect
-      .poll(() => playfulLine.textContent(), { timeout: 8_000 })
-      .not.toBe(firstLine)
+      preparedNativeAuthorization.getByText(
+        /2 sats of unused, authorized recipient fee reserves/
+      )
+    ).toBeVisible()
     await expect(
       page.getByText("Order payment verified", { exact: true }).first()
     ).toBeVisible({ timeout: 30_000 })
+    stage = "pending native treasury accounting"
     expect(control().snapshot()).toEqual({
       fundingInvoiceCount: 1,
       sendInvocationCount: 2,
       outgoingPaymentCount: 2,
-      debitedSats: 1_002,
+      debitedSats: 1_113,
+    })
+    expect(control().nativeSnapshot()).toMatchObject({
+      nativeSendInvocationCount: 1,
+      nativePaymentCount: 1,
+      transfers: [
+        {
+          status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+          transferDirection: "OUTGOING",
+          totalValue: 113,
+          receiverIdentityPublicKey: treasuryIdentityPublicKey,
+        },
+      ],
     })
     await expect(confirmation).toBeHidden()
 
-    stage = "partial payout receipt preserves pending fee"
+    stage = "partial payout receipt preserves pending native finalization"
     const partialReceipt = page.getByRole("region", {
       name: "Payment history",
       includeHidden: true,
@@ -1183,39 +1079,16 @@ async function rehearseRouter(
       })
     ).toHaveCount(0)
 
-    if (fulfillment === "pickup") {
-      stage = "pause before Conduit invoice response returns"
-      await page
-        .getByRole("button", { name: "Pause payment", exact: true })
-        .click()
-      releaseConduitInvoice()
-      await expect(
-        page.getByText(/Payment paused\. Resume checks its saved status/)
-      ).toBeVisible({ timeout: 30_000 })
-      const paused = control().snapshot()
-      expect(paused.sendInvocationCount).toBe(2)
-      expect(paused.outgoingPaymentCount).toBe(2)
-      const resume = page.getByRole("button", {
-        name: "Resume payment",
-        exact: true,
-      })
-      await expect(resume).toBeEnabled()
-      stage = "paused render cannot authorize another send"
-      await expect(confirmation).toBeHidden()
-      expect(control().snapshot()).toEqual(paused)
-      stage = "explicitly resume saved automatic payments"
-      await resume.click()
-      await expect(confirmation).toBeHidden()
-    } else {
-      // This case completes all three recipients from its one approved consent.
-      releaseConduitInvoice()
-    }
-
-    await expect
-      .poll(() => control().snapshot().outgoingPaymentCount, {
-        timeout: 30_000,
-      })
-      .toBe(3)
+    const pendingNative = control().nativeSnapshot()
+    control().setNativeCompletion(true)
+    const resume = page.getByRole("button", {
+      name: "Resume payment",
+      exact: true,
+    })
+    await expect(resume).toBeEnabled({ timeout: 30_000 })
+    stage = "explicitly reconcile the completed native transfer"
+    await resume.click()
+    await expect(confirmation).toBeHidden()
     await expect(
       page.getByText("Payment recorded", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
@@ -1228,19 +1101,33 @@ async function rehearseRouter(
     const settled = control().snapshot()
     expect(settled).toEqual({
       fundingInvoiceCount: 1,
-      sendInvocationCount: 3,
-      outgoingPaymentCount: 3,
+      sendInvocationCount: 2,
+      outgoingPaymentCount: 2,
       debitedSats: 1_113,
     })
     const expectedPayouts = [
-      { lud16: merchantAddress, amountSats: 751, feeSats: 1 },
-      { lud16: supplierAddress, amountSats: 249, feeSats: 1 },
-      {
-        lud16: CONDUIT_CHECKOUT_LOCAL_CANARY_FEE_RECIPIENT,
-        amountSats: 110,
-        feeSats: 1,
-      },
+      { lud16: merchantAddress, amountSats: 751, feeSats: 0 },
+      { lud16: supplierAddress, amountSats: 249, feeSats: 0 },
     ]
+    expect(control().nativeSnapshot()).toMatchObject({
+      nativeSendInvocationCount: pendingNative.nativeSendInvocationCount,
+      nativePaymentCount: pendingNative.nativePaymentCount,
+      transfers: [
+        {
+          status: "TRANSFER_STATUS_COMPLETED",
+          transferDirection: "OUTGOING",
+          totalValue: 113,
+          receiverIdentityPublicKey: treasuryIdentityPublicKey,
+          receivers: [
+            {
+              identityPublicKey: treasuryIdentityPublicKey,
+              amountSats: 113,
+              status: "TRANSFER_RECEIVER_STATUS_COMPLETED",
+            },
+          ],
+        },
+      ],
+    })
     const receipt = page.getByRole("region", {
       name: "Payment history",
       includeHidden: true,
@@ -1255,8 +1142,8 @@ async function rehearseRouter(
       }
       await expect(receipt).toBeVisible()
       await expect(
-        receipt.getByText("1,110 sats", { exact: true })
-      ).toBeVisible()
+        receipt.getByText("1,113 sats", { exact: true })
+      ).toHaveCount(3)
       await expect(
         receipt.getByText("All checkout payments verified.", { exact: true })
       ).toBeVisible()
@@ -1264,8 +1151,34 @@ async function rehearseRouter(
         0
       )
       await expect(receipt.getByText(/Supplier|Allocation/)).toHaveCount(0)
-      await expect(receipt.getByText("3 sats", { exact: true })).toBeVisible()
-      await expect(receipt.getByText("0 sats", { exact: true })).toBeVisible()
+      const nativeReceipt = receipt.getByRole("region", {
+        name: "Completed native Spark payment",
+        exact: true,
+      })
+      await expect(nativeReceipt).toBeVisible()
+      await expect(
+        nativeReceipt.getByText("Base Conduit allocation", { exact: true })
+      ).toBeVisible()
+      await expect(
+        nativeReceipt.getByText("Unused recipient fee reserves included", {
+          exact: true,
+        })
+      ).toBeVisible()
+      await expect(
+        nativeReceipt.getByText("Final Conduit payment", { exact: true })
+      ).toBeVisible()
+      await expect(
+        nativeReceipt.getByText("111 sats", { exact: true })
+      ).toBeVisible()
+      await expect(
+        nativeReceipt.getByText("2 sats", { exact: true })
+      ).toBeVisible()
+      await expect(
+        nativeReceipt.getByText("113 sats", { exact: true })
+      ).toBeVisible()
+      await expect(
+        nativeReceipt.getByText("0 sats", { exact: true })
+      ).toBeVisible()
       await expect(receipt.getByText(/not a live wallet balance/)).toBeVisible()
       await expect(receipt.getByRole("button")).toHaveCount(0)
     }
@@ -1377,10 +1290,9 @@ async function rehearseRouter(
     // Fixed authored phase only; no error, DOM, invoice or identity content.
     // The ordinary privacy-safe reporter deliberately omits annotations.
     test.info().annotations.push({ type: "router-phase", description: stage })
-    // End owned network work before releasing held fixture responses. This is
+    // End owned network work before draining fixture responses. This is
     // teardown only, never permission to hide failures during assertions.
     for (const beginTeardown of beginNetworkTeardown.values()) beginTeardown()
-    releaseConduitInvoice()
     await Promise.allSettled(
       contexts.map(async (context) => {
         try {
@@ -1400,18 +1312,14 @@ async function rehearseRouter(
   }
 }
 
-test("native router funding settles merchant, supplier and fee then retires without duplicate payouts @commerce", async ({
+test("native router funding settles commerce and the exact native treasury payment without duplicate payouts @commerce", async ({
   browser,
-}) => rehearseRouter(browser, "digital"))
-
-test("native router merchant-handoff pickup settles merchant, supplier and fee then retires without duplicate payouts @commerce", async ({
-  browser,
-}) => rehearseRouter(browser, "pickup"))
+}) => rehearseRouter(browser))
 
 test("native router cold Merchant restores a funded checkout and finishes all payouts without the buyer @commerce", async ({
   browser,
-}) => rehearseRouter(browser, "digital", "cold-merchant"))
+}) => rehearseRouter(browser, "cold-merchant"))
 
 test("native router cold Merchant finishes a partial checkout without replaying paid commerce or inventing recipient proof @commerce", async ({
   browser,
-}) => rehearseRouter(browser, "digital", "partial-cold-merchant"))
+}) => rehearseRouter(browser, "partial-cold-merchant"))

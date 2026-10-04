@@ -27,9 +27,15 @@ import {
   createCheckoutSparkMerchantSettlementRecord,
   recordCheckoutSparkMerchantCredit,
   recordCheckoutSparkMerchantPayout,
+  recordCheckoutSparkMerchantTreasury,
   restoreCheckoutSparkMerchantSettlementRecord,
   type CheckoutSparkMerchantSettlementRecord,
 } from "./checkout-spark-merchant-settlement"
+import {
+  deriveCheckoutSparkNativeTreasuryBudget,
+  prepareCheckoutSparkNativeTreasury,
+  type CheckoutSparkNativeTreasuryEvidence,
+} from "./checkout-spark-treasury-finalization"
 import {
   restoreCheckoutSparkMerchantOrderWitness,
   type CheckoutSparkMerchantOrderWitness,
@@ -161,7 +167,7 @@ function projectState(
       observedAt: leg.observedAt,
       finalFeeSats: leg.finalFeeSats,
       finalDebitSats: leg.finalDebitSats,
-      ...(valid.schemaVersion === 4
+      ...(valid.schemaVersion !== 3
         ? {
             generation: leg.generation!,
             closedGenerations: leg.closedGenerations!.map((entry) => ({
@@ -173,6 +179,16 @@ function projectState(
         : {}),
     })),
     updatedAt: valid.updatedAt,
+    ...(valid.schemaVersion === 5
+      ? {
+          treasuryFinalization: {
+            ...valid.treasuryFinalization!,
+            intent: valid.treasuryFinalization!.intent
+              ? { ...valid.treasuryFinalization!.intent }
+              : null,
+          },
+        }
+      : {}),
   }
 }
 
@@ -226,7 +242,9 @@ function snapshotFromRows(
       active.checkoutId !== checkoutId ||
       !Number.isSafeInteger(active.revision) ||
       active.revision < 1 ||
-      (active.state.schemaVersion !== 3 && active.state.schemaVersion !== 4)
+      (active.state.schemaVersion !== 3 &&
+        active.state.schemaVersion !== 4 &&
+        active.state.schemaVersion !== 5)
     ) {
       throw new CheckoutSparkSettledRepositoryIntegrityError()
     }
@@ -265,12 +283,25 @@ export function assertCheckoutSparkSettledRecoveryProgression(
   next = restoreCheckoutSparkSettledReconciliation(next)
   if (
     (previous.schemaVersion === 4 && next.schemaVersion !== 4) ||
+    (previous.schemaVersion === 5 && next.schemaVersion !== 5) ||
     next.updatedAt < previous.updatedAt ||
     next.plan.planDigest !== previous.plan.planDigest ||
     (previous.credit !== null &&
       JSON.stringify(next.credit) !== JSON.stringify(previous.credit))
   ) {
     throw new CheckoutSparkSettledRepositoryConflictError()
+  }
+  if (previous.schemaVersion === 5) {
+    const before = previous.treasuryFinalization!
+    const after = next.treasuryFinalization!
+    if (
+      (before.intent &&
+        JSON.stringify(before.intent) !== JSON.stringify(after.intent)) ||
+      (before.providerTransferId &&
+        before.providerTransferId !== after.providerTransferId)
+    ) {
+      throw new CheckoutSparkSettledRepositoryConflictError()
+    }
   }
   for (let position = 0; position < previous.legs.length; position += 1) {
     const before = previous.legs[position]!
@@ -426,7 +457,8 @@ export class DexieCheckoutSparkSettledRepository {
       binding: StoredCheckoutSparkPlanBinding
     ) => CheckoutSparkMerchantSettlementRecord,
     assertCurrent?: () => void,
-    target?: CheckoutSparkSettledOutgoingTarget
+    target?: CheckoutSparkSettledOutgoingTarget,
+    nativeState?: CheckoutSparkSettledReconciliation
   ): Promise<CheckoutSparkMerchantSettlementRecord> {
     assertCurrent?.()
     const canonical = restoreCheckoutSparkSettledPlan(plan)
@@ -468,6 +500,13 @@ export class DexieCheckoutSparkSettledRepository {
           ) {
             throw new CheckoutSparkSettledRepositoryConflictError()
           }
+        }
+        if (
+          nativeState &&
+          JSON.stringify(nativeState.treasuryFinalization?.intent) !==
+            JSON.stringify(snapshot.state.treasuryFinalization?.intent)
+        ) {
+          throw new CheckoutSparkSettledRepositoryConflictError()
         }
         const previous = restoreCheckoutSparkMerchantSettlementRecord(
           binding.merchantSettlement ??
@@ -1187,6 +1226,39 @@ export class DexieCheckoutSparkSettledRepository {
     return this.saveState(state, expectedRevision, assertCurrent)
   }
 
+  /** Native intent creation additionally requires the independent local ledger. */
+  async saveTreasuryPrepared(
+    state: CheckoutSparkSettledReconciliation,
+    expectedRevision: number,
+    settlement: CheckoutSparkMerchantSettlementRecord,
+    assertCurrent?: () => void
+  ): Promise<CheckoutSparkSettledRepositorySnapshot> {
+    return this.saveState(
+      state,
+      expectedRevision,
+      assertCurrent,
+      undefined,
+      settlement
+    )
+  }
+
+  /** Native history proof, not a recovery paid flag, creates the local receipt. */
+  async recordMerchantTreasury(
+    state: CheckoutSparkSettledReconciliation,
+    evidence: CheckoutSparkNativeTreasuryEvidence,
+    assertCurrent?: () => void
+  ): Promise<CheckoutSparkMerchantSettlementRecord> {
+    const canonical = projectState(state)
+    return this.recordMerchantSettlement(
+      canonical.plan,
+      (previous) =>
+        recordCheckoutSparkMerchantTreasury(previous, canonical, evidence),
+      assertCurrent,
+      undefined,
+      canonical
+    )
+  }
+
   /** Only a freshly resolved local invoice may accompany a new intent. */
   async savePreparedWithInvoiceOrigin(
     state: CheckoutSparkSettledReconciliation,
@@ -1419,7 +1491,8 @@ export class DexieCheckoutSparkSettledRepository {
       proof?: CheckoutSparkSettledReturnedProof
       nowMs?: number
       now?: () => number
-    }
+    },
+    treasurySettlement?: CheckoutSparkMerchantSettlementRecord
   ): Promise<CheckoutSparkSettledRepositorySnapshot> {
     assertCurrent?.()
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
@@ -1445,6 +1518,37 @@ export class DexieCheckoutSparkSettledRepository {
           throw new CheckoutSparkSettledRepositoryConflictError()
         }
         assertCheckoutSparkSettledRecoveryProgression(current.state, next)
+        if (
+          !current.state.treasuryFinalization?.intent &&
+          next.treasuryFinalization?.intent
+        ) {
+          if (!treasurySettlement || evidence || !next.credit)
+            throw new CheckoutSparkSettledRepositoryConflictError()
+          const binding =
+            await this.database.checkoutSparkPlanBindings.get(checkoutId)
+          if (!binding?.merchantSettlement)
+            throw new CheckoutSparkSettledRepositoryConflictError()
+          const local = restoreCheckoutSparkMerchantSettlementRecord(
+            binding.merchantSettlement,
+            next.plan
+          )
+          const supplied = restoreCheckoutSparkMerchantSettlementRecord(
+            treasurySettlement,
+            next.plan
+          )
+          if (JSON.stringify(local) !== JSON.stringify(supplied))
+            throw new CheckoutSparkSettledRepositoryConflictError()
+          deriveCheckoutSparkNativeTreasuryBudget(current.state, local)
+          const expected = projectState(
+            prepareCheckoutSparkNativeTreasury(current.state, {
+              settlement: local,
+              preparedAt: next.treasuryFinalization.intent.preparedAt,
+            })
+          )
+          if (JSON.stringify(expected) !== JSON.stringify(next))
+            throw new CheckoutSparkSettledRepositoryConflictError()
+        } else if (treasurySettlement)
+          throw new CheckoutSparkSettledRepositoryConflictError()
         const advanced = next.legs.filter(
           (leg, index) =>
             getCheckoutSparkSettledLegGeneration(leg) !==
@@ -1613,6 +1717,13 @@ export class DexieCheckoutSparkSettledRepository {
         const summary = createCheckoutSparkRetiredSettlementSummary(
           current.state
         )
+        if (
+          current.state.schemaVersion === 5 &&
+          current.state.treasuryFinalization!.status === "paid" &&
+          !binding.merchantSettlement?.nativeTreasury
+        ) {
+          throw new CheckoutSparkSettledRepositoryIntegrityError()
+        }
         if (binding.merchantSettlement) {
           validateCheckoutSparkRetiredSettlementRecord(
             summary,

@@ -227,7 +227,7 @@ describe("Merchant saved payout confirmation", () => {
     ).text()
     const preparation = source.slice(
       source.indexOf("async function preparePayout"),
-      source.indexOf("async function reviewPayout")
+      source.indexOf("async function finalizeNativeTreasury")
     )
     expect(preparation).toContain("if (busy || confirmation) return")
     expect(preparation).toContain(
@@ -252,5 +252,33 @@ describe("Merchant saved payout confirmation", () => {
     expect(source).toContain("do not assume a recovery copy reached your inbox")
     expect(source).toContain("existing_intent:")
     expect(source).toContain("existing payout invoice was kept unchanged")
+  })
+
+  it("offers one explicit native Conduit finalization without Lightning review or replacement", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx"
+    ).text()
+    const native = source.slice(
+      source.indexOf("async function finalizeNativeTreasury"),
+      source.indexOf("async function reviewPayout")
+    )
+
+    expect(source).toContain("continueMerchantCheckoutSparkNativeTreasury")
+    expect(native).toContain("beginManualAction(candidate.orderId)")
+    expect(native).toContain("await stopDiscovery()")
+    expect(native).toContain("shouldContinue: current.isCurrent")
+    expect(native).toContain("refreshVerifiedStatus([candidate], current)")
+    expect(native).toContain('continued.payout?.reason === "zero_remainder"')
+    expect(native).toContain("No approved checkout credit remains")
+    expect(native).not.toContain("reviewMerchantCheckoutSparkSettledPayout")
+    expect(native).not.toContain(
+      "prepareNextMerchantCheckoutSparkSettledPayout"
+    )
+    expect(native).not.toContain("hasCheckoutSparkProviderSendWindow")
+    expect(native).not.toContain("setConfirmation(")
+    expect(source).toContain("Finalize Conduit payment")
+    expect(source).toContain(
+      "onClick={() => void finalizeNativeTreasury(candidate)}"
+    )
   })
 })

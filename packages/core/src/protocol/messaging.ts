@@ -1,6 +1,7 @@
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { getEventHash } from "nostr-tools"
 import { createWrap } from "nostr-tools/nip59"
+import { v2 as nip44 } from "nostr-tools/nip44"
 import {
   NostrSignerError,
   type NostrKeySigner,
@@ -28,6 +29,7 @@ import {
   fetchEventsFanout,
   fetchEventsFanoutWithDiagnostics,
   getNdk,
+  MAX_RELAY_MESSAGE_CHARS,
   type FetchEventsFanoutOptions,
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
@@ -51,6 +53,7 @@ import {
   type ResolveInboxDeclarationOptions,
 } from "./private-message-routing"
 import {
+  getRelayPublishTargetStatus,
   publishWithPlanner,
   publishWithPlannerProgressive,
   RelayPublishDiagnosticsError,
@@ -429,6 +432,46 @@ export interface UnwrapGiftWrapOptions {
 const DEFAULT_UNWRAP_TIMEOUT_MS = 8_000
 const UNWRAP_TIMEOUT = Symbol("unwrap_timeout")
 
+/** Bound both NIP-44 layers before asking a signer to encrypt or sign. */
+function assertPrivateMessageFitsTransport(rumor: UnsignedNostrEvent): void {
+  const hex64 = "0".repeat(64)
+  const signedShell = {
+    id: hex64,
+    pubkey: hex64,
+    created_at: Number.MAX_SAFE_INTEGER,
+    kind: EVENT_KINDS.SEAL,
+    tags: [] as string[][],
+    content: "",
+    sig: "0".repeat(128),
+  }
+  const encryptedChars = (plaintextBytes: number): number => {
+    const prefixBytes = plaintextBytes < 65_536 ? 2 : 6
+    // Version (1), nonce (32), length prefix, padded UTF-8 content, MAC (32), base64.
+    return (
+      4 *
+      Math.ceil(
+        (65 + prefixBytes + nip44.utils.calcPaddedLen(plaintextBytes)) / 3
+      )
+    )
+  }
+  const rumorBytes = new TextEncoder().encode(
+    JSON.stringify({ ...rumor, id: hex64 })
+  ).length
+  const sealBytes =
+    JSON.stringify(signedShell).length + encryptedChars(rumorBytes)
+  const frameChars =
+    JSON.stringify([
+      "EVENT",
+      "0".repeat(64),
+      { ...signedShell, kind: EVENT_KINDS.GIFT_WRAP, tags: [["p", hex64]] },
+    ]).length + encryptedChars(sealBytes)
+  if (frameChars > MAX_RELAY_MESSAGE_CHARS) {
+    throw new Error(
+      "This message is too large to send securely. For an order, remove items from the cart or contact the merchant to arrange a smaller order."
+    )
+  }
+}
+
 /** NIP-59 construction with plain key operations, independent of relay clients. */
 export async function wrapPrivateMessage(
   event: NDKEvent,
@@ -446,6 +489,7 @@ export async function wrapPrivateMessage(
     tags: event.tags.map((tag) => [...tag]),
     content: event.content,
   }
+  assertPrivateMessageFitsTransport(rumor)
   const seal = await signer.signEvent({
     pubkey,
     kind: EVENT_KINDS.SEAL,
@@ -513,14 +557,14 @@ const LEGACY_ORDER_MESSAGE_TYPES = new Set([
   "receipt",
   "message",
   "payment_proof",
-  "organizer_fulfillment_receipt",
-  "organizer_fulfillment_revocation",
-  "organizer_handoff_ack",
+  "future_market_ready",
+  "future_market_revoked",
+  "future_market_handed_out",
 ])
 const EVENT_MARKET_PRIVATE_MESSAGE_TYPES = new Set([
-  "organizer_fulfillment_receipt",
-  "organizer_fulfillment_revocation",
-  "organizer_handoff_ack",
+  "future_market_ready",
+  "future_market_revoked",
+  "future_market_handed_out",
 ])
 
 function classifyLegacyOrderRumor(
@@ -1239,6 +1283,13 @@ export async function publishPrivateMessage(
   if (input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey) {
     throw new Error("Private message rumor author does not match sender")
   }
+  assertPrivateMessageFitsTransport({
+    pubkey: senderPubkey,
+    kind: input.rumorKind,
+    created_at: input.rumor.created_at ?? Math.floor(Date.now() / 1000),
+    tags: input.rumor.tags,
+    content: input.rumor.content,
+  })
   assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
   const signerPubkey = (await input.signer.getPublicKey()).trim().toLowerCase()
   assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
@@ -1578,7 +1629,7 @@ export async function publishPrivateMessage(
     })
     await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
     const milestones = await publishProgressiveFn(
-      wrappedToRecipient,
+      wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
       recipientPublishInput
     )
     const settledOutcome = milestones.settled.then(async (snapshot) => {
@@ -1671,28 +1722,32 @@ export async function publishPrivateMessage(
             )
           }
           try {
-            selfDelivery = await publishFn(wrappedToSelf, {
-              intent: "recipient_event",
-              authorPubkey: input.senderPubkey,
-              authenticatedPubkey: authenticatedOwnerPubkey,
-              recipientPubkeys: [input.senderPubkey],
-              exclusiveRelayUrls: currentSenderRoute.relayUrls,
-              ownerSelectedRelayUrls: currentSenderRoute.ownerSelectedRelayUrls,
-              shouldContinue: input.shouldContinue,
-              refreshRelayLists,
-              deliveryMode: "critical",
-              ...(accountPubkey
-                ? {
-                    accountPubkey,
-                    ...(input.accountNetworkLocalStateRepository
-                      ? {
-                          accountNetworkLocalStateRepository:
-                            input.accountNetworkLocalStateRepository,
-                        }
-                      : {}),
-                  }
-                : {}),
-            })
+            selfDelivery = await publishFn(
+              wrappedToSelf.rawEvent() as SignedPublicNostrEvent,
+              {
+                intent: "recipient_event",
+                authorPubkey: input.senderPubkey,
+                authenticatedPubkey: authenticatedOwnerPubkey,
+                recipientPubkeys: [input.senderPubkey],
+                exclusiveRelayUrls: currentSenderRoute.relayUrls,
+                ownerSelectedRelayUrls:
+                  currentSenderRoute.ownerSelectedRelayUrls,
+                shouldContinue: input.shouldContinue,
+                refreshRelayLists,
+                deliveryMode: "critical",
+                ...(accountPubkey
+                  ? {
+                      accountPubkey,
+                      ...(input.accountNetworkLocalStateRepository
+                        ? {
+                            accountNetworkLocalStateRepository:
+                              input.accountNetworkLocalStateRepository,
+                          }
+                        : {}),
+                    }
+                  : {}),
+              }
+            )
           } catch (error) {
             const partial = recoverPartialRelayPublishDiagnostics(error)
             if (!partial) throw error
@@ -1772,37 +1827,40 @@ export async function publishPrivateMessage(
     await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
   }
   try {
-    recipientDelivery = await publishFn(wrappedToRecipient, {
-      intent: "recipient_event",
-      authorPubkey: input.senderPubkey,
-      authenticatedPubkey: authenticatedOwnerPubkey,
-      recipientPubkeys: [input.recipientPubkey],
-      exclusiveRelayUrls: recipientRoute.relayUrls,
-      appRelayUrls:
-        recipientRoute.route === "compatibility_order"
-          ? recipientRoute.relayUrls
-          : [],
-      personalRelayUrls: [],
-      independentRelayUrls:
-        recipientRoute.route === "compatibility_order"
-          ? []
-          : recipientRoute.relayUrls,
-      shouldContinue: input.shouldContinue,
-      refreshRelayLists,
-      deliveryMode: "critical",
-      ...(relayAuthentication ? { relayAuthentication } : {}),
-      ...(accountPubkey
-        ? {
-            accountPubkey,
-            ...(input.accountNetworkLocalStateRepository
-              ? {
-                  accountNetworkLocalStateRepository:
-                    input.accountNetworkLocalStateRepository,
-                }
-              : {}),
-          }
-        : {}),
-    })
+    recipientDelivery = await publishFn(
+      wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
+      {
+        intent: "recipient_event",
+        authorPubkey: input.senderPubkey,
+        authenticatedPubkey: authenticatedOwnerPubkey,
+        recipientPubkeys: [input.recipientPubkey],
+        exclusiveRelayUrls: recipientRoute.relayUrls,
+        appRelayUrls:
+          recipientRoute.route === "compatibility_order"
+            ? recipientRoute.relayUrls
+            : [],
+        personalRelayUrls: [],
+        independentRelayUrls:
+          recipientRoute.route === "compatibility_order"
+            ? []
+            : recipientRoute.relayUrls,
+        shouldContinue: input.shouldContinue,
+        refreshRelayLists,
+        deliveryMode: "critical",
+        ...(relayAuthentication ? { relayAuthentication } : {}),
+        ...(accountPubkey
+          ? {
+              accountPubkey,
+              ...(input.accountNetworkLocalStateRepository
+                ? {
+                    accountNetworkLocalStateRepository:
+                      input.accountNetworkLocalStateRepository,
+                  }
+                : {}),
+            }
+          : {}),
+      }
+    )
   } catch (error) {
     if (preparedRecipientDelivery && input.onRecipientPublishSettled) {
       await input.onRecipientPublishSettled(
@@ -1883,37 +1941,40 @@ export async function publishPrivateMessage(
     } else {
       try {
         try {
-          selfDelivery = await publishFn(wrappedToSelf, {
-            intent: "recipient_event",
-            authorPubkey: input.senderPubkey,
-            authenticatedPubkey: authenticatedOwnerPubkey,
-            recipientPubkeys: [input.senderPubkey],
-            exclusiveRelayUrls: senderRoute.relayUrls,
-            appRelayUrls:
-              senderRoute.route === "compatibility_order"
-                ? senderRoute.relayUrls
-                : [],
-            personalRelayUrls: [],
-            independentRelayUrls:
-              senderRoute.route === "compatibility_order"
-                ? []
-                : senderRoute.relayUrls,
-            ownerSelectedRelayUrls: senderRoute.ownerSelectedRelayUrls,
-            shouldContinue: input.shouldContinue,
-            refreshRelayLists,
-            deliveryMode: "critical",
-            ...(accountPubkey
-              ? {
-                  accountPubkey,
-                  ...(input.accountNetworkLocalStateRepository
-                    ? {
-                        accountNetworkLocalStateRepository:
-                          input.accountNetworkLocalStateRepository,
-                      }
-                    : {}),
-                }
-              : {}),
-          })
+          selfDelivery = await publishFn(
+            wrappedToSelf.rawEvent() as SignedPublicNostrEvent,
+            {
+              intent: "recipient_event",
+              authorPubkey: input.senderPubkey,
+              authenticatedPubkey: authenticatedOwnerPubkey,
+              recipientPubkeys: [input.senderPubkey],
+              exclusiveRelayUrls: senderRoute.relayUrls,
+              appRelayUrls:
+                senderRoute.route === "compatibility_order"
+                  ? senderRoute.relayUrls
+                  : [],
+              personalRelayUrls: [],
+              independentRelayUrls:
+                senderRoute.route === "compatibility_order"
+                  ? []
+                  : senderRoute.relayUrls,
+              ownerSelectedRelayUrls: senderRoute.ownerSelectedRelayUrls,
+              shouldContinue: input.shouldContinue,
+              refreshRelayLists,
+              deliveryMode: "critical",
+              ...(accountPubkey
+                ? {
+                    accountPubkey,
+                    ...(input.accountNetworkLocalStateRepository
+                      ? {
+                          accountNetworkLocalStateRepository:
+                            input.accountNetworkLocalStateRepository,
+                        }
+                      : {}),
+                  }
+                : {}),
+            }
+          )
         } catch (error) {
           if (input.shouldContinue?.() === false) {
             selfCopyError = selfCopySessionChangedError
@@ -2039,30 +2100,14 @@ function buildOrderRelayDeliveryRecord(input: {
   if (!isValidSignedPublicNostrEvent(signedRecipientWrap)) return undefined
 
   const now = Date.now()
-  const successful = new Set(input.recipientDelivery.successfulRelayUrls ?? [])
-  const pending = new Set(
-    "pendingRelayUrls" in input.recipientDelivery
-      ? input.recipientDelivery.pendingRelayUrls
-      : []
-  )
-  const rejectedRelayUrls = new Set(
-    input.recipientDelivery.rejectedRelayUrls ?? []
-  )
-  const failures = input.recipientDelivery.relayFailureMessages ?? {}
   const relayDelivery = input.recipientRoute.relayUrls.map((relayUrl) => {
-    const acked = successful.has(relayUrl)
-    const rejected =
-      rejectedRelayUrls.has(relayUrl) ||
-      /^(?:pow|blocked|rate-limited|invalid|restricted|mute|error):/i.test(
-        failures[relayUrl]?.trim() ?? ""
-      )
-    const status: OrderRelayDeliveryStatus = acked
-      ? "acked"
-      : pending.has(relayUrl)
-        ? "pending"
-        : rejected
-          ? "rejected"
-          : "timed_out"
+    const outcome = getRelayPublishTargetStatus(
+      input.recipientDelivery,
+      relayUrl
+    )
+    const status: OrderRelayDeliveryStatus = outcome
+    const acked = status === "acked"
+    const rejected = status === "rejected"
     return {
       relayUrl,
       source: input.recipientRoute.relaySources[relayUrl] ?? "declared",
@@ -2071,9 +2116,7 @@ function buildOrderRelayDeliveryRecord(input: {
       lastAttemptAt: now,
       ...(acked ? { acknowledgedAt: now } : {}),
       ...(rejected ? { rejectedAt: now } : {}),
-      ...(!acked && !rejected && !pending.has(relayUrl)
-        ? { timedOutAt: now }
-        : {}),
+      ...(status === "timed_out" ? { timedOutAt: now } : {}),
     }
   })
 
@@ -2090,9 +2133,12 @@ function buildOrderRelayDeliveryRecord(input: {
     relayDelivery,
     deliveryAttemptCount: 1,
     retryCount: 0,
-    nextRetryAt: relayDelivery.every((delivery) => delivery.status === "acked")
-      ? undefined
-      : now + 15_000,
+    nextRetryAt: relayDelivery.some(
+      (delivery) =>
+        delivery.status !== "acked" && delivery.status !== "policy_blocked"
+    )
+      ? now + 15_000
+      : undefined,
     createdAt: now,
     updatedAt: now,
     expiresAt: now + ORDER_RELAY_RETRY_RETENTION_MS,

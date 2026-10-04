@@ -3,8 +3,15 @@ import {
   createCheckoutSparkSettledReconciliation,
   recordCheckoutSparkSettledCredit,
   restoreCheckoutSparkSettledPlan,
+  restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledPlan,
+  type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
+import {
+  deriveCheckoutSparkNativeTreasuryBudget,
+  type CheckoutSparkNativeTreasuryEvidence,
+  type CheckoutSparkNativeTreasuryBudget,
+} from "./checkout-spark-treasury-finalization"
 import type {
   CheckoutSparkSettledOutgoingObservation,
   CheckoutSparkSettledOutgoingTarget,
@@ -19,7 +26,7 @@ import {
   type CheckoutSparkInvoiceRecipientRecord,
 } from "./checkout-spark-invoice-recipient"
 
-const invalid = (): never => {
+function invalid(): never {
   throw new Error("Checkout Spark merchant settlement evidence is invalid.")
 }
 
@@ -53,7 +60,8 @@ function validId(value: unknown): value is string {
 
 /** Private device-local provider facts; never send this record to Nostr or telemetry. */
 export interface CheckoutSparkMerchantSettlementRecord {
-  readonly schemaVersion: 1
+  readonly schemaVersion: 1 | 2
+  readonly nativeTreasury?: CheckoutSparkNativeTreasurySettlement | null
   readonly merchantPubkey: string
   readonly orderId: string
   readonly checkoutId: string
@@ -78,6 +86,53 @@ export interface CheckoutSparkMerchantSettlementRecord {
   }[]
 }
 
+/** Native principal and actual debit, without invoice/address/recovery material. */
+export interface CheckoutSparkNativeTreasurySettlement extends CheckoutSparkNativeTreasuryBudget {
+  readonly invoiceId: string
+  readonly providerTransferId: string
+  readonly principalSats: number
+  readonly finalDebitSats: number
+  readonly finalFeeSats: 0
+  readonly observedAt: number
+}
+
+export function restoreCheckoutSparkNativeTreasurySettlement(
+  value: CheckoutSparkNativeTreasurySettlement
+): CheckoutSparkNativeTreasurySettlement {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid()
+  exactKeys(value, [
+    "invoiceId",
+    "providerTransferId",
+    "principalSats",
+    "finalDebitSats",
+    "finalFeeSats",
+    "observedAt",
+    "baseConduitAllocationSats",
+    "unusedCommerceReserveSats",
+    "authorizedDebitSats",
+    "accountingDigest",
+  ])
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      value.invoiceId
+    ) ||
+    !validId(value.providerTransferId) ||
+    !/^[0-9a-f]{64}$/.test(value.accountingDigest) ||
+    !Number.isSafeInteger(value.baseConduitAllocationSats) ||
+    value.baseConduitAllocationSats < 0 ||
+    !Number.isSafeInteger(value.unusedCommerceReserveSats) ||
+    value.unusedCommerceReserveSats < 0 ||
+    validSats(value.principalSats) !== validSats(value.finalDebitSats) ||
+    value.finalFeeSats !== 0 ||
+    value.authorizedDebitSats !== value.finalDebitSats ||
+    value.baseConduitAllocationSats + value.unusedCommerceReserveSats !==
+      value.authorizedDebitSats
+  )
+    invalid()
+  validTime(value.observedAt)
+  return Object.freeze({ ...value })
+}
+
 export interface CheckoutSparkMerchantSettlementProjection {
   readonly creditVerified: boolean
   readonly merchantVerified: boolean
@@ -94,7 +149,8 @@ export function createCheckoutSparkMerchantSettlementRecord(
   const merchant = canonical.recipients.find((leg) => leg.kind === "merchant")!
   const fee = canonical.recipients.find((leg) => leg.kind === "conduit")!
   return {
-    schemaVersion: 1,
+    schemaVersion: canonical.schemaVersion === 4 ? 2 : 1,
+    ...(canonical.schemaVersion === 4 ? { nativeTreasury: null } : {}),
     merchantPubkey: canonical.merchantPubkey,
     orderId: canonical.orderId,
     checkoutId: canonical.checkoutId,
@@ -126,9 +182,10 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
     "feeLegId",
     "credit",
     "paidLegs",
+    ...(record.schemaVersion === 2 ? ["nativeTreasury"] : []),
   ])
   if (
-    record.schemaVersion !== 1 ||
+    (record.schemaVersion !== 1 && record.schemaVersion !== 2) ||
     typeof record.merchantPubkey !== "string" ||
     !/^[0-9a-f]{64}$/.test(record.merchantPubkey) ||
     typeof record.planDigest !== "string" ||
@@ -155,6 +212,8 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
   ) {
     invalid()
   }
+  if (record.schemaVersion === 2 && record.nativeTreasury !== null)
+    restoreCheckoutSparkNativeTreasurySettlement(record.nativeTreasury!)
   if (record.credit) {
     exactKeys(record.credit, ["transferId", "creditedSats", "observedAt"])
     if (!validId(record.credit.transferId)) {
@@ -176,6 +235,7 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
       ...(leg.recipientVerified === undefined ? [] : ["recipientVerified"]),
     ])
     if (
+      (record.schemaVersion === 2 && leg.legId === record.feeLegId) ||
       (leg.legId !== record.feeLegId &&
         !record.requiredCommerceLegIds.includes(leg.legId)) ||
       ids.has(leg.legId) ||
@@ -195,6 +255,7 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
     const expected = createCheckoutSparkMerchantSettlementRecord(plan)
     if (
       record.merchantPubkey !== expected.merchantPubkey ||
+      record.schemaVersion !== expected.schemaVersion ||
       record.orderId !== expected.orderId ||
       record.checkoutId !== expected.checkoutId ||
       record.planDigest !== expected.planDigest ||
@@ -211,6 +272,15 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
     requiredCommerceLegIds: [...record.requiredCommerceLegIds],
     credit: record.credit ? { ...record.credit } : null,
     paidLegs: record.paidLegs.map((leg) => ({ ...leg })),
+    ...(record.schemaVersion === 2
+      ? {
+          nativeTreasury: record.nativeTreasury
+            ? restoreCheckoutSparkNativeTreasurySettlement(
+                record.nativeTreasury
+              )
+            : null,
+        }
+      : {}),
   }
 }
 
@@ -365,9 +435,66 @@ export function projectCheckoutSparkMerchantSettlement(
     commerceVerified:
       creditVerified &&
       verified.requiredCommerceLegIds.every((legId) => attributed.has(legId)),
-    feePending: creditVerified && !paid.has(verified.feeLegId),
+    feePending:
+      creditVerified &&
+      (verified.schemaVersion === 2
+        ? verified.nativeTreasury === null
+        : !paid.has(verified.feeLegId)),
     recipientUnverified: verified.paidLegs.some(
       (leg) => leg.recipientVerified !== true
     ),
   }
+}
+
+/** Evidence must come from exact native provider invoice + transfer history. */
+export function recordCheckoutSparkMerchantTreasury(
+  recordInput: CheckoutSparkMerchantSettlementRecord,
+  stateInput: CheckoutSparkSettledReconciliation,
+  evidence: CheckoutSparkNativeTreasuryEvidence
+): CheckoutSparkMerchantSettlementRecord {
+  const state = restoreCheckoutSparkSettledReconciliation(stateInput)
+  const record = restoreCheckoutSparkMerchantSettlementRecord(
+    recordInput,
+    state.plan
+  )
+  const intent = state.treasuryFinalization?.intent
+  const budget = deriveCheckoutSparkNativeTreasuryBudget(state, record)
+  if (
+    record.schemaVersion !== 2 ||
+    !intent ||
+    evidence.status !== "paid" ||
+    evidence.invoiceId !== intent.invoiceId ||
+    !evidence.providerTransferId ||
+    evidence.finalFeeSats !== 0 ||
+    evidence.finalDebitSats !== intent.amountSats ||
+    evidence.observedAt < intent.preparedAt ||
+    intent.accountingDigest !== budget.accountingDigest
+  )
+    invalid()
+  const next = restoreCheckoutSparkNativeTreasurySettlement({
+    invoiceId: intent.invoiceId,
+    providerTransferId: evidence.providerTransferId,
+    principalSats: intent.amountSats,
+    finalDebitSats: evidence.finalDebitSats,
+    finalFeeSats: 0,
+    observedAt: evidence.observedAt,
+    baseConduitAllocationSats: intent.baseConduitAllocationSats,
+    unusedCommerceReserveSats: intent.unusedCommerceReserveSats,
+    authorizedDebitSats: intent.authorizedDebitSats,
+    accountingDigest: intent.accountingDigest,
+  })
+  if (record.nativeTreasury) {
+    if (
+      Object.entries(next).some(
+        ([key, value]) =>
+          key !== "observedAt" &&
+          record.nativeTreasury![
+            key as keyof CheckoutSparkNativeTreasurySettlement
+          ] !== value
+      )
+    )
+      invalid()
+    return record
+  }
+  return { ...record, nativeTreasury: next }
 }

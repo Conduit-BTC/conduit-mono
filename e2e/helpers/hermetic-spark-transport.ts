@@ -16,7 +16,11 @@ const walletMethods = new Set<WalletMethod>([
   "getTransfers",
   "getSparkAddress",
   "getTransfer",
+  "querySparkInvoices",
+  "fulfillSparkInvoice",
   "getTransferFromSsp",
+  "queryHTLC",
+  "getLeaves",
   "createLightningInvoice",
   "getIdentityPublicKey",
   "getLightningReceiveRequest",
@@ -100,11 +104,53 @@ export function createHermeticSparkTransport(
                 },
               ])
             }
-            return await Reflect.apply(
-              wallet[command.method],
-              wallet,
-              command.args
-            )
+            if (command.method === "fulfillSparkInvoice") {
+              const [invoices] = command.args as [
+                Array<{ invoice: string; amount: string }>,
+              ]
+              if (
+                !Array.isArray(invoices) ||
+                invoices.length !== 1 ||
+                invoices.some(
+                  (item) =>
+                    typeof item?.invoice !== "string" ||
+                    typeof item.amount !== "string" ||
+                    !/^[1-9][0-9]*$/.test(item.amount)
+                )
+              )
+                unavailable()
+              return await wallet.fulfillSparkInvoice!([
+                {
+                  invoice: invoices[0]!.invoice,
+                  amount: BigInt(invoices[0]!.amount),
+                },
+              ])
+            }
+            if (command.method === "querySparkInvoices") {
+              const result = await wallet.querySparkInvoices!(
+                command.args[0] as string[]
+              )
+              return {
+                invoiceStatuses: result.invoiceStatuses.map((entry) => ({
+                  ...entry,
+                  ...(entry.transferType?.$case === "satsTransfer"
+                    ? {
+                        transferType: {
+                          $case: "satsTransfer",
+                          satsTransfer: {
+                            transferId: [
+                              ...entry.transferType.satsTransfer.transferId,
+                            ],
+                          },
+                        },
+                      }
+                    : {}),
+                })),
+              }
+            }
+            const method = wallet[command.method]
+            if (typeof method !== "function") unavailable()
+            return await Reflect.apply(method, wallet, command.args)
           }
           case "wallet.close": {
             const wallet = wallets.get(command.handle)

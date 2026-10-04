@@ -231,6 +231,7 @@ export interface CheckoutSparkSettledOutgoingStepResult {
     | "sibling_possible_send"
     | "prerequisite_unpaid"
     | "renewal_return_unavailable"
+    | "zero_remainder"
   readonly sendAttempted: boolean
 }
 

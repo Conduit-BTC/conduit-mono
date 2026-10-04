@@ -24,7 +24,6 @@ import {
   publishPrivateMessage,
   type PublishPrivateMessageInput,
 } from "./messaging"
-import { getNdk } from "./ndk"
 import type { NostrKeySigner } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import { waitForVisibleDocument } from "./interactive-signer"
@@ -495,7 +494,7 @@ export async function retryCheckoutSparkSupplierNotification(input: {
       let result
       try {
         result = await (input.transport?.publishFn ?? publishWithPlanner)(
-          new NDKEvent(getNdk(), wrap),
+          wrap,
           {
             intent: "recipient_event",
             authorPubkey: notification.merchantPubkey,

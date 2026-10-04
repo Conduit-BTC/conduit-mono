@@ -207,6 +207,274 @@ test.each([false, true])(
 )
 
 describe("local resource failure remains scoped to its source document", () => {
+  test("binds a resource to its original document before asynchronous fixture inspection", async () => {
+    let handler: ((route: Route) => Promise<void>) | undefined
+    let releaseFixture!: () => void
+    let announceFixtureStarted!: () => void
+    const fixtureStarted = new Promise<void>((resolve) => {
+      announceFixtureStarted = resolve
+    })
+    const heldFixture = new Promise<void>((resolve) => {
+      releaseFixture = resolve
+    })
+    let documentMarker = randomUUID()
+    const sourcePage = { isClosed: () => false }
+    const sourceFrame = {
+      page: () => sourcePage,
+      isDetached: () => false,
+      evaluate: async () => documentMarker,
+    }
+    await installHermeticCommerceNetwork(
+      {
+        addInitScript: async () => {},
+        route: async (_match: string, value: typeof handler) => {
+          handler = value
+        },
+        routeWebSocket: async () => {},
+      } as unknown as BrowserContext,
+      {
+        ...options,
+        lnurl: async () => {
+          announceFixtureStarted()
+          await heldFixture
+          return null
+        },
+      }
+    )
+    let fetchAttempts = 0
+    let abortAttempts = 0
+    let fallbackAttempts = 0
+    const request = handler!({
+      request: () => ({
+        url: () => `${options.appUrls[0]}/old-document-module.js`,
+        method: () => "GET",
+        isNavigationRequest: () => false,
+        frame: () => sourceFrame,
+      }),
+      fetch: async () => {
+        fetchAttempts += 1
+        throw new Error("Old document resource was cancelled.")
+      },
+      abort: async () => {
+        abortAttempts += 1
+      },
+      continue: async () => {
+        fallbackAttempts += 1
+      },
+    } as unknown as Route)
+
+    await fixtureStarted
+    documentMarker = randomUUID()
+    releaseFixture()
+
+    await expect(request).resolves.toBeUndefined()
+    expect(fetchAttempts).toBe(1)
+    expect(abortAttempts).toBe(1)
+    expect(fallbackAttempts).toBe(0)
+  })
+
+  test("keeps a positively observed original document when navigation commits during marker capture", async () => {
+    let handler: ((route: Route) => Promise<void>) | undefined
+    const frameNavigationListeners = new Set<(frame: unknown) => void>()
+    let documentMarker = randomUUID()
+    let holdMarkerRead = false
+    let releaseMarkerRead!: () => void
+    let announceMarkerReadStarted!: () => void
+    const markerReadStarted = new Promise<void>((resolve) => {
+      announceMarkerReadStarted = resolve
+    })
+    const heldMarkerRead = new Promise<void>((resolve) => {
+      releaseMarkerRead = resolve
+    })
+    let releaseFixture!: () => void
+    let announceFixtureStarted!: () => void
+    const fixtureStarted = new Promise<void>((resolve) => {
+      announceFixtureStarted = resolve
+    })
+    const heldFixture = new Promise<void>((resolve) => {
+      releaseFixture = resolve
+    })
+    let fixtureCalls = 0
+    const sourcePage = {
+      isClosed: () => false,
+      frames: () => [sourceFrame],
+      on: (event: string, listener: (frame: unknown) => void) => {
+        if (event === "framenavigated") frameNavigationListeners.add(listener)
+      },
+    }
+    const sourceFrame = {
+      page: () => sourcePage,
+      isDetached: () => false,
+      evaluate: async () => {
+        if (holdMarkerRead) {
+          announceMarkerReadStarted()
+          await heldMarkerRead
+        }
+        return documentMarker
+      },
+    }
+    await installHermeticCommerceNetwork(
+      {
+        addInitScript: async () => {},
+        route: async (_match: string, value: typeof handler) => {
+          handler = value
+        },
+        routeWebSocket: async () => {},
+      } as unknown as BrowserContext,
+      {
+        ...options,
+        lnurl: async () => {
+          fixtureCalls += 1
+          if (fixtureCalls === 2) {
+            announceFixtureStarted()
+            await heldFixture
+          }
+          return null
+        },
+      }
+    )
+    const request = (path: string, fetch: Route["fetch"]) =>
+      handler!({
+        request: () => ({
+          url: () => `${options.appUrls[0]}${path}`,
+          method: () => "GET",
+          isNavigationRequest: () => false,
+          frame: () => sourceFrame,
+        }),
+        fetch,
+        fulfill: async () => {},
+        abort: async () => {},
+      } as unknown as Route)
+
+    await request("/warm-document.js", async () => ({
+      status: () => 200,
+      dispose: async () => {},
+    }))
+
+    holdMarkerRead = true
+    let abortAttempts = 0
+    let fallbackAttempts = 0
+    const oldResource = handler!({
+      request: () => ({
+        url: () => `${options.appUrls[0]}/old-document-module.js`,
+        method: () => "GET",
+        isNavigationRequest: () => false,
+        frame: () => sourceFrame,
+      }),
+      fetch: async () => {
+        throw new Error("Old document resource was cancelled.")
+      },
+      abort: async () => {
+        abortAttempts += 1
+      },
+      continue: async () => {
+        fallbackAttempts += 1
+      },
+    } as unknown as Route)
+
+    await Promise.race([markerReadStarted, fixtureStarted])
+    documentMarker = randomUUID()
+    for (const listener of frameNavigationListeners) listener(sourceFrame)
+    await markerReadStarted
+    releaseMarkerRead()
+    releaseFixture()
+
+    await expect(oldResource).resolves.toBeUndefined()
+    expect(abortAttempts).toBe(1)
+    expect(fallbackAttempts).toBe(0)
+  })
+
+  test("does not lend a stale positive marker to a new-document resource", async () => {
+    let handler: ((route: Route) => Promise<void>) | undefined
+    const frameNavigationListeners = new Set<(frame: unknown) => void>()
+    let documentMarker = randomUUID()
+    let holdMarkerRead = false
+    let releaseMarkerRead!: () => void
+    let announceMarkerReadStarted!: () => void
+    const markerReadStarted = new Promise<void>((resolve) => {
+      announceMarkerReadStarted = resolve
+    })
+    const heldMarkerRead = new Promise<void>((resolve) => {
+      releaseMarkerRead = resolve
+    })
+    const sourcePage = {
+      isClosed: () => false,
+      frames: () => [sourceFrame],
+      on: (event: string, listener: (frame: unknown) => void) => {
+        if (event === "framenavigated") frameNavigationListeners.add(listener)
+      },
+    }
+    const sourceFrame = {
+      page: () => sourcePage,
+      isDetached: () => false,
+      evaluate: async () => {
+        if (holdMarkerRead) {
+          announceMarkerReadStarted()
+          await heldMarkerRead
+        }
+        return documentMarker
+      },
+    }
+    await installHermeticCommerceNetwork(
+      {
+        addInitScript: async () => {},
+        route: async (_match: string, value: typeof handler) => {
+          handler = value
+        },
+        routeWebSocket: async () => {},
+      } as unknown as BrowserContext,
+      options
+    )
+    const request = (path: string, fetch: Route["fetch"]) =>
+      handler!({
+        request: () => ({
+          url: () => `${options.appUrls[0]}${path}`,
+          method: () => "GET",
+          isNavigationRequest: () => false,
+          frame: () => sourceFrame,
+        }),
+        fetch,
+        fulfill: async () => {},
+        abort: async () => {},
+      } as unknown as Route)
+
+    await request("/warm-document.js", async () => ({
+      status: () => 200,
+      dispose: async () => {},
+    }))
+
+    holdMarkerRead = true
+    documentMarker = randomUUID()
+    for (const listener of frameNavigationListeners) listener(sourceFrame)
+    await markerReadStarted
+    let abortAttempts = 0
+    let fallbackAttempts = 0
+    const newResource = handler!({
+      request: () => ({
+        url: () => `${options.appUrls[0]}/new-document-module.js`,
+        method: () => "GET",
+        isNavigationRequest: () => false,
+        frame: () => sourceFrame,
+      }),
+      fetch: async () => {
+        throw new Error("Current document resource failed.")
+      },
+      abort: async () => {
+        abortAttempts += 1
+      },
+      continue: async () => {
+        fallbackAttempts += 1
+      },
+    } as unknown as Route)
+    releaseMarkerRead()
+
+    await expect(newResource).rejects.toThrow(
+      "Isolated local application request failed."
+    )
+    expect(abortAttempts).toBe(0)
+    expect(fallbackAttempts).toBe(0)
+  })
+
   test.each([
     { scenario: "current document", harmless: false },
     { scenario: "same-document history change", harmless: false },

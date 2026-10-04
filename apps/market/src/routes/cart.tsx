@@ -14,7 +14,9 @@ import {
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
+  formatEventMarketPickupDate,
   getProfilePaymentAddress,
+  getShippingOptionsByCoordinates,
   formatNpub,
   getCachedMarketplaceProducts,
   getCachedMerchantStorefront,
@@ -43,6 +45,9 @@ import {
   AvatarImage,
   Badge,
   Button,
+  Combobox,
+  Input,
+  Label,
   cn,
 } from "@conduit/ui"
 import {
@@ -67,13 +72,8 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../components/MerchantIdentity"
-import {
-  EventActorName,
-  EventActorProvenance,
-} from "../components/EventActorIdentity"
 import { ProductVariationSelector } from "../components/ProductVariationSelector"
 import { type CartItem, useCart } from "../hooks/useCart"
-import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
 import { useProductCartFulfillment } from "../hooks/useProductCartFulfillment"
 import {
   useCartReadiness,
@@ -83,7 +83,17 @@ import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapab
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type UseWalletsReturn } from "../hooks/useWallets"
 import { useShopperPresets } from "../hooks/useShopperPresets"
-import { getCartShippingDestinationEligibility } from "../lib/cart-shipping-options"
+import {
+  getCartShippingDestinationEligibility,
+  getCartShippingOptionCoordinates,
+  prepareCartFulfillment,
+} from "../lib/cart-shipping-options"
+import {
+  DEFAULT_CHECKOUT_SHIPPING,
+  readCheckoutShippingCapabilityInitialization,
+  initializeCheckoutShippingSession,
+  writeCheckoutShippingSession,
+} from "../lib/checkout-session"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   coordinationPricingEnabled,
@@ -92,18 +102,15 @@ import {
 import {
   getCartCostSummary,
   getCartItemStockEvidenceForAvailability,
-  getPendingEventPickupCartItems,
   getMixedFulfillmentBlockingMessage,
   getCartItemKey,
   getCartPurchaseReference,
   getProductAddAvailability,
-  groupCartItems,
   groupCartPurchases,
   isCartProductAvailabilityBlocking,
   selectCartLine,
   type CartPurchaseGroup,
   type CartProductAvailability,
-  type MerchantCartGroup,
 } from "../lib/cart-model"
 import {
   cartItemInputFromProductSelection,
@@ -112,7 +119,6 @@ import {
   getProductSelectionImages,
   type MarketProductFamily,
 } from "../lib/productVariations"
-import { getPickupHandoffSummary } from "../lib/pickup-handoff"
 
 type PriceFormatter = (
   price: CommercePriceLike,
@@ -417,37 +423,20 @@ function RelatedProductRow({
   )
   const fulfillment = useProductCartFulfillment(selectedProduct, btcUsdRate)
   const resolution = fulfillment.resolution
-  const relatedPickupHandoff =
-    resolution?.status === "pickup"
-      ? getPickupHandoffSummary(resolution.fulfillment)
+  const cartCandidate =
+    resolution?.status === "standard"
+      ? cartItemInputFromProductSelection(product, resolution.product, {
+          type: resolution.type,
+        })
       : null
-  const relatedPickupHandlerIdentity = useEventActorIdentity(
-    relatedPickupHandoff?.handlerPubkey
-  )
-  const cartCandidate = resolution
-    ? resolution.status === "pickup"
-      ? cartItemInputFromProductSelection(
-          product,
-          resolution.product,
-          resolution.fulfillment
-        )
-      : resolution.status === "standard"
-        ? cartItemInputFromProductSelection(product, resolution.product, {
-            type: resolution.type,
-          })
-        : null
-    : null
   const existing = cartCandidate
     ? selectCartLine(cart.items, cartCandidate)
     : undefined
   const cartQuantity = existing?.quantity ?? 0
-  const fulfillmentBlocked =
-    fulfillment.isChecking || resolution?.status === "blocked" || !cartCandidate
+  const fulfillmentBlocked = !cartCandidate
   const images = getProductSelectionImages(product, selectedProduct)
   const imageUrl = images[0]?.url
-  const price = formatPrice(selectedProduct, {
-    allowZero: resolution?.status === "pickup",
-  })
+  const price = formatPrice(selectedProduct)
   const { data: profile } = useProfile(product.pubkey, {
     accountPubkey,
     authenticatedPubkey,
@@ -482,6 +471,7 @@ function RelatedProductRow({
       <Link
         to="/products/$productId"
         params={{ productId: selectedProduct.id }}
+        search={{}}
         className="shrink-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)]"
       >
         <img
@@ -502,6 +492,7 @@ function RelatedProductRow({
         <Link
           to="/products/$productId"
           params={{ productId: selectedProduct.id }}
+          search={{}}
           className="line-clamp-2 text-sm font-medium leading-6 text-[var(--text-primary)] transition-colors hover:text-secondary-300"
         >
           {product.title}
@@ -570,40 +561,6 @@ function RelatedProductRow({
                     ? `In cart (${cartQuantity})`
                     : "Add"}
         </Button>
-        {fulfillment.isChecking ||
-        resolution?.status === "blocked" ||
-        resolution?.status === "pickup" ? (
-          <div className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
-            {fulfillment.isChecking ? (
-              "Checking signed event pickup."
-            ) : resolution?.status === "blocked" ? (
-              resolution.reason
-            ) : relatedPickupHandoff && relatedPickupHandlerIdentity ? (
-              <>
-                {relatedPickupHandoff.label} · handled by{" "}
-                <EventActorName identity={relatedPickupHandlerIdentity} />
-                {" · no delivery address required."}
-                <EventActorProvenance
-                  pubkey={relatedPickupHandoff.handlerPubkey}
-                  copyLabel="Copy pickup handler npub"
-                  className="mt-1 flex"
-                />
-              </>
-            ) : (
-              "Signed event pickup · no delivery address required."
-            )}{" "}
-            {(resolution?.status === "blocked" ||
-              resolution?.status === "pickup") && (
-              <Link
-                to="/events/$collectionRef"
-                params={{ collectionRef: resolution.canonicalNaddr }}
-                className="font-medium text-secondary-400 hover:text-secondary-300"
-              >
-                View event catalog
-              </Link>
-            )}
-          </div>
-        ) : null}
       </div>
     </div>
   )
@@ -633,10 +590,12 @@ function CartLineItem({
     isCartProductAvailabilityBlocking(availability) ||
     (typeof availability?.stock === "number" &&
       item.quantity >= availability.stock)
-  const pickup =
-    item.fulfillment?.type === "pickup" ? item.fulfillment : undefined
+  const futurePickup =
+    item.fulfillment?.type === "event_market_pickup"
+      ? item.fulfillment
+      : undefined
   const zeroPriceOptions = {
-    allowZero: allowZeroPrice && pickup !== undefined,
+    allowZero: allowZeroPrice && futurePickup !== undefined,
   }
   const linePrice = formatPrice(
     {
@@ -656,10 +615,6 @@ function CartLineItem({
     zeroPriceOptions
   )
   const unitPrice = formatPrice(item, zeroPriceOptions)
-  const pickupHandoff = pickup ? getPickupHandoffSummary(pickup) : null
-  const pickupHandlerIdentity = useEventActorIdentity(
-    pickupHandoff?.handlerPubkey
-  )
 
   return (
     <div
@@ -688,6 +643,7 @@ function CartLineItem({
         <Link
           to="/products/$productId"
           params={{ productId: item.productId }}
+          search={futurePickup ? { event: futurePickup.market.coordinate } : {}}
           className="line-clamp-2 text-base font-medium leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300 sm:text-lg"
         >
           {item.title}
@@ -711,28 +667,16 @@ function CartLineItem({
         <div className="mt-2 text-sm text-[var(--text-secondary)]">
           Qty {item.quantity}
         </div>
-        {pickup ? (
+        {futurePickup ? (
           <div className="mt-2 flex items-start gap-2 text-xs leading-5 text-[var(--text-secondary)]">
             <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-secondary-400" />
-            <div>
-              {pickupHandoff && pickupHandlerIdentity ? (
-                <div className="font-medium text-[var(--text-primary)]">
-                  {pickupHandoff.label} · handled by{" "}
-                  <EventActorName identity={pickupHandlerIdentity} />
-                  <EventActorProvenance
-                    pubkey={pickupHandoff.handlerPubkey}
-                    copyLabel="Copy pickup handler npub"
-                    className="mt-1 flex font-normal"
-                  />
-                </div>
-              ) : null}
-              <div>
-                {pickup.option.title}
-                {pickup.option.location || pickup.option.geohash
-                  ? ` · ${pickup.option.location ?? pickup.option.geohash}`
-                  : " · public location pending"}
-              </div>
-            </div>
+            <span>
+              {futurePickup.mode === "organizer_handoff"
+                ? "Pickup from event organizer"
+                : "Pickup from merchant booth"}
+              {` · ${futurePickup.assignment}`}
+              {` · ${formatEventMarketPickupDate(futurePickup)}`}
+            </span>
           </div>
         ) : null}
 
@@ -782,73 +726,6 @@ function CartLineItem({
         </div>
       </div>
     </div>
-  )
-}
-
-function PendingEventPickupCartCard({
-  group,
-  accountPubkey,
-  authenticatedPubkey,
-  shouldContinue,
-  formatPrice,
-  onIncrement,
-  onDecrement,
-  onRemove,
-}: {
-  group: MerchantCartGroup
-  accountPubkey: string | null
-  authenticatedPubkey: string | null
-  shouldContinue?: () => boolean
-  formatPrice: PriceFormatter
-  onIncrement: (item: CartItem) => void
-  onDecrement: (item: CartItem) => void
-  onRemove: (item: CartItem) => void
-}) {
-  return (
-    <section
-      className="overflow-hidden rounded-2xl border border-[var(--warning)] bg-[var(--surface)]"
-      data-testid="pending-event-pickup-cart"
-    >
-      <div className="p-5 sm:p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <MerchantIdentity
-            merchantPubkey={group.merchantPubkey}
-            accountPubkey={accountPubkey}
-            authenticatedPubkey={authenticatedPubkey}
-            shouldContinue={shouldContinue}
-            className="min-w-0 flex-1"
-          />
-          <Badge variant="warning">Event pickup · Verification required</Badge>
-        </div>
-        <div
-          role="status"
-          className="mt-5 flex items-start gap-3 rounded-xl bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]"
-        >
-          <AlertTriangle
-            className="mt-1 size-4 shrink-0 text-warning"
-            aria-hidden="true"
-          />
-          <p className="text-pretty">
-            These items are saved in your cart, but ordering and payment stay
-            locked until their current signed event and pickup terms are
-            confirmed.
-          </p>
-        </div>
-        <div className="mt-5 divide-y divide-[var(--border)] border-t border-[var(--border)]">
-          {group.items.map((item) => (
-            <CartLineItem
-              key={item.cartLineId ?? getCartItemKey(item)}
-              item={item}
-              formatPrice={formatPrice}
-              allowZeroPrice
-              onIncrement={() => onIncrement(item)}
-              onDecrement={() => onDecrement(item)}
-              onRemove={() => onRemove(item)}
-            />
-          ))}
-        </div>
-      </div>
-    </section>
   )
 }
 
@@ -941,7 +818,7 @@ function MerchantCartCard({
   const purchaseReference = getCartPurchaseReference(group.id)
   const purchaseLabel =
     group.kind === "pickup"
-      ? `Event pickup · ${group.items[0]?.fulfillment?.type === "pickup" ? group.items[0].fulfillment.option.title : "Pickup"}`
+      ? `Event pickup · ${group.items[0]?.fulfillment?.type === "event_market_pickup" ? `${group.items[0].fulfillment.assignment} · ${formatEventMarketPickupDate(group.items[0].fulfillment)}` : "Pickup"}`
       : group.items.some((item) => item.format !== "digital")
         ? "Shipping / delivery"
         : "Digital delivery"
@@ -982,6 +859,15 @@ function MerchantCartCard({
           </div>
         </div>
 
+        {group.kind === "delivery" &&
+          group.items.some((item) => item.format !== "digital") && (
+            <p className="mt-4 text-sm text-[var(--text-muted)]">
+              {pricing.status === "ok" &&
+              pricing.shippingCost.status !== "manual"
+                ? `Shipping estimate: ${formatPrice({ price: pricing.shippingCost.totalSats, currency: "SATS", priceSats: pricing.shippingCost.totalSats }, { allowZero: true }).primary}. Confirm your full address at checkout.`
+                : "Enter a supported destination in Estimate shipping, or coordinate shipping with the merchant after sending an order."}
+            </p>
+          )}
         <div className="mt-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
             <div className="text-3xl font-semibold leading-tight text-secondary-400 sm:text-4xl">
@@ -1072,7 +958,9 @@ function MerchantCartCard({
 }
 
 function CartPage() {
-  const { authGeneration } = useAuth()
+  const { authGeneration, signerReadiness, restorePendingPubkey } = useAuth()
+  const authPending =
+    signerReadiness === "pending" || restorePendingPubkey !== null
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -1090,16 +978,83 @@ function CartPage() {
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
   const shopperPresets = useShopperPresets()
+  const [estimateOpen, setEstimateOpen] = useState(false)
+  const [estimate, setEstimate] = useState(() => ({
+    owner: accountPubkey,
+    value: readCheckoutShippingCapabilityInitialization(null, accountPubkey)
+      .value,
+  }))
+  useLayoutEffect(() => {
+    setEstimate({
+      owner: accountPubkey,
+      value: readCheckoutShippingCapabilityInitialization(null, accountPubkey)
+        .value,
+    })
+  }, [accountPubkey, authGeneration])
+  const estimateValue =
+    estimate.owner === accountPubkey
+      ? estimate.value
+      : DEFAULT_CHECKOUT_SHIPPING
+  const shippingCoordinates = getCartShippingOptionCoordinates(cart.items)
+  const shippingOptions = useQuery({
+    queryKey: [
+      "cartShippingEstimateOptions",
+      shippingCoordinates,
+      accountPubkey,
+      session.relayScope,
+    ],
+    queryFn: ({ signal }) =>
+      getShippingOptionsByCoordinates(shippingCoordinates, {
+        accountPubkey,
+        authenticatedPubkey,
+        signal,
+        shouldContinue: shouldContinueAccountRead,
+      }),
+    enabled: shippingCoordinates.length > 0,
+    staleTime: 15000,
+  })
+  const estimatedItems = useMemo(
+    () =>
+      prepareCartFulfillment(
+        cart.items,
+        shippingOptions.data ?? [],
+        {
+          country: estimateValue.country,
+          subdivision: estimateValue.state,
+          postalCode: estimateValue.postalCode,
+        },
+        shopperPricing.quote
+      ).items,
+    [
+      cart.items,
+      shippingOptions.data,
+      estimateValue.country,
+      estimateValue.state,
+      estimateValue.postalCode,
+      shopperPricing.quote,
+    ]
+  )
+  const estimatedGroups = groupCartPurchases(estimatedItems)
+  function updateEstimate(
+    field: "country" | "state" | "postalCode",
+    value: string
+  ): void {
+    if (authPending) return
+    const current = initializeCheckoutShippingSession(null, accountPubkey).value
+    const next = {
+      ...current,
+      [field]: value,
+      ...(field === "country" ? { state: "", postalCode: "" } : {}),
+    }
+    writeCheckoutShippingSession(next, undefined, undefined, accountPubkey)
+    setEstimate({ owner: accountPubkey, value: next })
+  }
   const [confirmClearTarget, setConfirmClearTarget] = useState<
     "all" | string | null
   >(null)
 
   const purchaseGroups = useMemo(
     () => groupCartPurchases(cart.items),
-    [cart.items]
-  )
-  const pendingPickupGroups = useMemo(
-    () => groupCartItems(getPendingEventPickupCartItems(cart.items)),
     [cart.items]
   )
   const merchantCount = useMemo(
@@ -1258,7 +1213,7 @@ function CartPage() {
     cachedRelatedProductsQuery.isLoading
 
   const allCartsSummary = getCartSummaryPrice(
-    cart.items,
+    estimatedItems,
     shopperPricing.quote,
     shopperPricing.formatPrice
   )
@@ -1379,9 +1334,6 @@ function CartPage() {
             <div className="text-sm tabular-nums text-[var(--text-secondary)]">
               {purchaseGroups.length} purchase
               {purchaseGroups.length === 1 ? "" : "s"}
-              {pendingPickupGroups.length > 0
-                ? ` · ${pendingPickupGroups.length} awaiting verification`
-                : ""}
               <span className="mx-2 text-[var(--text-muted)]">/</span>
               {merchantCount} merchant{merchantCount === 1 ? "" : "s"}
               <span className="mx-2 text-[var(--text-muted)]">/</span>
@@ -1389,6 +1341,74 @@ function CartPage() {
             </div>
           </div>
 
+          {cart.items.some(
+            (item) =>
+              item.format !== "digital" &&
+              item.fulfillment?.type !== "event_market_pickup"
+          ) && (
+            <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+              <Button
+                variant="ghost"
+                className="w-full justify-between px-0"
+                aria-expanded={estimateOpen}
+                aria-controls="cart-shipping-estimate"
+                onClick={() => setEstimateOpen(!estimateOpen)}
+              >
+                Estimate shipping <ChevronDown className="h-4 w-4" />
+              </Button>
+              {estimateOpen && (
+                <div
+                  id="cart-shipping-estimate"
+                  className="mt-3 grid gap-3 sm:grid-cols-3"
+                >
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="estimate-country">Country</Label>
+                    <Combobox
+                      id="estimate-country"
+                      value={estimateValue.country}
+                      disabled={authPending}
+                      searchPlaceholder="Search countries..."
+                      options={SHIPPING_COUNTRIES.map(({ code, name }) => ({
+                        value: code,
+                        label: name,
+                      }))}
+                      onValueChange={(value) =>
+                        updateEstimate("country", value)
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="estimate-state">State / region</Label>
+                    <Input
+                      id="estimate-state"
+                      disabled={authPending}
+                      value={estimateValue.state}
+                      onChange={(event) =>
+                        updateEstimate("state", event.target.value)
+                      }
+                      autoComplete="address-level1"
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="estimate-postal">Postal / ZIP code</Label>
+                    <Input
+                      id="estimate-postal"
+                      disabled={authPending}
+                      value={estimateValue.postalCode}
+                      onChange={(event) =>
+                        updateEstimate("postalCode", event.target.value)
+                      }
+                      autoComplete="postal-code"
+                    />
+                  </div>
+                  <p className="text-xs text-[var(--text-muted)] sm:col-span-3">
+                    Calculated on this device from the merchant's signed
+                    shipping terms. Review your full address at checkout.
+                  </p>
+                </div>
+              )}
+            </section>
+          )}
           {merchantCount < purchaseGroups.length ? (
             <div className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-secondary)]">
               <AlertTriangle
@@ -1410,26 +1430,6 @@ function CartPage() {
               not survive a reload or appear in another tab.
             </div>
           ) : null}
-
-          {pendingPickupGroups.map((group) => (
-            <PendingEventPickupCartCard
-              key={group.merchantPubkey}
-              group={group}
-              accountPubkey={accountPubkey}
-              authenticatedPubkey={authenticatedPubkey}
-              shouldContinue={shouldContinueAccountRead}
-              formatPrice={shopperPricing.formatPrice}
-              onIncrement={(item) => cart.incrementItem(item)}
-              onDecrement={(item) => {
-                if (item.quantity <= 1) {
-                  cart.removeItem(item)
-                  return
-                }
-                cart.decrementItem(item)
-              }}
-              onRemove={(item) => cart.removeItem(item)}
-            />
-          ))}
 
           {cartReadiness.hasUnavailableItems ? (
             <div
@@ -1503,7 +1503,7 @@ function CartPage() {
             </div>
           )}
 
-          {purchaseGroups.map((group) => {
+          {estimatedGroups.map((group) => {
             const forceExpanded = purchaseGroups.length === 1
             const expanded = forceExpanded || expandedGroup?.id === group.id
 
@@ -1572,11 +1572,8 @@ function CartPage() {
             <div className="mt-3 text-sm text-[var(--text-secondary)]">
               {cart.totals.count} item{cart.totals.count === 1 ? "" : "s"}{" "}
               across {purchaseGroups.length} ready purchase
-              {purchaseGroups.length === 1 ? "" : "s"}
-              {pendingPickupGroups.length > 0
-                ? ` and ${pendingPickupGroups.length} awaiting verification`
-                : ""}{" "}
-              from {merchantCount} merchant{merchantCount === 1 ? "" : "s"}.
+              {purchaseGroups.length === 1 ? "" : "s"} from {merchantCount}{" "}
+              merchant{merchantCount === 1 ? "" : "s"}.
             </div>
             <Button
               variant="outline"

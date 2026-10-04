@@ -2,6 +2,7 @@ import {
   canonicalizeProductPrice,
   getProductShippingOptionAddress,
   isCommerceReadIncomplete,
+  getMerchantShippingPolicyCoordinate,
   MAX_PRODUCT_IMAGE_CANDIDATES,
   normalizePublicMediaUrl,
   type CommerceFreshnessMeta,
@@ -27,6 +28,26 @@ import {
   type ProductPublicationFulfillmentIntent,
 } from "./product-publishing"
 
+import { getProductShippingMeasurements } from "./shippingPolicyForm"
+import {
+  SHIPPING_WEIGHT_UNITS,
+  type ShippingWeightUnit,
+} from "./shippingWeightUnits"
+
+export type ProductVariationMeasurements = Omit<
+  Parameters<typeof getProductShippingMeasurements>[0],
+  "currency"
+> & { shippingWeightUnit?: ShippingWeightUnit }
+
+const MEASUREMENT_FIELDS = [
+  "shippingWeightGrams",
+  "shippingWeightAllowanceGrams",
+  "shippingHandling",
+  "shippingLengthCm",
+  "shippingWidthCm",
+  "shippingHeightCm",
+] as const
+
 export const MAX_PRODUCT_VARIATION_AXES = 3
 export const MAX_PRODUCT_VARIATION_COUNT = 64
 export const MAX_PRODUCT_VARIATION_AXIS_VALUES = MAX_PRODUCT_VARIATION_COUNT
@@ -38,7 +59,7 @@ export interface ProductVariationAxis {
   values: string
 }
 
-export interface ProductVariationRow {
+export interface ProductVariationRow extends ProductVariationMeasurements {
   included: boolean
   identity: string
   dTag?: string
@@ -59,6 +80,8 @@ export interface ProductVariationRow {
 export type ProductVariationOverride = ProductVariationRow
 
 export interface ProductVariationFormState {
+  /** Explicit authoring choice; sharing a rate table does not imply this. */
+  shareShippingMeasurements?: boolean
   enabled: boolean
   axes: ProductVariationAxis[]
   rows: ProductVariationRow[]
@@ -490,6 +513,22 @@ function parseNewVariationRow(
   ) {
     return null
   }
+  if (
+    MEASUREMENT_FIELDS.some(
+      (field) => row[field] !== undefined && typeof row[field] !== "string"
+    )
+  )
+    return null
+  if (
+    row.shippingWeightUnit !== undefined &&
+    !SHIPPING_WEIGHT_UNITS.some(({ value }) => value === row.shippingWeightUnit)
+  )
+    return null
+  const measurements = Object.fromEntries(
+    MEASUREMENT_FIELDS.filter((field) => row[field] !== undefined).map(
+      (field) => [field, row[field]]
+    )
+  )
   const specifications: ProductSchema["specifications"] = []
   for (const specification of row.specifications) {
     if (!specification || typeof specification !== "object") return null
@@ -503,6 +542,10 @@ function parseNewVariationRow(
     specifications.push({ key: candidate.key, value: candidate.value })
   }
   return createVariationRow(specifications, {
+    ...measurements,
+    ...(row.shippingWeightUnit
+      ? { shippingWeightUnit: row.shippingWeightUnit as ShippingWeightUnit }
+      : {}),
     included: row.included ?? true,
     identity: getCombinationIdentity(specifications),
     ...(row.dTag ? { dTag: row.dTag } : {}),
@@ -597,7 +640,12 @@ export function parseProductVariationFormState(
   if (!Array.isArray(candidate.axes) || !Array.isArray(candidate.rows)) {
     return migrateLegacyVariationState(candidate)
   }
-  if (typeof candidate.enabled !== "boolean") return null
+  if (
+    typeof candidate.enabled !== "boolean" ||
+    (candidate.shareShippingMeasurements !== undefined &&
+      typeof candidate.shareShippingMeasurements !== "boolean")
+  )
+    return null
 
   const axes: ProductVariationAxis[] = []
   for (const valueAxis of candidate.axes) {
@@ -619,6 +667,12 @@ export function parseProductVariationFormState(
     rows.push(row)
   }
   return reconcileProductVariationForm({
+    ...(candidate.shareShippingMeasurements !== undefined
+      ? {
+          shareShippingMeasurements:
+            candidate.shareShippingMeasurements as boolean,
+        }
+      : {}),
     enabled: candidate.enabled,
     axes,
     rows,
@@ -689,6 +743,9 @@ export function reconcileProductVariationForm(
   state: ProductVariationFormState
 ): ProductVariationFormState {
   return {
+    ...(state.shareShippingMeasurements !== undefined
+      ? { shareShippingMeasurements: state.shareShippingMeasurements }
+      : {}),
     enabled: state.enabled,
     axes: state.axes.map((axis, index) => ({
       id: axis.id || axisId(axis.key, index),
@@ -902,6 +959,24 @@ export function updateProductVariationOverride(
   }
 }
 
+export function updateProductVariationMeasurements(
+  state: ProductVariationFormState,
+  identity: string,
+  update: Partial<ProductVariationMeasurements>
+): ProductVariationFormState {
+  const fields = Object.fromEntries(
+    [...MEASUREMENT_FIELDS, "shippingWeightUnit" as const]
+      .filter((field) => update[field] !== undefined)
+      .map((field) => [field, update[field]])
+  )
+  return {
+    ...state,
+    rows: state.rows.map((row) =>
+      row.identity === identity ? { ...row, ...fields } : row
+    ),
+  }
+}
+
 export function updateProductVariationInheritance(
   state: ProductVariationFormState,
   identity: string,
@@ -960,12 +1035,27 @@ function getUnresolvedVariationShippingError(
   return `${label} shipping could not be verified from the current relay read. Refresh products before saving this family.`
 }
 
+function getTableVariationPriceError(
+  row: ProductVariationRow,
+  baseFormat: string | undefined
+): string | null {
+  if (
+    (row.format === "inherit" ? baseFormat : row.format) !== "physical" ||
+    row.inheritShipping ||
+    !row.shippingCost.trim()
+  )
+    return null
+  return `${getCombinationLabel(row.specifications)}: Fixed variation prices cannot be combined with table shipping. Select Use table, clear the variation shipping price to coordinate after ordering, or change Shipping pricing to Fixed price per item.`
+}
+
 export function getProductVariationFormError(
   state: ProductVariationFormState,
   currency: string,
   options: {
     preserveExistingFulfillment?: boolean
     allowZeroPrice?: boolean
+    shippingPricingMode?: string
+    baseFormat?: string
   } = {}
 ): string | null {
   if (!state.enabled) return null
@@ -1018,6 +1108,16 @@ export function getProductVariationFormError(
   for (const row of includedRows) {
     if (
       !options.preserveExistingFulfillment &&
+      options.shippingPricingMode === "weight_table"
+    ) {
+      const tablePriceError = getTableVariationPriceError(
+        row,
+        options.baseFormat
+      )
+      if (tablePriceError) return tablePriceError
+    }
+    if (
+      !options.preserveExistingFulfillment &&
       (row.shippingResolution === "unresolved" ||
         (row.shippingResolution === "replacement" &&
           row.format !== "digital" &&
@@ -1065,6 +1165,35 @@ export function getProductVariationFormError(
         return error instanceof Error
           ? error.message
           : `Enter a valid price for ${getCombinationLabel(row.specifications)}.`
+      }
+    }
+    if (
+      !options.preserveExistingFulfillment &&
+      options.shippingPricingMode === "weight_table" &&
+      row.inheritShipping &&
+      (row.format === "inherit" ? options.baseFormat : row.format) ===
+        "physical"
+    ) {
+      try {
+        const measurements = getProductShippingMeasurements({
+          ...row,
+          currency,
+          ...(state.shareShippingMeasurements
+            ? {
+                shippingWeightGrams: undefined,
+                shippingLengthCm: undefined,
+                shippingWidthCm: undefined,
+                shippingHeightCm: undefined,
+              }
+            : {}),
+        })
+        if (
+          !state.shareShippingMeasurements &&
+          !measurements.shippingWeightGrams
+        )
+          return `${getCombinationLabel(row.specifications)}: Add a shipping weight or explicitly use the same measurements for all physical variations.`
+      } catch (error) {
+        return `${getCombinationLabel(row.specifications)}: ${error instanceof Error ? error.message : "Check shipping measurements."}`
       }
     }
     if (!row.inheritStock) {
@@ -1188,6 +1317,16 @@ function getShippingProjection(product: ProductSchema) {
   }
 }
 
+// This recognizes an authoring reference only. Publication separately verifies
+// the current signed policy and each product's positive weight.
+function hasMerchantShippingTableReference(product: ProductSchema): boolean {
+  return (
+    product.format === "physical" &&
+    product.shippingOptionId ===
+      getMerchantShippingPolicyCoordinate(product.pubkey)
+  )
+}
+
 function imagesMatch(
   left: ProductSchema["images"],
   right: ProductSchema["images"]
@@ -1307,10 +1446,12 @@ export function getProductVariationFormState<
     const variationShippingIntent =
       resolvePublishedProductFulfillmentIntentForTarget(variation.product)
     const inheritShipping =
-      parentShippingIntent !== null &&
-      variationShippingIntent !== null &&
-      JSON.stringify(variationShippingIntent) ===
-        JSON.stringify(parentShippingIntent)
+      (hasMerchantShippingTableReference(parent.product) &&
+        hasMerchantShippingTableReference(variation.product)) ||
+      (parentShippingIntent !== null &&
+        variationShippingIntent !== null &&
+        JSON.stringify(variationShippingIntent) ===
+          JSON.stringify(parentShippingIntent))
     const shippingAmount =
       variation.product.sourceShippingCost?.amount ??
       variation.product.shippingCostSats
@@ -1318,6 +1459,29 @@ export function getProductVariationFormState<
     rows.push(
       createVariationRow(specifications, {
         dTag: variation.dTag,
+        shippingWeightGrams:
+          variation.product.shippingWeightGrams === undefined
+            ? ""
+            : String(variation.product.shippingWeightGrams),
+        shippingWeightAllowanceGrams:
+          variation.product.shippingWeightAllowanceGrams === undefined
+            ? ""
+            : String(variation.product.shippingWeightAllowanceGrams),
+        shippingHandling:
+          variation.product.shippingHandling === undefined
+            ? ""
+            : formatProductAmountInput(
+                variation.product.shippingHandling.amount
+              ),
+        shippingLengthCm: variation.product.shippingDimensionsCm
+          ? String(variation.product.shippingDimensionsCm.length)
+          : "",
+        shippingWidthCm: variation.product.shippingDimensionsCm
+          ? String(variation.product.shippingDimensionsCm.width)
+          : "",
+        shippingHeightCm: variation.product.shippingDimensionsCm
+          ? String(variation.product.shippingDimensionsCm.height)
+          : "",
         title: variation.product.title,
         price:
           variationPrice.amount === parentPrice.amount
@@ -1340,7 +1504,8 @@ export function getProductVariationFormState<
             : formatProductAmountInput(shippingAmount),
         inheritShipping,
         ...(variation.product.shippingOptionId &&
-        variationShippingIntent === null
+        variationShippingIntent === null &&
+        !hasMerchantShippingTableReference(variation.product)
           ? { shippingResolution: "unresolved" as const }
           : {}),
       })
@@ -1444,6 +1609,16 @@ export function reconcileProductVariationDraftResolution(
       const publishedRow = publishedRows.get(
         getCombinationIdentity(row.specifications)
       )
+      if (publishedRow && (!row.dTag || row.dTag === publishedRow.dTag)) {
+        row = {
+          ...row,
+          ...Object.fromEntries(
+            MEASUREMENT_FIELDS.filter((field) => row[field] === undefined).map(
+              (field) => [field, publishedRow[field]]
+            )
+          ),
+        }
+      }
       if (
         !publishedRow ||
         (row.dTag && publishedRow.dTag && row.dTag !== publishedRow.dTag) ||
@@ -1551,8 +1726,16 @@ function buildVariationProduct(
   existing: ProductListingRecordLike | undefined,
   now: number,
   preserveExistingFulfillment = false,
-  listingAreaMode: "preserve" | "apply" = "apply"
+  listingAreaMode: "preserve" | "apply" = "apply",
+  shareShippingMeasurements = false
 ): ProductSchema {
+  if (
+    !preserveExistingFulfillment &&
+    hasMerchantShippingTableReference(parent)
+  ) {
+    const tablePriceError = getTableVariationPriceError(row, parent.format)
+    if (tablePriceError) throw new Error(tablePriceError)
+  }
   const dTag =
     row.dTag ??
     buildProductVariationDTag(parentDTag, {
@@ -1623,6 +1806,36 @@ function buildVariationProduct(
     }
   } else if (row.inheritShipping) {
     product = copyShippingProjection(product, getShippingProjection(parent))
+    if (
+      hasMerchantShippingTableReference(parent) &&
+      product.format === "physical"
+    ) {
+      const measurements = getProductShippingMeasurements({
+        ...row,
+        currency,
+        ...(shareShippingMeasurements
+          ? {
+              shippingWeightGrams: undefined,
+              shippingLengthCm: undefined,
+              shippingWidthCm: undefined,
+              shippingHeightCm: undefined,
+            }
+          : {}),
+      })
+      product.shippingWeightGrams = shareShippingMeasurements
+        ? parent.shippingWeightGrams
+        : measurements.shippingWeightGrams
+      product.shippingDimensionsCm = shareShippingMeasurements
+        ? parent.shippingDimensionsCm
+        : measurements.shippingDimensionsCm
+      product.shippingWeightAllowanceGrams =
+        measurements.shippingWeightAllowanceGrams
+      product.shippingHandling = measurements.shippingHandling
+      if (!product.shippingWeightGrams)
+        throw new Error(
+          `${row.label}: Add a shipping weight or explicitly use the same measurements for all physical variations.`
+        )
+    }
   } else if (row.shippingCost.trim()) {
     const amount = parsePlainDecimalAmount(
       row.shippingCost,
@@ -1656,6 +1869,26 @@ function buildVariationProduct(
     })
   }
 
+  if (!preserveExistingFulfillment) {
+    product.shippingAdjustmentsMalformed = undefined
+  }
+  if (product.format === "digital") {
+    product = copyShippingProjection(product, {
+      shippingCostSats: undefined,
+      sourceShippingCost: undefined,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingOptionRefs: undefined,
+      collectionRefs: product.collectionRefs,
+      shippingCountries: undefined,
+      shippingCountryRules: undefined,
+    })
+    product.shippingWeightGrams = undefined
+    product.shippingDimensionsCm = undefined
+    product.shippingWeightAllowanceGrams = undefined
+    product.shippingHandling = undefined
+    product.shippingAdjustmentsMalformed = undefined
+  }
   return product
 }
 
@@ -1849,6 +2082,9 @@ export function buildProductFamilyChangePlan<
 
   const parentProduct: ProductSchema = {
     ...input.baseProduct,
+    ...(fulfillmentIntent.kind === "weight_table"
+      ? { shippingOptionId: fulfillmentIntent.policyCoordinate }
+      : {}),
     id: `30402:${input.baseProduct.pubkey}:${parentDTag}`,
     type: input.variations.enabled ? "variable" : "simple",
     parentProductId: undefined,
@@ -1888,7 +2124,8 @@ export function buildProductFamilyChangePlan<
             existing,
             now,
             false,
-            input.listingAreaMode ?? "apply"
+            input.listingAreaMode ?? "apply",
+            input.variations.shareShippingMeasurements === true
           ),
           existing,
           !row.inheritShipping && !row.shippingCost.trim()
@@ -1918,7 +2155,8 @@ export function buildProductFamilyChangePlan<
       desiredDTags.has(dTag) &&
       !safeReplacementShippingDTags.has(dTag) &&
       !!product.shippingOptionId &&
-      resolvePublishedProductFulfillmentIntentForTarget(product) === null
+      resolvePublishedProductFulfillmentIntentForTarget(product) === null &&
+      !hasMerchantShippingTableReference(product)
   )
   if (unresolvedExistingShipping) {
     throw new Error(
@@ -1928,6 +2166,7 @@ export function buildProductFamilyChangePlan<
   const publish = desired.filter((target) => {
     if (input.forcePublishDTags?.includes(target.dTag)) return true
     if (!target.existing?.dTag) return true
+    if (target.existing.product.shippingAdjustmentsMalformed) return true
     const existingFulfillmentIntent =
       resolvePublishedProductFulfillmentIntentForTarget(target.existing.product)
     if (!existingFulfillmentIntent) return true

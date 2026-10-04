@@ -101,7 +101,11 @@ export const publishExactProductShippingRelay: ProductShippingRelayPublisher =
             input.isAuthenticatedPubkeyCurrent?.(authenticatedPubkey) !== false
         : undefined,
     })
-    return { status }
+    // Authentication defers this exact frame; it is not a terminal rejection.
+    return {
+      status:
+        status === "acked" || status === "rejected" ? status : "timed_out",
+    }
   }
 
 export interface ProductShippingDeliveryOptions {

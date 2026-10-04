@@ -6,6 +6,9 @@ import {
   createCheckoutSparkSettledReconciliation,
   freezeCheckoutSparkCommerceQuote,
   freezeCheckoutSparkSettledPlan,
+  freezeCheckoutSparkSettledTreasuryPlan,
+  deriveCheckoutSparkNativeTreasuryInvoiceId,
+  selectCheckoutSparkTreasuryAddress,
   restoreCheckoutSparkSettledReconciliation,
   snapshotCheckoutSparkPlanSourceEvents,
   projectProfileContent,
@@ -16,6 +19,7 @@ import {
   type CheckoutSparkSettledRecipientInput,
   type CheckoutSparkSettledReconciliation,
   type SignedPublicNostrEvent,
+  type CheckoutSparkTreasuryConfiguration,
   type fetchLnurlPayMetadata,
 } from "@conduit/core"
 
@@ -39,6 +43,9 @@ import {
 import type {
   SparkCheckoutReceiveInput,
   SparkCheckoutReceiveRequest,
+  SparkCheckoutTreasuryDestination,
+  SparkCheckoutTreasuryPrepareInput,
+  SparkCheckoutTreasuryRequest,
 } from "./spark-wallet"
 
 const STORAGE_KEY = "conduit:checkout-spark-settled-preparations:v3"
@@ -112,6 +119,14 @@ export interface CheckoutSparkSettledPreparationRepository {
 
 export interface PrepareCheckoutSparkSettledFundingDependencies {
   now?: () => number
+  treasuryConfiguration?: CheckoutSparkTreasuryConfiguration
+  validateTreasuryDestination?: (input: {
+    network: CheckoutSparkNetwork
+    sparkAddress: string
+  }) => Promise<SparkCheckoutTreasuryDestination>
+  prepareTreasuryRequest?: (
+    input: SparkCheckoutTreasuryPrepareInput
+  ) => Promise<SparkCheckoutTreasuryRequest>
   fetchPayoutMetadata?: typeof fetchLnurlPayMetadata
   repository?: CheckoutSparkSettledPreparationRepository
   createWalletMaterial?: (
@@ -383,6 +398,32 @@ export async function prepareCheckoutSparkSettledFunding(
     dependencies.publishRecoveryHandoff ??
     publishCheckoutSparkSettledRecoveryHandoff
   const verifyAck = dependencies.verifyRecoveryAck ?? recoveryAcked
+  const treasuryAddress = selectCheckoutSparkTreasuryAddress(
+    network,
+    dependencies.treasuryConfiguration
+  )
+  // Validate a configured public destination before generating wallet material.
+  // Invalid configuration must not silently revert to the Lightning rail.
+  const treasuryDestination = treasuryAddress
+    ? await (
+        dependencies.validateTreasuryDestination ??
+        ((request) =>
+          requireSparkManager().validateCheckoutTreasuryDestination(request))
+      )({
+        network,
+        sparkAddress: treasuryAddress,
+      })
+    : null
+  assertCurrent()
+  if (
+    treasuryDestination &&
+    (treasuryDestination.sparkAddress !== treasuryAddress ||
+      !/^(02|03)[0-9a-f]{64}$/.test(
+        treasuryDestination.receiverIdentityPublicKey
+      ))
+  ) {
+    throw new Error("Checkout Spark treasury configuration is invalid.")
+  }
 
   const preparedAt = now()
   if (
@@ -572,7 +613,7 @@ export async function prepareCheckoutSparkSettledFunding(
         "Settled checkout receive does not match its invoice terms."
       )
     }
-    const plan = freezeCheckoutSparkSettledPlan({
+    const planInput = {
       checkoutId,
       orderId,
       merchantPubkey,
@@ -591,7 +632,31 @@ export async function prepareCheckoutSparkSettledFunding(
         expiresAt: receive.expiresAt,
       },
       recipients,
-    })
+    }
+    const nativeTreasury = treasuryDestination
+      ? await (
+          dependencies.prepareTreasuryRequest ??
+          ((request) =>
+            requireSparkManager().prepareCheckoutTreasuryRequest(request))
+        )({
+          network,
+          ...treasuryDestination,
+          senderIdentityPublicKey: receive.receiverIdentityPublicKey!,
+          invoiceId: deriveCheckoutSparkNativeTreasuryInvoiceId({
+            checkoutId,
+            orderId,
+            walletId: wallet.walletId,
+            network,
+            createdAt: receive.createdAt,
+            ...treasuryDestination,
+            senderIdentityPublicKey: receive.receiverIdentityPublicKey!,
+          }),
+        })
+      : null
+    assertCurrent()
+    const plan = nativeTreasury
+      ? freezeCheckoutSparkSettledTreasuryPlan({ ...planInput, nativeTreasury })
+      : freezeCheckoutSparkSettledPlan(planInput)
     const canonicalSources = canonicalizeCheckoutSparkPlanSourceEvents(
       plan,
       sourceEvents

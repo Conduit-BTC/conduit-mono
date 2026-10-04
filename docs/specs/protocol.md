@@ -114,7 +114,7 @@ The exception is constrained as follows:
   restricted to those events. Its review link must target the Merchant
   deployment paired with the Market deployment that created it; production,
   preview, signet, and supported local environments must not cross-link.
-- For a version-3 settled-allocation Spark router plan, a separate constrained
+- For a version-3 or version-4 settled-allocation Spark router plan, a separate constrained
   wrapping capability may seal the machine-only `checkout_spark_recovery`
   and `checkout_spark_recovery_progress` rumors for that same order and
   merchant. The canonical payload, plan, recipient, sender, and preparation
@@ -199,6 +199,38 @@ closure metadata replaces fresh operator/payment history and spendable-return
 verification. Recovery secrets do not enter progress, generic Messages,
 diagnostics or public events. Retired receipt summaries retain the winning
 attempt identity; the retirement tombstone remains a replay barrier.
+
+### Settled router native treasury extension
+
+The optional native final-allocation rail uses frozen plan version four and
+reconciliation version five. The initial buyer recovery envelope remains
+version two and buyer progress remains version three, with strictly validated
+nested native state. Merchant-authored progress uses version three and its own
+digest domain. Local provider-attributed settlement records use version two;
+retained settlement summaries use version three. Unsupported clients reject
+these versions rather than infer a Lightning intent or omit the final leg.
+
+The final native sidecar contains one frozen sender-restricted canonical
+invoice request and deterministic UUID, then a saved exact accounting intent,
+possible-send status and actual provider identifier learned from history.
+The UUID is not a fabricated provider transfer identifier. Commerce rows keep
+their Lightning intent and append-only closed-generation journal. Restoration
+and merging reject unknown fields, a changed request, divergent accounting,
+identifier substitution, rollback, contradictory receipts and omitted history.
+
+Signed recovery state and relay acknowledgement are transport evidence only.
+Both buyer and Merchant execution independently re-prove exact funding, all
+winning commerce payments, recipient association and any complete old returns
+before freezing or sending the final amount. No balance-only sweep is allowed.
+An uncertain native transfer stays attached to that exact request; no invoice
+renewal or new identifier is inferred from absent or unavailable history.
+Fresh exact claimed-transfer evidence records the native receipt without a
+Lightning invoice or preimage. The wallet contract specifies residual ownership,
+approval, zero-fee capability, completion and retirement restrictions.
+
+The guest exception retains its existing order scope and lifetime. Native
+recovery adds no account credential, signer permission, generic message,
+public event, diagnostic payload or service-operated wallet executor.
 
 ### Service Signer Exception: Anon Public Zaps
 

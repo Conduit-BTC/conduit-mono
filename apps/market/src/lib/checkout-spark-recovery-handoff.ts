@@ -316,7 +316,7 @@ function assertGuestSettledRecoveryScope(input: {
 }): void {
   const { identity, plan, preparedAt, now } = input
   if (
-    plan.schemaVersion !== 3 ||
+    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
     identity.orderId !== plan.orderId ||
     identity.merchantPubkey !== plan.merchantPubkey ||
     !HEX_64.test(identity.pubkey) ||

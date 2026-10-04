@@ -1,4 +1,4 @@
-import { isSatsLikeCurrency } from "../pricing"
+import { isSatsLikeCurrency, normalizeCurrencyIdentity } from "../pricing"
 import {
   orderPickupFulfillmentSchema,
   type OrderPickupFulfillmentSchema,
@@ -6,10 +6,10 @@ import {
 import type { CheckoutSparkCommerceQuoteLine } from "./checkout-spark-reconciliation"
 import {
   parseAddressableCoordinate,
-  resolveEventMarketEvidence,
-  resolveEventMarketProductParticipation,
+  parseEventMarketCalendarEvent,
+  parseEventMarketCollectionEvent,
+  parseEventMarketPickupEvent,
 } from "./event-market"
-import { resolveEventMarketProductFulfillment } from "./event-market-fulfillment"
 import { parseProductEvent } from "./products"
 import {
   isValidSignedPublicNostrEvent,
@@ -135,39 +135,76 @@ export function resolveCheckoutSparkSignedPickup(input: {
     const collectionEvent = selectedSource(line.pickup.collection, [30405])
     const calendarEvent = selectedSource(line.pickup.calendar, [31922, 31923])
     const pickupEvent = selectedSource(line.shippingOption, [30406])
-    const resolution = resolveEventMarketEvidence({
-      reference: line.pickup.collection.coordinate,
-      expectedOrganizerPubkey: collectionEvent.pubkey,
-      selectedProductCoordinates: [line.productCoordinate],
-      events: [collectionEvent, calendarEvent, pickupEvent],
-      productRequestEvents: [productEvent],
-      nowMs: acceptedAtMs,
-    })
-    const participation = resolveEventMarketProductParticipation(
-      product,
-      resolution
-    )
-    const fulfillment = resolveEventMarketProductFulfillment(
-      product,
-      resolution
-    )
-    const { calendar, collection } = resolution
+    // This exact-revision graph is private compatibility for pre-31927 plans;
+    // it neither discovers nor admits a legacy public market for new checkout.
+    const collection = parseEventMarketCollectionEvent(collectionEvent)
+    const calendar = parseEventMarketCalendarEvent(calendarEvent)
+    const pickup = parseEventMarketPickupEvent(pickupEvent)
     if (
-      resolution.state !== "active" ||
-      !participation.accepted ||
-      !participation.requested ||
       !calendar ||
       !collection ||
-      calendar.eventId !== calendarEvent.id ||
-      collection.eventId !== collectionEvent.id ||
-      fulfillment.status !== "resolved" ||
-      fulfillment.selectedPickup.eventId !== pickupEvent.id ||
-      !isSatsLikeCurrency(fulfillment.sourceCost.normalizedCurrency) ||
-      fulfillment.sourceCost.amount !== line.unitShippingSats
+      !pickup ||
+      calendar.authorPubkey !== collection.authorPubkey ||
+      collection.unsupportedReferences.length !== 0 ||
+      collection.eventCoordinates.length !== 1 ||
+      collection.eventCoordinates[0] !== calendar.coordinate ||
+      collection.pickupCoordinates.length > 1 ||
+      collection.orderAcceptance === "closed" ||
+      (collection.orderAcceptance === undefined &&
+        acceptedAtMs >= calendar.end) ||
+      !collection.productCoordinates.includes(product.id) ||
+      !product.collectionRefs?.includes(collection.coordinate) ||
+      !isSatsLikeCurrency(pickup.currency)
     ) {
       unavailable()
     }
-    const pickup = fulfillment.selectedPickup
+    const references = [...(product.shippingOptionRefs ?? [])]
+    if (
+      product.shippingOptionId &&
+      !references.some((entry) => entry.coordinate === product.shippingOptionId)
+    ) {
+      references.push({ coordinate: product.shippingOptionId })
+    }
+    if (references.length === 0) unavailable()
+    const selected = new Set<string>()
+    const extras: number[] = []
+    for (const reference of references) {
+      if (reference.coordinate === collection.coordinate) {
+        if (collection.pickupCoordinates.length !== 1) unavailable()
+        selected.add(collection.pickupCoordinates[0]!)
+      } else {
+        const coordinate = parseAddressableCoordinate(
+          reference.coordinate,
+          [30406]
+        )
+        if (!coordinate) unavailable()
+        selected.add(coordinate.coordinate)
+      }
+      const extra = reference.extraCost
+      if (
+        reference.extraCostMalformed ||
+        (extra &&
+          (!Number.isFinite(extra.amount) ||
+            extra.amount < 0 ||
+            normalizeCurrencyIdentity(extra.currency) !==
+              normalizeCurrencyIdentity(extra.normalizedCurrency) ||
+            normalizeCurrencyIdentity(extra.normalizedCurrency) !==
+              normalizeCurrencyIdentity(pickup.currency)))
+      )
+        unavailable()
+      extras.push(extra?.amount ?? 0)
+    }
+    const merchantHandoff = pickup.authorPubkey === productEvent.pubkey
+    if (
+      selected.size !== 1 ||
+      !selected.has(pickup.coordinate) ||
+      extras.some((amount) => amount !== extras[0]) ||
+      (!merchantHandoff &&
+        (pickup.authorPubkey !== collection.authorPubkey ||
+          !collection.pickupCoordinates.includes(pickup.coordinate))) ||
+      pickup.price + extras[0]! !== line.unitShippingSats
+    )
+      unavailable()
     const snapshot: CheckoutSparkSignedPickup = {
       type: "pickup",
       organizerPubkey: collection.authorPubkey,
@@ -195,10 +232,14 @@ export function resolveCheckoutSparkSignedPickup(input: {
         ...(pickup.location ? { location: pickup.location } : {}),
         ...(pickup.geohash ? { geohash: pickup.geohash } : {}),
       },
-      handoffMode: fulfillment.handoffMode,
-      handlerPubkey: fulfillment.handoffPubkey,
+      handoffMode: merchantHandoff ? "merchant_handoff" : "organizer_handoff",
+      handlerPubkey: pickup.authorPubkey,
       costSats: line.unitShippingSats,
-      sourceCost: { ...fulfillment.sourceCost },
+      sourceCost: {
+        amount: line.unitShippingSats,
+        currency: pickup.currency,
+        normalizedCurrency: pickup.currency,
+      },
     }
     if (!orderPickupFulfillmentSchema.safeParse(snapshot).success) unavailable()
     return snapshot

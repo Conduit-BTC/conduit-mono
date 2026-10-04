@@ -178,6 +178,7 @@ export async function reviewMerchantCheckoutSparkSettledPayout(
 
 export type MerchantCheckoutSparkSignedNextPayoutSelection =
   | { status: "ready"; review: MerchantCheckoutSparkPayoutReview }
+  | { status: "native_treasury" }
   | {
       status:
         | "preparation_needed"
@@ -303,6 +304,14 @@ export async function selectMerchantCheckoutSparkSignedNextPayout(
       selection = { status: "no_unpaid_leg" }
       return
     }
+    if (
+      state.plan.schemaVersion === 4 &&
+      state.plan.recipients.find((recipient) => recipient.legId === next.legId)
+        ?.kind === "conduit"
+    ) {
+      selection = { status: "native_treasury" }
+      return
+    }
     const review = payoutReview(state, next.legId)
     const signedReview = payoutReview(signed, next.legId)
     if (
@@ -363,6 +372,9 @@ export async function selectMerchantCheckoutSparkSignedNextPayout(
     ? selection
     : { status: "recovery_unavailable" }
 }
+
+export { continueMerchantCheckoutSparkNativeTreasury } from "./checkout-spark-native-treasury-continuation"
+export type { MerchantCheckoutSparkNativeTreasuryContinuationDependencies } from "./checkout-spark-native-treasury-continuation"
 
 export interface MerchantCheckoutSparkContinuationDependencies {
   repository?: Store

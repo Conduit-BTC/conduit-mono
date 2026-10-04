@@ -41,6 +41,42 @@ function receipt(): PaymentReceipt {
 }
 
 describe("private checkout payment receipt", () => {
+  it("shows the completed native treasury payment from exact provider history", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkPaymentReceipt
+        receipt={{
+          ...receipt(),
+          recordedPaidSats: 1_108,
+          recordedFeeSats: 2,
+          recordedDebitSats: 1_110,
+          recordedUnspentSats: 3,
+          nativeTreasury: {
+            baseConduitAllocationSats: 111,
+            unusedCommerceReserveSats: 2,
+            principalSats: 113,
+            feeSats: 0,
+            debitSats: 113,
+            observedAt: 3_000,
+          },
+        }}
+      />
+    )
+
+    expect(html).toContain("Completed native Spark payment")
+    expect(html).toContain("exact completed transfer")
+    expect(html).toContain("Base Conduit allocation")
+    expect(html).toContain("111 sats")
+    expect(html).toContain("Unused recipient fee reserves included")
+    expect(html).toContain("2 sats")
+    expect(html).toContain("Final Conduit payment")
+    expect(html).toContain("113 sats")
+    expect(html).toContain("Actual native Spark fee")
+    expect(html).toContain("0 sats")
+    expect(html).not.toContain("native-transfer")
+    expect(html).not.toContain("11111111-1111-5111")
+    expect(html).not.toContain("<button")
+  })
+
   it("keeps routing accounting behind a collapsed payment-details disclosure", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkPaymentReceipt receipt={receipt()} />

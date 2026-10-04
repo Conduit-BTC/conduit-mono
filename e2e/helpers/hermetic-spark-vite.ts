@@ -20,7 +20,7 @@ const pureExports = [
     "utils/receive-quote.ts",
   ],
   [
-    "decodeSparkAddress, getNetworkFromSparkAddress, isValidSparkAddress",
+    "encodeSparkAddress, decodeSparkAddress, getNetworkFromSparkAddress, isValidSparkAddress",
     "utils/address.ts",
   ],
 ] as const
@@ -169,7 +169,7 @@ const sdk = createHermeticSparkSdkFacade({ pureSdk, request(command) {
 export const { SparkWallet, SparkReadonlyClient, DefaultSparkSigner, UUID,
   SparkWalletEvent, SparkValidationError, Network, NetworkToProto,
   parseCompressedPublicKeyHex, manifestGrossSats, manifestNetSatsFor,
-  manifestFeeSats, ReceiveQuoteAmountBasis, decodeSparkAddress,
+  manifestFeeSats, ReceiveQuoteAmountBasis, decodeSparkAddress, encodeSparkAddress,
   getNetworkFromSparkAddress, isValidSparkAddress } = sdk;
 `
     },

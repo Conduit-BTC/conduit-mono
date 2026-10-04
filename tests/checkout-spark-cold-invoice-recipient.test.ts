@@ -56,6 +56,8 @@ function invoice(amountSats: number, paymentHash: string) {
 }
 
 describe("cold Merchant recovery of an independently attributed saved invoice", () => {
+  // Each case signs, delivers and restores multiple private progress snapshots.
+  // This test-only budget does not extend provider or product deadlines.
   it.each([
     ["unpaid merchant", false, false],
     ["already-paid merchant", true, false],
@@ -503,6 +505,7 @@ describe("cold Merchant recovery of an independently attributed saved invoice", 
         database.close()
         await database.delete()
       }
-    }
+    },
+    15_000
   )
 })

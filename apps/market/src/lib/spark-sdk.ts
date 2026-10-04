@@ -1,5 +1,6 @@
 import {
   config,
+  createCheckoutSparkNativeTreasurySdkAdapter,
   decodeLightningInvoiceAmount,
   decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
@@ -10,9 +11,12 @@ import {
   isAmountlessLightningInvoice,
   isValidLightningInvoice,
   inspectSparkCheckoutLightningReturnedAttempt,
+  inspectSparkCheckoutLightningClosedReturnedAttempt,
   normalizeLightningInvoice,
+  prepareCheckoutSparkNativeTreasuryRequest,
   readExactSparkLightningRecoveredTransfer,
   verifyExactSparkLightningRequestDebit,
+  validateCheckoutSparkNativeTreasuryDestination,
   type CheckoutSparkNativeRetirementReader,
   type SparkCheckoutLightningReturnedReader,
   type WalletNetwork,
@@ -30,12 +34,16 @@ import {
   type SparkCheckoutReceiveRequest,
   type SparkCheckoutRetirementSession,
   type SparkFundsState,
+  type SparkCheckoutTreasuryPrepareInput,
+  type SparkCheckoutTreasuryRequest,
+  type SparkCheckoutTreasuryDestination,
   type SparkPreparedPayment,
   type SparkPayInvoiceInput,
   type SparkSdkClient,
   type SparkSdkFactory,
   type SparkSdkPayment,
 } from "./spark-wallet"
+import marketPackage from "../../package.json"
 import { isSparkWalletSessionCoordinationAvailable } from "./spark-wallet-lease"
 import { canUseCheckoutSparkLocalRouterCanary } from "./checkout-spark-local-router-canary"
 import { CHECKOUT_SPARK_LOCAL_UNQUOTED_RECEIVE_POLICY } from "./checkout-spark-unquoted-canary"
@@ -85,6 +93,11 @@ interface SparkNativeTransfer {
   type: string
   transferDirection: string
   receiverIdentityPublicKey?: string
+  senderIdentityPublicKey?: string
+  valueSentByWallet?: number
+  valueReceivedByWallet?: number
+  sparkInvoice?: string
+  senders?: Array<{ identityPublicKey: string }>
   receivers?: Array<{
     identityPublicKey: string
     amountSats: number
@@ -109,6 +122,14 @@ interface SparkNativeLightningSendRequest {
 }
 
 export interface SparkNativeWallet {
+  querySparkInvoices?(
+    invoices: string[]
+  ): Promise<
+    import("@buildonspark/spark-sdk/proto/spark").QuerySparkInvoicesResponse
+  >
+  fulfillSparkInvoice?(
+    invoices: Array<{ invoice: string; amount: bigint }>
+  ): Promise<unknown>
   /** Authenticated native closure reads; only an explicit renewal uses these. */
   queryHTLC?: SparkCheckoutLightningReturnedReader["queryHTLC"]
   getLeaves?: SparkCheckoutLightningReturnedReader["getLeaves"]
@@ -197,6 +218,9 @@ interface SparkNativeInitializeInput {
 
 export interface SparkNativeModule {
   readonly eventNames: readonly string[]
+  /** Reviewed dependency capability, not a provider quote or deployment proof. */
+  readonly nativeTreasuryPolicy?: typeof SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY
+  encodeSparkAddress?: typeof import("@buildonspark/spark-sdk").encodeSparkAddress
   parseTransferId(value: string): SparkNativeTransferId
   inspectLightningReceiveQuote(input: {
     quote: SparkNativeReceiveQuote
@@ -224,6 +248,9 @@ export interface SparkNativeModule {
   isValidSparkAddress(address: string): boolean
   getNetworkFromSparkAddress(address: string): string
 }
+
+export const SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY =
+  "spark-sdk-0.12.1-invoice-zero-fee-v1" as const
 
 interface FirstPartySparkSdkFactoryOptions {
   network: SupportedSparkNetwork
@@ -344,6 +371,24 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
     this.#now = input.now ?? Date.now
   }
 
+  async prepareCheckoutTreasuryRequest(
+    request: SparkCheckoutTreasuryPrepareInput
+  ): Promise<SparkCheckoutTreasuryRequest> {
+    if (request.network !== this.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    return prepareCheckoutTreasuryRequest(await this.#getModule(), request)
+  }
+
+  async validateCheckoutTreasuryDestination(
+    request: Pick<SparkCheckoutTreasuryPrepareInput, "network" | "sparkAddress">
+  ): Promise<SparkCheckoutTreasuryDestination> {
+    if (request.network !== this.network) {
+      throw new Error("Checkout Spark payment belongs to another network.")
+    }
+    return validateCheckoutTreasuryDestination(await this.#getModule(), request)
+  }
+
   async open(input: {
     walletId: string
     mnemonic: string
@@ -410,7 +455,12 @@ export class FirstPartySparkSdkFactory implements SparkSdkFactory {
   }
 }
 
-function adaptFirstPartySparkWallet(input: {
+export const validateCheckoutTreasuryDestination =
+  validateCheckoutSparkNativeTreasuryDestination
+export const prepareCheckoutTreasuryRequest =
+  prepareCheckoutSparkNativeTreasuryRequest
+
+export function adaptFirstPartySparkWallet(input: {
   walletId: string
   wallet: SparkNativeWallet
   module: SparkNativeModule
@@ -576,6 +626,23 @@ function adaptFirstPartySparkWallet(input: {
     }
     return { availableSats, ownedSats, incomingSats, observedAt }
   }
+
+  const {
+    inspectCheckoutTreasury,
+    preflightCheckoutTreasury,
+    sendCheckoutTreasury,
+  } = createCheckoutSparkNativeTreasurySdkAdapter({
+    wallet: input.wallet,
+    codec: input.module,
+    network: input.network === "MAINNET" ? "MAINNET" : "REGTEST",
+    isClosed: () => disconnected,
+    read: (read) =>
+      withReadTimeout(
+        read(),
+        input.retirementReadTimeoutMs,
+        "Checkout Spark treasury operation"
+      ),
+  })
 
   const createCheckoutReceive = async (
     request: SparkCheckoutReceiveInput
@@ -969,6 +1036,9 @@ function adaptFirstPartySparkWallet(input: {
   }
 
   const client: SparkSdkClient = {
+    inspectCheckoutTreasury,
+    preflightCheckoutTreasury,
+    sendCheckoutTreasury,
     async addEventListener(listener) {
       const listenerId = `spark-listener-${++nextListenerId}`
       const nativeListener = () => {
@@ -1019,6 +1089,24 @@ function adaptFirstPartySparkWallet(input: {
         return { status: "conflicting" }
       }
       return inspectSparkCheckoutLightningReturnedAttempt(
+        input.wallet,
+        request,
+        {
+          now: input.now,
+          assertCurrent: () => {
+            if (disconnected) throw new Error("Spark wallet is closed.")
+            assertCurrent?.()
+          },
+        }
+      )
+    },
+    async inspectCheckoutLightningClosedReturnedAttempt(
+      request,
+      assertCurrent
+    ) {
+      if (request.network.toUpperCase() !== input.network)
+        return { status: "conflicting" }
+      return inspectSparkCheckoutLightningClosedReturnedAttempt(
         input.wallet,
         request,
         {
@@ -2307,6 +2395,12 @@ export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
   )
   return {
     eventNames,
+    // Any dependency upgrade must re-review native fee/debit semantics before
+    // enabling this path. There is no public native fee estimate/max-fee API.
+    ...(marketPackage.dependencies["@buildonspark/spark-sdk"] === "0.12.1"
+      ? { nativeTreasuryPolicy: SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY }
+      : {}),
+    encodeSparkAddress: module.encodeSparkAddress,
     parseTransferId: (value) => module.UUID.parse(value),
     inspectLightningReceiveQuote({ quote, receiverIdentityPubkey, network }) {
       try {
@@ -2402,6 +2496,18 @@ export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
           getTransfers: (limit, offset) => wallet.getTransfers(limit, offset),
           getSparkAddress: () => wallet.getSparkAddress(),
           transfer: (request) => wallet.transfer(request),
+          querySparkInvoices: (invoices) =>
+            wallet.querySparkInvoices(
+              invoices as import("@buildonspark/spark-sdk").SparkAddressFormat[]
+            ),
+          fulfillSparkInvoice: (invoices) =>
+            wallet.fulfillSparkInvoice(
+              invoices.map(({ invoice, amount }) => ({
+                invoice:
+                  invoice as import("@buildonspark/spark-sdk").SparkAddressFormat,
+                amount,
+              }))
+            ),
           getTransfer: (id) => wallet.getTransfer(id),
           getTransferFromSsp: (id) => wallet.getTransferFromSsp(id),
           getIdentityPublicKey: () => wallet.getIdentityPublicKey(),

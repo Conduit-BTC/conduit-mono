@@ -58,6 +58,8 @@ export interface CollectCheckoutSparkNativeRetirementEvidenceInput {
   expectedTransferIds: readonly string[]
   /** Separate fresh terminal-only proof for each exact archived returned ID. */
   closedReturnedProofs?: readonly CheckoutSparkSettledClosedReturnedProof[]
+  /** V4 cleanup must retain recovery for any unattributed provider activity. */
+  requireExactHistoryScope?: true
   now: () => number
   assertCurrent?: () => void
 }
@@ -141,6 +143,90 @@ async function readCompleteHistory(
   return history.sort((left, right) => left.id.localeCompare(right.id))
 }
 
+/** Exact checkout-attributed pre-send scope, not a wallet sweep authorization. */
+export async function proveCheckoutSparkNativeTreasuryHistory(
+  input: CollectCheckoutSparkNativeRetirementEvidenceInput & {
+    authorizedDebitSats: number
+  }
+): Promise<boolean> {
+  try {
+    if (
+      !isIdentifier(input.walletId) ||
+      !isIdentifier(input.sparkAddress) ||
+      !["mainnet", "regtest"].includes(input.network) ||
+      !Number.isSafeInteger(input.authorizedDebitSats) ||
+      input.authorizedDebitSats < 0 ||
+      !Number.isSafeInteger(input.stateUpdatedAt) ||
+      input.stateUpdatedAt < 0 ||
+      !Array.isArray(input.expectedTransferIds) ||
+      input.expectedTransferIds.length < 2 ||
+      input.expectedTransferIds.length > PAGE_SIZE * MAX_PAGES ||
+      input.expectedTransferIds.some((id) => !isIdentifier(id)) ||
+      new Set(input.expectedTransferIds).size !==
+        input.expectedTransferIds.length
+    )
+      return false
+    input = { ...input, expectedTransferIds: [...input.expectedTransferIds] }
+    const proofs = [...(input.closedReturnedProofs ?? [])]
+    if (proofs.length > PAGE_SIZE * MAX_PAGES) return false
+    const closed = new Map<string, number>()
+    const verifyReturns = () => {
+      const seen = new Set<string>()
+      for (const proof of proofs) {
+        const closure = assertCheckoutSparkSettledClosedReturnedProof(proof, {
+          walletId: input.walletId,
+          network: input.network,
+          nowMs: input.now(),
+        })
+        if (
+          seen.has(closure.transferId) ||
+          input.expectedTransferIds.includes(closure.transferId)
+        )
+          throw new Error("Invalid closed scope")
+        seen.add(closure.transferId)
+        closed.set(closure.transferId, closure.debitedSats)
+      }
+    }
+    verifyReturns()
+    input.assertCurrent?.()
+    const startedAt = input.now()
+    if (!Number.isSafeInteger(startedAt) || startedAt < input.stateUpdatedAt)
+      return false
+    const first = await readCompleteHistory(input, closed)
+    const second = await readCompleteHistory(input, closed)
+    if (
+      !first ||
+      !second ||
+      JSON.stringify(first) !== JSON.stringify(second) ||
+      first.some(
+        (transfer) =>
+          !input.expectedTransferIds.includes(transfer.id) &&
+          !closed.has(transfer.id)
+      )
+    )
+      return false
+    const available = await guardedRead(input, () =>
+      input.authenticatedReader.getAvailableBalance(input.sparkAddress)
+    )
+    const owned = await guardedRead(input, () =>
+      input.authenticatedReader.getOwnedBalance(input.sparkAddress)
+    )
+    const pending = await guardedRead(input, () =>
+      input.authenticatedReader.getPendingTransfers(input.sparkAddress)
+    )
+    input.assertCurrent?.()
+    verifyReturns()
+    return (
+      available === BigInt(input.authorizedDebitSats) &&
+      owned === available &&
+      Array.isArray(pending) &&
+      pending.length === 0
+    )
+  } catch {
+    return false
+  }
+}
+
 /**
  * Terminal observation, never proof of the expected payments by
  * itself. The caller first proves the exact funding/payout amounts and owners.
@@ -200,6 +286,15 @@ export async function collectCheckoutSparkNativeRetirementEvidence(
     if (!first) return null
     const second = await readCompleteHistory(input, closedReturns)
     if (!second || JSON.stringify(first) !== JSON.stringify(second)) return null
+    if (
+      input.requireExactHistoryScope &&
+      first.some(
+        (transfer) =>
+          !input.expectedTransferIds.includes(transfer.id) &&
+          !closedReturns.has(transfer.id)
+      )
+    )
+      return null
     const available = await guardedRead(input, () =>
       reader.getAvailableBalance(input.sparkAddress)
     )

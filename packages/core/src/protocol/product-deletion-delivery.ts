@@ -1125,7 +1125,11 @@ async function deliverProductDeletionJobUnlocked(
       const status =
         outcome.status === "acked" ||
         outcome.status === "rejected" ||
-        outcome.status === "timed_out"
+        outcome.status === "timed_out" ||
+        outcome.status === "cancelled" ||
+        outcome.status === "auth_required" ||
+        outcome.status === "error" ||
+        outcome.status === "policy_blocked"
           ? outcome.status
           : "timed_out"
 

@@ -110,6 +110,7 @@ async function shippingQuote(
   return {
     shippingEvent,
     raw,
+    authorizedItems: authorization.items,
     quote: buildCheckoutSparkQuoteAuthority({
       authorization,
       rateInput: null,
@@ -135,11 +136,13 @@ function request(
 
 describe("fixed-shipping settled entry", () => {
   it("retains the exact signed selected option beside its priced checkout quote", async () => {
-    const { shippingEvent, quote } = await shippingQuote()
+    const { shippingEvent, quote, authorizedItems } = await shippingQuote()
     expect(quote.shippingSourceEvents).toEqual([structuredClone(shippingEvent)])
     expect(Object.isFrozen(quote.shippingSourceEvents?.[0]?.tags)).toBe(true)
     expect(quote.pricing.totalSats).toBe(330)
     expect(quote.lines[0]?.shippingOption?.eventId).toBe(shippingEvent.id)
+    expect(authorizedItems[0]?.shippingOptionLaunchUnsupported).toBe(false)
+    expect(quote.products[0]?.shippingOptionLaunchUnsupported).toBe(false)
   })
 
   it.each([

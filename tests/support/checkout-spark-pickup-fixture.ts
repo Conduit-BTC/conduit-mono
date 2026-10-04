@@ -5,10 +5,59 @@ import {
 } from "nostr-tools/pure"
 import {
   buildEventMarketCalendarDraft,
-  buildEventMarketCollectionDraft,
-  buildEventMarketPickupDraft,
   type EventMarketEventDraft,
 } from "@conduit/core/protocol/event-market"
+
+// Retired public graph writers stay test-only. These are historical fixtures,
+// never new checkout admission or a replacement for the kind-31927 writers.
+function buildEventMarketCollectionDraft(input: {
+  dTag: string
+  title: string
+  eventCoordinate: string
+  productCoordinates: string[]
+  pickupCoordinate?: string
+  orderAcceptance?: "open" | "closed"
+}): EventMarketEventDraft {
+  return {
+    kind: 30405,
+    content: "",
+    tags: [
+      ["d", input.dTag],
+      ["title", input.title],
+      ["a", input.eventCoordinate],
+      ...input.productCoordinates.map((coordinate) => ["a", coordinate]),
+      ...(input.pickupCoordinate
+        ? [["shipping_option", input.pickupCoordinate]]
+        : []),
+      ...(input.orderAcceptance
+        ? [["conduit_event_market", "1", input.orderAcceptance]]
+        : []),
+    ],
+  }
+}
+function buildEventMarketPickupDraft(input: {
+  dTag: string
+  title: string
+  price: number
+  currency: string
+  countries: string[]
+  location: string
+  geohash: string
+}): EventMarketEventDraft {
+  return {
+    kind: 30406,
+    content: "",
+    tags: [
+      ["d", input.dTag],
+      ["title", input.title],
+      ["service", "pickup"],
+      ["price", String(input.price), input.currency],
+      ...input.countries.map((country) => ["country", country]),
+      ["location", input.location],
+      ["g", input.geohash],
+    ],
+  }
+}
 import type { CheckoutSparkCommerceQuoteLine } from "@conduit/core/protocol/checkout-spark-reconciliation"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 

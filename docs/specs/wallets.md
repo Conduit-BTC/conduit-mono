@@ -202,7 +202,58 @@ outcomes never authorize a replacement invoice, new transfer identifier, or
 blind retry. Router completion requires every planned payout, including the
 Conduit leg; wallet retirement remains a separate evidence-gated action.
 
-### Closed-attempt invoice renewal
+### Native final treasury allocation
+
+New version-four plans may replace only the Conduit Lightning leg with one
+native Spark transfer to an operator-configured static receive address.
+Merchant and supplier payments remain Lightning payments with their existing
+preimage and recipient-origin requirements, and Conduit remains last.
+Without a configured address, new plans retain the existing Lightning fee
+rail. A malformed or wrong-network configured address blocks preparation;
+it must not silently change rails. Previously funded plans are never migrated.
+
+Before funding, approval must explain that the fixed checkout total includes
+a best-effort Conduit fee estimate and payment reserves. After every commerce
+leg settles, the final native amount is the exact credited checkout funds
+minus the actual verified commerce debits (including outgoing fees).
+It therefore includes the settled Conduit allocation and unused commerce
+reserves. It cannot include another deposit, an incomplete return, an
+unresolved obligation, or unverified payment history. No additional buyer
+funding is requested. Receipts retain the actual transfer amount, base
+allocation, unused reserves and provider fee separately.
+The inbound allowance is not a cap on outgoing reserves or actual final
+collection; the approved fixed funding total remains the aggregate debit cap.
+
+The static treasury address, network, receiver identity, sender-restricted
+canonical Spark request and deterministic invoice UUID are frozen before
+funding exposure. The request has no invoice expiry or fixed amount; its exact
+amount is frozen locally only after fresh authenticated funding, commerce,
+recipient and archived-return checks. This is an unsigned canonical request
+constructed from the approved address, not a claim of receiver signing.
+Address rotation cannot redirect a funded plan; previously approved
+destinations must remain explicitly accepted for recovery.
+
+The pinned native adapter supports only its verified zero-fee path. A fee,
+unknown capability, inadequate funds or uncertain evidence pauses this leg.
+Pre-send authenticated full-history scans must contain only the exact funding,
+verified commerce and separately proven net-zero closed-attempt identifiers.
+Available and owned funds must equal the attributed remainder, with no pending
+activity. Unknown history or extra funds cannot subsidize or enlarge collection.
+Before admission, atomically persist the exact intent and possible-send state
+and relay-ACK each required recovery snapshot. Reconcile the exact canonical
+invoice and its actual provider transfer identifier after sending.
+An empty lookup after possible submission never authorizes another send.
+Receiver-claim completion, not a fulfill response or invoice-finalized hint,
+is the payment receipt. A zero attributed remainder creates no transfer or
+fabricated receipt and remains an explicit recovery state.
+
+Commerce remains paid while final collection needs attention. Completion and
+wallet retirement still require independent native settlement and safe
+whole-wallet inspection. Late or unrelated deposits are not automatically
+collected; recovery material stays available when retirement is not proven.
+These protocol rules do not publish a new effective legal-document version.
+
+### Lightning closed-attempt invoice renewal
 
 Merchant recovery may obtain a fresh invoice from the same frozen Lightning
 address after positively verifying that the exact old outgoing transfer closed

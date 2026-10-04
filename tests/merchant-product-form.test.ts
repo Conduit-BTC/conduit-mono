@@ -9,7 +9,6 @@ import {
   addProductTags,
   applyMerchantProductSupplierAllocationFormChange,
   buildProductShippingMetadata,
-  canUseZeroProductPrice,
   canSubmitProductForm,
   formatProductTags,
   getMerchantProductSupplierAllocationFormState,
@@ -373,12 +372,6 @@ describe("merchant product form validation", () => {
       listingAreaPlaceId: null,
       listingAreaMode: "clear",
       fulfillment: "ship",
-      eventMarketReference: "",
-      eventHandoffMode: "merchant_handoff",
-      merchantPickupTitle: "Merchant booth pickup",
-      merchantPickupLocation: "",
-      merchantPickupGeohash: "",
-      merchantPickupCountry: "US",
       publicZapEnabled: true,
       zapMessagePolicy: "generic_only",
     }
@@ -632,7 +625,7 @@ describe("merchant product form validation", () => {
     expect(tooMany.errors.images).toBe("Use 12 images or fewer.")
   })
 
-  it("requires an explicit verified pickup lane before accepting zero", () => {
+  it("requires explicit authorization before accepting an existing BTC-native zero price", () => {
     const defaultNative = validate(form({ price: "0", currency: "SATS" }))
     const verifiedNative = validate(
       form({ price: "0", currency: "SATS" }),
@@ -648,46 +641,6 @@ describe("merchant product form validation", () => {
     expect(defaultNative.errors.price).toContain("greater than zero")
     expect(verifiedNative.canPublish).toBe(true)
     expect(verifiedFiat.errors.price).toContain("BTC-native")
-  })
-
-  it("recognizes only explicit verified merchant or organizer pickup as zero-price eligible", () => {
-    for (const handoffMode of [
-      "merchant_handoff",
-      "organizer_handoff",
-    ] as const) {
-      expect(
-        canUseZeroProductPrice({
-          fulfillment: "local_pickup",
-          handoffMode,
-          evidenceVerified: true,
-        })
-      ).toBe(true)
-    }
-
-    for (const candidate of [
-      {
-        fulfillment: "local_pickup",
-        handoffMode: "merchant_handoff",
-        evidenceVerified: false,
-      },
-      {
-        fulfillment: "ship",
-        handoffMode: "merchant_handoff",
-        evidenceVerified: true,
-      },
-      {
-        fulfillment: "digital",
-        handoffMode: "organizer_handoff",
-        evidenceVerified: true,
-      },
-      {
-        fulfillment: "local_pickup",
-        handoffMode: "unsupported",
-        evidenceVerified: true,
-      },
-    ]) {
-      expect(canUseZeroProductPrice(candidate)).toBe(false)
-    }
   })
 
   it("rejects exponent and signed amount syntax", () => {

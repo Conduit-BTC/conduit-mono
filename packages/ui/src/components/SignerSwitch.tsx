@@ -32,6 +32,7 @@ export type SignerSwitchStatus =
   "disconnected" | "restoring" | "connecting" | "connected" | "error"
 
 export interface SignerSwitchProps {
+  logoSrc?: string
   status: SignerSwitchStatus
   pubkeyLabel?: string | null
   pubkeyDetailLabel?: string | null
@@ -57,6 +58,7 @@ export interface SignerSwitchProps {
 }
 
 export interface SignerConnectPanelProps {
+  logoSrc?: string
   title?: string
   description: string
   helperText: string
@@ -84,11 +86,17 @@ export interface SignerConnectPanelProps {
   onForget?: () => Promise<void> | void
 }
 
-function ConduitLogoLockup({ className = "h-10" }: { className?: string }) {
+function ConduitLogoLockup({
+  className = "h-10",
+  logoSrc = "/images/logo/logo-full.svg",
+}: {
+  className?: string
+  logoSrc?: string
+}) {
   return (
     <div className="mb-5 flex justify-center">
       <img
-        src="/images/logo/logo-full.svg"
+        src={logoSrc}
         alt="Conduit"
         className={`${className} w-auto select-none object-contain`}
         draggable="false"
@@ -113,6 +121,7 @@ export function isMobileSignerEnvironment(
 }
 
 function SignerHeader({
+  logoSrc,
   title,
   description,
   titleRef,
@@ -120,10 +129,11 @@ function SignerHeader({
   title: string
   description: string
   titleRef?: Ref<HTMLHeadingElement>
+  logoSrc?: string
 }) {
   return (
     <DialogHeader className="mx-auto max-w-md items-center text-center">
-      <ConduitLogoLockup className="h-11" />
+      <ConduitLogoLockup className="h-11" logoSrc={logoSrc} />
       <DialogTitle
         ref={titleRef}
         tabIndex={-1}
@@ -470,6 +480,7 @@ function SignerDisconnectedContent({
 }
 
 export function SignerConnectPanel({
+  logoSrc,
   title = "Sign in to Conduit",
   description,
   helperText,
@@ -508,7 +519,7 @@ export function SignerConnectPanel({
     >
       <div className="relative px-5 py-5 sm:px-6 sm:py-6">
         <div className="mx-auto max-w-md text-center">
-          <ConduitLogoLockup className="h-11" />
+          <ConduitLogoLockup className="h-11" logoSrc={logoSrc} />
           <h1
             id={titleId}
             className="mt-4 text-2xl font-semibold text-balance text-[var(--text-primary)] sm:text-[2rem]"
@@ -550,6 +561,7 @@ export function SignerConnectPanel({
 }
 
 export function SignerSwitch({
+  logoSrc,
   status,
   pubkeyLabel,
   pubkeyDetailLabel,
@@ -656,6 +668,7 @@ export function SignerSwitch({
             {connected ? (
               <>
                 <SignerHeader
+                  logoSrc={logoSrc}
                   title="Signer connected"
                   description={connectedDescription}
                   titleRef={titleRef}
@@ -676,6 +689,7 @@ export function SignerSwitch({
             ) : (
               <>
                 <SignerHeader
+                  logoSrc={logoSrc}
                   title="Sign in to Conduit"
                   description={connectDescription}
                   titleRef={titleRef}

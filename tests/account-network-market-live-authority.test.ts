@@ -46,7 +46,7 @@ describe("Market live account authority", () => {
       "apps/market/src/hooks/useMerchantTrustContext.ts",
       "apps/market/src/routes/cart.tsx",
       "apps/market/src/routes/checkout.tsx",
-      "apps/market/src/routes/events/$collectionRef.tsx",
+      "apps/market/src/components/FutureEventMarketPage.tsx",
       "apps/market/src/components/MarketEventsTimeline.tsx",
       "apps/market/src/routes/messages.tsx",
       "apps/market/src/routes/orders.tsx",

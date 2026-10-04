@@ -385,7 +385,7 @@ describe("initial recovery signed source bundle", () => {
       },
       recipientInboxRelays: RELAYS,
       publishFn: (async (event) => {
-        retried = JSON.stringify(event.rawEvent())
+        retried = JSON.stringify(event)
         return {
           attemptedRelayUrls: RELAYS,
           successfulRelayUrls: RELAYS,

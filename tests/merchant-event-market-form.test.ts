@@ -1,11 +1,13 @@
 import { describe, expect, it } from "bun:test"
 import {
   createEmptyOrganizerEventMarketForm,
+  generateOrganizerWeeklyDates,
   getOrganizerEventEndMinimum,
   getOrganizerEventStartMinimum,
   getOrganizerEventTimezoneOptions,
   isOrganizerEventMarketFormDirty,
   localDateTimeToEpochSeconds,
+  prepareOrganizerEventMarketDates,
   prepareOrganizerEventMarketForm,
   slugifyEventMarketTitle,
   validateOrganizerEventMarketForm,
@@ -21,13 +23,24 @@ function validForm() {
     start: "2026-08-15T09:00",
     end: "2026-08-15T14:00",
     timezone: "America/New_York",
-    organizerHandoffEnabled: true,
-    pickupLocation: "Public Hall, Main Entrance",
   }
 }
 
 describe("merchant organizer event form", () => {
-  it("prepares a timed NIP-52 event and public pickup without private fields", () => {
+  it("allows an optional banner and validates a provided public image URL", () => {
+    expect(
+      validateOrganizerEventMarketForm({ ...validForm(), imageUrl: "" })
+        .canPublish
+    ).toBe(true)
+    expect(
+      validateOrganizerEventMarketForm({
+        ...validForm(),
+        imageUrl: "http://images.example/banner.jpg",
+      }).errors.imageUrl
+    ).toContain("https://")
+  })
+
+  it("prepares a public timed NIP-52 calendar without protocol-specific pickup fields", () => {
     const prepared = prepareOrganizerEventMarketForm(validForm())
 
     expect(prepared.calendar).toEqual({
@@ -41,16 +54,7 @@ describe("merchant organizer event form", () => {
       end: 1_786_816_800,
       timezone: "America/New_York",
     })
-    expect(prepared.pickup).toEqual({
-      title: "Event pickup",
-      location: "Public Hall, Main Entrance",
-      geohash: undefined,
-      country: "US",
-      price: "0",
-      currency: "SAT",
-    })
-    expect(Object.keys(prepared.pickup)).not.toContain("instructions")
-    expect(Object.keys(prepared.pickup)).not.toContain("note")
+    expect(Object.keys(prepared)).toEqual(["calendar"])
   })
 
   it("prepares all-day events with NIP-52 date values", () => {
@@ -69,58 +73,18 @@ describe("merchant organizer event form", () => {
     })
   })
 
-  it("allows an event and catalog without an organizer handoff program", () => {
-    const form = {
+  it("requires a public description and location without event pickup authoring", () => {
+    const result = validateOrganizerEventMarketForm({
       ...validForm(),
-      organizerHandoffEnabled: false,
-      pickupTitle: "",
-      pickupLocation: "",
-      pickupGeohash: "",
-      pickupCountry: "",
-      pickupPrice: "",
-      pickupCurrency: "",
-    }
-
-    const validation = validateOrganizerEventMarketForm(form)
-    const prepared = prepareOrganizerEventMarketForm(form)
-
-    expect(validation.canPublish).toBe(true)
-    expect(prepared.pickup).toBeUndefined()
-    expect(prepared.collection.title).toBe("Community market")
-  })
-
-  it("derives zero-cost organizer pickup from the event venue", () => {
-    const form = {
-      ...validForm(),
-      imageUrl: "http://images.example/market.jpg",
+      summary: "",
       eventLocation: "",
-      pickupLocation: "",
-      pickupGeohash: "",
-      pickupCountry: "USA",
-      pickupPrice: "-1",
-      pickupCurrency: "USD",
-    }
-    const result = validateOrganizerEventMarketForm(form)
-
-    expect(result.canPublish).toBe(false)
-    expect(result.errors.imageUrl).toContain("https://")
-    expect(result.errors.eventLocation).toContain("public event location")
-    expect(result.errors.pickupCountry).toContain("two-letter")
-    expect(result.errors.pickupLocation).toBeUndefined()
-
-    const derived = prepareOrganizerEventMarketForm({
-      ...validForm(),
-      pickupLocation: "",
-      pickupGeohash: "",
-      pickupPrice: "999",
-      pickupCurrency: "USD",
-    }).pickup
-    expect(derived).toMatchObject({
-      title: "Event pickup",
-      location: "Public Hall, Main Entrance",
-      price: "0",
-      currency: "SAT",
     })
+    expect(result.canPublish).toBe(false)
+    expect(result.errors.summary).toBeTruthy()
+    expect(result.errors.eventLocation).toBeTruthy()
+    expect(Object.keys(createEmptyOrganizerEventMarketForm())).not.toContain(
+      "pickupLocation"
+    )
   })
 
   it("rejects reversed schedules and nonexistent local DST times", () => {
@@ -133,6 +97,77 @@ describe("merchant organizer event form", () => {
     expect(() =>
       localDateTimeToEpochSeconds("2026-03-08T02:30", "America/New_York")
     ).toThrow("does not exist")
+    expect(() =>
+      localDateTimeToEpochSeconds("2026-11-01T01:30", "America/New_York")
+    ).toThrow("occurs twice")
+  })
+
+  it("expands selected weekdays to editable concrete dates across a DST change", () => {
+    const dates = generateOrganizerWeeklyDates({
+      firstDate: "2026-03-01",
+      throughDate: "2026-03-15",
+      weekdays: [0],
+      startTime: "09:00",
+      endTime: "14:00",
+      timezone: "America/New_York",
+    })
+    expect(dates.map((date) => date.start)).toEqual([
+      "2026-03-01T09:00",
+      "2026-03-08T09:00",
+      "2026-03-15T09:00",
+    ])
+    const prepared = prepareOrganizerEventMarketDates(validForm(), dates)
+    expect(prepared.map((date) => date.calendar.start)).toEqual([
+      1_772_373_600, 1_772_974_800, 1_773_579_600,
+    ])
+  })
+
+  it("rejects a generated skipped or repeated local hour with its date", () => {
+    const pattern = {
+      firstDate: "2026-03-08",
+      throughDate: "2026-03-08",
+      weekdays: [0],
+      startTime: "02:30",
+      endTime: "03:30",
+      timezone: "America/New_York",
+    }
+    expect(() => generateOrganizerWeeklyDates(pattern)).toThrow(
+      "2026-03-08: That local time does not exist"
+    )
+    expect(() =>
+      generateOrganizerWeeklyDates({
+        ...pattern,
+        firstDate: "2026-11-01",
+        throughDate: "2026-11-01",
+        startTime: "01:30",
+        endTime: "02:30",
+      })
+    ).toThrow("2026-11-01: That local time occurs twice")
+  })
+
+  it("caps generated dates and rejects duplicate or invalid edited rows", () => {
+    expect(() =>
+      generateOrganizerWeeklyDates({
+        firstDate: "2026-01-01",
+        throughDate: "2026-03-01",
+        weekdays: [0, 1, 2, 3, 4, 5, 6],
+        startTime: "09:00",
+        endTime: "17:00",
+        timezone: "UTC",
+      })
+    ).toThrow("at most 32")
+    const rows = [
+      { id: "a", start: "2026-08-15T09:00", end: "2026-08-15T14:00" },
+      { id: "b", start: "2026-08-15T09:00", end: "2026-08-15T15:00" },
+    ]
+    expect(() => prepareOrganizerEventMarketDates(validForm(), rows)).toThrow(
+      "duplicates another start"
+    )
+    expect(() =>
+      prepareOrganizerEventMarketDates(validForm(), [
+        { id: "a", start: "2026-11-01T01:30", end: "2026-11-01T03:00" },
+      ])
+    ).toThrow("Date 1: That local time occurs twice")
   })
 
   it("requires future starts only for new-event validation", () => {

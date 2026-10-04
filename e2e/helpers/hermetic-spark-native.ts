@@ -4,6 +4,7 @@ import {
   getLightningInvoiceNetwork,
 } from "../../packages/core/src/protocol/lightning"
 import type { CheckoutSparkNativeRetirementReader } from "@conduit/core"
+import { CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY } from "../../packages/core/src/protocol/checkout-spark-treasury-sdk"
 import type {
   SparkNativeModule,
   SparkNativeWallet,
@@ -30,6 +31,14 @@ interface HermeticPayout {
   preimage: string
   feeSats: number
 }
+type NativeInvoiceCodec = Pick<
+  SparkNativeModule,
+  | "parseTransferId"
+  | "encodeSparkAddress"
+  | "decodeSparkAddress"
+  | "isValidSparkAddress"
+  | "getNetworkFromSparkAddress"
+>
 
 function unsupported(): never {
   throw new Error("Unsupported hermetic Spark operation")
@@ -50,6 +59,8 @@ export function createHermeticSparkNative(input: {
   deriveIdentity: (mnemonic: string, accountNumber: number) => Promise<string>
   /** Optional real SDK encoder supplied by the runner, without provider I/O. */
   encodeAddress?: (identityPublicKey: string) => string
+  /** Public pure codecs only. Supplying them enables synthetic native invoices. */
+  nativeInvoiceCodec?: NativeInvoiceCodec
   issueFundingInvoice: (request: {
     identityPublicKey: string
     amountSats: number
@@ -92,6 +103,7 @@ export function createHermeticSparkNative(input: {
           identityPublicKey,
           accountNumber: request.accountNumber,
           sparkAddress: input.encodeAddress?.(identityPublicKey),
+          nativeInvoiceCodec: input.nativeInvoiceCodec,
           issueFundingInvoice: (invoice) =>
             input.issueFundingInvoice({ ...invoice, identityPublicKey }),
         }),
@@ -100,15 +112,19 @@ export function createHermeticSparkNative(input: {
     }
     return account.native
   }
-  const module = createNativeModule(async (request) => {
-    if (request.options.network !== nativeNetwork) unsupported()
-    const account = await getAccount({
-      mnemonic: request.mnemonicOrSeed,
-      accountNumber: request.accountNumber,
-      network,
-    })
-    return { wallet: account.openWallet() }
-  }, nativeNetwork)
+  const module = createNativeModule(
+    async (request) => {
+      if (request.options.network !== nativeNetwork) unsupported()
+      const account = await getAccount({
+        mnemonic: request.mnemonicOrSeed,
+        accountNumber: request.accountNumber,
+        network,
+      })
+      return { wallet: account.openWallet() }
+    },
+    nativeNetwork,
+    input.nativeInvoiceCodec
+  )
   return {
     module,
     async openAuthenticatedRetirementReader(request: {
@@ -136,6 +152,7 @@ function createHermeticWalletNative(input: {
   identityPublicKey: string
   accountNumber: number
   sparkAddress?: string
+  nativeInvoiceCodec?: NativeInvoiceCodec
   issueFundingInvoice: (request: {
     amountSats: number
     expirySeconds: number
@@ -161,6 +178,16 @@ function createHermeticWalletNative(input: {
   let debitedSats = 0
   let privateEnabled = false
   const payouts = new Map<string, HermeticPayout>()
+  const nativeOutgoing = new Map<string, NativeTransfer>()
+  const returnedHtlcs: Array<{
+    paymentHash: Uint8Array
+    [key: string]: unknown
+  }> = []
+  let nativeSendInvocationCount = 0
+  let nativePaymentCount = 0
+  let nativeCompleted = true
+  let nativeLostResponse = false
+  let extraHistory: NativeHistoryTransfer[] = []
   const outgoing = new Map<
     string,
     {
@@ -174,6 +201,7 @@ function createHermeticWalletNative(input: {
     return [
       ...(incomingTransfer ? [incomingTransfer] : []),
       ...[...outgoing.values()].map((row) => row.nativeTransfer),
+      ...nativeOutgoing.values(),
     ]
   }
   function openReader() {
@@ -186,15 +214,29 @@ function createHermeticWalletNative(input: {
       async getTransfers(request) {
         assertAddress(request.sparkAddress)
         // Spark 0.12.1 protobuf: PREIMAGE_SWAP=0, COMPLETED=5.
-        const transfers = request.types.includes(0)
-          ? history().map(({ id, totalValue }) => ({
-              id,
-              totalValue,
-              type: 0,
-              status: 5,
-              network: historyNetwork,
-            }))
-          : []
+        const transfers = history()
+          .flatMap(({ id, totalValue, type, status }) => {
+            const nativeType = type === "TRANSFER" ? 1 : 0
+            return request.types.includes(nativeType)
+              ? [
+                  {
+                    id,
+                    totalValue,
+                    type: nativeType,
+                    status:
+                      status === "TRANSFER_STATUS_COMPLETED"
+                        ? 5
+                        : status === "TRANSFER_STATUS_RETURNED"
+                          ? 7
+                          : 3,
+                    network: historyNetwork,
+                  },
+                ]
+              : []
+          })
+          .concat(
+            extraHistory.filter((row) => request.types.includes(row.type))
+          )
         return page(transfers, request.limit, request.offset)
       },
       async getPendingTransfers(address) {
@@ -266,6 +308,113 @@ function createHermeticWalletNative(input: {
         return openReader()
       },
       transfer: unsupported,
+      async queryHTLC(request) {
+        assertOpen()
+        return {
+          preimageRequests: structuredClone(
+            returnedHtlcs.filter((row) =>
+              request.paymentHashes.some(
+                (hash) => hash === Buffer.from(row.paymentHash).toString("hex")
+              )
+            )
+          ),
+          offset: -1,
+        }
+      },
+      getLeaves: unsupported,
+      async querySparkInvoices(invoices) {
+        assertOpen()
+        if (!input.nativeInvoiceCodec) unsupported()
+        return {
+          invoiceStatuses: invoices.map((invoice) => {
+            const decoded = input.nativeInvoiceCodec!.decodeSparkAddress(
+              invoice,
+              nativeNetwork
+            )
+            if (!decoded.sparkInvoiceFields) unsupported()
+            const transfer = nativeOutgoing.get(invoice)
+            return transfer
+              ? {
+                  invoice,
+                  status: 2,
+                  transferType: {
+                    $case: "satsTransfer" as const,
+                    satsTransfer: {
+                      transferId: input.nativeInvoiceCodec!.parseTransferId(
+                        transfer.id
+                      ).bytes,
+                    },
+                  },
+                }
+              : { invoice, status: 0 }
+          }),
+        }
+      },
+      async fulfillSparkInvoice(invoices) {
+        assertOpen()
+        nativeSendInvocationCount += 1
+        const codec = input.nativeInvoiceCodec
+        if (!codec || invoices.length !== 1) unsupported()
+        const { invoice, amount } = invoices[0]!
+        const decoded = codec.decodeSparkAddress(invoice, nativeNetwork)
+        const fields = decoded.sparkInvoiceFields as
+          | {
+              version?: number
+              id?: string
+              paymentType?: { type: string; amount?: number }
+              senderPublicKey?: string
+            }
+          | undefined
+        const sender = fields?.senderPublicKey
+        const amountSats = Number(amount)
+        if (
+          !fields ||
+          fields.version !== 1 ||
+          !fields.id ||
+          codec.parseTransferId(fields.id).bytes.length !== 16 ||
+          fields.paymentType?.type !== "sats" ||
+          fields.paymentType.amount !== undefined ||
+          sender !== identityPublicKey ||
+          !decoded.identityPublicKey ||
+          !Number.isSafeInteger(amountSats) ||
+          amountSats <= 0 ||
+          nativeOutgoing.has(invoice) ||
+          availableSats < amountSats
+        )
+          unsupported()
+        const transfer: NativeTransfer = {
+          id: crypto.randomUUID(),
+          type: "TRANSFER",
+          transferDirection: "OUTGOING",
+          totalValue: amountSats,
+          status: nativeCompleted
+            ? "TRANSFER_STATUS_COMPLETED"
+            : "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+          valueSentByWallet: amountSats,
+          valueReceivedByWallet: 0,
+          sparkInvoice: invoice,
+          senderIdentityPublicKey: identityPublicKey,
+          receiverIdentityPublicKey: decoded.identityPublicKey,
+          senders: [{ identityPublicKey }],
+          receivers: [
+            {
+              identityPublicKey: decoded.identityPublicKey,
+              amountSats,
+              status: nativeCompleted
+                ? "TRANSFER_RECEIVER_STATUS_COMPLETED"
+                : "TRANSFER_RECEIVER_STATUS_KEY_TWEAK_PENDING",
+            },
+          ],
+        }
+        nativeOutgoing.set(invoice, transfer)
+        availableSats -= amountSats
+        debitedSats += amountSats
+        nativePaymentCount += 1
+        if (nativeLostResponse)
+          throw new Error("Synthetic native response lost")
+        // A completed response is still not a receipt; adapters must query exact history.
+        return { sats: [structuredClone(transfer)] }
+      },
       async getTransfer(id) {
         assertOpen()
         const saved = history().find((transfer) => transfer.id === id)
@@ -409,6 +558,39 @@ function createHermeticWalletNative(input: {
     openWallet,
     openReader,
     control: {
+      setNativeCompletion(completed: boolean) {
+        nativeCompleted = completed
+        for (const transfer of nativeOutgoing.values()) {
+          transfer.status = completed
+            ? "TRANSFER_STATUS_COMPLETED"
+            : "TRANSFER_STATUS_SENDER_KEY_TWEAKED"
+          transfer.receivers![0]!.status = completed
+            ? "TRANSFER_RECEIVER_STATUS_COMPLETED"
+            : "TRANSFER_RECEIVER_STATUS_KEY_TWEAK_PENDING"
+        }
+      },
+      setNativeLostResponse(lost: boolean) {
+        nativeLostResponse = lost
+      },
+      setExtraHistory(transfers: readonly NativeHistoryTransfer[]) {
+        extraHistory = structuredClone([...transfers])
+      },
+      addUnattributedAvailableSats(sats: number) {
+        if (
+          !Number.isSafeInteger(sats) ||
+          sats < 0 ||
+          !Number.isSafeInteger(availableSats + sats)
+        )
+          unsupported()
+        availableSats += sats
+      },
+      nativeSnapshot() {
+        return {
+          nativeSendInvocationCount,
+          nativePaymentCount,
+          transfers: structuredClone([...nativeOutgoing.values()]),
+        }
+      },
       setPendingTransfers(transfers: readonly NativeHistoryTransfer[]) {
         if (
           transfers.some(
@@ -438,6 +620,92 @@ function createHermeticWalletNative(input: {
         )
           unsupported()
         payouts.set(payout.paymentRequest, { ...payout })
+      },
+      /** Synthetic terminal provider facts; returned leaves may already be spent. */
+      registerReturnedLightning(request: {
+        transferId: string
+        paymentRequest: string
+        feeSats: number
+      }) {
+        const amount = decodeLightningInvoiceMetadata(
+          request.paymentRequest
+        ).sats
+        const hash = decodeLightningInvoicePaymentHash(request.paymentRequest)
+        if (
+          getLightningInvoiceNetwork(request.paymentRequest) !== network ||
+          !amount ||
+          !hash ||
+          !Number.isSafeInteger(request.feeSats) ||
+          request.feeSats < 0 ||
+          outgoing.has(request.transferId)
+        )
+          unsupported()
+        const debit = amount + request.feeSats
+        const userRequest = {
+          id: `hermetic-returned:${request.transferId}`,
+          typename: "LightningSendRequest",
+          encodedInvoice: request.paymentRequest,
+          idempotencyKey: request.transferId,
+          network: nativeNetwork,
+          status: "USER_SWAP_RETURNED",
+          fee: { originalValue: request.feeSats, originalUnit: "SATOSHI" },
+          transfer: {
+            sparkId: request.transferId,
+            totalAmount: { originalValue: debit, originalUnit: "SATOSHI" },
+          },
+        }
+        outgoing.set(request.transferId, {
+          invoice: request.paymentRequest,
+          request: userRequest,
+          transfer: { ...userRequest.transfer, userRequest },
+          nativeTransfer: {
+            id: request.transferId,
+            totalValue: debit,
+            type: "LIGHTNING",
+            transferDirection: "OUTGOING",
+            status: "TRANSFER_STATUS_RETURNED",
+            userRequest,
+          },
+        })
+        const providerKey = Uint8Array.from(
+          Buffer.from(`03${identityPublicKey.slice(2)}`, "hex")
+        )
+        const senderKey = Uint8Array.from(Buffer.from(identityPublicKey, "hex"))
+        returnedHtlcs.push({
+          paymentHash: Uint8Array.from(Buffer.from(hash, "hex")),
+          senderIdentityPubkey: senderKey,
+          receiverIdentityPubkey: providerKey,
+          status: 2,
+          transfer: {
+            id: request.transferId,
+            network: historyNetwork,
+            status: 7,
+            type: 0,
+            senders: [{ id: "sender", identityPublicKey: senderKey }],
+            receivers: [
+              {
+                id: "receiver",
+                identityPublicKey: providerKey,
+                amountSats: debit,
+                status: 7,
+              },
+            ],
+            leaves: [
+              {
+                transferSenderId: "sender",
+                transferReceiverId: "receiver",
+                leaf: {
+                  id: `hermetic-returned-leaf:${request.transferId}`,
+                  value: debit,
+                  network: historyNetwork,
+                  ownerIdentityPublicKey: senderKey,
+                  status: "AVAILABLE",
+                  treenodeStatus: 1,
+                },
+              },
+            ],
+          },
+        })
       },
       completeFunding() {
         if (!receive) throw new Error("Hermetic funding invoice is not created")
@@ -496,7 +764,8 @@ function page<T>(transfers: readonly T[], limit: number, offset: number) {
 
 function createNativeModule(
   initialize: SparkNativeModule["initialize"],
-  network: "MAINNET" | "REGTEST"
+  network: "MAINNET" | "REGTEST",
+  codec?: NativeInvoiceCodec
 ): SparkNativeModule {
   return {
     eventNames: [],
@@ -528,8 +797,15 @@ function createNativeModule(
       }
     },
     initialize,
-    decodeSparkAddress: unsupported,
-    isValidSparkAddress: () => false,
-    getNetworkFromSparkAddress: unsupported,
+    ...(codec
+      ? {
+          ...codec,
+          nativeTreasuryPolicy: CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
+        }
+      : {}),
+    decodeSparkAddress: codec?.decodeSparkAddress ?? unsupported,
+    isValidSparkAddress: codec?.isValidSparkAddress ?? (() => false),
+    getNetworkFromSparkAddress:
+      codec?.getNetworkFromSparkAddress ?? unsupported,
   }
 }

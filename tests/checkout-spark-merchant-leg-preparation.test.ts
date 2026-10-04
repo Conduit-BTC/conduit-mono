@@ -336,7 +336,7 @@ async function harness(
         expect(options.exclusiveRelayUrls).toEqual([INBOX])
         expect(options.appRelayUrls).toEqual([])
         expect(options.personalRelayUrls).toEqual([])
-        calls.publishes.push(event.rawEvent() as SignedPublicNostrEvent)
+        calls.publishes.push(event as SignedPublicNostrEvent)
         return {
           attemptedRelayUrls: [INBOX],
           successfulRelayUrls: [INBOX],
@@ -1817,7 +1817,9 @@ describe("Merchant payout preparation and exact recovery delivery adapter", () =
         expect(accepted[0]!.relayAccepted).toBe(true)
       })
     }
-  })
+    // Both rejected and lost ACKs replay full signed private progress; retain
+    // bounded harness headroom when the complete Windows suite is running.
+  }, 15_000)
 
   it("keeps the immutable local intent when staging fails without claiming relay acceptance", async () => {
     await withHarness(async (test) => {

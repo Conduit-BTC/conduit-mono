@@ -44,6 +44,8 @@ export function createPlaywrightRouterConfig(
   const serverEnvironment = {
     PLAYWRIGHT_MARKET_PORT: marketPort,
     PLAYWRIGHT_MERCHANT_PORT: merchantPort,
+    VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS:
+      environment.VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS ?? "",
   }
   return defineConfig({
     metadata: hasEvidence ? { smokeEvidence } : undefined,

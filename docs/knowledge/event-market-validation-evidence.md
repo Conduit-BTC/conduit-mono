@@ -1,44 +1,120 @@
-# Event-market validation evidence
+# Event Market validation evidence
 
-This page gives stable acceptance (`AC-EM-*`) and evidence (`EV-EM-*`) IDs to
-the one-to-one criteria in the protected
-[event-market specification](../specs/event-markets.md#required-validation).
-It is an evidence index, not a replacement for the normative specification.
+This index maps stable acceptance and evidence IDs to current-model regression
+coverage. A PR must record the candidate commit, commands or CI URLs, and actual
+results. A named test is not proof for a newer head. Historical collection-based
+fixtures are retired; the corresponding user outcomes use current signed data.
 
-Test names below are stable lookup keys for candidate-head automation. A pull
-request that relies on this matrix must record its candidate commit, the exact
-command or CI job URL, and the result for every cited `EV-EM-*` ID. A named
-test is not evidence for a newer candidate until it has passed on that
-candidate.
+| Acceptance | Evidence | Observable outcome                                                                          | Automated coverage                                                                                                        | Separate human evidence                                    |
+| ---------- | -------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| AC-EM-01   | EV-EM-01 | Create an empty market with concrete dates and retry the same signed operation              | `event-market-creation-retry`, `event-market-calendar-retry`, composed browser creation                                   | NIP-07 and NIP-46 on independent devices                   |
+| AC-EM-02   | EV-EM-02 | Merchant-present pickup uses the assigned merchant and no organizer release message         | `order-event-market-fulfillment`, `market-event-fulfillment`, `event-market-cart-snapshot`                                | Preview merchant booth journey                             |
+| AC-EM-03   | EV-EM-03 | Organizer pickup requires authenticated merchant authority and exact goods                  | `event-market-order-evidence`, `event-market-handoff`, `merchant-order-pickup-authorization`                              | Live private delivery and physical release                 |
+| AC-EM-04   | EV-EM-04 | Known revoke, conflict, deletion or absent current authority blocks new commerce            | `event-market-authorization`, `event-market-roster`, `event-market-checkout-authorization`                                | Independent-session revoke/reapprove                       |
+| AC-EM-05   | EV-EM-05 | Provisional discovery stays fast and cannot authorize a purchase                            | `event-market-discovery-progress`, `event-market-discovery-boundaries`, Market `progressive-event-market-discovery-query` | Cold mobile event discovery                                |
+| AC-EM-06   | EV-EM-06 | Material purchase changes require review; unrelated roster revisions do not                 | `event-market-cutover-snapshot`, `event-market-checkout-authorization`, `event-cart-current-model`                        | Preview changed-price/date/assignment review               |
+| AC-EM-07   | EV-EM-07 | Exact encrypted retries survive reload and do not duplicate release                         | `event-market-handoff`, `future-market-private-read-cancellation`, composed private handoff browser journey               | Interrupted live delivery and fresh-device recovery        |
+| AC-EM-08   | EV-EM-08 | Private receipt contents remain minimal; merchant retains payment authority                 | `event-market-handoff`, `event-market-order-evidence`, `event-market-e2e-privacy`                                         | Inspect organizer and buyer UI without collecting payloads |
+| AC-EM-09   | EV-EM-09 | Known revocation blocks release; authenticated acknowledgement supports merchant completion | `merchant-order-phase`, `merchant-order-action-view`, composed handoff browser journey                                    | Physical handout and completion                            |
+| AC-EM-10   | EV-EM-10 | Signed-in and guest contact pickup remain; immediate contact-free pickup is opt-in          | `buyer-checkout`, `event-contact-free`, `market-event-fulfillment`                                                        | Mobile guest receipt retention and recovery                |
+| AC-EM-11   | EV-EM-11 | Host, merchant, buyer and organizer flows work together                                     | `e2e/event-market.playwright.ts` in both app areas                                                                        | Candidate preview with independent real accounts           |
+| AC-EM-12   | EV-EM-12 | Ordinary shipping, digital products and non-event collections still work                    | `buyer-checkout`, `cart-model`, `commerce-gateway`, `merchant-product-publishing`                                         | Ordinary nonzero purchase and wallet settlement            |
+| AC-EM-13   | EV-EM-13 | Finite recurrence and shipping/pickup choices retain exact selected date                    | `event-market-schedule`, `event-fulfillment-choice`, `future-event-market-timeline`, composed browser cases               | Timezone and device checks                                 |
+| AC-EM-14   | EV-EM-14 | Event and merchant QR signs support preview, batch and Print / Save as PDF                  | `merchant-event-signage`, `merchant-event-market-route-contract`                                                          | Print both PDFs and scan each on a phone                   |
+| AC-EM-15   | EV-EM-15 | Old event links ask for reposting and never authorize old-model commerce                    | `event-cart-current-model`, `checkout-authorization`, composed repost browser case                                        | Confirm new posted links replace old signs                 |
 
-| Acceptance ID | Evidence ID | Observable criterion                                                                                                                                                                                                                                                 | Candidate-head automated evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Live evidence still required                                                                                                                                                          |
-| ------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-EM-01`    | `EV-EM-01`  | Organizer publication supports an empty collection, optional organizer pickup, external signing, and exact retry.                                                                                                                                                    | `tests/event-market-publish.test.ts`: `publishes an organizer event without forcing an organizer pickup`; `publishes calendar and pickup ACKs before publishing the collection`; `retries the exact signed record without rebuilding or resigning it`                                                                                                                                                                                                                                                                                                                                                                            | Confirm one real NIP-07 session and one real NIP-46 session can sign the flow without exporting keys.                                                                                 |
-| `AC-EM-02`    | `EV-EM-02`  | Accepted merchant-authored booth pickup stays merchant handoff and sends no organizer receipt.                                                                                                                                                                       | `tests/event-market-resolution.test.ts`: `derives merchant handoff from the product's exact direct booth pickup`; `tests/order-pickup-fulfillment.test.ts`: `accepts a merchant-authored booth pickup only as merchant handoff`; `e2e/event-market.playwright.ts`: `organizer offer off publishes an empty catalog and permits booth handoff @market @merchant`                                                                                                                                                                                                                                                                  | Run the browser flow against the candidate previews and observed relay set.                                                                                                           |
-| `AC-EM-03`    | `EV-EM-03`  | Organizer handoff authority requires an authenticated merchant receipt bound to the exact current mutual graph and merchandise. A usable declared organizer inbox is required to deliver and discover receipts, not to prove global completeness after one is found. | `tests/event-market-resolution.test.ts`: `requires one valid signed product price before acceptance or ACK`; `tests/event-market-handoff.test.ts`: `requires a current secure organizer kind-10050 declaration`; `tests/merchant-organizer-handoff-authorization.test.ts`: `uses Core-verified exact product titles and permits positive partial coverage`                                                                                                                                                                                                                                                                       | Confirm the organizer declaration and graph events propagate to the relays used by the candidate previews.                                                                            |
-| `AC-EM-04`    | `EV-EM-04`  | No valid merchant authorization means no handoff authority. Invalid, ambiguous, stale, deleted, conflicting, unsupported, or cross-author positive evidence fails closed.                                                                                            | `tests/event-market-resolution.test.ts`: `fails closed on malformed, conflicting, and unsupported collection graphs`; `rejects attacker-owned calendars and never grants attacker pickup handoff`; `tests/event-market-handoff.test.ts`: `finds no handoff authority without a valid merchant receipt`; `binds ACK authority to current two-sided organizer handoff evidence`                                                                                                                                                                                                                                                    | None beyond normal candidate-head automation unless graph resolution changes.                                                                                                         |
-| `AC-EM-05`    | `EV-EM-05`  | The normal Merchant UI requires explicit action-time confirmation that payment is settled or nothing is owed, the order is ready, and organizer release is authorized. The authenticated receipt asserts all three facts.                                            | `tests/merchant-event-market-handoff.test.ts`: `requires explicit merchant confirmation before creating a ready authorization`; `permits zero-cost readiness and blocks nonzero unpaid readiness`; `tests/event-market-handoff.test.ts`: `derives a minimal receipt from the private order and current graph`; `tests/merchant-event-market-route-contract.test.ts`: `keeps handoff consent explicit and organizer authority narrowly scoped`                                                                                                                                                                                    | Exercise one paid and one zero-cost order in candidate previews. Do not include invoices or payment secrets in artifacts.                                                             |
-| `AC-EM-06`    | `EV-EM-06`  | Ready evidence contains only the literal authorization assertions, exact graph, quantities, claim, state, and time; it rejects contact, address, notes, invoices, proofs, secrets, and extra keys.                                                                   | `tests/merchant-event-market-handoff.test.ts`: `builds only the minimal receipt and excludes private order fields`; `tests/event-market-handoff.test.ts`: `round-trips exact authority and rejects sensitive or free-form fields`; `includes pickup lines only and fails closed on duplicate coordinates`                                                                                                                                                                                                                                                                                                                        | Inspect only decoded schema field names with disposable identities; do not capture payload values in logs or video.                                                                   |
-| `AC-EM-07`    | `EV-EM-07`  | Exact receipt, revocation, and ACK wraps persist before I/O; zero/partial delivery remains retryable and idempotent across reload. Completed receipt seeds do not exhaust durable storage.                                                                           | `tests/event-market-handoff.test.ts`: `persists exact signed wraps before relay I/O and reports partial ACKs`; `converges alternating relay ACKs without republishing exact wraps`; `tests/merchant-event-market-handoff.test.ts`: `reloads one durable receipt idempotently without republishing`; `releases completed ready receipts without filling delivery or marker storage`; `preserves retryable ready receipts and revocation rows on completion cleanup`; `does not clobber a concurrent revocation upsert when releasing a completed receipt`; `collects an interrupted pending completion marker on the next upsert` | With disposable accounts, interrupt one candidate-preview delivery, reload, and confirm the exact pending delivery converges without a second logical receipt.                        |
-| `AC-EM-08`    | `EV-EM-08`  | Bounded coverage remains visible as discovery health. Pagination continues to find relevant messages, but capped, partial, stale, or otherwise incomplete coverage does not negate a valid authorization or acknowledgement already found.                           | `tests/event-market-handoff.test.ts`: `authorizes a found valid receipt despite incomplete inbox coverage`; `authorizes a found receipt when an exact timestamp boundary stays capped`; `discovers paginated receipt evidence without certifying a multi-request scan`; `discovers evidence past 3,200 wraps but keeps stitched coverage partial`; `tests/merchant-event-market-handoff.test.ts`: `preserves a found exact ACK while reporting degraded discovery`; `e2e/event-market.playwright.ts`: `organizer handoff completes a private order receipt and exact ACK flow @market @merchant`                                 | Confirm degraded discovery remains visible while the found valid authorization stays actionable. A browser reload intentionally restarts the process-local scan from the newest page. |
-| `AC-EM-09`    | `EV-EM-09`  | A valid matching revocation known before handoff removes readiness and prevents handout. The possible existence of an unseen revocation does not negate found authority. Organizer ACK grants no merchant-only lifecycle authority.                                  | `tests/event-market-handoff.test.ts`: `authorizes a found valid receipt despite incomplete inbox coverage`; `dedupes exact retries and treats ACK plus revocation as conflicting`; `tests/merchant-event-market-handoff.test.ts`: `allows revocation without completeness proof but never over a known acknowledgement`; `blocks cancellation when a scoped handed-out acknowledgement exists`; `tests/merchant-event-market-route-contract.test.ts`: `verifies the signed pickup snapshot before the Merchant order workflow`                                                                                                   | Confirm the candidate UI disables handout for a known revoked receipt and leaves ordinary completion authored by the merchant.                                                        |
-| `AC-EM-10`    | `EV-EM-10`  | Signed-in pickup needs no contact form; guest pickup requires merchant-only email and phone contact.                                                                                                                                                                 | `tests/market-event-fulfillment.test.ts`: `skips signed-in pickup contact and requires both guest contact methods`; `tests/order-pickup-fulfillment.test.ts`: guest contact remains inside the merchant order                                                                                                                                                                                                                                                                                                                                                                                                                    | Verify signed-in and guest forms, and confirm the organizer view never displays guest contact data.                                                                                   |
-| `AC-EM-11`    | `EV-EM-11`  | Cross-app browser coverage exercises creation, both handoff modes, acceptance, pickup checkout, readiness, organizer ACK, and merchant completion.                                                                                                                   | `e2e/event-market.playwright.ts`: `organizer offer off publishes an empty catalog and permits booth handoff @market @merchant`; `organizer handoff completes a private order receipt and exact ACK flow @market @merchant`                                                                                                                                                                                                                                                                                                                                                                                                       | Run both fixtures on the candidate head. Record separate paid and zero-cost results if the fixtures do not cover both branches, plus real external-signer results from `EV-EM-01`.    |
-| `AC-EM-12`    | `EV-EM-12`  | Ordinary shipping, digital, legacy order, and non-event collection behavior remains unchanged.                                                                                                                                                                       | `tests/buyer-checkout.test.ts`: `adds known physical shipping costs to checkout totals`; `keeps digital shipping ready while stale fiat pricing blocks direct payment`; `preserves item fulfillment format and defaults legacy items to physical`; `tests/order-pickup-fulfillment.test.ts`: `rejects mismatched product identity, delivery addresses, and mixed shipping`                                                                                                                                                                                                                                                       | Run the normal Market and Merchant E2E shards on the candidate; add a focused live regression only when those ordinary surfaces changed.                                              |
+All named unit suites are under `tests/` unless noted. Browser evidence uses
+synthetic external signers and controlled relays; it is not cryptographic wallet,
+live relay, preview, real signer or physical pickup evidence. Disable screenshots,
+trace and video in private-order fixtures. Public evidence must omit identities,
+orders, contact details, invoices, wallet material and private message contents.
 
-## Evidence artifact rules
+The composed private-handoff journey also checks merchant receipt and organizer
+handed-out retries after signer readiness is lost: fresh actions remain disabled,
+altered saved wraps are rejected, and the original recipient and self-copy IDs
+are replayed without new signing. Organizer recovery is scoped to the retained
+owner and pending deliveries; a different account cannot access its retry control.
+Owner-retirement cancellation is covered separately at the shared delivery
+boundary. Real relay authentication can still require a connected signer.
 
-- Use disposable identities and redact account identifiers from screenshots,
-  recordings, logs, and CI attachments.
-- Never record order contents, contact details, addresses, ciphertext, invoices,
-  signer secrets, wallet connection material, or message bodies.
-- Record coarse outcomes only: event kind, state class, aggregate relay counts,
-  and content-free ACK, reject, or timeout status.
-- Treat injected Playwright signers as browser automation evidence, not proof of
-  real third-party NIP-07 or NIP-46 prompt behavior.
-- The bounded inbox continuation is process-local. It can discover older
-  positive or revocation evidence across calls, but pagination and stitched
-  calls remain partial. Coverage describes discovery and the uncertainty of
-  absence; it is not an authority gate for exact authenticated evidence already
-  found. Reloading safely discards parsed evidence and restarts from the newest
-  relay page; it does not claim restart-durable deep-scan progress.
+The cart-to-order journey adds two products across an unrelated signed roster
+revision and verifies one order and private release. Signed recurring dates
+remain selectable after an interrupted calendar read; a retained date absent
+from the next live read stays disabled in the buyer selector. The product-detail
+selector reaches the same action-time signed-evidence gate.
+
+The variable-product journey opens the existing variation selector before adding
+an Event Market product. The composed checkout verifies that the signed order
+contains the purchasable variation and its specifications, retaining Event Market
+pickup terms rather than placing the variable parent in the cart.
+
+Shipping-choice and guest-receipt fixtures use the shared calendar builder so
+timed events retain every required UTC day tag when the test runs near midnight.
+A fixed midnight unit case verifies both complete and incomplete signed calendars.
+
+The weekly-date authoring journey holds the post-publication roster refresh and
+checks that another edit or removal cannot start until the refreshed schedule
+arrives. Publication alone does not mean the editing state has caught up.
+
+Organizer handoff authenticates the original signed roster, occurrence, optional
+schedule and causal merchant grant carried in the private ready receipt. This
+is an offline check of the organizer-handoff role, not another merchant or
+product approval. Current roster removal, public grant revocation, closure,
+calendar expiry and relay pruning do not reinterpret an already-created order.
+The exact authenticated private release and its private revocation/conflict
+state remain authoritative for physical handoff. Receipts without the signed
+approval bundle remain decodable, but cannot authorize a new handoff ACK.
+The composed journey prunes the original approval and publishes a later closed
+roster and revoked grant before handing out the paid order; no exact approval
+relay reads occur. `future-market-merchandise` also rejects fabricated or
+mismatched approval evidence before reads, signing or persistence.
+
+Single-date commerce remains controlled by the signed market open/closed state.
+Series purchases require a current or future selected occurrence.
+`event-market-checkout-authorization` locks both rules at snapshot creation and
+submit; expiration of one series occurrence does not close other valid dates.
+
+Catalog discovery resolves the signed roster before querying kind `30402` by
+its bounded merchant author set and exact market tag. An empty roster sends no
+product query. Cached signed cards still appear before the network wait;
+candidate display adds no per-merchant grant reads or purchase authority.
+`event-market-roster` covers 48 and 256 newer unapproved listings ahead of an
+approved product, including partial relay coverage and saturated responses.
+Retained organizer revocation, conflict, deletion and unresolved causal evidence
+suppress candidate cards; a complete causal regrant can restore them. No
+additional network read is needed to honor this already-observed evidence.
+
+Direct product pickup checks the current signed roster, selected occurrence,
+merchant grant and exact product revision at both Add and increment. The browser
+regression changes revocation, closure, product association, deletion, price and
+pickup assignment after rendering, and preserves unrelated roster edits. A
+rejected action leaves the cart quantity unchanged and refreshes the displayed
+terms before another action.
+
+Private handoff recovery is bounded per owner using serialized UTF-16 sizes:
+768 KiB pending deliveries, 1 MiB exact archives, 1 MiB observed encrypted wraps
+and 512 KiB compact terminal history. New ready receipts leave 256 KiB of byte
+headroom; the pending queue allows 96 ready admissions and 128 total updates.
+Active exact bytes are never evicted to make room for a new release. Storage
+failure preserves saved retries and blocks new issuance.
+
+Authenticated organizer terminal observations compact encrypted history while
+retaining claim, graph-conflict and revocation denial fences. Merchant exact
+receipt and ACK evidence remain until an authenticated merchant-authored final
+order status permits compaction. Compact markers cannot establish payment,
+handoff acknowledgement or order completion. `future-market-handoff-storage`
+covers quota volume, restart/degraded reads, interrupted writes and reserved
+terminal-update capacity. Other owners/features share the origin quota, so a
+bounded handoff allocation does not guarantee every storage write succeeds.
+Retention and completed-history compaction use the same account-scoped Web Lock
+where available, with a serialized runtime queue as fallback. This coordinates
+the asynchronous decrypt/merge window with compaction across browser tabs;
+environments without Web Locks only have runtime-local serialization.
+
+Contact-free checkout checks the current date and merchant-signed opt-in before
+creating an order. Historical decoding checks the claimed creation-time terms;
+buyer-authored payload and rumor timestamps do not independently prove when a
+merchant observed the order. Receiver time cannot distinguish backdating from
+delayed delivery or another device's recovery. `event-contact-free` preserves
+receipt verification after the date has ended. Decoding and bearer receipt
+possession establish neither payment nor fulfillment authorization.

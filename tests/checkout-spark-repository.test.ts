@@ -430,7 +430,7 @@ describe("checkout Spark durable repository", () => {
     const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
     try {
       await upgraded.open()
-      expect(upgraded.verno).toBe(24)
+      expect(upgraded.verno).toBe(25)
       expect(await upgraded.wallets.get("existing-wallet")).toMatchObject({
         label: "existing",
       })
@@ -487,7 +487,7 @@ describe("checkout Spark durable repository", () => {
     const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
     try {
       await upgraded.open()
-      expect(upgraded.verno).toBe(24)
+      expect(upgraded.verno).toBe(25)
       const repository = new DexieCheckoutSparkRepository(upgraded)
       expect(
         await repository.load(activePlan.checkoutId, activePlan.planDigest)
@@ -530,7 +530,7 @@ describe("checkout Spark durable repository", () => {
     const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
     try {
       await upgraded.open()
-      expect(upgraded.verno).toBe(24)
+      expect(upgraded.verno).toBe(25)
       expect(await upgraded.eventMarketRosterEvidence.get(roster.id)).toEqual(
         roster
       )
@@ -543,52 +543,133 @@ describe("checkout Spark durable repository", () => {
     }
   })
 
-  it("adds Spark stores without losing roster and jobs from an existing version-21 database", async () => {
-    const name = `conduit-roster-v21-${crypto.randomUUID()}`
-    const roster = {
-      id: "roster-1",
-      marketCoordinate: "31923:organizer:event",
-      cachedAt: CREATED_AT,
-    }
-    const job = {
-      id: "job-1",
-      marketCoordinate: roster.marketCoordinate,
-      merchantPubkey: MERCHANT_PUBKEY,
-      status: "pending",
-      createdAt: CREATED_AT,
-    }
-    const legacy = new Dexie(name, fakeIndexedDBOptions)
-    legacy.version(20).stores({
-      wallets: "id",
-      shoppingCarts: "id, updatedAt",
-      eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
-    })
-    legacy.version(21).stores({
-      eventMarketMerchantDecisionJobs:
-        "id, [marketCoordinate+merchantPubkey], status, createdAt",
-    })
-    await legacy.open()
-    await legacy.table("eventMarketRosterEvidence").put(roster)
-    await legacy.table("eventMarketMerchantDecisionJobs").put(job)
-    legacy.close()
+  for (const legacyVersion of [21, 22, 23, 23.1]) {
+    it(`preserves and indexes pending merchant decisions when upgrading version ${legacyVersion}`, async () => {
+      const name = `conduit-roster-v${legacyVersion}-${crypto.randomUUID()}`
+      const roster = {
+        id: "roster-1",
+        marketCoordinate: "31923:organizer:event",
+        cachedAt: CREATED_AT,
+      }
+      const jobs = [
+        {
+          id: "job-1",
+          marketCoordinate: roster.marketCoordinate,
+          merchantPubkey: MERCHANT_PUBKEY,
+          status: "pending",
+          createdAt: CREATED_AT,
+        },
+        {
+          id: "job-2",
+          marketCoordinate: roster.marketCoordinate,
+          merchantPubkey: "c".repeat(64),
+          status: "acknowledged",
+          createdAt: CREATED_AT + 1,
+        },
+        {
+          id: "job-3",
+          marketCoordinate: "31923:organizer:other-event",
+          merchantPubkey: "d".repeat(64),
+          status: "pending",
+          createdAt: CREATED_AT + 2,
+        },
+      ]
+      if (legacyVersion === 23.1) {
+        const template = new ConduitDB(
+          `conduit-schema-template-${crypto.randomUUID()}`,
+          fakeIndexedDBOptions
+        )
+        const currentSchema = Object.fromEntries(
+          template.tables.map((table) => [
+            table.name,
+            [
+              table.schema.primKey.src,
+              ...table.schema.indexes.map((index) => index.src),
+            ].join(","),
+          ])
+        )
+        template.close()
+        const oldSchema = {
+          ...currentSchema,
+          eventMarketMerchantDecisionJobs:
+            "id, [marketCoordinate+merchantPubkey], status, createdAt",
+        }
+        const oldV23 = new Dexie(name, fakeIndexedDBOptions)
+        oldV23.version(23).stores(oldSchema)
+        await oldV23.open()
+        await oldV23.table("eventMarketRosterEvidence").put(roster)
+        await oldV23.table("eventMarketMerchantDecisionJobs").bulkPut(jobs)
+        expect(oldV23.backendDB().version).toBe(230)
+        oldV23.close()
 
-    const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
-    try {
-      await upgraded.open()
-      expect(upgraded.verno).toBe(24)
-      expect(await upgraded.eventMarketRosterEvidence.get(roster.id)).toEqual(
-        roster
-      )
-      expect(
-        await upgraded.eventMarketMerchantDecisionJobs.get(job.id)
-      ).toEqual(job)
-      const plan = makePlan("after-v21-upgrade")
-      expect(
-        await new DexieCheckoutSparkRepository(upgraded).create(plan)
-      ).toMatchObject({ status: "active", revision: 1 })
-    } finally {
-      upgraded.close()
-      await upgraded.delete()
-    }
-  })
+        const repairedV23 = new Dexie(name, fakeIndexedDBOptions)
+        repairedV23.version(23).stores({
+          ...currentSchema,
+          eventMarketMerchantDecisionJobs:
+            "id, marketCoordinate, merchantPubkey, status, updatedAt",
+        })
+        await repairedV23.open()
+        expect(repairedV23.verno).toBe(23)
+        expect(repairedV23.backendDB().version).toBe(231)
+        expect(
+          await repairedV23
+            .table("eventMarketMerchantDecisionJobs")
+            .where("marketCoordinate")
+            .equals(roster.marketCoordinate)
+            .toArray()
+        ).toEqual(jobs.slice(0, 2))
+        repairedV23.close()
+      } else {
+        const legacy = new Dexie(name, fakeIndexedDBOptions)
+        legacy.version(20).stores({
+          eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
+        })
+        legacy.version(21).stores({
+          eventMarketMerchantDecisionJobs:
+            "id, [marketCoordinate+merchantPubkey], status, createdAt",
+        })
+        if (legacyVersion >= 22)
+          legacy.version(22).stores({
+            checkoutSparkPlanBindings: "checkoutId",
+            checkoutSparkReconciliations: "checkoutId",
+            checkoutSparkRetirements: "checkoutId",
+          })
+        if (legacyVersion >= 23)
+          legacy.version(23).stores({
+            merchantShippingSettingsEvidence: "pubkey",
+          })
+        await legacy.open()
+        await legacy.table("eventMarketRosterEvidence").put(roster)
+        await legacy.table("eventMarketMerchantDecisionJobs").bulkPut(jobs)
+        legacy.close()
+      }
+
+      const upgraded = new ConduitDB(name, fakeIndexedDBOptions)
+      try {
+        await upgraded.open()
+        expect(upgraded.verno).toBe(25)
+        expect(await upgraded.eventMarketRosterEvidence.get(roster.id)).toEqual(
+          roster
+        )
+        const marketJobs = await upgraded.eventMarketMerchantDecisionJobs
+          .where("marketCoordinate")
+          .equals(roster.marketCoordinate)
+          .toArray()
+        expect(marketJobs).toEqual(jobs.slice(0, 2))
+        expect(marketJobs.filter((job) => job.status === "pending")).toEqual([
+          jobs[0],
+        ])
+        expect(
+          await upgraded.eventMarketMerchantDecisionJobs.get("job-3")
+        ).toEqual(jobs[2])
+        const plan = makePlan(`after-v${legacyVersion}-upgrade`)
+        expect(
+          await new DexieCheckoutSparkRepository(upgraded).create(plan)
+        ).toMatchObject({ status: "active", revision: 1 })
+      } finally {
+        upgraded.close()
+        await upgraded.delete()
+      }
+    })
+  }
 })
