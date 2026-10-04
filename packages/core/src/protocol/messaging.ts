@@ -1,5 +1,12 @@
-import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
+import { CommerceInboxStore } from "./commerce-inbox-store"
+import { getProtectedReadAuthorization } from "./protected-read-authorization"
+import {
+  stagePrivateDelivery,
+  recordPrivateDelivery,
+  resumePrivateDelivery,
+} from "./private-message-delivery"
 import { getEventHash } from "nostr-tools"
+import { MAX_RELAY_MESSAGE_CHARS } from "./relay-wire-limits"
 import { createWrap } from "nostr-tools/nip59"
 import { v2 as nip44 } from "nostr-tools/nip44"
 import {
@@ -26,10 +33,12 @@ import {
 import type { InboxDeclarationEvidenceRepository } from "./inbox-declaration-evidence"
 import { EVENT_KINDS } from "./kinds"
 import {
+  decodeCommerceMessageRumor,
+  type DecodedCommerceMessage,
+} from "./commerce-message-codec"
+import {
   fetchEventsFanout,
   fetchEventsFanoutWithDiagnostics,
-  getNdk,
-  MAX_RELAY_MESSAGE_CHARS,
   type FetchEventsFanoutOptions,
 } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
@@ -73,13 +82,44 @@ import {
 
 /**
  * Shared private-message boundary (CND-57). Centralizes NIP-17 gift-wrap build,
- * publish, unwrap, and classification so Market/Merchant routes never hand-roll
- * NDK wrap/unwrap logic. See docs/specs/messaging.md and docs/specs/protocol.md.
+ * publish, unwrap, and classification as shared plain-event operations.
  *
  * Two conversation types share the same NIP-17 transport, distinguished by the
  * inner rumor kind: kind 14 general direct messages (order-independent, threaded
  * by counterparty) vs kind 16 order-linked messages (threaded by order id).
  */
+
+/** Plain event surface shared by envelopes, codecs and immutable delivery. */
+export interface PrivateMessageEvent {
+  id: string
+  pubkey: string
+  kind: number
+  created_at?: number
+  tags: string[][]
+  content: string
+  sig?: string
+}
+export type PrivateMessageRumor = UnsignedNostrEvent & { id: string }
+export function createPrivateMessageRumor(
+  input: UnsignedNostrEvent
+): PrivateMessageRumor {
+  const event = { ...input, tags: input.tags.map((tag) => [...tag]) }
+  return { ...event, id: getEventHash(event) }
+}
+function completePrivateMessageEvent(
+  event: PrivateMessageEvent
+): PrivateMessageRumor {
+  if (event.kind === undefined || event.created_at === undefined)
+    throw new Error("Incomplete private event")
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    kind: event.kind,
+    created_at: event.created_at,
+    tags: event.tags.map((tag) => [...tag]),
+    content: event.content,
+  }
+}
 
 export type PrivateMessageCategory = "order" | "direct"
 
@@ -171,7 +211,7 @@ export function getOrderCompanionNotificationContentOrderId(
  * conversation threads.
  */
 export function getOrderCompanionNotificationIdentity(
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
 ): OrderCompanionNotificationIdentity | null {
   if (rumor.kind !== EVENT_KINDS.DIRECT_MESSAGE) return null
   const subjects = rumor.tags.filter((tag) => tag[0] === "subject")
@@ -210,7 +250,9 @@ export function getOrderCompanionNotificationIdentity(
   }
 }
 
-export function isOrderCompanionNotificationRumor(rumor: NDKEvent): boolean {
+export function isOrderCompanionNotificationRumor(
+  rumor: PrivateMessageEvent
+): boolean {
   return getOrderCompanionNotificationIdentity(rumor) !== null
 }
 
@@ -223,12 +265,12 @@ function isConduitMarketClientTag(tag: string[]): boolean {
 }
 
 export function createOrderCompanionNotificationRumor(input: {
-  authoritativeOrder: NDKEvent
+  authoritativeOrder: PrivateMessageEvent
   senderPubkey: string
   recipientPubkey: string
   buyerIdentityKind: "signed_in" | "guest_ephemeral"
   merchantOrigin: string
-}): NDKEvent {
+}): PrivateMessageEvent {
   const orderId = input.authoritativeOrder.tags.find(
     (tag) => tag[0] === "order"
   )?.[1]
@@ -240,7 +282,13 @@ export function createOrderCompanionNotificationRumor(input: {
     throw new Error("Order notification requires the order timestamp.")
   }
 
-  const companion = new NDKEvent()
+  const companion: PrivateMessageEvent = {
+    id: "",
+    kind: EVENT_KINDS.DIRECT_MESSAGE,
+    pubkey: input.senderPubkey,
+    tags: [],
+    content: "",
+  }
   companion.kind = EVENT_KINDS.DIRECT_MESSAGE
   companion.pubkey = input.senderPubkey
   companion.created_at = input.authoritativeOrder.created_at
@@ -273,7 +321,7 @@ export function createOrderCompanionNotificationRumor(input: {
   companion.content =
     `${copy}\n` +
     `Review it at: ${buildMerchantOrderReviewUrl(input.merchantOrigin, orderId)}`
-  companion.id = companion.getEventHash()
+  companion.id = getEventHash(completePrivateMessageEvent(companion))
   return companion
 }
 
@@ -283,7 +331,7 @@ export function createOrderCompanionNotificationRumor(input: {
  * absent: validation can authorize the lane but cannot widen its relay pool.
  */
 export function createValidatedOrderRouteScope(input: {
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
   orderId: string
   senderPubkey: string
   recipientPubkey: string
@@ -308,6 +356,9 @@ export function createValidatedOrderRouteScope(input: {
     .find((tag) => tag[0] === "p")?.[1]
     ?.trim()
     .toLowerCase()
+  const decoded = decodeCommerceMessageRumor(
+    completePrivateMessageEvent(input.rumor)
+  )
   if (
     input.rumor.kind !== EVENT_KINDS.ORDER ||
     !input.rumor.id ||
@@ -316,7 +367,8 @@ export function createValidatedOrderRouteScope(input: {
     (expectedRumorRecipient !== recipientPubkey &&
       recipientPubkey !== senderPubkey) ||
     rumorOrderId !== orderId ||
-    classifyLegacyOrderRumor(input.rumor) !== "ok"
+    decoded.category !== "commerce" ||
+    !decoded.parsedOrderMessage
   ) {
     throw new Error("Cannot authorize compatibility routing for this rumor.")
   }
@@ -340,12 +392,12 @@ export function createValidatedOrderRouteScope(input: {
  * unavailable.
  */
 export function createValidatedGuestOrderCompanion(input: {
-  authoritativeOrder: NDKEvent
+  authoritativeOrder: PrivateMessageEvent
   senderPubkey: string
   recipientPubkey: string
   merchantOrigin: string
 }): {
-  companion: NDKEvent
+  companion: PrivateMessageEvent
   scope: ValidatedGuestOrderCompanionScope
 } {
   const senderPubkey = input.senderPubkey.trim().toLowerCase()
@@ -406,8 +458,15 @@ export type UnwrapOutcome =
   | {
       status: "ok"
       wrapId: string
-      rumor: NDKEvent
+      rumor: PrivateMessageEvent
       category: PrivateMessageCategory
+    }
+  | {
+      status: "external"
+      wrapId: string
+      rumor: PrivateMessageEvent
+      category: "order"
+      record: DecodedCommerceMessage
     }
   | { status: "ignored"; wrapId: string; kind: number | undefined }
   | {
@@ -419,18 +478,34 @@ export type UnwrapOutcome =
 
 /** Injectable unwrap implementation (tests / capability overrides). */
 export type GiftUnwrapFn = (
-  event: NDKEvent,
+  event: PrivateMessageEvent,
   signer: NostrKeySigner
-) => Promise<NDKEvent | null>
+) => Promise<PrivateMessageEvent | null>
 
 export interface UnwrapGiftWrapOptions {
+  /** Dedicated handoff recovery only; general inbox consumers defer these records. */
+  machineConsumer?: "future_market"
+  /** Visible wait threshold only; provider deadlines belong to SessionSigner. */
   timeoutMs?: number
+  onWaiting?: () => void
   /** Replace NIP-44 envelope verification and decryption (used by tests). */
   giftUnwrap?: GiftUnwrapFn
 }
 
 const DEFAULT_UNWRAP_TIMEOUT_MS = 8_000
-const UNWRAP_TIMEOUT = Symbol("unwrap_timeout")
+/** Named read-only exception for authenticated client metadata on seals.
+ * Canonical writes still emit empty tags. Routing/domain tags never qualify.
+ */
+export function acceptsAuthenticatedSealMetadata(tags: string[][]): boolean {
+  return (
+    tags.length === 0 ||
+    (tags.length === 1 &&
+      tags[0]?.[0] === "client" &&
+      tags[0].length >= 2 &&
+      tags[0].length <= 4 &&
+      tags[0].slice(1).every((value) => value.length <= 512))
+  )
+}
 
 /** Bound both NIP-44 layers before asking a signer to encrypt or sign. */
 function assertPrivateMessageFitsTransport(rumor: UnsignedNostrEvent): void {
@@ -474,11 +549,11 @@ function assertPrivateMessageFitsTransport(rumor: UnsignedNostrEvent): void {
 
 /** NIP-59 construction with plain key operations, independent of relay clients. */
 export async function wrapPrivateMessage(
-  event: NDKEvent,
+  event: PrivateMessageEvent,
   recipient: { pubkey: string },
   signer: NostrKeySigner,
   params: { rumorKind?: number } = {}
-): Promise<NDKEvent> {
+): Promise<SignedPublicNostrEvent> {
   const pubkey = await signer.getPublicKey()
   if (event.pubkey && event.pubkey !== pubkey)
     throw new NostrSignerError("authority_changed")
@@ -502,15 +577,16 @@ export async function wrapPrivateMessage(
   })
   if (!isValidSignedPublicNostrEvent(seal) || seal.pubkey !== pubkey)
     throw new NostrSignerError("invalid_response")
-  return new NDKEvent(event.ndk, createWrap(seal, recipient.pubkey))
+  return createWrap(seal, recipient.pubkey)
 }
 
 /** Validate both envelopes and the unsigned rumor before returning private data. */
 export async function unwrapPrivateMessageEnvelope(
-  event: NDKEvent,
-  signer: NostrKeySigner
-): Promise<NDKEvent> {
-  const wrap = event.rawEvent()
+  event: PrivateMessageEvent,
+  signer: NostrKeySigner,
+  options: { onClientSealMetadataAccepted?: () => void } = {}
+): Promise<PrivateMessageEvent> {
+  const wrap = event as SignedPublicNostrEvent
   const pubkey = await signer.getPublicKey()
   if (
     !isValidSignedPublicNostrEvent(wrap as SignedPublicNostrEvent) ||
@@ -531,7 +607,7 @@ export async function unwrapPrivateMessageEnvelope(
   if (
     !isValidSignedPublicNostrEvent(seal) ||
     seal.kind !== EVENT_KINDS.SEAL ||
-    seal.tags.length !== 0
+    !acceptsAuthenticatedSealMetadata(seal.tags)
   )
     throw new NostrSignerError("invalid_response")
   let rumor: UnsignedNostrEvent & { id: string; sig?: string }
@@ -541,87 +617,17 @@ export async function unwrapPrivateMessageEnvelope(
     if (
       "sig" in rumor ||
       rumor.pubkey !== seal.pubkey ||
-      rumor.id !== getEventHash(rumor)
+      rumor.id !== getEventHash(rumor) ||
+      (rumor.pubkey !== pubkey &&
+        !rumor.tags.some((tag) => tag[0] === "p" && tag[1] === pubkey))
     )
       throw new NostrSignerError("invalid_response")
   } catch {
     throw new NostrSignerError("invalid_response")
   }
-  return new NDKEvent(event.ndk, rumor)
+  if (seal.tags.length) options.onClientSealMetadataAccepted?.()
+  return rumor
 }
-const LEGACY_ORDER_MESSAGE_TYPES = new Set([
-  "order",
-  "payment_request",
-  "status_update",
-  "shipping_update",
-  "receipt",
-  "message",
-  "payment_proof",
-  "future_market_ready",
-  "future_market_revoked",
-  "future_market_handed_out",
-])
-const EVENT_MARKET_PRIVATE_MESSAGE_TYPES = new Set([
-  "future_market_ready",
-  "future_market_revoked",
-  "future_market_handed_out",
-])
-
-function classifyLegacyOrderRumor(
-  rumor: NDKEvent
-): "ok" | "ignored" | "malformed" | "deferred_machine" {
-  const tags = rumor.tags ?? []
-  const typeTags = tags.filter((tag) => tag[0] === "type")
-  const orderTags = tags.filter((tag) => tag[0] === "order")
-  const recipientTags = tags.filter((tag) => tag[0] === "p")
-  const type = typeTags[0]?.[1]
-  const orderId = orderTags[0]?.[1]
-  const claimRef = tags.find((tag) => tag[0] === "claim")?.[1]
-  const recipient = recipientTags[0]?.[1]
-
-  // A checkout recovery rumor contains wallet authority, not a conversation
-  // message. Leave its ciphertext for the dedicated strict recovery reader;
-  // the generic inbox must neither cache its content nor consume its wrap.
-  if (typeTags.some((tag) => tag[1] === "checkout_spark_recovery")) {
-    return typeTags.length === 1 &&
-      orderTags.length === 1 &&
-      recipientTags.length === 1 &&
-      orderId &&
-      recipient
-      ? "deferred_machine"
-      : "malformed"
-  }
-
-  // Kind 16 is also NIP-18 generic repost. Only a positively identified
-  // Conduit legacy commerce envelope enters the order parser.
-  if (!type && !orderId && !claimRef) return "ignored"
-  if (
-    !type ||
-    !recipient ||
-    (EVENT_MARKET_PRIVATE_MESSAGE_TYPES.has(type) ? !claimRef : !orderId)
-  ) {
-    return "malformed"
-  }
-  if (!LEGACY_ORDER_MESSAGE_TYPES.has(type)) return "ignored"
-  try {
-    const content = JSON.parse(rumor.content) as unknown
-    if (!content || typeof content !== "object" || Array.isArray(content)) {
-      return "malformed"
-    }
-    if (
-      type === "message" &&
-      (typeof (content as { note?: unknown }).note !== "string" ||
-        !(content as { note: string }).note.trim())
-    ) {
-      return "malformed"
-    }
-    parseOrderMessageRumorEvent(rumor)
-    return "ok"
-  } catch {
-    return "malformed"
-  }
-}
-
 /** Map an inner rumor kind to its conversation type, or null when unrelated. */
 export function classifyPrivateMessageKind(
   kind: number | undefined
@@ -637,7 +643,7 @@ export function classifyPrivateMessageKind(
  * the current path; NIP-04 stays in the separate read-only legacy lane.
  */
 export async function unwrapGiftWrap(
-  event: NDKEvent,
+  event: PrivateMessageEvent,
   signer: NostrKeySigner,
   options: UnwrapGiftWrapOptions = {}
 ): Promise<UnwrapOutcome> {
@@ -645,7 +651,7 @@ export async function unwrapGiftWrap(
   const timeoutMs = options.timeoutMs ?? DEFAULT_UNWRAP_TIMEOUT_MS
 
   const runner = (async (): Promise<{
-    rumor: NDKEvent | null
+    rumor: PrivateMessageEvent | null
     reason: DecryptFailureReason | null
   }> => {
     if (options.giftUnwrap) {
@@ -667,18 +673,16 @@ export async function unwrapGiftWrap(
     }
   })()
 
-  const raced = await Promise.race([
-    runner,
-    new Promise<typeof UNWRAP_TIMEOUT>((resolve) =>
-      setTimeout(() => resolve(UNWRAP_TIMEOUT), timeoutMs)
-    ),
-  ])
-
-  if (raced === UNWRAP_TIMEOUT) {
-    return { status: "decrypt_failed", wrapId, reason: "timeout" }
+  // This timer changes visible waiting state only. The real provider operation
+  // remains owned until it settles; a slow valid result is never discarded.
+  const waitTimer = setTimeout(() => options.onWaiting?.(), timeoutMs)
+  let decoded: Awaited<typeof runner>
+  try {
+    decoded = await runner
+  } finally {
+    clearTimeout(waitTimer)
   }
-
-  const { rumor, reason } = raced
+  const { rumor, reason } = decoded
   if (!rumor) {
     return {
       status: "decrypt_failed",
@@ -687,41 +691,45 @@ export async function unwrapGiftWrap(
     }
   }
 
-  const category = classifyPrivateMessageKind(rumor.kind)
-  if (!category) {
-    return { status: "ignored", wrapId, kind: rumor.kind }
-  }
-  if (category === "order") {
-    const classification = classifyLegacyOrderRumor(rumor)
-    if (classification === "deferred_machine") {
-      return { status: "deferred_machine", wrapId, kind: EVENT_KINDS.ORDER }
+  const decodedRecord = decodeCommerceMessageRumor(
+    completePrivateMessageEvent(rumor)
+  )
+  if (decodedRecord.category === "machine") {
+    if (options.machineConsumer === "future_market") {
+      try {
+        const message = parseOrderMessageRumorEvent(rumor)
+        if (
+          [
+            "future_market_ready",
+            "future_market_revoked",
+            "future_market_handed_out",
+          ].includes(message.type)
+        )
+          return { status: "ok", wrapId, rumor, category: "order" }
+      } catch {
+        // Invalid recovery never gains generic rendering or domain authority.
+      }
     }
-    if (classification === "ignored") {
-      return { status: "ignored", wrapId, kind: rumor.kind }
-    }
-    if (classification === "malformed") {
-      return { status: "decrypt_failed", wrapId, reason: "malformed" }
+    return { status: "deferred_machine", wrapId, kind: EVENT_KINDS.ORDER }
+  }
+  if (decodedRecord.category === "commerce") {
+    if (decodedRecord.parsedOrderMessage)
+      return { status: "ok", wrapId, rumor, category: "order" }
+    return {
+      status: "external",
+      wrapId,
+      rumor,
+      category: "order",
+      record: decodedRecord,
     }
   }
-  return { status: "ok", wrapId, rumor, category }
-}
-
-/** Unwrap a batch of gift wraps, capping concurrency per chunk. */
-export async function unwrapGiftWraps(
-  events: NDKEvent[],
-  signer: NostrKeySigner,
-  options: UnwrapGiftWrapOptions = {},
-  batchSize = 5
-): Promise<UnwrapOutcome[]> {
-  const results: UnwrapOutcome[] = []
-  for (let index = 0; index < events.length; index += batchSize) {
-    const batch = events.slice(index, index + batchSize)
-    const batchResults = await Promise.all(
-      batch.map((event) => unwrapGiftWrap(event, signer, options))
-    )
-    results.push(...batchResults)
+  if (
+    decodedRecord.category === "direct" ||
+    decodedRecord.category === "file"
+  ) {
+    return { status: "ok", wrapId, rumor, category: "direct" }
   }
-  return results
+  return { status: "ignored", wrapId, kind: rumor.kind }
 }
 
 export interface BuildDirectMessageRumorInput {
@@ -730,14 +738,21 @@ export interface BuildDirectMessageRumorInput {
   content: string
   appId: ConduitAppId
   subject?: string
+  replyTo?: string
   createdAt?: number
 }
 
 /** Build an unsigned kind-14 general direct-message rumor (NIP-17). */
 export function buildDirectMessageRumor(
   input: BuildDirectMessageRumorInput
-): NDKEvent {
-  const rumor = new NDKEvent()
+): PrivateMessageEvent {
+  const rumor: PrivateMessageEvent = {
+    id: "",
+    kind: EVENT_KINDS.DIRECT_MESSAGE,
+    pubkey: input.senderPubkey,
+    tags: [],
+    content: "",
+  }
   rumor.kind = EVENT_KINDS.DIRECT_MESSAGE
   rumor.pubkey = input.senderPubkey
   rumor.created_at = input.createdAt ?? Math.floor(Date.now() / 1000)
@@ -746,7 +761,7 @@ export function buildDirectMessageRumor(
   rumor.tags = appendConduitClientTag(tags, input.appId)
   rumor.content = input.content
   try {
-    rumor.id = rumor.getEventHash()
+    rumor.id = getEventHash(completePrivateMessageEvent(rumor))
   } catch {
     // id derivation is best-effort; caching path re-derives if needed
   }
@@ -763,6 +778,10 @@ export interface ParsedDirectMessage {
   /** Milliseconds, matching ParsedOrderMessage.createdAt. */
   createdAt: number
   transport: DirectMessageTransport
+  participants?: string[]
+  conversationId?: string
+  replyTo?: string
+  file?: Extract<DecodedCommerceMessage, { category: "file" }>
 }
 
 export type DirectMessageTransport = "nip17" | "nip04"
@@ -792,7 +811,7 @@ export function createLegacyDmDecrypt(signer: NostrKeySigner): LegacyDmDecrypt {
 }
 
 export async function decryptLegacyDirectMessage(
-  event: NDKEvent,
+  event: PrivateMessageEvent,
   principalPubkey: string,
   decrypt: LegacyDmDecrypt,
   options: { timeoutMs?: number } = {}
@@ -815,23 +834,11 @@ export async function decryptLegacyDirectMessage(
     return { status: "ignored", eventId: event.id }
   }
 
-  const timeout = Symbol("legacy_dm_timeout")
+  // Active-operation deadlines belong to the session signer. Queue waiting
+  // and a UI waiting indicator must never discard a valid provider result.
+  void options
   try {
-    const result = await Promise.race([
-      decrypt(counterpartyPubkey, event.content ?? ""),
-      new Promise<typeof timeout>((resolve) =>
-        setTimeout(
-          () => resolve(timeout),
-          options.timeoutMs ?? DEFAULT_UNWRAP_TIMEOUT_MS
-        )
-      ),
-    ])
-    if (result === timeout) {
-      return {
-        status: "decrypt_failed",
-        failure: { eventId: event.id, reason: "timeout", retryable: true },
-      }
-    }
+    const result = await decrypt(counterpartyPubkey, event.content ?? "")
     return {
       status: "ok",
       message: {
@@ -856,7 +863,9 @@ export async function decryptLegacyDirectMessage(
 }
 
 /** Parse an unwrapped kind-14 rumor into a general direct message. */
-export function parseDirectMessageRumor(rumor: NDKEvent): ParsedDirectMessage {
+export function parseDirectMessageRumor(
+  rumor: PrivateMessageEvent
+): ParsedDirectMessage {
   const recipientPubkey =
     (rumor.tags ?? []).find((tag) => tag[0] === "p")?.[1] ?? ""
   return {
@@ -866,12 +875,20 @@ export function parseDirectMessageRumor(rumor: NDKEvent): ParsedDirectMessage {
     content: rumor.content ?? "",
     createdAt: (rumor.created_at ?? 0) * 1000,
     transport: "nip17",
+    participants: [
+      ...new Set([
+        rumor.pubkey,
+        ...rumor.tags.filter((tag) => tag[0] === "p").map((tag) => tag[1]!),
+      ]),
+    ].sort(),
+    conversationId: `nip17:${[...new Set([rumor.pubkey, ...rumor.tags.filter((tag) => tag[0] === "p").map((tag) => tag[1]!)])].sort().join(":")}`,
+    replyTo: rumor.tags.filter((tag) => tag[0] === "e").at(-1)?.[1],
   }
 }
 
 export interface PublishPrivateMessageInput {
   /** Caller-built rumor (pubkey stamped); its kind must equal rumorKind. */
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
   senderPubkey: string
   recipientPubkey: string
   /**
@@ -1046,13 +1063,13 @@ function createInteractionGatedSigner(
 
 export interface PreparedPrivateMessageWraps {
   rumorId: string
-  wrappedToRecipient: NDKEvent
-  wrappedToSelf: NDKEvent | null
+  wrappedToRecipient: SignedPublicNostrEvent
+  wrappedToSelf: SignedPublicNostrEvent | null
 }
 
 export interface PreparedPrivateMessageRecipientDelivery {
   rumorId: string
-  wrappedToRecipient: NDKEvent
+  wrappedToRecipient: SignedPublicNostrEvent
   deliveryRoute: OrderDeliveryRoute
   routingAuthority?: OrderRelayRoutingAuthority
   compatibilityPlan?: OrderRelayCompatibilityPlan
@@ -1063,8 +1080,8 @@ export interface PreparedPrivateMessageRecipientDelivery {
 }
 
 export interface PublishPrivateMessageResult {
-  wrappedToRecipient: NDKEvent
-  wrappedToSelf: NDKEvent | null
+  wrappedToRecipient: SignedPublicNostrEvent
+  wrappedToSelf: SignedPublicNostrEvent | null
   /** Exact content-free planner result for the self-copy leg, when attempted. */
   selfDelivery: PublishWithPlannerResult | null
   /** Exact ACK completeness for the attempted self-copy leg. */
@@ -1088,7 +1105,7 @@ export interface PublishPrivateMessageResult {
 }
 
 export interface PrivateMessagePostAcceptanceResult {
-  wrappedToSelf: NDKEvent | null
+  wrappedToSelf: SignedPublicNostrEvent | null
   selfDelivery: PublishWithPlannerResult | null
   selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null
   selfCopyError: string | null
@@ -1133,21 +1150,11 @@ function recoverPartialRelayPublishDiagnostics(
     : null
 }
 
-function isCanonicalInitialOrderRumor(rumor: NDKEvent): boolean {
+function isCanonicalInitialOrderRumor(rumor: PrivateMessageEvent): boolean {
   const typeTags = rumor.tags.filter((tag) => tag[0] === "type")
-  return typeTags.length === 1 && typeTags[0]?.[1] === "order"
-}
-
-function clonePrivateMessageRumor(rumor: NDKEvent): NDKEvent {
-  return new NDKEvent(rumor.ndk, {
-    kind: rumor.kind,
-    id: rumor.id,
-    pubkey: rumor.pubkey,
-    created_at: rumor.created_at,
-    tags: rumor.tags.map((tag) => [...tag]),
-    content: rumor.content,
-    sig: "",
-  })
+  return (
+    typeTags.length === 1 && ["order", "1"].includes(typeTags[0]?.[1] ?? "")
+  )
 }
 
 const ORDER_RELAY_RETRY_RETENTION_MS = 24 * 60 * 60 * 1_000
@@ -1258,9 +1265,10 @@ function buildRecoverableRecipientRoutingAuthority(input: {
 export async function publishPrivateMessage(
   input: PublishPrivateMessageInput
 ): Promise<PublishPrivateMessageResult> {
-  if (input.rumor.kind !== input.rumorKind) {
+  if (input.rumor.kind !== input.rumorKind)
     throw new Error("Private message rumor kind does not match requested kind")
-  }
+  if (![14, 16].includes(input.rumor.kind))
+    throw new Error("Unsupported private message rumor kind")
 
   const senderPubkey = input.senderPubkey.trim().toLowerCase()
   const recipientPubkey = input.recipientPubkey.trim().toLowerCase()
@@ -1311,6 +1319,29 @@ export async function publishPrivateMessage(
     )
   }
 
+  const originalId = input.rumor.id
+  const stableRumor = createPrivateMessageRumor(
+    completePrivateMessageEvent(input.rumor)
+  )
+  if (originalId && originalId !== stableRumor.id)
+    throw new Error("Private message rumor id does not match its content")
+  input = { ...input, rumor: stableRumor }
+
+  const currentDeliveryAuthorization = authenticatedOwnerPubkey
+    ? getProtectedReadAuthorization(authenticatedOwnerPubkey)
+    : null
+  if (
+    currentDeliveryAuthorization &&
+    input.recipientDeliveryBoundary !== "accepted"
+  ) {
+    const resumed = await resumePrivateDelivery(
+      new CommerceInboxStore(currentDeliveryAuthorization),
+      stableRumor.id,
+      recipientPubkey,
+      input.publishFn
+    )
+    if (resumed) return resumed
+  }
   const giftWrapFn = input.giftWrapFn ?? wrapPrivateMessage
   const selfCopy = input.selfCopy ?? true
   const refreshRelayLists = input.refreshRelayLists ?? true
@@ -1507,10 +1538,8 @@ export async function publishPrivateMessage(
   }
   const senderRoute: ReturnType<
     typeof selectPrivateMessageDeliveryRoute
-  > | null = progressiveRecipientDelivery ? null : await resolveSenderRoute()
+  > | null = await resolveSenderRoute()
 
-  // The envelope's event context carries no account key authority.
-  input.rumor.ndk ??= getNdk()
   const externalSignerInteraction =
     (input.signerInteraction ?? "background_external") === "external"
   const waitForSignerVisibility =
@@ -1539,11 +1568,11 @@ export async function publishPrivateMessage(
         }
       : undefined
 
-  let wrappedToRecipient: NDKEvent
+  let wrappedToRecipient: SignedPublicNostrEvent
   try {
     wrappedToRecipient = await giftWrapFn(
       input.rumor,
-      new NDKUser({ pubkey: input.recipientPubkey }),
+      { pubkey: input.recipientPubkey },
       giftWrapSigner,
       wrapParams
     )
@@ -1555,6 +1584,75 @@ export async function publishPrivateMessage(
     })
     throw error
   }
+  // The self-copy is a non-critical local-recovery leg: a signer failure while
+  // wrapping it must never block the critical recipient delivery below.
+  let selfCopyError: string | null = null
+  let selfDelivery: PublishWithPlannerResult | null = null
+  let selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null = null
+  let wrappedToSelf: SignedPublicNostrEvent | null = null
+  if (selfCopy) {
+    try {
+      wrappedToSelf = await giftWrapFn(
+        input.rumor,
+        { pubkey: input.senderPubkey },
+        giftWrapSigner,
+        wrapParams
+      )
+    } catch (error) {
+      selfCopyError =
+        error instanceof Error ? error.message : "Self-copy wrap failed"
+    }
+  }
+
+  const deliveryAuthorization = authenticatedOwnerPubkey
+    ? getProtectedReadAuthorization(authenticatedOwnerPubkey)
+    : null
+  const deliveryStore = deliveryAuthorization
+    ? new CommerceInboxStore(deliveryAuthorization)
+    : null
+  const stagedId =
+    deliveryStore && (!progressiveRecipientDelivery || wrappedToSelf)
+      ? await stagePrivateDelivery(deliveryStore, {
+          rumorId: input.rumor.id,
+          senderPubkey,
+          createdAt: Date.now(),
+          legs: [
+            ...(!progressiveRecipientDelivery
+              ? [
+                  {
+                    recipientPubkey,
+                    event: wrappedToRecipient,
+                    relayUrls: [...recipientRoute.relayUrls],
+                    ownerSelectedRelayUrls: [],
+                    compatibility:
+                      recipientRoute.route === "compatibility_order",
+                    relaySources: { ...recipientRoute.relaySources },
+                    truncated: recipientRoute.truncated,
+                    acknowledged: [],
+                    failed: [],
+                  },
+                ]
+              : []),
+            ...(wrappedToSelf && senderRoute && senderRoute.route !== "blocked"
+              ? [
+                  {
+                    recipientPubkey: senderPubkey,
+                    event: wrappedToSelf,
+                    relayUrls: [...senderRoute.relayUrls],
+                    ownerSelectedRelayUrls: [
+                      ...senderRoute.ownerSelectedRelayUrls,
+                    ],
+                    compatibility: false,
+                    relaySources: { ...senderRoute.relaySources },
+                    truncated: senderRoute.truncated,
+                    acknowledged: [],
+                    failed: [],
+                  },
+                ]
+              : []),
+          ],
+        })
+      : null
   const preparedRecipientDelivery: PreparedPrivateMessageRecipientDelivery | null =
     recoverableRoutingAuthority || recoverableCompatibilityPlan
       ? {
@@ -1620,7 +1718,7 @@ export async function publishPrivateMessage(
     })
     await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
     const milestones = await publishProgressiveFn(
-      wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
+      wrappedToRecipient as SignedPublicNostrEvent,
       recipientPublishInput
     )
     const settledOutcome = milestones.settled.then(async (snapshot) => {
@@ -1667,7 +1765,6 @@ export async function publishPrivateMessage(
       routingAuthority: recoverableRoutingAuthority,
       compatibilityPlan: recoverableCompatibilityPlan,
     })
-    const stableRumor = clonePrivateMessageRumor(input.rumor)
     let postAcceptanceWork: Promise<PrivateMessagePostAcceptanceResult> | null =
       null
     const startPostAcceptanceWork = () => {
@@ -1675,10 +1772,11 @@ export async function publishPrivateMessage(
         let selfCopyError: string | null = null
         let selfDelivery: PublishWithPlannerResult | null = null
         let selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null = null
-        let wrappedToSelf: NDKEvent | null = null
+        const preparedSelfWrap = wrappedToSelf
+        let savedSelfWrap: SignedPublicNostrEvent | null = preparedSelfWrap
         if (!selfCopy) {
           return {
-            wrappedToSelf,
+            wrappedToSelf: savedSelfWrap,
             selfDelivery,
             selfDeliveryStatus,
             selfCopyError,
@@ -1690,7 +1788,7 @@ export async function publishPrivateMessage(
               "Sender self-copy stopped because the signer session changed."
             )
           }
-          const currentSenderRoute = await resolveSenderRoute()
+          const currentSenderRoute = senderRoute
           if (!currentSenderRoute || currentSenderRoute.route === "blocked") {
             throw new Error(
               "Sender has no usable NIP-17 inbox relay declaration."
@@ -1701,12 +1799,9 @@ export async function publishPrivateMessage(
               "Sender self-copy stopped because the signer session changed."
             )
           }
-          wrappedToSelf = await giftWrapFn(
-            stableRumor,
-            new NDKUser({ pubkey: input.senderPubkey }),
-            giftWrapSigner,
-            wrapParams
-          )
+          if (!preparedSelfWrap)
+            throw new Error("Sender self-copy was not prepared")
+          savedSelfWrap = preparedSelfWrap
           if (input.shouldContinue?.() === false) {
             throw new Error(
               "Sender self-copy stopped because the signer session changed."
@@ -1714,7 +1809,7 @@ export async function publishPrivateMessage(
           }
           try {
             selfDelivery = await publishFn(
-              wrappedToSelf.rawEvent() as SignedPublicNostrEvent,
+              savedSelfWrap as SignedPublicNostrEvent,
               {
                 intent: "recipient_event",
                 authorPubkey: input.senderPubkey,
@@ -1744,6 +1839,13 @@ export async function publishPrivateMessage(
             if (!partial) throw error
             selfDelivery = partial
           }
+          if (deliveryStore && stagedId && savedSelfWrap)
+            await recordPrivateDelivery(
+              deliveryStore,
+              stagedId,
+              savedSelfWrap.id,
+              selfDelivery
+            )
           const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
           selfDeliveryStatus = summary.status
           selfCopyError = summary.error
@@ -1752,7 +1854,7 @@ export async function publishPrivateMessage(
             error instanceof Error ? error.message : "Self-copy failed"
         }
         return {
-          wrappedToSelf,
+          wrappedToSelf: savedSelfWrap,
           selfDelivery,
           selfDeliveryStatus,
           selfCopyError,
@@ -1774,26 +1876,6 @@ export async function publishPrivateMessage(
       deliveryPlanTruncated: recipientRoute.truncated,
       orderRelayDelivery,
       startPostAcceptanceWork,
-    }
-  }
-
-  // The self-copy is a non-critical local-recovery leg: a signer failure while
-  // wrapping it must never block the critical recipient delivery below.
-  let selfCopyError: string | null = null
-  let selfDelivery: PublishWithPlannerResult | null = null
-  let selfDeliveryStatus: PrivateMessageSelfDeliveryStatus | null = null
-  let wrappedToSelf: NDKEvent | null = null
-  if (selfCopy) {
-    try {
-      wrappedToSelf = await giftWrapFn(
-        input.rumor,
-        new NDKUser({ pubkey: input.senderPubkey }),
-        giftWrapSigner,
-        wrapParams
-      )
-    } catch (error) {
-      selfCopyError =
-        error instanceof Error ? error.message : "Self-copy wrap failed"
     }
   }
 
@@ -1819,7 +1901,7 @@ export async function publishPrivateMessage(
   }
   try {
     recipientDelivery = await publishFn(
-      wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
+      wrappedToRecipient as SignedPublicNostrEvent,
       {
         intent: "recipient_event",
         authorPubkey: input.senderPubkey,
@@ -1859,6 +1941,13 @@ export async function publishPrivateMessage(
       )
       recipientDeliveryReported = true
     }
+    if (deliveryStore && stagedId)
+      await recordPrivateDelivery(
+        deliveryStore,
+        stagedId,
+        wrappedToRecipient.id,
+        error instanceof RelayPublishDiagnosticsError ? error.diagnostics : null
+      )
     const partial = recoverPartialRelayPublishDiagnostics(error)
     if (partial) {
       // A planner diagnostic that includes a recipient ACK is durable delivery.
@@ -1897,6 +1986,13 @@ export async function publishPrivateMessage(
     })
     throw new Error("Recipient delivery completed without a relay ACK.")
   }
+  if (deliveryStore && stagedId)
+    await recordPrivateDelivery(
+      deliveryStore,
+      stagedId,
+      wrappedToRecipient.id,
+      recipientDelivery
+    )
   const deliveryStatus =
     Array.isArray(recipientDelivery.failedRelayUrls) &&
     recipientDelivery.failedRelayUrls.length > 0
@@ -1933,7 +2029,7 @@ export async function publishPrivateMessage(
       try {
         try {
           selfDelivery = await publishFn(
-            wrappedToSelf.rawEvent() as SignedPublicNostrEvent,
+            wrappedToSelf as SignedPublicNostrEvent,
             {
               intent: "recipient_event",
               authorPubkey: input.senderPubkey,
@@ -1975,6 +2071,13 @@ export async function publishPrivateMessage(
             selfDelivery = partial
           }
         }
+        if (deliveryStore && stagedId)
+          await recordPrivateDelivery(
+            deliveryStore,
+            stagedId,
+            wrappedToSelf.id,
+            selfDelivery
+          )
         if (selfDelivery) {
           const summary = summarizePrivateMessageSelfDelivery(selfDelivery)
           selfDeliveryStatus = summary.status
@@ -2008,7 +2111,7 @@ export async function publishPrivateMessage(
 
 function consumeValidatedOrderRouteScope(input: {
   scope: ValidatedOrderRouteScope | undefined
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
   senderPubkey: string
   recipientPubkey: string
 }): boolean {
@@ -2027,7 +2130,7 @@ function consumeValidatedOrderRouteScope(input: {
 
 function consumeValidatedGuestOrderCompanionScope(input: {
   scope: ValidatedGuestOrderCompanionScope | undefined
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
   senderPubkey: string
   recipientPubkey: string
   selfCopy: boolean
@@ -2038,7 +2141,7 @@ function consumeValidatedGuestOrderCompanionScope(input: {
 
   let rumorHash: string
   try {
-    rumorHash = input.rumor.getEventHash()
+    rumorHash = getEventHash(completePrivateMessageEvent(input.rumor))
   } catch {
     return false
   }
@@ -2066,7 +2169,7 @@ function consumeValidatedGuestOrderCompanionScope(input: {
 
 function buildOrderRelayDeliveryRecord(input: {
   rumorId: string
-  wrappedToRecipient: NDKEvent
+  wrappedToRecipient: SignedPublicNostrEvent
   recipientRoute: DeliveryRouteSelection
   recipientDelivery:
     Awaited<ReturnType<typeof publishWithPlanner>> | ProgressivePublishSnapshot
@@ -2083,8 +2186,7 @@ function buildOrderRelayDeliveryRecord(input: {
   }
   let signedRecipientWrap: SignedPublicNostrEvent
   try {
-    signedRecipientWrap =
-      input.wrappedToRecipient.rawEvent() as SignedPublicNostrEvent
+    signedRecipientWrap = input.wrappedToRecipient as SignedPublicNostrEvent
   } catch {
     return undefined
   }
@@ -2584,5 +2686,31 @@ export async function inspectOwnPrivateMessageRelayReadiness(
   return projectOwnPrivateMessageRelayReadiness(resolution, {
     sharedPlanRelayUrls,
     distributionRepairable,
+  })
+}
+
+export function createParticipantMessageRumor(
+  input: Omit<BuildDirectMessageRumorInput, "recipientPubkey"> & {
+    recipientPubkeys: string[]
+  }
+): PrivateMessageRumor {
+  const participants = [...new Set(input.recipientPubkeys)]
+    .filter((p) => p !== input.senderPubkey)
+    .sort()
+  if (!participants.length || participants.length > 16)
+    throw new Error("Invalid participant set")
+  return createPrivateMessageRumor({
+    pubkey: input.senderPubkey,
+    kind: 14,
+    created_at: input.createdAt ?? Math.floor(Date.now() / 1000),
+    content: input.content,
+    tags: appendConduitClientTag(
+      [
+        ...participants.map((p) => ["p", p]),
+        ...(input.subject ? [["subject", input.subject]] : []),
+        ...(input.replyTo ? [["e", input.replyTo, "", "reply"]] : []),
+      ],
+      input.appId
+    ),
   })
 }

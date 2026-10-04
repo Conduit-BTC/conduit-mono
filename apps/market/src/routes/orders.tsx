@@ -21,7 +21,6 @@ import {
   EVENT_KINDS,
   formatNpub,
   formatPubkey,
-  getNdk,
   getAccountSigner,
   getOrderLifecycle,
   getProductImageCandidates,
@@ -38,8 +37,9 @@ import {
   replaceOrderPaymentTarget,
   retryOrderRelayDelivery,
   resolveWalletPaymentInstance,
-  selectProtectedReadRows,
   useAuth,
+  useCommerceInbox,
+  type PrivateMessageEvent,
   useProfile,
   useProfiles,
   type CommercePriceLike,
@@ -49,8 +49,8 @@ import {
   type ShopperPriceDisplayOptions,
 } from "@conduit/core"
 import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  CommerceInboxRecovery,
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -103,11 +103,7 @@ import {
   SparkFeeApprovalDialog,
   useSparkFeeApproval,
 } from "../components/SparkFeeApprovalDialog"
-import {
-  fetchBuyerConversations,
-  fetchCachedBuyerConversations,
-  type BuyerConversation,
-} from "../lib/orderConversations"
+import { type BuyerConversation } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets } from "../hooks/useWallets"
@@ -1616,10 +1612,15 @@ function OrderDetail({
       if (guestIdentity) throw new Error("Guest orders cannot send messages")
       if (!signerReady) throw new Error("Reconnect your signer to send.")
       if (!replyText.trim()) throw new Error("Message is required")
-      const ndk = getNdk()
       if (!getAccountSigner()) throw new Error("Signer not connected")
 
-      const rumor = new NDKEvent(ndk)
+      const rumor: PrivateMessageEvent = {
+        id: "",
+        pubkey: buyerPubkey,
+        kind: 16,
+        tags: [],
+        content: "",
+      }
       rumor.kind = EVENT_KINDS.ORDER
       rumor.created_at = Math.floor(Date.now() / 1000)
       rumor.tags = appendConduitClientTag(
@@ -1637,17 +1638,11 @@ function OrderDetail({
         buyerPubkey,
         createdAt: Date.now(),
       })
-      await publishBuyerOrderMessage(
-        rumor,
-        ndk,
-        row.merchantPubkey,
-        buyerPubkey,
-        {
-          accountPubkey: authenticatedPubkey ?? null,
-          authenticatedPubkey: authenticatedPubkey ?? null,
-          shouldContinue: shouldContinueBuyerSession,
-        }
-      )
+      await publishBuyerOrderMessage(rumor, row.merchantPubkey, buyerPubkey, {
+        accountPubkey: authenticatedPubkey ?? null,
+        authenticatedPubkey: authenticatedPubkey ?? null,
+        shouldContinue: shouldContinueBuyerSession,
+      })
     },
     onSuccess: async () => {
       setReplyText("")
@@ -2614,19 +2609,8 @@ function OrdersPage() {
     },
     refetchInterval: 30_000,
   })
-  const messagesQuery = useQuery({
-    queryKey: ["buyer-messages-live", activeBuyerPubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => fetchBuyerConversations(activeBuyerPubkey!),
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: true,
-  })
-  const cachedMessagesQuery = useQuery({
-    queryKey: ["buyer-messages", activeBuyerPubkey ?? "none"],
-    enabled: hasAccount,
-    queryFn: () => fetchCachedBuyerConversations(activeBuyerPubkey!),
-    staleTime: 5_000,
-  })
+  const inbox = useCommerceInbox(activeBuyerPubkey, signerConnected)
+  const messagesQuery = inbox.buyer
 
   const refetchAll = useCallback(async () => {
     const refreshes: Promise<unknown>[] = [lifecyclesQuery.refetch()]
@@ -2663,12 +2647,8 @@ function OrdersPage() {
   }, [refetchAll])
 
   const conversations = useMemo(
-    () =>
-      selectProtectedReadRows(
-        messagesQuery.data?.data,
-        cachedMessagesQuery.data?.data
-      ),
-    [cachedMessagesQuery.data, messagesQuery.data]
+    () => messagesQuery.data?.data ?? [],
+    [messagesQuery.data]
   )
   const messagesMeta = messagesQuery.data?.meta
   const protectedOrdersReadState = deriveProtectedReadPresentationState({
@@ -2966,6 +2946,7 @@ function OrdersPage() {
 
   return (
     <div className="space-y-6">
+      <CommerceInboxRecovery {...inbox} />
       <LightningStrikeOverlay
         open={lightningPlaying}
         onComplete={() => setLightningPlaying(false)}

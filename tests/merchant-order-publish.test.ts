@@ -12,6 +12,7 @@ describe("merchant order publish", () => {
   it("targets the merchant for a guest-only operational record", () => {
     const rumor = new NDKEvent()
     rumor.id = "guest-status-rumor"
+    rumor.created_at = 100
     rumor.kind = EVENT_KINDS.ORDER
     rumor.pubkey = "merchant"
     rumor.tags = buildMerchantOrderRumorTags({

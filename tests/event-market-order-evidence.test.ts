@@ -1,14 +1,13 @@
 import {
+  installPrivateInboxTestRead,
+  cleanupPrivateInboxTestReads,
+} from "./helpers/private-inbox"
+import {
   plainTestSigner,
   setTestAccountSigner as setSigner,
   removeTestAccountSigner as removeSigner,
 } from "./helpers/plain-signer"
-import {
-  giftWrap,
-  NDKEvent,
-  NDKPrivateKeySigner,
-  NDKUser,
-} from "@nostr-dev-kit/ndk"
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { afterEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -22,8 +21,6 @@ import {
   canCompleteFutureMarketHandoff,
   readFutureMarketMerchantClaim,
   publishFutureMarketReadyReceipt,
-  getNdk,
-  __setCommerceTestOverrides,
   buildFutureMarketPrivateRumor,
   readFutureMarketReadyReceipts,
   readFutureMarketHandoffAcks,
@@ -47,7 +44,8 @@ import {
 } from "@conduit/core"
 import { assertCreatedEventMarketPickupTerms } from "../apps/market/src/lib/order-pickup-retry"
 
-afterEach(() => {
+afterEach(async () => {
+  await cleanupPrivateInboxTestReads()
   __resetCommerceTestOverrides()
   __resetFutureMarketHandoffTestState()
 })
@@ -816,36 +814,12 @@ describe("future Event Market private physical handoff", () => {
       let principal = organizer
       let rumors = [ready]
       const setRead = () =>
-        __setCommerceTestOverrides({
-          allowMissingProtectedReadAuthorization: true,
-          getAccountSigner: () =>
-            ({ getPublicKey: async () => principal }) as never,
-          resolveInboxRelayUrls: async () => ["wss://future.inbox.test"],
-          fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
-            events: rumors.map(
-              (rumor) =>
-                new NDKEvent(
-                  undefined,
-                  finalizeEvent(
-                    {
-                      kind: 1059,
-                      created_at: rumor.created_at!,
-                      tags: [["p", principal]],
-                      content: rumor.id!,
-                    },
-                    merchantSecret
-                  )
-                )
-            ),
-            attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-            successfulRelayUrls: [...(options?.relayUrls ?? [])],
-            failedRelayUrls:
-              coverage === "partial" ? [...(options?.relayUrls ?? [])] : [],
-            cappedRelayUrls:
-              coverage === "capped" ? [...(options?.relayUrls ?? [])] : [],
-          }),
-          giftUnwrap: async (event) =>
-            rumors.find((rumor) => rumor.id === event.content)!,
+        installPrivateInboxTestRead({
+          principalSecret:
+            principal === organizer ? organizerSecret : merchantSecret,
+          authorSecrets: [merchantSecret, organizerSecret],
+          rumors,
+          coverage,
         })
       setRead()
       const organizerRead = await readFutureMarketReadyReceipts({
@@ -855,14 +829,12 @@ describe("future Event Market private physical handoff", () => {
       expect(organizerRead.stale).toBe(false)
       expect(organizerRead.coverageDegraded).toBe(true)
       expect(organizerRead.claims[0]?.state).toBe("ready_for_pickup")
-      __setCommerceTestOverrides({
-        fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
-          events: [],
-          attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-          successfulRelayUrls: [],
-          failedRelayUrls: [...(options?.relayUrls ?? [])],
-          cappedRelayUrls: [],
-        }),
+      installPrivateInboxTestRead({
+        principalSecret:
+          principal === organizer ? organizerSecret : merchantSecret,
+        authorSecrets: [merchantSecret, organizerSecret],
+        rumors: [],
+        coverage: "unavailable",
       })
       const retained = await readFutureMarketReadyReceipts({
         organizerPubkey: organizer,
@@ -893,14 +865,12 @@ describe("future Event Market private physical handoff", () => {
           hasLocalRevocation: true,
         })
       ).toBe(false)
-      __setCommerceTestOverrides({
-        fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
-          events: [],
-          attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-          successfulRelayUrls: [],
-          failedRelayUrls: [...(options?.relayUrls ?? [])],
-          cappedRelayUrls: [],
-        }),
+      installPrivateInboxTestRead({
+        principalSecret:
+          principal === organizer ? organizerSecret : merchantSecret,
+        authorSecrets: [merchantSecret, organizerSecret],
+        rumors: [],
+        coverage: "unavailable",
       })
       const degradedAck = await readFutureMarketHandoffAcks({
         merchantPubkey: merchant,
@@ -1134,31 +1104,10 @@ describe("future Event Market private physical handoff", () => {
         return ""
       },
     }
-    __setCommerceTestOverrides({
-      allowMissingProtectedReadAuthorization: true,
-      getAccountSigner: () => plainTestSigner(signer as never),
-      resolveInboxRelayUrls: async () => ["wss://fresh.inbox.test"],
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
-        events: [
-          new NDKEvent(
-            undefined,
-            finalizeEvent(
-              {
-                kind: 1059,
-                created_at: 250,
-                tags: [["p", merchant]],
-                content: ready.id!,
-              },
-              merchantSecret
-            )
-          ),
-        ],
-        attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-        successfulRelayUrls: [...(options?.relayUrls ?? [])],
-        failedRelayUrls: [],
-        cappedRelayUrls: [],
-      }),
-      giftUnwrap: async () => ready,
+    installPrivateInboxTestRead({
+      principalSecret: merchantSecret,
+      authorSecrets: [merchantSecret],
+      rumors: [ready],
     })
     const recovered = await readFutureMarketMerchantClaim({
       order: handoffOrder,
@@ -1222,27 +1171,12 @@ describe("future Event Market private physical handoff", () => {
         issuedAt: 260,
       })
       const ready = buildFutureMarketPrivateRumor(receipt)
-      ready.ndk = getNdk()
-      const selfWrap = await giftWrap(
-        ready,
-        new NDKUser({ pubkey: merchant }),
-        signer,
-        { rumorKind: ready.kind }
-      )
       const setRead = (available: boolean) =>
-        __setCommerceTestOverrides({
-          allowMissingProtectedReadAuthorization: true,
-          getAccountSigner: () => plainTestSigner(signer as never),
-          resolveInboxRelayUrls: async () => ["wss://restart.inbox.test"],
-          fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
-            events: available ? [selfWrap] : [],
-            attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-            successfulRelayUrls: available
-              ? [...(options?.relayUrls ?? [])]
-              : [],
-            failedRelayUrls: available ? [] : [...(options?.relayUrls ?? [])],
-            cappedRelayUrls: [],
-          }),
+        installPrivateInboxTestRead({
+          principalSecret: merchantSecret,
+          authorSecrets: [merchantSecret],
+          rumors: available ? [ready] : [],
+          coverage: available ? "complete" : "unavailable",
         })
       setRead(true)
       const first = await readFutureMarketMerchantClaim({

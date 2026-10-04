@@ -1,4 +1,7 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import {
+  createPrivateMessageRumor,
+  type PrivateMessageEvent,
+} from "./messaging"
 import type { NostrKeySigner } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import { sha256 } from "@noble/hashes/sha2.js"
@@ -45,7 +48,6 @@ import {
   resolveEventMarketOrganizerInbox,
 } from "./event-market-handoff"
 import { unwrapGiftWrap } from "./messaging"
-import { getNdk } from "./ndk"
 import { publishWithPlanner } from "./relay-publish"
 
 const HEX_64 = /^[0-9a-f]{64}$/
@@ -557,8 +559,14 @@ function timestamp(payload: FutureMarketPrivatePayload): number {
 
 export function buildFutureMarketPrivateRumor(
   payload: FutureMarketPrivatePayload
-): NDKEvent {
-  const rumor = new NDKEvent()
+): PrivateMessageEvent {
+  const rumor: PrivateMessageEvent = {
+    id: "",
+    kind: EVENT_KINDS.ORDER,
+    pubkey: sender(payload),
+    tags: [],
+    content: "",
+  }
   rumor.kind = EVENT_KINDS.ORDER
   rumor.pubkey = sender(payload)
   rumor.created_at = timestamp(payload)
@@ -574,8 +582,7 @@ export function buildFutureMarketPrivateRumor(
     "merchant"
   )
   rumor.content = JSON.stringify(payload)
-  rumor.id = rumor.getEventHash()
-  return rumor
+  return createPrivateMessageRumor({ ...rumor, created_at: rumor.created_at! })
 }
 
 export interface FutureMarketPrivateDeliveryRecord {
@@ -1197,7 +1204,9 @@ async function retainFutureMessagesLocked(
       throw new Error(
         "The account signer changed during private handoff recovery."
       )
-    const outcome = await unwrapGiftWrap(new NDKEvent(getNdk(), wrap), signer)
+    const outcome = await unwrapGiftWrap(wrap, signer, {
+      machineConsumer: "future_market",
+    })
     assertFutureMarketReadCurrent(shouldContinue)
     if (outcome.status !== "ok" || outcome.category !== "order")
       throw new Error(
@@ -1224,7 +1233,7 @@ async function retainFutureMessagesLocked(
     }
   }
   assertFutureMarketReadCurrent(shouldContinue)
-  const messages = [...retained.values()]
+  let messages = [...retained.values()]
   if (storage) {
     if (
       messages.length > 0 &&
@@ -1275,6 +1284,11 @@ async function retainFutureMessagesLocked(
       )
         retained.delete(id)
     }
+    // Durable inbox history may observe old wraps after terminal compaction.
+    // Preserve the denial ledger without restoring completed exact claims.
+    messages = messages.filter(
+      (message) => !history[message.payload.claimRef]?.compacted
+    )
   }
   retainedFutureMessages.set(owner, retained)
   return messages
@@ -1385,10 +1399,8 @@ async function publishFutureMarketPrivatePayload(input: {
     signerInteraction: "external",
     shouldContinue: input.shouldContinue,
     onWrapped: async (prepared: PreparedPrivateMessageWraps) => {
-      const recipientWrap =
-        prepared.wrappedToRecipient.rawEvent() as SignedPublicNostrEvent
-      const selfWrap = prepared.wrappedToSelf?.rawEvent() as
-        SignedPublicNostrEvent | undefined
+      const recipientWrap = prepared.wrappedToRecipient
+      const selfWrap = prepared.wrappedToSelf ?? undefined
       if (
         !selfWrap ||
         !isValidSignedPublicNostrEvent(recipientWrap) ||
@@ -1592,10 +1604,9 @@ export async function recoverFutureMarketReadyReceipt(input: {
     (await input.signer.getPublicKey()) !== record.senderPubkey
   )
     throw new Error("Merchant ready receipt recovery authority is invalid.")
-  const outcome = await unwrapGiftWrap(
-    new NDKEvent(getNdk(), record.signedSelfWrap),
-    input.signer
-  )
+  const outcome = await unwrapGiftWrap(record.signedSelfWrap, input.signer, {
+    machineConsumer: "future_market",
+  })
   if (
     outcome.status !== "ok" ||
     outcome.category !== "order" ||

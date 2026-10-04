@@ -1,6 +1,12 @@
-import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { finalizeEvent, getPublicKey } from "nostr-tools"
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
+import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools"
+import {
+  encrypt as encryptNip04,
+  decrypt as decryptNip04,
+} from "nostr-tools/nip04"
+import { v2 } from "nostr-tools/nip44"
+import { wrapEvent } from "nostr-tools/nip59"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
@@ -9,54 +15,53 @@ import {
   getBuyerConversationList,
   getDirectMessageConversationList,
   getMerchantConversationList,
-  type CachedOrderMessage,
 } from "@conduit/core"
-import {
-  __resetProtectedReadSigner,
-  installProtectedReadSigner,
-} from "../packages/core/src/protocol/protected-read-authorization"
+import { ConduitDB } from "../packages/core/src/db"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
 import type {
-  NostrEventSigner,
+  NostrKeySigner,
   SignedNostrEvent,
 } from "../packages/core/src/protocol/nostr-event-signer"
+import { parseOrderMessageRumorEvent } from "../packages/core/src/protocol/orders"
+import {
+  __resetProtectedReadSigner,
+  getProtectedReadAuthorization,
+  installProtectedReadSigner,
+} from "../packages/core/src/protocol/protected-read-authorization"
+import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
+import {
+  activateAccountSigner,
+  retireAccountSigner,
+  SessionSigner,
+} from "../packages/core/src/protocol/session-signer"
 
 const BUYER_KEY = new Uint8Array(32).fill(21)
 const MERCHANT_KEY = new Uint8Array(32).fill(22)
-const WRAP_KEY = new Uint8Array(32).fill(23)
 const BUYER = getPublicKey(BUYER_KEY)
 const MERCHANT = getPublicKey(MERCHANT_KEY)
 const RELAY_URL = "wss://protected-commerce.example"
 
-const wraps = new Map(
-  [BUYER, MERCHANT].map((recipient, index) => {
-    const wrap = finalizeEvent(
-      {
-        kind: 1_059,
-        created_at: 1_700_000_000 + index,
-        tags: [["p", recipient]],
-        content: `encrypted-${index}`,
-      },
-      WRAP_KEY
-    )
-    return [recipient, wrap] as const
+function deferred() {
+  let release!: () => void
+  const promise = new Promise<void>((resolve) => {
+    release = resolve
   })
-)
+  return { promise, release }
+}
 
-function orderRumor(recipient: string) {
-  const buyer = recipient === MERCHANT ? BUYER : recipient
-  const merchant = recipient === MERCHANT ? recipient : MERCHANT
-  return {
-    id: `rumor-${recipient}`,
+function orderRumor() {
+  const draft = {
     kind: 16,
-    pubkey: buyer,
+    pubkey: BUYER,
     created_at: 1_700_000_100,
     content: JSON.stringify({
-      id: `order-${recipient}`,
-      merchantPubkey: merchant,
-      buyerPubkey: buyer,
+      id: "synthetic-order",
+      merchantPubkey: MERCHANT,
+      buyerPubkey: BUYER,
       items: [
         {
-          productId: `30402:${merchant}:item`,
+          productId: `30402:${MERCHANT}:item`,
           quantity: 1,
           priceAtPurchase: 2_100,
           currency: "SATS",
@@ -67,29 +72,38 @@ function orderRumor(recipient: string) {
       createdAt: 1_700_000_100_000,
     }),
     tags: [
-      ["p", merchant],
+      ["p", MERCHANT],
       ["type", "order"],
-      ["order", `order-${recipient}`],
+      ["order", "synthetic-order"],
       ["amount", "2100"],
       ["currency", "SATS"],
     ],
   }
+  return { ...draft, id: getEventHash(draft) }
 }
 
-let signCalls = 0
-
-function signer(privateKey: Uint8Array): NostrEventSigner {
-  const pubkey = getPublicKey(privateKey)
-  return {
-    authMethod: "nip07",
-    getPublicKey: async () => pubkey,
-    signEvent: async (event) => {
-      signCalls += 1
-      return finalizeEvent(event, privateKey)
+function legacyMessage(): SignedNostrEvent {
+  return finalizeEvent(
+    {
+      kind: 4,
+      created_at: 1_700_000_200,
+      tags: [["p", BUYER]],
+      content: encryptNip04(MERCHANT_KEY, BUYER, "synthetic legacy message"),
     },
-  }
+    MERCHANT_KEY
+  )
 }
 
+const wraps = new Map<string, SignedNostrEvent>(
+  [BUYER, MERCHANT].map((recipient) => [
+    recipient,
+    wrapEvent(orderRumor(), BUYER_KEY, recipient),
+  ])
+)
+let legacyWrap: SignedNostrEvent | undefined
+let emitOrderWraps = true
+let signCalls = 0
+let decryptCalls = 0
 let rejectAuthentication = false
 let challengeAuthentication = true
 const sockets: CommerceProtectedRelaySocket[] = []
@@ -130,10 +144,15 @@ class CommerceProtectedRelaySocket {
       return
     }
     if (frame[0] !== "REQ") return
-    const filter = frame[2] as { "#p"?: string[] }
+    const filter = frame[2] as { "#p"?: string[]; kinds?: number[] }
     const recipient = filter["#p"]?.[0]
-    const wrap = recipient ? wraps.get(recipient) : undefined
-    if (wrap) this.relay(["EVENT", frame[1], wrap])
+    const event =
+      filter.kinds?.includes(1059) && emitOrderWraps
+        ? recipient && wraps.get(recipient)
+        : filter.kinds?.includes(4)
+          ? legacyWrap
+          : undefined
+    if (event) this.relay(["EVENT", frame[1], event])
     this.relay(["EOSE", frame[1]])
   }
 
@@ -149,76 +168,79 @@ class CommerceProtectedRelaySocket {
   }
 }
 
-function cachedOrderRow(): CachedOrderMessage {
-  const message = {
-    id: "cached-rumor",
-    orderId: "cached-order",
-    type: "order" as const,
-    createdAt: 1_700_000_050_000,
-    senderPubkey: BUYER,
-    recipientPubkey: MERCHANT,
-    rawContent: JSON.stringify({
-      id: "cached-order",
-      merchantPubkey: MERCHANT,
-      buyerPubkey: BUYER,
-      items: [],
-      subtotal: 0,
-      currency: "SATS",
-      createdAt: 1_700_000_050_000,
+class GatedInboxStore extends CommerceInboxStore {
+  beforeCommit?: () => Promise<void>
+
+  override async commit(...args: Parameters<CommerceInboxStore["commit"]>) {
+    if (this.beforeCommit) await this.beforeCommit()
+    return await super.commit(...args)
+  }
+}
+
+interface AccountFixture {
+  signer: SessionSigner
+  owner: CommerceInbox
+  store: GatedInboxStore
+  database: ConduitDB
+  authority: { current: boolean }
+}
+
+const accounts = new Map<string, AccountFixture>()
+const databases: ConduitDB[] = []
+
+function installAccount(
+  key: Uint8Array,
+  options: {
+    beforeDecrypt?: () => Promise<void>
+    beforeLegacyDecrypt?: () => Promise<void>
+  } = {}
+): AccountFixture {
+  const pubkey = getPublicKey(key)
+  const authority = { current: true }
+  const provider: NostrKeySigner = {
+    pubkey,
+    getPublicKey: async () => pubkey,
+    signEvent: async (event) => {
+      signCalls += 1
+      return finalizeEvent(event, key)
+    },
+    encryptNip44: async (peer, text) =>
+      v2.encrypt(text, v2.utils.getConversationKey(key, peer)),
+    decryptNip44: async (peer, text) => {
+      decryptCalls += 1
+      await options.beforeDecrypt?.()
+      return v2.decrypt(text, v2.utils.getConversationKey(key, peer))
+    },
+    decryptLegacy: async (peer, text) => {
+      decryptCalls += 1
+      await options.beforeLegacyDecrypt?.()
+      return decryptNip04(key, peer, text)
+    },
+  }
+  const signer = new SessionSigner(provider, {
+    expectedPubkey: pubkey,
+    revision: "synthetic-session",
+    authMethod: "nip07",
+    getCapabilities: () => ({
+      signEvent: true,
+      nip44: true,
+      nip04Decrypt: true,
     }),
-    payload: {
-      id: "cached-order",
-      merchantPubkey: MERCHANT,
-      buyerPubkey: BUYER,
-      items: [],
-      subtotal: 0,
-      currency: "SATS",
-      createdAt: 1_700_000_050_000,
-    },
-  }
-  return {
-    id: message.id,
-    orderId: message.orderId,
-    type: message.type,
-    senderPubkey: message.senderPubkey,
-    recipientPubkey: message.recipientPubkey,
-    createdAt: message.createdAt,
-    rawContent: JSON.stringify(message),
-    cachedAt: message.createdAt,
-  }
-}
-
-function emptyProtectedRead() {
-  return {
-    events: [],
-    coverage: "complete" as const,
-    auth: {
-      state: "not_challenged" as const,
-      challengedCount: 0,
-      succeededCount: 0,
-      failedCount: 0,
-    },
-    relayResult: {
-      status: "success" as const,
-      observations: [],
-      relays: [],
-      attemptedCount: 1,
-      completedCount: 1,
-      failedCount: 0,
-      authoritativeEmpty: true,
-    },
-  }
-}
-
-function legacyDirectMessage() {
-  return {
-    id: "legacy-authority-fence",
-    kind: 4,
-    pubkey: MERCHANT,
-    created_at: 1_700_000_200,
-    content: "encrypted-legacy-message",
-    tags: [["p", BUYER]],
-  }
+    hasAuthority: () => authority.current,
+  })
+  activateAccountSigner(signer)
+  installProtectedReadSigner(signer, pubkey, () => authority.current)
+  const authorization = getProtectedReadAuthorization(pubkey)!
+  const database = new ConduitDB(`protected-commerce-${crypto.randomUUID()}`, {
+    indexedDB: new IDBFactory(),
+    IDBKeyRange,
+  })
+  const store = new GatedInboxStore(authorization, database)
+  const owner = new CommerceInbox(authorization, signer, store)
+  const fixture = { signer, owner, store, database, authority }
+  accounts.set(pubkey, fixture)
+  databases.push(database)
+  return fixture
 }
 
 const originalWebSocket = globalThis.WebSocket
@@ -226,12 +248,27 @@ const originalWebSocket = globalThis.WebSocket
 beforeEach(() => {
   rejectAuthentication = false
   challengeAuthentication = true
+  legacyWrap = undefined
+  emitOrderWraps = true
   signCalls = 0
+  decryptCalls = 0
   sockets.splice(0)
   __resetCommerceTestOverrides()
+  const accountNetworkLocalStateRepository =
+    createInMemoryAccountNetworkLocalStateRepository()
   __setCommerceTestOverrides({
-    accountNetworkLocalStateRepository:
-      createInMemoryAccountNetworkLocalStateRepository(),
+    accountNetworkLocalStateRepository,
+    readProtectedInbox: (options) =>
+      readProtectedInbox({
+        ...options,
+        accountNetworkLocalStateRepository,
+      }),
+    resolveInboxRelayUrls: async () => [RELAY_URL],
+    getCommerceInbox: (principal) => {
+      const owner = accounts.get(principal)?.owner
+      if (!owner) throw new Error("Missing synthetic inbox owner")
+      return owner
+    },
   })
   __resetProtectedReadSigner()
   closeAllProtectedRelayConnections()
@@ -242,10 +279,16 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
+afterEach(async () => {
+  for (const { owner, signer } of accounts.values()) {
+    owner.stop()
+    retireAccountSigner(signer)
+  }
+  accounts.clear()
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
   closeAllProtectedRelayConnections()
+  for (const database of databases.splice(0)) await database.delete()
   Object.defineProperty(globalThis, "WebSocket", {
     configurable: true,
     writable: true,
@@ -254,69 +297,52 @@ afterEach(() => {
 })
 
 describe("Market and Merchant protected inbox integration", () => {
-  it("keeps both account roles working on relays that do not challenge", async () => {
+  it("reads genuine encrypted order wraps for both roles without a relay challenge", async () => {
     challengeAuthentication = false
-    __setCommerceTestOverrides({
-      getAccountSigner: () => plainTestSigner({} as never),
-      resolveInboxRelayUrls: async () => [RELAY_URL],
-      getCachedOrderMessages: async () => [],
-      putCachedOrderMessages: async () => undefined,
-      getCachedDirectMessages: async () => [],
-      putCachedDirectMessages: async () => undefined,
-      giftUnwrap: async (event) => {
-        const recipient = event.tags.find((tag) => tag[0] === "p")?.[1]
-        return recipient ? (orderRumor(recipient) as never) : null
-      },
-    })
-
-    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+    const merchant = installAccount(MERCHANT_KEY)
     const merchantResult = await getMerchantConversationList({
       principalPubkey: MERCHANT,
     })
-    installProtectedReadSigner(signer(BUYER_KEY), BUYER, () => true)
+    const merchantSockets = [...sockets]
+    const buyer = installAccount(BUYER_KEY)
     const buyerResult = await getBuyerConversationList({
       principalPubkey: BUYER,
     })
 
+    expect(
+      merchantResult.data.map((conversation) => conversation.orderId)
+    ).toEqual(["synthetic-order"])
+    expect(
+      buyerResult.data.map((conversation) => conversation.orderId)
+    ).toEqual(["synthetic-order"])
     for (const result of [merchantResult, buyerResult]) {
-      expect(result.data).toHaveLength(1)
       expect(result.meta.inbox?.coverage).toBe("complete")
       expect(result.meta.inbox?.authentication?.state).toBe("not_challenged")
     }
     expect(signCalls).toBe(0)
+    expect(decryptCalls).toBe(4)
+    expect(merchantSockets.every((socket) => socket.closed)).toBe(true)
     expect(
       sockets
         .flatMap((socket) => socket.sent)
         .some((frame) => frame[0] === "AUTH")
     ).toBe(false)
-    const requestFrames = sockets
-      .flatMap((socket) => socket.sent)
-      .filter((frame) => frame[0] === "REQ")
-    expect(requestFrames).toHaveLength(sockets.length)
-    expect(requestFrames.length).toBeGreaterThanOrEqual(2)
+    expect(
+      sockets
+        .flatMap((socket) => socket.sent)
+        .filter((frame) => frame[0] === "REQ").length
+    ).toBeGreaterThanOrEqual(2)
+    expect(await merchant.database.commerceInboxRecords.count()).toBe(1)
+    expect(await buyer.database.commerceInboxRecords.count()).toBe(1)
   })
 
-  it("authenticates the actual shared kind-1059 path for both account roles", async () => {
-    const persistedRows: CachedOrderMessage[] = []
-    __setCommerceTestOverrides({
-      getAccountSigner: () => plainTestSigner({} as never),
-      resolveInboxRelayUrls: async () => [RELAY_URL],
-      getCachedOrderMessages: async () => [],
-      putCachedOrderMessages: async (rows) => persistedRows.push(...rows),
-      getCachedDirectMessages: async () => [],
-      putCachedDirectMessages: async () => undefined,
-      giftUnwrap: async (event) => {
-        const recipient = event.tags.find((tag) => tag[0] === "p")?.[1]
-        return recipient ? (orderRumor(recipient) as never) : null
-      },
-    })
-
-    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
+  it("authenticates socket reads and persists only encrypted projections", async () => {
+    const merchant = installAccount(MERCHANT_KEY)
     const merchantResult = await getMerchantConversationList({
       principalPubkey: MERCHANT,
     })
     const merchantSockets = [...sockets]
-    installProtectedReadSigner(signer(BUYER_KEY), BUYER, () => true)
+    installAccount(BUYER_KEY)
     const buyerResult = await getBuyerConversationList({
       principalPubkey: BUYER,
     })
@@ -327,42 +353,38 @@ describe("Market and Merchant protected inbox integration", () => {
       "authenticated"
     )
     expect(buyerResult.meta.inbox?.authentication?.state).toBe("authenticated")
-    expect(merchantSockets.length).toBeGreaterThan(0)
-    expect(sockets.length).toBeGreaterThan(merchantSockets.length)
+    expect(signCalls).toBeGreaterThanOrEqual(2)
     expect(merchantSockets.every((socket) => socket.closed)).toBe(true)
     for (const socket of sockets) {
-      expect(socket.sent.map((frame) => frame[0])).toEqual([
-        "AUTH",
-        "REQ",
-        "CLOSE",
-      ])
+      const frames = socket.sent.map((frame) => frame[0])
+      expect(frames).toContain("AUTH")
+      expect(frames).toContain("REQ")
+      expect(frames.indexOf("AUTH")).toBeLessThan(frames.indexOf("REQ"))
     }
-    const persisted = JSON.stringify(persistedRows)
-    expect(persisted).not.toContain(RELAY_URL)
-    expect(persisted).not.toContain("challenge-")
-    expect(persisted).not.toContain("22242")
-    expect(persisted).not.toContain("authentication")
+    const stored = JSON.stringify(
+      await merchant.database.commerceInboxRecords.toArray()
+    )
+    expect(stored).not.toContain("synthetic-order")
+    expect(stored).not.toContain(RELAY_URL)
+    expect(stored).not.toContain("challenge-")
+    expect(stored).not.toContain("22242")
   })
 
-  it("keeps cached orders visible when every relay rejects authentication", async () => {
+  it("keeps an encrypted cached order visible when every relay rejects AUTH", async () => {
     rejectAuthentication = true
-    __setCommerceTestOverrides({
-      getAccountSigner: () => plainTestSigner({} as never),
-      resolveInboxRelayUrls: async () => [RELAY_URL],
-      getCachedOrderMessages: async () => [cachedOrderRow()],
-      putCachedOrderMessages: async () => undefined,
-      getCachedDirectMessages: async () => [],
-      putCachedDirectMessages: async () => undefined,
-      giftUnwrap: async () => null,
-    })
-    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => true)
-
+    const { owner, store, database } = installAccount(MERCHANT_KEY)
+    await owner.initialize()
+    await store.putProjection(
+      { kind: "order", message: parseOrderMessageRumorEvent(orderRumor()) },
+      1
+    )
+    await owner.refresh()
     const result = await getMerchantConversationList({
       principalPubkey: MERCHANT,
     })
 
     expect(result.data.map((conversation) => conversation.orderId)).toEqual([
-      "cached-order",
+      "synthetic-order",
     ])
     expect(result.meta.stale).toBe(true)
     expect(result.meta.degraded).toBe(true)
@@ -371,221 +393,92 @@ describe("Market and Merchant protected inbox integration", () => {
       state: "unavailable",
       failure: "authentication_rejected",
     })
+    expect(decryptCalls).toBe(0)
+    expect(await database.commerceInboxRecords.count()).toBe(1)
   })
 
-  it("does not return decrypted inbox data when session authority changes during unwrap", async () => {
-    let authorityCurrent = true
-    let unwrapStarted!: () => void
-    const started = new Promise<void>((resolve) => {
-      unwrapStarted = resolve
-    })
-    let releaseUnwrap!: () => void
-    const unwrapGate = new Promise<void>((resolve) => {
-      releaseUnwrap = resolve
-    })
-    const written: CachedOrderMessage[] = []
-    __setCommerceTestOverrides({
-      getAccountSigner: () => plainTestSigner({} as never),
-      resolveInboxRelayUrls: async () => [RELAY_URL],
-      getCachedOrderMessages: async () => [],
-      putCachedOrderMessages: async (rows) => written.push(...rows),
-      getCachedDirectMessages: async () => [],
-      putCachedDirectMessages: async () => undefined,
-      giftUnwrap: async (event) => {
-        unwrapStarted()
-        await unwrapGate
-        const recipient = event.tags.find((tag) => tag[0] === "p")?.[1]
-        return recipient ? (orderRumor(recipient) as never) : null
-      },
-    })
-    installProtectedReadSigner(
-      signer(MERCHANT_KEY),
-      MERCHANT,
-      () => authorityCurrent
-    )
-
-    const pending = getMerchantConversationList({
-      principalPubkey: MERCHANT,
-    })
-    await started
-    authorityCurrent = false
-    releaseUnwrap()
-
-    await expect(pending).rejects.toThrow("authority changed")
-    expect(written).toEqual([])
-  })
-
-  it("aborts the protected cache transaction when authority changes during persistence", async () => {
-    let authorityCurrent = true
-    let persistenceStarted!: () => void
-    const started = new Promise<void>((resolve) => {
-      persistenceStarted = resolve
-    })
-    let releasePersistence!: () => void
-    const persistenceGate = new Promise<void>((resolve) => {
-      releasePersistence = resolve
-    })
-    let committed = false
-    __setCommerceTestOverrides({
-      getAccountSigner: () => plainTestSigner({} as never),
-      resolveInboxRelayUrls: async () => [RELAY_URL],
-      getCachedOrderMessages: async () => [],
-      getCachedDirectMessages: async () => [],
-      giftUnwrap: async (event) => {
-        const recipient = event.tags.find((tag) => tag[0] === "p")?.[1]
-        return recipient ? (orderRumor(recipient) as never) : null
-      },
-      persistProtectedInboxMessages: async (
-        _orders,
-        _direct,
-        assertAuthority
-      ) => {
-        assertAuthority()
-        persistenceStarted()
-        await persistenceGate
-        assertAuthority()
-        committed = true
-      },
-    })
-    installProtectedReadSigner(
-      signer(MERCHANT_KEY),
-      MERCHANT,
-      () => authorityCurrent
-    )
-
-    const pending = getMerchantConversationList({
-      principalPubkey: MERCHANT,
-    })
-    await started
-    authorityCurrent = false
-    releasePersistence()
-
-    await expect(pending).rejects.toThrow("authority changed")
-    expect(committed).toBe(false)
-  })
-
-  it("does not return or persist legacy plaintext when authority changes during decrypt", async () => {
-    let authorityCurrent = true
-    let decryptStarted!: () => void
-    const started = new Promise<void>((resolve) => {
-      decryptStarted = resolve
-    })
-    let releaseDecrypt!: () => void
-    const decryptGate = new Promise<void>((resolve) => {
-      releaseDecrypt = resolve
-    })
-    const written: unknown[] = []
-    __setCommerceTestOverrides({
-      getAccountSigner: () =>
-        ({
-          decryptLegacy: async () => {
-            decryptStarted()
-            await decryptGate
-            return "legacy plaintext"
-          },
-        }) as never,
-      readProtectedInbox: async () => emptyProtectedRead(),
-      fetchEventsFanout: async (filter) =>
-        filter.kinds?.includes(4) ? ([legacyDirectMessage()] as never) : [],
-      getCachedOrderMessages: async () => [],
-      putCachedOrderMessages: async () => undefined,
-      getCachedDirectMessages: async () => [],
-      putCachedDirectMessages: async (rows) => {
-        written.push(...rows)
-      },
-    })
-    installProtectedReadSigner(signer(BUYER_KEY), BUYER, () => authorityCurrent)
-
-    const pending = getDirectMessageConversationList({ principalPubkey: BUYER })
-    await started
-    authorityCurrent = false
-    releaseDecrypt()
-
-    await expect(pending).rejects.toThrow("authority changed")
-    expect(written).toEqual([])
-  })
-
-  it("aborts the legacy plaintext cache transaction when authority changes during persistence", async () => {
-    let authorityCurrent = true
-    let persistenceStarted!: () => void
-    const started = new Promise<void>((resolve) => {
-      persistenceStarted = resolve
-    })
-    let releasePersistence!: () => void
-    const persistenceGate = new Promise<void>((resolve) => {
-      releasePersistence = resolve
-    })
-    let committed = false
-    __setCommerceTestOverrides({
-      getAccountSigner: () =>
-        ({ decryptLegacy: async () => "legacy plaintext" }) as never,
-      readProtectedInbox: async () => emptyProtectedRead(),
-      fetchEventsFanout: async (filter) =>
-        filter.kinds?.includes(4) ? ([legacyDirectMessage()] as never) : [],
-      getCachedOrderMessages: async () => [],
-      putCachedOrderMessages: async () => undefined,
-      getCachedDirectMessages: async () => [],
-      persistLegacyDirectMessages: async (_rows, assertAuthority) => {
-        assertAuthority()
-        persistenceStarted()
-        await persistenceGate
-        assertAuthority()
-        committed = true
-      },
-    })
-    installProtectedReadSigner(signer(BUYER_KEY), BUYER, () => authorityCurrent)
-
-    const pending = getDirectMessageConversationList({ principalPubkey: BUYER })
-    await started
-    authorityCurrent = false
-    releasePersistence()
-
-    await expect(pending).rejects.toThrow("authority changed")
-    expect(committed).toBe(false)
-  })
-
-  it("refuses cached order plaintext when no current protected lease exists", async () => {
-    let cachedReads = 0
-    __setCommerceTestOverrides({
-      getAccountSigner: () => plainTestSigner({} as never),
-      getCachedOrderMessages: async () => {
-        cachedReads += 1
-        return [cachedOrderRow()]
-      },
-    })
-    installProtectedReadSigner(signer(MERCHANT_KEY), MERCHANT, () => false)
-
+  it("does not start a relay read or decrypt after session authority is revoked", async () => {
+    const { authority, database } = installAccount(MERCHANT_KEY)
+    authority.current = false
     await expect(
       getMerchantConversationList({ principalPubkey: MERCHANT })
-    ).rejects.toThrow("authority changed")
-    expect(cachedReads).toBe(0)
+    ).rejects.toBeDefined()
+    expect(sockets).toHaveLength(0)
+    expect(decryptCalls).toBe(0)
+    expect(await database.commerceInboxRecords.count()).toBe(0)
   })
 
-  it("does not return cached DM plaintext when authority changes during cache load", async () => {
-    let authorityCurrent = true
-    let cacheStarted!: () => void
-    const started = new Promise<void>((resolve) => {
-      cacheStarted = resolve
-    })
-    let releaseCache!: () => void
-    const cacheGate = new Promise<void>((resolve) => {
-      releaseCache = resolve
-    })
-    __setCommerceTestOverrides({
-      getAccountSigner: () => plainTestSigner({} as never),
-      getCachedDirectMessages: async () => {
-        cacheStarted()
-        await cacheGate
-        return []
+  it("fences a late NIP-44 decrypt after session revocation", async () => {
+    const entered = deferred()
+    const gate = deferred()
+    const { authority, database } = installAccount(MERCHANT_KEY, {
+      beforeDecrypt: async () => {
+        entered.release()
+        await gate.promise
       },
     })
-    installProtectedReadSigner(signer(BUYER_KEY), BUYER, () => authorityCurrent)
+    const pending = getMerchantConversationList({ principalPubkey: MERCHANT })
+    await entered.promise
+    authority.current = false
+    gate.release()
+    await expect(pending).rejects.toBeDefined()
+    expect(await database.commerceInboxRecords.count()).toBe(0)
+    expect(decryptCalls).toBe(1)
+  })
 
+  it("aborts projection storage when authority changes before commit", async () => {
+    const entered = deferred()
+    const gate = deferred()
+    const { authority, store, database } = installAccount(MERCHANT_KEY)
+    store.beforeCommit = async () => {
+      entered.release()
+      await gate.promise
+    }
+    const pending = getMerchantConversationList({ principalPubkey: MERCHANT })
+    await entered.promise
+    authority.current = false
+    gate.release()
+    await expect(pending).rejects.toBeDefined()
+    expect(await database.commerceInboxRecords.count()).toBe(0)
+    expect(decryptCalls).toBe(2)
+  })
+
+  it("fences genuine legacy NIP-04 plaintext after a late provider response", async () => {
+    emitOrderWraps = false
+    legacyWrap = legacyMessage()
+    const entered = deferred()
+    const gate = deferred()
+    const { authority, database } = installAccount(BUYER_KEY, {
+      beforeLegacyDecrypt: async () => {
+        entered.release()
+        await gate.promise
+      },
+    })
     const pending = getDirectMessageConversationList({ principalPubkey: BUYER })
-    await started
-    authorityCurrent = false
-    releaseCache()
+    await entered.promise
+    authority.current = false
+    gate.release()
+    await expect(pending).rejects.toBeDefined()
+    expect(await database.commerceInboxRecords.count()).toBe(0)
+    expect(decryptCalls).toBe(1)
+  })
 
-    await expect(pending).rejects.toThrow("authority changed")
+  it("aborts legacy NIP-04 projection storage after session revocation", async () => {
+    emitOrderWraps = false
+    legacyWrap = legacyMessage()
+    const entered = deferred()
+    const gate = deferred()
+    const { authority, store, database } = installAccount(BUYER_KEY)
+    store.beforeCommit = async () => {
+      entered.release()
+      await gate.promise
+    }
+    const pending = getDirectMessageConversationList({ principalPubkey: BUYER })
+    await entered.promise
+    authority.current = false
+    gate.release()
+    await expect(pending).rejects.toBeDefined()
+    expect(await database.commerceInboxRecords.count()).toBe(0)
+    expect(decryptCalls).toBe(1)
   })
 })

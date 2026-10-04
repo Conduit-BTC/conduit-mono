@@ -30,9 +30,13 @@ export interface ProtectedInboxReadResult {
 
 export interface ReadProtectedInboxOptions {
   principalPubkey: string
+  transport?: "nip17" | "nip04_incoming" | "nip04_outgoing"
   relayUrls: string[]
   /** Optional full signed event ID; only narrows the protected kind-1059/#p read. */
   eventId?: string
+  /** Inclusive NIP-01 time bounds for bounded recipient-scoped history reads. */
+  since?: number
+  until?: number
   /**
    * Exact relay subset backed by this authenticated owner's own inbox or
    * Network selection. Compatibility and remote evidence must not populate it.
@@ -51,6 +55,8 @@ export interface ReadProtectedInboxOptions {
   connectTimeoutMs?: number
   queryTimeoutMs?: number
   authTimeoutMs?: number
+  /** Called per valid recipient wrapper; caller must still treat coverage separately. */
+  onEvent?: (event: SignedNostrEvent) => void
 }
 
 function emptyUnavailableResult(
@@ -139,6 +145,17 @@ export async function readProtectedInbox(
   if (eventId !== undefined && !/^[0-9a-f]{64}$/.test(eventId)) {
     throw new Error("Protected inbox event ID is invalid.")
   }
+  if (
+    (options.since !== undefined &&
+      (!Number.isSafeInteger(options.since) || options.since < 0)) ||
+    (options.until !== undefined &&
+      (!Number.isSafeInteger(options.until) || options.until < 0)) ||
+    (options.since !== undefined &&
+      options.until !== undefined &&
+      options.since > options.until)
+  ) {
+    throw new Error("Protected inbox time range is invalid.")
+  }
   if (!/^[0-9a-f]{64}$/.test(principalPubkey)) {
     return emptyUnavailableResult(options.relayUrls.length, "authority_changed")
   }
@@ -174,13 +191,22 @@ export async function readProtectedInbox(
       relayUrls: eligibleRelayUrls,
       filters: [
         {
-          kinds: [1_059],
-          "#p": [principalPubkey],
+          kinds: [
+            options.transport && options.transport !== "nip17" ? 4 : 1_059,
+          ],
+          ...(options.transport === "nip04_outgoing"
+            ? { authors: [principalPubkey] }
+            : { "#p": [principalPubkey] }),
           ...(eventId ? { ids: [eventId] } : {}),
+          ...(options.since === undefined ? {} : { since: options.since }),
+          ...(options.until === undefined ? {} : { until: options.until }),
           limit: options.limit,
         },
       ],
-      operation: "private_inbox_read",
+      operation:
+        options.transport && options.transport !== "nip17"
+          ? "legacy_inbox_read"
+          : "private_inbox_read",
     },
     {
       signal: options.signal,
@@ -188,6 +214,7 @@ export async function readProtectedInbox(
       connectTimeoutMs: options.connectTimeoutMs,
       queryTimeoutMs: options.queryTimeoutMs,
       authTimeoutMs: options.authTimeoutMs,
+      onProtectedEvent: options.onEvent,
     }
   )
   const { events, ...relayDiagnostics } = relayResult

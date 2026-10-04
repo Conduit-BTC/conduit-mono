@@ -363,3 +363,5 @@ export {
   useProgressiveEventMarketDiscovery,
   createProgressiveEventMarketDiscoveryQuery,
 } from "./hooks/useProgressiveEventMarketDiscovery"
+
+export { useCommerceInbox } from "./hooks/useCommerceInbox"

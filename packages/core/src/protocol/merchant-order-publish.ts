@@ -1,7 +1,8 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { encodeCommonCommerceWire } from "./commerce-wire"
+import { getEventHash } from "nostr-tools"
+import { type PrivateMessageEvent } from "./messaging"
 import { cacheParsedOrderMessage } from "./commerce"
 import { EVENT_KINDS } from "./kinds"
-import { getNdk } from "./ndk"
 import { getAccountSigner } from "./session-signer"
 import { appendConduitClientTag } from "./nip89"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
@@ -77,9 +78,18 @@ export async function cachePublishedMerchantOrderMessage(
   }
 }
 
-function prepareMerchantRumor(rumor: NDKEvent, merchantPubkey: string): void {
+function prepareMerchantRumor(
+  rumor: PrivateMessageEvent,
+  merchantPubkey: string
+): void {
+  Object.assign(rumor, encodeCommonCommerceWire(rumor))
   rumor.pubkey = merchantPubkey
-  if (!rumor.id) rumor.id = rumor.getEventHash()
+  if (!rumor.id)
+    rumor.id = getEventHash({
+      ...rumor,
+      kind: rumor.kind!,
+      created_at: rumor.created_at!,
+    })
 }
 
 export interface PublishMerchantOrderMessageResult {
@@ -92,7 +102,7 @@ export function getMerchantOrderPublishTarget(
     PublishMerchantOrderMessageInput,
     "merchantPubkey" | "buyerPubkey" | "orderId" | "delivery"
   >,
-  rumor: NDKEvent
+  rumor: PrivateMessageEvent
 ) {
   const recipientPubkey =
     input.delivery === "self_only" ? input.merchantPubkey : input.buyerPubkey
@@ -112,11 +122,16 @@ export function getMerchantOrderPublishTarget(
 export async function publishMerchantOrderMessage(
   input: PublishMerchantOrderMessageInput
 ): Promise<PublishMerchantOrderMessageResult> {
-  const ndk = getNdk()
   const signer = getAccountSigner()
   if (!signer) throw new Error("Signer not connected")
 
-  const rumor = new NDKEvent(ndk)
+  const rumor = {
+    id: "",
+    pubkey: input.merchantPubkey,
+    kind: 16,
+    tags: [],
+    content: "",
+  } as PrivateMessageEvent
   rumor.kind = EVENT_KINDS.ORDER
   rumor.created_at = Math.floor(Date.now() / 1000)
   rumor.tags = buildMerchantOrderRumorTags(input)

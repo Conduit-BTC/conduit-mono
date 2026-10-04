@@ -1,3 +1,5 @@
+import type { ParsedDirectMessage } from "@conduit/core"
+import { PrivateAttachment } from "./PrivateAttachment"
 import { LoaderCircle, RefreshCw } from "lucide-react"
 import { getEventMarketEnrollmentDisplayContent } from "@conduit/core"
 import { cn } from "../utils"
@@ -42,6 +44,7 @@ export function getConversationMessageDisplayContent(content: string): string {
 
 export interface ConversationMessageBubbleProps {
   content: string
+  file?: ParsedDirectMessage["file"]
   /** True when the signed-in user authored the message (align right). */
   mine: boolean
   timestampLabel?: string
@@ -58,6 +61,7 @@ export interface ConversationMessageBubbleProps {
  */
 export function ConversationMessageBubble({
   content,
+  file,
   mine,
   timestampLabel,
   authorLabel,
@@ -92,7 +96,11 @@ export function ConversationMessageBubble({
             {authorLabel}
           </span>
         ) : null}
-        <span>{displayContent}</span>
+        {file ? (
+          <PrivateAttachment file={file} />
+        ) : (
+          <span>{displayContent}</span>
+        )}
         {timestampLabel || deliveryState !== "published" ? (
           <span
             className={cn(

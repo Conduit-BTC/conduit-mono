@@ -296,3 +296,9 @@ export {
   type StatusStepperRow,
   type StatusStepperRowStatus,
 } from "./StatusStepper"
+
+export {
+  CommerceInboxRecovery,
+  type CommerceInboxRecoveryProps,
+} from "./CommerceInboxRecovery"
+export { PrivateAttachment } from "./PrivateAttachment"

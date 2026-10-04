@@ -1,4 +1,3 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { NostrKeySigner } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import { z } from "zod"
@@ -15,7 +14,6 @@ import {
   unwrapGiftWrap,
   type ParsedDirectMessage,
 } from "./messaging"
-import { getNdk } from "./ndk"
 import { publishWithPlanner } from "./relay-publish"
 import {
   isValidSignedPublicNostrEvent,
@@ -290,14 +288,16 @@ export async function publishEventMarketEnrollment(
     signerInteraction: "external",
     shouldContinue: input.shouldContinue,
     onWrapped: (prepared) => {
+      if (!prepared.wrappedToSelf)
+        throw new Error(
+          "Participation delivery requires its exact signed self-copy."
+        )
       const record = validateDelivery({
         version: 1,
         payload,
         rumorId: prepared.rumorId,
-        signedRecipientWrap:
-          prepared.wrappedToRecipient.rawEvent() as SignedPublicNostrEvent,
-        signedSelfWrap:
-          prepared.wrappedToSelf?.rawEvent() as SignedPublicNostrEvent,
+        signedRecipientWrap: prepared.wrappedToRecipient,
+        signedSelfWrap: prepared.wrappedToSelf,
       })
       const serialized = JSON.stringify(record)
       persistence.setItem(
@@ -343,10 +343,7 @@ export async function retryEventMarketEnrollmentDelivery(
   const signer = input.signer ?? getAccountSigner()
   if (!signer)
     throw new Error("Connect the saved participation sender's signer.")
-  const recovered = await dependencies.unwrap(
-    new NDKEvent(getNdk(), record.signedSelfWrap),
-    signer
-  )
+  const recovered = await dependencies.unwrap(record.signedSelfWrap, signer)
   const exact =
     recovered.status === "ok"
       ? parseEventMarketEnrollmentMessage(

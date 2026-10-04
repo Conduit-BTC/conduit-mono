@@ -28,13 +28,30 @@ import {
   __setCommerceTestOverrides,
   __resetInboxDeclarationCache,
   getNdk,
+  getAccountSigner,
 } from "@conduit/core"
 import {
   setTestAccountSigner as setSigner,
   removeTestAccountSigner as removeSigner,
 } from "./helpers/plain-signer"
 
-afterEach(() => {
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
+import { ConduitDB } from "../packages/core/src/db"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import {
+  installProtectedReadSigner,
+  getProtectedReadAuthorization,
+  __resetProtectedReadSigner,
+} from "../packages/core/src/protocol/protected-read-authorization"
+
+let privateOwner: CommerceInbox | null = null
+const privateDatabases: ConduitDB[] = []
+afterEach(async () => {
+  privateOwner?.stop()
+  privateOwner = null
+  __resetProtectedReadSigner()
+  for (const db of privateDatabases.splice(0)) await db.delete()
   __resetFutureMarketHandoffTestState()
   __resetCommerceTestOverrides()
   __resetInboxDeclarationCache()
@@ -104,9 +121,8 @@ async function wrappedMessage(
   recipientPubkey: string
 ) {
   const rumor = buildFutureMarketPrivateRumor(payload)
-  rumor.ndk = getNdk()
   const wrap = await giftWrap(
-    rumor,
+    new NDKEvent(getNdk(), rumor as never),
     new NDKUser({ pubkey: recipientPubkey }),
     signer,
     {
@@ -117,16 +133,58 @@ async function wrappedMessage(
 }
 
 function setPrivateRead(wraps: NDKEvent[], available = true) {
+  const signer = getAccountSigner()!
+  if (!privateOwner) {
+    installProtectedReadSigner(signer, signer.pubkey, () => true)
+    const database = new ConduitDB(`future-storage-${crypto.randomUUID()}`, {
+      indexedDB: new IDBFactory(),
+      IDBKeyRange,
+    })
+    privateDatabases.push(database)
+    const authorization = getProtectedReadAuthorization(signer.pubkey)!
+    privateOwner = new CommerceInbox(
+      authorization,
+      signer,
+      new CommerceInboxStore(authorization, database)
+    )
+  }
   __setCommerceTestOverrides({
-    allowMissingProtectedReadAuthorization: true,
+    getCommerceInbox: () => privateOwner!,
     resolveInboxRelayUrls: async () => ["wss://handoff-storage.test"],
-    fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
-      events: available ? wraps : [],
-      attemptedRelayUrls: [...(options?.relayUrls ?? [])],
-      successfulRelayUrls: available ? [...(options?.relayUrls ?? [])] : [],
-      failedRelayUrls: available ? [] : [...(options?.relayUrls ?? [])],
-      cappedRelayUrls: [],
-    }),
+    readProtectedInbox: async () => {
+      const events = available
+        ? wraps.map((wrap) => wrap.rawEvent() as never)
+        : []
+      return {
+        events,
+        coverage: available ? "complete" : "unavailable",
+        auth: {
+          state: "not_challenged",
+          challengedCount: 0,
+          succeededCount: 0,
+          failedCount: 0,
+        },
+        relayResult: {
+          status: available ? "success" : "failed",
+          observations: available ? [{ type: "eose", relayIndex: 0 }] : [],
+          relays: [
+            {
+              relayIndex: 0,
+              status: available ? "success" : "failed",
+              auth: "not_challenged",
+              eventCount: events.length,
+              duplicateCount: 0,
+              malformedCount: 0,
+              unusableCount: 0,
+            },
+          ],
+          attemptedCount: 1,
+          completedCount: available ? 1 : 0,
+          failedCount: available ? 0 : 1,
+          authoritativeEmpty: available && events.length === 0,
+        },
+      }
+    },
   })
 }
 

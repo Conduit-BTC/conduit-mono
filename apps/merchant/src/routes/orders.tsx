@@ -18,12 +18,10 @@ import {
   formatNpub,
   formatEventMarketPickupDate,
   getAccountSigner,
-  getCachedMerchantConversationList,
   getCachedMerchantStorefront,
   getCurrencyAmountStep,
   getEventMarketOrderCorrelationRef,
   getLightningNetworkMismatchMessage,
-  getMerchantConversationList,
   getMerchantOrderActions,
   getMerchantOrderReopenTransition,
   getProductImageCandidates,
@@ -37,7 +35,6 @@ import {
   publishMerchantOrderMessage,
   pubkeyToNpub,
   prepareProtectedReadRefreshState,
-  selectProtectedReadRows,
   type MerchantConversationSummary,
   type MerchantOrderDelivery,
   type MerchantOrderAction,
@@ -48,6 +45,7 @@ import {
   type OrderSummary,
   type SignedPublicNostrEvent,
   useAuth,
+  useCommerceInbox,
   useConduitSession,
   useInboxDeclaration,
   useNip05Verification,
@@ -60,6 +58,7 @@ import {
   reportCommerceGmvEstimate,
 } from "@conduit/core/commerce-gmv"
 import {
+  CommerceInboxRecovery,
   AlertDialog,
   AlertDialogContent,
   AlertDialogDescription,
@@ -728,21 +727,8 @@ function OrdersWorkspace() {
     inboxReadiness.status
   )
 
-  const ordersQuery = useQuery({
-    queryKey: ["merchant-order-messages-live", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => getMerchantConversationList({ principalPubkey: pubkey! }),
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: true,
-  })
-  const cachedOrdersQuery = useQuery({
-    queryKey: ["merchant-order-messages", pubkey ?? "none"],
-    enabled: hasAccount,
-    queryFn: () =>
-      getCachedMerchantConversationList({ principalPubkey: pubkey! }),
-    staleTime: 5_000,
-  })
+  const inbox = useCommerceInbox(pubkey, signerConnected)
+  const ordersQuery = inbox.merchant
   const isOrdersInitialHydration = signerConnected && ordersQuery.isPending
   const refetchOrders = ordersQuery.refetch
 
@@ -753,12 +739,8 @@ function OrdersWorkspace() {
   }, [pubkey, refetchOrders, signerConnected])
 
   const conversations = useMemo(
-    () =>
-      selectProtectedReadRows(
-        ordersQuery.data?.data,
-        cachedOrdersQuery.data?.data
-      ),
-    [cachedOrdersQuery.data, ordersQuery.data]
+    () => ordersQuery.data?.data ?? [],
+    [ordersQuery.data]
   )
 
   useEffect(() => {
@@ -2579,6 +2561,7 @@ function OrdersWorkspace() {
 
   return (
     <div className="space-y-6">
+      <CommerceInboxRecovery {...inbox} />
       <div className="flex flex-wrap items-start justify-between gap-4 xl:shrink-0">
         <div>
           <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
@@ -2672,7 +2655,7 @@ function OrdersWorkspace() {
       )}
 
       {hasAccount &&
-        !cachedOrdersQuery.isLoading &&
+        !ordersQuery.isLoading &&
         conversations.length === 0 &&
         protectedOrdersReadState === "complete" && (
           <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
