@@ -281,92 +281,63 @@ function compareEvidence(
   return 0
 }
 
-function findExactEventEvidence(
-  candidate: ProductDeletionCandidate,
+/** Index one immutable evidence snapshot for all products in a synchronous read. */
+export function prepareProductDeletionResolver(
   evidence: readonly ProductDeletionEvidence[]
-): ProductDeletionEvidence | null {
-  const authorPubkey = normalizeHex64(candidate.authorPubkey)
-  const eventId = normalizeHex64(candidate.eventId)
-  if (!authorPubkey || !eventId) return null
+): (candidate: ProductDeletionCandidate) => ProductDeletionResolution {
+  const byEvent = new Map<string, ProductDeletionEvidence>()
+  const byAddress = new Map<string, ProductDeletionEvidence>()
 
-  return (
-    evidence
-      .filter(
-        (item) =>
-          item.target === "event" &&
-          isValidEvidenceIdentity(item) &&
-          item.authorPubkey.toLowerCase() === authorPubkey &&
-          normalizeHex64(item.eventId) === eventId
-      )
-      .sort(compareEvidence)[0] ?? null
-  )
-}
-
-function findAddressEvidence(
-  candidate: ProductDeletionCandidate,
-  evidence: readonly ProductDeletionEvidence[]
-): ProductDeletionEvidence | null {
-  const authorPubkey = normalizeHex64(candidate.authorPubkey)
-  const address = parseProductAddressCoordinate(candidate.addressId)
-  const createdAt = candidate.createdAt
-  if (
-    !authorPubkey ||
-    !address ||
-    address.authorPubkey !== authorPubkey ||
-    typeof createdAt !== "number" ||
-    !isValidEventTimestamp(createdAt)
-  ) {
-    return null
+  for (const item of evidence) {
+    if (!isValidEvidenceIdentity(item)) continue
+    const authorPubkey = item.authorPubkey.toLowerCase()
+    const target = item.target
+    if (target === "event") {
+      const eventId = normalizeHex64(item.eventId)
+      if (!eventId) continue
+      const key = `${authorPubkey}:${eventId}`
+      const previous = byEvent.get(key)
+      if (!previous || compareEvidence(item, previous) < 0)
+        byEvent.set(key, item)
+    } else if (target === "address") {
+      const address = parseProductAddressCoordinate(item.addressId)
+      if (!address || address.authorPubkey !== authorPubkey) continue
+      const previous = byAddress.get(address.addressId)
+      if (!previous || compareEvidence(item, previous) < 0)
+        byAddress.set(address.addressId, item)
+    }
   }
 
-  return (
-    evidence
-      .filter((item) => {
-        if (
-          item.target !== "address" ||
-          !isValidEvidenceIdentity(item) ||
-          item.authorPubkey.toLowerCase() !== authorPubkey ||
-          item.deletedAt < createdAt
-        ) {
-          return false
-        }
-        const evidenceAddress = parseProductAddressCoordinate(item.addressId)
-        return (
-          evidenceAddress?.authorPubkey === authorPubkey &&
-          evidenceAddress.addressId === address.addressId
-        )
-      })
-      .sort(compareEvidence)[0] ?? null
-  )
+  return (candidate) => {
+    const authorPubkey = normalizeHex64(candidate.authorPubkey)
+    if (authorPubkey) {
+      const eventId = normalizeHex64(candidate.eventId)
+      const exact = eventId
+        ? byEvent.get(`${authorPubkey}:${eventId}`)
+        : undefined
+      if (exact) return { deleted: true, matchedBy: "event", evidence: exact }
+
+      const address = parseProductAddressCoordinate(candidate.addressId)
+      const createdAt = candidate.createdAt
+      if (
+        address?.authorPubkey === authorPubkey &&
+        typeof createdAt === "number" &&
+        isValidEventTimestamp(createdAt)
+      ) {
+        const matched = byAddress.get(address.addressId)
+        if (matched && matched.deletedAt >= createdAt)
+          return { deleted: true, matchedBy: "address", evidence: matched }
+      }
+    }
+    return { deleted: false, matchedBy: null, evidence: null }
+  }
 }
 
 export function resolveProductDeletion(
   candidate: ProductDeletionCandidate,
   evidence: readonly ProductDeletionEvidence[]
 ): ProductDeletionResolution {
-  const exactEventEvidence = findExactEventEvidence(candidate, evidence)
-  if (exactEventEvidence) {
-    return {
-      deleted: true,
-      matchedBy: "event",
-      evidence: exactEventEvidence,
-    }
-  }
-
-  const addressEvidence = findAddressEvidence(candidate, evidence)
-  if (addressEvidence) {
-    return {
-      deleted: true,
-      matchedBy: "address",
-      evidence: addressEvidence,
-    }
-  }
-
-  return {
-    deleted: false,
-    matchedBy: null,
-    evidence: null,
-  }
+  return prepareProductDeletionResolver(evidence)(candidate)
 }
 
 export function isProductDeletedByNip09(

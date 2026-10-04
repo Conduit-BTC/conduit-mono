@@ -120,6 +120,7 @@ import {
 import {
   isProductDeletedByNip09,
   parseProductAddressCoordinate,
+  prepareProductDeletionResolver,
   productDeletionAddressKey,
   productDeletionEventKey as scopedProductDeletionEventKey,
   validateProductDeletionEvent,
@@ -2424,11 +2425,9 @@ function selectCachedProductUpdates(
   rows: CachedProduct[],
   existingRows: CachedProduct[]
 ): CachedProduct[] {
-  const ids = Array.from(new Set(rows.map((row) => row.id)))
+  const ids = new Set(rows.map((row) => row.id))
   const selected = new Map(
-    existingRows
-      .filter((row) => ids.includes(row.id))
-      .map((row) => [row.id, row])
+    existingRows.filter((row) => ids.has(row.id)).map((row) => [row.id, row])
   )
   const changed = new Map<string, CachedProduct>()
 
@@ -3062,16 +3061,14 @@ export function reconcileProductRecordsWithDeletions(
   records: CommerceProductRecord[],
   evidence: readonly ProductDeletionEvidence[]
 ): CommerceProductRecord[] {
+  const resolveDeletion = prepareProductDeletionResolver(evidence)
   const deleted = (record: CommerceProductRecord) =>
-    isProductDeletedByNip09(
-      {
-        authorPubkey: record.product.pubkey,
-        eventId: record.eventId,
-        addressId: record.dTag ? record.addressId : null,
-        createdAt: record.eventCreatedAt,
-      },
-      evidence
-    )
+    resolveDeletion({
+      authorPubkey: record.product.pubkey,
+      eventId: record.eventId,
+      addressId: record.dTag ? record.addressId : null,
+      createdAt: record.eventCreatedAt,
+    }).deleted
   // Multiple exact targets may share a family. Re-evaluate it once per snapshot.
   const resolvedContexts = new Map<
     RetainedProductFamilyContext,

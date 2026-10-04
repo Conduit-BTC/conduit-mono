@@ -55,6 +55,11 @@ Relay arrivals are consumed as deltas and coalesced before parsing, cache
 writes, and catalog projection. Parsing yields between small time slices.
 Prepared progressive snapshots bypass recursive query structural comparison;
 signed deletion evidence still retracts products during and after the read.
+Each reconciliation indexes its deletion-evidence snapshot once by author and
+event or address, then reuses that lookup across products and retained families.
+Exact-event precedence, address timestamp cutoffs, and evidence validation remain
+unchanged. Cache update selection likewise uses indexed membership rather than
+scanning every requested ID for every existing row.
 
 Browser public-event admission computes the canonical event hash and verifies
 the signature in a worker. Parsing and schema validation reuse proof only when
