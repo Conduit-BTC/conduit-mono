@@ -10,6 +10,13 @@ No download happens during dependency installation, app builds, or CI tests.
 
 From the checkout root, with Bun and `tar` available:
 
+Setup downloads and writes a native executable. Agents performing an answer,
+diagnosis, review, or plan must stop this tool path if Deed is missing or
+unavailable and report the limitation without downloading or writing files.
+Run setup only with explicit user authorization or as a necessary prerequisite
+of an already-authorized implementation task. Loading the skill or seeing a
+setup command in help does not grant that authorization.
+
 ```sh
 bun run nostr:debug:setup
 bun run nostr:debug doctor

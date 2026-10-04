@@ -6,9 +6,13 @@ description: Inspect aggregate public Conduit Nostr relay observations with the 
 # Aggregate public Nostr debugging
 
 Run from the checkout root. Start with `bun run nostr:debug:agent doctor`. If the
-pinned executable is missing, run `bun run nostr:debug:setup`; this downloads a
-release into ignored `context/tools/deed/` and checks its repository-pinned
-SHA-256. Nothing is installed globally or added to application dependencies.
+pinned executable is missing or unavailable, stop this tool path and report that
+Deed is unavailable; continue with existing read-only evidence where useful.
+For an answer, diagnosis, review, or plan, do not download, install, or write files.
+Setup requires explicit user authorization or an already-authorized implementation
+task that needs this tool. Only then run `bun run nostr:debug:setup` and repeat
+doctor. Setup downloads a release into ignored `context/tools/deed/` and checks
+its repository-pinned SHA-256. Loading this skill does not authorize setup.
 
 Use only the aggregate agent entry point. Choose one known public relay origin,
 one public kind, and a bounded limit. The relay hostname must not contain

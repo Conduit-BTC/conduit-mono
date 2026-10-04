@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import {
   chmodSync,
   existsSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs"
@@ -42,6 +43,62 @@ const query = [
 ]
 
 describe("public Deed harness", () => {
+  test("missing-tool skill examples stop without installing and require setup authorization", () => {
+    const skill = readFileSync(".agents/skills/deed-debug/SKILL.md", "utf8")
+    const examples = [...skill.matchAll(/^bun run nostr:debug:agent (.+)$/gm)]
+    expect(examples.length).toBeGreaterThan(0)
+    const root = mkdtempSync(join(tmpdir(), "conduit-deed-missing-"))
+    directories.push(root)
+    const output = mock((message: string) => {
+      void message
+    })
+    const originalLog = console.log
+    const originalError = console.error
+    const download = spyOn(globalThis, "fetch").mockImplementation(() => {
+      throw new Error("Read-only diagnostics must not download a tool.")
+    })
+    console.log = output
+    console.error = output
+    try {
+      for (const [, command] of examples) {
+        output.mockClear()
+        const status = runDebug(
+          ["agent", ...command.split(" ")],
+          join(root, "missing-deed"),
+          root
+        )
+        expect(status).toBe(command === "--help" ? 0 : 1)
+        const transcript = JSON.stringify(output.mock.calls)
+        expect(transcript).toContain("explicit user authorization")
+        expect(transcript).toContain("already-authorized implementation task")
+        expect(readdirSync(root)).toEqual([])
+        expect(download).not.toHaveBeenCalled()
+      }
+    } finally {
+      console.log = originalLog
+      console.error = originalError
+      download.mockRestore()
+    }
+  })
+  test("a mismatched agent doctor version requires setup authorization without replacing the binary", () => {
+    const { root, binary } = fixture()
+    const before = readFileSync(binary, "utf8")
+    const output = mock((message: string) => {
+      void message
+    })
+    const original = console.error
+    console.error = output
+    try {
+      expect(runDebug(["agent", "doctor"], binary, root)).toBe(1)
+      expect(JSON.stringify(output.mock.calls)).toContain(
+        "explicit user authorization"
+      )
+      expect(readFileSync(binary, "utf8")).toBe(before)
+      expect(readdirSync(root)).toEqual(["deed"])
+    } finally {
+      console.error = original
+    }
+  })
   test("agent queries retain public-kind, target, and duration bounds", () => {
     expect(planDebug(["agent", ...query])).toEqual(planDebug(query))
     expect(planDebug(["agent", "doctor"]).args).toEqual(["version"])

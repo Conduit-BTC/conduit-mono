@@ -15,6 +15,8 @@ import {
 } from "./deed-tool"
 
 export const publicKinds = new Set([0, 5, 10002, 10050, 30402])
+const setupGuidance =
+  "If Deed is unavailable, stop this tool path and report the limitation. Setup downloads and writes a native executable; it requires explicit user authorization or an already-authorized implementation task that needs this tool. Only then run bun run nostr:debug:setup and repeat doctor."
 const usage = `Read-only Nostr debugging with pinned Deed ${DEED_VERSION}
   bun run nostr:debug:agent doctor
   bun run nostr:debug:agent req --relay <public-wss-origin> --kind <n> [--limit <1..100>] [--timeout <100..30000>]
@@ -28,7 +30,7 @@ Developer-only local commands (never use identity-bearing inputs in agent tools)
 Public kinds: 0, 5, 10002, 10050, 30402. One explicit relay per query.
 Queries print counts only. --save writes raw public events to ignored context/nostr-debug/.
 No signing, publishing, key access, encrypted events, authentication, or unbounded streams.
-Run bun run nostr:debug:setup if Deed is missing.`
+${setupGuidance}`
 
 const agentUsage = `Aggregate-only Nostr debugging with pinned Deed ${DEED_VERSION}
   bun run nostr:debug:agent doctor
@@ -37,7 +39,7 @@ const agentUsage = `Aggregate-only Nostr debugging with pinned Deed ${DEED_VERSI
 Public kinds: 0, 5, 10002, 10050, 30402. Use a public relay origin without personal data.
 No targeted filters, reference decoding, file input, captures, or raw output.
 Never put identities into agent prompts or tool arguments; rejection happens after invocation is recorded.
-Run bun run nostr:debug:setup if Deed is missing.`
+${setupGuidance}`
 
 export interface DebugPlan {
   command: "doctor" | "decode" | "verify" | "req"
@@ -228,7 +230,7 @@ export function runDebug(
   })
   if (result.error || result.signal) {
     console.error(
-      `Deed unavailable, timed out, or exceeded the output bound. Run nostr:debug:setup and ${agent ? "nostr:debug:agent" : "nostr:debug"} doctor.`
+      `Deed unavailable, timed out, or exceeded the output bound. ${setupGuidance}`
     )
     return 1
   }
@@ -246,7 +248,7 @@ export function runDebug(
   }
   if (plan.command === "doctor") {
     if (exitCode !== 0 || result.stdout.trim() !== `deed ${DEED_VERSION}`) {
-      console.error("Pinned Deed version unavailable; run nostr:debug:setup.")
+      console.error(`Pinned Deed version unavailable. ${setupGuidance}`)
       return 1
     }
     console.log(`Deed ${DEED_VERSION} ready (repo-local, read-only harness).`)
