@@ -1042,6 +1042,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
   private readonly now: () => number
   private readonly createSubscriptionId: () => string
   private readonly publicReadScope: PublicRelayReadSocketScope
+  private readonly publicReadControllers = new Set<AbortController>()
   private readonly authenticatedConnections = new Map<
     string,
     Map<string, RelayConnection>
@@ -1148,11 +1149,12 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
   }
 
   closeAll(): void {
+    for (const controller of [...this.publicReadControllers]) controller.abort()
+    closePublicRelayConnections(this.publicReadScope)
     this.closeAllAuthenticated()
   }
 
   dispose(): void {
-    closePublicRelayConnections(this.publicReadScope)
     this.closeAll()
     this.unsubscribeRevocation()
   }
@@ -1375,8 +1377,23 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
   ): Promise<Omit<RelayQueryResult, "observations">> {
     const snapshot = cloneRequest(request)
     assertRequest(snapshot, options.authorization)
-    if (snapshot.operation === "public_read")
-      return await this.executePublicRead(snapshot, options, observe)
+    if (snapshot.operation === "public_read") {
+      const controller = new AbortController()
+      const abort = () => controller.abort()
+      if (options.signal?.aborted) controller.abort()
+      else options.signal?.addEventListener("abort", abort, { once: true })
+      this.publicReadControllers.add(controller)
+      try {
+        return await this.executePublicRead(
+          snapshot,
+          { ...options, signal: controller.signal },
+          observe
+        )
+      } finally {
+        options.signal?.removeEventListener("abort", abort)
+        this.publicReadControllers.delete(controller)
+      }
+    }
     const relayUrls = uniqueNormalizedRelayUrls(snapshot.relayUrls)
     const seenEventIds = new Set<string>()
     const events: SignedNostrEvent[] = []

@@ -1602,8 +1602,8 @@ export async function fetchSignedEventsFanoutDetailed(
     throw new Error("Public reads cannot request protected inbox events.")
   }
   const startedAt = Date.now()
-  const { relayUrls, rateLimitedRelayUrls } =
-    await resolveFanoutRelayPlan(options)
+  // Capture the pool before planning yields, so teardown cannot be followed by
+  // an obsolete operation registering a replacement pool for the same scope.
   let sharedConnections = relayConnections
   if (options.socketScope) {
     sharedConnections =
@@ -1614,6 +1614,8 @@ export async function fetchSignedEventsFanoutDetailed(
     options.reuseRelayConnections === false
       ? new Map<string, RelayConnection>()
       : sharedConnections
+  const { relayUrls, rateLimitedRelayUrls } =
+    await resolveFanoutRelayPlan(options)
   const merged = new Map<string, SignedPublicNostrEvent>()
   const results: FetchEventsFromRelayResult[] = []
   const attempted = new Set<string>()

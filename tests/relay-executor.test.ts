@@ -238,6 +238,120 @@ afterEach(() => {
 })
 
 describe("NDK-neutral relay executor NIP-42 state machine", () => {
+  it("closeAll aborts active public reads and permits a fresh read", async () => {
+    let complete = false
+    let started!: () => void
+    const requestStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const harness = new FakeRelayHarness().at("wss://public.example", {
+      onSend: (socket, frame) => {
+        if (frame[0] !== "REQ") return
+        started()
+        if (complete) socket.relay(["EOSE", frame[1]])
+      },
+    })
+    const executor = createExecutor(harness)
+    const pending = executor.query(publicRequest(), { queryTimeoutMs: 100 })
+    await requestStarted
+
+    executor.closeAll()
+    await expect(pending).resolves.toMatchObject({ status: "aborted" })
+    expect(harness.sockets[0].closed).toBe(true)
+
+    complete = true
+    await expect(executor.query(publicRequest())).resolves.toMatchObject({
+      status: "success",
+    })
+    expect(harness.sockets).toHaveLength(2)
+  })
+
+  for (const teardown of ["closeAll", "dispose"] as const) {
+    it(`${teardown} cancels a public read before planning finishes`, async () => {
+      const harness = new FakeRelayHarness().at("wss://public.example", {
+        onSend: (socket, frame) => {
+          if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+        },
+      })
+      const executor = createExecutor(harness)
+      const pending = executor.query(publicRequest())
+      executor[teardown]()
+
+      await expect(pending).resolves.toMatchObject({ status: "aborted" })
+      expect(harness.sockets).toHaveLength(0)
+    })
+
+    it(`${teardown} cancels queued public attempts without cancelling a sibling executor`, async () => {
+      const relayUrls = Array.from(
+        { length: 9 },
+        (_, index) => `wss://teardown-${index}.example`
+      )
+      const harness = new FakeRelayHarness()
+      let started!: () => void
+      let requestCount = 0
+      const requestsStarted = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      for (const relayUrl of relayUrls)
+        harness.at(relayUrl, {
+          onSend: (_, frame) => {
+            if (frame[0] === "REQ" && ++requestCount === 8) started()
+          },
+        })
+      const executor = createExecutor(harness)
+      const pending = executor.query(publicRequest(relayUrls), {
+        queryTimeoutMs: 100,
+      })
+      await requestsStarted
+
+      const siblingHarness = new FakeRelayHarness().at(
+        "wss://sibling.example",
+        {
+          onSend: (socket, frame) => {
+            if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+          },
+        }
+      )
+      const sibling = createExecutor(siblingHarness)
+      const siblingRead = sibling.query(
+        publicRequest(["wss://sibling.example"])
+      )
+
+      executor[teardown]()
+      await expect(pending).resolves.toMatchObject({ status: "aborted" })
+      await expect(siblingRead).resolves.toMatchObject({ status: "success" })
+      // The sibling's completed read proves the shared queue has advanced.
+      expect(harness.sockets).toHaveLength(8)
+      expect(harness.sockets.every((socket) => socket.closed)).toBe(true)
+      expect(siblingHarness.sockets).toHaveLength(1)
+      expect(siblingHarness.sockets[0].closed).toBe(false)
+    })
+  }
+
+  it("closeAll ends the public observation stream with cancellation evidence", async () => {
+    let started!: () => void
+    const requestStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const harness = new FakeRelayHarness().at("wss://public.example", {
+      onSend: (_, frame) => {
+        if (frame[0] === "REQ") started()
+      },
+    })
+    const executor = createExecutor(harness)
+    const observations = []
+    const pending = (async () => {
+      for await (const observation of executor.req(publicRequest()))
+        observations.push(observation)
+    })()
+    await requestStarted
+    executor.closeAll()
+    await pending
+
+    expect(observations).toContainEqual({ type: "abort", relayIndex: 0 })
+    expect(harness.sockets[0].closed).toBe(true)
+  })
+
   for (const phase of ["before connect", "after REQ"] as const) {
     it(`completes injected public reads without global WebSocket ${phase}`, async () => {
       const descriptor = Object.getOwnPropertyDescriptor(

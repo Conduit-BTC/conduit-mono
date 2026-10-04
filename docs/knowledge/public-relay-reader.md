@@ -32,6 +32,12 @@ continues to stop domain/cache updates. `PublicRelayReadCancelledError.result`
 retains already verified events, completed sources and cancelled in-flight
 sources. Queued work cannot open a socket after cancellation.
 
+The public executor owns cancellation for every read until it settles.
+`closeAll()` and `dispose()` revoke planning, queued and active public reads
+before closing their scoped sockets. Teardown leaves sibling executors alone;
+a fresh read after `closeAll()` may create a new pool. Both query results and
+observation streams retain cancellation evidence.
+
 The generic public executor projects source URLs back to their stable requested
 relay indices and emits verified event/duplicate and malformed/unusable counts
 as each source finishes. Connection timeouts keep their connect phase. The
@@ -82,8 +88,10 @@ plain signed wraps directly so private receipt authority can survive reload.
 
 Deterministic wire fixtures cover EOSE, delayed/no EOSE, CLOSED, public AUTH
 challenge/refusal, disconnect, malformed events, invalid hash/signature,
-duplicate sources, queued cancellation and verifier backpressure. Composed
-planner, follow/frontier and deletion tests guard evidence-sensitive callers.
+duplicate sources, queued cancellation and verifier backpressure. The
+executor regressions cover teardown before planning, nine-source queue
+saturation, sibling isolation, observation-stream closure and subsequent reuse.
+Composed planner, follow/frontier and deletion tests guard evidence-sensitive callers.
 Browser fixtures exercise catalog useful paint and profile/declaration Network
 reads, recording only counts, event kinds and timings. Equal-topology baseline
 comparison is required before making a performance claim. Fixtures do not prove
