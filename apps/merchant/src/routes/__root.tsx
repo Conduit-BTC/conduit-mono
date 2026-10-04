@@ -466,6 +466,7 @@ function ConnectGate() {
         className="mx-auto flex min-h-dvh w-full max-w-4xl items-center justify-center px-4 pb-20 pt-8 outline-none sm:px-6 lg:px-8"
       >
         <SignerConnectPanel
+          logoSrc="/images/logo/merchant-logo-full.svg"
           title="Sign in to Conduit"
           description="Use your Nostr account to open your merchant workspace."
           helperText={
