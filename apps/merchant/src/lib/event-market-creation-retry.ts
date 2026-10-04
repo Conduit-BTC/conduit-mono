@@ -14,6 +14,7 @@ import {
   createEmptyOrganizerEventMarketForm,
   prepareOrganizerEventMarketForm,
   slugifyEventMarketTitle,
+  toStoredOrganizerEventForm,
   type OrganizerEventMarketFormValues,
 } from "./event-market-form"
 
@@ -43,7 +44,9 @@ function storageKey(organizerPubkey: string): string {
 function calendarForCreation(
   creation: FutureEventMarketCreation
 ): EventMarketCalendarDraftInput {
-  const prepared = prepareOrganizerEventMarketForm(creation.form).calendar
+  const prepared = prepareOrganizerEventMarketForm(creation.form, {
+    endDateIsExclusive: true,
+  }).calendar
   const common = {
     dTag: `${creation.dTag}-calendar`,
     title: prepared.title,
@@ -133,7 +136,7 @@ export function saveNewFutureEventMarketCreation(
     dTag,
     marketCoordinate: `30409:${organizerPubkey}:${dTag}`,
     calendarCoordinate: `${prepared.calendar.kind}:${organizerPubkey}:${dTag}-calendar`,
-    form: { ...form },
+    form: toStoredOrganizerEventForm(form),
   }
   storage.setItem(storageKey(organizerPubkey), JSON.stringify(creation))
   return creation

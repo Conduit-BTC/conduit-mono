@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   encodeEventMarketNaddr,
   isValidSignedPublicNostrEvent,
@@ -20,26 +20,22 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-  Checkbox,
   Input,
   Label,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   Textarea,
 } from "@conduit/ui"
 import {
   createEmptyOrganizerEventMarketForm,
-  generateOrganizerWeeklyDates,
+  generateOrganizerRecurringDates,
+  fromStoredOrganizerEventForm,
+  toStoredOrganizerEventForm,
   MAX_ORGANIZER_EVENT_DATES,
   prepareOrganizerEventMarketDates,
   prepareOrganizerEventMarketForm,
   slugifyEventMarketTitle,
   type OrganizerEventDateRow,
   type OrganizerEventMarketFormValues,
-  type OrganizerWeeklyDatePattern,
+  type OrganizerEventRepeat,
 } from "../lib/event-market-form"
 
 import {
@@ -48,27 +44,11 @@ import {
   saveNewFutureEventMarketCreation,
 } from "../lib/event-market-creation-retry"
 
-import { EventMessagesSetup } from "./EventMessagesSetup"
-import { EventBannerField, EventTimezoneField } from "./EventAuthoringFields"
-
-const WEEKDAYS = [
-  { value: 0, label: "Sunday" },
-  { value: 1, label: "Monday" },
-  { value: 2, label: "Tuesday" },
-  { value: 3, label: "Wednesday" },
-  { value: 4, label: "Thursday" },
-  { value: 5, label: "Friday" },
-  { value: 6, label: "Saturday" },
-] as const
-
-const EMPTY_WEEKLY_PATTERN: OrganizerWeeklyDatePattern = {
-  firstDate: "",
-  throughDate: "",
-  weekdays: [],
-  startTime: "09:00",
-  endTime: "17:00",
-  timezone: "",
-}
+import { EventBannerField } from "./EventAuthoringFields"
+import {
+  EventScheduleFields,
+  type EventRepeatMode,
+} from "./EventScheduleFields"
 
 interface FrozenSeriesDraft {
   version: 1
@@ -280,17 +260,40 @@ function FutureEventMarketCreateForm({
     () => `event-create:${organizerPubkey}:${crypto.randomUUID()}`
   )
   const publishing = useRef(false)
-  const [form, setForm] = useState<OrganizerEventMarketFormValues>(
-    () => restored.creation?.form ?? createEmptyOrganizerEventMarketForm()
+  const [form, setForm] = useState<OrganizerEventMarketFormValues>(() =>
+    restored.creation
+      ? fromStoredOrganizerEventForm(restored.creation.form)
+      : createEmptyOrganizerEventMarketForm()
   )
-  const [scheduleMode, setScheduleMode] = useState<"one" | "multiple">("one")
+  const [repeatMode, setRepeatMode] = useState<EventRepeatMode>("none")
   const [dateRows, setDateRows] = useState<OrganizerEventDateRow[]>([])
-  const [generatedBaseline, setGeneratedBaseline] = useState<
-    OrganizerEventDateRow[]
-  >([])
-  const [weekly, setWeekly] =
-    useState<OrganizerWeeklyDatePattern>(EMPTY_WEEKLY_PATTERN)
-  const [showWeekly, setShowWeekly] = useState(false)
+  const [repeat, setRepeat] = useState<OrganizerEventRepeat>({
+    frequency: "weekly",
+    weekdays: [],
+    ends: "after_count",
+    throughDate: "",
+    count: 4,
+  })
+  const generated = useMemo(() => {
+    if (repeatMode !== "weekly" && repeatMode !== "monthly")
+      return { rows: [], error: "" }
+    try {
+      return {
+        rows: generateOrganizerRecurringDates(form, {
+          ...repeat,
+          frequency: repeatMode,
+        }),
+        error: "",
+      }
+    } catch (cause) {
+      return {
+        rows: [],
+        error:
+          cause instanceof Error ? cause.message : "Check the repeating dates.",
+      }
+    }
+  }, [form, repeat, repeatMode])
+  const activeDateRows = repeatMode === "custom" ? dateRows : generated.rows
   const [frozenDraft, setFrozenDraft] = useState<FrozenSeriesDraft | null>(null)
   const [savedSignatureCount, setSavedSignatureCount] = useState(0)
   const [recordProgress, setRecordProgress] = useState<Record<string, string>>(
@@ -312,10 +315,18 @@ function FutureEventMarketCreateForm({
       const saved = readFrozenSeriesDraft(organizerPubkey)
       setFrozenDraft(saved)
       if (saved) {
-        setForm(saved.form)
-        setDateRows(saved.dateRows)
-        setScheduleMode("multiple")
-        setShowWeekly(false)
+        setForm(fromStoredOrganizerEventForm(saved.form))
+        setDateRows(
+          saved.dateRows.map((row) => ({
+            ...row,
+            end: fromStoredOrganizerEventForm({
+              ...saved.form,
+              start: row.start,
+              end: row.end,
+            }).end,
+          }))
+        )
+        setRepeatMode("custom")
         const marketCoordinate = `30409:${organizerPubkey}:${saved.marketDTag}`
         void loadRetainedSignedEventMarketEvidence(marketCoordinate)
           .then((events) => {
@@ -355,85 +366,6 @@ function FutureEventMarketCreateForm({
     setForm((current) => ({ ...current, [key]: value }))
   }
 
-  function chooseScheduleMode(mode: "one" | "multiple"): void {
-    if (mode === "multiple" && dateRows.length === 0) {
-      setDateRows([
-        { id: crypto.randomUUID(), start: form.start, end: form.end },
-      ])
-    }
-    setScheduleMode(mode)
-    setError("")
-  }
-
-  function updateDateRow(
-    id: string,
-    field: "start" | "end",
-    value: string
-  ): void {
-    setDateRows((current) =>
-      current.map((row) => (row.id === id ? { ...row, [field]: value } : row))
-    )
-  }
-
-  function addDate(): void {
-    if (dateRows.length >= MAX_ORGANIZER_EVENT_DATES) {
-      setError(`Add at most ${MAX_ORGANIZER_EVENT_DATES} dates.`)
-      return
-    }
-    setDateRows((current) => [
-      ...current,
-      { id: crypto.randomUUID(), start: "", end: "" },
-    ])
-    setError("")
-  }
-
-  function generateWeekly(): void {
-    try {
-      const generated = generateOrganizerWeeklyDates({
-        ...weekly,
-        timezone: form.timezone,
-      }).map((row) => ({ ...row, id: crypto.randomUUID() }))
-      const existingStarts = new Set(
-        dateRows.filter((row) => row.start).map((row) => row.start)
-      )
-      if (generated.some((row) => existingStarts.has(row.start))) {
-        throw new Error("Generated dates overlap dates already in the list.")
-      }
-      const existing = dateRows.filter((row) => row.start || row.end)
-      if (existing.length + generated.length > MAX_ORGANIZER_EVENT_DATES) {
-        throw new Error(
-          `Keep the list to at most ${MAX_ORGANIZER_EVENT_DATES} dates.`
-        )
-      }
-      setDateRows([...existing, ...generated])
-      setGeneratedBaseline((current) => [...current, ...generated])
-      setWeekly(EMPTY_WEEKLY_PATTERN)
-      setShowWeekly(false)
-      setError("")
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not generate dates."
-      )
-    }
-  }
-
-  const starts = dateRows
-    .map((row) => row.start)
-    .filter(Boolean)
-    .sort()
-  const generatedById = new Map(generatedBaseline.map((row) => [row.id, row]))
-  const generatedCurrentIds = new Set(dateRows.map((row) => row.id))
-  const changedGenerated = dateRows.filter((row) => {
-    const original = generatedById.get(row.id)
-    return (
-      original && (row.start !== original.start || row.end !== original.end)
-    )
-  }).length
-  const removedGenerated = generatedBaseline.filter(
-    (row) => !generatedCurrentIds.has(row.id)
-  ).length
-  const addedDates = dateRows.filter((row) => !generatedById.has(row.id)).length
-
   async function publish(): Promise<void> {
     if (
       !authenticatedPubkey ||
@@ -448,10 +380,10 @@ function FutureEventMarketCreateForm({
     setRecordProgress({})
     try {
       if (!shouldContinue()) throw new Error("Organizer session changed.")
-      if (scheduleMode === "multiple") {
+      if (repeatMode !== "none") {
         let draft = readFrozenSeriesDraft(organizerPubkey)
         if (!draft) {
-          prepareOrganizerEventMarketDates(form, dateRows, {
+          prepareOrganizerEventMarketDates(form, activeDateRows, {
             requireFutureStart: true,
           })
           const marketDTag = `${slugifyEventMarketTitle(form.title)}-${crypto.randomUUID().slice(0, 8)}`
@@ -460,18 +392,30 @@ function FutureEventMarketCreateForm({
             organizerPubkey,
             marketDTag,
             scheduleDTag: `${marketDTag}-schedule`,
-            occurrenceDTags: dateRows.map(
+            occurrenceDTags: activeDateRows.map(
               (_, index) => `${marketDTag}-date-${index + 1}`
             ),
-            form: structuredClone(form),
-            dateRows: structuredClone(dateRows),
+            form: toStoredOrganizerEventForm({
+              ...form,
+              start: activeDateRows[0]!.start,
+              end: activeDateRows[0]!.end,
+            }),
+            dateRows: activeDateRows.map((row) => ({
+              ...row,
+              end: toStoredOrganizerEventForm({
+                ...form,
+                start: row.start,
+                end: row.end,
+              }).end,
+            })),
           }
           saveFrozenSeriesDraft(draft)
         }
         setFrozenDraft(draft)
         const preparedDates = prepareOrganizerEventMarketDates(
           draft.form,
-          draft.dateRows
+          draft.dateRows,
+          { endDateIsExclusive: true }
         )
         const marketCoordinate = `30409:${organizerPubkey}:${draft.marketDTag}`
         const scheduleCoordinate = `31924:${organizerPubkey}:${draft.scheduleDTag}`
@@ -631,14 +575,13 @@ function FutureEventMarketCreateForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Create Event Market</CardTitle>
+        <CardTitle>Create event</CardTitle>
         <CardDescription>
-          Create an organizer-signed Event Market. Approved merchants associate
-          their products once; product stock is shared across listed dates.
+          Add your event details and dates. You can invite merchants after
+          publishing.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        <EventMessagesSetup role="host" />
         {creation ? (
           <p role="status" className="text-sm text-[var(--text-muted)]">
             A saved creation is waiting to finish. Retry the same Event Market
@@ -701,278 +644,20 @@ function FutureEventMarketCreateForm({
               required
             />
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="future-schedule-mode">Dates</Label>
-            <Select
-              value={scheduleMode}
-              onValueChange={(value) =>
-                chooseScheduleMode(value as "one" | "multiple")
-              }
-            >
-              <SelectTrigger id="future-schedule-mode">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="one">One date</SelectItem>
-                <SelectItem value="multiple">Multiple dates</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="future-calendar-type">Schedule</Label>
-            <Select
-              value={form.calendarType}
-              onValueChange={(value) =>
-                update("calendarType", value as "date" | "timed")
-              }
-            >
-              <SelectTrigger id="future-calendar-type">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="timed">Timed event</SelectItem>
-                <SelectItem value="date">All-day event</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          {scheduleMode === "one" ? (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1">
-                <Label htmlFor="future-start">Start</Label>
-                <Input
-                  id="future-start"
-                  type={
-                    form.calendarType === "timed" ? "datetime-local" : "date"
-                  }
-                  value={form.start}
-                  onChange={(event) => update("start", event.target.value)}
-                  required
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="future-end">End</Label>
-                <Input
-                  id="future-end"
-                  type={
-                    form.calendarType === "timed" ? "datetime-local" : "date"
-                  }
-                  value={form.end}
-                  onChange={(event) => update("end", event.target.value)}
-                  required
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <p
-                aria-live="polite"
-                className="text-sm text-[var(--text-secondary)]"
-              >
-                {dateRows.length} of {MAX_ORGANIZER_EVENT_DATES} dates
-                {starts.length
-                  ? ` · First ${starts[0].slice(0, 10)} · Last ${starts[starts.length - 1].slice(0, 10)}`
-                  : ""}
-                {generatedBaseline.length
-                  ? ` · Exceptions: ${changedGenerated} edited, ${removedGenerated} removed, ${addedDates} added`
-                  : ""}
-                {` · About ${dateRows.length + 2} signer confirmations to create`}
-              </p>
-              {dateRows.map((row, index) => (
-                <div
-                  key={row.id}
-                  className="rounded-lg border border-[var(--border)] p-3 space-y-3"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="font-medium">Date {index + 1}</h3>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      aria-label={`Remove date ${index + 1}`}
-                      disabled={pending}
-                      onClick={() =>
-                        setDateRows((current) =>
-                          current.filter((item) => item.id !== row.id)
-                        )
-                      }
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <Label htmlFor={`future-date-${row.id}-start`}>
-                        Start
-                      </Label>
-                      <Input
-                        id={`future-date-${row.id}-start`}
-                        type={
-                          form.calendarType === "timed"
-                            ? "datetime-local"
-                            : "date"
-                        }
-                        value={row.start}
-                        onChange={(event) =>
-                          updateDateRow(row.id, "start", event.target.value)
-                        }
-                        required
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor={`future-date-${row.id}-end`}>End</Label>
-                      <Input
-                        id={`future-date-${row.id}-end`}
-                        type={
-                          form.calendarType === "timed"
-                            ? "datetime-local"
-                            : "date"
-                        }
-                        value={row.end}
-                        onChange={(event) =>
-                          updateDateRow(row.id, "end", event.target.value)
-                        }
-                        required
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={
-                    pending || dateRows.length >= MAX_ORGANIZER_EVENT_DATES
-                  }
-                  onClick={addDate}
-                >
-                  Add date
-                </Button>
-                {form.calendarType === "timed" ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={pending}
-                    onClick={() => setShowWeekly((current) => !current)}
-                  >
-                    Generate weekly dates
-                  </Button>
-                ) : null}
-              </div>
-              {showWeekly && form.calendarType === "timed" ? (
-                <div
-                  className="space-y-3 rounded-lg border border-[var(--border)] p-3"
-                  aria-label="Weekly date generator"
-                >
-                  <p className="text-sm text-[var(--text-secondary)]">
-                    Generate concrete dates. You can edit or remove any date
-                    before publishing.
-                  </p>
-                  <fieldset className="space-y-2">
-                    <legend className="font-medium">Weekdays</legend>
-                    <div className="flex flex-wrap gap-3">
-                      {WEEKDAYS.map((day) => (
-                        <label
-                          key={day.value}
-                          className="flex items-center gap-2 text-sm"
-                        >
-                          <Checkbox
-                            checked={weekly.weekdays.includes(day.value)}
-                            onCheckedChange={(checked) =>
-                              setWeekly((current) => ({
-                                ...current,
-                                weekdays:
-                                  checked === true
-                                    ? [...current.weekdays, day.value]
-                                    : current.weekdays.filter(
-                                        (value) => value !== day.value
-                                      ),
-                              }))
-                            }
-                          />
-                          {day.label}
-                        </label>
-                      ))}
-                    </div>
-                  </fieldset>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <Label htmlFor="weekly-first">First date</Label>
-                      <Input
-                        id="weekly-first"
-                        type="date"
-                        value={weekly.firstDate}
-                        onChange={(event) =>
-                          setWeekly((current) => ({
-                            ...current,
-                            firstDate: event.target.value,
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="weekly-through">Through date</Label>
-                      <Input
-                        id="weekly-through"
-                        type="date"
-                        value={weekly.throughDate}
-                        onChange={(event) =>
-                          setWeekly((current) => ({
-                            ...current,
-                            throughDate: event.target.value,
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="weekly-start">Start hour</Label>
-                      <Input
-                        id="weekly-start"
-                        type="time"
-                        value={weekly.startTime}
-                        onChange={(event) =>
-                          setWeekly((current) => ({
-                            ...current,
-                            startTime: event.target.value,
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="weekly-end">End hour</Label>
-                      <Input
-                        id="weekly-end"
-                        type="time"
-                        value={weekly.endTime}
-                        onChange={(event) =>
-                          setWeekly((current) => ({
-                            ...current,
-                            endTime: event.target.value,
-                          }))
-                        }
-                      />
-                    </div>
-                  </div>
-                  <p className="text-sm text-[var(--text-secondary)]">
-                    Time zone: {form.timezone || "Choose a time zone below"}
-                  </p>
-                  <Button
-                    type="button"
-                    disabled={pending}
-                    onClick={generateWeekly}
-                  >
-                    Generate dates
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-          )}
-          {form.calendarType === "timed" ? (
-            <EventTimezoneField
-              id="future-timezone"
-              value={form.timezone}
-              onChange={(value) => update("timezone", value)}
-            />
-          ) : null}
+          <EventScheduleFields
+            form={form}
+            onFormChange={setForm}
+            mode={repeatMode}
+            onModeChange={(mode) => {
+              setRepeatMode(mode)
+              setError("")
+            }}
+            repeat={repeat}
+            onRepeatChange={setRepeat}
+            rows={repeatMode === "none" ? dateRows : activeDateRows}
+            onRowsChange={setDateRows}
+            error={generated.error}
+          />
         </fieldset>
         {step ? <p role="status">{step}</p> : null}
         {Object.keys(recordProgress).length > 0 ? (
@@ -995,11 +680,15 @@ function FutureEventMarketCreateForm({
         <Button
           type="button"
           disabled={
-            !authenticatedPubkey || pending || !!restored.error || bannerBusy
+            !authenticatedPubkey ||
+            pending ||
+            !!restored.error ||
+            bannerBusy ||
+            !!generated.error
           }
           onClick={() => void publish()}
         >
-          {frozenDraft ? "Resume publishing" : "Publish Event Market"}
+          {frozenDraft ? "Resume publishing" : "Publish event"}
         </Button>
         {!authenticatedPubkey ? (
           <p className="text-sm text-[var(--text-muted)]">

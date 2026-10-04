@@ -18,7 +18,11 @@ import {
   publishFutureEventMarketCreation,
   saveNewFutureEventMarketCreation,
 } from "../apps/merchant/src/lib/event-market-creation-retry"
-import { createEmptyOrganizerEventMarketForm } from "../apps/merchant/src/lib/event-market-form"
+import {
+  createEmptyOrganizerEventMarketForm,
+  fromStoredOrganizerEventForm,
+  type OrganizerEventMarketFormValues,
+} from "../apps/merchant/src/lib/event-market-form"
 
 const secret = generateSecretKey()
 const organizer = getPublicKey(secret)
@@ -35,7 +39,7 @@ function result(acknowledged: boolean): PublishWithPlannerResult {
   }
 }
 
-function setup() {
+function setup(overrides: Partial<OrganizerEventMarketFormValues> = {}) {
   const values = new Map<string, string>()
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -51,6 +55,7 @@ function setup() {
     start: "2099-01-01T12:00",
     end: "2099-01-01T13:00",
     timezone: "UTC",
+    ...overrides,
   }
   const creation = saveNewFutureEventMarketCreation(
     organizer,
@@ -62,6 +67,7 @@ function setup() {
   const signed: SignedPublicNostrEvent[] = []
   const attempts: SignedPublicNostrEvent[] = []
   const acknowledgments = new Map<number, boolean>([
+    [31922, true],
     [31923, true],
     [30409, true],
   ])
@@ -158,6 +164,41 @@ function setup() {
 }
 
 describe("durable future Event Market creation", () => {
+  it.each(["2099-01-03", ""])(
+    "preserves a legacy v1 all-day end %s and retries the exact signed calendar",
+    async (end) => {
+      const test = setup({
+        calendarType: "date",
+        start: "2099-01-01",
+        end: "2099-01-01",
+      })
+      expect(test.creation.form.end).toBe("2099-01-02")
+      const legacy = { ...test.creation, form: { ...test.creation.form, end } }
+      test.storage.setItem(
+        `conduit:future-event-market-creation:v1:${organizer}`,
+        JSON.stringify(legacy)
+      )
+      const restored = loadFutureEventMarketCreation(organizer, test.storage)!
+      expect(fromStoredOrganizerEventForm(restored.form).end).toBe(
+        end ? "2099-01-02" : "2099-01-01"
+      )
+      test.acknowledgments.set(31922, false)
+      await expect(test.run()).rejects.toThrow("saved for retry")
+      const signedCalendar = test.signed.find((event) => event.kind === 31922)!
+      expect(signedCalendar.tags.find((tag) => tag[0] === "end")?.[1]).toBe(
+        end || undefined
+      )
+      test.acknowledgments.set(31922, true)
+      await test.run()
+      const attempts = test.attempts.filter((event) => event.kind === 31922)
+      expect(attempts).toHaveLength(2)
+      expect(attempts[1]).toEqual(attempts[0])
+      expect(test.signed.filter((event) => event.kind === 31922)).toHaveLength(
+        1
+      )
+    }
+  )
+
   it.each([31923, 30409])(
     "keeps the coordinate and exact signed IDs after kind %i zero ACK and reload",
     async (kind) => {

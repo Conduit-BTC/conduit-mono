@@ -12,6 +12,8 @@ import {
   type EventMarketEnrollmentDelivery,
 } from "@conduit/core"
 
+import { getEventMarketEnrollmentError } from "../lib/event-market-enrollment-presentation"
+
 export function useEventMarketEnrollment(
   marketCoordinate: string,
   authenticatedPubkey: string | null
@@ -19,6 +21,7 @@ export function useEventMarketEnrollment(
   const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const [networkRepair, setNetworkRepair] = useState(false)
   const [revision, setRevision] = useState(0)
   const query = useQuery({
     queryKey: [
@@ -60,6 +63,7 @@ export function useEventMarketEnrollment(
     if (!authenticatedPubkey || busy) return
     setBusy(true)
     setError("")
+    setNetworkRepair(false)
     try {
       const signer = getAccountSigner()
       if (!signer)
@@ -84,21 +88,12 @@ export function useEventMarketEnrollment(
       })
       await query.refetch()
     } catch (cause) {
-      setError(
-        cause instanceof PrivateMessageRelayReadinessError
-          ? cause.reason === "sender_not_ready"
-            ? "Set up your event messages before sending participation."
-            : cause.reason === "recipient_relays_excluded"
-              ? "The recipient’s inbox relays are excluded by your Network settings. Review event messages, then retry."
-              : cause.reason === "recipient_lookup_failed"
-                ? "The recipient’s private inbox could not be checked. Refresh and retry; this does not prove their setup is missing."
-                : action === "request" || action === "withdraw"
-                  ? "The host’s private inbox is not ready to receive participation. The host must set up event messages; then refresh and retry."
-                  : "This merchant’s private inbox is not ready. They must set up event messages; then refresh and retry."
-          : cause instanceof Error
-            ? cause.message
-            : "Participation could not be sent."
+      setNetworkRepair(
+        cause instanceof PrivateMessageRelayReadinessError &&
+          (cause.reason === "sender_not_ready" ||
+            cause.reason === "recipient_relays_excluded")
       )
+      setError(getEventMarketEnrollmentError(cause, action))
     } finally {
       setRevision((value) => value + 1)
       setBusy(false)
@@ -108,6 +103,7 @@ export function useEventMarketEnrollment(
     if (!pending || !authenticatedPubkey || busy) return
     setBusy(true)
     setError("")
+    setNetworkRepair(false)
     try {
       await retryEventMarketEnrollmentDelivery({
         record: pending,
@@ -116,11 +112,12 @@ export function useEventMarketEnrollment(
       })
       await query.refetch()
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Saved participation still needs delivery."
+      setNetworkRepair(
+        cause instanceof PrivateMessageRelayReadinessError &&
+          (cause.reason === "sender_not_ready" ||
+            cause.reason === "recipient_relays_excluded")
       )
+      setError(getEventMarketEnrollmentError(cause, pending.payload.action))
     } finally {
       setRevision((value) => value + 1)
       setBusy(false)
@@ -131,6 +128,7 @@ export function useEventMarketEnrollment(
     pending,
     busy,
     error: error || storageError,
+    networkRepair,
     storageError,
     send,
     retry,
