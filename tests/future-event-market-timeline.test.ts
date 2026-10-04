@@ -15,6 +15,8 @@ import {
 import { projectFutureMarketTimelineOccurrences } from "../apps/market/src/components/MarketEventsTimeline"
 import {
   getFutureMerchantTimelineDateParts,
+  matchesMerchantEventRelationship,
+  merchantEventDatesUnavailable,
   projectFutureMerchantTimelineOccurrences,
 } from "../apps/merchant/src/lib/merchant-event-timeline"
 
@@ -92,6 +94,80 @@ const seriesRead: EventMarketRosterReadResult = {
 }
 
 describe("future Event Market timeline rows", () => {
+  it("includes owned events in All Events and separates organizing from signed selling membership", () => {
+    expect(matchesMerchantEventRelationship(seriesRead, organizer, "all")).toBe(
+      true
+    )
+    expect(
+      matchesMerchantEventRelationship(seriesRead, organizer, "organizing")
+    ).toBe(true)
+    expect(
+      matchesMerchantEventRelationship(seriesRead, organizer, "selling")
+    ).toBe(false)
+    const selling = {
+      ...seriesRead,
+      resolution: {
+        state: "current" as const,
+        market: {
+          ...market,
+          merchants: [
+            {
+              pubkey: organizer,
+              mode: "merchant_present" as const,
+              assignment: "Booth",
+            },
+          ],
+        },
+      },
+    }
+    expect(
+      matchesMerchantEventRelationship(selling, organizer, "selling")
+    ).toBe(true)
+    expect(
+      matchesMerchantEventRelationship(selling, "f".repeat(64), "organizing")
+    ).toBe(false)
+    expect(
+      matchesMerchantEventRelationship(
+        { ...seriesRead, resolution: { state: "missing" } },
+        organizer,
+        "all"
+      )
+    ).toBe(false)
+  })
+
+  it("distinguishes known missing single or series dates from an empty discovery", () => {
+    expect(merchantEventDatesUnavailable(seriesRead)).toBe(true)
+    expect(
+      merchantEventDatesUnavailable({
+        ...seriesRead,
+        schedule: {
+          ...seriesRead.schedule!,
+          unresolvedCoordinates: [],
+        } as typeof seriesRead.schedule,
+        scheduleCoverage: "complete",
+      })
+    ).toBe(false)
+    const single = {
+      ...seriesRead,
+      resolution: {
+        state: "current" as const,
+        market: { ...market, calendarCoordinate: dates[0]!.parsed.coordinate },
+      },
+      schedule: undefined,
+      calendar: null,
+    }
+    expect(merchantEventDatesUnavailable(single)).toBe(true)
+    expect(
+      merchantEventDatesUnavailable({ ...single, calendar: dates[0]!.parsed })
+    ).toBe(false)
+    expect(
+      merchantEventDatesUnavailable({
+        ...single,
+        resolution: { state: "missing" },
+      })
+    ).toBe(false)
+  })
+
   it("keeps date-only dates and signed timezone day rollover distinct", () => {
     const dateOnly = getFutureMerchantTimelineDateParts({
       ...dates[0]!.parsed,

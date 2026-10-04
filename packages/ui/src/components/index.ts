@@ -23,6 +23,7 @@ export {
 } from "./ThemeToggleButton"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
+export { Breadcrumb } from "./Breadcrumb"
 export { LightningStrikeOverlay } from "./LightningStrikeOverlay"
 export {
   ProjectTip,

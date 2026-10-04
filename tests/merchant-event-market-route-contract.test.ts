@@ -61,19 +61,19 @@ describe("current Merchant Event Market routes", () => {
       expect(contents).toContain("isAuthGenerationCurrent")
   })
 
-  it("keeps event context during reviewed inbox setup without becoming a second inbox writer", async () => {
-    const [setup, create, manager] = await Promise.all([
-      source("apps/merchant/src/components/EventMessagesSetup.tsx"),
+  it("keeps Network settings as the inbox configuration owner and links only actionable repair", async () => {
+    const [create, manager, enrollment] = await Promise.all([
       source("apps/merchant/src/components/FutureEventMarketCreate.tsx"),
       source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
+      source("apps/merchant/src/hooks/useEventMarketEnrollment.ts"),
     ])
-    expect(setup).toContain("useInboxDeclaration")
-    expect(setup).toContain("useAccountNetworkSettings")
-    expect(setup).toContain("<RelaySettingsPanel")
-    expect(setup).toContain("Publish or discard the relay edits")
-    expect(setup).not.toContain("publishPrivateMessageRelayList")
-    expect(create).toContain('<EventMessagesSetup role="host"')
-    expect(manager).toContain("<EventMessagesSetup")
+    expect(create).not.toContain("EventMessagesSetup")
+    expect(manager).not.toContain("EventMessagesSetup")
+    expect(manager).toContain("enrollment.networkRepair")
+    expect(enrollment).toContain('cause.reason === "sender_not_ready"')
+    expect(enrollment).toContain('cause.reason === "recipient_relays_excluded"')
+    for (const contents of [create, manager, enrollment])
+      expect(contents).not.toContain("publishPrivateMessageRelayList")
   })
 
   it("keeps event and merchant PDF signs on current selected-date destinations", async () => {

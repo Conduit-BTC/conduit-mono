@@ -19,6 +19,7 @@ export function useEventMarketEnrollment(
   const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const [networkRepair, setNetworkRepair] = useState(false)
   const [revision, setRevision] = useState(0)
   const query = useQuery({
     queryKey: [
@@ -60,6 +61,7 @@ export function useEventMarketEnrollment(
     if (!authenticatedPubkey || busy) return
     setBusy(true)
     setError("")
+    setNetworkRepair(false)
     try {
       const signer = getAccountSigner()
       if (!signer)
@@ -84,17 +86,22 @@ export function useEventMarketEnrollment(
       })
       await query.refetch()
     } catch (cause) {
+      setNetworkRepair(
+        cause instanceof PrivateMessageRelayReadinessError &&
+          (cause.reason === "sender_not_ready" ||
+            cause.reason === "recipient_relays_excluded")
+      )
       setError(
         cause instanceof PrivateMessageRelayReadinessError
           ? cause.reason === "sender_not_ready"
-            ? "Set up your event messages before sending participation."
+            ? "Configure your private inbox in Network settings before sending participation."
             : cause.reason === "recipient_relays_excluded"
-              ? "The recipient’s inbox relays are excluded by your Network settings. Review event messages, then retry."
+              ? "The recipient’s inbox relays are excluded by your Network settings. Review the settings, then retry."
               : cause.reason === "recipient_lookup_failed"
                 ? "The recipient’s private inbox could not be checked. Refresh and retry; this does not prove their setup is missing."
                 : action === "request" || action === "withdraw"
-                  ? "The host’s private inbox is not ready to receive participation. The host must set up event messages; then refresh and retry."
-                  : "This merchant’s private inbox is not ready. They must set up event messages; then refresh and retry."
+                  ? "The host has not configured a private inbox for participation messages."
+                  : "This merchant has not configured a private inbox for participation messages."
           : cause instanceof Error
             ? cause.message
             : "Participation could not be sent."
@@ -108,6 +115,7 @@ export function useEventMarketEnrollment(
     if (!pending || !authenticatedPubkey || busy) return
     setBusy(true)
     setError("")
+    setNetworkRepair(false)
     try {
       await retryEventMarketEnrollmentDelivery({
         record: pending,
@@ -116,6 +124,11 @@ export function useEventMarketEnrollment(
       })
       await query.refetch()
     } catch (cause) {
+      setNetworkRepair(
+        cause instanceof PrivateMessageRelayReadinessError &&
+          (cause.reason === "sender_not_ready" ||
+            cause.reason === "recipient_relays_excluded")
+      )
       setError(
         cause instanceof Error
           ? cause.message
@@ -131,6 +144,7 @@ export function useEventMarketEnrollment(
     pending,
     busy,
     error: error || storageError,
+    networkRepair,
     storageError,
     send,
     retry,
