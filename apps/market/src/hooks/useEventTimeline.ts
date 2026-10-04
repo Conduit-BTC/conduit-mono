@@ -19,8 +19,7 @@ import {
   type PerspectiveAuthorSource,
   type ProductCatalogSourceMode,
 } from "../lib/productCatalogRead"
-import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
-import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
+import { MARKET_MERCHANT_PUBKEYS } from "../lib/marketMerchants"
 
 export const MARKET_EVENT_TIMELINE_REFRESH_INTERVAL_MS = 60_000
 
@@ -58,10 +57,7 @@ export function useEventTimeline(
   const connected = status === "connected" && !!pubkey
   const effectiveSource = connected ? requestedSource : "conduit"
   const authenticatedPubkey = connected ? pubkey : null
-  const guestMarket = useGuestMarketDiscovery({
-    enabled: effectiveSource !== "following",
-  })
-  const perspectivePubkey = connected ? pubkey : guestMarket.perspectivePubkey
+  const perspectivePubkey = connected ? pubkey : null
   const normalizedPerspectivePubkey = normalizePubkey(perspectivePubkey)
   const firstDegreeDiscoveryEnabled =
     session.relaySettingsReady &&
@@ -128,12 +124,8 @@ export function useEventTimeline(
     [retainedFirstDegreeSnapshot]
   )
   const conduitAuthors = useMemo(
-    () =>
-      uniquePubkeys(
-        guestMarket.seedAuthorPubkeys ??
-          getDefaultMarketPerspectiveFollowPubkeys()
-      ),
-    [guestMarket.seedAuthorPubkeys]
+    () => uniquePubkeys(MARKET_MERCHANT_PUBKEYS),
+    []
   )
   const retainedSupersedesLive = retainedFollowSnapshotSupersedesLive(
     firstDegreeQuery.data?.meta.eventObserved
@@ -172,13 +164,7 @@ export function useEventTimeline(
       retainedSupersedesLive,
     ]
   )
-  const resolvedOrganizerPubkeys =
-    authorResolution.authorPubkeys ??
-    (effectiveSource === "conduit" &&
-    guestMarket.seedAuthorPubkeys !== undefined &&
-    !guestMarket.isRefreshing
-      ? []
-      : undefined)
+  const resolvedOrganizerPubkeys = authorResolution.authorPubkeys
   const followCoverage =
     firstDegreeQuery.data?.meta.coverage ??
     (retainedFirstDegreeSnapshot
@@ -267,20 +253,12 @@ export function useEventTimeline(
       ),
     [futureQuery.data?.markets]
   )
-  const refreshGuestPerspective = guestMarket.refetch
   const refreshFollows = firstDegreeQuery.refetch
   const refreshFuture = futureQuery.refetch
   const refetch = useCallback(() => {
-    if (effectiveSource !== "following") void refreshGuestPerspective()
     if (firstDegreeDiscoveryEnabled) void refreshFollows()
     void refreshFuture()
-  }, [
-    effectiveSource,
-    firstDegreeDiscoveryEnabled,
-    refreshFuture,
-    refreshFollows,
-    refreshGuestPerspective,
-  ])
+  }, [firstDegreeDiscoveryEnabled, refreshFuture, refreshFollows])
   return {
     data: futureQuery.data
       ? {
@@ -300,15 +278,11 @@ export function useEventTimeline(
     authorSource: authorResolution.source,
     effectiveSource,
     isInitialLoading: organizerPubkeys === undefined || futureQuery.isPending,
-    isFetching:
-      futureQuery.isFetching ||
-      firstDegreeQuery.isFetching ||
-      guestMarket.isRefreshing,
+    isFetching: futureQuery.isFetching || firstDegreeQuery.isFetching,
     isRefreshStale:
       futureQuery.isError ||
       futureQuery.data?.coverage !== "complete" ||
-      followRefreshStale ||
-      (effectiveSource !== "following" && guestMarket.stale),
+      followRefreshStale,
     error: futureQuery.error,
     refetch,
   }

@@ -33,7 +33,6 @@ import {
   filterSellersByName,
   groupDiscoveredSellers,
 } from "../lib/sellerDirectory"
-import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
 import { useShopperPresets } from "./useShopperPresets"
 import { useMerchantIdentities } from "./useMerchantIdentities"
 import { useProgressiveProducts } from "./useProgressiveProducts"
@@ -78,9 +77,6 @@ export function useMarketBrowseModel({
   const usesAnonymousPerspective = status !== "connected"
   const effectiveCatalogSource =
     status === "connected" ? catalogSource : "conduit"
-  const guestMarket = useGuestMarketDiscovery({
-    enabled: usesAnonymousPerspective,
-  })
   const normalizedSearchQuery = search.q?.trim() ?? ""
   const isSearching = normalizedSearchQuery.length > 0
   const isRemoteSearchEligible = isRemoteMarketSearchEligible(
@@ -89,10 +85,8 @@ export function useMarketBrowseModel({
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
     catalogSource: effectiveCatalogSource,
-    perspectivePubkey:
-      status === "connected" && pubkey ? pubkey : guestMarket.perspectivePubkey,
+    perspectivePubkey: status === "connected" && pubkey ? pubkey : null,
     authenticatedPubkey: status === "connected" ? pubkey : null,
-    seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     sort: "newest",
     networkEnabled: !isSearching,
   })
@@ -185,24 +179,14 @@ export function useMarketBrowseModel({
     [globalSearchEnabled, globalSearchProducts, productsQuery.products]
   )
   const refreshCatalog = productsQuery.refetch
-  const refreshGuestDiscovery = guestMarket.refetch
   const refreshGlobalSearch = globalSearchQuery.refetch
   const refetch = useCallback(async () => {
     await refreshMarketBrowseData({
       globalSearchEnabled,
-      refreshDiscovery: usesAnonymousPerspective
-        ? refreshGuestDiscovery
-        : undefined,
       refreshCatalog,
       refreshGlobalSearch,
     })
-  }, [
-    globalSearchEnabled,
-    refreshCatalog,
-    refreshGlobalSearch,
-    refreshGuestDiscovery,
-    usesAnonymousPerspective,
-  ])
+  }, [globalSearchEnabled, refreshCatalog, refreshGlobalSearch])
   const preparedProductsQuery = {
     ...productsQuery,
     isInitialLoading:
@@ -214,8 +198,7 @@ export function useMarketBrowseModel({
     isHydrating:
       isSearching && isRemoteSearchEligible
         ? globalSearchEnabled && globalSearchQuery.isFetching
-        : productsQuery.isHydrating ||
-          (usesAnonymousPerspective && guestMarket.isRefreshing),
+        : productsQuery.isHydrating,
     error:
       isSearching && isRemoteSearchEligible
         ? globalSearchQuery.error
@@ -224,7 +207,6 @@ export function useMarketBrowseModel({
       isSearching && isRemoteSearchEligible
         ? isShowingCachedSearch ||
           productsQuery.discoveryStale ||
-          (usesAnonymousPerspective && guestMarket.stale) ||
           !!globalSearchQuery.error ||
           globalSearchQuery.isPaused ||
           !!globalSearchQuery.data?.meta.degraded ||
@@ -233,9 +215,7 @@ export function useMarketBrowseModel({
             catalogMeta: productsQuery.meta,
             catalogError: productsQuery.error,
             catalogPaused: productsQuery.isRefreshPaused,
-            discoveryStale:
-              productsQuery.discoveryStale ||
-              (usesAnonymousPerspective && guestMarket.stale),
+            discoveryStale: productsQuery.discoveryStale,
             globalSearchEnabled: false,
             globalSearchMeta: undefined,
             globalSearchError: null,

@@ -38,7 +38,6 @@ import {
   isSellerCatalogEvidenceIncomplete,
   isSellerDirectoryUnavailable,
 } from "../lib/sellerDirectory"
-import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
 import { useMerchantIdentities } from "./useMerchantIdentities"
 import { useProgressiveProducts } from "./useProgressiveProducts"
 
@@ -64,17 +63,13 @@ export function useSellerDirectory(input: {
   const effectiveSource: ProductCatalogSourceMode = connected
     ? input.catalogSource
     : "conduit"
-  const guestMarket = useGuestMarketDiscovery({
-    enabled: enabled && !connected,
-  })
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
     catalogSource: effectiveSource,
     enabled,
     networkEnabled: input.networkEnabled,
-    perspectivePubkey: connected ? pubkey : guestMarket.perspectivePubkey,
+    perspectivePubkey: connected ? pubkey : null,
     authenticatedPubkey: connected ? pubkey : null,
-    seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     sort: "newest",
   })
   // Text only filters these products locally; typing must not repeat discovery.
@@ -216,8 +211,7 @@ export function useSellerDirectory(input: {
     authorPubkeys: eligibleAuthorPubkeys,
     source: effectiveSource,
     followLookupStatus: productsQuery.followLookupStatus,
-    discoveryStale:
-      productsQuery.discoveryStale || (!connected && guestMarket.stale),
+    discoveryStale: productsQuery.discoveryStale,
   })
   const accountSearch = useProfileSearch(query, {
     enabled: enabled && eligibleAuthorPubkeys !== undefined,
@@ -258,23 +252,19 @@ export function useSellerDirectory(input: {
   })
   const refreshCatalog = productsQuery.refetch
   const refreshFallback = fallbackQuery.refetch
-  const refreshGuestDiscovery = guestMarket.refetch
   const refreshAccountSearch = accountSearch.refetch
   const retry = useCallback(() => {
     const remoteSearchEligible = isRemoteMarketSearchEligible(query)
-    if (!connected) void refreshGuestDiscovery()
     if (input.fallbackNetworkEnabled && fallbackReady) void refreshFallback()
     else refreshCatalog()
     if (remoteSearchEligible) refreshAccountSearch()
   }, [
-    connected,
     fallbackReady,
     input.fallbackNetworkEnabled,
     query,
     refreshAccountSearch,
     refreshCatalog,
     refreshFallback,
-    refreshGuestDiscovery,
   ])
 
   return {

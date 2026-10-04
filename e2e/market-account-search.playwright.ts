@@ -5,7 +5,7 @@ import { installTestSigner } from "./helpers/auth"
 const marketUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 }`
-// Members of the bundled Conduit perspective. Keep these fixtures explicit so
+// Members of the repository-owned Market list. Keep these fixtures explicit so
 // Playwright does not evaluate browser-only application modules in Node.
 const SELLER_PUBKEY =
   "c4eabae1be3cf657bc1855ee05e69de9f059cb7a059227168b80b89761cbc4e0"
@@ -13,7 +13,10 @@ const ELIGIBLE_ACCOUNT_PUBKEY =
   "088436cd039ff89074468fd327facf62784eeb37490e0a118ab9f14c9d2646cc"
 const UNLISTED_ACCOUNT_PUBKEY = "c".repeat(64)
 
-async function seedAccounts(page: Page): Promise<void> {
+async function seedAccounts(
+  page: Page,
+  sellerPubkey = SELLER_PUBKEY
+): Promise<void> {
   await page.waitForLoadState("networkidle")
   await page.evaluate(
     ({ sellerPubkey, eligibleAccountPubkey, unlistedAccountPubkey }) =>
@@ -98,12 +101,91 @@ async function seedAccounts(page: Page): Promise<void> {
         }
       }),
     {
-      sellerPubkey: SELLER_PUBKEY,
+      sellerPubkey,
       eligibleAccountPubkey: ELIGIBLE_ACCOUNT_PUBKEY,
       unlistedAccountPubkey: UNLISTED_ACCOUNT_PUBKEY,
     }
   )
 }
+
+test("guest catalog uses the repository list despite legacy follows and relay failure @market", async ({
+  page,
+}) => {
+  const addedMerchant =
+    "005bc4de41cfcb580f71cad6ae8909a976568633a4f6a93c6b7fd5bfef11e1a2"
+  await page.addInitScript(
+    ({ unlisted }) => {
+      localStorage.setItem(
+        "conduit.market.defaultPerspectiveFollows.v3",
+        JSON.stringify({
+          pubkeys: [unlisted],
+          eventCreatedAt: Math.floor(Date.now() / 1000) + 100,
+          eventId: "0".repeat(64),
+        })
+      )
+    },
+    { unlisted: UNLISTED_ACCOUNT_PUBKEY }
+  )
+  await page.goto(`${marketUrl}/products`)
+  await seedAccounts(page, addedMerchant)
+
+  const requests: { kinds?: number[]; authors?: string[] }[] = []
+  await page.routeWebSocket(/.*/, (socket) => {
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message))
+      if (frame[0] !== "REQ") return
+      const filters = frame.slice(2) as {
+        kinds?: number[]
+        authors?: string[]
+      }[]
+      requests.push(...filters)
+      if (filters.some((filter) => filter.kinds?.includes(30402))) {
+        socket.send(
+          JSON.stringify(["CLOSED", frame[1], "error: unavailable fixture"])
+        )
+      } else {
+        socket.send(JSON.stringify(["EOSE", frame[1]]))
+      }
+    })
+  })
+  await page.reload()
+  await expect
+    .poll(
+      () => requests.filter((filter) => filter.kinds?.includes(30402)).length
+    )
+    .toBeGreaterThan(0)
+  await expect(
+    page.getByText("Account search fixture", { exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByText("Hidden category fixture", { exact: true })
+  ).toHaveCount(0)
+  const productAuthors = requests
+    .filter((filter) => filter.kinds?.includes(30402))
+    .flatMap((filter) => filter.authors ?? [])
+  expect(productAuthors).toContain(addedMerchant)
+  expect(productAuthors).not.toContain(UNLISTED_ACCOUNT_PUBKEY)
+  expect(requests.some((filter) => filter.kinds?.includes(3))).toBe(false)
+
+  const input = page.getByRole("combobox", {
+    name: "Search products, categories, merchants, and accounts",
+  })
+  await input.fill("ali")
+  const listbox = page.getByRole("listbox", {
+    name: "Matching categories, merchants, and accounts",
+  })
+  await expect(
+    listbox.getByRole("option", { name: /Alice Storefront/ })
+  ).toBeVisible()
+  await expect(listbox.getByText("Alicia Reader")).toHaveCount(0)
+  await page.goto(`${marketUrl}/events`)
+  await expect
+    .poll(
+      () => requests.filter((filter) => filter.kinds?.includes(30409)).length
+    )
+    .toBeGreaterThan(0)
+  expect(requests.some((filter) => filter.kinds?.includes(3))).toBe(false)
+})
 
 test("market header preserves account search inside the eligible author scope @market", async ({
   page,
@@ -150,7 +232,7 @@ test("market header selects cached categories inside the active catalog scope @m
   page,
 }) => {
   // Use a different connected account so the seller stays inside the Conduit
-  // author set while guest follow-discovery evidence stays out of this case.
+  // author set while personal follow-discovery evidence stays out of this case.
   await installTestSigner(page, ELIGIBLE_ACCOUNT_PUBKEY)
   await page.goto(
     `${marketUrl}/products?source=conduit&merchant=${SELLER_PUBKEY}&sort=price_asc&q=old`
@@ -271,11 +353,15 @@ test("merchants tab lists discovered merchants and filters by name @market", asy
   await expect(networkAccounts).toBeVisible()
 })
 
-test("incomplete eligibility stays visible instead of looking like no matches @market", async ({
+test("incomplete personal follow eligibility stays visible instead of looking like no matches @market", async ({
   page,
 }) => {
-  await page.goto(`${marketUrl}/products`)
+  await installTestSigner(page, SELLER_PUBKEY)
+  await page.goto(`${marketUrl}/products?source=following`)
   await seedAccounts(page)
+  await page.routeWebSocket(/.*/, async (socket) => {
+    await socket.close({ code: 1011, reason: "catalog unavailable fixture" })
+  })
   await page.reload()
 
   const input = page.getByRole("combobox", {

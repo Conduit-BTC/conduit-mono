@@ -49,7 +49,7 @@ import {
   type ProductCatalogSourceMode,
   type ProductCatalogReadInput,
 } from "../lib/productCatalogRead"
-import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
+import { MARKET_MERCHANT_PUBKEYS } from "../lib/marketMerchants"
 import { getProductSourceRelayHintsByPubkey } from "../lib/clientHydration"
 import {
   canCarryAuthoritativeProgressiveSnapshot,
@@ -311,7 +311,10 @@ export function useProgressiveProducts(
   const streamsNetwork =
     queryEnabled && networkEnabled && input.scope === "marketplace"
   const rawSeedAuthorPubkeys =
-    input.scope === "marketplace" ? input.seedAuthorPubkeys : undefined
+    input.scope === "marketplace"
+      ? (input.seedAuthorPubkeys ??
+        (catalogSource === "conduit" ? MARKET_MERCHANT_PUBKEYS : undefined))
+      : undefined
   const seededAuthors = useMemo(
     () =>
       rawSeedAuthorPubkeys?.length
@@ -384,7 +387,7 @@ export function useProgressiveProducts(
   const fallbackPerspectiveAuthors = useMemo(
     () =>
       usesPerspectiveGraph && !seededAuthors
-        ? getDefaultMarketPerspectiveFollowPubkeys()
+        ? MARKET_MERCHANT_PUBKEYS
         : undefined,
     [seededAuthors, usesPerspectiveGraph]
   )
