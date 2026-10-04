@@ -5,6 +5,21 @@ import {
 } from "@conduit/core"
 
 export const MAX_PROFILE_RELAY_HINTS_PER_PUBKEY = 5
+export const MERCHANT_PAGE_SIZE = 12
+export const PRODUCT_PAGE_SIZE = 12
+export const MERCHANT_SEARCH_PREVIEW_SIZE = 6
+
+/** Request displayed identities and one additional page, never the catalog. */
+export function getPagedMerchantPubkeys(
+  pubkeys: readonly string[],
+  visibleCount: number,
+  pageSize = MERCHANT_PAGE_SIZE
+): string[] {
+  return Array.from(new Set(pubkeys)).slice(
+    0,
+    Math.max(0, visibleCount) + pageSize
+  )
+}
 
 export function normalizeRelayHints(
   relayUrls: readonly (string | null | undefined)[],
@@ -88,14 +103,21 @@ export function splitMerchantHydrationTargets({
 
 /** Keep browse profile reads tied to rows the shopper can currently use. */
 export function getBrowseBackgroundHydrationPubkeys(input: {
-  allMerchantPubkeys: readonly string[]
   menuMerchantPubkeys: readonly string[]
   selectedMerchantPubkeys: readonly string[]
+  searchMerchantPubkeys: readonly string[]
   isSearching: boolean
   storeMenuOpen: boolean
 }): string[] {
-  if (input.isSearching) return [...input.allMerchantPubkeys]
-  if (!input.storeMenuOpen) return []
+  if (input.isSearching)
+    return Array.from(
+      new Set([
+        ...input.searchMerchantPubkeys,
+        ...(input.storeMenuOpen ? input.menuMerchantPubkeys : []),
+        ...input.selectedMerchantPubkeys,
+      ])
+    )
+  if (!input.storeMenuOpen) return [...input.selectedMerchantPubkeys]
   return Array.from(
     new Set([...input.menuMerchantPubkeys, ...input.selectedMerchantPubkeys])
   )

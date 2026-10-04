@@ -527,7 +527,7 @@ test("product search lists matching merchants above the product results @market"
   // The perspective travels with the link; the directory reads the same
   // source and would otherwise show a different merchant set.
   await expect(
-    merchants.getByRole("link", { name: /See all/ })
+    merchants.getByRole("link", { name: "Search the merchant directory" })
   ).toHaveAttribute(
     "href",
     /\/merchants\?(?=[^"]*q=alice)(?=[^"]*source=combined)/
@@ -535,6 +535,37 @@ test("product search lists matching merchants above the product results @market"
   // The merchant row answers the name query; product filtering stays product-only.
   await expect(
     page.getByRole("link", { name: /Account search fixture/ })
+  ).toHaveCount(0)
+})
+
+test("merchant menu and directory reveal twelve rows at a time @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/products`)
+  await seedMerchantImageRows(page)
+  await page.reload()
+  await expect(
+    page.getByText(/Hydration product \d+/, { exact: true }).first()
+  ).toBeVisible()
+  await page.getByRole("button", { name: "All merchants", exact: true }).click()
+  await expect(page.getByRole("menuitemcheckbox")).toHaveCount(13)
+  await page.getByRole("button", { name: "Show more merchants" }).click()
+  await expect(page.getByRole("menuitemcheckbox")).toHaveCount(25)
+  await page.keyboard.press("Escape")
+
+  await page.goto(`${marketUrl}/merchants`)
+  const directory = page.locator(
+    'section[aria-labelledby="discovered-merchants-heading"]'
+  )
+  await expect(directory.getByRole("link")).toHaveCount(12)
+  await expect(directory).toContainText("12 of 48")
+  for (const expectedCount of [24, 36, 48]) {
+    await directory.getByRole("button", { name: "Show more merchants" }).click()
+    await expect(directory.getByRole("link")).toHaveCount(expectedCount)
+    await expect(directory).toContainText(`${expectedCount} of 48`)
+  }
+  await expect(
+    directory.getByRole("button", { name: "Show more merchants" })
   ).toHaveCount(0)
 })
 
@@ -573,6 +604,20 @@ test("merchant avatars wait for visible rows and banners wait for profile naviga
     name: /Fixture Merchant 47/,
   })
   const targetAvatar = target.locator(`img[src="${targetAvatarUrl}"]`)
+  await expect(directory.getByRole("link")).toHaveCount(12)
+  await expect(target).toHaveCount(0)
+  expect(targetAvatarRequests).toBe(0)
+  // Prepare offscreen rows without scrolling the paging control into view.
+  // The preceding case covers paging clicks; this case isolates image loading.
+  for (const expectedCount of [24, 36, 48]) {
+    await directory
+      .getByRole("button", { name: "Show more merchants" })
+      .evaluate((button) => button.click())
+    await expect(directory.getByRole("link")).toHaveCount(expectedCount)
+  }
+  await expect(
+    directory.getByRole("button", { name: "Show more merchants" })
+  ).toHaveCount(0)
   await expect(target).toBeAttached()
   expect(
     await target.evaluate(

@@ -51,20 +51,42 @@ deletion relay to finish, and cached data remains discovery evidence rather
 than purchase authority. Every progressive projection and final resolution
 reconciles currently known deletion evidence.
 
+Relay arrivals are consumed as deltas and coalesced before parsing, cache
+writes, and catalog projection. Parsing yields between small time slices.
+Prepared progressive snapshots bypass recursive query structural comparison;
+signed deletion evidence still retracts products during and after the read.
+
+Browser public-event admission computes the canonical event hash and verifies
+the signature in a worker. Parsing and schema validation reuse proof only when
+every signed field matches an immutable verified snapshot. Proof is local to
+the process, never inferred from persisted display data or an event ID alone.
+The cross-object lookup cache is bounded; admitted objects retain their proof
+while in use. The worker posts one batch at a time, bounds queued work, and
+starts its execution deadline only when a batch is posted. A timeout permits
+one worker replacement and retry. Persistent failure reports unavailability;
+browser queue overflow or worker failure never switches crypto to the UI thread.
+
 Client content rules and their caches have been removed. Listing availability
 only describes merchant visibility, usable images, and supported variation
 structure. It is not a content assessment or a review decision. The merchant
 list controls Conduit catalog content discovery; personal follow feeds retain
 their own merchant scope.
 
-Products hydrate the visible merchants first. Store-menu identities and
-seller-name search hydrate when those surfaces are used. Profile query keys
+Products hydrate merchants for visible cards and one next page. Store-menu and directory
+identities hydrate the displayed rows plus one next page; shoppers can reveal
+additional rows without hydrating the entire catalog. Inline seller-name search
+uses a bounded preview and links to the merchant directory. Unchecked names
+remain explicitly incomplete rather than implying no matches. Profile query keys
 include relay hints only for their requested merchants, so unrelated catalog
 arrivals do not restart those reads. Long directory/menu lists mount avatar
 images near the viewport; profile banners mount on the
 profile route. Kind-0 profile metadata is a complete event, so fetching names
 also receives other metadata fields, but receiving an image URL does not
 download that image.
+
+These client scheduling changes preserve relay selection and catalog scope.
+Revealing another page is display pagination, not relay pagination, and a first
+page does not establish complete relay coverage.
 
 ## Initial review basis
 

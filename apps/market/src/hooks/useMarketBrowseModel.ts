@@ -25,7 +25,12 @@ import {
   type MarketProductCardView,
 } from "../lib/marketBrowseModel"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
-import { getBrowseBackgroundHydrationPubkeys } from "../lib/clientHydration"
+import {
+  getBrowseBackgroundHydrationPubkeys,
+  getPagedMerchantPubkeys,
+  MERCHANT_SEARCH_PREVIEW_SIZE,
+  PRODUCT_PAGE_SIZE,
+} from "../lib/clientHydration"
 import {
   isRemoteMarketSearchEligible,
   MARKET_SEARCH_QUERY_POLICY,
@@ -43,6 +48,7 @@ interface UseMarketBrowseModelInput {
   catalogSource: ProductCatalogSourceMode
   search: MarketBrowseSearch
   storeMenuOpen: boolean
+  visibleMerchantCount: number
   visibleCount: number
 }
 
@@ -51,6 +57,7 @@ export function useMarketBrowseModel({
   catalogSource,
   search,
   storeMenuOpen,
+  visibleMerchantCount,
   visibleCount,
 }: UseMarketBrowseModelInput) {
   const { pubkey, status, authGeneration } = useAuth()
@@ -281,8 +288,15 @@ export function useMarketBrowseModel({
     [filtered, visibleCount]
   )
   const visibleMerchantPubkeys = useMemo(
-    () => Array.from(new Set(visibleProducts.map((product) => product.pubkey))),
-    [visibleProducts]
+    () =>
+      Array.from(
+        new Set(
+          filtered
+            .slice(0, visibleCount + PRODUCT_PAGE_SIZE)
+            .map((product) => product.pubkey)
+        )
+      ),
+    [filtered, visibleCount]
   )
   const storeFacetSortProducts = useMemo(
     () =>
@@ -294,11 +308,16 @@ export function useMarketBrowseModel({
   )
   const backgroundHydrationPubkeys = useMemo(() => {
     return getBrowseBackgroundHydrationPubkeys({
-      allMerchantPubkeys,
-      menuMerchantPubkeys: storeFacetSortProducts.map(
-        (product) => product.pubkey
+      menuMerchantPubkeys: getPagedMerchantPubkeys(
+        storeFacetSortProducts.map((product) => product.pubkey),
+        visibleMerchantCount
       ),
       selectedMerchantPubkeys: selectedMerchants,
+      searchMerchantPubkeys: getPagedMerchantPubkeys(
+        allMerchantPubkeys,
+        MERCHANT_SEARCH_PREVIEW_SIZE,
+        MERCHANT_SEARCH_PREVIEW_SIZE
+      ),
       isSearching,
       storeMenuOpen,
     })
@@ -308,6 +327,7 @@ export function useMarketBrowseModel({
     selectedMerchants,
     storeFacetSortProducts,
     storeMenuOpen,
+    visibleMerchantCount,
   ])
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const merchantIdentities = useMerchantIdentities({
@@ -315,8 +335,8 @@ export function useMarketBrowseModel({
     authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
     allMerchantPubkeys,
-    // Product cards are eager; the menu and seller-name results request their
-    // additional identities only while those surfaces are in use.
+    // Prepare identities for displayed cards and one next page. The menu and
+    // seller-name results request additional identities only while in use.
     deferBackgroundHydration: !storeMenuOpen && !isSearching,
     backgroundHydrationPubkeys,
     visibleMerchantPubkeys,
@@ -380,9 +400,14 @@ export function useMarketBrowseModel({
         ? sortStoreFacetOptionsByRecentPublisher(
             storeFacetOptions,
             storeFacetSortProducts
-          )
-        : storeFacetOptions,
-    [storeFacetOptions, storeFacetSortProducts, storeMenuOpen]
+          ).slice(0, visibleMerchantCount)
+        : storeFacetOptions.slice(0, visibleMerchantCount),
+    [
+      storeFacetOptions,
+      storeFacetSortProducts,
+      storeMenuOpen,
+      visibleMerchantCount,
+    ]
   )
   const storeFacetTotal = storeFacetSortProducts.length
   const productCards: MarketProductCardView[] = useMemo(
@@ -450,6 +475,7 @@ export function useMarketBrowseModel({
     showCategorySkeleton:
       productsQuery.isInitialLoading && categoryFacetOptions.length === 0,
     storeFacetOptions: visibleStoreFacetOptions,
+    hasMoreStoreFacets: storeFacetOptions.length > visibleMerchantCount,
     storeFacetTotal,
     storeTriggerLabel: getStoreTriggerLabel(selectedMerchants),
     visibleProducts,

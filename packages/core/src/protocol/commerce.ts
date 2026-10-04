@@ -114,6 +114,10 @@ import {
   type SignedPublicNostrEvent,
 } from "./signed-event"
 import {
+  sameSignedPublicEvent,
+  snapshotSignedPublicEvent,
+} from "./verified-public-event"
+import {
   isProductDeletedByNip09,
   parseProductAddressCoordinate,
   productDeletionAddressKey,
@@ -1508,6 +1512,7 @@ async function streamProductRecordChunks(input: {
   shouldContinue?: () => boolean
   readPolicy?: CommerceReadPolicy
   merged: Map<string, SignedPublicNostrEvent>
+  recordsByEventId: Map<string, CommerceProductRecord>
   deletionTimestamps?: DeletionTimestamps
   retainRevisions?: boolean
   onRecords: (
@@ -1529,6 +1534,100 @@ async function streamProductRecordChunks(input: {
   )
   const fetchProgressive =
     testOverrides.fetchPublicEventsProgressive ?? fetchPublicEventsProgressive
+  const yieldCatalogTask = async (): Promise<void> => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    input.signal?.throwIfAborted()
+    if (input.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+  }
+  const pendingEvents = new Map<string, SignedPublicNostrEvent>()
+  let pendingProgress: Promise<void> | undefined
+  let pendingRefresh = false
+  let pendingRelayUrl = ""
+  const scheduleProgress = async (
+    events: SignedPublicNostrEvent[],
+    relayUrl: string
+  ): Promise<void> => {
+    // Admit only this relay's delta. The fanout's mergedEvents is cumulative,
+    // and parsing it on every callback makes a broad catalog quadratic.
+    let taskStartedAt = performance.now()
+    for (const event of events) {
+      if (performance.now() - taskStartedAt >= 8) {
+        await yieldCatalogTask()
+        taskStartedAt = performance.now()
+      }
+      putMergedEvent(input.merged, event)
+      const key =
+        event.id || `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+      pendingEvents.set(key, input.merged.get(key)!)
+    }
+    pendingRelayUrl = relayUrl
+    pendingRefresh = true
+    if (!pendingProgress) {
+      // Coalesce concurrent relay/chunk callbacks before parsing, cache I/O,
+      // deletion reads, and family projection. The awaited flush preserves
+      // early durability and callback errors/cancellation.
+      pendingProgress = new Promise<void>((resolve, reject) => {
+        setTimeout(() => {
+          void (async () => {
+            while (pendingRefresh) {
+              input.signal?.throwIfAborted()
+              if (input.shouldContinue?.() === false)
+                throw new NostrSignerError("authority_changed")
+              pendingRefresh = false
+              const changedEvents = Array.from(pendingEvents.values())
+              pendingEvents.clear()
+              const currentRelayUrl = pendingRelayUrl
+              const changedRecords: CommerceProductRecord[] = []
+              let parseTaskStartedAt = performance.now()
+              for (const event of changedEvents) {
+                if (performance.now() - parseTaskStartedAt >= 8) {
+                  await yieldCatalogTask()
+                  parseTaskStartedAt = performance.now()
+                }
+                const record = dedupeProductEvents(
+                  [event],
+                  input.deletionTimestamps,
+                  input.retainRevisions
+                )[0]
+                if (!record) continue
+                const recordKey = input.retainRevisions
+                  ? record.eventId ||
+                    `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+                  : record.addressId
+                const previous = input.recordsByEventId.get(recordKey)
+                const next = previous
+                  ? mergeProductRecordSources(previous, record)
+                  : record
+                if (
+                  previous &&
+                  next.eventId === previous.eventId &&
+                  (next.sourceRelayUrls?.length ?? 0) ===
+                    (previous.sourceRelayUrls?.length ?? 0)
+                ) {
+                  continue
+                }
+                input.recordsByEventId.set(recordKey, next)
+                changedRecords.push(next)
+              }
+              // Empty progress still refreshes newly observed tombstones.
+              await input.onRecords(changedRecords, currentRelayUrl)
+            }
+          })().then(
+            () => {
+              pendingProgress = undefined
+              resolve()
+            },
+            (error) => {
+              pendingProgress = undefined
+              reject(error)
+            }
+          )
+        }, 32)
+      })
+    }
+    return pendingProgress
+  }
 
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
@@ -1559,7 +1658,7 @@ async function streamProductRecordChunks(input: {
             connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
             fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
           },
-          async ({ events, mergedEvents, relayUrl, status }) => {
+          async ({ events, relayUrl, status }) => {
             input.signal?.throwIfAborted()
             if (status) {
               input.onTransportStatus?.(
@@ -1567,21 +1666,16 @@ async function streamProductRecordChunks(input: {
                 isBoundedFanoutSaturated(chunkFilter, events)
               )
             }
-            for (const event of mergedEvents) {
-              putMergedEvent(input.merged, event)
-            }
-            await input.onRecords(
-              dedupeProductEvents(
-                Array.from(input.merged.values()),
-                input.deletionTimestamps,
-                input.retainRevisions
-              ),
-              relayUrl
-            )
+            await scheduleProgress(events, relayUrl)
           }
         )
         input.signal?.throwIfAborted()
+        let mergeTaskStartedAt = performance.now()
         for (const event of events) {
+          if (performance.now() - mergeTaskStartedAt >= 8) {
+            await yieldCatalogTask()
+            mergeTaskStartedAt = performance.now()
+          }
           putMergedEvent(input.merged, event)
         }
         input.onTransportStatus?.(
@@ -1591,6 +1685,9 @@ async function streamProductRecordChunks(input: {
       }
     })
   )
+  // A transport override may return without awaiting its callback. The final
+  // deletion frontier must still follow every scheduled progressive batch.
+  await pendingProgress
 }
 
 function createProductQueryMatcher(
@@ -3993,20 +4090,23 @@ const MAX_PRODUCT_PARSE_CACHE = 20_000
 const productParseCache = new Map<
   string,
   {
+    event: SignedPublicNostrEvent
     parsed: ReturnType<typeof parseProductEvent>
     availability: ReturnType<typeof evaluateListingAvailability>
   }
 >()
 
-// Parsing + listing-availability evaluation is deterministic per event id, but
-// dedupeProductEvents re-runs over the full accumulated set on every streaming
-// callback. Cache by id so each unique event is parsed/evaluated once instead
-// of O(callbacks x events).
+// Reuse parsed projections only while all signed fields match the original
+// snapshot. An id alone cannot admit mutated or unverified signed bytes.
 function parseAndPrepareProductEvent(event: SignedPublicNostrEvent) {
   const cached = event.id ? productParseCache.get(event.id) : undefined
-  if (cached) return cached
+  if (cached && sameSignedPublicEvent(cached.event, event)) return cached
   const parsed = parseProductEvent(event)
-  const entry = { parsed, availability: evaluateListingAvailability(parsed) }
+  const entry = {
+    event: snapshotSignedPublicEvent(event),
+    parsed,
+    availability: evaluateListingAvailability(parsed),
+  }
   if (event.id) {
     if (productParseCache.size >= MAX_PRODUCT_PARSE_CACHE) {
       const oldest = productParseCache.keys().next().value
@@ -4310,6 +4410,7 @@ async function fetchPublicProductRecordsProgressive(
     signal: query.signal,
   })
   const merged = new Map<string, SignedPublicNostrEvent>()
+  const recordsByEventId = new Map<string, CommerceProductRecord>()
   const initialDeletionTimestamps = await getLocalProductDeletionTimestamps(
     undefined,
     query.authors
@@ -4345,6 +4446,7 @@ async function fetchPublicProductRecordsProgressive(
     signal: query.signal,
     readPolicy: query.readPolicy,
     merged,
+    recordsByEventId,
     deletionTimestamps: initialDeletionTimestamps,
     retainRevisions: query.retainRevisions,
     onRecords,
@@ -4381,6 +4483,7 @@ async function fetchPublicProductRecordsProgressive(
       signal: query.signal,
       readPolicy: query.readPolicy,
       merged,
+      recordsByEventId,
       deletionTimestamps: initialDeletionTimestamps,
       retainRevisions: query.retainRevisions,
       onRecords,
@@ -4941,6 +5044,34 @@ export async function getMarketplaceProductsProgressive(
     return progressiveCacheWrite
   }
 
+  const liveRecords = new Map<string, CommerceProductRecord>()
+  const publishProgress = async (
+    records: CommerceProductRecord[],
+    relayUrl: string
+  ): Promise<void> => {
+    for (const record of records) {
+      liveRecords.set(record.eventId, record)
+    }
+    await persistProgress(records)
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentDeletions = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    query.signal?.throwIfAborted()
+    // Until every planned relay settles, this snapshot remains incomplete.
+    onProgress(
+      toResult(
+        Array.from(liveRecords.values()),
+        { degraded: true, capped: readCapped },
+        currentDeletions
+      ),
+      relayUrl
+    )
+  }
+
   const fetchedRecords = await fetchPublicProductRecordsProgressive(
     {
       retainRevisions: true,
@@ -4960,27 +5091,7 @@ export async function getMarketplaceProductsProgressive(
         readCapped ||= capped
       },
     },
-    async (records, relayUrl) => {
-      await persistProgress(records)
-      query.signal?.throwIfAborted()
-      if (query.shouldContinue?.() === false)
-        throw new NostrSignerError("authority_changed")
-      const currentDeletions = await getLocalProductDeletionTimestamps(
-        query.merchantPubkey,
-        query.authorPubkeys
-      )
-      query.signal?.throwIfAborted()
-      // Until every planned relay settles, the progressive snapshot is
-      // intentionally incomplete even if the first relay succeeded.
-      onProgress(
-        toResult(
-          records,
-          { degraded: true, capped: readCapped },
-          currentDeletions
-        ),
-        relayUrl
-      )
-    }
+    publishProgress
   )
 
   query.signal?.throwIfAborted()

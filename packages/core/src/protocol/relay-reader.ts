@@ -1,8 +1,4 @@
 /** Public reads own isolated sockets, bounded verification and source coverage. */
-import { schnorr } from "@noble/curves/secp256k1.js"
-import { hexToBytes } from "@noble/curves/utils.js"
-import { sha256 } from "@noble/hashes/sha2.js"
-import { bytesToHex } from "@noble/hashes/utils.js"
 import { matchFilter, validateEvent, type Filter } from "nostr-tools"
 import { config } from "../config"
 import {
@@ -24,7 +20,8 @@ import {
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
 import { NostrSignerError } from "./nostr-event-signer"
-import type { SignedPublicNostrEvent } from "./signed-event"
+import { isValidSignedPublicNostrEvent, type SignedPublicNostrEvent } from "./signed-event"
+import { hasVerifiedPublicEvent, rememberVerifiedPublicEvent, clearVerifiedPublicEvents, inheritVerifiedPublicEvent, sameSignedPublicEvent, signedPublicEventProofKey, snapshotSignedPublicEvent, signedPublicEventChars } from "./verified-public-event"
 
 export interface PublicRelayReadSocket {
   readyState: number
@@ -230,9 +227,9 @@ export function mergeEventSourceRelayUrls(
 }
 
 const MAX_CONCURRENT_RELAY_READS = 8
-// Keep one relay-read slot able to finish without joining a saturated worker
-// queue; otherwise all eight slots can wait on the same verifier indefinitely.
-const MAX_PENDING_VERIFY_WORKER_BATCHES = MAX_CONCURRENT_RELAY_READS - 1
+// One posted batch; bound both queued batches and retained signed text.
+const MAX_PENDING_VERIFY_WORKER_BATCHES = 128
+const MAX_PENDING_VERIFY_CHARS = 8 * 1024 * 1024
 const MAX_QUEUED_RELAY_READS = 128
 let activeRelayReads = 0
 let relaySettingsRefreshPending = false
@@ -399,25 +396,6 @@ function requestedEventLimit(filter: Filter | Filter[]): number | null {
 
 let relayReadSubCounter = 0
 
-function computeEventId(event: RawNostrEvent): string {
-  const serialized = JSON.stringify([
-    0,
-    event.pubkey,
-    event.created_at,
-    event.kind,
-    event.tags,
-    event.content,
-  ])
-  return bytesToHex(sha256(new TextEncoder().encode(serialized)))
-}
-
-// Schnorr verification (~1-2ms) dominates read cost, and the same event arrives
-// from many relays. Cache the id+signature proof so the expensive check runs
-// once per exact signed event, not once per relay copy. Event ids do not bind
-// the signature itself, so caching by id alone would let a later invalid
-// signature reuse an otherwise valid event id.
-const MAX_VERIFIED_PROOF_CACHE = 20000
-const verifiedEventProofs = new Set<string>()
 const MAX_RAW_RELAY_EVENT_FRAMES = 5000
 const MIN_RAW_RELAY_EVENT_FRAMES = 256
 export const MAX_RELAY_MESSAGE_CHARS = 512 * 1024
@@ -426,40 +404,18 @@ const MAX_RELAY_CONNECTION_FRAMES = 10_000
 const MAX_RELAY_CONNECTION_CHARS = 16 * 1024 * 1024
 const MAX_SIGNATURES_PER_RELAY_READ = 512
 
-type SchnorrItem = { sig: string; id: string; pubkey: string }
+type SchnorrItem = SignedPublicNostrEvent
 
-function verificationProofKey(event: RawNostrEvent): string {
-  return `${event.id}:${event.sig}`
-}
-
-// Cheap main-thread check: valid shape + id binds to content. Returns the
-// verified-cache state so callers know whether schnorr still needs to run.
 function checkEventId(
   event: RawNostrEvent
 ): "cached" | "needs-schnorr" | "invalid" {
-  try {
-    if (!isCanonicalSignedPublicNostrEvent(event)) return "invalid"
-    if (computeEventId(event) !== event.id) return "invalid"
-    return verifiedEventProofs.has(verificationProofKey(event))
-      ? "cached"
-      : "needs-schnorr"
-  } catch {
-    return "invalid"
-  }
+  if (!isCanonicalSignedPublicNostrEvent(event)) return "invalid"
+  // First-time canonical hashing and Schnorr are both owned by the worker.
+  return hasVerifiedPublicEvent(event) ? "cached" : "needs-schnorr"
 }
 
 function verifySchnorrSync(items: SchnorrItem[]): boolean[] {
-  return items.map((item) => {
-    try {
-      return schnorr.verify(
-        hexToBytes(item.sig),
-        hexToBytes(item.id),
-        hexToBytes(item.pubkey)
-      )
-    } catch {
-      return false
-    }
-  })
+  return items.map(isValidSignedPublicNostrEvent)
 }
 
 async function verifySchnorrChunked(
@@ -490,12 +446,17 @@ type PendingVerifyBatch = {
   items: SchnorrItem[]
   resolve: (valid: boolean[]) => void
   reject: (reason: unknown) => void
-  timer: ReturnType<typeof setTimeout>
+  timer?: ReturnType<typeof setTimeout>
+  posted: boolean
+  retries: number
+  chars: number
+  workerIndexes?: number[]
   signal?: AbortSignal
   onAbort?: () => void
 }
 const pendingVerify = new Map<number, PendingVerifyBatch>()
 let verifyWorkerRestartScheduled = false
+let pendingVerifyChars = 0
 
 function clearPendingVerifyBatch(
   reqId: number
@@ -504,6 +465,7 @@ function clearPendingVerifyBatch(
   if (!pending) return undefined
 
   pendingVerify.delete(reqId)
+  pendingVerifyChars -= pending.chars
   clearTimeout(pending.timer)
   if (pending.signal && pending.onAbort) {
     pending.signal.removeEventListener("abort", pending.onAbort)
@@ -517,9 +479,18 @@ function resolvePendingVerifyBatch(reqId: number, valid: boolean[]): void {
 
   if (pending.signal?.aborted) {
     pending.reject(abortError())
+    pumpVerifyQueue()
     return
   }
-  pending.resolve(valid)
+  const verdicts = pending.items.map((_, index) => {
+    const workerIndex = pending.workerIndexes?.[index] ?? index
+    return workerIndex === -1 || valid[workerIndex] === true
+  })
+  for (let index = 0; index < pending.items.length; index++) {
+    if (verdicts[index]) rememberVerifiedPublicEvent(pending.items[index])
+  }
+  pending.resolve(verdicts)
+  pumpVerifyQueue()
 }
 
 function rejectPendingVerifyBatch(reqId: number, reason: unknown): void {
@@ -527,63 +498,103 @@ function rejectPendingVerifyBatch(reqId: number, reason: unknown): void {
 }
 
 function recoverTimedOutVerifyBatch(reqId: number): void {
-  const pending = clearPendingVerifyBatch(reqId)
+  const pending = pendingVerify.get(reqId)
   if (!pending) return
-
-  // A cold or temporarily stalled worker is a local liveness failure, not
-  // evidence that an EOSE-complete relay read failed. Restart the worker for
-  // future batches and verify this already-bounded batch cooperatively with
-  // the same Schnorr implementation. Invalid signatures still fail closed.
+  clearTimeout(pending.timer)
+  pending.timer = undefined
+  pending.posted = false
+  if (pending.retries++ >= 1) {
+    // A persistently stalled worker must not impose its timeout on every
+    // queued read in succession, or move the work onto the browser UI thread.
+    if (verifyWorker) failVerifyWorker(verifyWorker)
+    else
+      for (const id of [...pendingVerify.keys()]) {
+        rejectPendingVerifyBatch(
+          id,
+          new Error("Signature verification worker timed out.")
+        )
+      }
+    return
+  }
   scheduleVerifyWorkerRestart()
-  void verifySchnorrChunked(pending.items, pending.signal).then(
-    pending.resolve,
-    pending.reject
-  )
 }
 
 function scheduleVerifyWorkerRestart(): void {
-  if (verifyWorkerRestartScheduled || !verifyWorker) return
+  if (verifyWorkerRestartScheduled) return
   verifyWorkerRestartScheduled = true
-
   queueMicrotask(() => {
     verifyWorkerRestartScheduled = false
     const worker = verifyWorker
+    verifyWorker = undefined
     if (worker) {
-      verifyWorker = undefined
       worker.onmessage = null
       worker.onerror = null
       try {
         worker.terminate()
       } catch {
-        // ignore teardown errors
+        /* already stopped */
       }
     }
-
-    if (pendingVerify.size === 0) return
-    const replacement = getVerifyWorker()
-    if (!replacement) {
-      for (const reqId of [...pendingVerify.keys()]) {
-        rejectPendingVerifyBatch(
-          reqId,
-          new Error("Signature verification worker is unavailable.")
-        )
-      }
-      return
-    }
-
     for (const [reqId, pending] of [...pendingVerify.entries()]) {
-      if (pending.signal?.aborted) {
-        clearPendingVerifyBatch(reqId)?.reject(abortError())
-        continue
-      }
-      try {
-        replacement.postMessage({ reqId, items: pending.items })
-      } catch {
-        failVerifyWorker(replacement)
-        break
-      }
+      clearTimeout(pending.timer)
+      pending.timer = undefined
+      pending.posted = false
+      if (pending.signal?.aborted) rejectPendingVerifyBatch(reqId, abortError())
     }
+    pumpVerifyQueue()
   })
+}
+
+function pumpVerifyQueue(): void {
+  if (
+    verifyWorkerRestartScheduled ||
+    [...pendingVerify.values()].some((batch) => batch.posted)
+  )
+    return
+  const first = pendingVerify.entries().next().value
+  if (!first) return
+  const [reqId, pending] = first
+  if (pending.signal?.aborted) {
+    rejectPendingVerifyBatch(reqId, abortError())
+    pumpVerifyQueue()
+    return
+  }
+  const worker = getVerifyWorker()
+  if (!worker) {
+    for (const id of [...pendingVerify.keys()])
+      rejectPendingVerifyBatch(
+        id,
+        new Error("Signature verification worker is unavailable.")
+      )
+    return
+  }
+  const work: SchnorrItem[] = []
+  const byProof = new Map<string, number>()
+  pending.workerIndexes = pending.items.map((event) => {
+    if (hasVerifiedPublicEvent(event)) return -1
+    const key = signedPublicEventProofKey(event)
+    const existing = byProof.get(key)
+    if (existing !== undefined && sameSignedPublicEvent(work[existing], event))
+      return existing
+    const index = work.length
+    byProof.set(key, index)
+    work.push(event)
+    return index
+  })
+  if (work.length === 0) {
+    resolvePendingVerifyBatch(reqId, [])
+    return
+  }
+  pending.posted = true
+  pending.timer = setTimeout(
+    () => recoverTimedOutVerifyBatch(reqId),
+    verifyWorkerTimeoutMs
+  )
+  try {
+    worker.postMessage({ reqId, items: work })
+  } catch {
+    failVerifyWorker(worker)
+  }
 }
 
 function cancelPendingVerifyBatch(reqId: number): void {
@@ -592,7 +603,8 @@ function cancelPendingVerifyBatch(reqId: number): void {
   pending.reject(abortError())
   // A Web Worker cannot remove an already-posted message from its queue.
   // Restarting clears stale crypto work; non-cancelled batches are re-posted.
-  scheduleVerifyWorkerRestart()
+  if (pending.posted) scheduleVerifyWorkerRestart()
+  else pumpVerifyQueue()
 }
 
 function failVerifyWorker(worker: Worker): void {
@@ -614,9 +626,7 @@ function failVerifyWorker(worker: Worker): void {
   }
 }
 
-export function __setPublicReaderVerifyTimeoutMsForTests(
-  timeoutMs: number
-): void {
+export function __setPublicReaderVerifyTimeoutMsForTests(timeoutMs: number): void {
   verifyWorkerTimeoutMs = Math.max(1, Math.floor(timeoutMs))
 }
 
@@ -637,7 +647,8 @@ export function __resetPublicReaderTestState(): void {
   for (const reqId of [...pendingVerify.keys()]) {
     clearPendingVerifyBatch(reqId)?.reject(abortError())
   }
-  verifiedEventProofs.clear()
+  clearVerifiedPublicEvents()
+  pendingVerifyChars = 0
   for (const waiter of relayReadWaiters.splice(0)) {
     if (waiter.signal && waiter.onAbort) {
       waiter.signal.removeEventListener("abort", waiter.onAbort)
@@ -661,6 +672,20 @@ function getVerifyWorker(): Worker | null {
     worker.onmessage = (
       event: MessageEvent<{ reqId: number; valid: boolean[] }>
     ) => {
+      if (verifyWorker !== worker) return
+      const data = event.data
+      const pending = data && pendingVerify.get(data.reqId)
+      if (!pending) return
+      const expected = Math.max(-1, ...(pending.workerIndexes ?? [])) + 1
+      if (
+        !pending.posted ||
+        !Array.isArray(data.valid) ||
+        data.valid.length !== expected ||
+        data.valid.some((value) => typeof value !== "boolean")
+      ) {
+        failVerifyWorker(worker)
+        return
+      }
       resolvePendingVerifyBatch(event.data.reqId, event.data.valid)
     }
     worker.onerror = () => {
@@ -680,35 +705,50 @@ function verifySchnorrBatch(
   throwIfAborted(signal)
   if (items.length === 0) return Promise.resolve([])
   const worker = getVerifyWorker()
-  if (!worker) return verifySchnorrChunked(items, signal)
-  if (pendingVerify.size >= MAX_PENDING_VERIFY_WORKER_BATCHES) {
-    // Local worker backpressure must not turn an EOSE-complete relay read into
-    // false "unavailable" coverage. Verify this bounded batch cooperatively on
-    // the main thread while the already-posted worker batches finish.
-    return verifySchnorrChunked(items, signal)
+  if (!worker) {
+    // SSR/test runtimes retain verification. Browser unavailability must never
+    // shift catalog crypto onto its UI thread.
+    if (typeof window === "undefined")
+      return verifySchnorrChunked(items, signal)
+    return Promise.reject(
+      new Error("Signature verification worker is unavailable.")
+    )
+  }
+  const immutableItems = items.map(snapshotSignedPublicEvent)
+  const chars = immutableItems.reduce(
+    (sum, event) => sum + signedPublicEventChars(event),
+    0
+  )
+  if (
+    pendingVerify.size >= MAX_PENDING_VERIFY_WORKER_BATCHES ||
+    pendingVerifyChars + chars > MAX_PENDING_VERIFY_CHARS
+  ) {
+    return Promise.reject(new Error("Signature verification queue is full."))
   }
   return new Promise((resolve, reject) => {
-    const reqId = (verifyReqId += 1)
-    const timer = setTimeout(() => {
-      recoverTimedOutVerifyBatch(reqId)
-    }, verifyWorkerTimeoutMs)
+    const reqId = ++verifyReqId
     const pending: PendingVerifyBatch = {
-      items,
-      resolve,
+      items: immutableItems,
+      resolve: (valid) => {
+        for (let index = 0; index < immutableItems.length; index++) {
+          if (valid[index])
+            inheritVerifiedPublicEvent(items[index], immutableItems[index])
+        }
+        resolve(valid)
+      },
       reject,
-      timer,
       signal,
+      posted: false,
+      retries: 0,
+      chars,
     }
     if (signal) {
       pending.onAbort = () => cancelPendingVerifyBatch(reqId)
       signal.addEventListener("abort", pending.onAbort, { once: true })
     }
     pendingVerify.set(reqId, pending)
-    try {
-      worker.postMessage({ reqId, items })
-    } catch {
-      failVerifyWorker(worker)
-    }
+    pendingVerifyChars += chars
+    pumpVerifyQueue()
   })
 }
 
@@ -739,6 +779,7 @@ export async function verifySignedEvents(
         return null
       const snapshot = copySignedEvent(event)
       mergeEventSourceRelayUrls(snapshot, event)
+      inheritVerifiedPublicEvent(snapshot, event)
       return snapshot
     } catch {
       return null
@@ -758,11 +799,7 @@ export async function verifySignedEvents(
       accepted[index] = true
       continue
     }
-    schnorrItems.push({
-      sig: event.sig,
-      id: event.id,
-      pubkey: event.pubkey,
-    })
+    schnorrItems.push(event)
     schnorrIndexes.push(index)
   }
 
@@ -771,11 +808,7 @@ export async function verifySignedEvents(
   for (let index = 0; index < schnorrIndexes.length; index += 1) {
     if (!schnorrValid[index]) continue
     const eventIndex = schnorrIndexes[index]
-    accepted[eventIndex] = true
-    if (verifiedEventProofs.size >= MAX_VERIFIED_PROOF_CACHE) {
-      verifiedEventProofs.clear()
-    }
-    verifiedEventProofs.add(verificationProofKey(boundedEvents[eventIndex]!))
+    accepted[eventIndex] = hasVerifiedPublicEvent(boundedEvents[eventIndex]!)
   }
 
   return {
@@ -1430,14 +1463,17 @@ async function fetchEventsFromRelay(
           }
           return left.id.localeCompare(right.id)
         })
-    // Main thread: cheap sha256 id-check + verified-id cache. Anything not
-    // already cache-verified is batched to the worker for schnorr.
+    // Reuse exact proofs; both canonical hashing and Schnorr run in the worker.
     const accepted = new Array<boolean>(orderedEvents.length).fill(false)
     const schnorrItems: SchnorrItem[] = []
     const schnorrIndex: number[][] = []
     const pendingProofIndexes = new Map<string, number>()
     let verificationTruncated = false
     for (let i = 0; i < orderedEvents.length; i++) {
+      if (i > 0 && i % 64 === 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        throwIfAborted(options.signal)
+      }
       const raw = orderedEvents[i]
       const state = checkEventId(raw)
       if (state === "invalid") continue
@@ -1445,9 +1481,9 @@ async function fetchEventsFromRelay(
         accepted[i] = true
         continue
       }
-      const proofKey = verificationProofKey(raw)
+      const proofKey = signedPublicEventProofKey(raw)
       const pendingIndex = pendingProofIndexes.get(proofKey)
-      if (pendingIndex !== undefined) {
+      if (pendingIndex !== undefined && sameSignedPublicEvent(schnorrItems[pendingIndex], raw)) {
         schnorrIndex[pendingIndex].push(i)
         continue
       }
@@ -1456,7 +1492,7 @@ async function fetchEventsFromRelay(
         continue
       }
       pendingProofIndexes.set(proofKey, schnorrItems.length)
-      schnorrItems.push({ sig: raw.sig, id: raw.id, pubkey: raw.pubkey })
+      schnorrItems.push(raw)
       schnorrIndex.push([i])
     }
 
@@ -1465,12 +1501,10 @@ async function fetchEventsFromRelay(
     for (let j = 0; j < schnorrIndex.length; j++) {
       if (!schnorrValid[j]) continue
       const indexes = schnorrIndex[j]
-      for (const index of indexes) accepted[index] = true
-      const i = indexes[0]
-      if (verifiedEventProofs.size >= MAX_VERIFIED_PROOF_CACHE) {
-        verifiedEventProofs.clear()
+      for (const index of indexes) {
+        inheritVerifiedPublicEvent(orderedEvents[index], schnorrItems[j])
+        accepted[index] = hasVerifiedPublicEvent(orderedEvents[index])
       }
-      verifiedEventProofs.add(verificationProofKey(orderedEvents[i]))
     }
 
     // A filter's limit belongs to that filter, not to a global bag. Select
@@ -1502,6 +1536,7 @@ async function fetchEventsFromRelay(
       }
       if (!selected) continue
       const event = copySignedEvent(raw)
+      inheritVerifiedPublicEvent(event, raw)
       uniqueIds.add(event.id)
       attachEventSourceRelayUrl(event, admittedRelayUrl)
       verified.push(event)

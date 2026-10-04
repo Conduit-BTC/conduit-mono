@@ -526,6 +526,10 @@ export function useProgressiveProducts(
   )
   const progressiveQuery = useQuery({
     queryKey: progressiveQueryKey,
+    // The commerce owner supplies prepared immutable snapshots. Recursively
+    // comparing every signed tag and product field on every arrival repeats
+    // catalog work on the UI thread; publish that prepared snapshot directly.
+    structuralSharing: false,
     queryFn: createProgressiveCatalogQuery<
       CommerceResult<CommerceProductRecord[]>
     >({

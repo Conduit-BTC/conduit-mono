@@ -21,9 +21,13 @@ import {
   limitAccountMatches,
 } from "../lib/accountSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
-import { mergeProductSearchResults } from "../lib/marketBrowseModel"
+import {
+  getMerchantIdentityView,
+  mergeProductSearchResults,
+} from "../lib/marketBrowseModel"
 import {
   getProductSourceRelayHintsByPubkey,
+  getPagedMerchantPubkeys,
   mergeRelayHintsByPubkey,
 } from "../lib/clientHydration"
 import {
@@ -53,6 +57,7 @@ export function useSellerDirectory(input: {
   accountSearchSettleMs?: number
   /** Header suggestions use scoped account search, not every seller profile. */
   hydrateSellerProfiles?: boolean
+  visibleSellerCount?: number
 }) {
   const { pubkey, status, authGeneration } = useAuth()
   const queryClient = useQueryClient()
@@ -201,15 +206,17 @@ export function useSellerDirectory(input: {
     shouldContinue: () => authGenerationRef.current === authGeneration,
     allMerchantPubkeys: sellerPubkeys,
     visibleMerchantPubkeys:
-      input.hydrateSellerProfiles === false ? [] : sellerPubkeys,
+      input.hydrateSellerProfiles === false
+        ? []
+        : getPagedMerchantPubkeys(
+            sellerPubkeys,
+            input.visibleSellerCount ?? 12
+          ),
     deferBackgroundHydration: input.hydrateSellerProfiles === false,
+    backgroundHydrationPubkeys: [],
     relayHintsByPubkey: profileRelayHintsByPubkey,
   })
   const query = input.query.trim()
-  const filteredSellers = useMemo(
-    () => filterSellersByName(sellers, identities.getIdentity, query),
-    [identities.getIdentity, query, sellers]
-  )
   const eligibleAuthorPubkeys = productsQuery.catalogAuthorPubkeys
   const eligibilityState = getSellerEligibilityState({
     authorPubkeys: eligibleAuthorPubkeys,
@@ -224,6 +231,32 @@ export function useSellerDirectory(input: {
     accountPubkey: connected ? pubkey : null,
     authorPubkeys: eligibleAuthorPubkeys,
   })
+  const accountSellerProfiles = useMemo(() => {
+    const known = new Set(sellerPubkeys)
+    return Object.fromEntries(
+      (accountSearch.data?.matches ?? [])
+        .filter((match) => known.has(match.pubkey))
+        .map((match) => [match.pubkey, match.profile])
+    )
+  }, [accountSearch.data, sellerPubkeys])
+  const getBaseIdentity = identities.getIdentity
+  const getIdentity = useCallback(
+    (sellerPubkey: string) => {
+      const profile = accountSellerProfiles[sellerPubkey]
+      return profile
+        ? getMerchantIdentityView(
+            sellerPubkey,
+            profile,
+            profileRelayHintsByPubkey[sellerPubkey]
+          )
+        : getBaseIdentity(sellerPubkey)
+    },
+    [accountSellerProfiles, getBaseIdentity, profileRelayHintsByPubkey]
+  )
+  const filteredSellers = useMemo(
+    () => filterSellersByName(sellers, getIdentity, query),
+    [getIdentity, query, sellers]
+  )
   const networkAccounts = useMemo(
     () =>
       limitAccountMatches(
@@ -282,7 +315,7 @@ export function useSellerDirectory(input: {
     retry,
     sellers,
     filteredSellers,
-    getIdentity: identities.getIdentity,
+    getIdentity,
     query,
     accountSearch,
     networkAccounts,

@@ -2096,6 +2096,158 @@ describe("commerce gateway", () => {
     }
   })
 
+  it("coalesces concurrent relay batches while retaining revisions, sources, and families", async () => {
+    const older = makeSignedProductEvent({
+      dTag: "progressive-revision",
+      createdAt: 100,
+      title: "Older terms",
+    })
+    const newer = makeSignedProductEvent({
+      dTag: "progressive-revision",
+      createdAt: 110,
+      title: "Current terms",
+    })
+    const sameNewer = new NDKEvent(undefined, newer.rawEvent())
+    const parent = makeSignedGammaProductEvent({
+      dTag: "progressive-family",
+      createdAt: 100,
+      title: "Family",
+      type: "variable",
+    })
+    const child = makeSignedGammaProductEvent({
+      dTag: "progressive-child",
+      createdAt: 101,
+      title: "Small",
+      type: "variation",
+      parentProductId: `30402:${parent.pubkey}:progressive-family`,
+      size: "Small",
+    })
+    attachEventSourceRelayUrl(newer, "wss://first-source.example")
+    attachEventSourceRelayUrl(sameNewer, "wss://second-source.example")
+    const snapshots: Array<{
+      ids: string[]
+      sourceUrls: string[]
+      familyChildren: string[]
+    }> = []
+    __setCommerceTestOverrides({
+      fetchEventsFanoutDetailed: async () => ({ events: [], relays: [] }),
+      fetchEventsFanoutProgressive: async (_filter, _options, onProgress) => {
+        const batches = [[older], [newer], [sameNewer], [parent, child]]
+        await Promise.all(
+          batches.map((events, index) =>
+            onProgress({
+              relayUrl: `wss://batch-${index}.example`,
+              events,
+              mergedEvents: events,
+              status: "success",
+            })
+          )
+        )
+        return [older, newer, sameNewer, parent, child]
+      },
+    })
+
+    const result = await getMarketplaceProductsProgressive(
+      { merchantPubkey: MERCHANT_A_PUBKEY, limit: 10 },
+      (progress) => {
+        const current = progress.data.find(
+          (record) =>
+            record.addressId === `30402:${newer.pubkey}:progressive-revision`
+        )
+        const family = progress.data.find(
+          (record) =>
+            record.addressId === `30402:${parent.pubkey}:progressive-family`
+        )
+        snapshots.push({
+          ids: progress.data.map((record) => record.eventId),
+          sourceUrls: current?.sourceRelayUrls ?? [],
+          familyChildren:
+            family?.family?.children.map((record) => record.eventId) ?? [],
+        })
+      }
+    )
+
+    expect(snapshots).toHaveLength(2)
+    for (const snapshot of snapshots) {
+      expect(snapshot.ids).toContain(newer.id)
+      expect(snapshot.ids).not.toContain(older.id)
+      expect(snapshot.sourceUrls).toEqual([
+        "wss://first-source.example",
+        "wss://second-source.example",
+      ])
+      expect(snapshot.familyChildren).toEqual([child.id])
+    }
+    expect(result.data.map((record) => record.eventId)).toEqual(
+      snapshots[1]!.ids
+    )
+    expect(cachedProducts.some((row) => row.eventId === newer.id)).toBe(true)
+  })
+
+  it("drops queued catalog progress when its scope is cancelled", async () => {
+    const controller = new AbortController()
+    const event = makeSignedProductEvent({
+      dTag: "cancelled-progress",
+      createdAt: 100,
+      title: "Cancelled progress",
+    })
+    let releaseQueued!: () => void
+    const queued = new Promise<void>((resolve) => {
+      releaseQueued = resolve
+    })
+    const snapshots: string[][] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+        const callback = onProgress({
+          relayUrl: options.relayUrls?.[0] ?? "wss://cancelled.example",
+          events: [event],
+          mergedEvents: [event],
+        })
+        releaseQueued()
+        await callback
+        return [event]
+      },
+    })
+
+    const read = getMarketplaceProductsProgressive(
+      { merchantPubkey: MERCHANT_A_PUBKEY, signal: controller.signal },
+      (progress) =>
+        snapshots.push(progress.data.map((record) => record.eventId))
+    )
+    await queued
+    controller.abort()
+    await expect(read).rejects.toThrow()
+    expect(snapshots).toEqual([])
+    expect(cachedProducts).toEqual([])
+  })
+
+  it("flushes a transport's unawaited final progress before deletion resolution", async () => {
+    const event = makeSignedProductEvent({
+      dTag: "final-progress-flush",
+      createdAt: 100,
+      title: "Final progress flush",
+    })
+    const snapshots: string[][] = []
+    __setCommerceTestOverrides({
+      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+        void onProgress({
+          relayUrl: options.relayUrls?.[0] ?? "wss://final-progress.example",
+          events: [event],
+          mergedEvents: [event],
+        })
+        return [event]
+      },
+    })
+
+    const result = await getMarketplaceProductsProgressive(
+      { merchantPubkey: MERCHANT_A_PUBKEY },
+      (progress) =>
+        snapshots.push(progress.data.map((record) => record.eventId))
+    )
+    expect(snapshots).toEqual([[event.id], [event.id]])
+    expect(result.data[0]?.eventId).toBe(event.id)
+    expect(cachedProducts.some((row) => row.eventId === event.id)).toBe(true)
+  })
+
   it("marks a saturated variation-group read as degraded", async () => {
     const merchantPubkey = MERCHANT_A_PUBKEY
     const parentProductId = `30402:${merchantPubkey}:large-catalog`
