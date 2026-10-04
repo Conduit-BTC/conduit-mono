@@ -1,0 +1,74 @@
+# Public reader compatibility audit
+
+Audit source: `f2e6b508326e74bfe64d702ca6dd4487785a6e41`.
+Unchanged-main reference: `6a370e648c3481d723b303de211bb70b401b9597`.
+Two independent read-only audits reconstructed guarantees from the base and
+callers before the consolidated implementation. The ledger supplements
+[public relay read ownership](./public-relay-reader.md).
+
+## Contract ledger
+
+| ID                     | Expected behavior                                                                                                                                                                              | Affected callers                                                             | Executable proof                                                                                                                                                                                                      | Boundary or gap                                                                                                                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CON-01 / READ-02       | Preserve the seven signed fields and detached nested tags; discard unsigned wire metadata. Verification returns the snapshot actually checked, on cold and cached paths.                       | Every reader consumer; follows and shopper verification                      | `public-reader-contract.test.ts`: hostile array/string/number/object metadata, standalone verification, mutation during await; `ndk-worker.test.ts`                                                                   | Local fixtures prove hash/signature binding, not independent signer interoperability.                                                                                                     |
+| CON-02 / READ-02       | Provenance is exclusively locally attached verified delivery evidence; duplicate merging unions actual sources without proof-cache leakage between reads.                                      | Commerce, shipping, owner/inbox declarations, merchandise, receipts          | `public-reader-contract.test.ts`: A-delivered event naming empty B, duplicate/cache reads, trusted merge; `public-relay-reader.test.ts`                                                                               | Persisted domain provenance remains an explicitly separate trusted local input.                                                                                                           |
+| CON-03 / READ-02,03    | Duplicate copies consume observation/frame budgets, but not distinct result limits or repeated new-proof capacity; source event counts and cap diagnostics count distinct verified events.     | Reader, executor, owner declarations, inbox readback                         | `public-reader-contract.test.ts`: 512 copies plus distinct event cold/warm; three declaration copies below limit; composed follow cap; `public-reader-duplicates.test.ts`                                             | Frame/byte limits still bound duplicate floods. Main is not an oracle for this guarantee.                                                                                                 |
+| CON-04 / READ-03       | Complete scoped empty, partial, unavailable, malformed, unusable, rejected and cancelled remain distinct; global absence is always false.                                                      | Discovery and signed frontiers                                               | `public-relay-reader.test.ts`; `relay-executor.test.ts`; `shipping-policy-action-readiness.test.ts`                                                                                                                   | EOSE covers only the selected bounded source plan.                                                                                                                                        |
+| CON-05 / READ-04       | Reentrant callbacks cannot send a REQ or invoke the next callback after cancellation/current authority is revoked.                                                                             | Connection observer, cumulative and per-source progress, executor            | `public-reader-contract.test.ts`: caller/scope connection retirement, cumulative cancellation and authority loss                                                                                                      | Connection and cumulative callbacks are synchronous APIs.                                                                                                                                 |
+| CON-06 / READ-04       | Planning, queued reads, sockets, verification and awaited callbacks retain their resource owner; refresh is deferred, explicit retirement is scoped, siblings survive, closeAll permits reuse. | Shared reader, generic executor, Commerce progressive reads                  | `public-reader-contract.test.ts`: refresh + eight active/ninth queued + teardown + sibling async barrier + reuse; existing planning/global retirement and worker tests                                                | Already-running caller promises remain cooperative: settlement awaits their completion. Socket/queue retirement is immediate; arbitrary callback side effects cannot be forcibly stopped. |
+| CON-07 / READ-01,04    | Kind-1059 filters never reach public I/O; authorized protected paging and exact wrap recovery keep their separate owner.                                                                       | Event Market inbox, protected reader and receipt recovery                    | `public-relay-reader.test.ts`; `protected-inbox-commerce-integration.test.ts`; `future-market-handoff-storage.test.ts`                                                                                                | Controlled transport is not live NIP-42 enforcement/device proof.                                                                                                                         |
+| CON-08 / READ-01,02,03 | Canonical outputs reach cache/deletion consumers; actual sources survive parsing, deletion fanout and declaration readback while stronger signed evidence survives omission.                   | Commerce products/tombstones, shipping, owner and private inbox declarations | `public-reader-contract.test.ts`: hostile product/deletion cache; composed declaration provenance; `commerce-deletion-source-read.test.ts`, `product-deletion-source-fanout.test.ts`, owner/inbox and shipping suites | Retained evidence and local publication inputs are domain responsibilities.                                                                                                               |
+| CON-09 / READ-01,05,06 | Public callers use one plain reader; obsolete wrapping/fanout is removed, domain reducers and complete browser flows remain usable.                                                            | Caller inventory in ownership note; Market/Merchant                          | Caller inventory, workspace checks, catalog/Network observations, complete commerce and Event Market journeys                                                                                                         | Hosted CI, maintainer code/evidence sign-off, independent signer/device/live relay/payment QA remain separate gates.                                                                      |
+
+## Findings collected before production edits
+
+| Finding | Classification                                                       | Root cause and disposition                                                                                                                                                                                                              |
+| ------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F-01    | Defect                                                               | Spreading wire objects trusts injected provenance and method-name collisions. Wrong-type provenance can drop valid signed events. Canonical snapshots plus separately held local provenance fix the boundary.                           |
+| F-02    | Defect, also present on main                                         | Standalone verifier returns mutable originals after asynchronous verification. Snapshot canonical fields and tags before verification; preserve only locally attached provenance.                                                       |
+| F-03    | Defect against the new distinct-event contract; also present on main | Cold verification schedules identical proofs repeatedly; source/cap diagnostics count copies, including downstream follow/shipping coverage. Deduplicate exact proof work and project distinct counts once in the shared source result. |
+| F-04    | Defect                                                               | Connection/progress callbacks can revoke authority reentrantly; execution lacks a subsequent fence. Recheck cancellation, settlement, connection state and current authority before subsequent work.                                    |
+| D-01    | Material contract choice, preserve base behavior                     | Already-started async progress is cooperative. Keep operation ownership until it settles; do not claim cancellation stops arbitrary caller code. Barrier proofs cover deferred refresh and retirement.                                  |
+
+No optional cleanup is included. Previously resolved paging, observation-index,
+malformed-frame, injected-socket and retirement findings remain covered by their
+existing regressions; no separate rewrite was justified.
+
+## Deterministic comparison
+
+`tests/public-reader-contract.test.ts` supplies signed fixtures and controlled
+sockets, and normalizes events, canonical keys, per-event sources and source
+status/counts. No network relay supplies its ground truth. To compare the same
+wire fixtures against an archived base with its locked dependency paths, run:
+
+```sh
+PR606_REFERENCE_ROOT=/absolute/path/to/unchanged-main bun test tests/public-reader-contract.test.ts
+bun test tests/public-reader-contract.test.ts
+```
+
+The reference-only branch records known base behavior rather than declaring it
+correct: main sanitizes hostile transport metadata via NDK construction, but
+its duplicate-copy limit loses the second distinct fixture even with a warm
+proof cache. Candidate ground truth requires both events. Main has no
+`onConnection` callback and no combined cumulative/per-source callback API;
+those new composition boundaries use scheduling-barrier ground truth. Existing
+executor retirement behavior is compared separately with the same schedule:
+main opens nine owned sockets and reports unavailable after closeAll; candidate
+admits eight, cancels the queued ninth and reports aborted. Both leave zero
+owned sockets open, preserve a successful sibling and permit a fresh read.
+
+Intentional migration differences: canonical plain events replace wrappers;
+local provenance uses object identity rather than a serializable wire property;
+source `eventCount` counts distinct verified ids, with duplicate copies retained separately; duplicates do not consume distinct limits or repeated signature work;
+malformed/rejected/unusable evidence explicitly degrades coverage; public
+kind-1059 refusal and cancellation evidence remain explicit. Standalone
+verification now returns detached canonical snapshots instead of caller-owned
+objects. No domain authority, protected route, publishing policy or dependency
+changes.
+
+Source contracts: [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md)
+for signed fields, filters and EOSE; [NIP-09](https://github.com/nostr-protocol/nips/blob/master/09.md)
+for deletion authority; [NIP-65](https://github.com/nostr-protocol/nips/blob/master/65.md)
+and [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md) for separate
+public declaration and protected inbox ownership. Public NIP-44 v2 and
+capability-gated v3 planning are unchanged.

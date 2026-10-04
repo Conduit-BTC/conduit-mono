@@ -124,6 +124,7 @@ export type PublicRelayReadOutcome =
 export interface PublicRelayReadSourceStatus {
   relayUrl: string
   status: "success" | "partial" | "failed"
+  /** Distinct verified event ids selected from this source; copies are counted separately. */
   eventCount: number
   /** Structurally matching events rejected by id or signature verification. */
   rejectedEventCount?: number
@@ -183,10 +184,22 @@ export interface PublicRelayReadDiagnosticsResult extends Partial<PublicRelayRea
   cappedRelayUrls?: string[]
 }
 
-const EVENT_SOURCE_RELAY_URLS = "__conduitSourceRelayUrls"
+// Provenance is local evidence, never a field supplied on the wire. Object
+// identity also prevents proof-cache hits from borrowing previous-read sources.
+const eventSourceRelayUrls = new WeakMap<object, string[]>()
 
-type EventWithSourceRelayUrls = SignedPublicNostrEvent & {
-  [EVENT_SOURCE_RELAY_URLS]?: string[]
+function copySignedEvent(
+  event: SignedPublicNostrEvent
+): SignedPublicNostrEvent {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
+    tags: event.tags.map((tag) => [...tag]),
+    content: event.content,
+    sig: event.sig,
+  }
 }
 
 function uniqueRelayUrls(urls: readonly string[]): string[] {
@@ -197,23 +210,14 @@ export function attachEventSourceRelayUrl(
   event: object,
   relayUrl: string
 ): void {
-  const eventWithSources = event as EventWithSourceRelayUrls
-  const next = uniqueRelayUrls([
-    ...(eventWithSources[EVENT_SOURCE_RELAY_URLS] ?? []),
-    relayUrl,
-  ])
-
-  Object.defineProperty(eventWithSources, EVENT_SOURCE_RELAY_URLS, {
-    value: next,
-    enumerable: false,
-    configurable: true,
-  })
+  eventSourceRelayUrls.set(
+    event,
+    uniqueRelayUrls([...(eventSourceRelayUrls.get(event) ?? []), relayUrl])
+  )
 }
 
 export function getEventSourceRelayUrls(event: object): string[] {
-  return [
-    ...((event as EventWithSourceRelayUrls)[EVENT_SOURCE_RELAY_URLS] ?? []),
-  ]
+  return [...(eventSourceRelayUrls.get(event) ?? [])]
 }
 
 export function mergeEventSourceRelayUrls(
@@ -694,7 +698,20 @@ export async function verifySignedEvents(
   const maxEvents = Number.isFinite(requestedMax)
     ? Math.max(0, Math.min(MAX_SIGNATURES_PER_RELAY_READ, requestedMax))
     : 0
-  const boundedEvents = events.slice(0, maxEvents)
+  const boundedInputs = events.slice(0, maxEvents)
+  // Snapshot before verification yields. Neither unsigned metadata nor caller
+  // mutation may change the event whose proof is returned.
+  const boundedEvents = boundedInputs.map((event) => {
+    try {
+      if (!validateEvent(event) || !isCanonicalSignedPublicNostrEvent(event))
+        return null
+      const snapshot = copySignedEvent(event)
+      mergeEventSourceRelayUrls(snapshot, event)
+      return snapshot
+    } catch {
+      return null
+    }
+  })
   const accepted = new Array<boolean>(boundedEvents.length).fill(false)
   const schnorrItems: SchnorrItem[] = []
   const schnorrIndexes: number[] = []
@@ -702,7 +719,7 @@ export async function verifySignedEvents(
   for (let index = 0; index < boundedEvents.length; index += 1) {
     throwIfAborted(options.signal)
     const event = boundedEvents[index]
-    if (!validateEvent(event)) continue
+    if (!event) continue
     const state = checkEventId(event)
     if (state === "invalid") continue
     if (state === "cached") {
@@ -726,12 +743,15 @@ export async function verifySignedEvents(
     if (verifiedEventProofs.size >= MAX_VERIFIED_PROOF_CACHE) {
       verifiedEventProofs.clear()
     }
-    verifiedEventProofs.add(verificationProofKey(boundedEvents[eventIndex]))
+    verifiedEventProofs.add(verificationProofKey(boundedEvents[eventIndex]!))
   }
 
   return {
-    events: boundedEvents.filter((_, index) => accepted[index]),
-    truncated: events.length > boundedEvents.length,
+    events: boundedEvents.filter(
+      (event, index): event is SignedPublicNostrEvent =>
+        event !== null && accepted[index]
+    ),
+    truncated: events.length > boundedInputs.length,
   }
 }
 
@@ -997,7 +1017,10 @@ function readRelayEvents(
   onConnection?: (relayUrl: string) => void,
   bounds: Pick<
     PublicRelayReadOptions,
-    "maxFramesPerRelay" | "maxEventsPerRelay" | "maxBytesPerRelay"
+    | "maxFramesPerRelay"
+    | "maxEventsPerRelay"
+    | "maxBytesPerRelay"
+    | "shouldContinue"
   > = {}
 ): Promise<{
   events: RawNostrEvent[]
@@ -1197,7 +1220,21 @@ function readRelayEvents(
           finish(false, false, "rate_limited")
           return
         }
+        if (bounds.shouldContinue?.() === false) {
+          cancel()
+          return
+        }
         onConnection?.(relayUrl)
+        // Observers can cancel or retire the connection reentrantly. Fence
+        // final I/O again before creating a timer or sending the subscription.
+        if (settled || signal?.aborted || bounds.shouldContinue?.() === false) {
+          cancel()
+          return
+        }
+        if (conn.closed || conn.ws.readyState !== WEBSOCKET_OPEN) {
+          finish(false)
+          return
+        }
         fetchTimer = setTimeout(
           () => finish(false, false, undefined, "timeout"),
           fetchTimeoutMs
@@ -1339,7 +1376,8 @@ async function fetchEventsFromRelay(
     // already cache-verified is batched to the worker for schnorr.
     const accepted = new Array<boolean>(orderedEvents.length).fill(false)
     const schnorrItems: SchnorrItem[] = []
-    const schnorrIndex: number[] = []
+    const schnorrIndex: number[][] = []
+    const pendingProofIndexes = new Map<string, number>()
     let verificationTruncated = false
     for (let i = 0; i < orderedEvents.length; i++) {
       const raw = orderedEvents[i]
@@ -1349,20 +1387,28 @@ async function fetchEventsFromRelay(
         accepted[i] = true
         continue
       }
+      const proofKey = verificationProofKey(raw)
+      const pendingIndex = pendingProofIndexes.get(proofKey)
+      if (pendingIndex !== undefined) {
+        schnorrIndex[pendingIndex].push(i)
+        continue
+      }
       if (schnorrItems.length >= MAX_SIGNATURES_PER_RELAY_READ) {
         verificationTruncated = true
         continue
       }
+      pendingProofIndexes.set(proofKey, schnorrItems.length)
       schnorrItems.push({ sig: raw.sig, id: raw.id, pubkey: raw.pubkey })
-      schnorrIndex.push(i)
+      schnorrIndex.push([i])
     }
 
     const schnorrValid = await verifySchnorrBatch(schnorrItems, options.signal)
     throwIfAborted(options.signal)
     for (let j = 0; j < schnorrIndex.length; j++) {
       if (!schnorrValid[j]) continue
-      const i = schnorrIndex[j]
-      accepted[i] = true
+      const indexes = schnorrIndex[j]
+      for (const index of indexes) accepted[index] = true
+      const i = indexes[0]
       if (verifiedEventProofs.size >= MAX_VERIFIED_PROOF_CACHE) {
         verifiedEventProofs.clear()
       }
@@ -1375,10 +1421,7 @@ async function fetchEventsFromRelay(
     let duplicateEventCount = 0
     for (let i = 0; i < orderedEvents.length; i++) {
       if (!accepted[i]) continue
-      const event = {
-        ...orderedEvents[i],
-        tags: orderedEvents[i].tags.map((tag) => [...tag]),
-      }
+      const event = copySignedEvent(orderedEvents[i])
       if (uniqueIds.has(event.id)) duplicateEventCount += 1
       uniqueIds.add(event.id)
       attachEventSourceRelayUrl(event, admittedRelayUrl)
@@ -1646,7 +1689,7 @@ export async function fetchSignedEventsFanoutDetailed(
     const relays = results.map((result) => ({
       relayUrl: result.relayUrl,
       status: result.status,
-      eventCount: result.events.length,
+      eventCount: result.events.length - (result.duplicateEventCount ?? 0),
       rejectedEventCount: result.rejectedEventCount,
       malformedEventCount: result.malformedEventCount ?? 0,
       unusableEventCount: result.unusableEventCount ?? 0,
@@ -1733,6 +1776,8 @@ export async function fetchSignedEventsFanoutDetailed(
         if (options.shouldContinue?.() !== false) {
           const progress = snapshot("progressive")
           options.onProgress?.(progress)
+          throwIfAborted(options.signal)
+          if (options.shouldContinue?.() === false) throw abortError()
           await options.onRelayProgress?.({
             relayUrl: result.relayUrl,
             events: result.events,
@@ -1740,6 +1785,8 @@ export async function fetchSignedEventsFanoutDetailed(
             status: result.status,
             result: progress,
           })
+          throwIfAborted(options.signal)
+          if (options.shouldContinue?.() === false) throw abortError()
         }
         return result
       }

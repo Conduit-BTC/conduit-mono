@@ -3,7 +3,13 @@
 `protocol/relay-reader.ts` owns public WebSockets, subscriptions, signature
 verification, fanout, cancellation and connection lifetime. Public events are
 plain signed Nostr wire objects. No public reader constructs an NDK event or
-uses an NDK pool. The protected executor keeps its account-authenticated sockets
+uses an NDK pool. Wire input is copied to the seven canonical signed fields;
+unsigned extra fields are ignored without rejecting an otherwise valid event.
+Provenance is held separately by object identity and attached only after an
+actual verified delivery. Standalone verification snapshots canonical fields
+and nested tags before asynchronous work, retaining only locally attached
+provenance. Cold and cached verification return that detached snapshot.
+The protected executor keeps its account-authenticated sockets
 in a separate pool; public reads never send AUTH or borrow those connections.
 
 ## Result and operation policy
@@ -17,7 +23,9 @@ attempt budget. Source policy is checked after the bounded execution queue and
 before opening a socket. Whole-relay exclusions and owner-selected insecure
 transport authority remain account scoped.
 
-Each source reports EOSE, CLOSED, authentication required, rejection, throttling,
+Each source `eventCount` counts distinct verified ids; `duplicateEventCount`
+retains copy observations. Source counts and limit diagnostics therefore agree
+for declaration, follow and shipping callers. Each source reports EOSE, CLOSED, authentication required, rejection, throttling,
 disconnect, connect/query timeout, resource exhaustion, malformed evidence or
 verification failure. Rejected signatures and malformed input make coverage
 partial even if the relay sent EOSE. Missing/falsy EVENT payloads are still
@@ -41,7 +49,9 @@ observation streams retain cancellation evidence.
 The shared reader tracks each operation from planning through verification and
 asynchronous progress callbacks, independently of the eight execution slots.
 An idle settings refresh waits for those operations to settle before retiring
-their pools. Explicit scoped or global retirement cancels owned operations
+their pools. Already-started asynchronous caller callbacks are cooperative;
+retirement closes sockets and cancels queued work immediately, while read
+settlement waits for those callbacks. Explicit scoped or global retirement cancels owned operations
 before removing their pools, so pending work cannot open a detached socket.
 
 The generic public executor projects source URLs back to their stable requested
@@ -55,6 +65,8 @@ Events-only and diagnostic projections, and per-source progressive callbacks,
 all use the same detailed executor. Catalog discovery remains progressive;
 replacement-sensitive reads retain explicit plans and frontier/deletion policy.
 This transport migration does not redesign catalog assembly or cache state.
+The [compatibility audit ledger](./public-relay-reader-contract-audit.md) maps
+these guarantees to hostile-input and scheduling-barrier proofs.
 
 Bounds remain eight concurrent reads, 128 queued reads, bounded inbound frames
 and bytes, 512 new signature checks per source, a bounded verification proof

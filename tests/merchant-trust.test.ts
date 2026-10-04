@@ -518,9 +518,18 @@ describe("NIP-02 merchant trust helpers", () => {
     )
 
     expect(read.authors[0]?.coverage).toBe("limited")
-    expect(requirePublishableContactListSnapshot(read, viewerPubkey)).toBe(
-      event
-    )
+    const snapshot = requirePublishableContactListSnapshot(read, viewerPubkey)
+    expect(snapshot).not.toBe(event)
+    expect(snapshot).toEqual({
+      id: event.id,
+      pubkey: event.pubkey,
+      kind: event.kind,
+      created_at: event.created_at,
+      tags: event.tags,
+      content: event.content,
+      sig: event.sig,
+    })
+    expect(snapshot.tags).not.toBe(event.tags)
   })
 
   it("rejects capped exact owner-local evidence before replacing a follow list", async () => {
