@@ -123,6 +123,29 @@ function decodeLegacyAuthorization(value: string): Record<string, unknown> {
 }
 
 describe("product image upload target resolution", () => {
+  it("bounds copies without blocking the preferred host or rewriting a long personal list", () => {
+    const serverUrls = Array.from(
+      { length: 12 },
+      (_, index) => `https://media-${index}.conduit.market`
+    )
+    const signedResolution = resolution({
+      status: "published",
+      publishedServerUrls: serverUrls,
+    })
+    expect(
+      resolveProductImageUploadTarget({
+        owner: "a".repeat(64),
+        signerAvailable: true,
+        resolution: signedResolution,
+      })
+    ).toEqual({
+      kind: "configured",
+      serverUrl: serverUrls[0],
+      backupServerUrls: serverUrls.slice(1, 10),
+    })
+    expect(signedResolution.publishedServerUrls).toEqual(serverUrls)
+  })
+
   it("uses a clean local CND-186 mirror only when it matches signed authority", () => {
     const publishedRevision = {
       eventId: "b".repeat(64),
@@ -1158,8 +1181,6 @@ describe("verified Blossom product image upload", () => {
     ]
     const codes: ProductImageUploadFailureCode[] = [
       "unsupported_type",
-      "fallback_retry_mismatch",
-      "fallback_guard_unavailable",
       "payment_required",
       "policy_rejected",
       "integrity_failed",

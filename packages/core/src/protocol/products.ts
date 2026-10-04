@@ -1,3 +1,9 @@
+import type { ProductImage } from "../types"
+import {
+  getProductImageSources,
+  getProductImageUrlHash,
+  readProductImageMetadata,
+} from "./product-image-sources"
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   isValidSignedPublicNostrEvent,
@@ -32,7 +38,7 @@ import {
 } from "./product-event-evidence"
 
 export const PRODUCT_SHIPPING_ADJUSTMENTS_TAG = "conduit_shipping_adjustments"
-export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
+export const MAX_PRODUCT_IMAGE_CANDIDATES = 24
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
 const PRODUCT_TITLE_MAX_LENGTH = 200
 const PRODUCT_SUMMARY_MAX_LENGTH = 5000
@@ -412,6 +418,16 @@ export function buildProductListingEventDraft({
   tags.push(...buildShippingOptionTags(product, priceCurrency))
   for (const image of getProductProtocolImages(product)) {
     tags.push(["image", image.url])
+    if (image.sha256 && getProductImageUrlHash(image.url) === image.sha256) {
+      tags.push([
+        "imeta",
+        `url ${image.url}`,
+        `x ${image.sha256}`,
+        ...getProductImageSources(image)
+          .slice(1)
+          .map((url) => `fallback ${url}`),
+      ])
+    }
   }
   for (const tag of canonicalizeProductTags(product.tags)) {
     tags.push(["t", tag])
@@ -430,8 +446,8 @@ export function buildProductListingEventDraft({
 
 export function getProductImageCandidates(
   product: Pick<ProductSchema, "images">
-): Array<{ url: string; alt?: string }> {
-  const candidates: Array<{ url: string; alt?: string }> = []
+): ProductImage[] {
+  const candidates: ProductImage[] = []
   const seen = new Set<string>()
 
   for (const image of getProductProtocolImages(product)) {
@@ -453,8 +469,8 @@ export function getProductImageCandidates(
  */
 export function getProductProtocolImages(
   product: Pick<ProductSchema, "images">
-): Array<{ url: string; alt?: string }> {
-  const images: Array<{ url: string; alt?: string }> = []
+): ProductImage[] {
+  const images: ProductImage[] = []
 
   for (const image of Array.isArray(product.images) ? product.images : []) {
     if (!image || typeof image !== "object") continue
@@ -476,6 +492,12 @@ export function getProductProtocolImages(
     }
     images.push({
       url: image.url,
+      ...(image.sha256 && getProductImageUrlHash(image.url) === image.sha256
+        ? {
+            sha256: image.sha256,
+            fallbackUrls: getProductImageSources(image).slice(1),
+          }
+        : {}),
       ...(typeof image.alt === "string" && image.alt ? { alt: image.alt } : {}),
     })
   }
@@ -1236,7 +1258,9 @@ export function parseProductEvent(
   const parentProductId = parseVariationParentProductId(event.tags, type)
 
   const images = getProductProtocolImages({
-    images: getTagValues(event.tags, "image").map((url) => ({ url })),
+    images: getTagValues(event.tags, "image").map((url) =>
+      readProductImageMetadata(url, event.tags)
+    ),
   })
 
   const tags = canonicalizeProductTags(getTagValues(event.tags, "t"))

@@ -221,6 +221,11 @@ export const productSchema = z.object({
         // apply public-network projection before loading an image.
         url: protocolHttpUrlSchema,
         alt: z.string().optional(),
+        sha256: z
+          .string()
+          .regex(/^[0-9a-f]{64}$/)
+          .optional(),
+        fallbackUrls: z.array(protocolHttpUrlSchema).max(9).optional(),
       })
     )
     .default([]),

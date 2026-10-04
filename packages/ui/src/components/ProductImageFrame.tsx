@@ -1,6 +1,11 @@
 import { ImageOff } from "lucide-react"
 import { useEffect, useState } from "react"
-import { normalizePublicMediaUrl, type ProductImage } from "@conduit/core"
+import {
+  getProductImageSources,
+  normalizePublicMediaUrl,
+  type ProductImage,
+} from "@conduit/core"
+import { RecoverableProductImage } from "./RecoverableProductImage"
 import { cn } from "../utils"
 
 interface ProductImageFrameProps {
@@ -27,7 +32,7 @@ export function ProductImageFrame({
   const normalizedUrl = normalizePublicMediaUrl(image?.url)
   const activeImage =
     image && normalizedUrl ? { ...image, url: normalizedUrl } : undefined
-  const imageKey = activeImage?.url ?? ""
+  const imageKey = JSON.stringify(getProductImageSources(activeImage))
 
   useEffect(() => {
     setImageFailed(false)
@@ -51,8 +56,8 @@ export function ProductImageFrame({
               imageLoaded ? "opacity-0" : "opacity-100"
             )}
           />
-          <img
-            src={activeImage.url}
+          <RecoverableProductImage
+            image={activeImage}
             alt={activeImage.alt ?? title}
             width={640}
             height={480}

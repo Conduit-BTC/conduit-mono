@@ -18,9 +18,8 @@ import { interceptBlossom } from "./helpers/blossom"
 const merchantUrl =
   "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
 const configuredServer = "https://media.conduit.market"
-const fallbackServer = "https://blossom.nostr.build"
-const fallbackDisclosureText =
-  "No media server is configured, so this file uses"
+const fallbackServer = "https://blossom.ditto.pub"
+const fallbackDisclosureText = "You’re using shared public media hosting."
 const image192 = join(
   process.cwd(),
   "apps/merchant/public/merchant-icon-192.png"
@@ -109,20 +108,25 @@ async function readObjectUrlAudit(page: Page): Promise<ObjectUrlAudit> {
 
 async function openProductDialogWithSigner(
   page: Page,
-  options: { configuredServerUrl?: string } = {}
+  options: {
+    configuredServerUrl?: string
+    configuredServerUrls?: string[]
+  } = {}
 ) {
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
   const configuredCreatedAt = Math.floor(Date.now() / 1_000) + 1
   await seedTestRelayIdentity(secretKey)
   await installTestSigner(page, pubkey, { secretKey })
-  if (options.configuredServerUrl) {
+  if (options.configuredServerUrl || options.configuredServerUrls) {
     await publishTestRelayEvents([
       finalizeEvent(
         {
           kind: 10_063,
           created_at: configuredCreatedAt,
-          tags: [["server", options.configuredServerUrl]],
+          tags: (
+            options.configuredServerUrls ?? [options.configuredServerUrl!]
+          ).map((url) => ["server", url]),
           content: "",
         },
         secretKey
@@ -212,7 +216,7 @@ test("configured Blossom uploads stay sequential and retry only unfinished image
     configuredServerUrl: configuredServer,
   })
   await expect(
-    dialog.getByText("your first configured media server", { exact: false })
+    dialog.getByText("your configured media servers", { exact: false })
   ).toBeVisible()
 
   await dialog.locator("#product-image-file").setInputFiles([
@@ -426,7 +430,7 @@ test("a newer signed media-server revision stops a pending upload before PUT @me
       configuredServerUrl: configuredServer,
     })
   await expect(
-    dialog.getByText("your first configured media server", { exact: false })
+    dialog.getByText("your configured media servers", { exact: false })
   ).toBeVisible()
 
   let markSignerStarted!: () => void
@@ -529,7 +533,7 @@ test("legacy Blossom auth retries once with the same signed event @merchant", as
     configuredServerUrl: configuredServer,
   })
   await expect(
-    dialog.getByText("your first configured media server", { exact: false })
+    dialog.getByText("your configured media servers", { exact: false })
   ).toBeVisible()
   await expect(
     dialog.getByRole("button", { name: "Add image", exact: true })
@@ -582,27 +586,14 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
     dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible({ timeout: 20_000 })
   await expect(
-    dialog.getByRole("link", { name: "Blossom service" })
-  ).toHaveAttribute("href", "https://blossom.nostr.build/")
-  await expect(
-    dialog
-      .locator("#product-image-upload-help")
-      .getByRole("link", { name: "nostr.build plans" })
+    dialog.getByRole("link", { name: "Compare nostr.build plans" })
   ).toHaveAttribute("href", "https://account.nostr.build/plans")
   await expect(
-    dialog.getByRole("link", { name: "Terms of Service" })
-  ).toHaveAttribute("href", "https://account.nostr.build/tos")
-  await expect(
-    dialog.getByRole("link", { name: "Privacy Policy" })
-  ).toHaveAttribute("href", "https://account.nostr.build/privacy")
-  const previewBox = await dialog
-    .getByText("Conduit Market card preview", { exact: true })
-    .boundingBox()
-  const disclosureBox = await dialog
-    .getByText(fallbackDisclosureText, { exact: false })
-    .boundingBox()
-  expect(previewBox?.y ?? Number.POSITIVE_INFINITY).toBeLessThan(
-    disclosureBox?.y ?? Number.NEGATIVE_INFINITY
+    dialog.getByRole("link", { name: "Manage media servers" })
+  ).toHaveAttribute("href", "/network")
+  await expect(dialog.locator("#product-image-file")).toHaveAttribute(
+    "multiple",
+    ""
   )
 
   await dialog.locator("#product-image-file").setInputFiles({
@@ -637,7 +628,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   expect(state.originalBodyObserved).toBe(false)
   await expect(
     dialog.getByRole("button", { name: "Add another image", exact: true })
-  ).toBeDisabled()
+  ).toBeEnabled()
 
   await dialog.getByRole("button", { name: "Add by URL" }).click()
   await dialog
@@ -673,7 +664,7 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
       name: "Add another image",
       exact: true,
     })
-  ).toBeDisabled()
+  ).toBeEnabled()
 
   page.once("dialog", (confirmation) => confirmation.accept())
   await resumedDialog.getByRole("button", { name: "Discard changes" }).click()
@@ -714,299 +705,225 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
       name: "Add another image",
       exact: true,
     })
-  ).toBeDisabled()
-  expect(state.putCount).toBe(2)
-})
-
-test("a pristine new-product draft releases its consumed fallback claim @merchant", async ({
-  page,
-}) => {
-  test.setTimeout(90_000)
-  const state = await interceptBlossom(page, fallbackServer)
-  const { dialog } = await openProductDialogWithSigner(page)
-  await expect(
-    dialog.getByText(fallbackDisclosureText, { exact: false })
-  ).toBeVisible()
-
-  await dialog.locator("#product-image-file").setInputFiles(image192)
-  await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
-    /^https:\/\/cdn\.conduit\.market\//
-  )
-  expect(state.putCount).toBe(1)
-  await dialog
-    .getByRole("button", { name: "Clear primary image", exact: true })
-    .click()
-  await expect(dialog.getByLabel("Primary image URL")).toHaveCount(0)
-  await dialog.locator("form").getByRole("button", { name: "Close" }).click()
-  await expect(dialog).toBeHidden()
-
-  await page.getByRole("button", { name: "Add product" }).first().click()
-  const freshDialog = page.getByRole("dialog", { name: "Add product" })
-  await expect(freshDialog).toBeVisible()
-  await expect(
-    freshDialog.getByRole("button", {
-      name: "Add image",
-      exact: true,
-    })
   ).toBeEnabled()
-  await freshDialog.locator("#product-image-file").setInputFiles(image512)
-  await expect(freshDialog.getByLabel("Primary image URL")).toHaveValue(
-    /^https:\/\/cdn\.conduit\.market\//
-  )
   expect(state.putCount).toBe(2)
 })
 
-test("fallback destination persistence fails before signing and survives draft recovery @merchant", async ({
-  page,
-}) => {
-  test.setTimeout(90_000)
-  await page.addInitScript(
-    ({ allowKey, claimPrefix }) => {
-      const originalSetItem = Storage.prototype.setItem
+for (const scenario of [
+  "consumed",
+  "corrupt",
+  "unreadable",
+  "unwritable",
+  "ambiguous",
+  "destination-rejected",
+] as const) {
+  test(`legacy one-image claim ${scenario} cannot block batch uploads or draft recovery @merchant`, async ({
+    page,
+  }) => {
+    test.setTimeout(90_000)
+    await page.addInitScript((scenario) => {
+      const prefix = "conduit:merchant:product_image_fallback:v1"
+      const get = Storage.prototype.getItem
+      const set = Storage.prototype.setItem
+      Storage.prototype.getItem = function (key) {
+        if (!key.startsWith(prefix)) return get.call(this, key)
+        if (scenario === "unreadable")
+          throw new DOMException("Synthetic storage denial", "SecurityError")
+        if (scenario === "consumed") return "1"
+        if (scenario === "ambiguous")
+          return JSON.stringify({
+            version: 1,
+            state: "retry_same_hash",
+            sha256: "f".repeat(64),
+          })
+        if (scenario === "corrupt") return "{corrupt"
+        return null
+      }
       Storage.prototype.setItem = function (key, value) {
         if (
-          key.startsWith(claimPrefix) &&
-          key.includes("product%3A30402%3A") &&
-          this.getItem(allowKey) !== "1"
-        ) {
+          key.startsWith(prefix) &&
+          ["unwritable", "destination-rejected"].includes(scenario)
+        )
           throw new DOMException(
-            "Synthetic destination storage rejection",
+            "Synthetic storage denial",
             "QuotaExceededError"
           )
-        }
-        return originalSetItem.call(this, key, value)
+        return set.call(this, key, value)
       }
-    },
-    {
-      allowKey: "conduit:test:allow-fallback-destination",
-      claimPrefix: "conduit:merchant:product_image_fallback:v1",
-    }
-  )
-  const state = await interceptBlossom(page, fallbackServer)
+    }, scenario)
+    const state = await interceptBlossom(page, fallbackServer)
+    const { dialog } = await openProductDialogWithSigner(page)
+    await expect(
+      dialog.getByText(fallbackDisclosureText, { exact: false })
+    ).toBeVisible()
+    await dialog.getByLabel("Title").fill(`Legacy claim ${scenario}`)
+    await dialog
+      .locator("#product-image-file")
+      .setInputFiles([image192, image512])
+    await expect(dialog.getByLabel("Image 2 URL")).toHaveValue(
+      /^https:\/\/cdn\.conduit\.market\//
+    )
+    const urls = [
+      await dialog.getByLabel("Primary image URL").inputValue(),
+      await dialog.getByLabel("Image 2 URL").inputValue(),
+    ]
+    expect(state.putCount).toBe(2)
+    await dialog.locator("form").getByRole("button", { name: "Close" }).click()
+    await expect(dialog).toBeHidden()
+    await page.reload()
+    await page.getByRole("button", { name: "Resume product draft" }).click()
+    const resumed = page.getByRole("dialog", { name: "Add product" })
+    await expect(resumed.getByLabel("Primary image URL")).toHaveValue(urls[0])
+    await expect(resumed.getByLabel("Image 2 URL")).toHaveValue(urls[1])
+    await expect(
+      resumed.getByRole("button", { name: "Add another image", exact: true })
+    ).toBeEnabled()
+    expect(state.putCount).toBe(2)
+  })
+}
+
+test("default batch keeps a verified image when another fails and retries only the failure @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const state = await interceptBlossom(page, fallbackServer, {
+    failSecondOnce: true,
+  })
   const { dialog } = await openProductDialogWithSigner(page)
   await expect(
     dialog.getByText(fallbackDisclosureText, { exact: false })
   ).toBeVisible()
-  await dialog.locator("#product-image-file").setInputFiles(image192)
+  await dialog
+    .locator("#product-image-file")
+    .setInputFiles([image192, image512])
   await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//
   )
-  await dialog.getByLabel("Title").fill("Destination-guarded fallback")
+  await expect(
+    dialog.getByRole("button", { name: "Retry image 2 upload" })
+  ).toBeVisible()
+  expect(state.putCount).toBe(2)
+  await dialog.getByRole("button", { name: "Retry image 2 upload" }).click()
+  await expect(dialog.getByLabel("Image 2 URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\//
+  )
+  expect(state.putCount).toBe(3)
+  const cover = await dialog.getByLabel("Primary image URL").inputValue()
+  const second = await dialog.getByLabel("Image 2 URL").inputValue()
+  await dialog.getByRole("button", { name: "Make cover", exact: true }).click()
+  await expect(dialog.getByLabel("Primary image URL")).toHaveValue(second)
+  await expect(dialog.getByLabel("Image 2 URL")).toHaveValue(cover)
+})
+
+test("configured backup failure retains primary, retries the backup, and recovers display @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const backupServer = "https://backup-media.conduit.market"
+  const primary = await interceptBlossom(page, configuredServer, {
+    resourcePathPrefix: "primary",
+  })
+  const backup = await interceptBlossom(page, backupServer, {
+    rejectFirstStatus: 429,
+    resourcePathPrefix: "backup",
+  })
+  const { dialog, pubkey } = await openProductDialogWithSigner(page, {
+    configuredServerUrls: [configuredServer, backupServer],
+  })
+  await expect(
+    dialog.getByText("your configured media servers", { exact: false })
+  ).toBeVisible()
+  // Fetch verification succeeds, while image loading simulates a host outage.
+  await page.route("https://cdn.conduit.market/primary/**", (route) =>
+    route.request().resourceType() === "image"
+      ? route.abort()
+      : route.fallback()
+  )
+  await dialog.locator("#product-image-file").setInputFiles(image192)
+  await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
+    /^https:\/\/cdn\.conduit\.market\/primary\//
+  )
+  await expect(
+    dialog.getByText("Image is usable.", { exact: false })
+  ).toBeVisible()
+  expect(primary.putCount).toBe(1)
+  expect(backup.putCount).toBe(1)
+  await dialog.getByRole("button", { name: "Retry image 1 upload" }).click()
+  await expect(
+    dialog.getByRole("button", { name: "Retry image 1 upload" })
+  ).toHaveCount(0)
+  await expect(
+    dialog.getByRole("button", { name: "Add another image" })
+  ).toBeEnabled()
+  expect(primary.putCount).toBe(1)
+  expect(backup.putCount).toBe(2)
+  expect(primary.requestHashes[0]).toBe(backup.requestHashes[1])
+  const preview = dialog.getByRole("img", {
+    name: "Product image",
+    exact: true,
+  })
+  await expect(preview).toHaveAttribute("src", backup.resourceUrls[0])
+  await dialog.getByLabel("Title").fill("Redundant image listing")
   await dialog.getByLabel("Price").fill("7")
   await dialog.locator("#product-fulfillment").click()
   await page.getByRole("option", { name: "Digital" }).click()
   const tags = dialog.getByRole("combobox", { name: "Tags" })
-  for (const tag of ["fallback", "destination", "guardrail"]) {
+  for (const tag of ["redundant", "image", "copy"]) {
     await tags.fill(tag)
     await tags.press("Enter")
   }
-
   await dialog
     .getByRole("button", { name: "Publish product", exact: true })
     .click()
-  await expect(
-    dialog.getByText(
-      "The public fallback could not preserve retry safety on this device.",
-      { exact: false }
-    )
-  ).toBeVisible()
-  await expect(dialog).toBeVisible()
-  expect(
-    await page.evaluate(
-      () =>
-        (window as unknown as { __conduitSignedKinds?: number[] })
-          .__conduitSignedKinds
-    )
-  ).toEqual([24242])
-  expect(state.putCount).toBe(1)
-
-  await page.reload()
-  const resumeButton = page.getByRole("button", {
-    name: "Resume product draft",
-  })
-  await expect(resumeButton).toBeVisible()
-  await resumeButton.click()
-  const resumed = page.getByRole("dialog", { name: "Add product" })
-  await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
-    /^https:\/\/cdn\.conduit\.market\//
-  )
-  await expect(
-    resumed.getByRole("button", { name: "Add another image", exact: true })
-  ).toBeDisabled()
-  await resumed.getByLabel("Title").fill("Recovered destination guard")
-  await page.evaluate(
-    (allowKey) => localStorage.setItem(allowKey, "1"),
-    "conduit:test:allow-fallback-destination"
-  )
-  await resumed
-    .getByRole("button", { name: "Publish product", exact: true })
-    .click()
-  const inboxReady = page.getByRole("heading", {
-    name: "Private inbox ready",
-    exact: true,
-  })
-  const publishedListing = page
-    .getByText("Recovered destination guard", { exact: true })
-    .first()
-  await expect(inboxReady.or(publishedListing)).toBeVisible({
-    timeout: 15_000,
-  })
-  if (await inboxReady.isVisible()) {
-    await page
-      .getByRole("button", { name: "Publish product", exact: true })
-      .last()
-      .click()
-  }
-  await expect(resumed).toBeHidden({ timeout: 15_000 })
-  await expect(publishedListing).toBeVisible({ timeout: 15_000 })
-  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
-  const editDialog = page.getByRole("dialog", { name: "Edit listing" })
-  await expect(editDialog).toBeVisible()
-  await expect(
-    editDialog.getByRole("button", {
-      name: "Add another image",
-      exact: true,
-    })
-  ).toBeDisabled()
-  expect(state.putCount).toBe(1)
-})
-
-test("fallback rejection clears the durable claim across reload @merchant", async ({
-  page,
-}) => {
-  test.setTimeout(90_000)
-  const state = await interceptBlossom(page, fallbackServer, {
-    rejectFirstStatus: 429,
-  })
-  const { dialog } = await openProductDialogWithSigner(page)
-  await expect(
-    dialog.getByText(fallbackDisclosureText, { exact: false })
-  ).toBeVisible()
-  await dialog.getByLabel("Title").fill("Rejected fallback draft")
-  await dialog.locator("#product-image-file").setInputFiles(image192)
-  await expect(
-    dialog.getByText("This media server is rate limiting uploads.", {
-      exact: false,
-    })
-  ).toBeVisible()
-  expect(state.putCount).toBe(1)
-
-  await dialog.locator("form").getByRole("button", { name: "Close" }).click()
-  await expect(dialog).toBeHidden()
-  await page.reload()
-  await page.getByRole("button", { name: "Add product" }).first().click()
-  const resumed = page.getByRole("dialog", { name: "Add product" })
-  await expect(
-    resumed.getByRole("button", { name: "Add image", exact: true })
-  ).toBeEnabled()
-  await resumed.locator("#product-image-file").setInputFiles(image512)
-  await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
-    /^https:\/\/cdn\.conduit\.market\//
-  )
-  expect(state.putCount).toBe(2)
-})
-
-test("ambiguous fallback retries only the same prepared hash after reload @merchant", async ({
-  page,
-}) => {
-  test.setTimeout(90_000)
-  const state = await interceptBlossom(page, fallbackServer, {
-    abortFirstOnce: true,
-  })
-  const { dialog } = await openProductDialogWithSigner(page)
-  await expect(
-    dialog.getByText(fallbackDisclosureText, { exact: false })
-  ).toBeVisible()
-  await dialog.getByLabel("Title").fill("Ambiguous fallback draft")
-  await dialog.locator("#product-image-file").setInputFiles(image192)
-  await expect(
-    dialog.getByText("The upload did not finish. Retry this image.", {
-      exact: true,
-    })
-  ).toBeVisible()
-  expect(state.putCount).toBe(1)
-
-  await dialog.locator("form").getByRole("button", { name: "Close" }).click()
-  await expect(dialog).toBeHidden()
-  await page.reload()
-  await page.getByRole("button", { name: "Add product" }).first().click()
-  const resumed = page.getByRole("dialog", { name: "Add product" })
-  await expect(
-    resumed.getByText("Choose the same image to retry", { exact: false })
-  ).toBeVisible()
-  await expect(
-    resumed.getByRole("button", { name: "Add image", exact: true })
-  ).toBeEnabled()
-
-  await resumed.locator("#product-image-file").setInputFiles(image512)
-  await expect(
-    resumed.getByText("Choose the same image you previously tried to upload.", {
-      exact: false,
-    })
-  ).toBeVisible()
-  expect(state.putCount).toBe(1)
-  await resumed
-    .getByRole("button", { name: "Remove unfinished image 1", exact: true })
-    .click()
-  await expect(
-    resumed.getByRole("button", { name: "Add image", exact: true })
-  ).toBeEnabled()
-
-  await resumed.locator("#product-image-file").setInputFiles(image192)
-  await expect(resumed.getByLabel("Primary image URL")).toHaveValue(
-    /^https:\/\/cdn\.conduit\.market\//
-  )
-  expect(state.putCount).toBe(2)
-  expect(state.requestHashes[1]).toBe(state.requestHashes[0])
-})
-
-test("fallback refuses PUT when its durable guard cannot be confirmed @merchant", async ({
-  page,
-}) => {
-  await page.addInitScript((claimPrefix) => {
-    const originalSetItem = Storage.prototype.setItem
-    Storage.prototype.setItem = function (key, value) {
-      if (key.startsWith(claimPrefix)) {
-        throw new DOMException(
-          "Synthetic storage rejection",
-          "QuotaExceededError"
+  await expect(dialog).toBeHidden({ timeout: 15_000 })
+  let event: Awaited<ReturnType<typeof readTestRelayEvents>>[number] | undefined
+  await expect
+    .poll(
+      async () => {
+        const events = await readTestRelayEvents({
+          kinds: [30402],
+          authors: [pubkey],
+        })
+        event = events.find((candidate) =>
+          candidate.tags.some(
+            (tag) => tag[0] === "title" && tag[1] === "Redundant image listing"
+          )
         )
-      }
-      return originalSetItem.call(this, key, value)
-    }
-  }, "conduit:merchant:product_image_fallback:v1")
-  const state = await interceptBlossom(page, fallbackServer)
-  const { dialog } = await openProductDialogWithSigner(page)
-  await expect(
-    dialog.getByText(fallbackDisclosureText, { exact: false })
-  ).toBeVisible()
-  await dialog.locator("#product-image-file").setInputFiles(image192)
-  await expect(
-    dialog.getByText(
-      "The public fallback could not preserve retry safety on this device.",
-      { exact: false }
+        return event?.tags.filter((tag) => tag[0] === "image")
+      },
+      { timeout: 15_000 }
     )
-  ).toBeVisible()
-  expect(state.putCount).toBe(0)
-})
-
-test("a corrupt fallback claim fails closed without sending a file @merchant", async ({
-  page,
-}) => {
-  await page.addInitScript((claimPrefix) => {
-    const originalGetItem = Storage.prototype.getItem
-    Storage.prototype.getItem = function (key) {
-      if (key.startsWith(claimPrefix)) return ""
-      return originalGetItem.call(this, key)
-    }
-  }, "conduit:merchant:product_image_fallback:v1")
-  const state = await interceptBlossom(page, fallbackServer)
-  const { dialog } = await openProductDialogWithSigner(page)
+    .toEqual([["image", primary.resourceUrls[0]]])
+  if (!event)
+    throw new Error("Expected the published signed listing on the test relay")
+  expect(event.tags).toContainEqual(["image", primary.resourceUrls[0]])
+  expect(event.tags.find((t) => t[0] === "imeta")).toContain(
+    `fallback ${backup.resourceUrls[0]}`
+  )
+  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+  const edit = page.getByRole("dialog", { name: "Edit listing" })
+  await expect(edit.getByLabel("Primary image URL")).toHaveValue(
+    primary.resourceUrls[0]
+  )
   await expect(
-    dialog.getByText(fallbackDisclosureText, { exact: false })
-  ).toBeVisible()
+    edit.getByRole("img", { name: "Redundant image listing", exact: true })
+  ).toHaveAttribute("src", backup.resourceUrls[0])
+  await edit.screenshot({ path: "/private/tmp/conduit-media-backup-edit.png" })
+  const dTag = event.tags.find((tag) => tag[0] === "d")![1]
+  const marketUrl =
+    "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MARKET_PORT ?? "7000")
+  await page.goto(
+    `${marketUrl}/products/${encodeURIComponent(`30402:${pubkey}:${dTag}`)}`
+  )
   await expect(
-    dialog.getByRole("button", { name: "Add image", exact: true })
-  ).toBeDisabled()
-  expect(state.putCount).toBe(0)
+    page.getByRole("heading", { name: "Redundant image listing", exact: true })
+  ).toBeVisible({ timeout: 20_000 })
+  await expect(
+    page
+      .getByRole("img", { name: "Redundant image listing", exact: true })
+      .first()
+  ).toHaveAttribute("src", backup.resourceUrls[0])
+  await page.screenshot({
+    path: "/private/tmp/conduit-media-backup-market.png",
+  })
 })

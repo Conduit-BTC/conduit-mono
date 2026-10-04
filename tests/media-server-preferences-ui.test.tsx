@@ -57,9 +57,9 @@ describe("shared media server preference UI", () => {
       <MediaServerPreferencesSection view={view()} {...actions} />
     )
     expect(html).toContain("Media servers")
-    expect(html).toContain("https://blossom.nostr.build")
-    expect(html).toContain("will not add or publish that fallback")
-    expect(html).not.toContain('value="https://blossom.nostr.build"')
+    expect(html).toContain("https://blossom.ditto.pub")
+    expect(html).toContain("will not add or publish those defaults")
+    expect(html).not.toContain('value="https://blossom.ditto.pub"')
     expect(html).toContain(
       "Choose the preferred order for Blossom media servers."
     )

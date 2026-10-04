@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 import { type FormEvent, useLayoutEffect, useRef, useState } from "react"
 import {
+  PRODUCT_IMAGE_DEFAULT_SERVERS,
   type MediaServerDraftActionResult,
   type MediaServerPreferencesView,
 } from "@conduit/core"
@@ -328,12 +329,12 @@ export function MediaServerPreferencesSection({
           </ol>
         ) : (
           <div className="mt-3 rounded-xl border border-dashed border-[var(--border)] px-3 py-4 text-sm leading-6 text-[var(--text-secondary)]">
-            No media server preference is saved locally. Later Conduit media
-            upload will visibly default to{" "}
+            No media server preference is saved locally. Product uploads use the
+            app defaults:{" "}
             <span className="font-mono text-[var(--text-primary)]">
-              https://blossom.nostr.build
+              {PRODUCT_IMAGE_DEFAULT_SERVERS.join(", ")}
             </span>
-            . Conduit will not add or publish that fallback for you.
+            . Conduit will not add or publish those defaults for you.
           </div>
         )}
       </PreferenceSectionBody>

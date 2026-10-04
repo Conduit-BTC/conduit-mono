@@ -30,6 +30,7 @@ import {
 } from "@conduit/core"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
+  RecoverableProductImage,
   Avatar,
   AvatarFallback,
   AvatarImage,
@@ -825,8 +826,8 @@ function ProductPage() {
                     }`}
                     aria-label={`Show image ${index + 1}`}
                   >
-                    <img
-                      src={image.url}
+                    <RecoverableProductImage
+                      image={image}
                       alt={image.alt ?? product.title}
                       referrerPolicy="no-referrer"
                       className={`h-full w-full object-cover ${
@@ -840,8 +841,8 @@ function ProductPage() {
 
             <div className="w-full min-w-0 max-w-[calc(100vw-2rem)] self-start justify-self-stretch overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] lg:max-w-full">
               <div className="flex aspect-square w-full max-w-full items-center justify-center overflow-hidden bg-[var(--background)] p-3 sm:aspect-[4/3] sm:p-6 lg:max-h-[calc(100vh-11rem)]">
-                <img
-                  src={selectedImage?.url}
+                <RecoverableProductImage
+                  image={selectedImage}
                   alt={selectedImage?.alt ?? product.title}
                   referrerPolicy="no-referrer"
                   className={`block h-full max-h-full w-full min-w-0 max-w-full object-contain ${
@@ -863,8 +864,8 @@ function ProductPage() {
                       }`}
                       aria-label={`Show image ${index + 1}`}
                     >
-                      <img
-                        src={image.url}
+                      <RecoverableProductImage
+                        image={image}
                         alt={image.alt ?? product.title}
                         referrerPolicy="no-referrer"
                         className={`h-full w-full object-cover ${

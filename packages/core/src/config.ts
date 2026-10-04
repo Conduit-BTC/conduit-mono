@@ -16,7 +16,7 @@ export interface RelayBucketConfig {
 }
 
 export type AppRelayNip65Mode = "read_write" | "write" | null
-export const APP_RELAY_REGISTRY_VERSION = 5
+export const APP_RELAY_REGISTRY_VERSION = 6
 
 /**
  * One transparent, code-owned Conduit app relay. These records are product
@@ -36,7 +36,7 @@ export interface AppRelayDefinition {
 
 export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
   {
-    url: "wss://conduit-congee.fly.dev",
+    url: "wss://relay.conduit.market",
     fallbackName: "Conduit Marketplace Relay",
     fallbackIconUrl: "/images/logo/logo-icon.svg",
     read: true,
@@ -57,8 +57,18 @@ export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
     nip17Preset: true,
   },
   {
-    url: "wss://relay.primal.net",
-    fallbackName: "Primal Public Relay",
+    url: "wss://relay.plebeian.market",
+    fallbackName: "Plebeian Market Relay",
+    read: false,
+    write: false,
+    commerce: true,
+    privateInbox: false,
+    nip65Preset: null,
+    nip17Preset: false,
+  },
+  {
+    url: "wss://relay.damus.io",
+    fallbackName: "Damus Public Relay",
     read: false,
     write: true,
     commerce: false,
@@ -76,22 +86,12 @@ export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
     nip65Preset: null,
     nip17Preset: false,
   },
-  {
-    url: "wss://relay.plebeian.market",
-    fallbackName: "Plebeian Market Relay",
-    read: false,
-    write: false,
-    commerce: true,
-    privateInbox: false,
-    nip65Preset: null,
-    nip17Preset: false,
-  },
 ]
 
 export const CANONICAL_APP_READ_RELAYS = CANONICAL_APP_RELAY_DEFINITIONS.filter(
   (relay) => relay.read
 ).map((relay) => relay.url)
-export const CANONICAL_APP_BACKPLANE_RELAYS = ["wss://conduit-congee.fly.dev"]
+export const CANONICAL_APP_BACKPLANE_RELAYS = ["wss://relay.conduit.market"]
 export const CANONICAL_APP_WRITE_RELAYS =
   CANONICAL_APP_RELAY_DEFINITIONS.filter((relay) => relay.write).map(
     (relay) => relay.url
@@ -99,7 +99,7 @@ export const CANONICAL_APP_WRITE_RELAYS =
 export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
   "wss://relay.ditto.pub",
   "wss://nos.lol",
-  "wss://relay.primal.net",
+  "wss://relay.damus.io",
 ]
 /**
  * Clave's push-wake proxy only watches this relay. Keep it in the Nostr
@@ -108,21 +108,21 @@ export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
  */
 export const CLAVE_PUSH_RELAY = "wss://relay.powr.build"
 export const CANONICAL_COMMERCE_DISCOVERY_RELAYS = [
-  "wss://conduit-congee.fly.dev",
+  "wss://relay.conduit.market",
   "wss://relay.ditto.pub",
   "wss://relay.plebeian.market",
 ]
 // Market product NIP-50 uses the primary entry. Ditto remains a secondary
 // search index for other discovery paths.
 export const CANONICAL_SEARCH_INDEX_RELAYS = [
-  "wss://conduit-congee.fly.dev",
+  "wss://relay.conduit.market",
   "wss://relay.ditto.pub",
 ]
 export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS = [
-  "wss://conduit-congee.fly.dev",
+  "wss://relay.conduit.market",
   "wss://relay.ditto.pub",
   "wss://nos.lol",
-  "wss://relay.primal.net",
+  "wss://relay.damus.io",
 ]
 /**
  * Bounded compatibility reads for encrypted commerce messages, limited to the
@@ -130,11 +130,11 @@ export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS = [
  * Do not use this set when creating a kind-10050 inbox declaration.
  */
 export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS = [
-  "wss://conduit-congee.fly.dev",
+  "wss://relay.conduit.market",
   "wss://relay.ditto.pub",
 ]
 export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
-  "wss://conduit-congee.fly.dev",
+  "wss://relay.conduit.market",
   "wss://relay.ditto.pub",
 ]
 /**
@@ -144,13 +144,13 @@ export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
  * extend this with arbitrary NIP-65, local OUT, or public relays.
  */
 export const CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS = [
-  "wss://conduit-congee.fly.dev",
+  "wss://relay.conduit.market",
   "wss://relay.ditto.pub",
 ]
 export const CANONICAL_ZAP_PUBLIC_RELAYS = [
   "wss://nos.lol",
   "wss://relay.ditto.pub",
-  "wss://relay.primal.net",
+  "wss://relay.damus.io",
   "wss://relay.plebeian.market",
 ]
 export const CANONICAL_DEFAULT_RELAYS = [
@@ -158,7 +158,7 @@ export const CANONICAL_DEFAULT_RELAYS = [
   ...CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
 ]
 const RETIRED_DEFAULT_RELAYS = new Set<string>()
-const FALLBACK_RELAY_URL = "wss://conduit-congee.fly.dev"
+const FALLBACK_RELAY_URL = "wss://relay.conduit.market"
 const OFFICIAL_PRODUCTION_APP_HOSTNAMES = new Set([
   "shop.conduit.market",
   "sell.conduit.market",

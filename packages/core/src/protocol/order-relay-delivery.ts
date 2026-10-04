@@ -28,10 +28,10 @@ import {
 const RETRY_DELAY_MS = 60_000
 const FOREGROUND_RETRY_DELAY_MS = 15_000
 export const ORDER_RELAY_DELIVERY_LEASE_MS = 30_000
-// The compatibility registry before the Congee cutover. This is only used to
-// validate already-staged exact wraps; new plans use the current registry.
-const PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS = new Set([
-  "wss://relay.conduit.market",
+// Previous app-owned hostname, accepted only for already-staged exact wraps.
+// New plans and retry targets use the current registry.
+const PRE_HOSTNAME_COMPATIBILITY_ORDER_RELAYS = new Set([
+  "wss://conduit-congee.fly.dev",
   "wss://relay.ditto.pub",
 ])
 
@@ -196,9 +196,9 @@ function isValidPersistedCompatibilityPlan(
     (relayUrls.length > 0 &&
       relayUrls.length <= MAX_COMPATIBILITY_ORDER_RELAYS &&
       new Set(relayUrls).size === relayUrls.length &&
-      relayUrls.includes("wss://relay.conduit.market") &&
+      relayUrls.includes("wss://conduit-congee.fly.dev") &&
       relayUrls.every((relayUrl) =>
-        PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS.has(relayUrl)
+        PRE_HOSTNAME_COMPATIBILITY_ORDER_RELAYS.has(relayUrl)
       ))
   )
 }

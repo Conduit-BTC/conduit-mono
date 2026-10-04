@@ -433,7 +433,7 @@ describe("durable order delivery staging", () => {
       )
     ).rejects.toThrow("validated relay plan")
 
-    const formerConduit = "wss://relay.conduit.market"
+    const formerConduit = "wss://conduit-congee.fly.dev"
     await expect(
       stageOrderRelayDelivery(
         {
