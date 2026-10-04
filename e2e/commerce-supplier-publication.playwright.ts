@@ -495,8 +495,7 @@ test("supplier percentages and readiness gate publish exact signed terms consume
       exact: true,
     })
     await expect(resume).toBeVisible()
-    await merchantReload.wait()
-    await merchantPage.reload()
+    await merchantReload.reload()
     await expect(resume).toBeVisible()
     await expect(dialog).toBeHidden()
     await resume.click()
@@ -658,8 +657,8 @@ test("supplier percentages and readiness gate publish exact signed terms consume
       })
       .toEqual(consumed)
     stage = "Market checkout reload"
-    await Promise.all([merchantReload.wait(), buyerReload.wait()])
-    await buyerPage.reload()
+    await merchantReload.wait()
+    await buyerReload.reload()
     await expect(checkoutHeading).toBeVisible({ timeout: 30_000 })
     await expect(sendOrder).toBeEnabled({ timeout: 30_000 })
     await expect
