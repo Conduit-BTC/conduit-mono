@@ -852,7 +852,6 @@ export async function publishShopperPresets({
   dependencies?: ShopperPresetsProtocolDependencies
 }): Promise<ShopperPresetsWriteResult> {
   const owner = normalizePubkey(pubkey)
-  const ndk = dependencies.ndk ?? getNdk()
   const signer = dependencies.signer ?? getAccountSigner()
   if (!signer) {
     throw new Error("Connect a signer before syncing shopper presets.")
@@ -862,7 +861,7 @@ export async function publishShopperPresets({
   const authenticatedDependencies = {
     ...dependencies,
     authenticatedPubkey: owner,
-    ndk,
+    ndk: dependencies.ndk ?? getNdk(),
   }
   const current = await fetchShopperPresets(owner, authenticatedDependencies)
   if (current.state === "unavailable") {
@@ -889,16 +888,14 @@ export async function publishShopperPresets({
     password,
     dependencies.randomBytes
   )
-  const event = new NDKEvent(ndk)
-  event.kind = EVENT_KINDS.APPLICATION_DATA
-  event.pubkey = owner
-  event.created_at = createdAt
-  event.tags = appendConduitClientTag([["d", SHOPPER_PRESETS_D_TAG]], appId)
-  event.content = serializeShopperPresetsEnvelope(envelope)
-  Object.assign(
-    event,
-    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
-  )
+  const draft: UnsignedNostrEvent = {
+    kind: EVENT_KINDS.APPLICATION_DATA,
+    pubkey: owner,
+    created_at: createdAt,
+    tags: appendConduitClientTag([["d", SHOPPER_PRESETS_D_TAG]], appId),
+    content: serializeShopperPresetsEnvelope(envelope),
+  }
+  const event = await signer.signEvent(draft)
 
   const publishEvent = dependencies.publishEvent ?? publishWithPlanner
   const publish = await publishEvent(event, {

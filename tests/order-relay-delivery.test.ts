@@ -841,3 +841,58 @@ describe("order relay delivery retry", () => {
     expect(serialized).not.toMatch(/failureMessage|invoice|nsec|privateKey/)
   })
 })
+
+for (const status of [
+  "error",
+  "auth_required",
+  "cancelled",
+  "policy_blocked",
+] as const) {
+  it(`restores exact ${status} checkpoint evidence without timeout substitution`, async () => {
+    const candidate = lifecycle()
+    const delivery = candidate.orderRelayDelivery!
+    delivery.deliveryLeaseOwner = "worker"
+    delivery.relayDelivery[1].attemptGeneration = 1
+    const store = repository(candidate)
+    await recordOrderRelayDeliveryOutcomes(
+      {
+        orderId: candidate.orderId,
+        buyerPubkey: BUYER,
+        leaseOwner: "worker",
+        wrapId: signedWrap.id,
+        outcomes: [{ relayUrl: DEFAULT_RELAY_URLS[1], generation: 1, status }],
+        releaseLease: true,
+      },
+      { repository: store.repository, now: () => 100 }
+    )
+    const restored = await store.repository.get(candidate.orderId)
+    expect(restored?.orderRelayDelivery?.relayDelivery[1].status).toBe(status)
+    expect(restored?.orderRelayDelivery?.signedRecipientWrap).toEqual(
+      structuredClone(signedWrap)
+    )
+    if (status === "policy_blocked") {
+      expect(restored?.orderRelayDelivery?.nextRetryAt).toBeUndefined()
+      let publishes = 0
+      await resumePendingOrderRelayDeliveries(BUYER, {
+        repository: store.repository,
+        now: () => 200,
+        publisher: async () => {
+          publishes += 1
+          return "acked"
+        },
+      })
+      await retryOrderRelayDelivery(candidate.orderId, BUYER, {
+        repository: store.repository,
+        now: () => 200,
+        publisher: async () => {
+          publishes += 1
+          return "acked"
+        },
+      })
+      expect(publishes).toBe(0)
+      expect(store.read().orderRelayDelivery?.relayDelivery[1].status).toBe(
+        "policy_blocked"
+      )
+    }
+  })
+}

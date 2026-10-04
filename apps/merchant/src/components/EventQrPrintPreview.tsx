@@ -153,7 +153,7 @@ export function PrintableEventQrSign({ sheet }: { sheet: EventQrSignSheet }) {
       >
         <header className="event-sign-brand flex items-center justify-between gap-6 border-b-4 border-primary-500 px-10 py-4">
           <img
-            src="/images/logo/logo-full.svg"
+            src="/images/logo/merchant-logo-full.svg"
             alt="Conduit"
             className="h-auto w-40"
           />

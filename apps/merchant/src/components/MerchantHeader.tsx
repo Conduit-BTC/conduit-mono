@@ -96,10 +96,10 @@ function MerchantAvatarFallback() {
   return (
     <span className="flex size-full items-center justify-center rounded-full bg-[var(--avatar-bg)]">
       <img
-        src="/images/logo/logo-icon.svg"
+        src="/images/logo/merchant-logo-icon.svg"
         alt=""
         aria-hidden="true"
-        className="h-4 w-auto rotate-180 select-none object-contain brightness-0 invert"
+        className="h-4 w-auto select-none object-contain brightness-0 invert"
         draggable="false"
       />
     </span>
@@ -114,7 +114,7 @@ export function MerchantBrandLockup() {
         className="h-8 w-6 shrink-0 overflow-hidden min-[420px]:w-[6.75rem]"
       >
         <img
-          src="/images/logo/logo-full.svg"
+          src="/images/logo/merchant-logo-full.svg"
           alt="Conduit"
           width={386}
           height={115}

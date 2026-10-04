@@ -84,3 +84,14 @@ export function resolveConduitSession(
     relayScope,
   }
 }
+
+/** Provider-owned retained identity, updated before React renders or effects. */
+export function createAccountIdentityScope(initialPubkey: string | null) {
+  let currentPubkey = initialPubkey
+  return {
+    setPubkey: (pubkey: string | null) => {
+      currentPubkey = pubkey
+    },
+    isCurrent: (pubkey: string) => currentPubkey === pubkey,
+  }
+}

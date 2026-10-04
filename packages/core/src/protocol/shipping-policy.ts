@@ -14,7 +14,6 @@ import {
 import { parseProductEvent } from "./products"
 import { normalizeAddressRegion } from "./address-validation"
 import { EVENT_KINDS } from "./kinds"
-import { getNdk } from "./ndk"
 import { getAccountSigner } from "./session-signer"
 import type { AccountSigner, UnsignedNostrEvent } from "./nostr-event-signer"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
@@ -551,25 +550,22 @@ async function signAndPublishPolicyDraft(
   dependencies?: ShippingPolicyMutationDependencies
 ): Promise<SignedPublicNostrEvent> {
   ensureSession(dependencies)
-  const event = new NDKEvent(getNdk())
-  event.kind = draft.kind
-  event.pubkey = owner
-  event.created_at = createdAt
-  event.tags = draft.tags
-  event.content = draft.content
-  Object.assign(
-    event,
-    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
-  )
+  const event: UnsignedNostrEvent = {
+    kind: draft.kind,
+    pubkey: owner,
+    created_at: createdAt,
+    tags: draft.tags,
+    content: draft.content,
+  }
+  const signedEvent = await signer.signEvent(event)
   ensureSession(dependencies)
-  const signedEvent = event.rawEvent() as SignedPublicNostrEvent
   if (
     !isValidSignedPublicNostrEvent(signedEvent) ||
     signedEvent.pubkey !== owner
   )
     throw new Error("Signer returned invalid shipping evidence.")
   const result = await (dependencies?.publishEvent ?? publishWithPlanner)(
-    event,
+    signedEvent,
     {
       intent: "commerce_author_event",
       authorPubkey: owner,

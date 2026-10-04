@@ -1,4 +1,3 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { db, type EventMarketMerchantDecisionJob } from "../db"
 import {
   buildEventMarketAuthorizationDraft,
@@ -26,7 +25,6 @@ import {
 } from "./event-market-schedule"
 import { waitForVisibleDocument } from "./interactive-signer"
 import { EVENT_KINDS } from "./kinds"
-import { getNdk } from "./ndk"
 import { getAccountSigner } from "./session-signer"
 import type { UnsignedNostrEvent } from "./nostr-event-signer"
 import {
@@ -63,26 +61,22 @@ async function signRoster(input: {
   await waitForVisibleDocument()
   if (input.shouldContinue?.() === false)
     throw new Error("Organizer session changed.")
-  const ndk = await getNdk()
   const signer = getAccountSigner()
   if (!signer) throw new Error("Organizer signer is not connected.")
   const signerPubkey = (await signer.getPublicKey()).toLowerCase()
   if (signerPubkey !== input.organizerPubkey) {
     throw new Error("Active signer does not match the organizer.")
   }
-  const event = new NDKEvent(ndk)
-  event.kind = input.draft.kind
-  event.tags = input.draft.tags
-  event.content = input.draft.content
-  event.created_at = input.createdAt
+  const draft: UnsignedNostrEvent = {
+    kind: input.draft.kind,
+    pubkey: signerPubkey,
+    created_at: input.createdAt,
+    tags: input.draft.tags,
+    content: input.draft.content,
+  }
   if (input.shouldContinue?.() === false)
     throw new Error("Organizer session changed.")
-  event.pubkey = signerPubkey
-  Object.assign(
-    event,
-    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
-  )
-  const signed = event.rawEvent() as SignedPublicNostrEvent
+  const signed = await signer.signEvent(draft)
   if (
     !isValidSignedPublicNostrEvent(signed) ||
     signed.pubkey !== input.organizerPubkey
@@ -97,8 +91,7 @@ async function publishRoster(
   authorPubkey: string,
   shouldContinue?: () => boolean
 ): Promise<PublishWithPlannerResult> {
-  const ndk = await getNdk()
-  return publishWithPlanner(new NDKEvent(ndk, signedEvent), {
+  return publishWithPlanner(signedEvent, {
     intent: "commerce_author_event",
     authorPubkey,
     authenticatedPubkey: authorPubkey,

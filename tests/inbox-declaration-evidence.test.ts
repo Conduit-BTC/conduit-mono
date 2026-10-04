@@ -78,6 +78,41 @@ function pendingRelayOutcome(relayUrl: string): NetworkPreferenceRelayOutcome {
 }
 
 describe("durable inbox declaration evidence", () => {
+  it("retains local publication errors through checkpoint normalization and retry", () => {
+    const signedEvent = declarationEvent({ createdAt: 100 })
+    const relayUrl = "wss://nos.lol"
+    const staged = applyInboxDeclarationDistributionStage(undefined, {
+      pubkey: ACCOUNT_A,
+      signedEvent,
+      publishRelayUrls: [relayUrl],
+      relayOutcomes: [pendingRelayOutcome(relayUrl)],
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+    const failed = applyInboxDeclarationDistributionOutcomes(staged, {
+      publish: [{ relayUrl, status: "error" }],
+      observedAt: 1_100,
+    })
+    const restored = applyInboxDeclarationDistributionOutcomes(
+      structuredClone(failed),
+      {
+        readback: [{ relayUrl, status: "absent" }],
+        observedAt: 1_200,
+      }
+    )
+    expect(restored.pendingDistribution?.relayOutcomes[0]?.publishStatus).toBe(
+      "error"
+    )
+    expect(restored.pendingDistribution?.signedEvent).toEqual(signedEvent)
+    const retried = applyInboxDeclarationDistributionOutcomes(restored, {
+      publish: [{ relayUrl, status: "acked" }],
+      observedAt: 1_300,
+    })
+    expect(retried.pendingDistribution?.relayOutcomes[0]?.publishStatus).toBe(
+      "acked"
+    )
+  })
+
   it("keeps exact per-relay outcomes immutable while retrying only unresolved work", () => {
     const signedEvent = declarationEvent({ createdAt: 100 })
     const exactSignedBytes = structuredClone(signedEvent)

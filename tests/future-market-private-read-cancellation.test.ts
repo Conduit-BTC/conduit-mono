@@ -1,5 +1,5 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
-import { afterEach, describe, expect, it, spyOn } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -130,36 +130,30 @@ describe("future market private read cancellation", () => {
     let ownerCurrent = true
     __setRelayPublishTestOverrides({
       accountNetworkLocalStateRepository: { get: async () => null },
-    })
-    const publish = spyOn(NDKEvent.prototype, "publish").mockImplementation(
-      async function (this: NDKEvent) {
-        published.push(this.id)
+      publishSignedEventFrameToRelay: async ({ signedEvent }) => {
+        published.push(signedEvent.id)
         ownerCurrent = false
-        return new Set([{ url: recipientRelay }]) as never
-      }
-    )
-    try {
-      await expect(
-        retryFutureMarketPrivateDelivery({
-          record: {
-            version: 2,
-            type: "future_market_ready",
-            rumorId: "a".repeat(64),
-            readyReceiptId: "a".repeat(64),
-            claimRef: "b".repeat(64),
-            senderPubkey: merchant,
-            recipientPubkey: organizer,
-            signedRecipientWrap: recipientWrap,
-            signedSelfWrap: selfWrap,
-          },
-          authenticatedOwnerPubkey: merchant,
-          shouldContinue: () => ownerCurrent,
-        })
-      ).rejects.toMatchObject({ name: "AbortError" })
-      expect(published).toEqual([recipientWrap.id])
-      expect(published).not.toContain(selfWrap.id)
-    } finally {
-      publish.mockRestore()
-    }
+        return "acked"
+      },
+    })
+    await expect(
+      retryFutureMarketPrivateDelivery({
+        record: {
+          version: 2,
+          type: "future_market_ready",
+          rumorId: "a".repeat(64),
+          readyReceiptId: "a".repeat(64),
+          claimRef: "b".repeat(64),
+          senderPubkey: merchant,
+          recipientPubkey: organizer,
+          signedRecipientWrap: recipientWrap,
+          signedSelfWrap: selfWrap,
+        },
+        authenticatedOwnerPubkey: merchant,
+        shouldContinue: () => ownerCurrent,
+      })
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(published).toEqual([recipientWrap.id])
+    expect(published).not.toContain(selfWrap.id)
   })
 })
