@@ -1571,59 +1571,57 @@ async function streamProductRecordChunks(input: {
       pendingProgress = new Promise<void>((resolve, reject) => {
         setTimeout(() => {
           void (async () => {
-            while (pendingRefresh) {
-              input.signal?.throwIfAborted()
-              if (input.shouldContinue?.() === false)
-                throw new NostrSignerError("authority_changed")
-              pendingRefresh = false
-              const changedEvents = Array.from(pendingEvents.values())
-              pendingEvents.clear()
-              const currentRelayUrl = pendingRelayUrl
-              const changedRecords: CommerceProductRecord[] = []
-              let parseTaskStartedAt = performance.now()
-              for (const event of changedEvents) {
-                if (performance.now() - parseTaskStartedAt >= 8) {
-                  await yieldCatalogTask()
-                  parseTaskStartedAt = performance.now()
+            try {
+              while (pendingRefresh) {
+                input.signal?.throwIfAborted()
+                if (input.shouldContinue?.() === false)
+                  throw new NostrSignerError("authority_changed")
+                pendingRefresh = false
+                const changedEvents = Array.from(pendingEvents.values())
+                pendingEvents.clear()
+                const currentRelayUrl = pendingRelayUrl
+                const changedRecords: CommerceProductRecord[] = []
+                let parseTaskStartedAt = performance.now()
+                for (const event of changedEvents) {
+                  if (performance.now() - parseTaskStartedAt >= 8) {
+                    await yieldCatalogTask()
+                    parseTaskStartedAt = performance.now()
+                  }
+                  const record = dedupeProductEvents(
+                    [event],
+                    input.deletionTimestamps,
+                    input.retainRevisions
+                  )[0]
+                  if (!record) continue
+                  const recordKey = input.retainRevisions
+                    ? record.eventId ||
+                      `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+                    : record.addressId
+                  const previous = input.recordsByEventId.get(recordKey)
+                  const next = previous
+                    ? mergeProductRecordSources(previous, record)
+                    : record
+                  if (
+                    previous &&
+                    next.eventId === previous.eventId &&
+                    (next.sourceRelayUrls?.length ?? 0) ===
+                      (previous.sourceRelayUrls?.length ?? 0)
+                  ) {
+                    continue
+                  }
+                  input.recordsByEventId.set(recordKey, next)
+                  changedRecords.push(next)
                 }
-                const record = dedupeProductEvents(
-                  [event],
-                  input.deletionTimestamps,
-                  input.retainRevisions
-                )[0]
-                if (!record) continue
-                const recordKey = input.retainRevisions
-                  ? record.eventId ||
-                    `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
-                  : record.addressId
-                const previous = input.recordsByEventId.get(recordKey)
-                const next = previous
-                  ? mergeProductRecordSources(previous, record)
-                  : record
-                if (
-                  previous &&
-                  next.eventId === previous.eventId &&
-                  (next.sourceRelayUrls?.length ?? 0) ===
-                    (previous.sourceRelayUrls?.length ?? 0)
-                ) {
-                  continue
-                }
-                input.recordsByEventId.set(recordKey, next)
-                changedRecords.push(next)
+                // Empty progress still refreshes newly observed tombstones.
+                await input.onRecords(changedRecords, currentRelayUrl)
               }
-              // Empty progress still refreshes newly observed tombstones.
-              await input.onRecords(changedRecords, currentRelayUrl)
-            }
-          })().then(
-            () => {
+            } finally {
+              // Release ownership in the same turn as the last queue check.
+              // A batch arriving in the promise-completion microtask must
+              // start its own drain, not attach to this finished one.
               pendingProgress = undefined
-              resolve()
-            },
-            (error) => {
-              pendingProgress = undefined
-              reject(error)
             }
-          )
+          })().then(resolve, reject)
         }, 32)
       })
     }
@@ -5104,33 +5102,35 @@ export async function getMarketplaceProductsProgressive(
   // Final resolution must follow writes that can yield to a new deletion. A
   // failed cache write still needs to retract the previous progressive paint;
   // preserve its rejection after delivering the resolved snapshot.
-  let result: CommerceResult<CommerceProductRecord[]>
+  let cacheFailure: { reason: unknown } | undefined
   try {
     await cacheProductRecords(records)
     progressiveCacheFailed = false
-  } finally {
-    query.signal?.throwIfAborted()
-    const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
-      query.merchantPubkey,
-      query.authorPubkeys
-    )
-    result = toResult(
-      fetchedRecords,
-      {
-        degraded:
-          transportDegraded ||
-          progressiveCacheFailed ||
-          readCapped ||
-          fetchedRecords.length >= rawEventLimit,
-        capped: readCapped || fetchedRecords.length >= rawEventLimit,
-      },
-      finalDeletionTimestamps
-    )
-    query.signal?.throwIfAborted()
-    if (query.shouldContinue?.() === false)
-      throw new NostrSignerError("authority_changed")
-    onProgress(result, "deletion-frontier")
+  } catch (reason) {
+    cacheFailure = { reason }
   }
+  query.signal?.throwIfAborted()
+  const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    query.merchantPubkey,
+    query.authorPubkeys
+  )
+  const result = toResult(
+    fetchedRecords,
+    {
+      degraded:
+        transportDegraded ||
+        progressiveCacheFailed ||
+        readCapped ||
+        fetchedRecords.length >= rawEventLimit,
+      capped: readCapped || fetchedRecords.length >= rawEventLimit,
+    },
+    finalDeletionTimestamps
+  )
+  query.signal?.throwIfAborted()
+  if (query.shouldContinue?.() === false)
+    throw new NostrSignerError("authority_changed")
+  onProgress(result, "deletion-frontier")
+  if (cacheFailure) throw cacheFailure.reason
   return result
 }
 

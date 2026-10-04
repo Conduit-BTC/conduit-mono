@@ -20,8 +20,20 @@ import {
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
 import { NostrSignerError } from "./nostr-event-signer"
-import { isValidSignedPublicNostrEvent, type SignedPublicNostrEvent } from "./signed-event"
-import { hasVerifiedPublicEvent, rememberVerifiedPublicEvent, clearVerifiedPublicEvents, inheritVerifiedPublicEvent, sameSignedPublicEvent, signedPublicEventProofKey, snapshotSignedPublicEvent, signedPublicEventChars } from "./verified-public-event"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
+import {
+  hasVerifiedPublicEvent,
+  rememberVerifiedPublicEvent,
+  clearVerifiedPublicEvents,
+  inheritVerifiedPublicEvent,
+  sameSignedPublicEvent,
+  signedPublicEventProofKey,
+  snapshotSignedPublicEvent,
+  signedPublicEventChars,
+} from "./verified-public-event"
 
 export interface PublicRelayReadSocket {
   readyState: number
@@ -586,12 +598,16 @@ function pumpVerifyQueue(): void {
     return
   }
   pending.posted = true
-  pending.timer = setTimeout(
-    () => recoverTimedOutVerifyBatch(reqId),
-    verifyWorkerTimeoutMs
-  )
   try {
     worker.postMessage({ reqId, items: work })
+    // The execution deadline excludes time waiting in our bounded queue and
+    // synchronous structured cloning while posting the complete signed batch.
+    if (pendingVerify.get(reqId) === pending && pending.posted) {
+      pending.timer = setTimeout(
+        () => recoverTimedOutVerifyBatch(reqId),
+        verifyWorkerTimeoutMs
+      )
+    }
   } catch {
     failVerifyWorker(worker)
   }
@@ -626,7 +642,9 @@ function failVerifyWorker(worker: Worker): void {
   }
 }
 
-export function __setPublicReaderVerifyTimeoutMsForTests(timeoutMs: number): void {
+export function __setPublicReaderVerifyTimeoutMsForTests(
+  timeoutMs: number
+): void {
   verifyWorkerTimeoutMs = Math.max(1, Math.floor(timeoutMs))
 }
 
@@ -1483,7 +1501,10 @@ async function fetchEventsFromRelay(
       }
       const proofKey = signedPublicEventProofKey(raw)
       const pendingIndex = pendingProofIndexes.get(proofKey)
-      if (pendingIndex !== undefined && sameSignedPublicEvent(schnorrItems[pendingIndex], raw)) {
+      if (
+        pendingIndex !== undefined &&
+        sameSignedPublicEvent(schnorrItems[pendingIndex], raw)
+      ) {
         schnorrIndex[pendingIndex].push(i)
         continue
       }

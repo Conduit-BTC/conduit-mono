@@ -61,6 +61,14 @@ Exact-event precedence, address timestamp cutoffs, and evidence validation remai
 unchanged. Cache update selection likewise uses indexed membership rather than
 scanning every requested ID for every existing row.
 
+The shared plain public relay reader owns transport admission. It returns only
+canonical signed fields and keeps actual relay-source observations separately
+by object identity. Cryptographic proof may transfer across identical signed
+snapshots; relay provenance never transfers merely because an event has a
+matching ID or signature. Distinct-event and duplicate counts, cancellation,
+authority fences, coverage, and protected inbox isolation retain their reader
+contracts. Public NDK readers and fanout wrappers are not part of this path.
+
 Browser public-event admission computes the canonical event hash and verifies
 the signature in a worker. Parsing and schema validation reuse proof only when
 every signed field matches an immutable verified snapshot. Proof is local to

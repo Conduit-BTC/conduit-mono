@@ -5,6 +5,7 @@ import { finalizeEvent, getEventHash } from "nostr-tools"
 
 import {
   __resetPublicReaderTestState,
+  __setPublicReaderVerifyTimeoutMsForTests,
   fetchSignedEventsFanoutDetailed,
   isValidSignedPublicNostrEvent,
   parseProductEvent,
@@ -46,16 +47,131 @@ function signedProduct() {
 }
 
 describe("product verification provenance", () => {
-  it("rejects a worker reply for a queued batch that was never posted", async () => {
-    const valid = signedProduct()
-    const invalid = { ...valid, sig: "0".repeat(128) }
-    let firstRequestId = 0
-    let worker!: HoldingWorker
+  for (const verdicts of [[], [true, true], ["true"]]) {
+    it(`rejects a malformed worker verdict vector ${JSON.stringify(verdicts)}`, async () => {
+      const event = signedProduct()
+      class MalformedWorker {
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: ((event: Event) => void) | null = null
+        postMessage(message: { reqId: number }): void {
+          queueMicrotask(() =>
+            this.onmessage?.({
+              data: { reqId: message.reqId, valid: verdicts },
+            } as MessageEvent)
+          )
+        }
+        terminate(): void {}
+      }
+      Object.defineProperty(globalThis, "Worker", {
+        configurable: true,
+        writable: true,
+        value: MalformedWorker,
+      })
+      await expect(verifySignedEvents([event])).rejects.toThrow("worker failed")
+    })
+  }
+
+  it("starts each execution deadline only when its batch is posted", async () => {
+    const firstEvent = signedProduct()
+    const secondEvent = finalizeEvent(
+      { ...firstEvent, created_at: 124 },
+      Uint8Array.from([...new Uint8Array(31), 1])
+    )
+    const posted: Array<{ reqId: number; items: (typeof firstEvent)[] }> = []
+    const worker: { current?: HoldingWorker } = {}
+    let terminations = 0
     class HoldingWorker {
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: Event) => void) | null = null
       constructor() {
-        worker = this
+        worker.current = this
+      }
+      postMessage(message: (typeof posted)[number]): void {
+        posted.push(message)
+      }
+      terminate(): void {
+        terminations++
+      }
+    }
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: HoldingWorker,
+    })
+    // The first posted batch retains its longer execution deadline. The next
+    // batch must survive in the queue longer than its own execution budget.
+    __setPublicReaderVerifyTimeoutMsForTests(1_000)
+    const first = verifySignedEvents([firstEvent])
+    __setPublicReaderVerifyTimeoutMsForTests(10)
+    const second = verifySignedEvents([secondEvent])
+    const completion = Promise.all([first, second])
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(posted).toHaveLength(1)
+    expect(terminations).toBe(0)
+    worker.current!.onmessage?.({
+      data: { reqId: posted[0]!.reqId, valid: [true] },
+    } as MessageEvent)
+    expect(posted).toHaveLength(2)
+    worker.current!.onmessage?.({
+      data: { reqId: posted[1]!.reqId, valid: [true] },
+    } as MessageEvent)
+    expect((await completion).map((result) => result.events[0]?.id)).toEqual([
+      firstEvent.id,
+      secondEvent.id,
+    ])
+    expect(terminations).toBe(0)
+  })
+
+  it("bounds queued worker memory without starting browser-thread verification", async () => {
+    const event = signedProduct()
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window")
+    let posts = 0
+    class HoldingWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      postMessage(): void {
+        posts++
+      }
+      terminate(): void {}
+    }
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {},
+    })
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: HoldingWorker,
+    })
+    const controller = new AbortController()
+    const verify = spyOn(schnorr, "verify")
+    const pending = Array.from({ length: 128 }, () =>
+      verifySignedEvents([event], { signal: controller.signal })
+    )
+    const completion = Promise.allSettled(pending)
+    try {
+      await expect(verifySignedEvents([event])).rejects.toThrow("queue is full")
+      expect(posts).toBe(1)
+      expect(verify).not.toHaveBeenCalled()
+    } finally {
+      controller.abort()
+      await completion
+      verify.mockRestore()
+      if (descriptor) Object.defineProperty(globalThis, "window", descriptor)
+      else Reflect.deleteProperty(globalThis, "window")
+    }
+  })
+
+  it("rejects a worker reply for a queued batch that was never posted", async () => {
+    const valid = signedProduct()
+    const invalid = { ...valid, sig: "0".repeat(128) }
+    let firstRequestId = 0
+    const worker: { current?: HoldingWorker } = {}
+    class HoldingWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      constructor() {
+        worker.current = this
       }
       postMessage(message: { reqId: number }): void {
         firstRequestId = message.reqId
@@ -70,7 +186,7 @@ describe("product verification provenance", () => {
     const first = verifySignedEvents([valid])
     const queued = verifySignedEvents([invalid])
     const completion = Promise.allSettled([first, queued])
-    worker.onmessage?.({
+    worker.current!.onmessage?.({
       data: { reqId: firstRequestId + 1, valid: [true] },
     } as MessageEvent)
     expect((await completion).map((result) => result.status)).toEqual([
@@ -134,9 +250,7 @@ describe("product verification provenance", () => {
       writable: true,
       value: VerifyingWorker,
     })
-    expect((await verifySignedEvents([event])).events).toHaveLength(
-      1
-    )
+    expect((await verifySignedEvents([event])).events).toHaveLength(1)
 
     const verify = spyOn(schnorr, "verify")
     try {
@@ -165,7 +279,7 @@ describe("product verification provenance", () => {
     }
   })
 
-  it("rejects cached bytes mutated while another event is awaiting admission", async () => {
+  it("preserves signed snapshots while rejecting caller mutations during admission", async () => {
     const cached = signedProduct()
     expect(isValidSignedPublicNostrEvent(cached)).toBe(true)
     const fresh = finalizeEvent(
@@ -203,9 +317,10 @@ describe("product verification provenance", () => {
     const admission = verifySignedEvents([cached, fresh])
     cached.content = "changed while waiting"
     release()
-    expect((await admission).events.map((event) => event.id)).toEqual([
-      fresh.id,
-    ])
+    const admitted = (await admission).events
+    expect(admitted.map((event) => event.id)).toEqual([cached.id, fresh.id])
+    expect(admitted[0]?.content).toBe("A signed listing")
+    expect(admitted[0]).not.toBe(cached)
     expect(isValidSignedPublicNostrEvent(cached)).toBe(false)
   })
 
@@ -292,9 +407,7 @@ describe("product verification provenance", () => {
         },
         Uint8Array.from([...new Uint8Array(31), 1])
       )
-      expect(
-        (await verifySignedEvents([filler])).events
-      ).toHaveLength(1)
+      expect((await verifySignedEvents([filler])).events).toHaveLength(1)
     }
     const verify = spyOn(schnorr, "verify")
     try {

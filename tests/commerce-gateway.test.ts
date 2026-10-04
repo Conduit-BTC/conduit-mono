@@ -2057,12 +2057,50 @@ describe("commerce gateway", () => {
     expect(complete.meta.degraded).toBe(false)
   })
 
+  it("does not reuse a parsed listing or signed proof after same-id input mutation", async () => {
+    const event = makeSignedProductEvent({
+      dTag: "parser-cache-mutation",
+      createdAt: 100,
+      title: "Signed original",
+    }).rawEvent() as SignedPublicNostrEvent
+    __setCommerceTestOverrides({
+      fetchPublicEvents: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? [event] : [],
+    })
+    const first = await getMarketplaceProducts({
+      authorPubkeys: [event.pubkey],
+    })
+    expect(first.data).toHaveLength(1)
+    expect(first.data[0]?.product.signedProductEvent?.content).toBe(
+      event.content
+    )
+
+    // A transport seam may reuse an object. Its old event id must not keep a
+    // prior projection or proof alive after any signed field changes.
+    const original = structuredClone(event)
+    event.content = "Modified unsigned content"
+    event.tags = event.tags.map((tag) =>
+      tag[0] === "visibility" ? ["visibility", "private"] : [...tag]
+    )
+    if (!event.tags.some((tag) => tag[0] === "visibility"))
+      event.tags.push(["visibility", "private"])
+    cachedProducts = []
+    const second = await getMarketplaceProducts({
+      authorPubkeys: [event.pubkey],
+    })
+    expect(second.data).toEqual([])
+    expect(cachedProducts).toHaveLength(1)
+    expect(cachedProducts[0]?.signedProductEvent).toBeUndefined()
+    expect(cachedProducts[0]?.visibility).toBe("private")
+    expect(first.data[0]?.product.signedProductEvent).toEqual(original)
+  })
+
   it("persists a progressive browse batch before the remaining relay read completes", async () => {
     const event = makeSignedProductEvent({
       dTag: "early-cache",
       createdAt: 100,
       title: "Early cached cup",
-    })
+    }).rawEvent() as SignedPublicNostrEvent
     let release!: () => void
     const pending = new Promise<void>((resolve) => {
       release = resolve
@@ -2072,8 +2110,11 @@ describe("commerce gateway", () => {
       ready = resolve
     })
     __setCommerceTestOverrides({
-      fetchEventsFanoutDetailed: async () => ({ events: [], relays: [] }),
-      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+      fetchPublicEventsWithDiagnostics: async () => ({
+        events: [],
+        relays: [],
+      }),
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
         await onProgress({
           relayUrl: options.relayUrls?.[0] ?? "wss://early.example",
           events: [event],
@@ -2101,19 +2142,19 @@ describe("commerce gateway", () => {
       dTag: "progressive-revision",
       createdAt: 100,
       title: "Older terms",
-    })
+    }).rawEvent() as SignedPublicNostrEvent
     const newer = makeSignedProductEvent({
       dTag: "progressive-revision",
       createdAt: 110,
       title: "Current terms",
-    })
-    const sameNewer = new NDKEvent(undefined, newer.rawEvent())
+    }).rawEvent() as SignedPublicNostrEvent
+    const sameNewer = structuredClone(newer)
     const parent = makeSignedGammaProductEvent({
       dTag: "progressive-family",
       createdAt: 100,
       title: "Family",
       type: "variable",
-    })
+    }).rawEvent() as SignedPublicNostrEvent
     const child = makeSignedGammaProductEvent({
       dTag: "progressive-child",
       createdAt: 101,
@@ -2121,7 +2162,7 @@ describe("commerce gateway", () => {
       type: "variation",
       parentProductId: `30402:${parent.pubkey}:progressive-family`,
       size: "Small",
-    })
+    }).rawEvent() as SignedPublicNostrEvent
     attachEventSourceRelayUrl(newer, "wss://first-source.example")
     attachEventSourceRelayUrl(sameNewer, "wss://second-source.example")
     const snapshots: Array<{
@@ -2130,8 +2171,11 @@ describe("commerce gateway", () => {
       familyChildren: string[]
     }> = []
     __setCommerceTestOverrides({
-      fetchEventsFanoutDetailed: async () => ({ events: [], relays: [] }),
-      fetchEventsFanoutProgressive: async (_filter, _options, onProgress) => {
+      fetchPublicEventsWithDiagnostics: async () => ({
+        events: [],
+        relays: [],
+      }),
+      fetchPublicEventsProgressive: async (_filter, _options, onProgress) => {
         const batches = [[older], [newer], [sameNewer], [parent, child]]
         await Promise.all(
           batches.map((events, index) =>
@@ -2189,14 +2233,14 @@ describe("commerce gateway", () => {
       dTag: "cancelled-progress",
       createdAt: 100,
       title: "Cancelled progress",
-    })
+    }).rawEvent() as SignedPublicNostrEvent
     let releaseQueued!: () => void
     const queued = new Promise<void>((resolve) => {
       releaseQueued = resolve
     })
     const snapshots: string[][] = []
     __setCommerceTestOverrides({
-      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
         const callback = onProgress({
           relayUrl: options.relayUrls?.[0] ?? "wss://cancelled.example",
           events: [event],
@@ -2225,10 +2269,10 @@ describe("commerce gateway", () => {
       dTag: "final-progress-flush",
       createdAt: 100,
       title: "Final progress flush",
-    })
+    }).rawEvent() as SignedPublicNostrEvent
     const snapshots: string[][] = []
     __setCommerceTestOverrides({
-      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
         void onProgress({
           relayUrl: options.relayUrls?.[0] ?? "wss://final-progress.example",
           events: [event],

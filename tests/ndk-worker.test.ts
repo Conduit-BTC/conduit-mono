@@ -21,6 +21,7 @@ import {
   verifySignedEvents,
 } from "@conduit/core"
 import { isValidSignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
+import { snapshotSignedPublicEvent } from "../packages/core/src/protocol/verified-public-event"
 
 function fakeRelayWebSocket(relayEvent: NostrEvent) {
   return class FakeWebSocket {
@@ -298,14 +299,14 @@ describe("Plain public reader worker verification", () => {
       }
     }
 
-    let socket: DeferredWebSocket | null = null
+    const socket: { current?: DeferredWebSocket } = {}
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       writable: true,
       value: class extends DeferredWebSocket {
         constructor() {
           super()
-          socket = this
+          socket.current = this
         }
       },
     })
@@ -320,13 +321,13 @@ describe("Plain public reader worker verification", () => {
     await request
 
     refreshNdkRelaySettingsWhenIdle("account:test")
-    expect(socket?.closed).toBe(false)
-    socket?.finish()
+    expect(socket.current?.closed).toBe(false)
+    socket.current?.finish()
 
     const result = await read
     expect(result.relays[0]?.status).toBe("success")
     expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
-    expect(socket?.closed).toBe(true)
+    expect(socket.current?.closed).toBe(true)
   })
 
   it("fails closed when the verification worker errors after postMessage", async () => {
@@ -400,13 +401,13 @@ describe("Plain public reader worker verification", () => {
     )
     const invalidEvent = { ...validEvent, sig: "0".repeat(128) }
     const requests: Array<{ reqId: number; items: (typeof validEvent)[] }> = []
-    let worker: ControlledWorker | undefined
+    const worker: { current?: ControlledWorker } = {}
 
     class ControlledWorker {
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: Event) => void) | null = null
       constructor() {
-        worker = this
+        worker.current = this
       }
       postMessage(message: {
         reqId: number
@@ -432,20 +433,20 @@ describe("Plain public reader worker verification", () => {
     expect(requests).toHaveLength(1)
 
     const firstRequest = requests[0]!
-    worker?.onmessage?.({
+    worker.current?.onmessage?.({
       data: {
         reqId: firstRequest.reqId,
         valid: firstRequest.items.map(isValidSignedPublicNostrEvent),
       },
     } as MessageEvent)
     await expect(first).resolves.toMatchObject({
-      events: [validEvent],
+      events: [snapshotSignedPublicEvent(validEvent)],
       truncated: false,
     })
     expect(workerPostMessages).toBe(2)
 
     const secondRequest = requests[1]!
-    worker?.onmessage?.({
+    worker.current?.onmessage?.({
       data: {
         reqId: secondRequest.reqId,
         valid: secondRequest.items.map(isValidSignedPublicNostrEvent),
@@ -470,12 +471,12 @@ describe("Plain public reader worker verification", () => {
       )
     )
     const requests: Array<{ reqId: number; items: NostrEvent[] }> = []
-    let worker: ControlledWorker | undefined
+    const worker: { current?: ControlledWorker } = {}
     class ControlledWorker {
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: Event) => void) | null = null
       constructor() {
-        worker = this
+        worker.current = this
       }
       postMessage(message: { reqId: number; items: NostrEvent[] }): void {
         workerPostMessages += 1
@@ -515,7 +516,7 @@ describe("Plain public reader worker verification", () => {
     for (let index = 0; index < 8; index += 1) {
       const request = requests[index]!
       expect(request.items).toHaveLength(1)
-      worker?.onmessage?.({
+      worker.current?.onmessage?.({
         data: {
           reqId: request.reqId,
           valid: request.items.map(isValidSignedPublicNostrEvent),
@@ -1670,12 +1671,12 @@ describe("Plain public reader worker verification", () => {
     const cancelledEvent = makeEvent(11)
     const retainedEvent = makeEvent(12)
     const posted: Array<{ reqId: number; items: NostrEvent[] }> = []
-    let worker: ControlledWorker | undefined
+    const worker: { current?: ControlledWorker } = {}
     class ControlledWorker {
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: Event) => void) | null = null
       constructor() {
-        worker = this
+        worker.current = this
       }
       postMessage(message: { reqId: number; items: NostrEvent[] }): void {
         workerPostMessages += 1
@@ -1703,23 +1704,27 @@ describe("Plain public reader worker verification", () => {
     expect(workerTerminates).toBe(0)
 
     const first = posted[0]!
-    worker?.onmessage?.({
+    worker.current?.onmessage?.({
       data: {
         reqId: first.reqId,
         valid: first.items.map(isValidSignedPublicNostrEvent),
       },
     } as MessageEvent)
-    await expect(active).resolves.toMatchObject({ events: [activeEvent] })
+    await expect(active).resolves.toMatchObject({
+      events: [snapshotSignedPublicEvent(activeEvent)],
+    })
     expect(workerPostMessages).toBe(2)
     const next = posted[1]!
     expect(next.items.map((event) => event.id)).toEqual([retainedEvent.id])
-    worker?.onmessage?.({
+    worker.current?.onmessage?.({
       data: {
         reqId: next.reqId,
         valid: next.items.map(isValidSignedPublicNostrEvent),
       },
     } as MessageEvent)
-    await expect(retained).resolves.toMatchObject({ events: [retainedEvent] })
+    await expect(retained).resolves.toMatchObject({
+      events: [snapshotSignedPublicEvent(retainedEvent)],
+    })
     expect(workerTerminates).toBe(0)
   })
 
