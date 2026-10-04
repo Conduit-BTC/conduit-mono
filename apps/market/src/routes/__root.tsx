@@ -21,6 +21,7 @@ import {
 import {
   ErrorPage,
   LegalFooter,
+  legalFooterActionClassName,
   NotFoundPage,
   SignerAuthUrlNotice,
   isProductLegalPath,
@@ -138,9 +139,7 @@ function RootShell({
           </Link>
         }
         activeHref={pathname}
-        tipAction={
-          <MarketProjectTip className="min-h-11 shrink-0 gap-1 px-1 text-[11px] font-medium text-[var(--text-primary)] hover:text-primary-500 sm:text-xs" />
-        }
+        tipAction={<MarketProjectTip className={legalFooterActionClassName} />}
         reportBugHref={reportBugHref}
         hidden={mobileChromeHidden}
       />
