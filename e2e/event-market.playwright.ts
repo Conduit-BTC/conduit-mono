@@ -8,6 +8,7 @@ import {
 } from "nostr-tools/pure"
 
 import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
+import { interceptBlossom } from "./helpers/blossom"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
 test.use({ trace: "off", video: "off", screenshot: "off" })
@@ -230,6 +231,7 @@ function createRelayHarness() {
   const incompleteReadKinds = new Set<number>()
   const rejectedKinds = new Set<number>()
   let rejectReads = false
+  let rejectMarketDiscovery = false
 
   return {
     publications,
@@ -237,6 +239,9 @@ function createRelayHarness() {
     incompleteRequests,
     incompleteReadsForKind(kind: number) {
       incompleteReadKinds.add(kind)
+    },
+    rejectMarketDiscovery(reject: boolean) {
+      rejectMarketDiscovery = reject
     },
     rejectReads(reject: boolean) {
       rejectReads = reject
@@ -348,7 +353,13 @@ function createRelayHarness() {
             }
             requests.push(request)
             const respond = () => {
-              if (rejectReads) {
+              if (
+                rejectReads ||
+                (rejectMarketDiscovery &&
+                  filters.some(
+                    (filter) => filter.kinds?.includes(30409) && !filter["#d"]
+                  ))
+              ) {
                 socket.send(
                   JSON.stringify([
                     "CLOSED",
@@ -1495,9 +1506,11 @@ test("Merchant links an approved shop product and Market discovers it without pi
   const beforeTimeline = relay.requests.length
   await gotoAs(page, merchantUrl, "/events", "merchant")
   await page.reload()
-  await page.getByRole("button", { name: "Selling at", exact: true }).click()
+  await page.getByRole("button", { name: "Selling At", exact: true }).click()
   await expect(
-    page.getByRole("button", { name: /^Open Merchant Fair\./ })
+    page
+      .getByRole("region", { name: "My Events timeline" })
+      .getByRole("button", { name: /^Open Merchant Fair\./ })
   ).toBeVisible()
   expect(
     relay.requests
@@ -2437,6 +2450,320 @@ test("two future market products form one order and one private organizer releas
   expect(completionMessages()).toHaveLength(1)
 })
 
+test("organizer customizes repeating all-day dates and resumes exact series bytes after reload @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await gotoAs(page, merchantUrl, "/events/new", "organizer")
+  await page.getByLabel("Event title").fill("Custom Makers")
+  await page.getByLabel("Description").fill("Two community event dates")
+  await page.getByLabel("Location", { exact: true }).fill("Town Hall")
+  await page.getByRole("checkbox", { name: "All day", exact: true }).check()
+  await page.getByLabel("Start", { exact: true }).fill("2030-06-01")
+  await page.getByRole("combobox", { name: "Repeat", exact: true }).click()
+  await page.getByRole("option", { name: "Weekly", exact: true }).click()
+  await page.getByLabel("Number of dates").fill("2")
+  await page
+    .getByRole("button", { name: "Edit individual dates", exact: true })
+    .click()
+  await page.getByLabel("Start", { exact: true }).nth(1).fill("2030-06-09")
+  await expect(page.getByLabel("End", { exact: true }).nth(1)).toHaveValue(
+    "2030-06-09"
+  )
+  relay.rejectKind(31922, true)
+  await page.getByRole("button", { name: "Publish event", exact: true }).click()
+  const resume = page.getByRole("button", {
+    name: "Resume publishing",
+    exact: true,
+  })
+  await expect(resume).toBeEnabled()
+  const saved = uniquePublishedEvents(relay.publications).find(
+    (event) => event.kind === 31922
+  )!
+  await page.reload()
+  await expect(page.getByLabel("End", { exact: true }).nth(0)).toHaveValue(
+    "2030-06-01"
+  )
+  await expect(page.getByLabel("End", { exact: true }).nth(1)).toHaveValue(
+    "2030-06-09"
+  )
+  relay.rejectKind(31922, false)
+  await resume.click()
+  await expect(page).toHaveURL(/\/events\/naddr1/)
+  const calendars = uniquePublishedEvents(relay.publications).filter(
+    (event) => event.kind === 31922
+  )
+  expect(
+    calendars.map((event) => event.tags.find((tag) => tag[0] === "end")?.[1])
+  ).toEqual(["2030-06-02", "2030-06-10"])
+  const retries = relay.publications.filter(
+    ({ event }) => event.id === saved.id
+  )
+  expect(retries.length).toBeGreaterThan(1)
+  for (const { event } of retries)
+    expect(JSON.stringify(event)).toBe(JSON.stringify(saved))
+})
+
+test("event banner supports choosing a file, previewing, replacing and removing it @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const mediaServer = "https://media.conduit.market"
+  relay.seed(
+    signEvent(ORGANIZER_SECRET, {
+      kind: 10063,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [["server", mediaServer]],
+      content: "",
+    })
+  )
+  const upload = await interceptBlossom(page, mediaServer)
+  await gotoAs(page, merchantUrl, "/events/new", "organizer")
+  const banner = page.getByRole("group", {
+    name: "Event banner (optional)",
+    exact: true,
+  })
+  await expect(
+    banner.getByRole("button", { name: "Add banner", exact: true })
+  ).toBeEnabled()
+  const chooser = page.waitForEvent("filechooser")
+  await banner.getByRole("button", { name: "Add banner", exact: true }).click()
+  await (await chooser).setFiles("apps/merchant/public/merchant-icon-192.png")
+  await expect(
+    banner.getByRole("img", { name: "Event banner preview" })
+  ).toBeVisible()
+  await expect(
+    banner.getByRole("button", { name: "Replace banner", exact: true })
+  ).toBeEnabled()
+  expect(upload.putCount).toBeGreaterThan(0)
+  expect(upload.canonicalAuthorizationCount).toBeGreaterThan(0)
+  await banner
+    .getByRole("button", { name: "Remove banner", exact: true })
+    .click()
+  await expect(banner.getByRole("img")).toHaveCount(0)
+  await banner.getByRole("button", { name: "Add by URL", exact: true }).click()
+  await banner
+    .getByLabel("Banner URL", { exact: true })
+    .fill("https://cdn.conduit.market/conduit-test/template-product.svg")
+  await expect(banner.getByRole("img")).toBeVisible()
+  await banner
+    .getByRole("button", { name: "Remove banner", exact: true })
+    .click()
+  await expect(banner.getByLabel("Banner URL", { exact: true })).toHaveValue("")
+})
+
+test("merchant directory separates open collapsible My Events and All Events with a scoped empty state @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  await gotoAs(page, merchantUrl, "/events", "organizer")
+  const my = page.getByRole("region", { name: "My Events timeline" })
+  const all = page.getByRole("region", { name: "All Events timeline" })
+  await expect(my).toBeVisible()
+  await expect(all).toBeVisible()
+  await expect(
+    all.getByRole("heading", { name: "No events found on your relays" })
+  ).toBeVisible()
+  await expect(
+    page.getByText("Future Event Market", { exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Retry", exact: true })
+  ).toHaveCount(0)
+  await page.getByRole("button", { name: /^My Events/ }).click()
+  await expect(my).toBeHidden()
+  await expect(all).toBeVisible()
+  await page.getByRole("button", { name: /^My Events/ }).click()
+  await my.getByRole("button", { name: "Selling At", exact: true }).click()
+  await expect(
+    my.getByRole("heading", { name: "You aren’t selling at any events" })
+  ).toBeVisible()
+  await page.getByRole("button", { name: /^All Events/ }).click()
+  await expect(all).toBeHidden()
+  await expect(my).toBeVisible()
+  await page.getByRole("button", { name: "Create event", exact: true }).click()
+  await expect(
+    page.getByRole("navigation", { name: "Breadcrumb" })
+  ).toContainText("Create event")
+  await expect(
+    page.getByRole("button", { name: "Add banner", exact: true })
+  ).toBeVisible()
+  await expect(page.getByLabel("Choose event banner file")).toHaveAttribute(
+    "type",
+    "file"
+  )
+  await expect(page.getByLabel("Banner URL", { exact: true })).toHaveCount(0)
+  await expect(
+    page.getByText("Event messages ready", { exact: true })
+  ).toHaveCount(0)
+  await page
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("link", { name: "Events", exact: true })
+    .click()
+  await expect(page).toHaveURL(/relation=selling/)
+  await expect(
+    page
+      .getByRole("region", { name: "My Events timeline" })
+      .getByRole("button", { name: "Selling At" })
+  ).toHaveAttribute("aria-pressed", "true")
+})
+
+test("merchant personal timeline shows unavailable discovery with an unrelated product-linked event @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1000) - 10
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "unrelated-fair"],
+      ["title", "Unrelated Fair"],
+      ["start", "1893456000"],
+      ["D", "21915"],
+    ],
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "unrelated-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+    ],
+  })
+  const template = createMerchantTemplateProductEvent(createdAt)
+  const product = signEvent(MERCHANT_SECRET, {
+    kind: template.kind,
+    created_at: createdAt,
+    content: template.content,
+    tags: [...template.tags, ["a", eventCoordinate(market)]],
+  })
+  relay.seed(calendar, market, product)
+  // The exact product-linked read succeeds; every broad market discovery fails.
+  relay.rejectMarketDiscovery(true)
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  const my = page.getByRole("region", { name: "My Events timeline" })
+  const all = page.getByRole("region", { name: "All Events timeline" })
+  await expect(
+    all.getByRole("button", { name: /^Open Unrelated Fair/ })
+  ).toBeVisible()
+  await expect(
+    my.getByRole("heading", { name: "Couldn’t connect to your relays" })
+  ).toBeVisible()
+  await expect(
+    my.getByRole("heading", { name: "You aren’t organizing any events" })
+  ).toHaveCount(0)
+  await my.getByRole("button", { name: "Selling At", exact: true }).click()
+  await expect(
+    my.getByRole("heading", { name: "Couldn’t connect to your relays" })
+  ).toBeVisible()
+  await expect(
+    my.getByRole("heading", { name: "You aren’t selling at any events" })
+  ).toHaveCount(0)
+  relay.rejectMarketDiscovery(false)
+  await expect(
+    page.getByRole("button", { name: "Refresh events", exact: true })
+  ).toBeEnabled()
+  await page
+    .getByRole("button", { name: "Refresh events", exact: true })
+    .click()
+  await expect(
+    my.getByRole("heading", { name: "You aren’t selling at any events" })
+  ).toBeVisible()
+  await expect(
+    all.getByRole("button", { name: /^Open Unrelated Fair/ })
+  ).toBeVisible()
+})
+
+for (const monthly of [false, true])
+  test(`organizer publishes ${monthly ? "monthly" : "one-day"} all-day events with inclusive displayed ends @merchant`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay)
+    await gotoAs(page, merchantUrl, "/events/new", "organizer")
+    await page
+      .getByLabel("Event title")
+      .fill(monthly ? "Monthly Makers" : "One Day Makers")
+    await page.getByLabel("Description").fill("An all-day community event")
+    await page.getByLabel("Location", { exact: true }).fill("Town Hall")
+    await page.getByRole("checkbox", { name: "All day", exact: true }).check()
+    await page.getByLabel("Start", { exact: true }).fill("2030-01-31")
+    await expect(page.getByLabel("End", { exact: true })).toHaveValue(
+      "2030-01-31"
+    )
+    if (monthly) {
+      await page.getByRole("combobox", { name: "Repeat", exact: true }).click()
+      await page.getByRole("option", { name: "Monthly", exact: true }).click()
+      await page.getByLabel("Number of dates").fill("3")
+      await expect(
+        page
+          .getByRole("list", { name: "Repeating dates preview" })
+          .getByRole("listitem")
+      ).toHaveText([
+        "2030-01-31 · All day",
+        "2030-03-31 · All day",
+        "2030-05-31 · All day",
+      ])
+    }
+    await page
+      .getByRole("button", { name: "Publish event", exact: true })
+      .click()
+    await expect(page).toHaveURL(/\/events\/naddr1/)
+    const calendars = uniquePublishedEvents(relay.publications).filter(
+      (event) => event.kind === 31922
+    )
+    expect(
+      calendars.map((event) => event.tags.find((tag) => tag[0] === "end")?.[1])
+    ).toEqual(
+      monthly ? ["2030-02-01", "2030-04-01", "2030-06-01"] : ["2030-02-01"]
+    )
+    await expect(
+      page.locator(monthly ? "#series-edit-end" : "#future-edit-end")
+    ).toHaveValue("2030-01-31")
+    await page
+      .locator(monthly ? "#series-edit-title" : "#future-edit-title")
+      .fill(monthly ? "Monthly Makers January" : "One Day Makers updated")
+    await page
+      .getByRole("button", {
+        name: monthly ? "Save selected date" : "Save event details",
+        exact: true,
+      })
+      .click()
+    await expect
+      .poll(
+        () =>
+          uniquePublishedEvents(relay.publications).filter(
+            (event) => event.kind === 31922
+          ).length
+      )
+      .toBe(monthly ? 4 : 2)
+    const updated = uniquePublishedEvents(relay.publications)
+      .filter((event) => event.kind === 31922)
+      .at(-1)!
+    expect(updated.tags.find((tag) => tag[0] === "end")?.[1]).toBe("2030-02-01")
+    await expect(
+      page.getByRole("navigation", { name: "Breadcrumb" })
+    ).toContainText(monthly ? "Monthly Makers" : "One Day Makers")
+    await page.getByRole("link", { name: "Events", exact: true }).click()
+    const my = page.getByRole("region", { name: "My Events timeline" })
+    const all = page.getByRole("region", { name: "All Events timeline" })
+    await expect(my.getByRole("button", { name: /^Open/ })).toHaveCount(
+      monthly ? 3 : 1
+    )
+    await expect(all.getByRole("button", { name: /^Open/ })).toHaveCount(
+      monthly ? 3 : 1
+    )
+  })
+
 test("organizer creates and closes one future Event Market without legacy event records @merchant", async ({
   page,
 }) => {
@@ -2445,13 +2772,14 @@ test("organizer creates and closes one future Event Market without legacy event 
   await gotoAs(page, merchantUrl, "/events/new", "organizer")
   await page.getByLabel("Event title").fill("New Future Fair")
   await page.getByLabel("Description").fill("A future organizer market")
+  await page.getByRole("button", { name: "Add by URL", exact: true }).click()
   await page
-    .getByLabel(/^Event banner/)
+    .getByLabel("Banner URL")
     .fill("https://cdn.conduit.market/conduit-test/template-product.svg")
   await page.getByLabel("Location", { exact: true }).fill("Town Hall")
   await page.getByLabel("Start", { exact: true }).fill("2030-06-01T10:00")
   await page.getByLabel("End", { exact: true }).fill("2030-06-01T16:00")
-  await page.getByRole("button", { name: "Publish Event Market" }).click()
+  await page.getByRole("button", { name: "Publish event" }).click()
   await expect(page).toHaveURL(/\/events\/naddr1/)
   await expect(
     page.getByRole("heading", { name: "New Future Fair" })
@@ -2504,25 +2832,25 @@ test("organizer generates weekly dates and publishes one signed series @merchant
   await gotoAs(page, merchantUrl, "/events/new", "organizer")
   await page.getByLabel("Event title").fill("Weekly Future Fair")
   await page.getByLabel("Description").fill("A weekly organizer market")
+  await page.getByRole("button", { name: "Add by URL", exact: true }).click()
   await page
-    .getByLabel(/^Event banner/)
+    .getByLabel("Banner URL")
     .fill("https://cdn.conduit.market/conduit-test/template-product.svg")
   await page.getByLabel("Location", { exact: true }).fill("Town Hall")
-  await page.getByRole("combobox", { name: "Dates" }).click()
-  await page.getByRole("option", { name: "Multiple dates" }).click()
+  await page.getByLabel("Start", { exact: true }).fill("2030-06-01T10:00")
+  await page.getByLabel("End", { exact: true }).fill("2030-06-01T16:00")
   await page.getByRole("combobox", { name: "Time zone" }).click()
   await page.getByRole("option", { name: "UTC", exact: true }).click()
-  await page.getByRole("button", { name: "Generate weekly dates" }).click()
-  await page.getByRole("checkbox", { name: "Saturday" }).check()
-  await page.getByLabel("First date").fill("2030-06-01")
-  await page.getByLabel("Through date").fill("2030-06-08")
-  await page.getByLabel("Start hour").fill("10:00")
-  await page.getByLabel("End hour").fill("16:00")
-  await page
-    .getByRole("button", { name: "Generate dates", exact: true })
-    .click()
-  await expect(page.getByText(/2 of 32 dates/)).toBeVisible()
-  await page.getByRole("button", { name: "Publish Event Market" }).click()
+  await page.getByRole("combobox", { name: "Repeat", exact: true }).click()
+  await page.getByRole("option", { name: "Weekly", exact: true }).click()
+  await expect(page.getByRole("checkbox", { name: "Saturday" })).toBeChecked()
+  await page.getByLabel("Number of dates").fill("2")
+  await expect(
+    page
+      .getByRole("list", { name: "Repeating dates preview" })
+      .getByRole("listitem")
+  ).toHaveCount(2)
+  await page.getByRole("button", { name: "Publish event" }).click()
   await expect(page).toHaveURL(/\/events\/naddr1/)
   await expect(
     page.getByRole("heading", { name: "Weekly Future Fair" })
@@ -3123,15 +3451,8 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   ).toBeVisible()
 })
 
-async function enableEventMessages(page: Page): Promise<void> {
-  await page
-    .getByRole("button", { name: "Set up event messages", exact: true })
-    .click()
-  const dialog = page.getByRole("dialog", {
-    name: "Set up event messages",
-    exact: true,
-  })
-  const relays = dialog.getByRole("region", { name: "Relays", exact: true })
+async function enablePrivateInbox(page: Page): Promise<void> {
+  const relays = page.getByRole("region", { name: "Relays", exact: true })
   await expect(relays).toBeVisible()
   const inbox = relays.getByRole("button", {
     name: `Enable Private inbox for ${FIXTURE_RELAY}`,
@@ -3176,17 +3497,11 @@ async function enableEventMessages(page: Page): Promise<void> {
     .getByRole("button", { name: "Sign and publish", exact: true })
     .click()
   await expect(
-    dialog.getByText(
+    page.getByText(
       "The exact signed preferences were confirmed on the planned relays.",
       { exact: true }
     )
   ).toBeVisible({ timeout: 20_000 })
-  await dialog
-    .getByRole("button", { name: "Return to event", exact: true })
-    .click()
-  await expect(
-    page.getByText("Event messages ready", { exact: true })
-  ).toBeVisible()
 }
 
 test("a host and merchant create, request, approve and offer through the screens @market @merchant @commerce", async ({
@@ -3198,22 +3513,21 @@ test("a host and merchant create, request, approve and offer through the screens
   relay.seed(
     createMerchantTemplateProductEvent(Math.floor(Date.now() / 1000) - 10)
   )
-  await gotoAs(page, merchantUrl, "/events/new", "organizer")
+  await gotoAs(page, merchantUrl, "/network", "organizer")
+  await enablePrivateInbox(page)
+  await page.goto(`${merchantUrl}/events/new`)
   await page.getByLabel("Event title").fill("Community Makers Fair")
   await page
     .getByLabel("Description")
     .fill("Local makers and neighbors at the community hall")
+  await page.getByRole("button", { name: "Add by URL", exact: true }).click()
   await page
-    .getByLabel(/^Event banner/)
+    .getByLabel("Banner URL")
     .fill("https://cdn.conduit.market/conduit-test/template-product.svg")
   await page.getByLabel("Location", { exact: true }).fill("Community Hall")
   await page.getByLabel("Start", { exact: true }).fill("2030-06-01T10:00")
   await page.getByLabel("End", { exact: true }).fill("2030-06-01T16:00")
-  await enableEventMessages(page)
-  await expect(page.getByLabel("Event title")).toHaveValue(
-    "Community Makers Fair"
-  )
-  await page.getByRole("button", { name: "Publish Event Market" }).click()
+  await page.getByRole("button", { name: "Publish event" }).click()
   await expect(page).toHaveURL(/\/events\/naddr1/)
   const eventPath = new URL(page.url()).pathname
   const market = uniquePublishedEvents(relay.publications).find(
@@ -3250,8 +3564,9 @@ test("a host and merchant create, request, approve and offer through the screens
     )
   ).toBe(true)
 
-  await gotoAs(page, merchantUrl, eventPath, "merchant")
-  await enableEventMessages(page)
+  await gotoAs(page, merchantUrl, "/network", "merchant")
+  await enablePrivateInbox(page)
+  await page.goto(`${merchantUrl}${eventPath}`)
   await page
     .getByRole("button", { name: "Request to join", exact: true })
     .click()
