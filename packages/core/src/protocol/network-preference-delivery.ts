@@ -22,6 +22,10 @@ export interface NetworkPreferenceDistributionOutcomeUpdate {
 
 const PUBLISH_STRENGTH: Record<NetworkPreferencePublishStatus, number> = {
   pending: 0,
+  cancelled: 1,
+  policy_blocked: 1,
+  auth_required: 1,
+  error: 1,
   timed_out: 1,
   rejected: 2,
   acked: 3,

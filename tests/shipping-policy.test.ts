@@ -1026,7 +1026,7 @@ describe("shipping policy publication", () => {
     it(`replaces a reviewed complete ${reason} revision strictly later but rejects incomplete or changed evidence before signing`, async () => {
       cacheOverrides()
       const signer = setTestAccountSigner(new NDKPrivateKeySigner(secret))
-      let events = [
+      const events = [
         signedPolicy(policy, 10),
         reason === "conflicting"
           ? signedPolicy({ ...policy, handlingMinor: 0 }, 10)
@@ -1074,8 +1074,8 @@ describe("shipping policy publication", () => {
             signer,
             now: () => 1000,
             fetchPolicy: (pubkey) => fetchMerchantShippingPolicy(pubkey),
-            publishEvent: (async (event: NDKEvent) => {
-              events.push(event.rawEvent() as SignedPublicNostrEvent)
+            publishEvent: (async (event: SignedPublicNostrEvent) => {
+              events.push(event)
               return { successfulRelayUrls: ["wss://shipping.example"] }
             }) as typeof publishWithPlanner,
           },
@@ -1102,8 +1102,8 @@ describe("shipping policy publication", () => {
     const legacySigner = NDKPrivateKeySigner.generate()
     const signer = setTestAccountSigner(legacySigner)
     const pubkey = await signer.getPublicKey()
-    let published: NDKEvent | undefined
-    const publishEvent = (async (event: NDKEvent) => {
+    let published: SignedPublicNostrEvent | undefined
+    const publishEvent = (async (event: SignedPublicNostrEvent) => {
       published = event
       return { successfulRelayUrls: ["wss://shipping.example"] }
     }) as typeof publishWithPlanner
@@ -1188,7 +1188,7 @@ describe("shipping policy publication", () => {
     })
     await deletion.sign(legacySigner)
     const revision = { eventId: deletion.id, createdAt: 30 }
-    let published: NDKEvent | undefined
+    let published: SignedPublicNostrEvent | undefined
     await publishMerchantShippingPolicy({
       pubkey,
       policy,
@@ -1201,7 +1201,7 @@ describe("shipping policy publication", () => {
           revision,
           coverageComplete: true,
         }),
-        publishEvent: (async (event: NDKEvent) => {
+        publishEvent: (async (event: SignedPublicNostrEvent) => {
           published = event
           return { successfulRelayUrls: ["wss://shipping.example"] }
         }) as typeof publishWithPlanner,
@@ -1245,7 +1245,7 @@ describe("shipping policy publication", () => {
     })
     await event.sign(legacySigner)
     const revision = { eventId: event.id, createdAt: 10 }
-    let deletion: NDKEvent | undefined
+    let deletion: SignedPublicNostrEvent | undefined
     await withdrawMerchantShippingPolicy({
       pubkey,
       acceptedRevision: revision,
@@ -1260,7 +1260,7 @@ describe("shipping policy publication", () => {
           source: "relay",
           coverageComplete: true,
         }),
-        publishEvent: (async (published: NDKEvent) => {
+        publishEvent: (async (published: SignedPublicNostrEvent) => {
           deletion = published
           return { successfulRelayUrls: ["wss://shipping.example"] }
         }) as typeof publishWithPlanner,

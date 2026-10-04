@@ -1,3 +1,8 @@
+import {
+  fixtureWrite,
+  fixturePublisher,
+  resetFixturePublishers,
+} from "./helpers/plain-publisher"
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
@@ -190,20 +195,21 @@ async function attemptProductPublication(input: {
     putCachedProducts: async () => {},
   })
   __setRelayPublishTestOverrides({
+    publishSignedEventFrameToRelay: fixtureWrite,
     accountNetworkLocalStateRepository: { get: async () => undefined },
     planPublishRelays: async () => ({
       intent: "author_event",
-      primaryRelayUrls: ["wss://relay.example"],
+      primaryRelayUrls: ["wss://relay.fixture.conduit.market"],
       broadcastRelayUrls: [],
       parkedRelayUrls: [],
     }),
   })
-  const publish = spyOn(NDKEvent.prototype, "publish").mockImplementation(
+  const publish = spyOn(fixturePublisher, "publish").mockImplementation(
     async function (this: NDKEvent) {
       if (typeof this.kind === "number") {
         input.observed?.publishedKinds.push(this.kind)
       }
-      return new Set([{ url: "wss://relay.example/" }]) as never
+      return new Set([{ url: "wss://relay.fixture.conduit.market/" }]) as never
     }
   )
   const clock =
@@ -256,6 +262,7 @@ async function attemptPreservedPublication(input: {
 
 afterEach(() => {
   __resetCommerceTestOverrides()
+  resetFixturePublishers()
   __resetRelayPublishTestOverrides()
   __resetShippingTestOverrides()
   __resetNdkTestState()
@@ -480,7 +487,7 @@ describe("merchant-owned product mutation boundary", () => {
             author,
             {
               pubkey: author,
-              readRelayUrls: ["wss://shipping.example"],
+              readRelayUrls: ["wss://shipping.fixture.conduit.market"],
               writeRelayUrls: [],
               eventCreatedAt: 1,
               cachedAt: 1,
