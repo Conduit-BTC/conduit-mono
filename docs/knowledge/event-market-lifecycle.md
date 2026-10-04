@@ -32,6 +32,24 @@ concrete occurrence identity govern date presentation. Retained records and
 partial reads support browsing, with incomplete coverage visible. They do not
 establish current checkout authority or a complete archive of Nostr.
 
+Merchant authoring starts with one date. Weekly and monthly repeat choices
+expand to a finite preview of at most 32 concrete dates; custom dates use the
+same editable rows. Monthly dates keep their day of the month and skip months
+without that day. Timed repeats keep local wall-clock hours in the selected
+timezone and reject nonexistent or ambiguous daylight-saving times.
+
+All-day forms show an inclusive last day. A one-day event displays the same
+start and end date. The shared form helpers convert that end to the following
+calendar day for NIP-52's exclusive `end` tag, and convert signed ends back for
+editing. An omitted signed end displays as a one-day event. Existing v1 saved
+publishing plans retain exclusive dates; resume uses those stored values and
+exact signed bytes. Never apply the form conversion again to a saved plan.
+
+Private inbox configuration remains in Network settings. Creating a public
+event does not require an inbox setup step. Participation actions still use
+the shared NIP-17 delivery checks and offer a Network repair link only when
+the action discovers an actionable local configuration problem.
+
 ## Orders and pickup
 
 Before creating a new order or payment, checkout rechecks selected signed

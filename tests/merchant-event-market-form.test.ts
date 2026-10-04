@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import {
   createEmptyOrganizerEventMarketForm,
-  generateOrganizerWeeklyDates,
+  generateOrganizerRecurringDates,
+  fromStoredOrganizerEventForm,
+  toStoredOrganizerEventForm,
   getOrganizerEventEndMinimum,
   getOrganizerEventStartMinimum,
   getOrganizerEventTimezoneOptions,
@@ -26,7 +28,176 @@ function validForm() {
   }
 }
 
+function generateWeeklyDates(pattern: {
+  firstDate: string
+  throughDate: string
+  weekdays: number[]
+  startTime: string
+  endTime: string
+  timezone: string
+}) {
+  return generateOrganizerRecurringDates(
+    {
+      ...validForm(),
+      start: `${pattern.firstDate}T${pattern.startTime}`,
+      end: `${pattern.firstDate}T${pattern.endTime}`,
+      timezone: pattern.timezone,
+    },
+    {
+      frequency: "weekly",
+      weekdays: pattern.weekdays,
+      ends: "on_date",
+      throughDate: pattern.throughDate,
+      count: 4,
+    }
+  )
+}
+
 describe("merchant organizer event form", () => {
+  it("accepts the same displayed start and end for a one-day all-day event", () => {
+    const form = {
+      ...validForm(),
+      calendarType: "date" as const,
+      start: "2026-10-22",
+      end: "2026-10-22",
+    }
+    expect(validateOrganizerEventMarketForm(form).canPublish).toBe(true)
+    expect(prepareOrganizerEventMarketForm(form).calendar).toMatchObject({
+      start: "2026-10-22",
+      end: "2026-10-23",
+    })
+    expect(
+      prepareOrganizerEventMarketDates(form, [
+        { id: "first", start: form.start, end: form.end },
+      ])[0]?.calendar
+    ).toMatchObject({ start: "2026-10-22", end: "2026-10-23" })
+  })
+  it.each([
+    ["2028-02-29", "2028-03-01"],
+    ["2030-12-31", "2031-01-01"],
+    ["2030-04-30", "2030-05-01"],
+  ])(
+    "round-trips inclusive all-day dates across calendar boundaries %s",
+    (start, end) => {
+      const form = {
+        ...validForm(),
+        calendarType: "date" as const,
+        start,
+        end: start,
+      }
+      const stored = toStoredOrganizerEventForm(form)
+      expect(stored.end).toBe(end)
+      expect(fromStoredOrganizerEventForm(stored)).toEqual(form)
+      expect(
+        prepareOrganizerEventMarketForm(stored, { endDateIsExclusive: true })
+          .calendar.end
+      ).toBe(end)
+    }
+  )
+
+  it("shows an omitted signed all-day end as one day without changing its stored form", () => {
+    const stored = {
+      ...validForm(),
+      calendarType: "date" as const,
+      start: "2030-06-01",
+      end: "",
+    }
+    expect(fromStoredOrganizerEventForm(stored).end).toBe(stored.start)
+    expect(
+      prepareOrganizerEventMarketForm(stored, { endDateIsExclusive: true })
+        .calendar.end
+    ).toBeUndefined()
+  })
+
+  it("expands monthly all-day dates and skips months missing the chosen day", () => {
+    const form = {
+      ...validForm(),
+      calendarType: "date" as const,
+      start: "2030-01-31",
+      end: "2030-02-01",
+    }
+    const rows = generateOrganizerRecurringDates(form, {
+      frequency: "monthly",
+      weekdays: [],
+      ends: "after_count",
+      count: 3,
+      throughDate: "",
+    })
+    expect(rows.map(({ start, end }) => [start, end])).toEqual([
+      ["2030-01-31", "2030-02-01"],
+      ["2030-03-31", "2030-04-01"],
+      ["2030-05-31", "2030-06-01"],
+    ])
+    expect(
+      prepareOrganizerEventMarketDates(form, rows).map(
+        ({ calendar }) => calendar.end
+      )
+    ).toEqual(["2030-02-02", "2030-04-02", "2030-06-02"])
+  })
+
+  it("generates weekly one-day all-day events with an inclusive repeat-until date", () => {
+    const form = {
+      ...validForm(),
+      calendarType: "date" as const,
+      start: "2030-06-01",
+      end: "2030-06-01",
+    }
+    const rows = generateOrganizerRecurringDates(form, {
+      frequency: "weekly",
+      weekdays: [6],
+      ends: "on_date",
+      throughDate: "2030-06-08",
+      count: 4,
+    })
+    expect(rows.map(({ start, end }) => [start, end])).toEqual([
+      ["2030-06-01", "2030-06-01"],
+      ["2030-06-08", "2030-06-08"],
+    ])
+    expect(
+      prepareOrganizerEventMarketDates(form, rows).map(
+        ({ calendar }) => calendar.end
+      )
+    ).toEqual(["2030-06-02", "2030-06-09"])
+  })
+
+  it("preserves overnight local hours and rejects empty or unbounded repeat choices", () => {
+    const form = {
+      ...validForm(),
+      start: "2030-06-01T22:00",
+      end: "2030-06-02T03:00",
+    }
+    const repeat = {
+      frequency: "weekly" as const,
+      weekdays: [6],
+      ends: "after_count" as const,
+      count: 2,
+      throughDate: "",
+    }
+    expect(
+      generateOrganizerRecurringDates(form, repeat).map(({ start, end }) => [
+        start,
+        end,
+      ])
+    ).toEqual([
+      ["2030-06-01T22:00", "2030-06-02T03:00"],
+      ["2030-06-08T22:00", "2030-06-09T03:00"],
+    ])
+    for (const count of [0, 33, 1.5])
+      expect(() =>
+        generateOrganizerRecurringDates(form, { ...repeat, count })
+      ).toThrow("1 to 32")
+    expect(() =>
+      generateOrganizerRecurringDates(form, { ...repeat, weekdays: [] })
+    ).toThrow("weekday")
+    expect(() =>
+      generateOrganizerRecurringDates(form, {
+        ...repeat,
+        ends: "on_date",
+        throughDate: "2030-05-31",
+      })
+    ).toThrow("on or after")
+  })
+
   it("allows an optional banner and validates a provided public image URL", () => {
     expect(
       validateOrganizerEventMarketForm({ ...validForm(), imageUrl: "" })
@@ -68,7 +239,7 @@ describe("merchant organizer event form", () => {
     expect(prepareOrganizerEventMarketForm(form).calendar).toMatchObject({
       kind: 31922,
       start: "2026-08-15",
-      end: "2026-08-17",
+      end: "2026-08-18",
       timezone: undefined,
     })
   })
@@ -103,7 +274,7 @@ describe("merchant organizer event form", () => {
   })
 
   it("expands selected weekdays to editable concrete dates across a DST change", () => {
-    const dates = generateOrganizerWeeklyDates({
+    const dates = generateWeeklyDates({
       firstDate: "2026-03-01",
       throughDate: "2026-03-15",
       weekdays: [0],
@@ -131,11 +302,11 @@ describe("merchant organizer event form", () => {
       endTime: "03:30",
       timezone: "America/New_York",
     }
-    expect(() => generateOrganizerWeeklyDates(pattern)).toThrow(
+    expect(() => generateWeeklyDates(pattern)).toThrow(
       "2026-03-08: That local time does not exist"
     )
     expect(() =>
-      generateOrganizerWeeklyDates({
+      generateWeeklyDates({
         ...pattern,
         firstDate: "2026-11-01",
         throughDate: "2026-11-01",
@@ -147,7 +318,7 @@ describe("merchant organizer event form", () => {
 
   it("caps generated dates and rejects duplicate or invalid edited rows", () => {
     expect(() =>
-      generateOrganizerWeeklyDates({
+      generateWeeklyDates({
         firstDate: "2026-01-01",
         throughDate: "2026-03-01",
         weekdays: [0, 1, 2, 3, 4, 5, 6],
@@ -196,7 +367,7 @@ describe("merchant organizer event form", () => {
     )
     expect(
       getOrganizerEventEndMinimum("date", "2026-08-15", "2026-08-15")
-    ).toBe("2026-08-16")
+    ).toBe("2026-08-15")
     expect(
       getOrganizerEventEndMinimum(
         "timed",
