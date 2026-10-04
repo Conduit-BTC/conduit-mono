@@ -1,87 +1,27 @@
-import { useEffect, useMemo, useRef } from "react"
+import { useMemo } from "react"
 import { type PricingRateInput, type Product } from "@conduit/core"
 import {
-  getProductEventMarketCandidates,
-  resolveProductCartFulfillmentFromCatalogs,
-  takeEventCatalogProductRefreshObservations,
+  resolveProductCartFulfillment,
   type ProductCartFulfillmentResolution,
-} from "../lib/event-market-adapter"
-import { useEventCatalogs } from "./useEventMarket"
+} from "../lib/product-cart-fulfillment"
 
-// Shared catalog queries reuse recently completed evidence across mounts.
-// Checkout's explicit freshness verification remains a separate live read.
+/** Ordinary shop fulfillment. Event pickup is explicitly selected and verified on the event surface. */
 export function useProductCartFulfillmentBatch(
   products: readonly Product[],
-  rateInput: PricingRateInput = null
+  _rateInput: PricingRateInput = null
 ) {
-  const references = useMemo(
-    () => [
-      ...new Set(
-        products.flatMap((product) =>
-          getProductEventMarketCandidates(product).map(
-            (candidate) => candidate.canonicalNaddr
-          )
-        )
+  void _rateInput
+  const resolutionsByProductId = useMemo(
+    () =>
+      new Map<string, ProductCartFulfillmentResolution>(
+        products.map((product) => [
+          product.id,
+          resolveProductCartFulfillment(product),
+        ])
       ),
-    ],
     [products]
   )
-  const queries = useEventCatalogs(references, rateInput)
-  const refreshedRevisions = useRef(new Set<string>())
-  useEffect(() => {
-    for (let index = 0; index < references.length; index++) {
-      const query = queries[index]
-      if (!query?.data || query.isFetching) continue
-      const relevantProducts = products.filter((product) =>
-        getProductEventMarketCandidates(product).some(
-          (candidate) => candidate.canonicalNaddr === references[index]
-        )
-      )
-      const pending = takeEventCatalogProductRefreshObservations(
-        relevantProducts,
-        query.data,
-        query.queryIdentity,
-        refreshedRevisions.current
-      )
-      if (pending.length === 0) continue
-      void query.refetch({ cancelRefetch: false })
-    }
-  }, [products, queries, references])
-  const catalogs = new Map(
-    references.map((reference, index) => [reference, queries[index]])
-  )
-  const resolutionsByProductId = new Map<
-    string,
-    ProductCartFulfillmentResolution
-  >()
-  for (const product of products) {
-    const candidates = getProductEventMarketCandidates(product)
-    if (
-      candidates.some((candidate) => {
-        const query = catalogs.get(candidate.canonicalNaddr)
-        // A browse-only progress snapshot is not a completed freshness
-        // decision. Keep checkout checking until this read settles.
-        return !query?.data || query.isHydrating
-      })
-    )
-      continue
-    resolutionsByProductId.set(
-      product.id,
-      resolveProductCartFulfillmentFromCatalogs(
-        product,
-        candidates.map((candidate) => ({
-          candidate,
-          catalog: catalogs.get(candidate.canonicalNaddr)!.data!,
-        }))
-      )
-    )
-  }
-  return {
-    resolutionsByProductId,
-    isChecking: queries.some(
-      (query) => query.isInitialLoading || query.isHydrating
-    ),
-  }
+  return { resolutionsByProductId, isChecking: false }
 }
 
 export function useProductCartFulfillment(
@@ -94,9 +34,7 @@ export function useProductCartFulfillment(
     resolution: product
       ? (batch.resolutionsByProductId.get(product.id) ?? null)
       : null,
-    isChecking: batch.isChecking,
-    candidateNaddr: product
-      ? getProductEventMarketCandidates(product)[0]?.canonicalNaddr
-      : undefined,
+    isChecking: false,
+    candidateNaddr: undefined,
   }
 }

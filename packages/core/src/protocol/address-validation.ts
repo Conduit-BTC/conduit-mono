@@ -29,11 +29,7 @@ export interface AddressForValidation {
 }
 
 export type AddressValidityStatus =
-  | "not_required"
-  | "valid"
-  | "missing"
-  | "inconsistent"
-  | "unknown"
+  "not_required" | "valid" | "missing" | "inconsistent" | "unknown"
 
 export type AddressConfidenceLevel =
   | "not_required"
@@ -637,6 +633,17 @@ const PROFILES: Record<ProfiledCountryCode, CountryAddressProfile> = {
 
 function getProfile(country: string): CountryAddressProfile | undefined {
   return PROFILES[country as ProfiledCountryCode]
+}
+
+/** Share the address validator's existing country-specific region aliases. */
+export function normalizeAddressRegion(
+  country: string,
+  input: string | undefined
+): string | null {
+  const code = normalizeHumanText(country).toUpperCase()
+  const profile = getProfile(code)
+  if (!profile) return null
+  return normalizeRegion(input, profile.regionAliases, profile.regionCodes)
 }
 
 export function isAddressRegionRequired(country: string): boolean {

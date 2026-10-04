@@ -714,7 +714,7 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 230,
+      nativeVersion: 240,
       hasOutbox: true,
       hasShopperTrust: true,
       hasInboxDeclarationEvidence: true,

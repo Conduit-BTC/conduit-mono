@@ -11,6 +11,7 @@ export function setEventMarketProductAssociation(input: {
   market: ParsedEventMarketRoster
   authorization?: EventMarketAuthorizationReadResult
   enabled: boolean
+  authorizationActive?: boolean
 }): ProductSchema {
   const product = parseAddressableCoordinate(input.product.id, [30402])
   if (
@@ -31,14 +32,8 @@ export function setEventMarketProductAssociation(input: {
     ) {
       throw new Error("This merchant is not approved for the Event Market.")
     }
-    if (
-      input.authorization?.resolution.state !== "active" ||
-      input.authorization.merchantPubkey !== product.authorPubkey ||
-      input.authorization.marketCoordinate !== input.market.coordinate ||
-      !input.authorization.retained ||
-      input.authorization.coverage !== "complete"
-    ) {
-      throw new Error("Current signed Event Market authorization is required.")
+    if (!input.authorizationActive) {
+      throw new Error("A current organizer-signed merchant grant is required.")
     }
   }
   const refs = new Set(input.product.eventMarketRefs ?? [])

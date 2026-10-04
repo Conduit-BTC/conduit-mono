@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import { getMerchantOrderActions, type OrderSchema } from "@conduit/core"
 import {
   buildMerchantOrderActionView,
@@ -9,67 +10,12 @@ import {
 } from "../apps/merchant/src/lib/order-action-view"
 
 describe("merchant order action presentation", () => {
-  const merchant = "a".repeat(64)
-  const organizer = "b".repeat(64)
-  const productCoordinate = `30402:${merchant}:free-sample`
-  const pickupCoordinate = `30406:${organizer}:event-pickup`
+  const fixture = createEventMarketOrderFixture({ price: 0 })
+  const merchant = fixture.merchant
   const zeroCostOrder: Pick<
     OrderSchema,
     "items" | "subtotal" | "shippingCostSats"
-  > = {
-    subtotal: 0,
-    shippingCostSats: 0,
-    items: [
-      {
-        productId: productCoordinate,
-        format: "physical",
-        fulfillment: {
-          type: "pickup",
-          organizerPubkey: organizer,
-          handoffMode: "organizer_handoff",
-          handlerPubkey: organizer,
-          product: {
-            coordinate: productCoordinate,
-            merchantPubkey: merchant,
-            eventId: "1".repeat(64),
-            createdAt: 100,
-          },
-          calendar: {
-            coordinate: `31923:${organizer}:event-day`,
-            eventId: "2".repeat(64),
-            createdAt: 101,
-          },
-          collection: {
-            coordinate: `30405:${organizer}:event-market`,
-            eventId: "3".repeat(64),
-            createdAt: 102,
-          },
-          option: {
-            coordinate: pickupCoordinate,
-            eventId: "4".repeat(64),
-            createdAt: 103,
-          },
-          costSats: 0,
-          sourceCost: {
-            amount: 0,
-            currency: "SATS",
-            normalizedCurrency: "SATS",
-          },
-        },
-        quantity: 1,
-        priceAtPurchase: 0,
-        currency: "SATS",
-        shippingOptionId: pickupCoordinate,
-        shippingOptionDTag: "event-pickup",
-        shippingCostSats: 0,
-        sourceShippingCost: {
-          amount: 0,
-          currency: "SATS",
-          normalizedCurrency: "SATS",
-        },
-      },
-    ],
-  }
+  > = fixture.order
 
   it("prioritizes shipment and keeps cancellation in the secondary section", () => {
     const view = buildMerchantOrderActionView({

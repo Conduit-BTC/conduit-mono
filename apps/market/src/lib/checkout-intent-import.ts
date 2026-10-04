@@ -8,7 +8,6 @@ import {
   groupCartPurchases,
   type CartItem,
 } from "./cart-model"
-import { getProductEventMarketCandidates } from "./event-market-adapter"
 
 export type CheckoutImportError =
   | "merchant_scope_mismatch"
@@ -94,9 +93,8 @@ export async function prepareCheckoutIntent(
     ) {
       return { status: "error", error: "product_unavailable" }
     }
-    if (getProductEventMarketCandidates(product).length > 0) {
-      return { status: "error", error: "incompatible_checkout" }
-    }
+    // V1 links use ordinary fulfillment. Event pickup requires an explicit
+    // selection with current signed market evidence on the event surface.
     items.push({
       ...createCartItemFromProduct(product),
       quantity: requested.quantity,

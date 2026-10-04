@@ -14,6 +14,8 @@ export * from "./network-target-safety"
 export * from "./app-links"
 export * from "./checkout-intent"
 export * from "./checkout-partner-registry"
+export * from "./checkout-source-domain"
+export * from "./checkout-attribution"
 
 // Wallets
 export * from "./wallets"
@@ -357,3 +359,7 @@ export {
   useUpdateProfile,
   type UseUpdateProfileOptions,
 } from "./hooks/useUpdateProfile"
+export {
+  useProgressiveEventMarketDiscovery,
+  createProgressiveEventMarketDiscoveryQuery,
+} from "./hooks/useProgressiveEventMarketDiscovery"
