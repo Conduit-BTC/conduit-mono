@@ -29,7 +29,7 @@ import { mergeMerchantTimelineMarketReads } from "../lib/merchant-event-relation
 import {
   getNextMerchantEventTimelineLimit,
   matchesMerchantEventRelationship,
-  merchantEventDatesUnavailable,
+  getMerchantEventTimelineReadState,
   getFutureMerchantTimelineDateParts,
   projectFutureMerchantTimelineOccurrences,
   type FutureMerchantTimelineOccurrence,
@@ -286,11 +286,13 @@ function MerchantEventTimelineSection({
     priority: "visible",
     maxUnresolvedRefetches: 1,
   })
-  const futureDateReadIncomplete = marketReads.some(
-    (read) =>
-      matchesMerchantEventRelationship(read, merchantPubkey, relationship) &&
-      merchantEventDatesUnavailable(read)
-  )
+  const { datesUnavailable: futureDateReadIncomplete, unavailable } =
+    getMerchantEventTimelineReadState(
+      marketReads,
+      merchantPubkey,
+      relationship,
+      data.unavailable
+    )
   const initialLoading =
     data.initialLoading && visibleFutureOccurrences.length === 0
   function changeRelationship(value: string): void {
@@ -449,7 +451,7 @@ function MerchantEventTimelineSection({
           <MerchantEventTimelineEmptyState
             relationship={relationship}
             datesUnavailable={futureDateReadIncomplete}
-            unavailable={data.unavailable && marketReads.length === 0}
+            unavailable={unavailable}
             limited={data.limited}
             onCreate={onCreate}
             createDisabled={createDisabled}

@@ -20,7 +20,11 @@ describe("Merchant event discovery presentation", () => {
       <MerchantEventTimelineEmptyState relationship="all" unavailable />
     )
     const missingDates = renderToStaticMarkup(
-      <MerchantEventTimelineEmptyState relationship="all" datesUnavailable />
+      <MerchantEventTimelineEmptyState
+        relationship="all"
+        datesUnavailable
+        unavailable
+      />
     )
     expect(offline).toContain("Couldn’t connect to your relays")
     expect(missingDates).toContain("Event dates are unavailable")

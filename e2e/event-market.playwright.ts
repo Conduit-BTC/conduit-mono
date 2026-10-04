@@ -231,6 +231,7 @@ function createRelayHarness() {
   const incompleteReadKinds = new Set<number>()
   const rejectedKinds = new Set<number>()
   let rejectReads = false
+  let rejectMarketDiscovery = false
 
   return {
     publications,
@@ -238,6 +239,9 @@ function createRelayHarness() {
     incompleteRequests,
     incompleteReadsForKind(kind: number) {
       incompleteReadKinds.add(kind)
+    },
+    rejectMarketDiscovery(reject: boolean) {
+      rejectMarketDiscovery = reject
     },
     rejectReads(reject: boolean) {
       rejectReads = reject
@@ -349,7 +353,13 @@ function createRelayHarness() {
             }
             requests.push(request)
             const respond = () => {
-              if (rejectReads) {
+              if (
+                rejectReads ||
+                (rejectMarketDiscovery &&
+                  filters.some(
+                    (filter) => filter.kinds?.includes(30409) && !filter["#d"]
+                  ))
+              ) {
                 socket.send(
                   JSON.stringify([
                     "CLOSED",
@@ -2599,6 +2609,77 @@ test("merchant directory separates open collapsible My Events and All Events wit
       .getByRole("region", { name: "My Events timeline" })
       .getByRole("button", { name: "Selling At" })
   ).toHaveAttribute("aria-pressed", "true")
+})
+
+test("merchant personal timeline shows unavailable discovery with an unrelated product-linked event @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1000) - 10
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    kind: 31923,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "unrelated-fair"],
+      ["title", "Unrelated Fair"],
+      ["start", "1893456000"],
+      ["D", "21915"],
+    ],
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "unrelated-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+    ],
+  })
+  const template = createMerchantTemplateProductEvent(createdAt)
+  const product = signEvent(MERCHANT_SECRET, {
+    kind: template.kind,
+    created_at: createdAt,
+    content: template.content,
+    tags: [...template.tags, ["a", eventCoordinate(market)]],
+  })
+  relay.seed(calendar, market, product)
+  // The exact product-linked read succeeds; every broad market discovery fails.
+  relay.rejectMarketDiscovery(true)
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  const my = page.getByRole("region", { name: "My Events timeline" })
+  const all = page.getByRole("region", { name: "All Events timeline" })
+  await expect(
+    all.getByRole("button", { name: /^Open Unrelated Fair/ })
+  ).toBeVisible()
+  await expect(
+    my.getByRole("heading", { name: "Couldn’t connect to your relays" })
+  ).toBeVisible()
+  await expect(
+    my.getByRole("heading", { name: "You aren’t organizing any events" })
+  ).toHaveCount(0)
+  await my.getByRole("button", { name: "Selling At", exact: true }).click()
+  await expect(
+    my.getByRole("heading", { name: "Couldn’t connect to your relays" })
+  ).toBeVisible()
+  await expect(
+    my.getByRole("heading", { name: "You aren’t selling at any events" })
+  ).toHaveCount(0)
+  relay.rejectMarketDiscovery(false)
+  await expect(
+    page.getByRole("button", { name: "Refresh events", exact: true })
+  ).toBeEnabled()
+  await page
+    .getByRole("button", { name: "Refresh events", exact: true })
+    .click()
+  await expect(
+    my.getByRole("heading", { name: "You aren’t selling at any events" })
+  ).toBeVisible()
+  await expect(
+    all.getByRole("button", { name: /^Open Unrelated Fair/ })
+  ).toBeVisible()
 })
 
 for (const monthly of [false, true])

@@ -12,6 +12,8 @@ import {
   type EventMarketEnrollmentDelivery,
 } from "@conduit/core"
 
+import { getEventMarketEnrollmentError } from "../lib/event-market-enrollment-presentation"
+
 export function useEventMarketEnrollment(
   marketCoordinate: string,
   authenticatedPubkey: string | null
@@ -91,21 +93,7 @@ export function useEventMarketEnrollment(
           (cause.reason === "sender_not_ready" ||
             cause.reason === "recipient_relays_excluded")
       )
-      setError(
-        cause instanceof PrivateMessageRelayReadinessError
-          ? cause.reason === "sender_not_ready"
-            ? "Configure your private inbox in Network settings before sending participation."
-            : cause.reason === "recipient_relays_excluded"
-              ? "The recipient’s inbox relays are excluded by your Network settings. Review the settings, then retry."
-              : cause.reason === "recipient_lookup_failed"
-                ? "The recipient’s private inbox could not be checked. Refresh and retry; this does not prove their setup is missing."
-                : action === "request" || action === "withdraw"
-                  ? "The host has not configured a private inbox for participation messages."
-                  : "This merchant has not configured a private inbox for participation messages."
-          : cause instanceof Error
-            ? cause.message
-            : "Participation could not be sent."
-      )
+      setError(getEventMarketEnrollmentError(cause, action))
     } finally {
       setRevision((value) => value + 1)
       setBusy(false)
@@ -129,11 +117,7 @@ export function useEventMarketEnrollment(
           (cause.reason === "sender_not_ready" ||
             cause.reason === "recipient_relays_excluded")
       )
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Saved participation still needs delivery."
-      )
+      setError(getEventMarketEnrollmentError(cause, pending.payload.action))
     } finally {
       setRevision((value) => value + 1)
       setBusy(false)

@@ -63,6 +63,26 @@ export function merchantEventDatesUnavailable(
   return !read.calendar && read.schedule?.kind !== "single"
 }
 
+/** Only matching usable dates can mask an unavailable discovery for a section. */
+export function getMerchantEventTimelineReadState(
+  marketReads: EventMarketRosterReadResult[],
+  merchantPubkey: string,
+  relationship: MerchantEventRelationshipFilter,
+  discoveryUnavailable: boolean
+): { datesUnavailable: boolean; unavailable: boolean } {
+  const relevantReads = marketReads.filter((read) =>
+    matchesMerchantEventRelationship(read, merchantPubkey, relationship)
+  )
+  return {
+    datesUnavailable: relevantReads.some(merchantEventDatesUnavailable),
+    unavailable:
+      discoveryUnavailable &&
+      !relevantReads.some(
+        (read) => projectFutureMerchantTimelineOccurrences(read).length > 0
+      ),
+  }
+}
+
 /** Project only signed, resolved concrete dates from the current schedule. */
 export function projectFutureMerchantTimelineOccurrences(
   read: EventMarketRosterReadResult

@@ -15,6 +15,7 @@ import {
 import { projectFutureMarketTimelineOccurrences } from "../apps/market/src/components/MarketEventsTimeline"
 import {
   getFutureMerchantTimelineDateParts,
+  getMerchantEventTimelineReadState,
   matchesMerchantEventRelationship,
   merchantEventDatesUnavailable,
   projectFutureMerchantTimelineOccurrences,
@@ -166,6 +167,90 @@ describe("future Event Market timeline rows", () => {
         resolution: { state: "missing" },
       })
     ).toBe(false)
+  })
+
+  it("keeps failed discovery visible with unrelated or unresolved retained reads", () => {
+    const unrelatedMerchant = "f".repeat(64)
+    for (const relationship of ["organizing", "selling"] as const) {
+      expect(
+        getMerchantEventTimelineReadState(
+          [seriesRead],
+          unrelatedMerchant,
+          relationship,
+          true
+        )
+      ).toEqual({
+        datesUnavailable: false,
+        unavailable: true,
+      })
+    }
+    for (const state of [
+      "missing",
+      "deleted",
+      "malformed",
+      "conflicting",
+    ] as const) {
+      const unresolved: EventMarketRosterReadResult = {
+        ...seriesRead,
+        resolution:
+          state === "missing" ? { state } : { state, eventId: marketSigned.id },
+      }
+      for (const relationship of ["all", "organizing", "selling"] as const) {
+        expect(
+          getMerchantEventTimelineReadState(
+            [unresolved],
+            organizer,
+            relationship,
+            true
+          )
+        ).toEqual({
+          datesUnavailable: false,
+          unavailable: true,
+        })
+      }
+    }
+    expect(
+      getMerchantEventTimelineReadState([], organizer, "all", false)
+    ).toEqual({
+      datesUnavailable: false,
+      unavailable: false,
+    })
+  })
+
+  it("preserves usable dates and known missing dates for the matching section during an outage", () => {
+    expect(
+      getMerchantEventTimelineReadState(
+        [seriesRead],
+        organizer,
+        "organizing",
+        true
+      )
+    ).toEqual({
+      datesUnavailable: true,
+      unavailable: false,
+    })
+    const noDates: EventMarketRosterReadResult = {
+      ...seriesRead,
+      calendar: null,
+      schedule: undefined,
+    }
+    expect(
+      getMerchantEventTimelineReadState(
+        [noDates],
+        organizer,
+        "organizing",
+        true
+      )
+    ).toEqual({
+      datesUnavailable: true,
+      unavailable: true,
+    })
+    expect(
+      getMerchantEventTimelineReadState([noDates], organizer, "selling", true)
+    ).toEqual({
+      datesUnavailable: false,
+      unavailable: true,
+    })
   })
 
   it("keeps date-only dates and signed timezone day rollover distinct", () => {
