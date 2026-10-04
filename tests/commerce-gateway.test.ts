@@ -1855,7 +1855,7 @@ describe("commerce gateway", () => {
       "Conduit Shirt",
       "Conduit Sticker",
     ])
-    expect(parent?.safety?.state).toBe("active")
+    expect(parent?.availability?.state).toBe("active")
     expect(
       parent?.family?.children.map((variation) => variation.product.id)
     ).toEqual([
@@ -2556,7 +2556,7 @@ describe("commerce gateway", () => {
     ])
   })
 
-  it("preserves controlled relay relevance through real signatures, revisions, safety and Market facets", async () => {
+  it("preserves controlled relay relevance through real signatures, revisions, availability and Market facets", async () => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket")
     const first = makeSignedProductEvent({
       dTag: "shared",
@@ -4292,13 +4292,14 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(0)
   })
 
-  it("keeps market-hidden products out of batched Market reads", async () => {
+  it("keeps explicitly hidden products out of batched Market reads", async () => {
     const productEvent = makeProductEvent({
       pubkey: MERCHANT_A_PUBKEY,
       dTag: "blocked-batch-item",
       id: "event-blocked-batch",
       createdAt: 100,
       title: "Counterfeit goods display sample",
+      visibilityTag: "hidden",
     })
     const addressId = `30402:${MERCHANT_A_PUBKEY}:blocked-batch-item`
 
@@ -4316,13 +4317,13 @@ describe("commerce gateway", () => {
 
     expect(marketResult.data).toHaveLength(0)
     expect(merchantResult.data).toHaveLength(1)
-    expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
+    expect(merchantResult.data[0]?.availability?.state).toBe("hidden")
   })
 
-  it("scopes the merchant-hidden buyer exception to exact safe pickup coordinates", async () => {
+  it("scopes the merchant-hidden buyer exception to exact pickup coordinates", async () => {
     const eventProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-event-item`
     const ordinaryProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-ordinary-item`
-    const blockedProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-blocked-item`
+    const titledProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-blocked-item`
     const events = [
       makeProductEvent({
         pubkey: EVENT_TEST_MERCHANT_PUBKEY,
@@ -4356,15 +4357,15 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProductsByIds(
-      [eventProductId, ordinaryProductId, blockedProductId],
+      [eventProductId, ordinaryProductId, titledProductId],
       {
-        includeMerchantHiddenProductIds: [eventProductId, blockedProductId],
+        includeMerchantHiddenProductIds: [eventProductId, titledProductId],
       }
     )
 
-    expect(result.data.map((record) => record.addressId)).toEqual([
-      eventProductId,
-    ])
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      [eventProductId, titledProductId].sort()
+    )
     expect(
       result.diagnostics.find(
         (diagnostic) => diagnostic.productId === eventProductId
@@ -4377,9 +4378,9 @@ describe("commerce gateway", () => {
     ).toBe("listing_filtered")
     expect(
       result.diagnostics.find(
-        (diagnostic) => diagnostic.productId === blockedProductId
+        (diagnostic) => diagnostic.productId === titledProductId
       )?.issue
-    ).toBe("listing_filtered")
+    ).toBeNull()
   })
 
   it("isolates explicitly hidden event listings without inventing event semantics for public shipping", async () => {
@@ -4854,7 +4855,7 @@ describe("commerce gateway", () => {
     expect(merchantResult.data[0]?.product.title).toBe("Needs Image")
   })
 
-  it("suppresses blocked launch-safety listings from Market while Merchant can inspect them", async () => {
+  it("admits formerly blocked title text to Market and product detail", async () => {
     const productEvent = makeProductEvent({
       pubkey: "merchant",
       dTag: "blocked-item",
@@ -4887,14 +4888,15 @@ describe("commerce gateway", () => {
       includeMarketHidden: true,
     })
 
-    expect(marketResult.data).toHaveLength(0)
-    expect(publicDetail.data).toBeNull()
+    expect(marketResult.data).toHaveLength(1)
+    expect(marketResult.data[0]?.availability?.state).toBe("active")
+    expect(publicDetail.data?.availability?.state).toBe("active")
     expect(merchantResult.data).toHaveLength(1)
-    expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
-    expect(merchantDetail.data?.safety?.state).toBe("blocked")
+    expect(merchantResult.data[0]?.availability?.state).toBe("active")
+    expect(merchantDetail.data?.availability?.state).toBe("active")
   })
 
-  it("keeps policy-warning listings visible in Market while Merchant can inspect the warning", async () => {
+  it("admits formerly warned title text in Market and Merchant", async () => {
     const productEvent = makeProductEvent({
       pubkey: "merchant",
       dTag: "warning-item",
@@ -4921,12 +4923,12 @@ describe("commerce gateway", () => {
     })
 
     expect(marketResult.data).toHaveLength(1)
-    expect(marketResult.data[0]?.safety?.state).toBe("flagged")
+    expect(marketResult.data[0]?.availability?.state).toBe("active")
     expect(merchantResult.data).toHaveLength(1)
-    expect(merchantResult.data[0]?.safety?.state).toBe("flagged")
+    expect(merchantResult.data[0]?.availability?.state).toBe("active")
   })
 
-  it("does not resurrect an older cached active listing after a newer blocked replacement", async () => {
+  it("keeps a newer signed replacement visible over an older cached listing", async () => {
     cachedProducts.push({
       id: "30402:merchant:replacement-item",
       pubkey: "merchant",
@@ -4967,7 +4969,10 @@ describe("commerce gateway", () => {
       limit: 10,
     })
 
-    expect(marketResult.data).toHaveLength(0)
+    expect(marketResult.data).toHaveLength(1)
+    expect(marketResult.data[0]?.product.title).toBe(
+      "Counterfeit goods display sample"
+    )
     expect(merchantResult.data).toHaveLength(1)
     expect(merchantResult.data[0]?.product.title).toBe(
       "Counterfeit goods display sample"
@@ -4991,8 +4996,11 @@ describe("commerce gateway", () => {
       limit: 10,
     })
 
-    expect(cachedMarketResult.data).toHaveLength(0)
-    expect(cachedMerchantResult.data[0]?.safety?.state).toBe("blocked")
+    expect(cachedMarketResult.data).toHaveLength(1)
+    expect(cachedMarketResult.data[0]?.product.title).toBe(
+      "Counterfeit goods display sample"
+    )
+    expect(cachedMerchantResult.data[0]?.availability?.state).toBe("active")
   })
 
   it("resolves product detail from a NIP-89 naddr handler URL", async () => {
@@ -8669,13 +8677,14 @@ describe("getProductsByIds diagnostics", () => {
     expect(result.diagnostics[0]?.issue).toBe("cached_only")
   })
 
-  it("types market-filtered listings instead of calling them missing", async () => {
+  it("types merchant-hidden listings as filtered instead of missing", async () => {
     const productEvent = makeProductEvent({
       pubkey: merchantPubkey,
       dTag: "diagnosed-filtered",
       id: "event-diagnosed-filtered",
       createdAt: 100,
       title: "Counterfeit goods display sample",
+      visibilityTag: "hidden",
     })
     const filteredAddressId = `30402:${merchantPubkey}:diagnosed-filtered`
     __setCommerceTestOverrides({

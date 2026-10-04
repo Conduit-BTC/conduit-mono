@@ -69,13 +69,12 @@ import {
   type UnwrapGiftWrapOptions,
 } from "./messaging"
 import {
-  evaluateListingSafety,
-  isMerchantHiddenOnlyListingSafetyAllowed,
+  evaluateListingAvailability,
+  isMerchantHiddenOnlyListingAvailable,
   isListingMarketVisible,
-  reconcileContextualListingSafety,
-  type ListingSafetyContext,
-  type ListingSafetyEvaluation,
-} from "./listing-safety"
+  type ListingAvailabilityContext,
+  type ListingAvailabilityEvaluation,
+} from "./listing-availability"
 import {
   prepareProductCatalog,
   type PreparedProductFamily,
@@ -291,7 +290,7 @@ export interface FollowListResult extends CommerceResult<string[]> {
 
 export interface CommerceProductRecord {
   product: Product
-  safety?: ListingSafetyEvaluation
+  availability?: ListingAvailabilityEvaluation
   family?: PreparedProductFamily<CommerceProductRecord>
   /** In-memory evidence behind exact family eligibility, never extra results. */
   exactReadContext?: RetainedProductFamilyContext
@@ -374,12 +373,12 @@ export interface ProductsByIdsOptions {
    * The last callback is the final family/deletion-reconciled return value.
    */
   onProgress?: (result: ProductsByIdsResult) => void
-  /** Merchant management only: bypass every Market listing-safety filter. */
+  /** Merchant management only: bypass every Market availability filter. */
   includeMarketHidden?: boolean
   /**
    * Buyer-scoped exception for exact event-pickup coordinates. Only listings
-   * hidden solely by the merchant visibility signal are admitted; blocked,
-   * unsupported, pending, and external decisions remain filtered.
+   * hidden solely by the merchant visibility signal are admitted; missing
+   * images and unsupported product structures remain filtered.
    */
   includeMerchantHiddenProductIds?: readonly string[]
   /**
@@ -1676,14 +1675,15 @@ export function hasMarketProductImage(
   return product.images.some((image) => isValidProductImageUrl(image.url))
 }
 
-function withListingSafety(
-  record: Omit<CommerceProductRecord, "safety"> & {
-    safety?: ListingSafetyEvaluation
+function withListingAvailability(
+  record: Omit<CommerceProductRecord, "availability"> & {
+    availability?: ListingAvailabilityEvaluation
   }
 ): CommerceProductRecord {
   return {
     ...record,
-    safety: record.safety ?? evaluateListingSafety(record.product),
+    availability:
+      record.availability ?? evaluateListingAvailability(record.product),
   }
 }
 
@@ -1692,7 +1692,7 @@ function isMarketRenderableRecord(record: CommerceProductRecord): boolean {
     return false
   }
   return isListingMarketVisible(
-    record.safety ?? evaluateListingSafety(record.product)
+    record.availability ?? evaluateListingAvailability(record.product)
   )
 }
 
@@ -1716,7 +1716,7 @@ function prepareVariationGroups(
     const { parent } = item.family
     const eligibleVariationRecords = item.family.children.filter((variation) =>
       isListingMarketVisible(
-        evaluateListingSafety(variation.product, undefined, {
+        evaluateListingAvailability(variation.product, {
           variationGroupRole: "variation",
           hasGroupImage: true,
         })
@@ -1730,7 +1730,7 @@ function prepareVariationGroups(
     const variations = eligibleVariationRecords
       .filter((variation) =>
         isListingMarketVisible(
-          evaluateListingSafety(variation.product, undefined, {
+          evaluateListingAvailability(variation.product, {
             variationGroupRole: "variation",
             hasGroupImage,
           })
@@ -1746,7 +1746,7 @@ function prepareVariationGroups(
         {
           ...parent,
           family: item.family,
-          safety: evaluateListingSafety(parent.product, undefined, {
+          availability: evaluateListingAvailability(parent.product, {
             variationGroupRole: "parent",
             hasGroupImage,
           }),
@@ -1764,7 +1764,7 @@ function prepareVariationGroups(
       {
         ...parent,
         family: prepared.family,
-        safety: evaluateListingSafety(parent.product, undefined, {
+        availability: evaluateListingAvailability(parent.product, {
           variationGroupRole: "parent",
           hasGroupImage,
         }),
@@ -1927,7 +1927,7 @@ function selectExactProductRecordsForRead(
     return [
       {
         ...target,
-        safety: evaluateListingSafety(variation.product, undefined, {
+        availability: evaluateListingAvailability(variation.product, {
           variationGroupRole: "variation",
           hasGroupImage: true,
         }),
@@ -1938,10 +1938,10 @@ function selectExactProductRecordsForRead(
 
 function isMerchantHiddenExactRecordAllowed(
   record: CommerceProductRecord,
-  context?: ListingSafetyContext
+  context?: ListingAvailabilityContext
 ): boolean {
-  return isMerchantHiddenOnlyListingSafetyAllowed(
-    reconcileContextualListingSafety(record.product, record.safety, context)
+  return isMerchantHiddenOnlyListingAvailable(
+    evaluateListingAvailability(record.product, context)
   )
 }
 
@@ -1973,7 +1973,7 @@ function prepareMerchantHiddenExactRecords(
 
     const parent = item.family.parent
     const parentAllowed = allowedAddresses.has(parent.addressId)
-    const structuralContext: ListingSafetyContext = {
+    const structuralContext: ListingAvailabilityContext = {
       variationGroupRole: "parent",
       hasGroupImage: true,
     }
@@ -1981,7 +1981,7 @@ function prepareMerchantHiddenExactRecords(
       continue
     }
 
-    const ownImageChildContext: ListingSafetyContext = {
+    const ownImageChildContext: ListingAvailabilityContext = {
       variationGroupRole: "variation",
       hasGroupImage: true,
     }
@@ -1995,7 +1995,7 @@ function prepareMerchantHiddenExactRecords(
       structurallyAllowedChildren.some((child) =>
         hasMarketProductImage(child.product)
       )
-    const childContext: ListingSafetyContext = {
+    const childContext: ListingAvailabilityContext = {
       variationGroupRole: "variation",
       hasGroupImage,
     }
@@ -2005,22 +2005,18 @@ function prepareMerchantHiddenExactRecords(
       )
       .map((child) => ({
         ...child,
-        safety: reconcileContextualListingSafety(
-          child.product,
-          child.safety,
-          childContext
-        ),
+        availability: evaluateListingAvailability(child.product, childContext),
       }))
 
     // An accepted child can be rendered atomically without accepting its
-    // parent. The parent still proves family structure and safety, but an
+    // parent. The parent still proves family structure and availability, but an
     // unaccepted parent or sibling cannot donate an image or enter the result.
     for (const child of children) {
       prepared.set(child.addressId, child)
     }
 
     if (!parentAllowed) continue
-    const parentContext: ListingSafetyContext = {
+    const parentContext: ListingAvailabilityContext = {
       variationGroupRole: "parent",
       hasGroupImage,
     }
@@ -2031,9 +2027,8 @@ function prepareMerchantHiddenExactRecords(
         {
           ...parent,
           family: undefined,
-          safety: reconcileContextualListingSafety(
+          availability: evaluateListingAvailability(
             parent.product,
-            parent.safety,
             parentContext
           ),
         },
@@ -2188,7 +2183,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     ...(row.sourceRelayUrls ?? []),
     ...(volatileProductSourceRelayUrls.get(product.id) ?? []),
   ])
-  return withListingSafety({
+  return withListingAvailability({
     product,
     eventId: row.eventId ?? product.id,
     addressId: product.id,
@@ -3032,28 +3027,28 @@ export function reconcileProductRecordsWithDeletions(
     const parent = {
       ...record.family.parent,
       family: undefined,
-      safety: reconcileContextualListingSafety(
-        record.family.parent.product,
-        record.family.parent.safety,
-        { variationGroupRole: "parent", hasGroupImage }
-      ),
+      availability: evaluateListingAvailability(record.family.parent.product, {
+        variationGroupRole: "parent",
+        hasGroupImage,
+      }),
     }
     const prepared = prepareProductCatalog(
       [
         parent,
         ...children.map((child) => ({
           ...child,
-          safety: reconcileContextualListingSafety(
-            child.product,
-            child.safety,
-            { variationGroupRole: "variation", hasGroupImage }
-          ),
+          availability: evaluateListingAvailability(child.product, {
+            variationGroupRole: "variation",
+            hasGroupImage,
+          }),
         })),
       ],
       record.family.readEvidence
     ).items.find((item) => item.kind === "family")
     if (prepared?.kind !== "family") return []
-    return [{ ...record, safety: parent.safety, family: prepared.family }]
+    return [
+      { ...record, availability: parent.availability, family: prepared.family },
+    ]
   })
   return reconciled.length === records.length &&
     reconciled.every((record, index) => record === records[index])
@@ -3999,19 +3994,19 @@ const productParseCache = new Map<
   string,
   {
     parsed: ReturnType<typeof parseProductEvent>
-    safety: ReturnType<typeof evaluateListingSafety>
+    availability: ReturnType<typeof evaluateListingAvailability>
   }
 >()
 
-// Parsing + listing-safety evaluation is deterministic per event id, but
+// Parsing + listing-availability evaluation is deterministic per event id, but
 // dedupeProductEvents re-runs over the full accumulated set on every streaming
 // callback. Cache by id so each unique event is parsed/evaluated once instead
 // of O(callbacks x events).
-function parseAndEvaluateProductEvent(event: SignedPublicNostrEvent) {
+function parseAndPrepareProductEvent(event: SignedPublicNostrEvent) {
   const cached = event.id ? productParseCache.get(event.id) : undefined
   if (cached) return cached
   const parsed = parseProductEvent(event)
-  const entry = { parsed, safety: evaluateListingSafety(parsed) }
+  const entry = { parsed, availability: evaluateListingAvailability(parsed) }
   if (event.id) {
     if (productParseCache.size >= MAX_PRODUCT_PARSE_CACHE) {
       const oldest = productParseCache.keys().next().value
@@ -4031,7 +4026,7 @@ function dedupeProductEvents(
 
   for (const event of events) {
     try {
-      const { parsed, safety } = parseAndEvaluateProductEvent(event)
+      const { parsed, availability } = parseAndPrepareProductEvent(event)
 
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
@@ -4048,7 +4043,7 @@ function dedupeProductEvents(
           ...parsed,
           ...(event.id ? { sourceEventId: event.id } : {}),
         },
-        safety,
+        availability,
         eventId: event.id,
         addressId,
         dTag,
@@ -7305,7 +7300,7 @@ export async function getCachedProductDetail(
 
 /** Read one cached catalog batch for exact coordinates without relay I/O.
  * Retained records carry stale evidence; callers must not authorize purchases
- * from this projection. The same deletion and family safety rules as cached
+ * from this projection. The same deletion and family availability checks as cached
  * product detail apply, with a single author-scoped storage read.
  */
 export async function getCachedProductsByIds(

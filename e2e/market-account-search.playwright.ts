@@ -30,11 +30,17 @@ const IMAGE_FIXTURE_PNG = Buffer.from(
 
 async function seedAccounts(
   page: Page,
-  sellerPubkey = SELLER_PUBKEY
+  sellerPubkey = SELLER_PUBKEY,
+  productTitle = "Account search fixture"
 ): Promise<void> {
   await page.waitForLoadState("networkidle")
   await page.evaluate(
-    ({ sellerPubkey, eligibleAccountPubkey, unlistedAccountPubkey }) =>
+    ({
+      sellerPubkey,
+      productTitle,
+      eligibleAccountPubkey,
+      unlistedAccountPubkey,
+    }) =>
       new Promise<void>((resolve, reject) => {
         const request = indexedDB.open("conduit")
         request.onerror = () => reject(request.error)
@@ -67,7 +73,7 @@ async function seedAccounts(
           transaction.objectStore("products").put({
             id: `30402:${sellerPubkey}:account-search-fixture`,
             pubkey: sellerPubkey,
-            title: "Account search fixture",
+            title: productTitle,
             summary: "Seeded listing so the account is a merchant",
             price: 1,
             currency: "SATS",
@@ -117,6 +123,7 @@ async function seedAccounts(
       }),
     {
       sellerPubkey,
+      productTitle,
       eligibleAccountPubkey: ELIGIBLE_ACCOUNT_PUBKEY,
       unlistedAccountPubkey: UNLISTED_ACCOUNT_PUBKEY,
     }
@@ -298,6 +305,30 @@ test("market header preserves account search inside the eligible author scope @m
     `${marketUrl}/${nip19.npubEncode(SELLER_PUBKEY)}`
   )
   await expect(listbox).toBeHidden()
+})
+
+test("guest whitelist controls content discovery across cached reloads @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/about`)
+  await seedAccounts(page, SELLER_PUBKEY, "Counterfeit goods display fixture")
+  await page.routeWebSocket(/.*/, async (webSocket) => {
+    await webSocket.close({ code: 1011, reason: "offline catalog fixture" })
+  })
+  await page.goto(`${marketUrl}/products?source=conduit`)
+
+  const listedProduct = page.getByText("Counterfeit goods display fixture", {
+    exact: true,
+  })
+  await expect(listedProduct).toBeVisible()
+  await expect(
+    page.getByText("Hidden category fixture", { exact: true })
+  ).toHaveCount(0)
+  await page.reload()
+  await expect(listedProduct).toBeVisible()
+  await expect(
+    page.getByText("Hidden category fixture", { exact: true })
+  ).toHaveCount(0)
 })
 
 test("market header selects cached categories inside the active catalog scope @market", async ({

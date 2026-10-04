@@ -29,7 +29,10 @@ particular npub, a kind-3 refresh, or a saved follow-list override.
 The catalog cache and discovery queries include the resolved author set.
 Changing the list therefore changes their scope. Old
 `conduit.market.defaultPerspectiveFollows.v3` browser data is unused.
-Existing item-level visibility and safety filters continue to apply.
+The checked-in merchant scope is the catalog's content policy. The client does
+not classify listing text/tags or apply warning, block, or review states.
+Merchant visibility, usable images, supported variation structure, signed
+revisions, expiration, and deletion reconciliation still apply.
 Product reads use the existing bounded author batches. Event discovery retains
 its existing 64-organizer bound and reports partial coverage for larger scopes;
 the shared list does not imply that every organizer was queried.
@@ -48,16 +51,17 @@ deletion relay to finish, and cached data remains discovery evidence rather
 than purchase authority. Every progressive projection and final resolution
 reconciles currently known deletion evidence.
 
-Content rules remain enabled. Their immutable title, description, and tag
-assessment is reused within the running client; changed content gets a fresh
-assessment. Visibility, usable images, variation context, explicit review
-decisions, signed revisions, expiration, and deletion checks remain separate.
+Client content rules and their caches have been removed. Listing availability
+only describes merchant visibility, usable images, and supported variation
+structure. It is not a content assessment or a review decision. The merchant
+list controls Conduit catalog content discovery; personal follow feeds retain
+their own merchant scope.
 
 Products hydrate the visible merchants first. Store-menu identities and
 seller-name search hydrate when those surfaces are used. Profile query keys
 include relay hints only for their requested merchants, so unrelated catalog
-arrivals do not restart those reads. Long directory/menu
-lists mount avatar images near the viewport; profile banners mount on the
+arrivals do not restart those reads. Long directory/menu lists mount avatar
+images near the viewport; profile banners mount on the
 profile route. Kind-0 profile metadata is a complete event, so fetching names
 also receives other metadata fields, but receiving an image URL does not
 download that image.

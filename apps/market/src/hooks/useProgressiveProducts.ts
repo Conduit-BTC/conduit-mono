@@ -20,7 +20,7 @@ import {
   peekRetainedOwnFollowListSnapshot,
   readRetainedOwnFollowListSnapshot,
   subscribeToProductCacheChanges,
-  type ListingSafetyEvaluation,
+  type ListingAvailabilityEvaluation,
   type PreparedProductFamily,
   type Product,
   useAuth,
@@ -719,7 +719,7 @@ export function useProgressiveProducts(
 export function useProgressiveProductDetail(productId: string): {
   product: Product | null
   family: PreparedProductFamily<CommerceProductRecord> | null
-  listingSafety: ListingSafetyEvaluation | null
+  listingAvailability: ListingAvailabilityEvaluation | null
   isMarketVisible: boolean
   meta: CommerceQueryMeta | null
   profileRelayHintsByPubkey: Record<string, string[]>
@@ -774,10 +774,10 @@ export function useProgressiveProductDetail(productId: string): {
   const active = hasNetworkResult ? networkQuery.data : cachedQuery.data
   const product = active?.data?.product ?? null
   const family = active?.data?.family ?? null
-  const listingSafety = active?.data?.safety ?? null
+  const listingAvailability = active?.data?.availability ?? null
   const sourceRelayUrls = active?.data?.sourceRelayUrls ?? []
-  const isMarketVisible = listingSafety
-    ? isListingMarketVisible(listingSafety)
+  const isMarketVisible = listingAvailability
+    ? isListingMarketVisible(listingAvailability)
     : true
   const profileRelayHintsByPubkey =
     product && sourceRelayUrls.length
@@ -792,7 +792,7 @@ export function useProgressiveProductDetail(productId: string): {
   return {
     product,
     family,
-    listingSafety,
+    listingAvailability,
     isMarketVisible,
     meta: active?.meta ?? null,
     profileRelayHintsByPubkey,
