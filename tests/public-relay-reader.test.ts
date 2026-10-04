@@ -117,6 +117,37 @@ it("keeps scoped empty complete distinct from unavailable and malformed evidence
   })
 })
 
+for (const [label, payload] of [
+  ["missing", undefined],
+  ["null", null],
+  ["false", false],
+  ["zero", 0],
+  ["empty string", ""],
+  ["invalid object", { bad: true }],
+] as const) {
+  it(`keeps ${label} EVENT payload evidence partial after EOSE`, async () => {
+    install((socket, id) => {
+      socket.emit(
+        payload === undefined ? ["EVENT", id] : ["EVENT", id, payload]
+      )
+      socket.emit(["EOSE", id])
+    })
+    const read = await fetchSignedEventsFanoutDetailed(
+      { kinds: [0] },
+      options()
+    )
+    expect(read.events).toEqual([])
+    expect(read.readCoverage).toBe("partial")
+    expect(read.globalAbsence).toBe(false)
+    expect(read.relays[0]).toMatchObject({
+      status: "partial",
+      outcome: "malformed",
+      malformedEventCount: 1,
+      eoseReceived: true,
+    })
+  })
+}
+
 for (const [reason, outcome] of [
   ["auth-required: fixture", "auth_required"],
   ["restricted: fixture", "rejected"],

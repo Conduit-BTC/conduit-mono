@@ -1,9 +1,9 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, RefreshCw, SlidersHorizontal } from "lucide-react"
 import {
-  buildEventMarketShareRelayHints,
   encodeEventMarketNaddr,
   useAuth,
+  type EventMarketRosterReadResult,
 } from "@conduit/core"
 import {
   Button,
@@ -12,6 +12,7 @@ import {
   EventTimelineLoading,
   EventTimelineViewport,
   getResultPresentation,
+  paginateEventTimeline,
   Label,
   Select,
   SelectContent,
@@ -23,16 +24,11 @@ import {
 } from "@conduit/ui"
 import { useEventTimeline } from "../hooks/useEventTimeline"
 import {
-  filterAndSortEventMarkets,
   formatEventTimelineSchedule,
-  getEventTimelineBoundaries,
   getEventTimelineDateParts,
-  getEventTimelineFacets,
-  getEventTimelinePresentation,
   getNextEventTimelineLimit,
   MARKET_EVENT_TIMELINE_PAGE_SIZE,
   type EventTimelineSearch,
-  type TimelineEventMarket,
 } from "../lib/eventTimeline"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
 import { EventTimelineEmptyState } from "./EventTimelineEmptyState"
@@ -44,13 +40,47 @@ interface TimelinePresentationLimits {
   later: number
 }
 
+export interface FutureMarketTimelineOccurrence {
+  read: EventMarketRosterReadResult
+  calendar: NonNullable<EventMarketRosterReadResult["calendar"]>
+  coordinate: string
+  series: boolean
+}
+
+/** Each resolved member is its own row; an unresolved sibling has no date to show. */
+export function projectFutureMarketTimelineOccurrences(
+  read: EventMarketRosterReadResult
+): FutureMarketTimelineOccurrence[] {
+  if (read.resolution.state !== "current") return []
+  if (read.schedule?.kind === "series") {
+    return read.schedule.occurrences.map(({ occurrence }) => ({
+      read,
+      calendar: occurrence,
+      coordinate: occurrence.coordinate,
+      series: true,
+    }))
+  }
+  const calendar =
+    read.schedule?.kind === "single" ? read.schedule.occurrence : read.calendar
+  return calendar
+    ? [{ read, calendar, coordinate: calendar.coordinate, series: false }]
+    : []
+}
+
+type TimelineRow = {
+  entry: FutureMarketTimelineOccurrence
+  start: number
+  end: number
+  key: string
+}
+
 export function MarketEventsTimeline({
   onOpen,
   onSearchChange,
   search,
   source,
 }: {
-  onOpen: (reference: string) => void
+  onOpen: (reference: string, occurrence?: string) => void
   onSearchChange: (search: EventTimelineSearch) => void
   search: EventTimelineSearch
   source: ProductCatalogSourceMode
@@ -77,57 +107,102 @@ export function MarketEventsTimeline({
           key: filterKey,
           later: MARKET_EVENT_TIMELINE_PAGE_SIZE,
         }
+  const futureOccurrences = useMemo(
+    () =>
+      discovery.futureMarkets.flatMap(projectFutureMarketTimelineOccurrences),
+    [discovery.futureMarkets]
+  )
   const timelineBoundaries = useMemo(
-    () => getEventTimelineBoundaries(discovery.markets, "all"),
-    [discovery.markets]
+    () => [
+      ...futureOccurrences.flatMap(({ calendar }) => [
+        calendar.start,
+        calendar.end,
+      ]),
+    ],
+    [futureOccurrences]
   )
   const nowMs = useTimeBoundaryNow(timelineBoundaries)
-  const filteredMarkets = useMemo(
+  const visibleFutureOccurrences = useMemo(
     () =>
-      filterAndSortEventMarkets(
-        discovery.markets,
-        { ...search, window: "all" },
-        nowMs
-      ),
-    [discovery.markets, nowMs, search]
+      futureOccurrences.filter(({ read, calendar }) => {
+        if (read.resolution.state !== "current") return false
+        const market = read.resolution.market
+        if (search.organizer && market.organizerPubkey !== search.organizer)
+          return false
+        if (
+          search.location &&
+          ![...calendar.locations, calendar.geohash ?? ""].some(
+            (location) =>
+              location.toLocaleLowerCase() ===
+              search.location?.toLocaleLowerCase()
+          )
+        )
+          return false
+        return true
+      }),
+    [futureOccurrences, search.location, search.organizer]
   )
-  const presentation = useMemo(
-    () =>
-      getEventTimelinePresentation(
-        filteredMarkets,
-        {
-          earlier: activePresentationLimits.earlier,
-          later: activePresentationLimits.later,
-        },
-        nowMs
-      ),
-    [
-      activePresentationLimits.earlier,
-      activePresentationLimits.later,
-      filteredMarkets,
-      nowMs,
+  const presentation = useMemo(() => {
+    const rows: TimelineRow[] = [
+      ...visibleFutureOccurrences.map((entry) => ({
+        entry,
+        start: entry.calendar.start,
+        end: entry.calendar.end,
+        key: `${entry.read.coordinate}:${entry.coordinate}`,
+      })),
     ]
-  )
-  const presentedMarkets = useMemo(
-    () => [...presentation.past, ...presentation.currentAndFuture],
-    [presentation.currentAndFuture, presentation.past]
-  )
+    return paginateEventTimeline(
+      rows,
+      {
+        earlier: activePresentationLimits.earlier,
+        later: activePresentationLimits.later,
+      },
+      nowMs
+    )
+  }, [
+    activePresentationLimits.earlier,
+    activePresentationLimits.later,
+    nowMs,
+    visibleFutureOccurrences,
+  ])
   const timelineAnchor = useEventTimelineAnchor({
     isFetching: discovery.isFetching,
-    itemCount: filteredMarkets.length,
+    itemCount: visibleFutureOccurrences.length,
     pastCount: presentation.past.length,
     viewportKey: filterKey,
   })
-  const facets = useMemo(
-    () => getEventTimelineFacets(discovery.markets),
-    [discovery.markets]
-  )
+  const facets = useMemo(() => {
+    return {
+      organizers: Array.from(
+        new Set([
+          ...discovery.futureMarkets.flatMap((read) =>
+            read.resolution.state === "current"
+              ? [read.resolution.market.organizerPubkey]
+              : []
+          ),
+        ])
+      ).sort(),
+      locations: Array.from(
+        new Set([
+          ...futureOccurrences.flatMap(({ calendar }) => calendar.locations),
+        ])
+      ).sort(),
+    }
+  }, [discovery.futureMarkets, futureOccurrences])
   const visibleOrganizerPubkeys = useMemo(
     () =>
       Array.from(
-        new Set(presentedMarkets.map((market) => market.organizerPubkey))
+        new Set([
+          ...presentation.past
+            .concat(presentation.currentAndFuture)
+            .flatMap((row) =>
+              row.entry.read.resolution.state === "current"
+                ? [row.entry.read.resolution.market.organizerPubkey]
+                : []
+            ),
+        ])
       ),
-    [presentedMarkets]
+    [presentation.currentAndFuture, presentation.past]
   )
   const organizerIdentities = useMerchantIdentities({
     accountPubkey: connected ? pubkey : null,
@@ -138,14 +213,26 @@ export function MarketEventsTimeline({
     relayHintsByPubkey: discovery.profileRelayHintsByPubkey,
   })
   const hasLocalFilters = !!(search.organizer || search.location)
+  const futureDateReadIncomplete = discovery.futureMarkets.some(
+    (read) =>
+      read.resolution.state === "current" &&
+      read.resolution.market.calendarCoordinate.startsWith("31924:") &&
+      (read.schedule?.kind !== "series" ||
+        read.schedule.unresolvedCoordinates.length > 0 ||
+        read.scheduleCoverage !== "complete")
+  )
   const discoveryComplete =
     !discovery.error &&
     !discovery.isRefreshStale &&
+    !futureDateReadIncomplete &&
     (discovery.data?.state === "complete" ||
       discovery.data?.state === "complete_empty")
   const resultPresentation = getResultPresentation({
-    resultCount: discovery.markets.length,
-    visibleResultCount: filteredMarkets.length,
+    resultCount: Math.max(
+      discovery.futureMarkets.length,
+      futureOccurrences.length
+    ),
+    visibleResultCount: visibleFutureOccurrences.length,
     reliability: discoveryComplete ? "complete" : "degraded",
   })
   const filteredDiscoveryIncomplete =
@@ -189,30 +276,37 @@ export function MarketEventsTimeline({
     })
   }
 
-  function openMarket(market: TimelineEventMarket): void {
-    const relayHints = buildEventMarketShareRelayHints([
-      market.collection.sourceRelayUrls,
-      market.calendar.sourceRelayUrls,
-      ...market.pickups.map((pickup) => pickup.sourceRelayUrls),
-    ])
-    timelineAnchor.rememberPosition()
-    onOpen(encodeEventMarketNaddr(market.collection.coordinate, relayHints))
-  }
-
-  function renderEntry(market: TimelineEventMarket) {
+  function renderFutureEntry({
+    read,
+    calendar,
+    coordinate,
+    series,
+  }: FutureMarketTimelineOccurrence) {
+    if (read.resolution.state !== "current") return null
+    const market = read.resolution.market
     const organizer = organizerIdentities.getIdentity(market.organizerPubkey)
     return (
       <EventTimelineEntry
-        key={market.reference}
-        date={getEventTimelineDateParts(market.calendar)}
-        imageUrl={market.calendar.image ?? market.collection.image}
-        onOpen={() => openMarket(market)}
+        key={`${market.coordinate}:${coordinate}`}
+        date={getEventTimelineDateParts(calendar)}
+        imageUrl={calendar.image}
+        onOpen={() => {
+          timelineAnchor.rememberPosition()
+          onOpen(
+            encodeEventMarketNaddr(market.coordinate, read.observedRelayUrls),
+            series ? coordinate : undefined
+          )
+        }}
         organizerName={organizer.displayName}
         organizerPending={organizer.status === "pending"}
-        schedule={formatEventTimelineSchedule(market.calendar)}
-        title={market.calendar.title}
+        schedule={formatEventTimelineSchedule(calendar)}
+        title={calendar.title}
       />
     )
+  }
+
+  function renderMixedEntries(rows: TimelineRow[]) {
+    return rows.map((row) => renderFutureEntry(row.entry))
   }
 
   return (
@@ -228,7 +322,7 @@ export function MarketEventsTimeline({
           >
             {discovery.isInitialLoading
               ? "Loading events"
-              : `${filteredMarkets.length} ${filteredMarkets.length === 1 ? "event" : "events"}`}
+              : `${visibleFutureOccurrences.length} ${visibleFutureOccurrences.length === 1 ? "event" : "events"}`}
           </p>
           <Button
             type="button"
@@ -321,11 +415,11 @@ export function MarketEventsTimeline({
 
       {discovery.isInitialLoading ? (
         <EventTimelineLoading />
-      ) : filteredMarkets.length > 0 ? (
+      ) : visibleFutureOccurrences.length > 0 ? (
         <EventTimelineViewport
           busy={discovery.isFetching}
-          currentAndFutureEvents={presentation.currentAndFuture.map(
-            renderEntry
+          currentAndFutureEvents={renderMixedEntries(
+            presentation.currentAndFuture
           )}
           hiddenEarlierCount={presentation.hiddenEarlierCount}
           hiddenLaterCount={presentation.hiddenLaterCount}
@@ -333,10 +427,10 @@ export function MarketEventsTimeline({
           onLoadEarlier={loadEarlier}
           onLoadLater={loadLater}
           pageSize={MARKET_EVENT_TIMELINE_PAGE_SIZE}
-          pastEvents={presentation.past.map(renderEntry)}
+          pastEvents={renderMixedEntries(presentation.past)}
           viewportRef={timelineAnchor.timelineViewportRef}
         />
-      ) : discovery.markets.length > 0 ? (
+      ) : discovery.futureMarkets.length > 0 ? (
         <div
           className={cn(
             "rounded-xl px-6 py-12 text-center",
@@ -351,14 +445,19 @@ export function MarketEventsTimeline({
             aria-hidden="true"
           />
           <h2 className="mt-4 text-balance text-lg font-semibold text-[var(--text-primary)]">
-            No events match these filters
+            {futureDateReadIncomplete && !hasLocalFilters
+              ? "Event dates couldn't be fully loaded"
+              : "No events match these filters"}
           </h2>
           <p className="mx-auto mt-2 max-w-lg text-pretty text-sm text-[var(--text-secondary)]">
-            {filteredDiscoveryIncomplete
-              ? "Discovery is incomplete, so matching events may still be available. Retry or change the filters."
-              : "Clear a filter to see more events already found."}
+            {futureDateReadIncomplete && !hasLocalFilters
+              ? "Retry to check the signed dates for this market."
+              : filteredDiscoveryIncomplete
+                ? "Discovery is incomplete, so matching events may still be available. Retry or change the filters."
+                : "Clear a filter to see more events already found."}
           </p>
-          {filteredDiscoveryIncomplete ? (
+          {filteredDiscoveryIncomplete ||
+          (futureDateReadIncomplete && !hasLocalFilters) ? (
             <Button
               type="button"
               variant="outline"

@@ -9,7 +9,6 @@ import {
   type ProductImage,
   type ProductSchema,
   type ProductZapMessagePolicy,
-  type EventMarketHandoffMode,
 } from "@conduit/core"
 import type { ShippingConfig } from "./readiness"
 import { isShippingComplete } from "./readiness"
@@ -20,6 +19,8 @@ import {
   type ProductFulfillmentFormat,
   type ProductShippingPricingMode,
 } from "./productPriceForm"
+import type { ShippingWeightUnit } from "./shippingWeightUnits"
+import { getProductShippingMeasurements } from "./shippingPolicyForm"
 import { getProductStockInputError } from "./productStock"
 import {
   getProductVariationFormError,
@@ -32,21 +33,7 @@ export const RECOMMENDED_MAX_PRODUCT_TAG_COUNT = 12
 export const MAX_PRODUCT_TAG_COUNT = 24
 export const MAX_PRODUCT_TAG_LENGTH = 40
 
-export type ProductFulfillmentChoice =
-  "digital" | "ship" | "local_pickup" | "preserve"
-
-export function canUseZeroProductPrice(input: {
-  fulfillment: unknown
-  handoffMode: unknown
-  evidenceVerified: boolean
-}): boolean {
-  return (
-    input.evidenceVerified &&
-    input.fulfillment === "local_pickup" &&
-    (input.handoffMode === "merchant_handoff" ||
-      input.handoffMode === "organizer_handoff")
-  )
-}
+export type ProductFulfillmentChoice = "digital" | "ship" | "preserve"
 
 export interface ProductPublishFormValues {
   title: string
@@ -57,6 +44,13 @@ export interface ProductPublishFormValues {
   format: ProductFulfillmentFormat
   shippingPricingMode: ProductShippingPricingMode
   shippingCost: string
+  shippingWeightGrams?: string
+  shippingWeightUnit?: ShippingWeightUnit
+  shippingWeightAllowanceGrams?: string
+  shippingHandling?: string
+  shippingLengthCm?: string
+  shippingWidthCm?: string
+  shippingHeightCm?: string
   usePresetShippingZone: boolean
   customShippingConfig: ShippingConfig
   images: ProductImage[]
@@ -72,14 +66,9 @@ export interface MerchantProductFormValues extends ProductPublishFormValues {
   listingAreaDefault?: { location: string; geohash: string } | null
   variations: ProductVariationFormState
   fulfillment: ProductFulfillmentChoice
-  eventMarketReference: string
-  /** Experimental kind-30409 association; separate from legacy local pickup. */
+  /** Current Event Market association, separate from ordinary shop fulfillment. */
   futureEventMarketReference?: string
-  eventHandoffMode: EventMarketHandoffMode
-  merchantPickupTitle: string
-  merchantPickupLocation: string
-  merchantPickupGeohash: string
-  merchantPickupCountry: string
+  eventGuestContactOptional?: boolean
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
 }
@@ -164,6 +153,7 @@ export type ProductPublishFormField =
   | "tags"
   | "variations"
   | "shippingCost"
+  | "shippingWeight"
   | "shippingZone"
 
 export interface ProductPublishFormValidation {
@@ -282,6 +272,7 @@ function firstError(
     errors.images ??
     errors.tags ??
     errors.variations ??
+    errors.shippingWeight ??
     errors.shippingCost ??
     errors.shippingZone ??
     null
@@ -295,6 +286,7 @@ export function validateProductPublishForm(
     presetShippingConfig?: ShippingConfig
     allowZeroPrice?: boolean
     preserveExistingFulfillment?: boolean
+    skipShippingMeasurements?: boolean
   }
 ): ProductPublishFormValidation {
   const errors: Partial<Record<ProductPublishFormField, string>> = {}
@@ -326,6 +318,33 @@ export function validateProductPublishForm(
     )
   }
 
+  try {
+    const measurements =
+      isDigital || options.skipShippingMeasurements
+        ? {}
+        : getProductShippingMeasurements(form)
+    if (
+      !isDigital &&
+      !options.skipShippingMeasurements &&
+      form.shippingPricingMode === "weight_table" &&
+      !measurements.shippingWeightGrams
+    ) {
+      addError(
+        errors,
+        "shippingWeight",
+        "Add the shipping weight in grams to use your shipping table."
+      )
+    }
+  } catch (error) {
+    addError(
+      errors,
+      "shippingWeight",
+      error instanceof Error
+        ? error.message
+        : "Check the shipping weight and dimensions."
+    )
+  }
+
   const stockError = getProductStockInputError(form.stock)
   if (stockError) addError(errors, "stock", stockError)
 
@@ -335,6 +354,10 @@ export function validateProductPublishForm(
       currency,
       {
         preserveExistingFulfillment: options.preserveExistingFulfillment,
+        shippingPricingMode: options.skipShippingMeasurements
+          ? undefined
+          : form.shippingPricingMode,
+        baseFormat: form.format,
         // Each preserved child's baseline is checked at publication. A paid
         // parent does not imply that every existing child has a positive price.
         allowZeroPrice:

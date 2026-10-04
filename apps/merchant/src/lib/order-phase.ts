@@ -132,22 +132,15 @@ export function getMerchantOrderRequiresShipping(
 export type MerchantOrderFulfillmentMode =
   "digital" | "shipping" | "pickup" | "unknown"
 
-type PickupFulfillment = Extract<
+type FuturePickupFulfillment = Extract<
   NonNullable<OrderSummary["items"][number]["fulfillment"]>,
-  { type: "pickup" }
+  { type: "event_market_pickup" }
 >
-
-export interface MerchantOrderPickupContext {
-  organizerPubkey: PickupFulfillment["organizerPubkey"]
-  calendar: PickupFulfillment["calendar"]
-  collection: PickupFulfillment["collection"]
-  option: PickupFulfillment["option"]
-}
 
 export interface MerchantOrderFulfillment {
   mode: MerchantOrderFulfillmentMode
   requiresShipping: boolean
-  pickup: MerchantOrderPickupContext | null
+  futureMarket?: FuturePickupFulfillment | null
   /** Any buyer-authored pickup claim restricts shipping actions until verified. */
   hasPickupClaim: boolean
 }
@@ -155,36 +148,16 @@ export interface MerchantOrderFulfillment {
 function getOrderItemFulfillmentMode(
   item: OrderSummary["items"][number]
 ): MerchantOrderFulfillmentMode {
-  // Future Event Market orders require their own signed handoff adapter.
-  // Until that adapter is present, never reinterpret their roster snapshot
-  // as a shipment or a legacy pickup option.
-  if (item.fulfillment?.type === "event_market_pickup") return "unknown"
-  if (item.fulfillment) return item.fulfillment.type
+  if (item.fulfillment?.type === "event_market_pickup") return "pickup"
+  if (
+    item.fulfillment?.type === "shipping" ||
+    item.fulfillment?.type === "digital"
+  )
+    return item.fulfillment.type
   // The listing format is part of the signed order snapshot. Legacy digital
   // orders can therefore skip shipping; a legacy physical item cannot prove
   // whether the buyer selected shipment or pickup.
   return item.format === "digital" ? "digital" : "unknown"
-}
-
-function hasSamePickupContext(
-  left: PickupFulfillment,
-  right: PickupFulfillment
-): boolean {
-  return (
-    left.organizerPubkey === right.organizerPubkey &&
-    left.calendar.coordinate === right.calendar.coordinate &&
-    left.calendar.eventId === right.calendar.eventId &&
-    left.calendar.createdAt === right.calendar.createdAt &&
-    left.collection.coordinate === right.collection.coordinate &&
-    left.collection.eventId === right.collection.eventId &&
-    left.collection.createdAt === right.collection.createdAt &&
-    left.option.coordinate === right.option.coordinate &&
-    left.option.eventId === right.option.eventId &&
-    left.option.createdAt === right.option.createdAt &&
-    left.option.title === right.option.title &&
-    left.option.location === right.option.location &&
-    left.option.geohash === right.option.geohash
-  )
 }
 
 /**
@@ -197,15 +170,12 @@ export function getMerchantOrderFulfillment(
   items: OrderSummary["items"]
 ): MerchantOrderFulfillment {
   const hasPickupClaim = items.some(
-    (item) =>
-      item.fulfillment?.type === "pickup" ||
-      item.fulfillment?.type === "event_market_pickup"
+    (item) => item.fulfillment?.type === "event_market_pickup"
   )
   if (items.length === 0) {
     return {
       mode: "unknown",
       requiresShipping: true,
-      pickup: null,
       hasPickupClaim: false,
     }
   }
@@ -216,8 +186,7 @@ export function getMerchantOrderFulfillment(
   )
   const invalidPickupFormat = items.some(
     (item) =>
-      (item.fulfillment?.type === "pickup" ||
-        item.fulfillment?.type === "event_market_pickup") &&
+      item.fulfillment?.type === "event_market_pickup" &&
       item.format !== "physical"
   )
   if (
@@ -228,7 +197,6 @@ export function getMerchantOrderFulfillment(
     return {
       mode: "unknown",
       requiresShipping: !hasPickupClaim,
-      pickup: null,
       hasPickupClaim,
     }
   }
@@ -241,41 +209,41 @@ export function getMerchantOrderFulfillment(
     return {
       mode,
       requiresShipping: mode === "shipping",
-      pickup: null,
       hasPickupClaim,
     }
   }
 
-  const pickupFulfillments = items.flatMap((item) =>
-    item.fulfillment?.type === "pickup" ? [item.fulfillment] : []
+  const futureFulfillments = items.flatMap((item) =>
+    item.fulfillment?.type === "event_market_pickup" ? [item.fulfillment] : []
   )
-  const firstPickup = pickupFulfillments[0]
-  if (
-    !firstPickup ||
-    (!firstPickup.option.location && !firstPickup.option.geohash) ||
-    pickupFulfillments.some(
-      (fulfillment) => !hasSamePickupContext(firstPickup, fulfillment)
+  if (futureFulfillments.length > 0) {
+    const firstFuture = futureFulfillments[0]!
+    const coherent = futureFulfillments.every(
+      (fulfillment) =>
+        fulfillment.market.coordinate === firstFuture.market.coordinate &&
+        fulfillment.market.eventId === firstFuture.market.eventId &&
+        fulfillment.grant.eventId === firstFuture.grant.eventId &&
+        fulfillment.calendar.eventId === firstFuture.calendar.eventId &&
+        fulfillment.mode === firstFuture.mode &&
+        fulfillment.assignment === firstFuture.assignment &&
+        fulfillment.merchantPubkey === firstFuture.merchantPubkey
     )
-  ) {
-    return {
-      mode: "unknown",
-      requiresShipping: false,
-      pickup: null,
-      hasPickupClaim: true,
-    }
+    return coherent
+      ? {
+          mode: "pickup",
+          requiresShipping: false,
+          futureMarket: firstFuture,
+          hasPickupClaim: true,
+        }
+      : {
+          mode: "unknown",
+          requiresShipping: false,
+          futureMarket: null,
+          hasPickupClaim: true,
+        }
   }
 
-  return {
-    mode: "pickup",
-    requiresShipping: false,
-    pickup: {
-      organizerPubkey: firstPickup.organizerPubkey,
-      calendar: firstPickup.calendar,
-      collection: firstPickup.collection,
-      option: firstPickup.option,
-    },
-    hasPickupClaim: true,
-  }
+  return { mode: "unknown", requiresShipping: false, hasPickupClaim: true }
 }
 
 export function getMerchantConversationState(

@@ -154,6 +154,43 @@ describe("durable order delivery staging", () => {
     ).rejects.toBeInstanceOf(OrderRelayDeliveryStageConflictError)
   })
 
+  it("preserves an unregistered observed domain on exact-order retry without changing the recipient wrap", async () => {
+    const store = memoryRepository()
+    const source = {
+      sourceDomain: "example.co.uk",
+      sourceMethod: "referrer" as const,
+      linkMode: "cart" as const,
+    }
+    const delivery = prepared()
+    const input = lifecycleInput({ claimedReferralSource: source })
+    const first = await stageOrderRelayDelivery(
+      { lifecycle: input, prepared: delivery, leaseOwner: "foreground" },
+      { repository: store.repository, now: () => 100 }
+    )
+    const retry = await stageOrderRelayDelivery(
+      { lifecycle: input, prepared: delivery, leaseOwner: "foreground" },
+      { repository: store.repository, now: () => 200 }
+    )
+    expect(first.lifecycle.claimedReferralSource).toEqual(source)
+    expect(retry.lifecycle.claimedReferralSource).toEqual(source)
+    expect(
+      JSON.stringify(delivery.signedRecipientWrap).includes(source.sourceDomain)
+    ).toBe(false)
+    await expect(
+      stageOrderRelayDelivery(
+        {
+          lifecycle: {
+            ...input,
+            claimedReferralSource: { ...source, sourceDomain: "different.com" },
+          },
+          prepared: delivery,
+          leaseOwner: "foreground",
+        },
+        { repository: store.repository, now: () => 300 }
+      )
+    ).rejects.toBeInstanceOf(OrderRelayDeliveryStageConflictError)
+  })
+
   it("keeps a router plan binding local and rejects a different binding on restage", async () => {
     const store = memoryRepository()
     const checkoutSparkRouterBinding = {

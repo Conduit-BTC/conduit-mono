@@ -167,6 +167,8 @@ export interface RelayWritePlanInput {
 }
 
 export interface RelayWritePlan {
+  /** Fixed fallback candidates resolved before any publish I/O. */
+  fallbackRelayUrls?: string[]
   intent: RelayWriteIntent
   /**
    * True when the authenticated author's usable signed NIP-65 projection

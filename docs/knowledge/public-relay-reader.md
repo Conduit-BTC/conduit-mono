@@ -20,7 +20,9 @@ transport authority remain account scoped.
 Each source reports EOSE, CLOSED, authentication required, rejection, throttling,
 disconnect, connect/query timeout, resource exhaustion, malformed evidence or
 verification failure. Rejected signatures and malformed input make coverage
-partial even if the relay sent EOSE. A progress snapshot is provisional; only a
+partial even if the relay sent EOSE. Missing/falsy EVENT payloads are still
+counted as malformed frames; non-matching events remain unusable evidence.
+Verified duplicate copies do not consume a distinct-event filter limit. A progress snapshot is provisional; only a
 terminal observation can describe a completed bounded plan. `globalAbsence`
 always remains false. Freshness timestamps describe this observation; domain
 owners retain stale, malformed, deleted and conflicting prior evidence.
@@ -69,11 +71,12 @@ Deleted paths: the NDK public fanout exports and wire implementation, public
 NDKFilter read types, public NDKEvent wrapping, and the plain-to-NDK-to-plain
 adapter. Test seams and app/server consumers follow the same plain APIs.
 
-NDK remains only for existing event construction/publishing compatibility,
-private envelope/decrypt compatibility and publishing scripts. Those belong to
-the signed-event publishing, protected inbox, private envelope and final SDK
-cleanup work respectively. Local publication cache inputs still accept existing
-publisher objects structurally; relay read outputs never require them.
+The signed-event writer owns public publishing. NDK remains for existing
+private envelope/decrypt compatibility, construction helpers and publishing
+scripts. Those belong to private envelope and final SDK cleanup work. Local
+publication cache inputs still accept existing publisher objects structurally;
+relay read outputs never require them. Protected scan results retain their
+plain signed wraps directly so private receipt authority can survive reload.
 
 ## Validation boundary
 

@@ -48,15 +48,56 @@ describe("profile signer recovery", () => {
 describe("merchant order signer recovery", () => {
   it("keeps exact delivery retries owner-bound and signer-free", async () => {
     const contents = await source("apps/merchant/src/routes/orders.tsx")
-    const exactRetryStart = contents.indexOf(
-      "const retryOrganizerReadyDeliveryMutation"
+    const exactRetryStart = contents.indexOf("const futureRetryMutation")
+    const freshRevocationStart = contents.indexOf("const futureRevokeMutation")
+    const exactRetryBlock = contents.slice(
+      exactRetryStart,
+      freshRevocationStart
     )
-    const freshPaymentStart = contents.indexOf("const confirmPaymentMutation")
-    const exactRetryBlock = contents.slice(exactRetryStart, freshPaymentStart)
 
-    expect(exactRetryBlock).toContain("retryStoredOrganizerReadyReceipt")
-    expect(exactRetryBlock).toContain("retryStoredOrganizerReadyRevocation")
-    expect(exactRetryBlock).toContain("isCurrentOrderAccount")
+    expect(exactRetryStart).toBeGreaterThan(-1)
+    expect(freshRevocationStart).toBeGreaterThan(exactRetryStart)
+    expect(exactRetryBlock).toContain("retryFutureMarketPrivateDelivery({")
+    expect(exactRetryBlock).toContain("record.senderPubkey !== retryOwner")
+    expect(exactRetryBlock).toContain("authenticatedOwnerPubkey: retryOwner")
+    expect(exactRetryBlock).toContain("isCurrentOrderExactRetryOwner")
+    expect(exactRetryBlock).toContain(
+      "loadFutureMarketPrivateDeliveries(retryOwner)"
+    )
+    expect(exactRetryBlock).toContain(
+      "JSON.stringify(savedRecord) !== JSON.stringify(record)"
+    )
+    expect(exactRetryBlock).toContain("record: savedRecord,")
+    expect(exactRetryBlock).toMatch(
+      /shouldContinue: \(\) =>\s+isCurrentOrderExactRetryOwner\(retryOwner, retryGeneration\)/
+    )
+    expect(exactRetryBlock).toMatch(
+      /if \(!isCurrentOrderExactRetryOwner\(retryOwner, retryGeneration\)\)[\s\S]{0,180}if \(delivery\.recipientDelivered && delivery\.selfCopyDelivered\)\s+archiveFutureMarketPrivateDelivery\(retryOwner, savedRecord\.rumorId\)/
+    )
+    expect(exactRetryBlock).toMatch(
+      /onSuccess:[\s\S]{0,80}if \(isCurrentOrderExactRetryOwner\(retryOwner, retryGeneration\)\)/
+    )
+    const ownerPredicate = contents.slice(
+      contents.indexOf("const isCurrentOrderExactRetryOwner ="),
+      contents.indexOf("const isCurrentOrderSigner =")
+    )
+    expect(ownerPredicate).toContain("isCurrentOrderAccount(ownerPubkey)")
+    expect(ownerPredicate).toContain(
+      "isExactDeliveryRetryCurrent(generation, ownerPubkey)"
+    )
+    expect(ownerPredicate).toContain(
+      "orderAuthorityRef.current.authGeneration === generation"
+    )
+    for (const record of ["futureReadyRecord", "futureRevocationRecord"]) {
+      expect(contents).toMatch(
+        new RegExp(
+          `disabled=\\{orderDeliveryPending\\}[\\s\\S]{0,180}futureRetryMutation\\.mutate\\(\\s+${record}`
+        )
+      )
+    }
+    expect(contents).toContain(
+      "const orderActionPending = !signerConnected || orderDeliveryPending"
+    )
     expect(contents).toContain("const mountedRef = useRef(true)")
     expect(contents).toContain("mountedRef.current = false")
     expect(contents).toContain(

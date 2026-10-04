@@ -8,9 +8,9 @@ import {
   __setRelayListTestOverrides,
   formatNpub,
   getProfiles,
-  orderPickupFulfillmentSchema,
   pubkeyToNpub,
 } from "@conduit/core"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import { EventActorName } from "../apps/market/src/components/EventActorIdentity"
 import {
   getEventActorIdentityView,
@@ -19,8 +19,9 @@ import {
   type EventActorIdentityView,
 } from "../apps/market/src/lib/event-actor-identity"
 
-const handlerPubkey = "a".repeat(64)
-const organizerPubkey = "b".repeat(64)
+const signedFixture = createEventMarketOrderFixture()
+const handlerPubkey = signedFixture.merchant
+const organizerPubkey = signedFixture.organizer
 
 afterEach(() => {
   __resetCommerceTestOverrides()
@@ -28,10 +29,8 @@ afterEach(() => {
 })
 
 describe("Market event actor identity", () => {
-  it("matches a schema-valid uppercase order organizer to its lowercase profile", () => {
-    const organizer = orderPickupFulfillmentSchema.shape.organizerPubkey.parse(
-      organizerPubkey.toUpperCase()
-    )
+  it("matches an uppercase organizer reference to its lowercase profile", () => {
+    const organizer = organizerPubkey.toUpperCase()
     expect(
       getEventActorIdentityView({
         pubkey: organizer,
@@ -42,9 +41,7 @@ describe("Market event actor identity", () => {
   })
 
   it("hydrates both order actors through a strict lowercase profile read", async () => {
-    const organizer = orderPickupFulfillmentSchema.shape.organizerPubkey.parse(
-      organizerPubkey.toUpperCase()
-    )
+    const organizer = organizerPubkey.toUpperCase()
     const pubkeys = [handlerPubkey, normalizeEventActorPubkey(organizer)]
     const authorFilters: string[][] = []
     __setRelayListTestOverrides({
@@ -103,7 +100,9 @@ describe("Market event actor identity", () => {
     expect(organizer).toBe(organizerPubkey.toUpperCase())
 
     const orders = await Bun.file("apps/market/src/routes/orders.tsx").text()
-    expect(orders).toContain("getPickupHandoffSummary(pickup).handlerPubkey")
+    expect(orders).toContain('pickup.mode === "organizer_handoff"')
+    expect(orders).toContain("pickup.organizerPubkey")
+    expect(orders).toContain("pickup.merchantPubkey")
     expect(orders).toContain(
       "profile: eventActorProfiles.data[normalizeEventActorPubkey(pubkey)]"
     )
@@ -151,7 +150,7 @@ describe("Market event actor identity", () => {
     }
 
     const merchantHandoff = selectEventHandoffIdentity({
-      mode: "merchant_handoff",
+      mode: "merchant_present",
       handlerPubkey,
       merchant: { pubkey: handlerPubkey, identity: merchant },
       organizer: { pubkey: organizerPubkey, identity: organizer },
@@ -176,7 +175,7 @@ describe("Market event actor identity", () => {
 
     expect(
       selectEventHandoffIdentity({
-        mode: "merchant_handoff",
+        mode: "merchant_present",
         handlerPubkey: organizerPubkey,
         merchant: { pubkey: handlerPubkey, identity: merchant },
         organizer: { pubkey: organizerPubkey, identity: organizer },
@@ -187,24 +186,26 @@ describe("Market event actor identity", () => {
   it("uses the shared identity treatment across shopper pickup surfaces", async () => {
     const surfaces = await Promise.all(
       [
-        "apps/market/src/routes/events/$collectionRef.tsx",
-        "apps/market/src/components/ResolvedProductGridCard.tsx",
         "apps/market/src/routes/products/$productId.tsx",
-        "apps/market/src/routes/cart.tsx",
         "apps/market/src/routes/checkout.tsx",
         "apps/market/src/routes/orders.tsx",
       ].map((path) => Bun.file(path).text())
     )
-
-    for (const source of surfaces) {
-      expect(source).toContain("EventActorName")
-    }
-    for (const source of surfaces.slice(0, 4)) {
-      expect(source).toContain("EventActorProvenance")
-    }
-    for (const source of surfaces.slice(4)) {
+    for (const source of surfaces) expect(source).toContain("EventActorName")
+    expect(surfaces[0]).toContain("EventActorProvenance")
+    for (const source of surfaces.slice(1))
       expect(source).not.toContain("EventActorProvenance")
-    }
+    const eventPage = await Bun.file(
+      "apps/market/src/components/FutureEventMarketPage.tsx"
+    ).text()
+    expect(eventPage).toContain(
+      "getMerchantDisplayName(organizerProfile, organizerPubkey"
+    )
+    const cart = await Bun.file("apps/market/src/routes/cart.tsx").text()
+    expect(cart).toContain("getMerchantDisplayName(profile, merchantPubkey)")
+    expect(cart).toContain(
+      "navigator.clipboard.writeText(pubkeyToNpub(merchantPubkey))"
+    )
 
     const identityComponent = await Bun.file(
       "apps/market/src/components/EventActorIdentity.tsx"
@@ -216,7 +217,6 @@ describe("Market event actor identity", () => {
       "apps/market/src/lib/event-actor-identity.ts"
     ).text()
     const root = await Bun.file("apps/market/src/routes/__root.tsx").text()
-    const cart = surfaces[3]
 
     expect(identityComponent).toContain("<CopyButton")
     expect(identityComponent).toContain(
@@ -245,7 +245,7 @@ describe("Market event actor identity", () => {
     expect(identityModel).not.toContain("getEventActorProvenance")
     expect(cart).not.toContain("pickupHandlerPubkeys")
     expect(cart).not.toContain("pickupHandlerIdentity={")
-    expect(cart).toContain(
+    expect(surfaces[1]).toContain(
       "const pickupHandlerIdentity = useEventActorIdentity("
     )
     expect(root).toContain("<EventActorIdentityProvider>")

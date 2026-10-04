@@ -69,12 +69,11 @@ type PurchaseContext = {
 function getPurchaseContext(group: CartPurchaseGroup): PurchaseContext {
   if (group.kind === "pickup") {
     const pickupTitle = group.items.find(
-      (item) => item.fulfillment?.type === "pickup"
+      (item) => item.fulfillment?.type === "event_market_pickup"
     )?.fulfillment
     const pickupDetail =
-      pickupTitle?.type === "pickup"
-        ? pickupTitle.option.location?.trim() ||
-          pickupTitle.option.title?.trim()
+      pickupTitle?.type === "event_market_pickup"
+        ? pickupTitle.assignment.trim()
         : ""
     return {
       Icon: Store,

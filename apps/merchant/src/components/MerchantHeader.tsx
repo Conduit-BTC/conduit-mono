@@ -96,10 +96,10 @@ function MerchantAvatarFallback() {
   return (
     <span className="flex size-full items-center justify-center rounded-full bg-[var(--avatar-bg)]">
       <img
-        src="/images/logo/logo-icon.svg"
+        src="/images/logo/merchant-logo-icon.svg"
         alt=""
         aria-hidden="true"
-        className="h-4 w-auto rotate-180 select-none object-contain brightness-0 invert"
+        className="h-4 w-auto select-none object-contain brightness-0 invert"
         draggable="false"
       />
     </span>
@@ -114,7 +114,7 @@ export function MerchantBrandLockup() {
         className="h-8 w-6 shrink-0 overflow-hidden min-[420px]:w-[6.75rem]"
       >
         <img
-          src="/images/logo/logo-full.svg"
+          src="/images/logo/merchant-logo-full.svg"
           alt="Conduit"
           width={386}
           height={115}
@@ -514,8 +514,13 @@ function MerchantNavigationPanel({
         <NetworkBadge />
       </div>
 
-      <div className="mt-4 shrink-0 border-t border-[var(--border)] pb-[max(0px,env(safe-area-inset-bottom))] pt-4">
-        <MerchantProjectTip className="mb-2 min-h-11 w-full justify-start text-[var(--text-primary)]" />
+      <div className="mt-4 shrink-0 border-t border-[var(--border)] pb-[max(0px,env(safe-area-inset-bottom))] pr-1 pt-4">
+        <MerchantProjectTip
+          className={cn(
+            navItemClassName,
+            "mb-1 h-auto justify-start [&>svg]:size-4 [&>svg]:shrink-0"
+          )}
+        />
         <ReportBugLink onNavigate={onReportBug} />
       </div>
     </div>

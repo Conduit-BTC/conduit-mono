@@ -6,11 +6,11 @@ async function source(path: string): Promise<string> {
 
 describe("Merchant publish live account authority", () => {
   it("threads the route session predicate through invoice and product families", async () => {
-    const [orders, products, eventProducts, pickup] = await Promise.all([
+    const [orders, products, enrollment, manager] = await Promise.all([
       source("apps/merchant/src/routes/orders.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
-      source("apps/merchant/src/lib/event-product-publishing.ts"),
-      source("apps/merchant/src/lib/event-market-pickup.ts"),
+      source("apps/merchant/src/hooks/useEventMarketEnrollment.ts"),
+      source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
     ])
 
     expect(orders).toContain(
@@ -23,9 +23,6 @@ describe("Merchant publish live account authority", () => {
       /deliverSignedProductEvent\([\s\S]{0,220}shouldContinue: \(\) => isCurrentOrderAccount\(pubkey\)/
     )
     expect(products).toMatch(
-      /ensureMerchantBoothPickup\(\{[\s\S]{0,140}shouldContinue,/
-    )
-    expect(products).toMatch(
       /signAndPublishProductWriteBundle\(\{[\s\S]{0,100}shouldContinue,/
     )
     expect(products).toMatch(
@@ -34,9 +31,16 @@ describe("Merchant publish live account authority", () => {
     expect(products).toMatch(
       /deliverQueuedProductDeletion\([\s\S]{0,220}authenticatedPubkey:[\s\S]{0,80}shouldContinue: \(\) =>/
     )
-    expect(eventProducts).toContain("shouldContinue: input.shouldContinue")
-    expect(pickup.match(/shouldContinue: input\.shouldContinue/g)).toHaveLength(
-      2
+    expect(enrollment).toContain("publishEventMarketEnrollment")
+    expect(enrollment).toContain("retryEventMarketEnrollmentDelivery")
+    expect(
+      enrollment.match(
+        /shouldContinue: \(\) => isAuthGenerationCurrent\(authGeneration\)/g
+      )
+    ).toHaveLength(3)
+    expect(manager).toContain("publishEventMarketMerchantDecision")
+    expect(manager).toContain(
+      "const shouldContinue = () => isAuthGenerationCurrent(authGeneration)"
     )
   })
 

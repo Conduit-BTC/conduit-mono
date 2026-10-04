@@ -1,4 +1,9 @@
 import {
+  checkoutSourceFromReferrer,
+  normalizeCheckoutSourceDomain,
+} from "./checkout-source-domain"
+import type { CheckoutSource } from "./checkout-attribution"
+import {
   decodeProductReference,
   encodeProductNaddr,
 } from "./protocol/product-reference"
@@ -20,6 +25,7 @@ export type CheckoutIntent = {
   items: CheckoutIntentItem[]
   /** A syntactically valid claim. Registration is checked separately. */
   partner?: string
+  source?: CheckoutSource
 }
 
 export type CheckoutIntentError = "invalid_intent" | "unsupported_version"
@@ -33,8 +39,12 @@ export function isCheckoutPartnerCode(value: string): boolean {
 
 function validEncodedParameters(fragment: string): boolean {
   try {
-    for (const component of fragment.split(/[&=]/))
-      decodeURIComponent(component)
+    for (const parameter of fragment.split("&")) {
+      const [key, ...values] = parameter.split("=")
+      // Malformed optional attribution is omitted; purchase encoding stays strict.
+      if (decodeURIComponent(key!) === "source") continue
+      for (const component of [key!, ...values]) decodeURIComponent(component)
+    }
     return true
   } catch {
     return false
@@ -71,7 +81,8 @@ function parseProduct(
 
 /** Parse the public fragment without reading relays or changing the cart. */
 export function parseCheckoutIntentFragment(
-  fragment: string
+  fragment: string,
+  referrer = ""
 ): CheckoutIntentParseResult {
   const raw = fragment.startsWith("#") ? fragment.slice(1) : fragment
   if (
@@ -85,7 +96,7 @@ export function parseCheckoutIntentFragment(
   const params = new URLSearchParams(raw)
   if (
     [...params.keys()].some(
-      (key) => !["buy", "cart", "qty", "partner"].includes(key)
+      (key) => !["buy", "cart", "qty", "partner", "source"].includes(key)
     ) ||
     ["buy", "cart", "qty", "partner"].some(
       (key) => params.getAll(key).length > 1
@@ -100,6 +111,17 @@ export function parseCheckoutIntentFragment(
     partnerValue && isCheckoutPartnerCode(partnerValue)
       ? partnerValue
       : undefined
+  const sourceDomain = params.has("source")
+    ? params.getAll("source").length === 1
+      ? normalizeCheckoutSourceDomain(params.get("source"))
+      : null
+    : checkoutSourceFromReferrer(referrer)
+  const source: CheckoutSource | undefined = sourceDomain
+    ? {
+        domain: sourceDomain,
+        method: params.has("source") ? "claimed" : "referrer",
+      }
+    : undefined
   let items: CheckoutIntentItem[]
   let mode: "buy" | "cart"
   if (params.has("buy")) {
@@ -163,6 +185,12 @@ export function parseCheckoutIntentFragment(
   }
   return {
     status: "valid",
-    intent: { v: 1, mode, items, ...(partner ? { partner } : {}) },
+    intent: {
+      v: 1,
+      mode,
+      items,
+      ...(partner ? { partner } : {}),
+      ...(source ? { source } : {}),
+    },
   }
 }

@@ -9,7 +9,8 @@ import {
 } from "@conduit/core"
 
 export type ProductFulfillmentFormat = "physical" | "digital"
-export type ProductShippingPricingMode = "fixed" | "coordinate_after_order"
+export type ProductShippingPricingMode =
+  "fixed" | "coordinate_after_order" | "weight_table"
 export interface PublishableProductPriceOptions {
   allowZero?: boolean
 }

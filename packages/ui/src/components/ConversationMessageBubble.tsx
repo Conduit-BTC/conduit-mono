@@ -1,4 +1,5 @@
 import { LoaderCircle, RefreshCw } from "lucide-react"
+import { getEventMarketEnrollmentDisplayContent } from "@conduit/core"
 import { cn } from "../utils"
 import type { OptimisticMessageDeliveryState } from "../hooks/useOptimisticConversationMessages"
 
@@ -27,8 +28,10 @@ function isLegacyOrderStatusMessage(
   )
 }
 
-/** Render known legacy order-status DMs as their buyer-facing message text. */
+/** Render known application messages as readable text without changing the rumor. */
 export function getConversationMessageDisplayContent(content: string): string {
+  const enrollment = getEventMarketEnrollmentDisplayContent(content)
+  if (enrollment !== content) return enrollment
   try {
     const parsed: unknown = JSON.parse(content)
     return isLegacyOrderStatusMessage(parsed) ? parsed.message : content

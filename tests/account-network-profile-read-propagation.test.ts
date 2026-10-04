@@ -18,7 +18,7 @@ describe("authenticated account profile and storefront read propagation", () => 
       source("apps/market/src/components/MarketCartHud.tsx"),
       source("apps/market/src/hooks/useMerchantIdentities.ts"),
       source("apps/market/src/hooks/useMarketBrowseModel.ts"),
-      source("apps/market/src/routes/events/$collectionRef.tsx"),
+      source("apps/market/src/components/FutureEventMarketPage.tsx"),
       source("apps/market/src/routes/products/$productId.tsx"),
       source("apps/market/src/routes/$identityRef.tsx"),
       source("apps/market/src/lib/storeProducts.ts"),
@@ -34,8 +34,13 @@ describe("authenticated account profile and storefront read propagation", () => 
       identities.match(/accountPubkey,\n\s+authenticatedPubkey,/g)?.length ?? 0
     ).toBeGreaterThanOrEqual(2)
     expect(browse).toContain("accountPubkey: authenticatedPubkey,")
-    expect(eventCatalog).toContain("const accountPubkey = authenticatedPubkey")
-    expect(eventCatalog).toContain("authenticatedPubkey,")
+    expect(eventCatalog).toContain(
+      'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
+    )
+    expect(
+      eventCatalog.match(/accountPubkey: authenticatedPubkey,/g)
+    ).toHaveLength(2)
+    expect(eventCatalog).toContain("authenticatedPubkey,\n    shouldContinue,")
     expect(productDetail).toContain("const accountPubkey = authenticatedPubkey")
     expect(productDetail).toContain("authenticatedPubkey,")
     expect(publicProfile).toContain("useProgressiveProducts({")
@@ -64,19 +69,16 @@ describe("authenticated account profile and storefront read propagation", () => 
   })
 
   it("uses only explicit Merchant authentication for storefront and organizer profiles", async () => {
-    const [
-      dashboard,
-      eventTemplates,
-      organizerPanel,
-      eventsRoute,
-      eventDetailRoute,
-    ] = await Promise.all([
-      source("apps/merchant/src/routes/index.tsx"),
-      source("apps/merchant/src/lib/event-product-publishing.ts"),
-      source("apps/merchant/src/components/OrganizerEventMarketPanel.tsx"),
-      source("apps/merchant/src/routes/events.tsx"),
-      source("apps/merchant/src/routes/events/$collectionRef.tsx"),
-    ])
+    const [dashboard, participation, enrollment, manager, eventDetailRoute] =
+      await Promise.all([
+        source("apps/merchant/src/routes/index.tsx"),
+        source(
+          "apps/merchant/src/components/FutureEventMerchantParticipation.tsx"
+        ),
+        source("apps/merchant/src/hooks/useEventMarketEnrollment.ts"),
+        source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
+        source("apps/merchant/src/routes/events/$collectionRef.tsx"),
+      ])
 
     expect(dashboard).toMatch(
       /fetchDashboardStats\([\s\S]{0,180}!signal\.aborted && authGenerationRef\.current === authGeneration/
@@ -84,18 +86,25 @@ describe("authenticated account profile and storefront read propagation", () => 
     expect(dashboard).toContain(
       "authenticatedPubkey: signerConnected ? pubkey : null"
     )
-    expect(eventTemplates).toContain("accountPubkey: string | null")
-    expect(eventTemplates).toContain("accountPubkey,\n    authenticatedPubkey,")
-    expect(eventTemplates).toContain("authenticatedPubkey,")
-    expect(eventTemplates).not.toContain("authenticatedPubkey: merchantPubkey")
-    expect(organizerPanel).toContain("authenticatedPubkey: string | null")
-    expect(organizerPanel).toContain("accountPubkey,\n    authenticatedPubkey,")
-    expect(eventDetailRoute).toContain(
+    expect(participation).toContain("authenticatedPubkey: string | null")
+    expect(participation).toMatch(
+      /useProfiles\(\[market\.organizerPubkey\], \{\s+accountPubkey,\s+authenticatedPubkey,[\s\S]{0,80}shouldContinue: \(\) => isAuthGenerationCurrent\(authGeneration\)/
+    )
+    expect(participation).not.toContain(
+      "authenticatedPubkey: market.organizerPubkey"
+    )
+    expect(enrollment).toMatch(
+      /readEventMarketEnrollment\(\{\s+accountPubkey: authenticatedPubkey!,\s+marketCoordinate,\s+shouldContinue: \(\) => isAuthGenerationCurrent\(authGeneration\)/
+    )
+    expect(eventDetailRoute).toContain("<FutureEventMarketManager")
+    expect(eventDetailRoute).toContain("reference={collectionRef}")
+    expect(manager).toContain(
       'signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null'
     )
-    expect(eventDetailRoute).toContain(
-      "authenticatedPubkey={authenticatedPubkey}"
+    expect(manager).toContain("authenticatedPubkey={authenticatedPubkey}")
+    expect(manager).toContain("accountPubkey,\n      authenticatedPubkey,")
+    expect(manager).toContain(
+      "shouldContinue: () => isAuthGenerationCurrent(authGeneration)"
     )
-    expect(eventsRoute).toContain("authenticatedPubkey: string | null")
   })
 })

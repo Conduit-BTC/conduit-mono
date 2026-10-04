@@ -1,9 +1,12 @@
 import {
   parseCheckoutIntentFragment,
   recordBrowserTelemetryEvent,
-  resolveCheckoutPartnerCode,
+  resolveCheckoutAttribution,
+  checkoutAttributionTelemetryProperties,
   type CheckoutIntentParseResult,
 } from "@conduit/core"
+
+import { clearCheckoutReferral } from "./checkout-referral"
 
 const KEY = "conduit:checkout-intent:v1"
 const MAX_AGE_MS = 30 * 60_000
@@ -15,13 +18,17 @@ export type StagedCheckoutIntent = {
   reportedStages?: string[]
 }
 
+// Failed writes/removals must never revive an older persisted purchase.
+let preferMemory = false
 let fallback: StagedCheckoutIntent | null = null
 
 function save(stage: StagedCheckoutIntent): void {
   fallback = stage
   try {
     window.sessionStorage.setItem(KEY, JSON.stringify(stage))
+    preferMemory = false
   } catch {
+    preferMemory = true
     /* tab memory remains available */
   }
 }
@@ -30,18 +37,22 @@ export function clearStagedCheckoutIntent(): void {
   fallback = null
   try {
     window.sessionStorage.removeItem(KEY)
+    preferMemory = false
   } catch {
+    preferMemory = true
     /* storage unavailable */
   }
 }
 
 export function getStagedCheckoutIntent(): StagedCheckoutIntent | null {
   let candidate = fallback
-  try {
-    const raw = window.sessionStorage.getItem(KEY)
-    if (raw) candidate = JSON.parse(raw) as StagedCheckoutIntent
-  } catch {
-    /* use tab memory */
+  if (!preferMemory) {
+    try {
+      const raw = window.sessionStorage.getItem(KEY)
+      candidate = raw ? (JSON.parse(raw) as StagedCheckoutIntent) : null
+    } catch {
+      /* use tab memory */
+    }
   }
   if (
     !candidate ||
@@ -83,10 +94,10 @@ export function recordCheckoutHandoffStage(
     ...current,
     reportedStages: [...(current.reportedStages ?? []), handoffStage],
   })
-  const partner =
+  const attribution =
     current.result.status === "valid"
-      ? resolveCheckoutPartnerCode(current.result.intent.partner)
-      : null
+      ? resolveCheckoutAttribution(current.result.intent)
+      : undefined
   recordBrowserTelemetryEvent({
     app: "market",
     eventName: "checkout_handoff_result",
@@ -97,7 +108,7 @@ export function recordCheckoutHandoffStage(
         current.result.status === "valid"
           ? current.result.intent.mode
           : "unknown",
-      ...(partner ? { partner_code: partner } : {}),
+      ...checkoutAttributionTelemetryProperties(attribution),
     },
   })
 }
@@ -105,7 +116,11 @@ export function recordCheckoutHandoffStage(
 /** Called before the Market provider tree or browser telemetry can observe the URL. */
 export function captureCheckoutIntentFragment(): void {
   if (window.location.pathname !== "/checkout" || !window.location.hash) return
-  const result = parseCheckoutIntentFragment(window.location.hash)
+  clearCheckoutReferral()
+  const result = parseCheckoutIntentFragment(
+    window.location.hash,
+    document.referrer
+  )
   const stage: StagedCheckoutIntent = {
     id: crypto.randomUUID(),
     createdAt: Date.now(),

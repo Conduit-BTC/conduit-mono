@@ -630,13 +630,14 @@ type EventMarketInboxScanCycle = {
   relayUrls: string[]
   relays: Map<string, EventMarketInboxRelayScan>
   messages: Map<string, ParsedEventMarketPrivateMessage>
+  authenticatedWraps: Map<string, SignedPublicNostrEvent>
   decryptFailures: Map<string, DecryptFailure>
   evidenceCapped: boolean
 }
 // A strict handoff read may need several bounded calls to walk a large inbox.
 // Retain only cursors, bounded coarse failures, and bounded parsed handoff
-// evidence in process memory. Ciphertext, unrelated plaintext, and unrelated
-// event ids are discarded after each call and nothing is written to storage.
+// evidence and its authenticated wraps in account-scoped process memory.
+// Unrelated plaintext and wraps are discarded after each call; no storage writes.
 const eventMarketInboxScanCycles = new Map<string, EventMarketInboxScanCycle>()
 const eventMarketInboxScanPromises = new Map<
   string,
@@ -1509,6 +1510,7 @@ async function streamProductRecordChunks(input: {
   readPolicy?: CommerceReadPolicy
   merged: Map<string, SignedPublicNostrEvent>
   deletionTimestamps?: DeletionTimestamps
+  retainRevisions?: boolean
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
 }): Promise<void> {
@@ -1569,7 +1571,8 @@ async function streamProductRecordChunks(input: {
             input.onRecords(
               dedupeProductEvents(
                 Array.from(input.merged.values()),
-                input.deletionTimestamps
+                input.deletionTimestamps,
+                input.retainRevisions
               ),
               relayUrl
             )
@@ -2074,6 +2077,12 @@ function toCachedProduct(record: CommerceProductRecord) {
     parentProductId: product.parentProductId,
     specifications: product.specifications,
     format: product.format,
+    signedProductEvent: product.signedProductEvent,
+    shippingWeightGrams: product.shippingWeightGrams,
+    shippingWeightAllowanceGrams: product.shippingWeightAllowanceGrams,
+    shippingHandling: product.shippingHandling,
+    shippingAdjustmentsMalformed: product.shippingAdjustmentsMalformed,
+    shippingDimensionsCm: product.shippingDimensionsCm,
     shippingCostSats: product.shippingCostSats,
     sourceShippingCost: product.sourceShippingCost,
     shippingOptionId: product.shippingOptionId,
@@ -2093,6 +2102,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
+    eventGuestContactOptional: product.eventGuestContactOptional,
     location: product.location,
     geohash: product.geohash,
     eventId: record.eventId,
@@ -2136,6 +2146,12 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     parentProductId: row.parentProductId,
     specifications: row.specifications ?? [],
     format: row.format ?? "physical",
+    signedProductEvent: row.signedProductEvent,
+    shippingWeightGrams: row.shippingWeightGrams,
+    shippingWeightAllowanceGrams: row.shippingWeightAllowanceGrams,
+    shippingHandling: row.shippingHandling,
+    shippingAdjustmentsMalformed: row.shippingAdjustmentsMalformed,
+    shippingDimensionsCm: row.shippingDimensionsCm,
     shippingCostSats: row.shippingCostSats,
     sourceShippingCost: row.sourceShippingCost,
     shippingOptionId: row.shippingOptionId,
@@ -2157,6 +2173,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     publicZapEnabled: row.publicZapEnabled ?? true,
     zapMessagePolicy,
     publicZapPolicyKnown: row.publicZapPolicyKnown ?? false,
+    eventGuestContactOptional: row.eventGuestContactOptional,
     location: row.location,
     geohash: row.geohash,
     createdAt: row.createdAt ?? row.cachedAt,
@@ -4012,9 +4029,10 @@ function parseAndEvaluateProductEvent(event: SignedPublicNostrEvent) {
 
 function dedupeProductEvents(
   events: SignedPublicNostrEvent[],
-  deletionTimestamps?: DeletionTimestamps
+  deletionTimestamps?: DeletionTimestamps,
+  retainRevisions = false
 ): CommerceProductRecord[] {
-  const byAddress = new Map<string, CommerceProductRecord>()
+  const byKey = new Map<string, CommerceProductRecord>()
 
   for (const event of events) {
     try {
@@ -4043,16 +4061,19 @@ function dedupeProductEvents(
         sourceRelayUrls: getEventSourceRelayUrls(event),
       }
 
-      const existing = byAddress.get(addressId)
-      if (!existing) byAddress.set(addressId, candidate)
-      else
-        byAddress.set(addressId, mergeProductRecordSources(existing, candidate))
+      // Catalog reads keep revisions until the last asynchronous write settles.
+      // An exact deletion may invalidate the newest event without deleting its
+      // older, still-valid coordinate candidate.
+      const key = retainRevisions && event.id ? event.id : addressId
+      const existing = byKey.get(key)
+      if (!existing) byKey.set(key, candidate)
+      else byKey.set(key, mergeProductRecordSources(existing, candidate))
     } catch {
       // ignore malformed product events
     }
   }
 
-  return Array.from(byAddress.values())
+  return Array.from(byKey.values())
 }
 
 function isRecordDeletedByNip09(
@@ -4117,26 +4138,26 @@ function mergeCachedAndLiveProductRecords(input: {
 }): CommerceProductRecord[] {
   const byAddress = new Map<string, CommerceProductRecord>()
 
-  for (const record of input.cached) {
-    if (isRecordDeletedByNip09(record, input.deletionTimestamps)) continue
-    byAddress.set(record.addressId, record)
-  }
-
-  for (const record of input.live) {
-    if (isRecordDeletedByNip09(record, input.deletionTimestamps)) continue
+  // Resolve both frontiers before choosing a coordinate winner, so an exact
+  // deletion of the newer revision cannot discard the surviving older one.
+  const candidates = reconcileProductRecordsWithDeletions(
+    [...input.cached, ...input.live].filter(
+      (record) => !isRecordDeletedByNip09(record, input.deletionTimestamps)
+    ),
+    getLocalProductDeletionSnapshot().evidence
+  )
+  for (const record of candidates) {
     const existing = byAddress.get(record.addressId)
-    if (!existing) byAddress.set(record.addressId, record)
-    else
-      byAddress.set(
-        record.addressId,
-        mergeProductRecordSources(existing, record)
-      )
+    byAddress.set(
+      record.addressId,
+      existing ? mergeProductRecordSources(existing, record) : record
+    )
   }
-
   return Array.from(byAddress.values())
 }
 
 async function fetchPublicProductRecords(query: {
+  retainRevisions?: boolean
   authors?: string[]
   ids?: string[]
   dTags?: string[]
@@ -4237,11 +4258,16 @@ async function fetchPublicProductRecords(query: {
           signal: query.signal,
         }
       )
-  return dedupeProductEvents(result.events, deletionTimestamps)
+  return dedupeProductEvents(
+    result.events,
+    deletionTimestamps,
+    query.retainRevisions
+  )
 }
 
 async function fetchPublicProductRecordsProgressive(
   query: {
+    retainRevisions?: boolean
     authors?: string[]
     ids?: string[]
     dTags?: string[]
@@ -4327,6 +4353,7 @@ async function fetchPublicProductRecordsProgressive(
     readPolicy: query.readPolicy,
     merged,
     deletionTimestamps: initialDeletionTimestamps,
+    retainRevisions: query.retainRevisions,
     onRecords,
     onTransportStatus: query.onTransportStatus,
   })
@@ -4362,6 +4389,7 @@ async function fetchPublicProductRecordsProgressive(
       readPolicy: query.readPolicy,
       merged,
       deletionTimestamps: initialDeletionTimestamps,
+      retainRevisions: query.retainRevisions,
       onRecords,
       onTransportStatus: query.onTransportStatus,
     })
@@ -4381,7 +4409,11 @@ async function fetchPublicProductRecordsProgressive(
       signal: query.signal,
     }
   )
-  const resolved = dedupeProductEvents(mergedEvents, deletionTimestamps)
+  const resolved = dedupeProductEvents(
+    mergedEvents,
+    deletionTimestamps,
+    query.retainRevisions
+  )
   return resolved
 }
 
@@ -4712,6 +4744,7 @@ export async function getMarketplaceProducts(
     let transportDegraded = false
     let readCapped = false
     const fetchedRecords = await fetchPublicProductRecords({
+      retainRevisions: true,
       authors: authorPubkeys ? uniqueStrings(authorPubkeys) : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
@@ -4745,9 +4778,21 @@ export async function getMarketplaceProducts(
     if (query.shouldContinue?.() === false)
       throw new NostrSignerError("authority_changed")
 
+    const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentRecords = mergeCachedAndLiveProductRecords({
+      cached,
+      live: fetchedRecords,
+      deletionTimestamps: finalDeletionTimestamps,
+    })
     const filtered = applyProductLimit(
       sortProducts(
-        filterProductRecordsForRead(records).filter((record) =>
+        filterProductRecordsForRead(currentRecords).filter((record) =>
           productMatchesQuery(record, query)
         ),
         query.sort
@@ -4837,12 +4882,13 @@ export async function getMarketplaceProductsProgressive(
   )
   const toResult = (
     records: CommerceProductRecord[],
-    options: { degraded?: boolean; capped?: boolean } = {}
+    options: { degraded?: boolean; capped?: boolean } = {},
+    deletionTimestamps: DeletionTimestamps = localDeletionTimestamps
   ) => {
     const filteredRecords = mergeCachedAndLiveProductRecords({
       cached,
       live: records,
-      deletionTimestamps: localDeletionTimestamps,
+      deletionTimestamps,
     })
     const data = applyProductLimit(
       sortProducts(
@@ -4869,6 +4915,7 @@ export async function getMarketplaceProductsProgressive(
 
   const fetchedRecords = await fetchPublicProductRecordsProgressive(
     {
+      retainRevisions: true,
       authors:
         authorPubkeys && authorPubkeys.length > 0
           ? uniqueStrings(authorPubkeys)
@@ -4906,14 +4953,34 @@ export async function getMarketplaceProductsProgressive(
     live: fetchedRecords,
     deletionTimestamps: currentDeletionTimestamps,
   })
-  const result = toResult(records, {
-    degraded:
-      transportDegraded || readCapped || fetchedRecords.length >= rawEventLimit,
-    capped: readCapped || fetchedRecords.length >= rawEventLimit,
-  })
-  query.signal?.throwIfAborted()
-  onProgress(result, "deletion-frontier")
-  await cacheProductRecords(records)
+  // Final resolution must follow writes that can yield to a new deletion. A
+  // failed cache write still needs to retract the previous progressive paint;
+  // preserve its rejection after delivering the resolved snapshot.
+  let result: CommerceResult<CommerceProductRecord[]>
+  try {
+    await cacheProductRecords(records)
+  } finally {
+    query.signal?.throwIfAborted()
+    const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    result = toResult(
+      fetchedRecords,
+      {
+        degraded:
+          transportDegraded ||
+          readCapped ||
+          fetchedRecords.length >= rawEventLimit,
+        capped: readCapped || fetchedRecords.length >= rawEventLimit,
+      },
+      finalDeletionTimestamps
+    )
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    onProgress(result, "deletion-frontier")
+  }
   return result
 }
 
@@ -4978,6 +5045,7 @@ export async function getMerchantStorefront(
     let readCapped = false
     const rawEventLimit = getProductRawEventLimit(query.limit)
     const liveRecords = await fetchPublicProductRecords({
+      retainRevisions: true,
       authors: [query.merchantPubkey],
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
@@ -5004,8 +5072,19 @@ export async function getMerchantStorefront(
       deletionTimestamps,
     })
 
+    await cacheProductRecords(mergedRecords)
+    const currentDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey
+    )
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentRecords = mergeCachedAndLiveProductRecords({
+      cached,
+      live: liveRecords,
+      deletionTimestamps: currentDeletionTimestamps,
+    })
     const sorted = sortProducts(
-      filterProductRecordsForRead(mergedRecords, {
+      filterProductRecordsForRead(currentRecords, {
         includeMarketHidden: query.includeMarketHidden,
         groupVariations: query.includeMarketHidden ? false : true,
       }).filter((record) =>
@@ -5021,7 +5100,6 @@ export async function getMerchantStorefront(
     )
     const filtered = applyProductLimit(sorted, query.limit)
 
-    await cacheProductRecords(mergedRecords)
     const meta =
       liveRecords.length === 0 && filtered.length > 0
         ? createMeta(
@@ -5043,8 +5121,18 @@ export async function getMerchantStorefront(
     }
   } catch (error) {
     if (query.shouldContinue?.() === false) throw error
+    const deletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey
+    )
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentCache = mergeCachedAndLiveProductRecords({
+      cached,
+      live: [],
+      deletionTimestamps,
+    })
     const filteredCache = sortProducts(
-      filterProductRecordsForRead(cached, {
+      filterProductRecordsForRead(currentCache, {
         includeMarketHidden: query.includeMarketHidden,
         groupVariations: query.includeMarketHidden ? false : true,
       }).filter((record) =>
@@ -5057,7 +5145,9 @@ export async function getMerchantStorefront(
       query.sort
     )
 
-    if (filteredCache.length > 0) {
+    // An empty resolved fallback is meaningful when signed evidence removed
+    // the captured products. Rejecting would leave callers' old paint intact.
+    if (filteredCache.length > 0 || currentCache.length < cached.length) {
       const meta = createMeta(
         "merchant_storefront",
         "local_cache",
@@ -7636,9 +7726,9 @@ function isEventMarketPrivateMessage(
   message: ParsedOrderMessage
 ): message is ParsedEventMarketPrivateMessage {
   return (
-    message.type === "organizer_fulfillment_receipt" ||
-    message.type === "organizer_fulfillment_revocation" ||
-    message.type === "organizer_handoff_ack"
+    message.type === "future_market_ready" ||
+    message.type === "future_market_revoked" ||
+    message.type === "future_market_handed_out"
   )
 }
 
@@ -8016,6 +8106,7 @@ function eventMarketInboxScanCycle(
     relayUrls: [...relayUrls],
     relays,
     messages: new Map<string, ParsedEventMarketPrivateMessage>(),
+    authenticatedWraps: new Map<string, SignedPublicNostrEvent>(),
     decryptFailures: new Map<string, DecryptFailure>(),
     evidenceCapped: false,
   }
@@ -8079,7 +8170,7 @@ async function readEventMarketInboxWraps(
 function eventMarketTerminalReadyReceiptId(
   message: ParsedEventMarketPrivateMessage
 ): string | null {
-  return message.type === "organizer_fulfillment_receipt"
+  return message.type === "future_market_ready"
     ? null
     : message.payload.readyReceiptId
 }
@@ -8136,7 +8227,7 @@ function retainBoundedEventMarketMessage(
   const candidateId =
     Array.from(messages.entries()).find(
       ([id, candidate]) =>
-        candidate.type === "organizer_fulfillment_receipt" &&
+        candidate.type === "future_market_ready" &&
         !protectedReadyIds.has(id) &&
         id !== incomingGroupReadyId
     )?.[0] ??
@@ -8204,6 +8295,8 @@ async function advanceEventMarketPrivateMessageScan(input: {
   assertInboxSyncAuthority(input.authorization)
   assertEventMarketInboxScanCurrent(result.scanKey, cycle)
   const callMessages = new Map<string, ParsedEventMarketPrivateMessage>()
+  const callWraps = new Map<string, SignedPublicNostrEvent>()
+  const wrapsById = new Map(wraps.map((wrap) => [wrap.id, wrap]))
   const callDecryptFailures = new Map<string, DecryptFailure>()
   let callEvidenceCapped = false
   for (const outcome of outcomes) {
@@ -8249,6 +8342,15 @@ async function advanceEventMarketPrivateMessageScan(input: {
           message
         )
         cycle.evidenceCapped ||= cycleRetention.capped
+        const wrap = wrapsById.get(outcome.wrapId)
+        if (wrap && isValidSignedPublicNostrEvent(wrap)) {
+          if (callMessages.has(message.id)) callWraps.set(message.id, wrap)
+          if (cycle.messages.has(message.id))
+            cycle.authenticatedWraps.set(message.id, wrap)
+        }
+        for (const id of cycle.authenticatedWraps.keys()) {
+          if (!cycle.messages.has(id)) cycle.authenticatedWraps.delete(id)
+        }
       }
     } catch {
       const failure: DecryptFailure = {
@@ -8289,6 +8391,11 @@ async function advanceEventMarketPrivateMessageScan(input: {
     ? callDecryptFailures
     : cycle.decryptFailures
   const response: EventMarketPrivateMessageListResult = {
+    authenticatedWraps: Object.fromEntries(
+      [...(result.freshComplete ? callWraps : cycle.authenticatedWraps)].filter(
+        ([id]) => messages.has(id)
+      )
+    ),
     messages: Array.from(messages.values()).sort(
       (left, right) => left.createdAt - right.createdAt
     ),
@@ -9659,6 +9766,8 @@ export async function getConversationDetail(
 }
 
 export interface EventMarketPrivateMessageListResult {
+  /** Verified principal-addressed wraps for authenticated parsed messages; never diagnostics. */
+  authenticatedWraps?: Record<string, SignedPublicNostrEvent>
   messages: ParsedEventMarketPrivateMessage[]
   stale: boolean
   decryptFailures: DecryptFailure[]

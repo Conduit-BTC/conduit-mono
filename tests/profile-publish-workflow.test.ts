@@ -1,10 +1,6 @@
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import {
-  NDKEvent,
-  NDKPrivateKeySigner,
-  type NDKRelay,
-} from "@nostr-dev-kit/ndk"
+import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -31,7 +27,6 @@ const SECRET = generateSecretKey()
 const PUBKEY = getPublicKey(SECRET)
 const RELAY = "wss://relay.damus.io"
 const NOW = Math.floor(Date.now() / 1_000)
-const originalPublish = NDKEvent.prototype.publish
 let durable: CachedProfile | undefined
 let events: NDKEvent[]
 let published: Event[]
@@ -99,15 +94,16 @@ beforeEach(() => {
       parkedRelayUrls: [],
     }),
   })
-  NDKEvent.prototype.publish = async function () {
-    published.push(this.rawEvent() as Event)
-    afterPublish?.()
-    return new Set([{ url: RELAY } as NDKRelay])
-  }
+  __setRelayPublishTestOverrides({
+    publishSignedEventFrameToRelay: async ({ signedEvent }) => {
+      published.push(structuredClone(signedEvent) as Event)
+      afterPublish?.()
+      return "acked"
+    },
+  })
 })
 
 afterEach(() => {
-  NDKEvent.prototype.publish = originalPublish
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   __resetRelayPublishTestOverrides()

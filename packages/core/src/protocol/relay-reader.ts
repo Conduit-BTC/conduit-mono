@@ -378,7 +378,7 @@ const MAX_VERIFIED_PROOF_CACHE = 20000
 const verifiedEventProofs = new Set<string>()
 const MAX_RAW_RELAY_EVENT_FRAMES = 5000
 const MIN_RAW_RELAY_EVENT_FRAMES = 256
-const MAX_RELAY_MESSAGE_CHARS = 512 * 1024
+export const MAX_RELAY_MESSAGE_CHARS = 512 * 1024
 const MAX_RELAY_SUBSCRIPTION_CHARS = 8 * 1024 * 1024
 const MAX_RELAY_CONNECTION_FRAMES = 10_000
 const MAX_RELAY_CONNECTION_CHARS = 16 * 1024 * 1024
@@ -904,7 +904,7 @@ function getRelayConnection(
       }
       const handler = conn.subs.get(sub)
       if (!handler) return
-      if (type === "EVENT" && parsed[2]) {
+      if (type === "EVENT") {
         handler.onEvent(parsed[2] as RawNostrEvent, message.data.length)
       } else if (type === "EOSE") {
         handler.end("eose")
@@ -1361,7 +1361,7 @@ async function fetchEventsFromRelay(
       uniqueIds.add(event.id)
       attachEventSourceRelayUrl(event, admittedRelayUrl)
       verified.push(event)
-      if (eventLimit !== null && verified.length >= eventLimit) break
+      if (eventLimit !== null && uniqueIds.size >= eventLimit) break
     }
     const rejectedEventCount = accepted.reduce(
       (count, isAccepted) => count + (isAccepted ? 0 : 1),
@@ -1372,7 +1372,8 @@ async function fetchEventsFromRelay(
       truncated ||
       verificationTruncated ||
       rejectedEventCount > 0 ||
-      malformedEventCount > 0
+      malformedEventCount > 0 ||
+      unusableEventCount > 0
         ? "partial"
         : complete
           ? "success"

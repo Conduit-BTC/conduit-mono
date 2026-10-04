@@ -1085,7 +1085,7 @@ describe("NDK relay worker verification fallback", () => {
     })
   })
 
-  it("ignores valid non-matching frames before enforcing the requested limit", async () => {
+  it("retains matching events without certifying non-matching source evidence", async () => {
     const secret = Uint8Array.from([...new Uint8Array(31), 1])
     const nonMatchingEvent = finalizeEvent(
       {
@@ -1126,11 +1126,13 @@ describe("NDK relay worker verification fallback", () => {
       }
     )
 
+    expect(result.readCoverage).toBe("partial")
     expect(result.events.map((event) => event.id)).toEqual([matchingEvent.id])
     expect(result.relays).toMatchObject([
       {
         relayUrl: "wss://nonmatching-first.example",
-        status: "success",
+        status: "partial",
+        unusableEventCount: 1,
         eventCount: 1,
       },
     ])

@@ -292,6 +292,16 @@ serve Market and Commerce with different Lightning networks.
 Playwright area tags select the tests. CI rejects an untagged smoke test or a
 selected area that contains zero tests.
 
+Browser smoke jobs use the official Playwright Noble image with browsers and
+system libraries preinstalled. When updating the locked `@playwright/test`
+version, update the CI image version and registry digest together. The runtime
+contract test rejects version drift. For no-op shards, the image expression
+evaluates to an empty string. The Actions runner converts that definition to no
+job container, so the no-op step runs on the host without pulling an image.
+The aggregate gate still requires successful selection and shard execution.
+Keep Bash as the container step shell because smoke steps use Bash arrays and
+`pipefail`. The existing 20-minute limit and strict execution evidence still apply.
+
 ## Code Conventions
 
 ### General

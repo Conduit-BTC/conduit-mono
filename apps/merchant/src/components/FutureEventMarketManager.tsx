@@ -1,0 +1,2148 @@
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  buildEventMarketCalendarDraft,
+  buildEventMarketSeriesDraft,
+  decodeEventMarketReference,
+  encodeEventMarketNaddr,
+  listPendingEventMarketMerchantDecisions,
+  loadRetainedSignedEventMarketEvidence,
+  normalizePubkey,
+  parseEventMarketCalendarEvent,
+  publishEventMarketMerchantDecision,
+  publishEventMarketRoster,
+  previewEventMarketMerchantProducts,
+  publishFutureEventMarketCalendar,
+  publishFutureEventMarketOccurrenceRevision,
+  publishFutureEventMarketSeries,
+  readEventMarketAuthorization,
+  readEventMarketRoster,
+  retainSignedEventMarketEvidence,
+  retryEventMarketAuthorizationDelivery,
+  retryEventMarketCalendarDelivery,
+  retryEventMarketMerchantDecisionDelivery,
+  retryEventMarketRosterDelivery,
+  useAuth,
+  useProfiles,
+  normalizePublicMediaUrl,
+  useConduitSession,
+  type EventMarketMerchantMode,
+  type EventMarketMerchantRow,
+  type EventMarketCalendarDraftInput,
+  type EventMarketSchedule,
+  type ParsedEventMarketCalendar,
+  type ParsedEventMarketRoster,
+} from "@conduit/core"
+import {
+  Avatar,
+  AvatarImage,
+  AvatarFallback,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  EventPageHeader,
+  Input,
+  Label,
+  QRCodeSVG,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Textarea,
+} from "@conduit/ui"
+import { retainEventMarketMerchantDecision } from "../lib/event-market-merchant-decision"
+import {
+  getMatchingSavedSeriesDateEvents,
+  getSavedDateRecoveryAction,
+} from "../lib/event-market-date-recovery"
+import { buildFutureEventQrSignSheets } from "../lib/event-signage"
+import { EventMessagesSetup } from "./EventMessagesSetup"
+import { EventQrPrintPreview } from "./EventQrPrintPreview"
+import { FutureOrganizerClaimQueue } from "./FutureOrganizerClaimQueue"
+import {
+  epochSecondsToLocalDateTime,
+  getOrganizerEventStartMinimum,
+  localDateTimeToEpochSeconds,
+} from "../lib/event-market-form"
+import { EventBannerField, EventTimezoneField } from "./EventAuthoringFields"
+import { useEventMarketEnrollment } from "../hooks/useEventMarketEnrollment"
+import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
+import { getEventActorDisplayName } from "../lib/event-actor-identity"
+import { FutureEventMerchantParticipation } from "./FutureEventMerchantParticipation"
+
+function errorText(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : "The signed change could not be completed."
+}
+
+function formatOrganizerOccurrenceDate(
+  calendar: ParsedEventMarketCalendar,
+  timestamp = calendar.start
+): string {
+  if (calendar.kind === 31922)
+    return timestamp === calendar.start
+      ? (calendar.startDate ?? new Date(timestamp).toISOString().slice(0, 10))
+      : (calendar.endDate ?? new Date(timestamp).toISOString().slice(0, 10))
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: calendar.startTzid ?? "UTC",
+    timeZoneName: "short",
+  }).format(timestamp)
+}
+
+type FrozenSeriesMutation =
+  | {
+      version: 1
+      action: "edit"
+      marketCoordinate: string
+      occurrenceCoordinate: string
+      expectedPreviousEventId: string
+      expectedPreviousCreatedAt: number
+      calendar: EventMarketCalendarDraftInput
+    }
+  | {
+      version: 1
+      action: "add" | "remove"
+      marketCoordinate: string
+      expectedPreviousEventId: string
+      expectedPreviousCreatedAt: number
+      scheduleDTag: string
+      title: string
+      retainedMemberCoordinates: string[]
+      removedMemberCoordinates: string[]
+      newOccurrences: EventMarketCalendarDraftInput[]
+    }
+
+function mutationStorageKey(marketCoordinate: string): string {
+  return `conduit:future-event-market-series-edit:1:${marketCoordinate}`
+}
+
+function readSeriesMutation(
+  marketCoordinate: string
+): FrozenSeriesMutation | null {
+  if (typeof localStorage === "undefined") return null
+  const raw = localStorage.getItem(mutationStorageKey(marketCoordinate))
+  if (!raw) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (cause) {
+    throw new Error("Saved date edit could not be read.", { cause })
+  }
+  const value = parsed as Record<string, unknown>
+  if (
+    !value ||
+    value.version !== 1 ||
+    value.marketCoordinate !== marketCoordinate ||
+    (value.action !== "edit" &&
+      value.action !== "add" &&
+      value.action !== "remove") ||
+    typeof value.expectedPreviousEventId !== "string" ||
+    typeof value.expectedPreviousCreatedAt !== "number" ||
+    !Number.isFinite(value.expectedPreviousCreatedAt) ||
+    (value.action === "edit" &&
+      (typeof value.occurrenceCoordinate !== "string" || !value.calendar)) ||
+    (value.action !== "edit" &&
+      (typeof value.scheduleDTag !== "string" ||
+        typeof value.title !== "string" ||
+        !Array.isArray(value.retainedMemberCoordinates) ||
+        !Array.isArray(value.removedMemberCoordinates) ||
+        !Array.isArray(value.newOccurrences)))
+  ) {
+    throw new Error("Saved date edit needs organizer review before resuming.")
+  }
+  return value as FrozenSeriesMutation
+}
+
+function saveSeriesMutation(mutation: FrozenSeriesMutation): void {
+  if (typeof localStorage === "undefined") {
+    throw new Error("Local storage is required to resume date publishing.")
+  }
+  const key = mutationStorageKey(mutation.marketCoordinate)
+  const serialized = JSON.stringify(mutation)
+  try {
+    if (localStorage.getItem(key)) {
+      throw new Error("A saved date change is already awaiting publication.")
+    }
+    localStorage.setItem(key, serialized)
+    if (localStorage.getItem(key) !== serialized) {
+      throw new Error("The date change was not saved.")
+    }
+  } catch (cause) {
+    throw new Error("Save the date change locally before signing.", { cause })
+  }
+}
+
+function MarketLifecycleEditor({
+  market,
+  calendar,
+  authenticatedPubkey,
+  onChanged,
+}: {
+  market: ParsedEventMarketRoster
+  calendar: ParsedEventMarketCalendar
+  authenticatedPubkey: string
+  onChanged: () => void
+}) {
+  const { authGeneration, isAuthGenerationCurrent } = useAuth()
+  const [timezone, setTimezone] = useState(calendar.startTzid || "UTC")
+  const [summary, setSummary] = useState(calendar.summary ?? "")
+  const [image, setImage] = useState(calendar.image ?? "")
+  const [bannerBusy, setBannerBusy] = useState(false)
+  const [title, setTitle] = useState(calendar.title)
+  const [location, setLocation] = useState(calendar.locations[0] ?? "")
+  const [start, setStart] = useState(
+    calendar.kind === 31922
+      ? (calendar.startDate ?? "")
+      : epochSecondsToLocalDateTime(calendar.start / 1_000, timezone)
+  )
+  const [end, setEnd] = useState(
+    calendar.kind === 31922
+      ? (calendar.endDate ?? "")
+      : epochSecondsToLocalDateTime(calendar.end / 1_000, timezone)
+  )
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState("")
+  async function changeOpenState(): Promise<void> {
+    setPending(true)
+    setError("")
+    try {
+      await publishEventMarketRoster({
+        organizerPubkey: market.organizerPubkey,
+        authenticatedPubkey,
+        dTag: market.coordinate.split(":").slice(2).join(":"),
+        calendarCoordinate: market.calendarCoordinate,
+        state: market.state === "open" ? "closed" : "open",
+        merchants: market.merchants,
+        expectedPreviousEventId: market.eventId,
+        shouldContinue: () => isAuthGenerationCurrent(authGeneration),
+        onSignedLocal: (event) =>
+          retainSignedEventMarketEvidence(market.coordinate, event),
+      })
+      onChanged()
+    } catch (cause) {
+      setError(errorText(cause))
+      onChanged()
+    } finally {
+      setPending(false)
+    }
+  }
+  async function saveCalendar(): Promise<void> {
+    if (!title.trim() || !summary.trim() || !location.trim()) {
+      setError("Title, description and public location are required.")
+      return
+    }
+    setPending(true)
+    setError("")
+    try {
+      const draft =
+        calendar.kind === 31922
+          ? {
+              kind: 31922 as const,
+              dTag: calendar.dTag,
+              title: title.trim(),
+              summary: summary.trim(),
+              image,
+              locations: [location.trim()],
+              start,
+              end,
+            }
+          : {
+              kind: 31923 as const,
+              dTag: calendar.dTag,
+              title: title.trim(),
+              summary: summary.trim(),
+              image,
+              locations: [location.trim()],
+              start: localDateTimeToEpochSeconds(start, timezone),
+              end: localDateTimeToEpochSeconds(end, timezone),
+              startTzid: timezone,
+              endTzid: timezone,
+            }
+      await publishFutureEventMarketCalendar({
+        organizerPubkey: market.organizerPubkey,
+        authenticatedPubkey,
+        calendar: draft,
+        marketCoordinate: market.coordinate,
+        expectedPreviousEventId: calendar.eventId,
+        previousCreatedAt: Math.floor(calendar.createdAt / 1_000),
+        shouldContinue: () => isAuthGenerationCurrent(authGeneration),
+        onSignedLocal: (event) =>
+          retainSignedEventMarketEvidence(market.coordinate, event),
+      })
+      onChanged()
+    } catch (cause) {
+      setError(errorText(cause))
+      onChanged()
+    } finally {
+      setPending(false)
+    }
+  }
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Event controls</CardTitle>
+        <CardDescription>
+          Open or close new purchases, and edit the signed calendar. Existing
+          orders keep their original terms.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-1">
+          <Label htmlFor="future-edit-summary">Description · Required</Label>
+          <Textarea
+            id="future-edit-summary"
+            value={summary}
+            required
+            disabled={pending || bannerBusy}
+            onChange={(event) => setSummary(event.target.value)}
+          />
+        </div>
+        <EventBannerField
+          id="future-edit-image"
+          value={image}
+          title={title}
+          scopeId={`event-edit:${market.coordinate}`}
+          disabled={pending || bannerBusy}
+          onChange={setImage}
+          onBusyChange={setBannerBusy}
+        />
+        {calendar.kind === 31923 ? (
+          <EventTimezoneField
+            id="future-edit-timezone"
+            value={timezone}
+            disabled={pending || bannerBusy}
+            onChange={setTimezone}
+          />
+        ) : null}
+        <Button
+          type="button"
+          variant="outline"
+          disabled={pending || bannerBusy}
+          onClick={() => void changeOpenState()}
+        >
+          {market.state === "open"
+            ? "Close Event Market"
+            : "Reopen Event Market"}
+        </Button>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <Label htmlFor="future-edit-title">Title</Label>
+            <Input
+              id="future-edit-title"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="future-edit-location">Location</Label>
+            <Input
+              id="future-edit-location"
+              value={location}
+              onChange={(event) => setLocation(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="future-edit-start">
+              Start {calendar.kind === 31923 ? `(${timezone})` : ""}
+            </Label>
+            <Input
+              id="future-edit-start"
+              type={calendar.kind === 31922 ? "date" : "datetime-local"}
+              value={start}
+              onChange={(event) => setStart(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="future-edit-end">
+              End {calendar.kind === 31923 ? `(${timezone})` : ""}
+            </Label>
+            <Input
+              id="future-edit-end"
+              type={calendar.kind === 31922 ? "date" : "datetime-local"}
+              value={end}
+              onChange={(event) => setEnd(event.target.value)}
+            />
+          </div>
+        </div>
+        <Button
+          type="button"
+          disabled={
+            pending ||
+            bannerBusy ||
+            !title.trim() ||
+            !summary.trim() ||
+            !location.trim()
+          }
+          onClick={() => void saveCalendar()}
+        >
+          Save event details
+        </Button>
+        {error ? (
+          <p role="alert" className="text-sm text-[var(--destructive)]">
+            {error}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function SeriesDateManager({
+  market,
+  schedule,
+  calendarCoverage,
+  scheduleCoverage,
+  canEdit,
+  selectedOccurrence,
+  onSelectOccurrence,
+  authenticatedPubkey,
+  onChanged,
+}: {
+  market: ParsedEventMarketRoster
+  schedule: Extract<EventMarketSchedule, { kind: "series" }>
+  calendarCoverage?: "complete" | "partial" | "stale" | "unavailable"
+  scheduleCoverage?: "complete" | "partial" | "stale" | "unavailable"
+  canEdit: boolean
+  selectedOccurrence?: string
+  onSelectOccurrence?: (coordinate: string) => void
+  authenticatedPubkey: string
+  onChanged: () => Promise<unknown>
+}) {
+  const { authGeneration, isAuthGenerationCurrent } = useAuth()
+  const [localSelection, setLocalSelection] = useState<string | undefined>()
+  const fallback =
+    schedule.occurrences.find((entry) => entry.occurrence.end > Date.now()) ??
+    schedule.occurrences.at(-1)
+  const chosenCoordinate =
+    selectedOccurrence ?? localSelection ?? fallback?.occurrence.coordinate
+  const chosen = schedule.occurrences.find(
+    (entry) => entry.occurrence.coordinate === chosenCoordinate
+  )
+  const seed = chosen?.occurrence ?? fallback?.occurrence
+  const [editSource, setEditSource] = useState(seed)
+  const [timezone, setTimezone] = useState(seed?.startTzid || "UTC")
+  const [summary, setSummary] = useState(seed?.summary ?? "")
+  const [image, setImage] = useState(seed?.image ?? "")
+  const [bannerBusy, setBannerBusy] = useState(false)
+  const [title, setTitle] = useState(seed?.title ?? schedule.series.title)
+  const [location, setLocation] = useState(seed?.locations[0] ?? "")
+  const [start, setStart] = useState(
+    seed?.kind === 31922
+      ? (seed.startDate ?? "")
+      : seed
+        ? epochSecondsToLocalDateTime(seed.start / 1_000, timezone)
+        : ""
+  )
+  const [end, setEnd] = useState(
+    seed?.kind === 31922
+      ? (seed.endDate ?? "")
+      : seed
+        ? epochSecondsToLocalDateTime(seed.end / 1_000, timezone)
+        : ""
+  )
+  const [newKind, setNewKind] = useState<31922 | 31923>(
+    seed?.kind === 31922 ? 31922 : 31923
+  )
+  const [newTitle, setNewTitle] = useState(seed?.title ?? schedule.series.title)
+  const [newLocation, setNewLocation] = useState(seed?.locations[0] ?? "")
+  const [newStart, setNewStart] = useState("")
+  const [newEnd, setNewEnd] = useState("")
+  const [newTimezone, setNewTimezone] = useState(timezone)
+  const [pendingMutation, setPendingMutation] =
+    useState<FrozenSeriesMutation | null>(null)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState("")
+  const [step, setStep] = useState("")
+  const [deliveryOutcomes, setDeliveryOutcomes] = useState<
+    Record<string, string>
+  >({})
+
+  useEffect(() => {
+    try {
+      setPendingMutation(readSeriesMutation(market.coordinate))
+    } catch (cause) {
+      setError(errorText(cause))
+    }
+  }, [market.coordinate])
+
+  function choose(coordinate: string): void {
+    const occurrence = schedule.occurrences.find(
+      (entry) => entry.occurrence.coordinate === coordinate
+    )?.occurrence
+    if (occurrence) reviewDate(occurrence)
+    setLocalSelection(coordinate)
+    onSelectOccurrence?.(coordinate)
+  }
+
+  function reviewDate(occurrence: ParsedEventMarketCalendar): void {
+    const nextTimezone = occurrence.startTzid || "UTC"
+    setEditSource(occurrence)
+    setTimezone(nextTimezone)
+    setSummary(occurrence.summary ?? "")
+    setImage(occurrence.image ?? "")
+    setTitle(occurrence.title)
+    setLocation(occurrence.locations[0] ?? "")
+    setStart(
+      occurrence.kind === 31922
+        ? (occurrence.startDate ?? "")
+        : epochSecondsToLocalDateTime(occurrence.start / 1_000, nextTimezone)
+    )
+    setEnd(
+      occurrence.kind === 31922
+        ? (occurrence.endDate ?? "")
+        : epochSecondsToLocalDateTime(occurrence.end / 1_000, nextTimezone)
+    )
+    setError("")
+  }
+
+  function calendarDraft(input: {
+    source: ParsedEventMarketCalendar
+    dTag: string
+    kind: 31922 | 31923
+    title: string
+    location: string
+    start: string
+    end: string
+    timezone: string
+  }): EventMarketCalendarDraftInput {
+    const common = {
+      dTag: input.dTag,
+      title: input.title.trim(),
+      content: input.source.signedEvent?.content ?? "",
+      summary: summary.trim(),
+      image,
+      locations: [input.location.trim(), ...input.source.locations.slice(1)],
+      geohash: input.source.geohash,
+    }
+    return input.kind === 31922
+      ? { ...common, kind: 31922, start: input.start, end: input.end }
+      : {
+          ...common,
+          kind: 31923,
+          start: localDateTimeToEpochSeconds(input.start, input.timezone),
+          end: localDateTimeToEpochSeconds(input.end, input.timezone),
+          startTzid: input.timezone,
+          endTzid: input.timezone,
+        }
+  }
+
+  async function runMutation(mutation: FrozenSeriesMutation): Promise<void> {
+    setPending(true)
+    setError("")
+    try {
+      const signed = await loadRetainedSignedEventMarketEvidence(
+        market.coordinate
+      )
+      const shouldContinue = () => isAuthGenerationCurrent(authGeneration)
+      if (mutation.action === "edit") {
+        const expected = buildEventMarketCalendarDraft(mutation.calendar)
+        const saved = signed.filter(
+          (event) =>
+            event.id !== mutation.expectedPreviousEventId &&
+            event.created_at >
+              Math.floor(mutation.expectedPreviousCreatedAt / 1_000) &&
+            `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}` ===
+              mutation.occurrenceCoordinate &&
+            JSON.stringify(event.tags) === JSON.stringify(expected.tags) &&
+            event.content === expected.content
+        )
+        if (saved.length > 1) {
+          throw new Error("Multiple saved revisions need organizer review.")
+        }
+        const current = schedule.occurrences.find(
+          (entry) =>
+            entry.occurrence.coordinate === mutation.occurrenceCoordinate
+        )
+        const recovery = getSavedDateRecoveryAction({
+          savedEventId: saved[0]?.id ?? null,
+          observedEventId: current?.occurrence.eventId ?? null,
+          coverage: current?.coverage ?? "unavailable",
+          canEdit,
+        })
+        let publishedDate = saved[0]
+        if (recovery === "already_live") {
+          setStep("Signed date is already current.")
+        } else if (recovery === "retry_saved") {
+          setStep("Retrying saved date…")
+          const delivery = await retryEventMarketCalendarDelivery({
+            organizerPubkey: market.organizerPubkey,
+            authenticatedPubkey,
+            signedEvent: saved[0]!,
+            shouldContinue,
+          })
+          if (delivery.successfulRelayUrls.length === 0)
+            throw new Error(
+              "The signed date still needs a relay acknowledgment."
+            )
+        } else {
+          if (recovery === "blocked")
+            throw new Error(
+              "Refresh current signed dates before continuing publication."
+            )
+          setStep(saved[0] ? "Retrying saved date…" : "Signing date revision…")
+          const published = await publishFutureEventMarketOccurrenceRevision({
+            marketCoordinate: market.coordinate,
+            organizerPubkey: market.organizerPubkey,
+            authenticatedPubkey,
+            expectedPreviousEventId: mutation.expectedPreviousEventId,
+            calendar: mutation.calendar,
+            savedSignedEvent: saved[0],
+            shouldContinue,
+            onSignedLocal: (event) =>
+              retainSignedEventMarketEvidence(market.coordinate, event),
+            onDelivery: (delivery) =>
+              setDeliveryOutcomes((current) => ({
+                ...current,
+                "Selected date": `${delivery.acknowledged} ACK · ${delivery.rejected} rejected · ${delivery.timedOut} timed out${delivery.otherFailed ? ` · ${delivery.otherFailed} other failure` : ""}`,
+              })),
+          })
+          publishedDate = published.signedEvent
+        }
+        const updatedDate =
+          publishedDate && parseEventMarketCalendarEvent(publishedDate)
+        if (!updatedDate)
+          throw new Error("The published date could not be verified.")
+        reviewDate(updatedDate)
+      } else {
+        const expectedSchedule = buildEventMarketSeriesDraft({
+          dTag: mutation.scheduleDTag,
+          organizerPubkey: market.organizerPubkey,
+          title: mutation.title,
+          memberCoordinates: [
+            ...mutation.retainedMemberCoordinates,
+            ...mutation.newOccurrences.map(
+              (calendar) =>
+                `${calendar.kind}:${market.organizerPubkey}:${calendar.dTag}`
+            ),
+          ],
+        })
+        const expectedOccurrences = mutation.newOccurrences.map((calendar) => ({
+          coordinate: `${calendar.kind}:${market.organizerPubkey}:${calendar.dTag}`,
+          draft: buildEventMarketCalendarDraft(calendar),
+        }))
+        const matchingSigned = getMatchingSavedSeriesDateEvents({
+          signedEvents: signed,
+          scheduleCoordinate: schedule.coordinate,
+          expectedSchedule,
+          expectedOccurrences,
+          expectedPreviousCreatedAt: mutation.expectedPreviousCreatedAt,
+        })
+        const savedSchedule = matchingSigned.find(
+          (event) =>
+            event.kind === 31924 &&
+            event.id !== mutation.expectedPreviousEventId
+        )
+        const recovery = getSavedDateRecoveryAction({
+          savedEventId: savedSchedule?.id ?? null,
+          observedEventId: schedule.series.eventId,
+          coverage: calendarCoverage ?? "unavailable",
+          canEdit,
+        })
+        if (recovery === "already_live") {
+          setStep("Signed schedule is already current.")
+        } else if (recovery === "retry_saved") {
+          setStep("Retrying saved schedule…")
+          const delivery = await retryEventMarketCalendarDelivery({
+            organizerPubkey: market.organizerPubkey,
+            authenticatedPubkey,
+            signedEvent: savedSchedule!,
+            shouldContinue,
+          })
+          if (delivery.successfulRelayUrls.length === 0)
+            throw new Error(
+              "The signed schedule still needs a relay acknowledgment."
+            )
+        } else {
+          if (recovery === "blocked")
+            throw new Error(
+              "Refresh the current signed schedule before continuing publication."
+            )
+          await publishFutureEventMarketSeries({
+            organizerPubkey: market.organizerPubkey,
+            authenticatedPubkey,
+            marketCoordinate: market.coordinate,
+            expectedPreviousEventId: mutation.expectedPreviousEventId,
+            scheduleDTag: mutation.scheduleDTag,
+            title: mutation.title,
+            retainedMemberCoordinates: mutation.retainedMemberCoordinates,
+            removedMemberCoordinates: mutation.removedMemberCoordinates,
+            newOccurrences: mutation.newOccurrences,
+            savedSignedEvents: matchingSigned,
+            shouldContinue,
+            onSignedLocal: (event) =>
+              retainSignedEventMarketEvidence(market.coordinate, event),
+            onProgress: (progress) => {
+              const record =
+                progress.record === "schedule"
+                  ? "Schedule"
+                  : `Date ${progress.index} of ${progress.total}`
+              setStep(`${record}: ${progress.phase}`)
+            },
+            onDelivery: ({ record, index, delivery }) => {
+              const label = record === "schedule" ? "Schedule" : `Date ${index}`
+              setDeliveryOutcomes((current) => ({
+                ...current,
+                [label]: `${delivery.acknowledged} ACK · ${delivery.rejected} rejected · ${delivery.timedOut} timed out${delivery.otherFailed ? ` · ${delivery.otherFailed} other failure` : ""}`,
+              }))
+            },
+          })
+        }
+      }
+      localStorage.removeItem(mutationStorageKey(market.coordinate))
+      setPendingMutation(null)
+      await onChanged()
+    } catch (cause) {
+      setError(errorText(cause))
+      await onChanged()
+    } finally {
+      setPending(false)
+    }
+  }
+
+  function startMutation(mutation: FrozenSeriesMutation): void {
+    if (!canEdit) return
+    try {
+      setDeliveryOutcomes({})
+      saveSeriesMutation(mutation)
+      setPendingMutation(mutation)
+      void runMutation(mutation)
+    } catch (cause) {
+      setError(errorText(cause))
+    }
+  }
+
+  function editDate(): void {
+    if (
+      !chosen ||
+      !editSource ||
+      chosen.coverage !== "complete" ||
+      chosen.occurrence.end <= Date.now()
+    )
+      return
+    try {
+      if (chosen.occurrence.eventId !== editSource.eventId) {
+        throw new Error(
+          "This date changed. Review the updated date before saving."
+        )
+      }
+      const calendar = calendarDraft({
+        source: editSource,
+        dTag: editSource.dTag,
+        kind: editSource.kind,
+        title,
+        location,
+        start,
+        end,
+        timezone,
+      })
+      buildEventMarketCalendarDraft(calendar)
+      startMutation({
+        version: 1,
+        action: "edit",
+        marketCoordinate: market.coordinate,
+        occurrenceCoordinate: editSource.coordinate,
+        expectedPreviousEventId: editSource.eventId,
+        expectedPreviousCreatedAt: editSource.createdAt,
+        calendar,
+      })
+    } catch (cause) {
+      setError(errorText(cause))
+    }
+  }
+
+  function addDate(): void {
+    if (!seed) return
+    try {
+      const calendar = calendarDraft({
+        source: seed,
+        dTag: `${market.coordinate.split(":").slice(2).join(":")}-date-${crypto.randomUUID().slice(0, 8)}`,
+        kind: newKind,
+        title: newTitle,
+        location: newLocation,
+        start: newStart,
+        end: newEnd,
+        timezone: newTimezone,
+      })
+      buildEventMarketCalendarDraft(calendar)
+      if (
+        calendar.kind === 31922
+          ? calendar.start < getOrganizerEventStartMinimum("date")
+          : calendar.start * 1_000 <= Date.now()
+      ) {
+        throw new Error("New date must start in the future.")
+      }
+      startMutation({
+        version: 1,
+        action: "add",
+        marketCoordinate: market.coordinate,
+        expectedPreviousEventId: schedule.series.eventId,
+        expectedPreviousCreatedAt: schedule.series.createdAt,
+        scheduleDTag: schedule.coordinate.split(":").slice(2).join(":"),
+        title: schedule.series.title,
+        retainedMemberCoordinates: schedule.series.memberCoordinates,
+        removedMemberCoordinates: [],
+        newOccurrences: [calendar],
+      })
+    } catch (cause) {
+      setError(errorText(cause))
+    }
+  }
+
+  function removeDate(): void {
+    if (!chosen || chosen.occurrence.end <= Date.now()) return
+    startMutation({
+      version: 1,
+      action: "remove",
+      marketCoordinate: market.coordinate,
+      expectedPreviousEventId: schedule.series.eventId,
+      expectedPreviousCreatedAt: schedule.series.createdAt,
+      scheduleDTag: schedule.coordinate.split(":").slice(2).join(":"),
+      title: schedule.series.title,
+      retainedMemberCoordinates: schedule.series.memberCoordinates.filter(
+        (coordinate) => coordinate !== chosen.occurrence.coordinate
+      ),
+      removedMemberCoordinates: [chosen.occurrence.coordinate],
+      newOccurrences: [],
+    })
+  }
+
+  async function changeOpenState(): Promise<void> {
+    if (!canEdit) return
+    setPending(true)
+    setError("")
+    try {
+      await publishEventMarketRoster({
+        organizerPubkey: market.organizerPubkey,
+        authenticatedPubkey,
+        dTag: market.coordinate.split(":").slice(2).join(":"),
+        calendarCoordinate: market.calendarCoordinate,
+        state: market.state === "open" ? "closed" : "open",
+        merchants: market.merchants,
+        expectedPreviousEventId: market.eventId,
+        shouldContinue: () => isAuthGenerationCurrent(authGeneration),
+        onSignedLocal: (event) =>
+          retainSignedEventMarketEvidence(market.coordinate, event),
+      })
+      await onChanged()
+    } catch (cause) {
+      setError(errorText(cause))
+      await onChanged()
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const selectedFuture = !!chosen && chosen.occurrence.end > Date.now()
+  const editReady = canEdit && selectedFuture && chosen?.coverage === "complete"
+  const editChanged = chosen?.occurrence.eventId !== editSource?.eventId
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Event dates</CardTitle>
+        <CardDescription>
+          {schedule.series.memberCoordinates.length} dates belong to this signed
+          schedule. Adding or removing a date keeps the other members and
+          approved merchants in place. Existing orders keep their signed terms.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!canEdit || pending || !!pendingMutation}
+          onClick={() => void changeOpenState()}
+        >
+          {market.state === "open"
+            ? "Close Event Market"
+            : "Reopen Event Market"}
+        </Button>
+        {scheduleCoverage !== "complete" ||
+        schedule.unresolvedCoordinates.length > 0 ? (
+          <p role="status" className="text-sm text-[var(--text-secondary)]">
+            {schedule.occurrences.length} of{" "}
+            {schedule.series.memberCoordinates.length} dates are verified in
+            this read. Missing or partial date evidence does not remove a signed
+            schedule member. Refresh before editing an unavailable date.
+          </p>
+        ) : null}
+        <div className="space-y-1">
+          <Label htmlFor="future-series-date-choice">Choose date</Label>
+          <Select value={chosenCoordinate} onValueChange={choose}>
+            <SelectTrigger id="future-series-date-choice">
+              <SelectValue placeholder="Choose a date" />
+            </SelectTrigger>
+            <SelectContent>
+              {schedule.series.memberCoordinates.map((coordinate) => {
+                const entry = schedule.occurrences.find(
+                  (item) => item.occurrence.coordinate === coordinate
+                )
+                return (
+                  <SelectItem key={coordinate} value={coordinate}>
+                    {entry
+                      ? formatOrganizerOccurrenceDate(entry.occurrence)
+                      : "Date details unavailable"}
+                  </SelectItem>
+                )
+              })}
+            </SelectContent>
+          </Select>
+        </div>
+        {chosen ? (
+          <p className="text-sm text-[var(--text-secondary)]">
+            {formatOrganizerOccurrenceDate(chosen.occurrence)} –{" "}
+            {formatOrganizerOccurrenceDate(
+              chosen.occurrence,
+              chosen.occurrence.end
+            )}{" "}
+            · {chosen.coverage} evidence
+          </p>
+        ) : chosenCoordinate ? (
+          <p role="status">
+            The selected date is not verified in the current signed schedule.
+          </p>
+        ) : null}
+        {pendingMutation ? (
+          <div className="space-y-2 rounded-lg border border-[var(--border)] p-3">
+            <p role="status">
+              A signed {pendingMutation.action} change is saved for exact retry.
+              Review the current schedule before starting another change.
+            </p>
+            <Button
+              type="button"
+              disabled={pending}
+              onClick={() => void runMutation(pendingMutation)}
+            >
+              Resume publishing
+            </Button>
+          </div>
+        ) : null}
+        {editReady && chosen ? (
+          <div className="space-y-3 rounded-lg border border-[var(--border)] p-3">
+            <h3 className="font-medium">Edit selected date</h3>
+            {editChanged && !pending && !pendingMutation ? (
+              <div className="space-y-2">
+                <p
+                  role="status"
+                  className="text-sm text-[var(--text-secondary)]"
+                >
+                  This date changed since you started editing. Your unsaved text
+                  is still shown. Review the updated date to replace these
+                  fields with its current details before saving.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={bannerBusy}
+                  onClick={() => reviewDate(chosen.occurrence)}
+                >
+                  Review updated date
+                </Button>
+              </div>
+            ) : null}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label htmlFor="series-edit-title">Title</Label>
+                <Input
+                  id="series-edit-title"
+                  value={title}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setTitle(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-edit-location">Location</Label>
+                <Input
+                  id="series-edit-location"
+                  value={location}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setLocation(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-edit-start">
+                  Start{" "}
+                  {chosen.occurrence.kind === 31923 ? `(${timezone})` : ""}
+                </Label>
+                <Input
+                  id="series-edit-start"
+                  type={
+                    chosen.occurrence.kind === 31922 ? "date" : "datetime-local"
+                  }
+                  value={start}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setStart(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-edit-end">
+                  End {chosen.occurrence.kind === 31923 ? `(${timezone})` : ""}
+                </Label>
+                <Input
+                  id="series-edit-end"
+                  type={
+                    chosen.occurrence.kind === 31922 ? "date" : "datetime-local"
+                  }
+                  value={end}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setEnd(event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="series-edit-summary">
+                Description · Required
+              </Label>
+              <Textarea
+                id="series-edit-summary"
+                value={summary}
+                required
+                disabled={pending || !!pendingMutation}
+                onChange={(event) => setSummary(event.target.value)}
+              />
+            </div>
+            <EventBannerField
+              id="series-edit-image"
+              value={image}
+              title={title}
+              scopeId={`event-edit:${market.coordinate}`}
+              disabled={pending || !!pendingMutation}
+              onChange={setImage}
+              onBusyChange={setBannerBusy}
+            />
+            {chosen.occurrence.kind === 31923 ? (
+              <EventTimezoneField
+                id="series-edit-timezone"
+                value={timezone}
+                disabled={pending || !!pendingMutation}
+                onChange={setTimezone}
+              />
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                disabled={
+                  pending ||
+                  bannerBusy ||
+                  !!pendingMutation ||
+                  editChanged ||
+                  !title.trim() ||
+                  !summary.trim() ||
+                  !location.trim()
+                }
+                onClick={editDate}
+              >
+                Save selected date
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  pending ||
+                  bannerBusy ||
+                  !!pendingMutation ||
+                  schedule.series.memberCoordinates.length <= 1
+                }
+                onClick={removeDate}
+              >
+                Remove future date
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {chosen && !editReady ? (
+          <p className="text-sm text-[var(--text-secondary)]">
+            Past or partially verified dates remain visible but cannot be edited
+            or removed.
+          </p>
+        ) : null}
+        {canEdit && seed ? (
+          <div className="space-y-3 rounded-lg border border-[var(--border)] p-3">
+            <h3 className="font-medium">Add date</h3>
+            <div className="space-y-1">
+              <Label htmlFor="series-new-kind">Date type</Label>
+              <Select
+                value={String(newKind)}
+                onValueChange={(value) =>
+                  setNewKind(Number(value) as 31922 | 31923)
+                }
+              >
+                <SelectTrigger id="series-new-kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="31923">Timed event</SelectItem>
+                  <SelectItem value="31922">All-day event</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label htmlFor="series-new-title">Title</Label>
+                <Input
+                  id="series-new-title"
+                  value={newTitle}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setNewTitle(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-new-location">Location</Label>
+                <Input
+                  id="series-new-location"
+                  value={newLocation}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setNewLocation(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-new-start">Start</Label>
+                <Input
+                  id="series-new-start"
+                  type={newKind === 31922 ? "date" : "datetime-local"}
+                  value={newStart}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setNewStart(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="series-new-end">End</Label>
+                <Input
+                  id="series-new-end"
+                  type={newKind === 31922 ? "date" : "datetime-local"}
+                  value={newEnd}
+                  disabled={pending || !!pendingMutation}
+                  onChange={(event) => setNewEnd(event.target.value)}
+                />
+              </div>
+              {newKind === 31923 ? (
+                <EventTimezoneField
+                  id="series-new-timezone"
+                  value={newTimezone}
+                  disabled={pending || !!pendingMutation}
+                  onChange={setNewTimezone}
+                />
+              ) : null}
+            </div>
+            <Button
+              type="button"
+              disabled={
+                pending ||
+                bannerBusy ||
+                !!pendingMutation ||
+                !newTitle.trim() ||
+                !newLocation.trim() ||
+                !newStart ||
+                !newEnd
+              }
+              onClick={addDate}
+            >
+              Add signed date
+            </Button>
+          </div>
+        ) : null}
+        {step ? <p role="status">{step}</p> : null}
+        {Object.keys(deliveryOutcomes).length > 0 ? (
+          <ul
+            aria-label="Date publication outcomes"
+            className="space-y-1 text-sm text-[var(--text-secondary)]"
+          >
+            {Object.entries(deliveryOutcomes).map(([record, outcome]) => (
+              <li key={record}>
+                {record}: {outcome}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {error ? (
+          <p role="alert" className="text-sm text-[var(--destructive)]">
+            {error}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function MerchantAuthorityRow({
+  coordinate,
+  merchant,
+  row,
+  calendarCoordinate,
+  marketEventId,
+  marketState,
+  allRows,
+  decisionPending,
+  authenticatedPubkey,
+  onChanged,
+  enrollmentStatus,
+  displayName,
+  picture,
+  onEnrollment,
+  enrollmentBlocked,
+}: {
+  enrollmentStatus?: string
+  displayName: string
+  picture?: string
+  enrollmentBlocked: boolean
+  onEnrollment: (
+    action: "invite" | "decline",
+    merchant: string
+  ) => Promise<void>
+  coordinate: string
+  merchant: string
+  row?: EventMarketMerchantRow
+  calendarCoordinate: string
+  marketEventId: string
+  marketState: "open" | "closed"
+  allRows: EventMarketMerchantRow[]
+  decisionPending: boolean
+  authenticatedPubkey: string | null
+  onChanged: () => void
+}) {
+  const organizerPubkey = coordinate.split(":")[1] ?? ""
+  const { isAuthGenerationCurrent, authGeneration } = useAuth()
+  const [mode, setMode] = useState<EventMarketMerchantMode>(
+    row?.mode ?? "merchant_present"
+  )
+  const [assignment, setAssignment] = useState(row?.assignment ?? "")
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState("")
+  const [confirmReapproval, setConfirmReapproval] = useState(false)
+  const auth = useQuery({
+    queryKey: [
+      "future-market-authorization",
+      coordinate,
+      merchant,
+      authenticatedPubkey,
+      authGeneration,
+    ],
+    queryFn: ({ signal }) =>
+      readEventMarketAuthorization({
+        marketCoordinate: coordinate,
+        merchantPubkey: merchant,
+        authenticatedPubkey,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && isAuthGenerationCurrent(authGeneration),
+      }),
+    enabled: !!authenticatedPubkey,
+    retry: false,
+  })
+  const resolution = auth.data?.resolution
+  const authState = resolution?.state ?? "checking"
+  const isApproved =
+    !!row && authState === "active" && auth.data?.actionable === true
+  const canChange =
+    !!authenticatedPubkey &&
+    !pending &&
+    !decisionPending &&
+    !auth.isFetching &&
+    auth.data?.retained === true &&
+    auth.data.coverage === "complete" &&
+    ["active", "revoked", "missing"].includes(authState)
+  const expectedTipIds =
+    resolution &&
+    (resolution.state === "active" || resolution.state === "revoked")
+      ? [resolution.tip.eventId]
+      : []
+  const reapproval = authState === "revoked"
+  const reapprovalPreview = useQuery({
+    queryKey: [
+      "future-market-reapproval-preview",
+      coordinate,
+      merchant,
+      authenticatedPubkey,
+      authGeneration,
+    ],
+    queryFn: ({ signal }) =>
+      previewEventMarketMerchantProducts({
+        marketCoordinate: coordinate,
+        merchantPubkey: merchant,
+        authenticatedPubkey,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && isAuthGenerationCurrent(authGeneration),
+      }),
+    enabled: confirmReapproval && reapproval && !!authenticatedPubkey,
+    retry: false,
+  })
+
+  async function save(action: "approve" | "edit" | "revoke"): Promise<void> {
+    if (
+      !canChange ||
+      !authenticatedPubkey ||
+      !isAuthGenerationCurrent(authGeneration)
+    )
+      return
+    if (action !== "revoke" && !assignment.trim()) {
+      setError("A public booth or pickup assignment is required.")
+      return
+    }
+    if (action === "approve" && reapproval && !confirmReapproval) {
+      setConfirmReapproval(true)
+      return
+    }
+    setPending(true)
+    setError("")
+    try {
+      const shouldContinue = () => isAuthGenerationCurrent(authGeneration)
+      if (action === "edit") {
+        await publishEventMarketRoster({
+          organizerPubkey,
+          authenticatedPubkey,
+          dTag: coordinate.split(":").slice(2).join(":"),
+          calendarCoordinate,
+          state: marketState,
+          merchants: [
+            ...allRows.filter((entry) => entry.pubkey !== merchant),
+            { pubkey: merchant, mode, assignment: assignment.trim() },
+          ],
+          expectedPreviousEventId: marketEventId,
+          shouldContinue,
+          onSignedLocal: (event) =>
+            retainSignedEventMarketEvidence(coordinate, event),
+        })
+      } else {
+        await publishEventMarketMerchantDecision({
+          organizerPubkey,
+          authenticatedPubkey,
+          dTag: coordinate.split(":").slice(2).join(":"),
+          calendarCoordinate,
+          merchantPubkey: merchant,
+          action,
+          ...(action === "approve"
+            ? { row: { pubkey: merchant, mode, assignment: assignment.trim() } }
+            : {}),
+          expectedPreviousEventId: marketEventId,
+          expectedAuthorizationTipIds: expectedTipIds,
+          shouldContinue,
+          onSignedLocal: (decision) =>
+            retainEventMarketMerchantDecision(coordinate, decision),
+        })
+      }
+      setConfirmReapproval(false)
+      await auth.refetch()
+      onChanged()
+    } catch (cause) {
+      setError(errorText(cause))
+      await auth.refetch()
+      onChanged()
+    } finally {
+      setPending(false)
+    }
+  }
+
+  async function retryAuthorization(): Promise<void> {
+    if (
+      !authenticatedPubkey ||
+      pending ||
+      !resolution ||
+      (resolution.state !== "active" && resolution.state !== "revoked")
+    )
+      return
+    setPending(true)
+    setError("")
+    try {
+      await retryEventMarketAuthorizationDelivery({
+        signedEvent: resolution.tip.signedEvent,
+        authenticatedPubkey,
+        shouldContinue: () => isAuthGenerationCurrent(authGeneration),
+      })
+      await auth.refetch()
+      onChanged()
+    } catch (cause) {
+      setError(errorText(cause))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="break-all text-base">
+          <span className="flex items-center gap-2">
+            <Avatar>
+              <AvatarImage src={picture} />
+              <AvatarFallback>{displayName.slice(0, 2)}</AvatarFallback>
+            </Avatar>
+            {displayName}
+          </span>
+        </CardTitle>
+        <EventActorProvenance
+          pubkey={merchant}
+          copyLabel="Copy merchant npub"
+          className="text-xs"
+        />
+        <CardDescription>
+          {isApproved
+            ? "Approved"
+            : authState === "revoked"
+              ? "Revoked"
+              : authState === "conflicting"
+                ? "Conflicting signed authorization"
+                : authState === "missing"
+                  ? (enrollmentStatus ?? "Ready to invite")
+                  : authState === "active"
+                    ? "Grant signed; roster update needed"
+                    : "Authorization needs review"}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1">
+            <Label htmlFor={`mode-${merchant}`}>Handoff mode</Label>
+            <Select
+              value={mode}
+              onValueChange={(value) =>
+                setMode(value as EventMarketMerchantMode)
+              }
+            >
+              <SelectTrigger id={`mode-${merchant}`}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="merchant_present">Merchant booth</SelectItem>
+                <SelectItem
+                  value="organizer_handoff"
+                  disabled={merchant === organizerPubkey}
+                >
+                  Organizer pickup
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            {merchant === organizerPubkey ? (
+              <p className="text-xs text-[var(--text-secondary)]">
+                When you're selling, buyers collect directly from your booth.
+              </p>
+            ) : null}
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`assignment-${merchant}`}>Public assignment</Label>
+            <Input
+              id={`assignment-${merchant}`}
+              value={assignment}
+              onChange={(event) => setAssignment(event.target.value)}
+              placeholder="Booth 12 or pickup desk"
+            />
+          </div>
+        </div>
+        {confirmReapproval ? (
+          <div
+            role="alert"
+            className="space-y-2 rounded-lg border border-[var(--warning)]/40 p-3 text-sm"
+          >
+            <p>
+              Reapproving this merchant makes all still-tagged products reappear
+              if their current signed listings are eligible.
+            </p>
+            {reapprovalPreview.isPending ? (
+              <p>Checking current signed listings…</p>
+            ) : null}
+            {reapprovalPreview.data ? (
+              <>
+                <p>
+                  {reapprovalPreview.data.products.length} currently eligible{" "}
+                  {reapprovalPreview.data.products.length === 1
+                    ? "listing"
+                    : "listings"}{" "}
+                  found.
+                </p>
+                <ul className="list-disc pl-5">
+                  {reapprovalPreview.data.products.map((product) => (
+                    <li key={product.coordinate}>{product.title}</li>
+                  ))}
+                </ul>
+                {reapprovalPreview.data.coverage !== "complete" ? (
+                  <p>
+                    Relay evidence is incomplete; more tagged products may
+                    reappear after approval.
+                  </p>
+                ) : null}
+              </>
+            ) : null}
+            {reapprovalPreview.isError ? (
+              <p>
+                Current listings could not be checked. Refresh before
+                confirming.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {authState === "conflicting" ||
+        authState === "missing_parent" ||
+        authState === "deleted" ? (
+          <p role="alert" className="text-sm text-[var(--warning)]">
+            Signed authorization is stale or divergent. Refresh and reconcile
+            its transitions before changing admission.
+          </p>
+        ) : null}
+        {error ? (
+          <p role="alert" className="text-sm text-[var(--destructive)]">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={
+              !authenticatedPubkey ||
+              pending ||
+              enrollmentBlocked ||
+              merchant === organizerPubkey
+            }
+            onClick={() => void onEnrollment("invite", merchant)}
+          >
+            {enrollmentStatus === "invited"
+              ? "Resend invitation"
+              : "Send private invitation"}
+          </Button>
+          {!row && enrollmentStatus === "requested" ? (
+            <Button
+              variant="outline"
+              disabled={enrollmentBlocked || pending}
+              onClick={() => void onEnrollment("decline", merchant)}
+            >
+              Decline request
+            </Button>
+          ) : null}
+          {row ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!canChange}
+              onClick={() => void save("edit")}
+            >
+              Save assignment
+            </Button>
+          ) : null}
+          {!isApproved ? (
+            <Button
+              type="button"
+              disabled={
+                !canChange ||
+                (confirmReapproval &&
+                  (reapprovalPreview.isPending || reapprovalPreview.isError))
+              }
+              onClick={() => void save("approve")}
+            >
+              {confirmReapproval ? "Confirm reapproval" : "Approve merchant"}
+            </Button>
+          ) : null}
+          {row ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!canChange}
+              onClick={() => void save("revoke")}
+            >
+              Revoke
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={auth.isFetching}
+            onClick={() => void auth.refetch()}
+          >
+            Refresh authorization
+          </Button>
+          {(auth.data?.coverage === "stale" ||
+            auth.data?.coverage === "partial") &&
+          (authState === "active" || authState === "revoked") ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={pending || !authenticatedPubkey}
+              onClick={() => void retryAuthorization()}
+            >
+              Retry signed authorization
+            </Button>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+export function FutureEventMarketManager({
+  reference,
+  selectedOccurrence,
+  onSelectOccurrence,
+}: {
+  reference: string
+  selectedOccurrence?: string
+  onSelectOccurrence?: (coordinate: string) => void
+}) {
+  const {
+    accountPubkey,
+    pubkey,
+    signerReadiness,
+    authGeneration,
+    isAuthGenerationCurrent,
+  } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  useLayoutEffect(() => {
+    authGenerationRef.current = authGeneration
+  }, [authGeneration])
+  const session = useConduitSession()
+  const queryClient = useQueryClient()
+  const authenticatedPubkey =
+    signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
+  const coordinate = decodeEventMarketReference(reference, [30409])?.coordinate
+  const [merchantInput, setMerchantInput] = useState("")
+  const [invited, setInvited] = useState<string[]>([])
+  const enrollment = useEventMarketEnrollment(
+    coordinate ?? "",
+    authenticatedPubkey
+  )
+  const [printOpen, setPrintOpen] = useState(false)
+  const [retryingDecision, setRetryingDecision] = useState<string | null>(null)
+  const [decisionError, setDecisionError] = useState("")
+  const [retryingCalendar, setRetryingCalendar] = useState(false)
+  const [calendarRetryError, setCalendarRetryError] = useState("")
+  const query = useQuery({
+    queryKey: [
+      "future-market-manager",
+      reference,
+      session.relayScope,
+      authenticatedPubkey,
+      authGeneration,
+    ],
+    queryFn: ({ signal }) =>
+      readEventMarketRoster({
+        reference,
+        authenticatedPubkey,
+        signal,
+        shouldContinue: () =>
+          !signal.aborted && authGenerationRef.current === authGeneration,
+      }),
+    enabled: session.relaySettingsReady,
+    retry: false,
+  })
+  const result = query.data
+  const pendingDecisions = useQuery({
+    queryKey: [
+      "future-market-pending-decisions",
+      coordinate,
+      authenticatedPubkey,
+      authGeneration,
+    ],
+    queryFn: () => listPendingEventMarketMerchantDecisions(coordinate ?? ""),
+    enabled: !!coordinate && !!authenticatedPubkey,
+  })
+  const market =
+    result?.resolution.state === "current" ? result.resolution.market : null
+  const calendar = result?.calendar
+  const series = result?.schedule?.kind === "series" ? result.schedule : null
+  const selectedCalendar = series
+    ? (series.occurrences.find(
+        (entry) => entry.occurrence.coordinate === selectedOccurrence
+      )?.occurrence ?? (selectedOccurrence ? null : calendar))
+    : calendar
+  const merchantIds = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...(market?.merchants.map((row) => row.pubkey) ?? []),
+          ...invited,
+          ...(enrollment.query.data?.states
+            .filter((state) => state.status !== "withdrawn")
+            .map((state) => state.merchantPubkey) ?? []),
+        ])
+      ),
+    [market?.merchants, invited, enrollment.query.data?.states]
+  )
+  const profiles = useProfiles(
+    [...merchantIds, ...(market ? [market.organizerPubkey] : [])],
+    {
+      accountPubkey,
+      authenticatedPubkey,
+      priority: "visible",
+      shouldContinue: () => isAuthGenerationCurrent(authGeneration),
+    }
+  )
+  const sheets =
+    market && calendar
+      ? buildFutureEventQrSignSheets({
+          market,
+          calendar: selectedCalendar ?? calendar,
+          profiles: profiles.data,
+          occurrenceCoordinate: selectedCalendar?.coordinate,
+          relayHints: result?.observedRelayUrls,
+        })
+      : []
+  const naddr = market
+    ? encodeEventMarketNaddr(market.coordinate, result?.observedRelayUrls ?? [])
+    : null
+  const isOrganizer = !!market && accountPubkey === market.organizerPubkey
+  const canManage =
+    !!market &&
+    market.organizerPubkey === authenticatedPubkey &&
+    result?.retained &&
+    result.coverage === "complete" &&
+    result.calendarCoverage === "complete"
+
+  async function retryRoster(): Promise<void> {
+    if (!market || !authenticatedPubkey) return
+    try {
+      await retryEventMarketRosterDelivery({
+        signedEvent: market.signedEvent,
+        authenticatedPubkey,
+        shouldContinue: () => isAuthGenerationCurrent(authGeneration),
+      })
+      await query.refetch()
+    } catch {
+      await query.refetch()
+    }
+  }
+
+  async function retryCalendar(): Promise<void> {
+    if (!market || !calendar || !authenticatedPubkey || retryingCalendar) return
+    setRetryingCalendar(true)
+    setCalendarRetryError("")
+    try {
+      const shouldContinue = () => isAuthGenerationCurrent(authGeneration)
+      const current = await readEventMarketRoster({
+        reference: market.coordinate,
+        authenticatedPubkey,
+        shouldContinue,
+      })
+      if (
+        current.resolution.state !== "current" ||
+        current.resolution.market.eventId !== market.eventId ||
+        current.calendar?.eventId !== calendar.eventId ||
+        current.calendar.coordinate !== market.calendarCoordinate ||
+        !calendar.signedEvent ||
+        !current.retained
+      )
+        throw new Error(
+          "Signed event details changed. Refresh before retrying."
+        )
+      const recovery = getSavedDateRecoveryAction({
+        savedEventId: calendar.eventId,
+        observedEventId: current.calendar.eventId,
+        coverage: current.calendarCoverage ?? "unavailable",
+        canEdit: false,
+      })
+      if (recovery === "retry_saved") {
+        const delivery = await retryEventMarketCalendarDelivery({
+          organizerPubkey: market.organizerPubkey,
+          authenticatedPubkey,
+          signedEvent: calendar.signedEvent,
+          shouldContinue,
+        })
+        if (delivery.successfulRelayUrls.length === 0)
+          throw new Error(
+            "Signed event details still need a relay acknowledgment."
+          )
+      }
+      await query.refetch()
+    } catch (cause) {
+      setCalendarRetryError(errorText(cause))
+    } finally {
+      setRetryingCalendar(false)
+    }
+  }
+
+  async function retryDecision(decisionId: string): Promise<void> {
+    if (!authenticatedPubkey || retryingDecision) return
+    setRetryingDecision(decisionId)
+    setDecisionError("")
+    try {
+      await retryEventMarketMerchantDecisionDelivery({
+        decisionId,
+        authenticatedPubkey,
+        shouldContinue: () => isAuthGenerationCurrent(authGeneration),
+        onSignedLocal: (decision) =>
+          retainEventMarketMerchantDecision(coordinate!, decision),
+      })
+      await Promise.all([pendingDecisions.refetch(), query.refetch()])
+    } catch (cause) {
+      setDecisionError(errorText(cause))
+      await pendingDecisions.refetch()
+    } finally {
+      setRetryingDecision(null)
+    }
+  }
+
+  function addInvitation(): void {
+    const normalized = normalizePubkey(merchantInput)
+    if (!normalized || merchantIds.includes(normalized)) return
+    setInvited((current) => [...current, normalized])
+    setMerchantInput("")
+  }
+
+  return (
+    <div className="space-y-6">
+      {query.isPending ? (
+        <p role="status">Checking signed Event Market records…</p>
+      ) : null}
+      {query.isError ? (
+        <p role="alert">Event Market records could not be checked.</p>
+      ) : null}
+      {result && result.resolution.state !== "current" ? (
+        <p role="alert">
+          The signed Event Market is{" "}
+          {result.resolution.state.replaceAll("_", " ")}. Refresh before
+          managing it.
+        </p>
+      ) : null}
+      {pendingDecisions.data?.map((decision) => (
+        <div
+          key={decision.id}
+          className="space-y-2 rounded-lg border border-[var(--border)] p-4"
+        >
+          <p className="text-sm">
+            The signed {decision.action} for merchant{" "}
+            {decision.merchantPubkey.slice(0, 16)}… was saved. Retry its exact
+            roster and authorization delivery before starting another decision.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!!retryingDecision}
+            onClick={() => void retryDecision(decision.id)}
+          >
+            Retry saved decision
+          </Button>
+        </div>
+      ))}
+      {decisionError ? (
+        <p role="alert" className="text-sm text-[var(--destructive)]">
+          {decisionError}
+        </p>
+      ) : null}
+      {enrollment.error ? (
+        <p role="alert" className="text-sm text-[var(--destructive)]">
+          {enrollment.error}
+        </p>
+      ) : null}
+      {enrollment.pending ? (
+        <div className="space-y-2 rounded-lg border border-[var(--border)] p-3">
+          <p role="status">
+            Your participation message is saved. Retry the same delivery before
+            sending another.
+          </p>
+          <Button
+            disabled={enrollment.busy}
+            onClick={() => void enrollment.retry()}
+          >
+            Retry saved participation
+          </Button>
+        </div>
+      ) : null}
+      {enrollment.query.isError ? (
+        <p role="alert">
+          Participation messages could not be checked. Set up private messages
+          in{" "}
+          <a className="underline" href="/network">
+            Network settings
+          </a>
+          , then retry.
+        </p>
+      ) : null}
+      <EventMessagesSetup
+        role={isOrganizer ? "host" : "merchant"}
+        onReturn={() => void enrollment.query.refetch()}
+      />
+      {enrollment.query.data?.stale ? (
+        <p role="status" className="text-sm text-[var(--text-muted)]">
+          Saved participation is shown; private inbox coverage is incomplete.
+          Refresh for new replies.
+        </p>
+      ) : null}
+      {market && (calendar || series) ? (
+        <>
+          <EventPageHeader
+            title={series?.series.title ?? calendar?.title ?? "Event Market"}
+            summary={selectedCalendar?.summary ?? calendar?.summary}
+            imageUrl={selectedCalendar?.image ?? calendar?.image}
+            schedule={
+              selectedCalendar
+                ? formatOrganizerOccurrenceDate(selectedCalendar)
+                : "Select a date"
+            }
+            location={
+              selectedCalendar?.locations.join(", ") ||
+              "Selected date details unavailable"
+            }
+            organizer={
+              <span className="flex flex-wrap items-center gap-2">
+                Hosted by{" "}
+                <EventActorName
+                  pubkey={market.organizerPubkey}
+                  profile={profiles.data?.[market.organizerPubkey]}
+                />
+                <EventActorProvenance
+                  pubkey={market.organizerPubkey}
+                  copyLabel="Copy organizer npub"
+                  className="text-xs"
+                />
+              </span>
+            }
+          >
+            <p className="text-sm text-[var(--text-muted)]">
+              {market.state === "open"
+                ? "Open for sales"
+                : "Closed for new sales"}
+            </p>
+          </EventPageHeader>
+          <div className="flex flex-wrap gap-3">
+            {sheets[0] ? (
+              <div
+                role="img"
+                aria-label="Event catalog QR code"
+                className="w-fit bg-white p-2"
+              >
+                <QRCodeSVG value={sheets[0].qrValue} size={160} level="M" />
+              </div>
+            ) : null}
+            <div className="space-y-2">
+              <p className="break-all text-xs text-[var(--text-muted)]">
+                {naddr}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setPrintOpen(true)}
+              >
+                Print event and booth signs
+              </Button>
+            </div>
+          </div>
+          {isOrganizer && !canManage ? (
+            <p
+              role="status"
+              className="rounded-lg border border-[var(--border)] p-4"
+            >
+              Current signed organizer authority is incomplete or unavailable.
+              Refresh before editing.
+            </p>
+          ) : null}
+          {market &&
+          !canManage &&
+          authenticatedPubkey === market.organizerPubkey ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void retryRoster()}
+            >
+              Retry signed market delivery
+            </Button>
+          ) : null}
+          {canManage && authenticatedPubkey && !series && calendar ? (
+            <MarketLifecycleEditor
+              key={`${calendar.eventId}:${market.eventId}`}
+              market={market}
+              calendar={calendar}
+              authenticatedPubkey={authenticatedPubkey}
+              onChanged={() => void query.refetch()}
+            />
+          ) : null}
+          {!canManage &&
+          authenticatedPubkey === market.organizerPubkey &&
+          !series &&
+          calendar &&
+          result?.calendarCoverage !== "complete" ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={retryingCalendar}
+              onClick={() => void retryCalendar()}
+            >
+              Retry signed event details
+            </Button>
+          ) : null}
+          {calendarRetryError ? (
+            <p role="alert" className="text-sm text-[var(--destructive)]">
+              {calendarRetryError}
+            </p>
+          ) : null}
+          {authenticatedPubkey === market.organizerPubkey && series ? (
+            <SeriesDateManager
+              key={`${series.series.eventId}:${selectedOccurrence ?? "default"}`}
+              market={market}
+              schedule={series}
+              calendarCoverage={result?.calendarCoverage}
+              scheduleCoverage={result?.scheduleCoverage}
+              canEdit={!!canManage}
+              selectedOccurrence={selectedOccurrence}
+              onSelectOccurrence={onSelectOccurrence}
+              authenticatedPubkey={authenticatedPubkey}
+              onChanged={() => query.refetch()}
+            />
+          ) : null}
+          {!isOrganizer ? (
+            <FutureEventMerchantParticipation
+              market={market}
+              authenticatedPubkey={authenticatedPubkey}
+              enrollment={enrollment.query.data?.states.find(
+                (state) => state.merchantPubkey === authenticatedPubkey
+              )}
+              busy={enrollment.busy}
+              blocked={!!enrollment.pending || !!enrollment.storageError}
+              onSend={enrollment.send}
+            />
+          ) : null}
+          {canManage ? (
+            <section className="space-y-4">
+              <h2 className="text-xl font-semibold">Merchants</h2>
+              <p className="text-sm text-[var(--text-muted)]">
+                Review requests or invite a seller, then approve their handoff
+                mode and public booth or pickup point. Merchants control their
+                own listings and prices.
+              </p>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  setInvited((current) =>
+                    current.includes(market.organizerPubkey)
+                      ? current
+                      : [...current, market.organizerPubkey]
+                  )
+                }
+              >
+                I'm also selling
+              </Button>
+              {market.merchants.some(
+                (row) => row.pubkey === market.organizerPubkey
+              ) ? (
+                <FutureEventMerchantParticipation
+                  market={market}
+                  authenticatedPubkey={authenticatedPubkey}
+                  busy={enrollment.busy}
+                  blocked={!!enrollment.pending}
+                  onSend={enrollment.send}
+                />
+              ) : null}
+              <div className="flex gap-2">
+                <Input
+                  aria-label="Merchant pubkey"
+                  value={merchantInput}
+                  onChange={(event) => setMerchantInput(event.target.value)}
+                  placeholder="Merchant npub or pubkey"
+                />
+                <Button type="button" onClick={addInvitation}>
+                  Review seller
+                </Button>
+              </div>
+              <div className="grid gap-4">
+                {merchantIds.map((merchant) => (
+                  <MerchantAuthorityRow
+                    key={`${merchant}:${market.merchants.find((row) => row.pubkey === merchant)?.mode ?? "new"}:${market.merchants.find((row) => row.pubkey === merchant)?.assignment ?? ""}`}
+                    enrollmentStatus={
+                      enrollment.query.data?.states.find(
+                        (state) => state.merchantPubkey === merchant
+                      )?.status
+                    }
+                    displayName={getEventActorDisplayName(
+                      merchant,
+                      profiles.data?.[merchant]
+                    )}
+                    picture={
+                      profiles.data?.[merchant]?.pubkey === merchant
+                        ? (normalizePublicMediaUrl(
+                            profiles.data[merchant]?.picture
+                          ) ?? undefined)
+                        : undefined
+                    }
+                    onEnrollment={enrollment.send}
+                    enrollmentBlocked={
+                      enrollment.busy ||
+                      !!enrollment.pending ||
+                      !!enrollment.storageError
+                    }
+                    coordinate={market.coordinate}
+                    merchant={merchant}
+                    row={market.merchants.find(
+                      (row) => row.pubkey === merchant
+                    )}
+                    calendarCoordinate={market.calendarCoordinate}
+                    marketEventId={market.eventId}
+                    marketState={market.state}
+                    allRows={market.merchants}
+                    decisionPending={
+                      pendingDecisions.isPending ||
+                      (pendingDecisions.data?.length ?? 0) > 0
+                    }
+                    authenticatedPubkey={authenticatedPubkey}
+                    onChanged={() => {
+                      void query.refetch()
+                      void pendingDecisions.refetch()
+                      void queryClient.invalidateQueries({
+                        queryKey: ["future-market"],
+                      })
+                    }}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+          <EventQrPrintPreview
+            open={printOpen}
+            onOpenChange={setPrintOpen}
+            title={`Signs for ${series?.series.title ?? calendar?.title ?? "Event Market"}`}
+            sheets={sheets}
+            mode="merchant-batch"
+            eventState={
+              !result ||
+              [
+                result.coverage,
+                result.calendarCoverage,
+                result.scheduleCoverage ?? result.calendarCoverage,
+              ].includes("unavailable")
+                ? "unavailable"
+                : !result.retained ||
+                    [
+                      result.coverage,
+                      result.calendarCoverage,
+                      result.scheduleCoverage ?? result.calendarCoverage,
+                    ].includes("stale")
+                  ? "stale"
+                  : [
+                        result.coverage,
+                        result.calendarCoverage,
+                        result.scheduleCoverage ?? result.calendarCoverage,
+                      ].some((coverage) => coverage !== "complete")
+                    ? "partial"
+                    : "current"
+            }
+            refreshing={query.isFetching}
+            onRefresh={async () => {
+              await query.refetch()
+            }}
+          />
+        </>
+      ) : null}
+      {coordinate && accountPubkey === coordinate.split(":")[1] ? (
+        <FutureOrganizerClaimQueue
+          organizerPubkey={accountPubkey}
+          marketCoordinate={coordinate}
+        />
+      ) : null}
+      <Button
+        type="button"
+        variant="outline"
+        disabled={query.isFetching}
+        onClick={() => {
+          void query.refetch()
+          void enrollment.query.refetch()
+        }}
+      >
+        Refresh event records
+      </Button>
+    </div>
+  )
+}

@@ -1,7 +1,9 @@
+import { normalizeCheckoutSourceDomain } from "./checkout-source-domain"
 import { encodeProductNaddr } from "./protocol/product-reference"
 import {
   decodeEventMarketReference,
   encodeEventMarketNaddr,
+  parseAddressableCoordinate,
 } from "./protocol/event-market"
 import { normalizePubkey, pubkeyToNpub } from "./utils"
 import {
@@ -208,12 +210,18 @@ export function buildMarketCheckoutBuyUrl(
   marketOrigin: string,
   productNaddr: string,
   quantity = 1,
-  partner?: string
+  partner?: string,
+  source?: string
 ): string {
   const url = checkoutLinkBase(marketOrigin, partner)
   const hash = new URLSearchParams({ buy: encodeProductNaddr(productNaddr) })
   if (quantity !== 1) hash.set("qty", String(quantity))
   if (partner) hash.set("partner", partner)
+  if (source !== undefined) {
+    const domain = normalizeCheckoutSourceDomain(source)
+    if (!domain) throw new Error("Checkout source requires a public domain.")
+    hash.set("source", domain)
+  }
   if (parseCheckoutIntentFragment(hash.toString()).status !== "valid")
     throw new Error("Checkout link has invalid items or quantity.")
   url.hash = hash.toString()
@@ -224,7 +232,8 @@ export function buildMarketCheckoutBuyUrl(
 export function buildMarketCheckoutCartUrl(
   marketOrigin: string,
   items: readonly MarketCheckoutLinkItem[],
-  partner?: string
+  partner?: string,
+  source?: string
 ): string {
   const url = checkoutLinkBase(marketOrigin, partner)
   const hash = new URLSearchParams({
@@ -237,6 +246,11 @@ export function buildMarketCheckoutCartUrl(
     }),
   })
   if (partner) hash.set("partner", partner)
+  if (source !== undefined) {
+    const domain = normalizeCheckoutSourceDomain(source)
+    if (!domain) throw new Error("Checkout source requires a public domain.")
+    hash.set("source", domain)
+  }
   if (parseCheckoutIntentFragment(hash.toString()).status !== "valid")
     throw new Error("Checkout link has invalid items or quantity.")
   url.hash = hash.toString()
@@ -248,15 +262,16 @@ export function normalizeExactEventCatalogNaddr(value: string): string {
   if (!/^naddr1[023456789acdefghjklmnpqrstuvwxyz]+$/i.test(trimmed)) {
     throw new Error("Event link requires an exact event catalog naddr.")
   }
-  const decoded = decodeEventMarketReference(trimmed, [30405])
+  const decoded = decodeEventMarketReference(trimmed, [30409])
   if (!decoded) {
-    throw new Error("Event link requires a kind-30405 event catalog naddr.")
+    throw new Error("Event link requires a supported Event Market naddr.")
   }
   return encodeEventMarketNaddr(decoded.coordinate, decoded.relayHints)
 }
 
 export interface MarketEventCatalogUrlOptions {
   merchantPubkey?: string
+  occurrenceCoordinate?: string
 }
 
 /** Build a canonical Market event-catalog URL on a safe Conduit origin. */
@@ -285,6 +300,18 @@ export function buildMarketEventCatalogUrl(
       )
     }
     url.searchParams.set("merchant", pubkeyToNpub(merchantPubkey))
+  }
+  if (options.occurrenceCoordinate !== undefined) {
+    const occurrence = parseAddressableCoordinate(
+      options.occurrenceCoordinate,
+      [31922, 31923]
+    )
+    if (!occurrence) {
+      throw new Error(
+        "Event catalog link requires a valid event occurrence coordinate."
+      )
+    }
+    url.searchParams.set("occurrence", occurrence.coordinate)
   }
   return url.toString()
 }

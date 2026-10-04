@@ -4,8 +4,10 @@ import { finalizeEvent, getPublicKey } from "nostr-tools"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
+  buildFutureMarketPrivateRumor,
   closeAllProtectedRelayConnections,
   createInMemoryAccountNetworkLocalStateRepository,
+  futureMarketReadyReceiptSchema,
   getBuyerConversationList,
   getDirectMessageConversationList,
   getMerchantConversationList,
@@ -624,12 +626,45 @@ it("reads the paginated strict Event Market inbox through production protected t
       WRAP_KEY
     )
   )
+  const readyRumor = buildFutureMarketPrivateRumor(
+    futureMarketReadyReceiptSchema.parse({
+      version: 2,
+      type: "future_market_ready",
+      releaseAuthorized: true,
+      claimRef: "a".repeat(64),
+      merchantPubkey: MERCHANT,
+      organizerPubkey: BUYER,
+      market: {
+        coordinate: `30409:${BUYER}:market`,
+        eventId: "b".repeat(64),
+        createdAt: 100_000,
+      },
+      calendar: {
+        coordinate: `31923:${BUYER}:market-day`,
+        eventId: "c".repeat(64),
+        createdAt: 100_000,
+      },
+      grant: { eventId: "d".repeat(64), createdAt: 99_000 },
+      items: [
+        {
+          product: {
+            coordinate: `30402:${MERCHANT}:coffee`,
+            eventId: "e".repeat(64),
+            createdAt: 101_000,
+          },
+          quantity: 1,
+        },
+      ],
+      issuedAt: 1_700_000_100,
+    })
+  )
   const unwrapped = new Set<string>()
   __setCommerceTestOverrides({
     getAccountSigner: () => plainTestSigner({} as never),
     resolveInboxRelayUrls: async () => [RELAY_URL],
     giftUnwrap: async (event) => {
       unwrapped.add(event.id)
+      if (event.id === paginatedWraps?.[0]?.id) return readyRumor
       return {
         kind: 14,
         pubkey: MERCHANT,
@@ -643,6 +678,11 @@ it("reads the paginated strict Event Market inbox through production protected t
   const result = await getEventMarketPrivateMessageList(BUYER)
   expect(result.inbox.coverage).toBe("partial")
   expect(unwrapped.size).toBe(401)
+  expect(result.messages.map((message) => message.id)).toEqual([readyRumor.id])
+  expect(result.decryptFailures).toEqual([])
+  expect(result.authenticatedWraps?.[readyRumor.id]).toEqual(
+    JSON.parse(JSON.stringify(paginatedWraps[0]))
+  )
   const requests = sockets
     .flatMap((socket) => socket.sent)
     .filter((frame) => frame[0] === "REQ")

@@ -21,9 +21,12 @@ import {
 import {
   __resetEventMarketTestOverrides,
   __setEventMarketTestOverrides,
-  getEventMarket,
-  getOrganizerEventMarketsDetailed,
+  getEventMarketReadPlan,
 } from "../packages/core/src/protocol/event-market"
+import {
+  discoverFutureEventMarkets,
+  readEventMarketRoster,
+} from "../packages/core/src/protocol/event-market-roster-read"
 import {
   __resetEventMarketMerchandiseTestOverrides,
   __setEventMarketMerchandiseTestOverrides,
@@ -36,7 +39,7 @@ import {
   __resetInboxRelayCache,
   inspectOwnPrivateMessageRelayReadiness,
 } from "../packages/core/src/protocol/messaging"
-import type { PublicRelayReadOptions } from "../packages/core/src/protocol/ndk"
+import type { PublicRelayReadOptions } from "../packages/core/src/protocol/relay-reader"
 import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
@@ -50,7 +53,7 @@ import {
 } from "../packages/core/src/protocol/protected-read-authorization"
 import { fetchShopperPresets } from "../packages/core/src/protocol/shopper-presets"
 import { getShopperTrustEvidence } from "../packages/core/src/protocol/shopper-trust"
-import type { EventMarketReadyReceiptSchema } from "../packages/core/src/schemas"
+import { futureMarketReadyReceiptSchema } from "../packages/core/src/schemas"
 
 const ACCOUNT = "a".repeat(64)
 const RELAY_URL = "wss://removed-read.conduit.market"
@@ -421,9 +424,15 @@ describe("account network read call contract", () => {
     const fetchEvents = finalIoRecorder(openedRelayUrls)
     const thirdParty = "b".repeat(64)
 
+    let active = true
+    const shouldContinue = () => active
+    const controller = new AbortController()
+    const currentReadCalls: PublicRelayReadOptions[] = []
     __setEventMarketTestOverrides({
       getRelayListsDetailed: async (pubkeys, options = {}) => {
         expectAccountPolicy(options)
+        expect(options.authenticatedPubkey).toBe(ACCOUNT)
+        expect(options.shouldContinue).toBe(shouldContinue)
         return {
           relayLists: new Map(
             pubkeys.map((pubkey) => [pubkey, relayList(pubkey)])
@@ -433,21 +442,58 @@ describe("account network read call contract", () => {
           ),
         }
       },
-      fetchSignedEventsFanoutDetailed: fetchEvents,
-      loadCachedEvidence: async () => [],
-      persistCachedEvidence: async () => undefined,
     })
-    await getOrganizerEventMarketsDetailed({
-      organizerPubkey: thirdParty,
+    const dependencies: NonNullable<
+      Parameters<typeof discoverFutureEventMarkets>[1]
+    > = {
+      plan: (input) =>
+        getEventMarketReadPlan({
+          ...input,
+          accountNetworkLocalStateRepository: repository,
+        }),
+      load: async () => [],
+      retain: async () => undefined,
+      fetch: async (filter, options = {}) => {
+        // The dependency seam injects the final transport policy repository;
+        // the current reader supplies the actual account and live view scope.
+        expect(options.accountPubkey).toBe(ACCOUNT)
+        expect(options.authenticatedPubkey).toBe(ACCOUNT)
+        expect(options.shouldContinue).toBe(shouldContinue)
+        expect(options.signal).toBe(controller.signal)
+        expect(filter.authors).toEqual([thirdParty])
+        currentReadCalls.push(options)
+        return fetchEvents(filter, {
+          ...options,
+          accountNetworkLocalStateRepository: repository,
+        })
+      },
+    }
+    const currentInput = {
       authenticatedPubkey: ACCOUNT,
-      accountNetworkLocalStateRepository: repository,
-      projection: "discovery",
-    })
-    await getEventMarket({
-      reference: `30405:${thirdParty}:market`,
-      authenticatedPubkey: ACCOUNT,
-      accountNetworkLocalStateRepository: repository,
-    })
+      shouldContinue,
+      signal: controller.signal,
+    }
+    await discoverFutureEventMarkets(
+      { ...currentInput, organizerPubkeys: [thirdParty] },
+      dependencies
+    )
+    await readEventMarketRoster(
+      { ...currentInput, reference: `30409:${thirdParty}:market` },
+      dependencies
+    )
+    expect(currentReadCalls.length).toBeGreaterThanOrEqual(3)
+    active = false
+    currentReadCalls.forEach((options) =>
+      expect(options.shouldContinue?.()).toBe(false)
+    )
+    const callsBeforeCancellation = currentReadCalls.length
+    await expect(
+      discoverFutureEventMarkets(
+        { ...currentInput, organizerPubkeys: [thirdParty] },
+        dependencies
+      )
+    ).rejects.toThrow("cancelled")
+    expect(currentReadCalls).toHaveLength(callsBeforeCancellation)
 
     __setEventMarketMerchandiseTestOverrides({
       getRelayLists: async (_pubkeys, options = {}) => {
@@ -457,12 +503,36 @@ describe("account network read call contract", () => {
       fetchSignedEventsFanoutDetailed: fetchEvents,
     })
     await getEventMarketReceiptMerchandise({
-      receipt: {
+      receipt: futureMarketReadyReceiptSchema.parse({
+        version: 2,
+        type: "future_market_ready",
+        releaseAuthorized: true,
         merchantPubkey: thirdParty,
         organizerPubkey: ACCOUNT,
-        claimRef: "claim",
-        items: [],
-      } as EventMarketReadyReceiptSchema,
+        claimRef: "c".repeat(64),
+        market: {
+          coordinate: `30409:${ACCOUNT}:market`,
+          eventId: "d".repeat(64),
+          createdAt: 100_000,
+        },
+        calendar: {
+          coordinate: `31923:${ACCOUNT}:day`,
+          eventId: "e".repeat(64),
+          createdAt: 100_000,
+        },
+        grant: { eventId: "f".repeat(64), createdAt: 99_000 },
+        items: [
+          {
+            product: {
+              coordinate: `30402:${thirdParty}:coffee`,
+              eventId: "1".repeat(64),
+              createdAt: 101_000,
+            },
+            quantity: 1,
+          },
+        ],
+        issuedAt: 102,
+      }),
       authenticatedPubkey: ACCOUNT,
       accountNetworkLocalStateRepository: repository,
     })

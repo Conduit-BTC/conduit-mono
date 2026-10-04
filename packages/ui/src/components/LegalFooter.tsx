@@ -1,6 +1,7 @@
 import { forwardRef, type ReactNode } from "react"
 import { Bug } from "lucide-react"
 import { cn } from "../utils"
+import { Button } from "./Button"
 
 export interface LegalFooterProps {
   className?: string
@@ -13,6 +14,9 @@ export interface LegalFooterProps {
   tipAction?: ReactNode
   hidden?: boolean
 }
+
+export const legalFooterActionClassName =
+  "min-h-11 shrink-0 gap-1.5 px-2 text-[11px] font-medium text-[var(--text-primary)] hover:text-primary-500 sm:text-xs"
 
 const footerLinkClassName =
   "transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
@@ -63,7 +67,7 @@ export const LegalFooter = forwardRef<HTMLElement, LegalFooterProps>(
           className
         )}
       >
-        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-2 whitespace-nowrap text-[11px] font-medium min-[360px]:flex-nowrap min-[360px]:justify-between sm:text-xs">
+        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-2 whitespace-nowrap text-[11px] font-medium min-[420px]:flex-nowrap min-[420px]:justify-between sm:text-xs">
           <nav
             className="flex shrink-0 items-center gap-2.5 sm:gap-3"
             aria-label="Legal links"
@@ -109,16 +113,21 @@ export const LegalFooter = forwardRef<HTMLElement, LegalFooterProps>(
           </nav>
           <div className="flex shrink-0 items-center gap-2 sm:gap-3">
             {tipAction}
-            <a
-              href={reportBugHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              referrerPolicy="no-referrer"
-              className="inline-flex min-h-11 shrink-0 items-center gap-1.5 text-[var(--text-primary)] transition-colors hover:text-primary-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            <Button
+              asChild
+              variant="ghost"
+              className={legalFooterActionClassName}
             >
-              <Bug className="size-4" aria-hidden="true" />
-              <span>Report a Bug</span>
-            </a>
+              <a
+                href={reportBugHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                referrerPolicy="no-referrer"
+              >
+                <Bug className="size-4" aria-hidden="true" />
+                <span>Report a Bug</span>
+              </a>
+            </Button>
           </div>
         </div>
       </footer>

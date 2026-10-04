@@ -1,13 +1,5 @@
-import type {
-  EventMarketPerspectiveSnapshot,
-  EventMarketResolution,
-  ParsedEventMarketCalendar,
-  ParsedEventMarketCollection,
-} from "@conduit/core"
-import type {
-  EventMarketCardStatusTone,
-  EventTimelineDateParts,
-} from "@conduit/ui"
+import type { ParsedEventMarketCalendar } from "@conduit/core"
+import type { EventTimelineDateParts } from "@conduit/ui"
 import type { ProductCatalogSourceMode } from "./productCatalogRead"
 
 export type EventTimelineWindow =
@@ -18,31 +10,6 @@ export interface EventTimelineSearch {
   window?: EventTimelineWindow
   organizer?: string
   location?: string
-}
-
-export type TimelineEventMarket = EventMarketResolution & {
-  organizerPubkey: string
-  collection: ParsedEventMarketCollection
-  calendar: ParsedEventMarketCalendar
-}
-
-export interface EventTimelineFacets {
-  organizers: string[]
-  locations: string[]
-}
-
-export interface EventTimelineStatus {
-  label: string
-  tone: EventMarketCardStatusTone
-}
-
-export interface EventTimelinePresentation {
-  /** Past events are chronological, with the event nearest Now last. */
-  past: TimelineEventMarket[]
-  /** Ongoing and future events are chronological, with the nearest first. */
-  currentAndFuture: TimelineEventMarket[]
-  hiddenEarlierCount: number
-  hiddenLaterCount: number
 }
 
 export const MARKET_EVENT_TIMELINE_PAGE_SIZE = 12
@@ -56,137 +23,7 @@ export const EVENT_TIMELINE_WINDOWS: EventTimelineWindow[] = [
   "all",
 ]
 
-export function getEventTimelinePresentationPerspective(
-  perspective: EventMarketPerspectiveSnapshot,
-  isRefreshStale: boolean
-): EventMarketPerspectiveSnapshot {
-  if (!isRefreshStale || perspective.coverage !== "complete") {
-    return perspective
-  }
-
-  return { ...perspective, coverage: "limited" }
-}
-
 const DAY_MS = 86_400_000
-
-function eventTimelineWindowDurationMs(
-  window: EventTimelineWindow | undefined
-): number | null {
-  if (window === "7d") return 7 * DAY_MS
-  if (window === "30d") return 30 * DAY_MS
-  return null
-}
-
-export function isTimelineEventMarket(
-  market: EventMarketResolution
-): market is TimelineEventMarket {
-  return (
-    !!market.organizerPubkey &&
-    !!market.collection &&
-    !!market.calendar &&
-    (market.state === "active" ||
-      market.state === "partial" ||
-      market.state === "stale" ||
-      market.state === "ended")
-  )
-}
-
-function normalized(value: string | undefined): string {
-  return value?.trim().toLocaleLowerCase() ?? ""
-}
-
-function isPast(market: TimelineEventMarket, nowMs: number): boolean {
-  return market.calendar.end <= nowMs
-}
-
-function matchesWindow(
-  market: TimelineEventMarket,
-  window: EventTimelineWindow,
-  nowMs: number
-): boolean {
-  const past = isPast(market, nowMs)
-  if (window === "past") return past
-  if (window === "all") return true
-  const historical =
-    market.collection.orderAcceptance === "closed" ||
-    (market.collection.orderAcceptance !== "open" &&
-      (market.state === "ended" || past))
-  if (window === "history") return historical
-  if (window === "upcoming") return !historical
-  if (past) return false
-  const horizon = nowMs + (window === "7d" ? 7 : 30) * 86_400_000
-  return market.calendar.start <= horizon
-}
-
-function compareTimelineMarkets(
-  left: TimelineEventMarket,
-  right: TimelineEventMarket,
-  nowMs: number
-): number {
-  const leftPast = isPast(left, nowMs)
-  const rightPast = isPast(right, nowMs)
-  if (leftPast !== rightPast) return leftPast ? 1 : -1
-  const startDelta = left.calendar.start - right.calendar.start
-  if (startDelta !== 0) return leftPast ? -startDelta : startDelta
-  return left.reference.localeCompare(right.reference)
-}
-
-export function filterAndSortEventMarkets(
-  markets: readonly EventMarketResolution[],
-  search: EventTimelineSearch,
-  nowMs = Date.now()
-): TimelineEventMarket[] {
-  const window = search.window ?? "upcoming"
-  const organizer = normalized(search.organizer)
-  const location = normalized(search.location)
-
-  return markets
-    .filter(isTimelineEventMarket)
-    .filter((market) => matchesWindow(market, window, nowMs))
-    .filter(
-      (market) => !organizer || normalized(market.organizerPubkey) === organizer
-    )
-    .filter(
-      (market) =>
-        !location ||
-        [...market.calendar.locations, market.calendar.geohash ?? ""].some(
-          (value) => normalized(value) === location
-        )
-    )
-    .sort((left, right) => compareTimelineMarkets(left, right, nowMs))
-}
-
-function boundedPresentationLimit(value: number | undefined): number {
-  return Number.isFinite(value)
-    ? Math.max(0, Math.floor(value ?? 0))
-    : MARKET_EVENT_TIMELINE_PAGE_SIZE
-}
-
-export function getEventTimelinePresentation(
-  markets: readonly TimelineEventMarket[],
-  limits: { earlier?: number; later?: number } = {},
-  nowMs = Date.now()
-): EventTimelinePresentation {
-  const chronological = [...markets].sort((left, right) => {
-    const startDelta = left.calendar.start - right.calendar.start
-    return startDelta || left.reference.localeCompare(right.reference)
-  })
-  const past = chronological.filter((market) => isPast(market, nowMs))
-  const currentAndFuture = chronological.filter(
-    (market) => !isPast(market, nowMs)
-  )
-  const earlierLimit = boundedPresentationLimit(limits.earlier)
-  const laterLimit = boundedPresentationLimit(limits.later)
-  const visiblePast = past.slice(Math.max(0, past.length - earlierLimit))
-  const visibleCurrentAndFuture = currentAndFuture.slice(0, laterLimit)
-
-  return {
-    past: visiblePast,
-    currentAndFuture: visibleCurrentAndFuture,
-    hiddenEarlierCount: past.length - visiblePast.length,
-    hiddenLaterCount: currentAndFuture.length - visibleCurrentAndFuture.length,
-  }
-}
 
 export function getNextEventTimelineLimit(
   visibleCount: number,
@@ -202,73 +39,6 @@ export function getNextEventTimelineLimit(
     normalizedTotalCount,
     normalizedVisibleCount + MARKET_EVENT_TIMELINE_PAGE_SIZE
   )
-}
-
-/** Wall-clock boundaries that can change the selected timeline projection. */
-export function getEventTimelineBoundaries(
-  markets: readonly EventMarketResolution[],
-  window: EventTimelineWindow | undefined
-): number[] {
-  const windowDurationMs = eventTimelineWindowDurationMs(window)
-  return markets
-    .filter(isTimelineEventMarket)
-    .flatMap((market) => [
-      ...(windowDurationMs === null
-        ? []
-        : [market.calendar.start - windowDurationMs]),
-      market.calendar.start,
-      market.calendar.end,
-    ])
-}
-
-export function getEventTimelineFacets(
-  markets: readonly EventMarketResolution[]
-): EventTimelineFacets {
-  const organizers = new Set<string>()
-  const locations = new Set<string>()
-  for (const market of markets.filter(isTimelineEventMarket)) {
-    organizers.add(market.organizerPubkey)
-    for (const location of market.calendar.locations) {
-      if (location.trim()) locations.add(location.trim())
-    }
-    if (market.calendar.geohash?.trim()) {
-      locations.add(market.calendar.geohash.trim())
-    }
-  }
-  const byLabel = (left: string, right: string) =>
-    left.localeCompare(right, undefined, { sensitivity: "base" })
-  return {
-    organizers: Array.from(organizers).sort(),
-    locations: Array.from(locations).sort(byLabel),
-  }
-}
-
-export function getEventTimelineStatus(
-  market: TimelineEventMarket,
-  nowMs = Date.now()
-): EventTimelineStatus {
-  if (market.collection.orderAcceptance === "closed") {
-    return { label: "Closed", tone: "secondary" }
-  }
-  if (isPast(market, nowMs)) {
-    if (market.collection.orderAcceptance !== "open") {
-      return { label: "Past event", tone: "secondary" }
-    }
-    const refreshNeeded = market.state === "stale"
-    return {
-      label: refreshNeeded
-        ? "Scheduled time has passed · Refresh needed"
-        : "Scheduled time has passed · Open",
-      tone: refreshNeeded ? "warning" : "secondary",
-    }
-  }
-  if (market.state === "stale") {
-    return { label: "Refresh needed", tone: "warning" }
-  }
-  if (market.calendar.start <= nowMs) {
-    return { label: "Happening now", tone: "success" }
-  }
-  return { label: "Upcoming", tone: "success" }
 }
 
 export function formatEventTimelineSchedule(

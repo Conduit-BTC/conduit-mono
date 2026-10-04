@@ -34,6 +34,7 @@ import {
   type StoredPaymentAttempt,
 } from "@conduit/core"
 import type { CartItem } from "./cart-model"
+import { allocateShippingPolicyCosts } from "./shipping-policy-pricing"
 
 export const CHECKOUT_QUOTE_MAX_AGE_MS = DEFAULT_PRICING_RATE_MAX_AGE_MS
 
@@ -61,6 +62,8 @@ export type CheckoutPricingItem = {
   priceAtPurchase: number
   currency: "SATS"
   shippingCostSats?: number
+  shippingPolicyQuote?: CartItem["shippingPolicyQuote"]
+  shippingAllocatedCostSats?: number
   sourceShippingCost?: SourcePriceQuote
   shippingOptionId?: string
   shippingOptionDTag?: string
@@ -87,6 +90,7 @@ export type CheckoutPricingIntent =
         fetchedAt: number
         source: BtcUsdRateQuote["source"]
         fiatSource?: BtcUsdRateQuote["fiatSource"]
+        fiatUsdRates?: BtcUsdRateQuote["fiatUsdRates"]
       }
       approximate: boolean
       /** False only for an authenticated zero-cost pickup order. */
@@ -185,6 +189,14 @@ export function bindCartItemsToFreshProductPricing(
       currency: product.currency,
       priceSats: product.priceSats,
       sourcePrice: product.sourcePrice ? { ...product.sourcePrice } : undefined,
+      shippingWeightGrams: product.shippingWeightGrams,
+      shippingWeightAllowanceGrams: product.shippingWeightAllowanceGrams,
+      shippingHandling: product.shippingHandling
+        ? { ...product.shippingHandling }
+        : undefined,
+      productEventId: product.sourceEventId,
+      signedProductEvent: product.signedProductEvent,
+      productUpdatedAt: product.updatedAt,
     })
   }
 
@@ -211,13 +223,17 @@ function shippingCostNeedsFreshQuote(
   item: CartItem,
   approximate: boolean
 ): boolean {
-  const sourceCurrency = item.sourceShippingCost?.normalizedCurrency
+  const sourceCurrency =
+    item.shippingPolicyQuote?.currency ??
+    item.sourceShippingCost?.normalizedCurrency
   return (
     approximate &&
-    !!sourceCurrency &&
-    !isSatsLikeCurrency(sourceCurrency) &&
-    !isMsatsLikeCurrency(sourceCurrency) &&
-    !isBtcLikeCurrency(sourceCurrency)
+    (item.shippingPolicyQuote
+      ? item.shippingPolicyQuote.pricingRate != null
+      : !!sourceCurrency &&
+        !isSatsLikeCurrency(sourceCurrency) &&
+        !isMsatsLikeCurrency(sourceCurrency) &&
+        !isBtcLikeCurrency(sourceCurrency))
   )
 }
 
@@ -231,11 +247,11 @@ function getKnownShippingCostSats(
 function isCheckoutShippingCostResolvable(item: CartItem): boolean {
   return (
     item.format === "digital" ||
-    item.fulfillment?.type === "pickup" ||
     item.fulfillment?.type === "event_market_pickup" ||
     (item.canonicalShippingResolved === true &&
       !!item.shippingOptionId &&
-      (item.shippingCountryRules?.length ?? 0) > 0)
+      (!!item.shippingPolicyQuote ||
+        (item.shippingCountryRules?.length ?? 0) > 0))
   )
 }
 
@@ -245,6 +261,12 @@ function getCheckoutShippingResolvableItem(item: CartItem): CartItem {
       ...item,
       shippingCostSats: 0,
       sourceShippingCost: undefined,
+      shippingPolicyQuote: undefined,
+      shippingAllocatedCostSats: undefined,
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingCountries: undefined,
+      shippingCountryRules: undefined,
     }
   }
   return isCheckoutShippingCostResolvable(item)
@@ -265,7 +287,7 @@ export function getCheckoutShippingCost(
   rateInput: PricingRateInput = null
 ): CheckoutShippingCostSummary {
   return resolveCartShippingCost(
-    getCheckoutShippingResolvableItems(items),
+    getCheckoutShippingResolvableItems(allocateShippingPolicyCosts(items)),
     rateInput
   )
 }
@@ -275,14 +297,13 @@ export function buildCheckoutPricingIntent(
   rateInput: PricingRateInput,
   nowMs = Date.now()
 ): CheckoutPricingIntent {
+  items = allocateShippingPolicyCosts(items)
   const pricedItems: CheckoutPricingItem[] = []
   let itemSubtotalSats = 0
   let needsFreshQuote = false
 
   for (const item of items) {
-    const pickupAllowsZero =
-      item.fulfillment?.type === "pickup" ||
-      item.fulfillment?.type === "event_market_pickup"
+    const pickupAllowsZero = item.fulfillment?.type === "event_market_pickup"
     const priced = getPriceSats(item, rateInput, {
       allowZero: pickupAllowsZero,
     })
@@ -338,21 +359,23 @@ export function buildCheckoutPricingIntent(
     }
 
     const shippingItem = getCheckoutShippingResolvableItem(item)
-    const shippingSats = getKnownShippingCostSats(shippingItem, rateInput)
-    if (!shippingSats && shippingItem.sourceShippingCost) {
+    const shippingSats = shippingItem.shippingPolicyQuote
+      ? typeof shippingItem.shippingAllocatedCostSats === "number"
+        ? {
+            sats: 0,
+            approximate: shippingItem.shippingPolicyQuote.pricingRate != null,
+          }
+        : null
+      : getKnownShippingCostSats(shippingItem, rateInput)
+    if (
+      !shippingSats &&
+      (shippingItem.sourceShippingCost || shippingItem.shippingPolicyQuote)
+    ) {
       return {
         status: "error",
         code: "unpriced_items",
         reason:
           "One or more items cannot be converted to sats right now. Refresh prices before ordering.",
-      }
-    }
-    if (item.fulfillment?.type === "pickup" && !shippingSats) {
-      return {
-        status: "error",
-        code: "unpriced_items",
-        reason:
-          "The signed pickup cost could not be resolved. Refresh the event catalog before ordering.",
       }
     }
     if (
@@ -392,25 +415,33 @@ export function buildCheckoutPricingIntent(
       priceAtPurchase: itemSats,
       currency: "SATS",
       shippingCostSats: shippingSats?.sats,
+      shippingPolicyQuote: shippingItem.shippingPolicyQuote,
+      shippingAllocatedCostSats: shippingItem.shippingAllocatedCostSats,
       sourceShippingCost: shippingItem.sourceShippingCost,
-      shippingOptionId: item.shippingOptionId,
-      shippingOptionDTag: item.shippingOptionDTag,
-      shippingCountries: item.shippingCountries,
-      shippingCountryRules: item.shippingCountryRules,
+      shippingOptionId: shippingItem.shippingOptionId,
+      shippingOptionDTag: shippingItem.shippingOptionDTag,
+      shippingCountries: shippingItem.shippingCountries,
+      shippingCountryRules: shippingItem.shippingCountryRules,
       sourcePrice: item.sourcePrice,
-      fulfillment:
-        item.fulfillment?.type === "pickup"
-          ? {
-              ...item.fulfillment,
-              costSats: shippingSats!.sats,
-              sourceCost:
-                shippingItem.sourceShippingCost ?? item.fulfillment.sourceCost,
-            }
-          : item.fulfillment,
+      fulfillment: item.fulfillment,
     })
   }
 
   const shippingCost = getCheckoutShippingCost(items, rateInput)
+  if (shippingCost.status === "manual") {
+    // A partial table estimate is not an agreed shipping charge for an order
+    // whose remaining physical items still require merchant coordination.
+    for (const item of pricedItems) {
+      if (!item.shippingPolicyQuote) continue
+      item.shippingPolicyQuote = undefined
+      item.shippingAllocatedCostSats = undefined
+      item.shippingCostSats = undefined
+      item.sourceShippingCost = undefined
+      item.shippingOptionId = undefined
+      item.shippingOptionDTag = undefined
+      item.shippingCountryRules = undefined
+    }
+  }
   const totalSats = itemSubtotalSats + shippingCost.totalSats
 
   const zeroCostPickupOrder =
@@ -418,8 +449,7 @@ export function buildCheckoutPricingIntent(
     pricedItems.length > 0 &&
     pricedItems.every(
       (item) =>
-        (item.fulfillment?.type === "pickup" ||
-          item.fulfillment?.type === "event_market_pickup") &&
+        item.fulfillment?.type === "event_market_pickup" &&
         item.priceAtPurchase === 0 &&
         item.shippingCostSats === 0
     )
@@ -451,6 +481,9 @@ export function buildCheckoutPricingIntent(
           fetchedAt: rateInput.fetchedAt,
           source: rateInput.source,
           fiatSource: rateInput.fiatSource,
+          fiatUsdRates: rateInput.fiatUsdRates
+            ? { ...rateInput.fiatUsdRates }
+            : undefined,
         }
       : undefined,
   }

@@ -53,6 +53,7 @@ function AboutPage() {
   return (
     <AboutPagePanel
       appName={app.name}
+      logoSrc="/images/logo/merchant-logo-icon.svg"
       appDescription="Publish and manage your storefront, coordinate orders and fulfillment, and communicate privately with shoppers."
       buildInfo={conduitBuildInfo}
       commitUrl={getCommitUrl(conduitBuildInfo)}

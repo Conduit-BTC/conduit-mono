@@ -1250,7 +1250,7 @@ describe("NIP-02 merchant trust helpers", () => {
       getAccountSigner: () => plainTestSigner(ndk.signer!),
       readLatestFollowLists: readWithLag,
       publishWithPlanner: async (event, input) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return {
           plan: {
             intent: input.intent,
@@ -1327,7 +1327,7 @@ describe("NIP-02 merchant trust helpers", () => {
         })
       },
       publishWithPlanner: async (event, input) => {
-        published.push(event.rawEvent() as SignedPublicNostrEvent)
+        published.push(structuredClone(event))
         return {
           plan: {
             intent: input.intent,
