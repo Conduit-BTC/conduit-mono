@@ -29,6 +29,40 @@ function product(overrides: Partial<Product> = {}): Product {
 }
 
 describe("listing safety", () => {
+  it("reuses content assessment across projections but rechecks content revisions and context", () => {
+    let titleReads = 0
+    const listing = product({ title: "Memoized ordinary fixture" })
+    Object.defineProperty(listing, "title", {
+      get: () => {
+        titleReads += 1
+        return "Memoized ordinary fixture"
+      },
+    })
+    expect(evaluateListingSafety(listing).state).toBe("active")
+    titleReads = 0
+    expect(evaluateListingSafety(listing).state).toBe("active")
+    expect(titleReads).toBeLessThanOrEqual(2)
+    expect(
+      evaluateListingSafety({ ...listing, title: "Firearm listing" }).state
+    ).toBe("blocked")
+    expect(
+      evaluateListingSafety({ ...listing, summary: "Firearm listing" }).state
+    ).toBe("blocked")
+    expect(evaluateListingSafety({ ...listing, tags: ["csam"] }).state).toBe(
+      "blocked"
+    )
+    expect(evaluateListingSafety({ ...listing, images: [] }).state).toBe(
+      "hidden"
+    )
+    expect(
+      evaluateListingSafety({ ...listing, visibility: "hidden" }).state
+    ).toBe("hidden")
+    expect(
+      evaluateListingSafety({ ...listing, images: [] }, undefined, {
+        hasGroupImage: true,
+      }).state
+    ).toBe("active")
+  })
   it("allows ordinary simple listings with market images", () => {
     const safety = evaluateListingSafety(product())
 

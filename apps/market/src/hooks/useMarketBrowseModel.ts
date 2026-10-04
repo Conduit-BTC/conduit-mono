@@ -25,6 +25,7 @@ import {
   type MarketProductCardView,
 } from "../lib/marketBrowseModel"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import { getBrowseBackgroundHydrationPubkeys } from "../lib/clientHydration"
 import {
   isRemoteMarketSearchEligible,
   MARKET_SEARCH_QUERY_POLICY,
@@ -283,16 +284,41 @@ export function useMarketBrowseModel({
     () => Array.from(new Set(visibleProducts.map((product) => product.pubkey))),
     [visibleProducts]
   )
+  const storeFacetSortProducts = useMemo(
+    () =>
+      filterProductsByFacets(productData, {
+        q: isSearching ? undefined : search.q,
+        tags: selectedTags,
+      }),
+    [isSearching, productData, search.q, selectedTags]
+  )
+  const backgroundHydrationPubkeys = useMemo(() => {
+    return getBrowseBackgroundHydrationPubkeys({
+      allMerchantPubkeys,
+      menuMerchantPubkeys: storeFacetSortProducts.map(
+        (product) => product.pubkey
+      ),
+      selectedMerchantPubkeys: selectedMerchants,
+      isSearching,
+      storeMenuOpen,
+    })
+  }, [
+    allMerchantPubkeys,
+    isSearching,
+    selectedMerchants,
+    storeFacetSortProducts,
+    storeMenuOpen,
+  ])
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const merchantIdentities = useMerchantIdentities({
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,
     allMerchantPubkeys,
-    // Hydrate off-screen merchants (the rest of the store dropdown) in parallel
-    // with product streaming instead of waiting for hydration to settle, so the
-    // store list shows names/avatars rather than bare npubs when first opened.
-    deferBackgroundHydration: false,
+    // Product cards are eager; the menu and seller-name results request their
+    // additional identities only while those surfaces are in use.
+    deferBackgroundHydration: !storeMenuOpen && !isSearching,
+    backgroundHydrationPubkeys,
     visibleMerchantPubkeys,
     relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
   })
@@ -348,14 +374,6 @@ export function useMarketBrowseModel({
       query
     )
   }, [getMerchantIdentity, merchantCandidateProducts, search.q])
-  const storeFacetSortProducts = useMemo(
-    () =>
-      filterProductsByFacets(productData, {
-        q: isSearching ? undefined : search.q,
-        tags: selectedTags,
-      }),
-    [isSearching, productData, search.q, selectedTags]
-  )
   const visibleStoreFacetOptions = useMemo(
     () =>
       storeMenuOpen

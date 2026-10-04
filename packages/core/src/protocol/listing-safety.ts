@@ -606,6 +606,30 @@ function reasonFromRule(rule: ListingSafetyRule): ListingSafetyReason {
   }
 }
 
+const MAX_CONTENT_ASSESSMENTS = 20_000
+const contentAssessments = new Map<string, readonly ListingSafetyRule[]>()
+
+/** Only immutable content is reused. Visibility, images and family context
+ * are evaluated separately on every projection; explicit decisions win first. */
+function getContentRules(product: Product): readonly ListingSafetyRule[] {
+  const key = JSON.stringify([
+    product.title,
+    product.summary ?? "",
+    product.tags,
+  ])
+  const cached = contentAssessments.get(key)
+  if (cached) return cached
+  const matches = [...WARNING_RULES, ...BLOCKING_RULES].filter(
+    (rule) => getRuleMatches(product, rule).length > 0
+  )
+  if (contentAssessments.size >= MAX_CONTENT_ASSESSMENTS) {
+    const oldest = contentAssessments.keys().next().value
+    if (oldest !== undefined) contentAssessments.delete(oldest)
+  }
+  contentAssessments.set(key, matches)
+  return matches
+}
+
 function getMostSevereState(states: ListingSafetyState[]): ListingSafetyState {
   return states.reduce<ListingSafetyState>(
     (highest, state) =>
@@ -687,8 +711,7 @@ export function evaluateListingSafety(
     })
   }
 
-  for (const rule of [...WARNING_RULES, ...BLOCKING_RULES]) {
-    if (getRuleMatches(product, rule).length === 0) continue
+  for (const rule of getContentRules(product)) {
     states.push(rule.state)
     reasons.push(reasonFromRule(rule))
   }

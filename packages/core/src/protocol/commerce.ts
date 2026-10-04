@@ -1511,7 +1511,10 @@ async function streamProductRecordChunks(input: {
   merged: Map<string, SignedPublicNostrEvent>
   deletionTimestamps?: DeletionTimestamps
   retainRevisions?: boolean
-  onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
+  onRecords: (
+    records: CommerceProductRecord[],
+    relayUrl: string
+  ) => void | Promise<void>
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
 }): Promise<void> {
   input.signal?.throwIfAborted()
@@ -1557,7 +1560,7 @@ async function streamProductRecordChunks(input: {
             connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
             fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
           },
-          ({ events, mergedEvents, relayUrl, status }) => {
+          async ({ events, mergedEvents, relayUrl, status }) => {
             input.signal?.throwIfAborted()
             if (status) {
               input.onTransportStatus?.(
@@ -1568,7 +1571,7 @@ async function streamProductRecordChunks(input: {
             for (const event of mergedEvents) {
               putMergedEvent(input.merged, event)
             }
-            input.onRecords(
+            await input.onRecords(
               dedupeProductEvents(
                 Array.from(input.merged.values()),
                 input.deletionTimestamps,
@@ -1591,41 +1594,32 @@ async function streamProductRecordChunks(input: {
   )
 }
 
-function productMatchesQuery(
-  record: CommerceProductRecord,
+function createProductQueryMatcher(
   query: MarketplaceProductsQuery
-): boolean {
-  const { product } = record
+): (record: CommerceProductRecord) => boolean {
   const textQuery = normalizeText(query.textQuery)
-  if (
-    query.authorPubkeys &&
-    query.authorPubkeys.length > 0 &&
-    !new Set(query.authorPubkeys).has(product.pubkey)
-  ) {
-    return false
-  }
-  if (query.merchantPubkey && product.pubkey !== query.merchantPubkey)
-    return false
-  if (
-    query.authorPubkeys &&
-    query.authorPubkeys.length > 0 &&
-    !query.authorPubkeys.includes(product.pubkey)
-  ) {
-    return false
-  }
-  if (textQuery) {
-    const haystack = `${product.title}\n${product.summary ?? ""}`.toLowerCase()
-    if (!haystack.includes(textQuery)) return false
-  }
-
-  if (query.tags && query.tags.length > 0) {
-    const tagSet = new Set(canonicalizeProductTags(query.tags))
-    if (!canonicalizeProductTags(product.tags).some((tag) => tagSet.has(tag))) {
+  const authors = query.authorPubkeys?.length
+    ? new Set(query.authorPubkeys)
+    : null
+  const tags = query.tags?.length
+    ? new Set(canonicalizeProductTags(query.tags))
+    : null
+  return ({ product }) => {
+    if (authors && !authors.has(product.pubkey)) return false
+    if (query.merchantPubkey && product.pubkey !== query.merchantPubkey)
       return false
+    if (textQuery) {
+      const haystack =
+        `${product.title}\n${product.summary ?? ""}`.toLowerCase()
+      if (!haystack.includes(textQuery)) return false
     }
+    if (
+      tags &&
+      !canonicalizeProductTags(product.tags).some((tag) => tags.has(tag))
+    )
+      return false
+    return true
   }
-
-  return true
 }
 
 function sortProducts(
@@ -4000,7 +3994,7 @@ function isDeletedByNip09(
   )
 }
 
-const MAX_PRODUCT_PARSE_CACHE = 5000
+const MAX_PRODUCT_PARSE_CACHE = 20_000
 const productParseCache = new Map<
   string,
   {
@@ -4020,7 +4014,8 @@ function parseAndEvaluateProductEvent(event: SignedPublicNostrEvent) {
   const entry = { parsed, safety: evaluateListingSafety(parsed) }
   if (event.id) {
     if (productParseCache.size >= MAX_PRODUCT_PARSE_CACHE) {
-      productParseCache.clear()
+      const oldest = productParseCache.keys().next().value
+      if (oldest !== undefined) productParseCache.delete(oldest)
     }
     productParseCache.set(event.id, entry)
   }
@@ -4281,12 +4276,15 @@ async function fetchPublicProductRecordsProgressive(
     readPolicy?: CommerceReadPolicy
     onTransportStatus?: (degraded: boolean, capped: boolean) => void
   },
-  onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
+  onRecords: (
+    records: CommerceProductRecord[],
+    relayUrl: string
+  ) => void | Promise<void>
 ): Promise<CommerceProductRecord[]> {
   if (testOverrides.fetchPublicEvents) {
     const records = await fetchPublicProductRecords(query)
     query.signal?.throwIfAborted()
-    onRecords(records, "test")
+    await onRecords(records, "test")
     return records
   }
 
@@ -4529,6 +4527,10 @@ function projectRankedProductSearch(
     )
   )
   const ranks = new Map<string, number>()
+  const matchesQuery = createProductQueryMatcher({
+    ...query,
+    textQuery: undefined,
+  })
   hits.forEach((hit, index) => {
     const current = byAddress.get(hit.addressId)
     if (!current || !eligible.has(current.addressId)) return
@@ -4537,11 +4539,7 @@ function projectRankedProductSearch(
   })
   return applyProductLimit(
     filterProductRecordsForRead(records)
-      .filter(
-        (record) =>
-          ranks.has(record.addressId) &&
-          productMatchesQuery(record, { ...query, textQuery: undefined })
-      )
+      .filter((record) => ranks.has(record.addressId) && matchesQuery(record))
       .sort(
         (left, right) =>
           ranks.get(left.addressId)! - ranks.get(right.addressId)!
@@ -4792,8 +4790,8 @@ export async function getMarketplaceProducts(
     })
     const filtered = applyProductLimit(
       sortProducts(
-        filterProductRecordsForRead(currentRecords).filter((record) =>
-          productMatchesQuery(record, query)
+        filterProductRecordsForRead(currentRecords).filter(
+          createProductQueryMatcher(query)
         ),
         query.sort
       ),
@@ -4823,7 +4821,7 @@ export async function getMarketplaceProducts(
             { includeStale: true, includeMarketHidden: true },
             query.authorPubkeys
           )
-        ).filter((record) => productMatchesQuery(record, query)),
+        ).filter(createProductQueryMatcher(query)),
         query.sort
       ),
       query.limit
@@ -4880,6 +4878,7 @@ export async function getMarketplaceProductsProgressive(
     query.merchantPubkey,
     query.authorPubkeys
   )
+  const matchesQuery = createProductQueryMatcher(query)
   const toResult = (
     records: CommerceProductRecord[],
     options: { degraded?: boolean; capped?: boolean } = {},
@@ -4892,9 +4891,7 @@ export async function getMarketplaceProductsProgressive(
     })
     const data = applyProductLimit(
       sortProducts(
-        filterProductRecordsForRead(filteredRecords).filter((record) =>
-          productMatchesQuery(record, query)
-        ),
+        filterProductRecordsForRead(filteredRecords).filter(matchesQuery),
         query.sort
       ),
       limit
@@ -4911,6 +4908,42 @@ export async function getMarketplaceProductsProgressive(
       }
     )
     return { data: withProductFamilyReadEvidence(data, meta), meta }
+  }
+
+  // Persist validated public revisions as they arrive. Leaving the page must
+  // not discard every batch just because another relay or deletion read waits.
+  // Writes remain serialized and use the existing monotonic cache/tombstones.
+  const persistedSignatures = new Map<string, string>()
+  let progressiveCacheWrite = Promise.resolve()
+  let progressiveCacheFailed = false
+  const persistProgress = (records: CommerceProductRecord[]) => {
+    progressiveCacheWrite = progressiveCacheWrite.then(async () => {
+      query.signal?.throwIfAborted()
+      if (query.shouldContinue?.() === false)
+        throw new NostrSignerError("authority_changed")
+      const changed = records.filter((record) => {
+        const signature = JSON.stringify([
+          record.eventId,
+          record.sourceRelayUrls ?? [],
+        ])
+        return persistedSignatures.get(record.eventId) !== signature
+      })
+      try {
+        await cacheProductRecords(changed)
+        for (const record of changed) {
+          persistedSignatures.set(
+            record.eventId,
+            JSON.stringify([record.eventId, record.sourceRelayUrls ?? []])
+          )
+        }
+      } catch (error) {
+        rethrowProductReadAuthorityChange(error, query.shouldContinue)
+        // Final persistence retries the full frontier. Interim write failure
+        // marks coverage degraded rather than stopping deletion reconciliation.
+        progressiveCacheFailed = true
+      }
+    })
+    return progressiveCacheWrite
   }
 
   const fetchedRecords = await fetchPublicProductRecordsProgressive(
@@ -4932,12 +4965,24 @@ export async function getMarketplaceProductsProgressive(
         readCapped ||= capped
       },
     },
-    (records, relayUrl) => {
+    async (records, relayUrl) => {
+      await persistProgress(records)
+      query.signal?.throwIfAborted()
+      if (query.shouldContinue?.() === false)
+        throw new NostrSignerError("authority_changed")
+      const currentDeletions = await getLocalProductDeletionTimestamps(
+        query.merchantPubkey,
+        query.authorPubkeys
+      )
       query.signal?.throwIfAborted()
       // Until every planned relay settles, the progressive snapshot is
       // intentionally incomplete even if the first relay succeeded.
       onProgress(
-        toResult(records, { degraded: true, capped: readCapped }),
+        toResult(
+          records,
+          { degraded: true, capped: readCapped },
+          currentDeletions
+        ),
         relayUrl
       )
     }
@@ -4959,6 +5004,7 @@ export async function getMarketplaceProductsProgressive(
   let result: CommerceResult<CommerceProductRecord[]>
   try {
     await cacheProductRecords(records)
+    progressiveCacheFailed = false
   } finally {
     query.signal?.throwIfAborted()
     const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
@@ -4970,6 +5016,7 @@ export async function getMarketplaceProductsProgressive(
       {
         degraded:
           transportDegraded ||
+          progressiveCacheFailed ||
           readCapped ||
           fetchedRecords.length >= rawEventLimit,
         capped: readCapped || fetchedRecords.length >= rawEventLimit,
@@ -5014,7 +5061,7 @@ export async function getCachedMarketplaceProducts(
           { ...options, includeMarketHidden: true },
           query.authorPubkeys
         )
-      ).filter((record) => productMatchesQuery(record, query)),
+      ).filter(createProductQueryMatcher(query)),
       query.sort
     ),
     query.limit
@@ -5087,8 +5134,8 @@ export async function getMerchantStorefront(
       filterProductRecordsForRead(currentRecords, {
         includeMarketHidden: query.includeMarketHidden,
         groupVariations: query.includeMarketHidden ? false : true,
-      }).filter((record) =>
-        productMatchesQuery(record, {
+      }).filter(
+        createProductQueryMatcher({
           merchantPubkey: query.merchantPubkey,
           textQuery: query.textQuery,
           tags: query.tag ? [query.tag] : undefined,
@@ -5135,8 +5182,8 @@ export async function getMerchantStorefront(
       filterProductRecordsForRead(currentCache, {
         includeMarketHidden: query.includeMarketHidden,
         groupVariations: query.includeMarketHidden ? false : true,
-      }).filter((record) =>
-        productMatchesQuery(record, {
+      }).filter(
+        createProductQueryMatcher({
           merchantPubkey: query.merchantPubkey,
           textQuery: query.textQuery,
           tags: query.tag ? [query.tag] : undefined,
@@ -5183,8 +5230,8 @@ export async function getCachedMerchantStorefront(
           includeMarketHidden: query.includeMarketHidden,
           groupVariations: query.includeMarketHidden ? false : true,
         }
-      ).filter((record) =>
-        productMatchesQuery(record, {
+      ).filter(
+        createProductQueryMatcher({
           merchantPubkey: query.merchantPubkey,
           textQuery: query.textQuery,
           tags: query.tag ? [query.tag] : undefined,

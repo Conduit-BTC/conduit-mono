@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import { readFileSync } from "node:fs"
 import { nip19 } from "nostr-tools"
 import { installTestSigner } from "./helpers/auth"
 
@@ -12,6 +13,20 @@ const SELLER_PUBKEY =
 const ELIGIBLE_ACCOUNT_PUBKEY =
   "088436cd039ff89074468fd327facf62784eeb37490e0a118ab9f14c9d2646cc"
 const UNLISTED_ACCOUNT_PUBKEY = "c".repeat(64)
+const IMAGE_FIXTURE_MERCHANTS = (
+  JSON.parse(
+    readFileSync(
+      new URL("../apps/market/src/data/market-merchants.json", import.meta.url),
+      "utf8"
+    )
+  ) as string[]
+).slice(0, 48)
+const OFFSCREEN_MERCHANT_PUBKEY = IMAGE_FIXTURE_MERCHANTS.at(-1)!
+const IMAGE_FIXTURE_BASE = "https://blossom.conduit.market/hydration-fixture"
+const IMAGE_FIXTURE_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lXcAAAAASUVORK5CYII=",
+  "base64"
+)
 
 async function seedAccounts(
   page: Page,
@@ -105,6 +120,63 @@ async function seedAccounts(
       eligibleAccountPubkey: ELIGIBLE_ACCOUNT_PUBKEY,
       unlistedAccountPubkey: UNLISTED_ACCOUNT_PUBKEY,
     }
+  )
+}
+
+async function seedMerchantImageRows(page: Page): Promise<void> {
+  await page.waitForLoadState("networkidle")
+  await page.evaluate(
+    ({ pubkeys, imageBase }) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction(
+            ["profiles", "products"],
+            "readwrite"
+          )
+          const timestamp = Date.now()
+          const profiles = transaction.objectStore("profiles")
+          const products = transaction.objectStore("products")
+          pubkeys.forEach((pubkey, index) => {
+            const fixtureId = `hydration-fixture-${index}`
+            profiles.put({
+              pubkey,
+              name: `Fixture Merchant ${index}`,
+              displayName: `Fixture Merchant ${index}`,
+              picture: `${imageBase}-avatar-${index}.png`,
+              banner: `${imageBase}-banner.png`,
+              cachedAt: timestamp,
+            })
+            products.put({
+              id: `30402:${pubkey}:${fixtureId}`,
+              pubkey,
+              title: `Hydration product ${index}`,
+              summary: "Cached listing for image request coverage",
+              price: 1,
+              currency: "SATS",
+              priceSats: 1,
+              type: "simple",
+              format: "digital",
+              visibility: "public",
+              stock: 1,
+              images: [{ url: `${imageBase}-product.png` }],
+              tags: ["art"],
+              eventId: (index + 1).toString(16).padStart(64, "0"),
+              eventCreatedAt: 100,
+              dTag: fixtureId,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+              cachedAt: timestamp,
+            })
+          })
+          transaction.oncomplete = () => resolve()
+          transaction.onerror = () => reject(transaction.error)
+          transaction.onabort = () => reject(transaction.error)
+        }
+      }),
+    { pubkeys: IMAGE_FIXTURE_MERCHANTS, imageBase: IMAGE_FIXTURE_BASE }
   )
 }
 
@@ -433,4 +505,61 @@ test("product search lists matching merchants above the product results @market"
   await expect(
     page.getByRole("link", { name: /Account search fixture/ })
   ).toHaveCount(0)
+})
+
+test("merchant avatars wait for visible rows and banners wait for profile navigation @market", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  const targetAvatarUrl = `${IMAGE_FIXTURE_BASE}-avatar-47.png`
+  const bannerUrl = `${IMAGE_FIXTURE_BASE}-banner.png`
+  let targetAvatarRequests = 0
+  let bannerRequests = 0
+  await page.route(`${IMAGE_FIXTURE_BASE}-*.png`, async (route) => {
+    const url = route.request().url()
+    if (url === targetAvatarUrl) targetAvatarRequests += 1
+    if (url === bannerUrl) bannerRequests += 1
+    await route.fulfill({
+      status: 200,
+      contentType: "image/png",
+      body: IMAGE_FIXTURE_PNG,
+    })
+  })
+
+  await page.goto(`${marketUrl}/products`)
+  await seedMerchantImageRows(page)
+  await page.reload()
+  await expect(
+    page.getByText(/Hydration product \d+/, { exact: true }).first()
+  ).toBeVisible()
+  expect(bannerRequests).toBe(0)
+
+  await page.goto(`${marketUrl}/merchants`)
+  const directory = page.locator(
+    'section[aria-labelledby="discovered-merchants-heading"]'
+  )
+  const target = directory.getByRole("link", {
+    name: /Fixture Merchant 47/,
+  })
+  const targetAvatar = target.locator(`img[src="${targetAvatarUrl}"]`)
+  await expect(target).toBeAttached()
+  expect(
+    await target.evaluate(
+      (element) => element.getBoundingClientRect().top - window.innerHeight
+    )
+  ).toBeGreaterThan(300)
+  await expect(targetAvatar).toHaveCount(0)
+  expect(targetAvatarRequests).toBe(0)
+  expect(bannerRequests).toBe(0)
+
+  await target.scrollIntoViewIfNeeded()
+  await expect(targetAvatar).toBeVisible()
+  await expect.poll(() => targetAvatarRequests).toBeGreaterThan(0)
+  expect(bannerRequests).toBe(0)
+
+  await target.click()
+  await expect(page).toHaveURL(
+    `${marketUrl}/${nip19.npubEncode(OFFSCREEN_MERCHANT_PUBKEY)}`
+  )
+  await expect.poll(() => bannerRequests).toBeGreaterThan(0)
 })

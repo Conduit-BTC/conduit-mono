@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import type { CommerceProductRecord, CommerceResult } from "@conduit/core"
 import {
+  getBrowseBackgroundHydrationPubkeys,
   getProductSourceRelayHintsByPubkey,
   mergeRelayHintsByPubkey,
   normalizeRelayHints,
@@ -122,5 +123,23 @@ describe("client hydration helpers", () => {
       visibleMerchantPubkeys: ["b"],
       backgroundMerchantPubkeys: ["a", "c"],
     })
+  })
+
+  it("requests off-screen merchant profiles only for active browse surfaces", () => {
+    const input = {
+      allMerchantPubkeys: ["visible", "menu", "elsewhere"],
+      menuMerchantPubkeys: ["menu", "menu"],
+      selectedMerchantPubkeys: ["selected"],
+      isSearching: false,
+      storeMenuOpen: false,
+    }
+
+    expect(getBrowseBackgroundHydrationPubkeys(input)).toEqual([])
+    expect(
+      getBrowseBackgroundHydrationPubkeys({ ...input, storeMenuOpen: true })
+    ).toEqual(["menu", "selected"])
+    expect(
+      getBrowseBackgroundHydrationPubkeys({ ...input, isSearching: true })
+    ).toEqual(["visible", "menu", "elsewhere"])
   })
 })

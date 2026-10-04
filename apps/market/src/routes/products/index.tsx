@@ -3,9 +3,6 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, X } from "lucide-react"
 import { normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
   Badge,
   Button,
   DropdownMenu,
@@ -16,7 +13,7 @@ import {
   RefreshChip,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
-import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
+import { DeferredMerchantAvatar } from "../../components/DeferredMerchantAvatar"
 import {
   PRODUCT_GRID_CLASS_NAME,
   ProductGridCardSkeleton,
@@ -463,16 +460,12 @@ function ProductsPage() {
                     onCheckedChange={() => toggleMerchant(option.value)}
                     className="gap-2.5"
                   >
-                    <Avatar className="h-5 w-5 shrink-0">
-                      <AvatarImage
-                        src={identity.picture}
-                        alt=""
-                        className="object-cover"
-                      />
-                      <AvatarFallback>
-                        <MerchantAvatarFallback iconClassName="h-2.5 w-2.5" />
-                      </AvatarFallback>
-                    </Avatar>
+                    <DeferredMerchantAvatar
+                      picture={identity.picture}
+                      className="h-5 w-5 shrink-0"
+                      imageClassName="object-cover"
+                      iconClassName="h-2.5 w-2.5"
+                    />
                     <span
                       className={[
                         "min-w-0 flex-1 truncate",

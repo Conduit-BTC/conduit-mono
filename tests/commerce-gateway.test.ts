@@ -2057,6 +2057,45 @@ describe("commerce gateway", () => {
     expect(complete.meta.degraded).toBe(false)
   })
 
+  it("persists a progressive browse batch before the remaining relay read completes", async () => {
+    const event = makeSignedProductEvent({
+      dTag: "early-cache",
+      createdAt: 100,
+      title: "Early cached cup",
+    })
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let ready!: (persisted: boolean) => void
+    const firstBatch = new Promise<boolean>((resolve) => {
+      ready = resolve
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanoutDetailed: async () => ({ events: [], relays: [] }),
+      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+        await onProgress({
+          relayUrl: options.relayUrls?.[0] ?? "wss://early.example",
+          events: [event],
+          mergedEvents: [event],
+        })
+        ready(cachedProducts.some((row) => row.eventId === event.id))
+        await pending
+        return [event]
+      },
+    })
+    const read = getMarketplaceProductsProgressive(
+      { authorPubkeys: [event.pubkey] },
+      () => {}
+    )
+    try {
+      expect(await firstBatch).toBe(true)
+    } finally {
+      release()
+      await read
+    }
+  })
+
   it("marks a saturated variation-group read as degraded", async () => {
     const merchantPubkey = MERCHANT_A_PUBKEY
     const parentProductId = `30402:${merchantPubkey}:large-catalog`

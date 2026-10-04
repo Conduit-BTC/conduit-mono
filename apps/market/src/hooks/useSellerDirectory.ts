@@ -51,6 +51,8 @@ export function useSellerDirectory(input: {
   fallbackNetworkAllowed?: boolean
   query: string
   accountSearchSettleMs?: number
+  /** Header suggestions use scoped account search, not every seller profile. */
+  hydrateSellerProfiles?: boolean
 }) {
   const { pubkey, status, authGeneration } = useAuth()
   const queryClient = useQueryClient()
@@ -198,7 +200,9 @@ export function useSellerDirectory(input: {
     authenticatedPubkey: connected ? pubkey : null,
     shouldContinue: () => authGenerationRef.current === authGeneration,
     allMerchantPubkeys: sellerPubkeys,
-    visibleMerchantPubkeys: sellerPubkeys,
+    visibleMerchantPubkeys:
+      input.hydrateSellerProfiles === false ? [] : sellerPubkeys,
+    deferBackgroundHydration: input.hydrateSellerProfiles === false,
     relayHintsByPubkey: profileRelayHintsByPubkey,
   })
   const query = input.query.trim()

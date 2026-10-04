@@ -34,6 +34,32 @@ Product reads use the existing bounded author batches. Event discovery retains
 its existing 64-organizer bound and reports partial coverage for larger scopes;
 the shared list does not imply that every organizer was queried.
 
+## Browse loading
+
+Market shares one progressive catalog query across matching consumers, scoped
+by catalog authors, source, account/session authority, and relay settings. A
+warm query is reused for one minute; an explicit refresh starts one replacement
+read while retaining its previous result until a current cumulative snapshot
+arrives. Empty deletion-resolved snapshots remain authoritative.
+
+Validated public product batches are written through the existing monotonic
+cache as they arrive. Browse persistence does not wait for every product and
+deletion relay to finish, and cached data remains discovery evidence rather
+than purchase authority. Every progressive projection and final resolution
+reconciles currently known deletion evidence.
+
+Content rules remain enabled. Their immutable title, description, and tag
+assessment is reused within the running client; changed content gets a fresh
+assessment. Visibility, usable images, variation context, explicit review
+decisions, signed revisions, expiration, and deletion checks remain separate.
+
+Products hydrate the visible merchants first. Store-menu identities and
+seller-name search hydrate when those surfaces are used. Long directory/menu
+lists mount avatar images near the viewport; profile banners mount on the
+profile route. Kind-0 profile metadata is a complete event, so fetching names
+also receives other metadata fields, but receiving an image URL does not
+download that image.
+
 ## Initial review basis
 
 The 2026-10-03 anonymous public read of `wss://relay.conduit.market` returned

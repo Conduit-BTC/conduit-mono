@@ -85,3 +85,18 @@ export function splitMerchantHydrationTargets({
     backgroundMerchantPubkeys: background,
   }
 }
+
+/** Keep browse profile reads tied to rows the shopper can currently use. */
+export function getBrowseBackgroundHydrationPubkeys(input: {
+  allMerchantPubkeys: readonly string[]
+  menuMerchantPubkeys: readonly string[]
+  selectedMerchantPubkeys: readonly string[]
+  isSearching: boolean
+  storeMenuOpen: boolean
+}): string[] {
+  if (input.isSearching) return [...input.allMerchantPubkeys]
+  if (!input.storeMenuOpen) return []
+  return Array.from(
+    new Set([...input.menuMerchantPubkeys, ...input.selectedMerchantPubkeys])
+  )
+}
