@@ -277,6 +277,14 @@ relay has challenged, accepted auth, or enforced `#p` authorization.
 - Complete failure: zero ACKs throws delivery diagnostics and checkout cannot
   move to payment or claim the order was sent.
 
+Previously staged exact wraps may retain the old Conduit app hostname plus
+Ditto as a bounded historical plan. Their signed bytes and delivery evidence
+are preserved, including late ACKs from an original in-flight attempt. New plans
+use the current app registry, and recovery retries only currently approved
+targets; a retired hostname is not authorized for a new write. Remove this
+historical-plan validator only after retained staged orders no longer require
+recovery. The existing migration lane and its release owner remain unchanged.
+
 ## Review and removal gate
 
 The lane never renews silently. After each named production observation window,

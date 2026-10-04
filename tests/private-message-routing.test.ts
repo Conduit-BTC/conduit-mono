@@ -1495,7 +1495,7 @@ describe("planInboxReadRelays", () => {
     })
 
     expect(plan.relayUrls).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
     ])
   })
@@ -1711,7 +1711,7 @@ describe("selectPrivateMessageDeliveryRoute", () => {
 
     expect(selection.route).toBe("compatibility_order")
     expect(selection.relayUrls).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
     ])
   })

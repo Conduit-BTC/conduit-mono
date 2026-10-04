@@ -357,6 +357,22 @@ describe("merchant product drafts", () => {
     expect(loadProductDraft(draftTarget, storage).draft).toBeNull()
   })
 
+  it("retains all 24 images and verified alternate metadata across draft reload", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const images = Array.from({ length: 24 }, (_, index) => {
+      const sha256 = index.toString(16).padStart(64, "0")
+      return {
+        url: `https://primary.conduit.market/${sha256}.png`,
+        sha256,
+        fallbackUrls: [`https://backup.conduit.market/${sha256}.png`],
+      }
+    })
+    const values = form({ images })
+    expect(saveProductDraft(draftTarget, values, storage)).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft?.images).toEqual(images)
+  })
+
   it("round-trips constrained variation options and overrides", () => {
     const storage = new MemoryStorage()
     const draftTarget = target()

@@ -10,6 +10,10 @@ import {
 import { useEffect, useRef, useState } from "react"
 import {
   MAX_PRODUCT_IMAGE_CANDIDATES,
+  PRODUCT_IMAGE_HOSTING_NOTE,
+  PRODUCT_IMAGE_HOSTING_PLANS_URL,
+  type PreparedProductImage,
+  type ProductImageUploadResult,
   ProductImageUploadError,
   getProductImageUploadErrorMessage,
   normalizePublicMediaUrl,
@@ -46,6 +50,8 @@ interface UploadItem {
   previewUrl: string | null
   status: UploadItemStatus
   error: string | null
+  prepared?: PreparedProductImage
+  result?: ProductImageUploadResult
 }
 
 const UPLOAD_PROGRESS: Record<
@@ -144,16 +150,11 @@ export function ProductImageUrlCollectionField({
   const itemsRef = useRef(new Map<string, UploadItem>())
   const abortControllersRef = useRef(new Map<string, AbortController>())
   const objectUrlsRef = useRef(new Set<string>())
-  const fallbackReleaseRef = useRef({
-    release: upload?.releaseFallbackClaim,
-    scopeId: uploadScopeId,
-  })
   const disposedRef = useRef(false)
   const nextUploadIdRef = useRef(0)
   const [announcement, setAnnouncement] = useState("")
   const [urlEntryOpen, setUrlEntryOpen] = useState(false)
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([])
-  const [fallbackUploadStarted, setFallbackUploadStarted] = useState(false)
 
   const rows =
     images.length > 0
@@ -163,7 +164,7 @@ export function ProductImageUrlCollectionField({
         : []
   const occupiedSlots =
     rows.filter((image) => image.url.trim().length > 0).length +
-    uploadItems.length
+    uploadItems.filter((item) => !item.result).length
   const atLimit = occupiedSlots >= MAX_PRODUCT_IMAGE_CANDIDATES
   const hasValidAdoptedImage = images.some(
     (image) => !!normalizePublicMediaUrl(image.url.trim())
@@ -172,13 +173,6 @@ export function ProductImageUrlCollectionField({
     ? { ...rows[0], url: rows[0].url.trim() }
     : undefined
   const uploadReady = isUploadTargetReady(upload?.target)
-  const fallbackClaimState =
-    upload?.target.kind === "fallback"
-      ? upload.getFallbackClaimState(uploadScopeId)
-      : "available"
-  const fallbackBlocked =
-    upload?.target.kind === "fallback" &&
-    (fallbackUploadStarted || fallbackClaimState === "consumed")
   const canAddUrl =
     rows.length === 0 ||
     !!normalizePublicMediaUrl(rows.at(-1)?.url.trim() ?? "")
@@ -188,13 +182,6 @@ export function ProductImageUrlCollectionField({
   useEffect(() => {
     imagesRef.current = [...images]
   }, [images])
-
-  useEffect(() => {
-    fallbackReleaseRef.current = {
-      release: upload?.releaseFallbackClaim,
-      scopeId: uploadScopeId,
-    }
-  }, [upload?.releaseFallbackClaim, uploadScopeId])
 
   useEffect(() => {
     if (!missingRequiredImage) return
@@ -218,14 +205,9 @@ export function ProductImageUrlCollectionField({
     disposedRef.current = false
     const abortControllers = abortControllersRef.current
     const objectUrls = objectUrlsRef.current
-    const items = itemsRef.current
     return () => {
       disposedRef.current = true
       for (const controller of abortControllers.values()) controller.abort()
-      const { release, scopeId } = fallbackReleaseRef.current
-      for (const itemId of items.keys()) {
-        release?.(scopeId, itemId)
-      }
       for (const objectUrl of objectUrls) URL.revokeObjectURL(objectUrl)
     }
   }, [])
@@ -243,7 +225,10 @@ export function ProductImageUrlCollectionField({
   function updateUrl(index: number, url: string): void {
     const current = rows[index]
     const next = [...rows]
-    next[index] = current?.url === url ? current : { ...current, url }
+    next[index] =
+      current?.url === url
+        ? current
+        : { url, ...(current?.alt ? { alt: current.alt } : {}) }
     commitImages(next)
   }
 
@@ -322,11 +307,31 @@ export function ProductImageUrlCollectionField({
     const item = itemsRef.current.get(itemId)
     if (item) releaseObjectUrl(item.previewUrl)
     itemsRef.current.delete(itemId)
-    if (upload?.releaseFallbackClaim(uploadScopeId, itemId)) {
-      setFallbackUploadStarted(false)
-    }
     setUploadItems(Array.from(itemsRef.current.values()))
     setAnnouncement("Removed unfinished image.")
+  }
+
+  function adoptVerifiedResult(
+    itemId: string,
+    result: ProductImageUploadResult
+  ): void {
+    const item = itemsRef.current.get(itemId)
+    if (!item || disposedRef.current) return
+    const next = [...imagesRef.current]
+    if (item.result) {
+      const index = next.findIndex(
+        (image) => image.url === item.result?.image.url
+      )
+      // Do not resurrect a row the merchant removed or replaced during backup.
+      if (index >= 0) next[index] = { ...next[index], ...result.image }
+    } else {
+      const emptyIndex = next.findIndex((image) => !image.url.trim())
+      if (emptyIndex >= 0) next[emptyIndex] = result.image
+      else if (next.length < MAX_PRODUCT_IMAGE_CANDIDATES)
+        next.push(result.image)
+    }
+    commitImages(next)
+    replaceUploadItem(itemId, (current) => ({ ...current, result }))
   }
 
   async function runUpload(itemId: string): Promise<void> {
@@ -340,10 +345,13 @@ export function ProductImageUrlCollectionField({
       error: null,
     }))
     try {
-      const verifiedUrl = await upload.uploadFile({
+      const result = await upload.uploadFile({
         scopeId: uploadScopeId,
         itemId,
         file: item.file,
+        prepared: item.prepared,
+        previousResult: item.result,
+        onVerified: (result) => adoptVerifiedResult(itemId, result),
         target: item.target,
         signal: controller.signal,
         onPhase: (phase) => {
@@ -359,26 +367,35 @@ export function ProductImageUrlCollectionField({
           objectUrlsRef.current.add(preparedUrl)
           replaceUploadItem(itemId, (current) => {
             releaseObjectUrl(current.previewUrl)
-            return { ...current, previewUrl: preparedUrl }
+            return { ...current, previewUrl: preparedUrl, prepared }
           })
         },
       })
       const active = itemsRef.current.get(itemId)
       if (!active || disposedRef.current) return
-      const next = [...imagesRef.current]
-      const emptyIndex = next.findIndex((image) => !image.url.trim())
-      const insertionIndex = emptyIndex >= 0 ? emptyIndex : next.length
-      if (emptyIndex >= 0) next[emptyIndex] = { url: verifiedUrl }
-      else next.splice(insertionIndex, 0, { url: verifiedUrl })
-      commitImages(next)
-      releaseObjectUrl(active.previewUrl)
-      itemsRef.current.delete(itemId)
-      setUploadItems(Array.from(itemsRef.current.values()))
-      setAnnouncement(
-        insertionIndex === 0
-          ? "Verified image added as the cover."
-          : `Verified image added at position ${insertionIndex + 1}.`
-      )
+      adoptVerifiedResult(itemId, result)
+      const failedCopies = result.copies.filter((copy) => !copy.url)
+      if (failedCopies.length) {
+        replaceUploadItem(itemId, (current) => ({
+          ...current,
+          result,
+          status: "failed",
+          error:
+            "Image is usable. An additional copy needs attention. Retry to finish the backup.",
+        }))
+        setAnnouncement(
+          "Verified image kept. An additional copy needs attention."
+        )
+      } else {
+        releaseObjectUrl(active.previewUrl)
+        itemsRef.current.delete(itemId)
+        setUploadItems(Array.from(itemsRef.current.values()))
+        setAnnouncement(
+          (result.image.fallbackUrls?.length ?? 0) > 0
+            ? "Image verified and backed up."
+            : "Verified image added."
+        )
+      }
     } catch (error) {
       if (disposedRef.current) return
       const cancelled =
@@ -408,15 +425,10 @@ export function ProductImageUrlCollectionField({
     const remaining =
       MAX_PRODUCT_IMAGE_CANDIDATES -
       currentImages.filter((image) => image.url.trim().length > 0).length -
-      itemsRef.current.size
+      [...itemsRef.current.values()].filter((item) => !item.result).length
     const selected = Array.from(files)
-    const allowedCount =
-      selectedTarget.kind === "fallback"
-        ? Math.min(1, remaining)
-        : Math.min(selected.length, remaining)
-    const accepted = selected.slice(0, allowedCount)
+    const accepted = selected.slice(0, Math.max(0, remaining))
     if (accepted.length === 0) return
-    if (selectedTarget.kind === "fallback") setFallbackUploadStarted(true)
 
     const firstEmptyRow = currentImages.findIndex((image) => !image.url.trim())
     const insertionBase =
@@ -510,6 +522,23 @@ export function ProductImageUrlCollectionField({
                   role="group"
                   aria-label={`Reorder image ${index + 1}`}
                 >
+                  {index > 0 ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="min-h-11"
+                      onClick={() => {
+                        const next = [...rows]
+                        const [cover] = next.splice(index, 1)
+                        next.unshift(cover)
+                        commitImages(next)
+                        setAnnouncement(`Image ${index + 1} is now the cover.`)
+                        focusInput(0)
+                      }}
+                    >
+                      Make cover
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     variant="ghost"
@@ -692,7 +721,7 @@ export function ProductImageUrlCollectionField({
               id={`${id}-file`}
               type="file"
               accept="image/jpeg,image/png,image/webp"
-              multiple={upload.target.kind === "configured"}
+              multiple
               className="sr-only"
               tabIndex={-1}
               onChange={(event) => selectFiles(event.target.files)}
@@ -700,9 +729,7 @@ export function ProductImageUrlCollectionField({
             <Button
               ref={uploadButtonRef}
               type="button"
-              disabled={
-                !uploadReady || atLimit || fallbackBlocked || upload.isBusy
-              }
+              disabled={!uploadReady || atLimit || upload.isBusy}
               aria-describedby={
                 missingRequiredImage
                   ? `${id}-upload-help ${requiredErrorId}`
@@ -737,32 +764,14 @@ export function ProductImageUrlCollectionField({
         id={`${id}-upload-help`}
         className="text-pretty text-xs leading-5 text-[var(--text-muted)]"
       >
-        {upload?.target.kind === "configured" ? (
-          `Prepared images upload one at a time through your first configured media server. Add up to ${MAX_PRODUCT_IMAGE_CANDIDATES}; the first image is the cover.`
-        ) : upload?.target.kind === "fallback" &&
-          fallbackClaimState === "retry_same_hash" ? (
-          "Choose the same image to retry the earlier fallback request. A different file will not be sent. Pasted image URLs remain available."
-        ) : upload?.target.kind === "fallback" ? (
-          <>
-            The public fallback permits one uploaded image per listing. For more
-            uploads, compare{" "}
-            <a
-              href="https://account.nostr.build/plans"
-              target="_blank"
-              rel="noreferrer"
-              className="font-medium text-[var(--text-secondary)] underline underline-offset-2"
-            >
-              nostr.build plans
-            </a>
-            . Pasted image URLs do not count toward this limit.
-          </>
-        ) : upload?.target.kind === "pending" ? (
-          "Checking your media server settings. Add by URL remains available."
-        ) : upload ? (
-          "Connect a signer or repair Network settings to upload files. Add by URL remains available."
-        ) : (
-          `Add images one at a time, up to ${MAX_PRODUCT_IMAGE_CANDIDATES}. The first image is the cover.`
-        )}
+        {upload?.target.kind === "configured" ||
+        upload?.target.kind === "fallback"
+          ? `Prepared images upload one at a time through your ${upload.target.kind === "configured" ? "configured media servers" : "app default media servers"}. Add up to ${MAX_PRODUCT_IMAGE_CANDIDATES}; the first image is the cover.`
+          : upload?.target.kind === "pending"
+            ? "Checking your media server settings. Add by URL remains available."
+            : upload
+              ? "Connect a signer or repair Network settings to upload files. Add by URL remains available."
+              : `Add images one at a time, up to ${MAX_PRODUCT_IMAGE_CANDIDATES}. The first image is the cover.`}
       </p>
 
       <div className="grid gap-2">
@@ -780,53 +789,24 @@ export function ProductImageUrlCollectionField({
       </div>
 
       {upload?.target.kind === "fallback" ? (
-        <div className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-3 text-pretty text-xs leading-5 text-[var(--text-secondary)]">
-          <p>
-            No media server is configured, so this file uses{" "}
+        <div className="grid gap-1 text-pretty text-xs leading-5 text-[var(--text-muted)]">
+          <p>{PRODUCT_IMAGE_HOSTING_NOTE}</p>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
             <a
-              href="https://nostr.build/"
-              target="_blank"
-              rel="noreferrer"
-              className="font-medium text-[var(--text-primary)] underline underline-offset-2"
-            >
-              nostr.build
-            </a>
-            &apos;s third-party public{" "}
-            <a
-              href="https://blossom.nostr.build/"
+              href={PRODUCT_IMAGE_HOSTING_PLANS_URL}
               target="_blank"
               rel="noreferrer"
               className="underline underline-offset-2"
             >
-              Blossom service
+              Compare nostr.build plans
             </a>
-            . Availability and retention are not guaranteed. Review its{" "}
-            <a
-              href="https://account.nostr.build/tos"
-              target="_blank"
-              rel="noreferrer"
-              className="underline underline-offset-2"
-            >
-              Terms of Service
-            </a>{" "}
-            and{" "}
-            <a
-              href="https://account.nostr.build/privacy"
-              target="_blank"
-              rel="noreferrer"
-              className="underline underline-offset-2"
-            >
-              Privacy Policy
-            </a>
-            , or configure a media server in{" "}
             <a
               href={networkSettingsHref}
               className="underline underline-offset-2"
             >
-              Network settings
+              Manage media servers
             </a>
-            .
-          </p>
+          </div>
         </div>
       ) : null}
 

@@ -18,9 +18,9 @@ const OWNER = "a".repeat(64)
 const PERSONAL_RELAY = "wss://personal.example"
 const PERSONAL_ONLY_RELAY = "wss://personal-only.example"
 const REMOTE_PERSONAL_OVERLAP_RELAY = "wss://relay.nostr.band"
-const OVERLAP_RELAY = "wss://conduit-congee.fly.dev"
+const OVERLAP_RELAY = "wss://relay.conduit.market"
 const DECLARED_INBOX = "wss://inbox.example"
-const REMOVED_APP_RELAY = "wss://relay.damus.io"
+const REMOVED_APP_RELAY = "wss://relay.primal.net"
 
 function resolution(
   overrides: Partial<InboxDeclarationResolution>
@@ -221,7 +221,7 @@ describe("app relay routing integration", () => {
     ).toEqual([DECLARED_INBOX])
   })
 
-  it("keeps the removed Damus relay out of app config, plans, and personal setup presets", () => {
+  it("keeps the replaced Primal relay out of app config, plans, and personal setup presets", () => {
     const settings = createRelaySettingsFromPreferences([], "published")
     const routingPolicy = {
       appRelaysEnabled: true,

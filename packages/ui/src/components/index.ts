@@ -296,3 +296,5 @@ export {
   type StatusStepperRow,
   type StatusStepperRowStatus,
 } from "./StatusStepper"
+
+export { RecoverableProductImage } from "./RecoverableProductImage"

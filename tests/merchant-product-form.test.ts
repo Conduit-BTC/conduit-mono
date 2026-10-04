@@ -383,7 +383,7 @@ describe("merchant product form validation", () => {
     )
     const tooMany = validate(
       form({
-        images: Array.from({ length: 13 }, (_, index) => ({
+        images: Array.from({ length: 25 }, (_, index) => ({
           url: `https://cdn.conduit.market/image-${index + 1}.jpg`,
         })),
       })
@@ -393,7 +393,7 @@ describe("merchant product form validation", () => {
       "Image URL must start with https://"
     )
     expect(duplicate.errors.images).toBe("Use each image URL only once.")
-    expect(tooMany.errors.images).toBe("Use 12 images or fewer.")
+    expect(tooMany.errors.images).toBe("Use 24 images or fewer.")
   })
 
   it("requires explicit authorization before accepting an existing BTC-native zero price", () => {

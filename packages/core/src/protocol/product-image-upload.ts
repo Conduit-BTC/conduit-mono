@@ -19,7 +19,16 @@ import {
   type SignedNostrEvent,
 } from "./nostr-event-signer"
 
-export const PRODUCT_IMAGE_FALLBACK_SERVER = "https://blossom.nostr.build"
+export const MAX_PRODUCT_IMAGE_COPY_SERVERS = 10
+export const PRODUCT_IMAGE_FALLBACK_SERVER = "https://blossom.ditto.pub"
+/** Runtime defaults; never automatically save or publish as owner preferences. */
+export const PRODUCT_IMAGE_DEFAULT_SERVERS: readonly string[] = [
+  PRODUCT_IMAGE_FALLBACK_SERVER,
+]
+export const PRODUCT_IMAGE_HOSTING_NOTE =
+  "You’re using shared public media hosting. Images may become unavailable or be removed. For more control, consider a paid media plan or your own server."
+export const PRODUCT_IMAGE_HOSTING_PLANS_URL =
+  "https://account.nostr.build/plans"
 export const PRODUCT_IMAGE_UPLOAD_AUTH_TTL_SECONDS = 5 * 60
 export const PRODUCT_IMAGE_SIGNER_TIMEOUT_MS = 60_000
 export const PRODUCT_IMAGE_UPLOAD_CAPABILITY_TIMEOUT_MS = 5_000
@@ -44,10 +53,12 @@ export type ProductImageUploadTarget =
   | {
       kind: "configured"
       serverUrl: string
+      backupServerUrls?: string[]
     }
   | {
       kind: "fallback"
-      serverUrl: typeof PRODUCT_IMAGE_FALLBACK_SERVER
+      serverUrl: string
+      backupServerUrls?: string[]
     }
   | {
       kind: "pending"
@@ -70,9 +81,6 @@ export type ProductImageUploadFailureCode =
   | "encode_failed"
   | "output_too_large"
   | "target_unavailable"
-  | "fallback_limit_reached"
-  | "fallback_retry_mismatch"
-  | "fallback_guard_unavailable"
   | "signer_rejected"
   | "signer_timeout"
   | "signer_unavailable"
@@ -197,12 +205,6 @@ export function getProductImageUploadErrorMessage(
       return "The prepared image is still too large to upload."
     case "target_unavailable":
       return "Image upload is unavailable. Add an image URL or repair Network settings."
-    case "fallback_limit_reached":
-      return "The public fallback permits one file upload for this listing. Add more images by URL or configure a media server."
-    case "fallback_retry_mismatch":
-      return "Choose the same image you previously tried to upload. A different file cannot replace an upload with an unknown outcome."
-    case "fallback_guard_unavailable":
-      return "The public fallback could not preserve retry safety on this device. Add by URL or configure a media server."
     case "signer_rejected":
       return "The signer rejected the image upload authorization."
     case "signer_timeout":
@@ -274,11 +276,11 @@ export function resolveProductImageUploadTarget(input: {
     if (!draftServers || !baseServers || !publishedServers) return null
     if (!sameOrderedMediaServerList(draftServers, baseServers)) return null
     if (!sameOrderedMediaServerList(baseServers, publishedServers)) return null
-    return draftServers[0] ?? null
+    return draftServers.length ? draftServers : null
   })()
-  const publishedServer = resolution.publishedServerUrls
+  const publishedServers = resolution.publishedServerUrls
     .map(normalizeBlossomServerRoot)
-    .find((serverUrl): serverUrl is string => !!serverUrl)
+    .filter((serverUrl): serverUrl is string => !!serverUrl)
   const publishedServerIsSupersededByEmpty = (() => {
     const frontier = resolution.frontier
     const published = resolution.publishedRevision
@@ -289,9 +291,12 @@ export function resolveProductImageUploadTarget(input: {
     }
     return frontier.eventId.localeCompare(published.eventId) < 0
   })()
-  const configuredServer = localServer ?? publishedServer
+  const configuredServers = (localServer ?? publishedServers).slice(
+    0,
+    MAX_PRODUCT_IMAGE_COPY_SERVERS
+  )
   if (
-    configuredServer &&
+    configuredServers.length > 0 &&
     !publishedServerIsSupersededByEmpty &&
     (resolution.status === "published" ||
       resolution.status === "lookup_partial" ||
@@ -301,7 +306,10 @@ export function resolveProductImageUploadTarget(input: {
   ) {
     return {
       kind: "configured",
-      serverUrl: configuredServer,
+      serverUrl: configuredServers[0],
+      ...(configuredServers.length > 1
+        ? { backupServerUrls: configuredServers.slice(1) }
+        : {}),
     }
   }
 
@@ -318,7 +326,10 @@ export function resolveProductImageUploadTarget(input: {
   if (resolution.status === "not_observed" || resolution.status === "empty") {
     return {
       kind: "fallback",
-      serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+      serverUrl: PRODUCT_IMAGE_DEFAULT_SERVERS[0],
+      ...(PRODUCT_IMAGE_DEFAULT_SERVERS.length > 1
+        ? { backupServerUrls: PRODUCT_IMAGE_DEFAULT_SERVERS.slice(1) }
+        : {}),
     }
   }
   return { kind: "pending", reason: "lookup_incomplete" }
@@ -1330,4 +1341,121 @@ export async function uploadPreparedProductImage(
   )
   input.onPhase?.("succeeded")
   return descriptor.url
+}
+
+export interface ProductImageUploadCopy {
+  serverUrl: string
+  url?: string
+  failureCode?: ProductImageUploadFailureCode
+}
+
+export interface ProductImageUploadResult {
+  image: import("../types").ProductImage
+  copies: ProductImageUploadCopy[]
+}
+
+/** Each copy uses the same prepared bytes and its own scoped external-signer authorization. */
+export async function uploadPreparedProductImageCopies(
+  input: UploadPreparedProductImageInput & {
+    previousResult?: ProductImageUploadResult
+    onVerified?: (result: ProductImageUploadResult) => void
+  }
+): Promise<ProductImageUploadResult> {
+  const servers = [
+    input.target.serverUrl,
+    ...(input.target.backupServerUrls ?? []),
+  ]
+  if (
+    servers.length > MAX_PRODUCT_IMAGE_COPY_SERVERS ||
+    new Set(servers).size !== servers.length ||
+    servers.some((server) => normalizeBlossomServerRoot(server) !== server)
+  ) {
+    throw uploadError(
+      "target_unavailable",
+      getProductImageUploadErrorMessage("target_unavailable")
+    )
+  }
+  const copies: ProductImageUploadCopy[] = []
+  // Earlier verified work may be reused only for the exact bytes and provider plan.
+  const previous =
+    input.previousResult?.image.sha256 === input.prepared.sha256
+      ? input.previousResult.copies
+      : []
+  let firstError: unknown
+  const result = (): ProductImageUploadResult | null => {
+    const urls = [
+      ...new Set(copies.flatMap((copy) => (copy.url ? [copy.url] : []))),
+    ]
+    return urls.length
+      ? {
+          image: {
+            url: urls[0],
+            sha256: input.prepared.sha256,
+            fallbackUrls: urls.slice(1),
+          },
+          copies: copies.map((copy) => ({ ...copy })),
+        }
+      : null
+  }
+  for (const serverUrl of servers) {
+    if (input.signal?.aborted || input.shouldContinue?.() === false) {
+      // Preserve already verified copies when a later copy cannot proceed.
+      firstError ??= uploadError(
+        input.signal?.aborted ? "cancelled" : "authority_changed",
+        getProductImageUploadErrorMessage(
+          input.signal?.aborted ? "cancelled" : "authority_changed"
+        )
+      )
+      copies.push({
+        serverUrl,
+        failureCode: input.signal?.aborted ? "cancelled" : "authority_changed",
+      })
+      continue
+    }
+    const retained = previous.find(
+      (copy) =>
+        copy.serverUrl === serverUrl &&
+        !!copy.url &&
+        normalizePublicHttpsUrl(copy.url) === copy.url &&
+        getHashFromURL(copy.url)?.toLowerCase() === input.prepared.sha256
+    )
+    if (retained) {
+      copies.push({ ...retained })
+      continue
+    }
+    try {
+      // External signer requests must stay sequential; earlier success is exposed before backup.
+      // react-doctor-disable-next-line react-doctor/async-await-in-loop
+      const url = await uploadPreparedProductImage({
+        ...input,
+        target: { kind: input.target.kind, serverUrl },
+        onPhase: (phase) => {
+          if (phase !== "succeeded") input.onPhase?.(phase)
+        },
+      })
+      copies.push({ serverUrl, url })
+      const verified = result()
+      if (verified) input.onVerified?.(verified)
+    } catch (error) {
+      firstError ??= error
+      copies.push({
+        serverUrl,
+        failureCode:
+          error instanceof ProductImageUploadError
+            ? error.code
+            : "upload_failed",
+      })
+    }
+  }
+  const verified = result()
+  if (!verified)
+    throw (
+      firstError ??
+      uploadError(
+        "upload_failed",
+        getProductImageUploadErrorMessage("upload_failed")
+      )
+    )
+  input.onPhase?.("succeeded")
+  return verified
 }

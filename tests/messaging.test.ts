@@ -3028,7 +3028,7 @@ describe("publishPrivateMessage", () => {
 
   it("retains the approved compatibility plan and non-ACK outcome for exact retry", async () => {
     const approvedRelays = [
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://recipient-write.example",
     ] as const
     const wrapped = new NDKEvent()

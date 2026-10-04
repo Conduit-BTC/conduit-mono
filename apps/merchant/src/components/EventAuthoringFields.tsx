@@ -69,14 +69,14 @@ export function EventBannerField({
     setError("")
     onBusyChange?.(true)
     try {
-      const url = await upload.uploadFile({
+      const result = await upload.uploadFile({
         scopeId,
         itemId: `${scopeId}:banner`,
         file,
         target,
         onPhase: setPhase,
       })
-      onChange(url)
+      onChange(result.image.url)
     } catch (cause) {
       setError(
         cause instanceof Error

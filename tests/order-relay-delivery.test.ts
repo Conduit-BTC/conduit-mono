@@ -395,8 +395,8 @@ describe("order relay delivery retry", () => {
     expect(attempts).toEqual([relayUrls[1]])
   })
 
-  it("recovers a pre-cutover plan through Ditto without retrying the retired relay", async () => {
-    const formerConduit = "wss://relay.conduit.market"
+  it("recovers a pre-hostname plan through Ditto without retrying the retired relay", async () => {
+    const formerConduit = "wss://conduit-congee.fly.dev"
     const ditto = "wss://relay.ditto.pub"
     const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
     candidate.orderRelayDelivery = {
@@ -427,7 +427,7 @@ describe("order relay delivery retry", () => {
     await resumePendingOrderRelayDeliveries(BUYER, {
       repository: store.repository,
       accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
-      leaseOwner: "pre-cutover-worker",
+      leaseOwner: "pre-hostname-worker",
       now: () => 100,
       publisher: async ({ relayUrl, signedEvent }) => {
         attempts.push(relayUrl)
@@ -460,8 +460,8 @@ describe("order relay delivery retry", () => {
     ])
   })
 
-  it("rejects widened or invalid pre-cutover compatibility records", async () => {
-    const formerConduit = "wss://relay.conduit.market"
+  it("rejects widened or invalid pre-hostname compatibility records", async () => {
+    const formerConduit = "wss://conduit-congee.fly.dev"
     const ditto = "wss://relay.ditto.pub"
     const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
     candidate.orderRelayDelivery = {

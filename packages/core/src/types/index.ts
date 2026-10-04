@@ -99,6 +99,8 @@ export interface Product {
 
 export interface ProductImage {
   url: string
+  sha256?: string
+  fallbackUrls?: string[]
   alt?: string
 }
 
