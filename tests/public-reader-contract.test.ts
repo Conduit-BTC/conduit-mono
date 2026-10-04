@@ -5,6 +5,7 @@ import {
   attachEventSourceRelayUrl,
   closePublicRelayConnections,
   fetchPublicEventsWithDiagnostics,
+  fetchPublicEventsProgressive,
   fetchSignedEventsFanoutDetailed,
   getEventSourceRelayUrls,
   mergeEventSourceRelayUrls,
@@ -16,6 +17,7 @@ import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
   cacheSignedProductListingEvent,
+  getMarketplaceProductsProgressive,
   cacheSignedProductDeletionEvent,
 } from "../packages/core/src/protocol/commerce"
 import {
@@ -32,6 +34,7 @@ import {
   readLatestFollowLists,
 } from "../packages/core/src/protocol/follows"
 import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
+import { getRelayHealth } from "../packages/core/src/protocol/relay-health"
 import { WebSocketCommerceRelayExecutor } from "../packages/core/src/protocol/relay-executor"
 
 // Optional unchanged-main reference. The same wire fixture and normalized
@@ -79,6 +82,7 @@ class Socket {
   constructor(readonly url: string) {
     sockets.push(this)
     queueMicrotask(() => {
+      if (this.readyState === 3) return
       this.readyState = 1
       this.onopen?.(new Event("open"))
     })
@@ -805,3 +809,370 @@ if (!reference) {
     }
   })
 }
+
+if (!reference) {
+  const note = sign(50, 1)
+  for (const fixture of [
+    {
+      name: "disjoint bounded",
+      filters: [
+        { kinds: [0], limit: 1 },
+        { kinds: [1], limit: 1 },
+      ],
+      payload: [first, second, note],
+      expected: [first, note],
+    },
+    {
+      name: "overlapping bounded",
+      filters: [
+        { kinds: [0], limit: 1 },
+        { kinds: [0], limit: 1 },
+      ],
+      payload: [first, second],
+      expected: [first],
+    },
+    {
+      name: "bounded and unbounded",
+      filters: [{ kinds: [0], limit: 1 }, { kinds: [1] }],
+      payload: [first, second, note],
+      expected: [first, note],
+    },
+    {
+      name: "zero and bounded",
+      filters: [
+        { kinds: [0], limit: 0 },
+        { kinds: [1], limit: 1 },
+      ],
+      payload: [first, note],
+      expected: [note],
+    },
+    {
+      name: "zero only",
+      filters: [{ kinds: [0], limit: 0 }],
+      payload: [first],
+      expected: [],
+    },
+  ]) {
+    it(`CON-03 selects each ${fixture.name} filter independently`, async () => {
+      install((socket, id) => {
+        for (const event of fixture.payload) socket.emit(["EVENT", id, event])
+        socket.emit(["EOSE", id])
+      })
+      const result = await read(fixture.filters, options([A]))
+      expect(result.events.map((event) => event.id)).toEqual(
+        fixture.expected.map((event) => event.id)
+      )
+      expect(result.relays[0].eventCount).toBe(fixture.expected.length)
+      expect(result.readCoverage).toBe("complete")
+    })
+  }
+
+  it("CON-03 progressive catalog coverage counts signed revisions rather than delivery copies", async () => {
+    const product = sign(Math.floor(Date.now() / 1000), 30402, [
+      ["d", "progress-copies"],
+      ["title", "Progress fixture"],
+      ["price", "1", "SATS"],
+      ["type", "simple", "physical"],
+      ["image", "https://cdn.conduit.market/conduit-test/product.png"],
+    ])
+    install((socket, id) => {
+      const req = socket.sent.find(
+        (frame) => frame[0] === "REQ" && frame[1] === id
+      )!
+      const limit = (req[2] as { limit: number }).limit
+      for (let i = 0; i < limit; i++) socket.emit(["EVENT", id, product])
+      socket.emit(["EOSE", id])
+    })
+    const sourceCounts: number[] = []
+    __setCommerceTestOverrides({
+      getCachedProducts: async () => [],
+      putCachedProducts: async () => {},
+      getCachedProductTombstones: async () => [],
+      putCachedProductTombstones: async () => {},
+      fetchPublicEventsProgressive: async (filter, opts, progress) =>
+        await fetchPublicEventsProgressive(
+          filter,
+          { ...opts, ...options([A]) },
+          async (value) => {
+            sourceCounts.push(value.events.length)
+            await progress(value)
+          }
+        ),
+    })
+    const result = await getMarketplaceProductsProgressive(
+      { limit: 1 },
+      () => {}
+    )
+    expect(result.data).toHaveLength(1)
+    expect(sourceCounts).toEqual([1])
+    expect(result.meta).toMatchObject({ capped: false, degraded: false })
+  })
+
+  it("CON-03 executor reports selected duplicates once, including copies delivered after a full limit", async () => {
+    install((socket, id) => {
+      for (const event of [first, first, first])
+        socket.emit(["EVENT", id, event])
+      socket.emit(["EOSE", id])
+    })
+    const executor = new WebSocketCommerceRelayExecutor({
+      createWebSocket: (url) => new Socket(url),
+    })
+    try {
+      const result = await executor.query({
+        operation: "public_read",
+        filters: [{ kinds: [0], limit: 1 }],
+        relayUrls: [A, B],
+      })
+      expect(result.events).toHaveLength(1)
+      expect(
+        result.relays.map(({ eventCount, duplicateCount }) => ({
+          eventCount,
+          duplicateCount,
+        }))
+      ).toEqual([
+        { eventCount: 1, duplicateCount: 2 },
+        { eventCount: 0, duplicateCount: 3 },
+      ])
+      expect(
+        result.observations.filter((item) => item.type === "duplicate")
+      ).toHaveLength(5)
+    } finally {
+      executor.dispose()
+    }
+  })
+
+  for (const withEvent of [false, true]) {
+    it(`CON-05 authority loss after EOSE revokes ${withEvent ? "verified" : "empty"} output before callbacks`, async () => {
+      let current = true
+      let callbacks = 0
+      install((socket, id) => {
+        if (withEvent) socket.emit(["EVENT", id, first])
+        socket.emit(["EOSE", id])
+        current = false
+      })
+      await expect(
+        read(
+          { kinds: [0] },
+          {
+            ...options([A]),
+            shouldContinue: () => current,
+            onProgress: () => {
+              callbacks++
+            },
+          }
+        )
+      ).rejects.toMatchObject({ name: "AbortError" })
+      expect(callbacks).toBe(0)
+    })
+  }
+
+  it("CON-05 revoked authority cannot return an empty plan as a successful call", async () => {
+    await expect(
+      read({ kinds: [0] }, { ...options([]), shouldContinue: () => false })
+    ).rejects.toMatchObject({ code: "authority_changed" })
+  })
+
+  it("CON-08 revoked declaration read cannot persist owner evidence", async () => {
+    const event = sign(500, 10002, [["r", A]])
+    let current = true
+    let writes = 0
+    const repository = createInMemoryOwnerRelayListEvidenceRepository()
+    install((socket, id) => {
+      socket.emit(["EVENT", id, event])
+      socket.emit(["EOSE", id])
+      current = false
+    })
+    await expect(
+      resolveOwnerRelayList(event.pubkey, {
+        relayUrls: [A],
+        shouldContinue: () => current,
+        evidenceRepository: {
+          get: repository.get,
+          reconcile: async (input) => {
+            writes++
+            return await repository.reconcile(input)
+          },
+        },
+      })
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(writes).toBe(0)
+  })
+
+  it("CON-05 connection callback errors preserve identity and avoid relay failure penalties", async () => {
+    install((socket, id) => socket.emit(["EOSE", id]))
+    const failure = new Error("connection observer failed")
+    const before = getRelayHealth(A)
+    await expect(
+      read(
+        { kinds: [0] },
+        {
+          ...options([A]),
+          onConnection: () => {
+            throw failure
+          },
+        }
+      )
+    ).rejects.toBe(failure)
+    expect(getRelayHealth(A)).toEqual(before)
+    expect(sockets[0].sent.some((frame) => frame[0] === "REQ")).toBe(false)
+  })
+
+  for (const retirement of ["scope", "global"] as const) {
+    for (const reuseRelayConnections of [false, true]) {
+      it(`CON-06 ${retirement} retirement closes ${reuseRelayConnections ? "pooled" : "private"} sockets while callbacks drain`, async () => {
+        install((socket, id) => socket.emit(["EOSE", id]))
+        const entered = barrier(),
+          released = barrier()
+        const scope = { createWebSocket: (url: string) => new Socket(url) }
+        let settled = false
+        const pending = read(
+          { kinds: [0] },
+          {
+            ...options([A]),
+            socketScope: scope,
+            reuseRelayConnections,
+            onRelayProgress: async () => {
+              entered.release()
+              await released.promise
+            },
+          }
+        )
+          .then(
+            () => null,
+            (error: unknown) => error
+          )
+          .finally(() => {
+            settled = true
+          })
+        await entered.promise
+        try {
+          closePublicRelayConnections(
+            retirement === "scope" ? scope : undefined
+          )
+          expect(sockets.every((socket) => socket.readyState === 3)).toBe(true)
+          expect(settled).toBe(false)
+        } finally {
+          released.release()
+        }
+        expect(await pending).toMatchObject({ name: "AbortError" })
+      })
+
+      it(`CON-06 socket factory cannot register after ${retirement} retirement with reuse=${reuseRelayConnections}`, async () => {
+        install(() => {})
+        const scope = {
+          createWebSocket: (url: string) => {
+            const socket = new Socket(url)
+            closePublicRelayConnections(
+              retirement === "scope" ? scope : undefined
+            )
+            return socket
+          },
+        }
+        await expect(
+          read(
+            { kinds: [0] },
+            { ...options([A]), socketScope: scope, reuseRelayConnections }
+          )
+        ).rejects.toMatchObject({ name: "AbortError" })
+        expect(sockets.every((socket) => socket.readyState === 3)).toBe(true)
+        expect(
+          sockets
+            .flatMap((socket) => socket.sent)
+            .some((frame) => frame[0] === "REQ")
+        ).toBe(false)
+      })
+    }
+  }
+
+  for (const phase of ["planning", "admission"] as const) {
+    it(`CON-06 retirement abandons blocked ${phase} policy reads and permits sibling work`, async () => {
+      install((socket, id) => socket.emit(["EOSE", id]))
+      const entered = barrier(),
+        released = barrier()
+      let gets = 0
+      const urls = Array.from(
+        { length: 8 },
+        (_, i) => `wss://policy-${i}.example`
+      )
+      const scope = { createWebSocket: (url: string) => new Socket(url) }
+      const pending = read(
+        { kinds: [0] },
+        {
+          ...options(urls),
+          socketScope: scope,
+          accountPubkey: first.pubkey,
+          accountNetworkLocalStateRepository: {
+            get: async () => {
+              gets++
+              if (phase === "admission" && gets === 1) return undefined
+              if (gets === (phase === "planning" ? 1 : 9)) entered.release()
+              await released.promise
+              return undefined
+            },
+          },
+        }
+      ).then(
+        () => null,
+        (error: unknown) => error
+      )
+      await entered.promise
+      try {
+        closePublicRelayConnections(scope)
+        const result = await Promise.race([
+          pending,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve("policy still owns retired operation"),
+              100
+            )
+          ),
+        ])
+        expect(result).toMatchObject({ name: "AbortError" })
+        expect((await read({ kinds: [0] }, options([B]))).readCoverage).toBe(
+          "complete"
+        )
+        expect(sockets.every((socket) => socket.url === B)).toBe(true)
+      } finally {
+        released.release()
+        await pending
+      }
+      await Promise.resolve()
+      expect(sockets.every((socket) => socket.url === B)).toBe(true)
+    })
+  }
+}
+
+it("CON-03 multi-filter comparison keeps main truncation separate from fixture selection truth", async () => {
+  const Executor: typeof WebSocketCommerceRelayExecutor = referenceRoot
+    ? (
+        await import(
+          `${referenceRoot}/packages/core/src/protocol/relay-executor.ts`
+        )
+      ).WebSocketCommerceRelayExecutor
+    : WebSocketCommerceRelayExecutor
+  const note = sign(50, 1)
+  install((socket, id) => {
+    for (const event of [first, second, note]) socket.emit(["EVENT", id, event])
+    socket.emit(["EOSE", id])
+  })
+  const executor = new Executor({ createWebSocket: (url) => new Socket(url) })
+  try {
+    const result = await executor.query({
+      relayUrls: [A],
+      operation: "public_read",
+      filters: [
+        { kinds: [0], limit: 1 },
+        { kinds: [1], limit: 1 },
+      ],
+    })
+    expect(result.events.map((event) => event.id)).toEqual(
+      reference ? [first.id, second.id] : [first.id, note.id]
+    )
+    expect(result.status).toBe(reference ? "partial" : "success")
+    expect(result.relays[0].failure).toBe(
+      reference ? "protocol_limit_exceeded" : undefined
+    )
+  } finally {
+    executor.dispose()
+  }
+})

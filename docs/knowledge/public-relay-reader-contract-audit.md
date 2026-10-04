@@ -1,6 +1,7 @@
 # Public reader compatibility audit
 
 Audit source: `f2e6b508326e74bfe64d702ca6dd4487785a6e41`.
+Systematic follow-up source: `5b38a2a4b5fccbecfcee54569956e9dd1da32639`.
 Unchanged-main reference: `6a370e648c3481d723b303de211bb70b401b9597`.
 Two independent read-only audits reconstructed guarantees from the base and
 callers before the consolidated implementation. The ledger supplements
@@ -31,6 +32,23 @@ callers before the consolidated implementation. The ledger supplements
 | D-01    | Material contract choice, correct inherited early settlement         | Already-started async progress is cooperative. Keep operation ownership until it settles; do not claim cancellation stops arbitrary caller code. Barrier proofs cover deferred refresh and retirement.                                                                                                                                                                                                               |
 | F-05    | Defect against CON-06/D-01; early rejection also present on main     | A sibling rejection lets fanout settle and deregister ownership while another source's callback is still running. Retire sibling I/O immediately, drain all started attempts, stop backfill and preserve the first failure before releasing ownership. Five new barrier cases failed before the correction.                                                                                                          |
 | F-06    | Introduced protected-read boundary defect                            | The protected executor spreads unsigned wire padding into authenticated wraps, exhausting handoff recovery storage for a valid signed event. Project exactly seven signed fields with detached tags at the protected executor boundary. A real local encrypted wrap with more than 1 MiB unsigned padding failed the recovery budget before the fix; it now persists and decrypts after a relay-unavailable restart. |
+
+The systematic follow-up inspected every changed production caller and the
+unchanged provenance consumers, then crossed the ownership transitions with
+shared/private pools, blocked storage, callback failures and authority loss.
+All findings were collected on the frozen follow-up source before editing.
+
+| Finding          | Classification                                               | Root cause and disposition                                                                                                                                                                                                                                                                                                                                |
+| ---------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F-07 / CON-06    | Incomplete operation ownership                               | Retirement tracked scopes but omitted per-operation socket pools; a reentrant socket factory could also register after retirement. Track actual pools through settlement, close private sockets immediately on abort and fence registration after factory return. Scoped/global and pooled/private barrier cases cover both triggers.                     |
+| F-08 / CON-05,08 | Inherited authority defect                                   | Authority loss after EOSE skipped callbacks but returned success, allowing declaration evidence persistence. Check authority before progress and terminal return, including empty plans. Empty/verified results and composed owner persistence regressions cover the boundary. In-flight source exclusion changes retain their existing admission policy. |
+| F-09 / CON-05    | Introduced callback error-routing defect                     | Connection observer exceptions were caught as transport failures. Preserve the original caller failure without penalizing relay health; use the same first-failure/drain behavior as later callbacks.                                                                                                                                                     |
+| F-10 / CON-06    | Inherited cancellation-liveness gap                          | Blocked policy-storage reads retained retired operation ownership and all eight execution slots. Abandon read-only planning/admission waits on cancellation, consume their eventual rejection and prohibit later I/O. Caller progress promises still drain cooperatively. Barrier proofs retain the blocked storage while a sibling read completes.       |
+| F-11 / CON-03,04 | Aggregate filter-limit defect and compatibility disagreement | Summed limits let one filter crowd out another; overlap, zero and mixed bounded/unbounded filters were also incorrect. Select the union of independently limited distinct matches. Keep normal bounded EOSE success separate from wire/signature resource exhaustion and from domain cap checks.                                                          |
+| F-12 / CON-03,08 | Incomplete distinct-event migration                          | Duplicate-filled per-source progress caused catalog cap checks to disagree with corrected source counts. Return unique progress events and carry duplicate counts separately, consumed exactly once by the executor. A composed catalog fixture with 100 copies now returns one uncapped product; distinct revisions remain distinct.                     |
+
+The follow-up regression set had 18 failing cases before the batch. Its passing
+controls also cover private/pool isolation and existing callback ownership.
 
 No optional cleanup is included. Previously resolved paging, observation-index,
 malformed-frame, injected-socket and retirement findings remain covered by their
@@ -73,3 +91,21 @@ for deletion authority; [NIP-65](https://github.com/nostr-protocol/nips/blob/mas
 and [NIP-17](https://github.com/nostr-protocol/nips/blob/master/17.md) for separate
 public declaration and protected inbox ownership. Public NIP-44 v2 and
 capability-gated v3 planning are unchanged.
+
+## Systematic edge coverage
+
+| Boundary                                                     | Executable evidence / disposition                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire fields → verification → cache → serialization           | CON-01/02 hostile metadata, signature/cache and mutation fixtures; protected encrypted-wrap storage/reload; no additional defect found.                                                                                                                                                                                                                               |
+| Filter matching → ordering → selection → coverage            | CON-03 disjoint/overlapping/mixed/zero filters, cold/warm duplicate proofs, progressive catalog and executor copy counts; F-11/F-12 fixed.                                                                                                                                                                                                                            |
+| Planning → queue → admission → socket creation               | CON-06 eight occupied slots, queued cancellation, blocked planning/admission and reentrant factory retirement; F-07/F-10 fixed.                                                                                                                                                                                                                                       |
+| Connection → EOSE/verification → callbacks → terminal result | CON-05 original observer error and health, post-EOSE authority loss, empty plans, composed declaration persistence; F-08/F-09 fixed.                                                                                                                                                                                                                                  |
+| Explicit retirement → callback drain → refresh → reuse       | CON-06 scoped/global, pooled/private, sibling errors, cooperative callbacks and new reads; F-05/F-07 fixed.                                                                                                                                                                                                                                                           |
+| Plain outputs → domain authority                             | Changed caller inventory plus unchanged follows/media/Account Network consumers inspected; profile frontiers, declarations, product/deletion caches, shipping readiness, Event Market roster/merchandise, receipt authority and protected recovery remain domain-owned. Existing consumer suites and complete controlled browser journeys supply executable evidence. |
+
+No additional concrete defect was found in the inspected canonicalization,
+provenance, protected serialization or caller migration paths. This is a bounded
+contract audit, not a claim that all possible interleavings or external systems
+were exercised. Live signer/device/relay/payment interoperability, current-head
+CI and maintainer approval remain separate gates; a clean automated comment
+cannot supply those approvals.

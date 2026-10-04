@@ -124,3 +124,20 @@ padding cannot enter authenticated handoff evidence or consume its recovery
 storage budget. The composed regression uses local encrypted gift wraps and
 signer-backed storage recovery; it does not establish live relay or device
 interoperability.
+
+Independent filters retain independent distinct-event limits, including zero
+and mixed bounded/unbounded requests; the output is their selected union.
+Per-source progress arrays are unique just like terminal arrays. Duplicate
+counts remain separate observations, including selected copies delivered after
+the filter fills. Domain cap checks therefore see signed revisions, not copies.
+
+Operation ownership includes the actual shared or private socket pool. Explicit
+retirement closes both before cooperative callbacks settle, and a reentrant
+socket factory cannot register a connection into a retired pool. Read-only
+policy-storage awaits are cancellable during planning and final admission, so
+retired reads release execution slots even if storage has not returned. An
+already-started storage promise may finish internally, but cannot initiate I/O.
+Live session authority is checked before progress and final return; connection
+observer exceptions preserve caller error identity without recording a relay
+outage. These rules do not change the separate policy that an already-admitted
+relay may finish after another tab changes a whole-relay exclusion.

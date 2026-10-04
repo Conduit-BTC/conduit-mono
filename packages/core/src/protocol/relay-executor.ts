@@ -1271,7 +1271,11 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             (entry) => entry.relayUrl === progress.relayUrl
           )
           if (!source) throw new Error("Missing public relay outcome.")
-          observeSource(source, progress.events)
+          observeSource(
+            source,
+            progress.events,
+            source.duplicateEventCount ?? 0
+          )
         },
         onConnection: (url) =>
           observe({

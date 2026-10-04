@@ -247,7 +247,10 @@ const relayReadWaiters: RelayReadWaiter[] = []
 // callbacks after that slot is released. Retirement must cover that lifetime.
 const publicReadOperations = new Map<
   AbortController,
-  PublicRelayReadSocketScope | undefined
+  {
+    scope?: PublicRelayReadSocketScope
+    connections: Map<string, RelayConnection>
+  }
 >()
 
 function abortError(): Error {
@@ -258,6 +261,35 @@ function abortError(): Error {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortError()
+}
+
+// Policy storage only reads local state. Cancellation may abandon that wait;
+// already-started caller callbacks still drain cooperatively.
+function awaitReadPolicy<T>(
+  pending: Promise<T>,
+  signal?: AbortSignal
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(abortError())
+    if (signal?.aborted) abort()
+    else signal?.addEventListener("abort", abort, { once: true })
+    pending.then(
+      (value) => {
+        signal?.removeEventListener("abort", abort)
+        resolve(value)
+      },
+      (error: unknown) => {
+        signal?.removeEventListener("abort", abort)
+        reject(error)
+      }
+    )
+  })
+}
+
+class RelayReadCallbackError extends Error {
+  constructor(readonly reason: unknown) {
+    super("Public relay observer failed.")
+  }
 }
 
 function isAbortError(error: unknown): boolean {
@@ -360,7 +392,7 @@ function requestedEventLimit(filter: Filter | Filter[]): number | null {
   }
   return typeof filter.limit === "number" &&
     Number.isSafeInteger(filter.limit) &&
-    filter.limit > 0
+    filter.limit >= 0
     ? filter.limit
     : null
 }
@@ -829,7 +861,8 @@ function scheduleRelayConnectionIdleClose(
 function getRelayConnection(
   url: string,
   connections: Map<string, RelayConnection>,
-  socketScope?: PublicRelayReadSocketScope
+  socketScope?: PublicRelayReadSocketScope,
+  signal?: AbortSignal
 ): RelayConnection {
   if (config.e2eRelayIsolationEnabled) {
     const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
@@ -960,6 +993,12 @@ function getRelayConnection(
     // Rejection is handled per-read; swallow here to avoid unhandled rejection.
   })
 
+  // An injected factory can retire the operation before returning its socket.
+  // Fence registration so that socket cannot escape the retired pool.
+  if (signal?.aborted) {
+    dropRelayConnection(conn, connections, "cancelled")
+    throw abortError()
+  }
   connections.set(url, conn)
   return conn
 }
@@ -968,8 +1007,9 @@ function closeRelayConnections(
   connections: Map<string, RelayConnection>
 ): void {
   for (const conn of [...connections.values()]) {
-    // Deliberate client teardown revokes pending reads without declaring a
-    // relay outage. Remote closes and transport guards retain the drop path.
+    // Close subscriptions while the socket is still writable, then retire it.
+    // Deliberate teardown is cancellation, never a relay-health failure.
+    for (const sub of [...conn.subs.values()]) sub.end("cancelled")
     dropRelayConnection(conn, connections, "cancelled")
   }
   connections.clear()
@@ -977,7 +1017,10 @@ function closeRelayConnections(
 
 function closeAllRelayConnections(): void {
   relaySettingsRefreshPending = false
-  for (const controller of [...publicReadOperations.keys()]) controller.abort()
+  for (const [controller, operation] of [...publicReadOperations]) {
+    controller.abort()
+    closeRelayConnections(operation.connections)
+  }
   closeRelayConnections(relayConnections)
   for (const connections of scopedPublicConnections.values())
     closeRelayConnections(connections)
@@ -1038,7 +1081,7 @@ function readRelayEvents(
   }
 
   return new Promise((resolve, reject) => {
-    const conn = getRelayConnection(relayUrl, connections, socketScope)
+    const conn = getRelayConnection(relayUrl, connections, socketScope, signal)
     if (conn.idleTimer) {
       clearTimeout(conn.idleTimer)
       conn.idleTimer = undefined
@@ -1205,53 +1248,65 @@ function readRelayEvents(
       connectTimeoutMs
     )
 
-    conn.ready
-      .then(() => {
-        if (connectTimer) {
-          clearTimeout(connectTimer)
-          connectTimer = undefined
-        }
-        if (settled) return
-        if (conn.closed || conn.ws.readyState !== WEBSOCKET_OPEN) {
-          finish(false)
-          return
-        }
-        if (isRelayRateLimited(relayUrl)) {
-          finish(false, false, "rate_limited")
-          return
-        }
-        if (bounds.shouldContinue?.() === false) {
-          cancel()
-          return
-        }
-        onConnection?.(relayUrl)
-        // Observers can cancel or retire the connection reentrantly. Fence
-        // final I/O again before creating a timer or sending the subscription.
-        if (settled || signal?.aborted || bounds.shouldContinue?.() === false) {
-          cancel()
-          return
-        }
-        if (conn.closed || conn.ws.readyState !== WEBSOCKET_OPEN) {
-          finish(false)
-          return
-        }
-        fetchTimer = setTimeout(
-          () => finish(false, false, undefined, "timeout"),
-          fetchTimeoutMs
-        )
+    conn.ready.then(
+      () => {
         try {
-          conn.ws.send(
-            JSON.stringify([
-              "REQ",
-              subId,
-              ...(Array.isArray(filter) ? filter : [filter]),
-            ])
+          if (connectTimer) {
+            clearTimeout(connectTimer)
+            connectTimer = undefined
+          }
+          if (settled) return
+          if (conn.closed || conn.ws.readyState !== WEBSOCKET_OPEN) {
+            finish(false)
+            return
+          }
+          if (isRelayRateLimited(relayUrl)) {
+            finish(false, false, "rate_limited")
+            return
+          }
+          if (bounds.shouldContinue?.() === false) {
+            cancel()
+            return
+          }
+          onConnection?.(relayUrl)
+          // Observers can cancel or retire the connection reentrantly. Fence
+          // final I/O again before creating a timer or sending the subscription.
+          if (
+            settled ||
+            signal?.aborted ||
+            bounds.shouldContinue?.() === false
+          ) {
+            cancel()
+            return
+          }
+          if (conn.closed || conn.ws.readyState !== WEBSOCKET_OPEN) {
+            finish(false)
+            return
+          }
+          fetchTimer = setTimeout(
+            () => finish(false, false, undefined, "timeout"),
+            fetchTimeoutMs
           )
-        } catch {
-          finish(false)
+          try {
+            conn.ws.send(
+              JSON.stringify([
+                "REQ",
+                subId,
+                ...(Array.isArray(filter) ? filter : [filter]),
+              ])
+            )
+          } catch {
+            finish(false)
+          }
+        } catch (error) {
+          if (settled) return
+          settled = true
+          cleanup()
+          reject(new RelayReadCallbackError(error))
         }
-      })
-      .catch(() => finish(false))
+      },
+      () => finish(false)
+    )
   })
 }
 
@@ -1309,16 +1364,19 @@ async function fetchEventsFromRelay(
       admittedRelayUrl =
         normalizeSecureOrIsolatedE2eRelayUrls([relayUrl])[0] ?? null
     } else {
-      const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
-        accountPubkey: options.accountPubkey,
-        authenticatedPubkey: options.authenticatedPubkey,
-        candidateRelayUrls: [relayUrl],
-        ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-        appRelayUrls: options.appRelayUrls,
-        personalRelayUrls: options.personalRelayUrls,
-        independentRelayUrls: options.independentRelayUrls,
-        repository: options.accountNetworkLocalStateRepository,
-      })
+      const eligibleRelayUrls = await awaitReadPolicy(
+        filterEligibleAccountRelayUrls({
+          accountPubkey: options.accountPubkey,
+          authenticatedPubkey: options.authenticatedPubkey,
+          candidateRelayUrls: [relayUrl],
+          ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
+          appRelayUrls: options.appRelayUrls,
+          personalRelayUrls: options.personalRelayUrls,
+          independentRelayUrls: options.independentRelayUrls,
+          repository: options.accountNetworkLocalStateRepository,
+        }),
+        options.signal
+      )
       admittedRelayUrl = eligibleRelayUrls[0] ?? null
     }
     // Eligibility is re-read only after this attempt owns an execution slot.
@@ -1415,18 +1473,38 @@ async function fetchEventsFromRelay(
       verifiedEventProofs.add(verificationProofKey(orderedEvents[i]))
     }
 
-    const eventLimit = requestedEventLimit(filter)
+    // A filter's limit belongs to that filter, not to a global bag. Select
+    // the union of its ordered distinct matches; copies stay in observations.
+    const selections = (Array.isArray(filter) ? filter : [filter]).map(
+      (item) => ({
+        filter: item,
+        limit: requestedEventLimit(item),
+        ids: new Set<string>(),
+      })
+    )
     const verified: SignedPublicNostrEvent[] = []
     const uniqueIds = new Set<string>()
     let duplicateEventCount = 0
     for (let i = 0; i < orderedEvents.length; i++) {
       if (!accepted[i]) continue
-      const event = copySignedEvent(orderedEvents[i])
-      if (uniqueIds.has(event.id)) duplicateEventCount += 1
+      const raw = orderedEvents[i]
+      if (uniqueIds.has(raw.id)) {
+        duplicateEventCount += 1
+        continue
+      }
+      let selected = false
+      for (const selection of selections) {
+        if (selection.limit !== null && selection.ids.size >= selection.limit)
+          continue
+        if (!matchFilter(selection.filter, raw)) continue
+        selection.ids.add(raw.id)
+        selected = true
+      }
+      if (!selected) continue
+      const event = copySignedEvent(raw)
       uniqueIds.add(event.id)
       attachEventSourceRelayUrl(event, admittedRelayUrl)
       verified.push(event)
-      if (eventLimit !== null && uniqueIds.size >= eventLimit) break
     }
     const rejectedEventCount = accepted.reduce(
       (count, isAccepted) => count + (isAccepted ? 0 : 1),
@@ -1468,6 +1546,7 @@ async function fetchEventsFromRelay(
       ...(failureReason ? { failureReason } : {}),
     }
   } catch (error) {
+    if (error instanceof RelayReadCallbackError) throw error.reason
     if (options.signal?.aborted || isAbortError(error)) throw error
     if (
       error instanceof NostrSignerError &&
@@ -1708,7 +1787,7 @@ export async function fetchSignedEventsFanoutDetailed(
     const relays = results.map((result) => ({
       relayUrl: result.relayUrl,
       status: result.status,
-      eventCount: result.events.length - (result.duplicateEventCount ?? 0),
+      eventCount: result.events.length,
       rejectedEventCount: result.rejectedEventCount,
       malformedEventCount: result.malformedEventCount ?? 0,
       unusableEventCount: result.unusableEventCount ?? 0,
@@ -1765,11 +1844,25 @@ export async function fetchSignedEventsFanoutDetailed(
   const abort = () => controller.abort()
   if (callerSignal?.aborted) controller.abort()
   else callerSignal?.addEventListener("abort", abort, { once: true })
-  publicReadOperations.set(controller, options.socketScope)
+  const closePrivateConnections = () => {
+    if (connections !== sharedConnections) closeRelayConnections(connections)
+  }
+  controller.signal.addEventListener("abort", closePrivateConnections, {
+    once: true,
+  })
+  publicReadOperations.set(controller, {
+    scope: options.socketScope,
+    connections,
+  })
   let cancellationAtFailure: boolean | undefined
   options = { ...options, signal: controller.signal }
   try {
-    const plan = await resolveFanoutRelayPlan(options)
+    if (options.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const plan = await awaitReadPolicy(
+      resolveFanoutRelayPlan(options),
+      options.signal
+    )
     relayUrls = plan.relayUrls
     throwIfAborted(options.signal)
     const settled = await runBoundedRelayAttempts(
@@ -1793,21 +1886,20 @@ export async function fetchSignedEventsFanoutDetailed(
         results.push(result)
         mergeEventsInto(merged, result.events)
         throwIfAborted(options.signal)
-        if (options.shouldContinue?.() !== false) {
-          const progress = snapshot("progressive")
-          options.onProgress?.(progress)
-          throwIfAborted(options.signal)
-          if (options.shouldContinue?.() === false) throw abortError()
-          await options.onRelayProgress?.({
-            relayUrl: result.relayUrl,
-            events: result.events,
-            mergedEvents: progress.events,
-            status: result.status,
-            result: progress,
-          })
-          throwIfAborted(options.signal)
-          if (options.shouldContinue?.() === false) throw abortError()
-        }
+        if (options.shouldContinue?.() === false) throw abortError()
+        const progress = snapshot("progressive")
+        options.onProgress?.(progress)
+        throwIfAborted(options.signal)
+        if (options.shouldContinue?.() === false) throw abortError()
+        await options.onRelayProgress?.({
+          relayUrl: result.relayUrl,
+          events: result.events,
+          mergedEvents: progress.events,
+          status: result.status,
+          result: progress,
+        })
+        throwIfAborted(options.signal)
+        if (options.shouldContinue?.() === false) throw abortError()
         return result
       },
       (reason) => {
@@ -1817,6 +1909,7 @@ export async function fetchSignedEventsFanoutDetailed(
       }
     )
     throwIfAborted(options.signal)
+    if (options.shouldContinue?.() === false) throw abortError()
     results.splice(0, results.length, ...settled)
     return snapshot("terminal")
   } catch (error) {
@@ -1881,8 +1974,11 @@ export function closePublicRelayConnections(
   scope?: PublicRelayReadSocketScope
 ): void {
   if (scope) {
-    for (const [controller, operationScope] of publicReadOperations)
-      if (operationScope === scope) controller.abort()
+    for (const [controller, operation] of [...publicReadOperations]) {
+      if (operation.scope !== scope) continue
+      controller.abort()
+      closeRelayConnections(operation.connections)
+    }
     const connections = scopedPublicConnections.get(scope)
     if (connections) closeRelayConnections(connections)
     scopedPublicConnections.delete(scope)
