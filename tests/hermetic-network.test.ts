@@ -207,6 +207,103 @@ test.each([false, true])(
 )
 
 describe("local resource failure remains scoped to its source document", () => {
+  test.each([
+    {
+      operation: "fetch",
+      failure: new Error("connect ECONNREFUSED private-target"),
+      category: "connection_refused",
+    },
+    {
+      operation: "deliver",
+      failure: new Error("read ECONNRESET private-target"),
+      category: "connection_reset",
+    },
+    {
+      operation: "dispose",
+      failure: new Error(
+        "Target page, context or browser has been closed private-target"
+      ),
+      category: "request_context_closed",
+    },
+    {
+      operation: "fetch",
+      failure: new Error("private-transport-sentinel"),
+      category: "transport_other",
+    },
+  ] as const)(
+    "reports a closed classification before a current-document $operation failure ($category)",
+    async ({ operation, failure, category }) => {
+      let handler: ((route: Route) => Promise<void>) | undefined
+      const marker = randomUUID()
+      const sourcePage = { isClosed: () => false }
+      const sourceFrame = {
+        page: () => sourcePage,
+        isDetached: () => false,
+        evaluate: async () => marker,
+      }
+      let diagnostic: unknown
+      await installHermeticCommerceNetwork(
+        {
+          addInitScript: async () => {},
+          route: async (_match: string, value: typeof handler) => {
+            handler = value
+          },
+          routeWebSocket: async () => {},
+        } as unknown as BrowserContext,
+        {
+          ...options,
+          onLocalFailure: (value: unknown) => {
+            diagnostic = value
+            if (operation === "dispose") {
+              throw new Error("Diagnostic adapters cannot change isolation.")
+            }
+          },
+        }
+      )
+      let fallbackAttempts = 0
+      const request = handler!({
+        request: () => ({
+          url: () => `${options.appUrls[0]}/current-document-module.js`,
+          method: () => "GET",
+          isNavigationRequest: () => false,
+          frame: () => sourceFrame,
+        }),
+        fetch: async () => {
+          if (operation === "fetch") {
+            throw failure
+          }
+          return {
+            status: () => 200,
+            dispose: async () => {
+              if (operation === "dispose") {
+                throw failure
+              }
+            },
+          }
+        },
+        fulfill: async () => {
+          if (operation === "deliver") {
+            throw failure
+          }
+        },
+        abort: async () => {},
+        continue: async () => {
+          fallbackAttempts += 1
+        },
+      } as unknown as Route)
+
+      await expect(request).rejects.toThrow(
+        "Isolated local application request failed."
+      )
+      expect(diagnostic).toEqual({
+        operation,
+        source: "current_document",
+        category,
+      })
+      expect(fallbackAttempts).toBe(0)
+    }
+  )
+
   test("binds a resource to its original document before asynchronous fixture inspection", async () => {
     let handler: ((route: Route) => Promise<void>) | undefined
     let releaseFixture!: () => void
@@ -549,31 +646,65 @@ describe("local resource failure remains scoped to its source document", () => {
   })
 
   test.each([
-    { scenario: "current document", harmless: false },
-    { scenario: "same-document history change", harmless: false },
+    {
+      scenario: "current document",
+      harmless: false,
+      source: "current_document",
+    },
+    {
+      scenario: "same-document history change",
+      harmless: false,
+      source: "current_document",
+    },
     { scenario: "new document in source frame", harmless: true },
-    { scenario: "new document only in another frame", harmless: false },
-    { scenario: "navigation request with changed document", harmless: false },
+    {
+      scenario: "new document only in another frame",
+      harmless: false,
+      source: "current_document",
+    },
+    {
+      scenario: "navigation request with changed document",
+      harmless: false,
+      source: "navigation",
+    },
     {
       scenario: "navigation request after all pages close",
       harmless: false,
       allPagesClosed: true,
+      source: "navigation",
     },
-    { scenario: "missing original marker", harmless: false },
-    { scenario: "missing current marker", harmless: false },
+    {
+      scenario: "missing original marker",
+      harmless: false,
+      source: "source_unavailable",
+    },
+    {
+      scenario: "missing current marker",
+      harmless: false,
+      source: "current_unavailable",
+    },
     { scenario: "source frame detached", harmless: true },
     {
       scenario: "source page closed with another page open",
       harmless: true,
       abortThrows: true,
     },
-    { scenario: "source frame unavailable", harmless: false },
+    {
+      scenario: "source frame unavailable",
+      harmless: false,
+      source: "source_unavailable",
+    },
     {
       scenario: "source frame unavailable after all pages close",
       harmless: false,
       allPagesClosed: true,
+      source: "source_unavailable",
     },
-    { scenario: "document marker read unavailable", harmless: false },
+    {
+      scenario: "document marker read unavailable",
+      harmless: false,
+      source: "source_unavailable",
+    },
   ])("$scenario", async (testCase) => {
     const { scenario, harmless } = testCase
     const allPagesClosed =
@@ -588,6 +719,7 @@ describe("local resource failure remains scoped to its source document", () => {
     let abortAttempts = 0
     let fallbackAttempts = 0
     let fetchAttempts = 0
+    let diagnostic: unknown
     const otherFrame = { evaluate: async () => otherDocumentMarker }
     const sourcePage = {
       isClosed: () => sourceClosed,
@@ -615,7 +747,12 @@ describe("local resource failure remains scoped to its source document", () => {
         pages: () =>
           allPagesClosed ? [] : [sourcePage, { isClosed: () => false }],
       } as unknown as BrowserContext,
-      options
+      {
+        ...options,
+        onLocalFailure: (value: unknown) => {
+          diagnostic = value
+        },
+      }
     )
     const result = handler!({
       request: () => ({
@@ -674,6 +811,15 @@ describe("local resource failure remains scoped to its source document", () => {
     expect(fetchAttempts).toBe(1)
     expect(abortAttempts).toBe(harmless ? 1 : 0)
     expect(fallbackAttempts).toBe(0)
+    expect(diagnostic).toEqual(
+      harmless
+        ? undefined
+        : {
+            operation: "fetch",
+            source: "source" in testCase ? testCase.source : undefined,
+            category: "transport_other",
+          }
+    )
   })
 })
 

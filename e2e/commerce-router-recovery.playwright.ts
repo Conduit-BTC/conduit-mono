@@ -36,8 +36,10 @@ import {
   type HermeticLnurlIssuedInvoice,
 } from "./helpers/hermetic-lnurl"
 import {
+  HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS,
   createHermeticCommerceNetworkPolicy,
   installHermeticCommerceNetwork,
+  type HermeticNetworkFailureDiagnostic,
 } from "./helpers/hermetic-network"
 import { createHermeticSparkNative } from "./helpers/hermetic-spark-native"
 import { installPersistenceReloadBarrier } from "./helpers/persistence-reload-barrier"
@@ -278,6 +280,27 @@ async function rehearseRouter(
   }
   const contexts: BrowserContext[] = []
   const beginNetworkTeardown = new Map<BrowserContext, () => void>()
+  let recordedNetworkFailure = false
+  const recordNetworkFailure = (
+    diagnostic: HermeticNetworkFailureDiagnostic
+  ) => {
+    if (recordedNetworkFailure) return
+    recordedNetworkFailure = true
+    test.info().annotations.push(
+      {
+        type: HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.operation,
+        description: diagnostic.operation,
+      },
+      {
+        type: HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.source,
+        description: diagnostic.source,
+      },
+      {
+        type: HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.category,
+        description: diagnostic.category,
+      }
+    )
+  }
   let identity: string | undefined
   let grossFundingSats: number | undefined
   const native = createHermeticSparkNative({
@@ -355,6 +378,7 @@ async function rehearseRouter(
       await installHermeticCommerceNetwork(merchantContext, {
         ...networkOptions,
         lnurl: lnurl.respond,
+        onLocalFailure: recordNetworkFailure,
       })
     )
     await installHermeticSparkTransport(merchantContext, transport, {
@@ -408,6 +432,7 @@ async function rehearseRouter(
       await installHermeticCommerceNetwork(buyerContext, {
         ...networkOptions,
         lnurl: lnurl.respond,
+        onLocalFailure: recordNetworkFailure,
       })
     )
     await installHermeticSparkTransport(buyerContext, transport, {
@@ -618,6 +643,7 @@ async function rehearseRouter(
         await installHermeticCommerceNetwork(coldContext, {
           ...networkOptions,
           lnurl: lnurl.respond,
+          onLocalFailure: recordNetworkFailure,
         })
       )
       await installHermeticSparkTransport(coldContext, transport, {

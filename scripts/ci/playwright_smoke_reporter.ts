@@ -12,6 +12,13 @@ import type {
   TestError,
   TestResult,
 } from "@playwright/test/reporter"
+import {
+  HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS,
+  HERMETIC_NETWORK_FAILURE_CATEGORIES,
+  HERMETIC_NETWORK_FAILURE_OPERATIONS,
+  HERMETIC_NETWORK_FAILURE_SOURCES,
+  type HermeticNetworkFailureDiagnostic,
+} from "../../e2e/helpers/hermetic-network"
 
 type ReporterOptions = {
   outputFile: string
@@ -31,6 +38,7 @@ type SafeLocation = {
 }
 
 type SafeResult = {
+  diagnostic?: HermeticNetworkFailureDiagnostic
   duration: number
   error?: { location: SafeLocation }
   retry: number
@@ -59,6 +67,15 @@ const approvedProjects = new Set([
   "mobile-chromium",
   "mobile-webkit",
 ])
+const approvedHermeticNetworkOperations = new Set<string>(
+  HERMETIC_NETWORK_FAILURE_OPERATIONS
+)
+const approvedHermeticNetworkSources = new Set<string>(
+  HERMETIC_NETWORK_FAILURE_SOURCES
+)
+const approvedHermeticNetworkCategories = new Set<string>(
+  HERMETIC_NETWORK_FAILURE_CATEGORIES
+)
 const redactedTitle = "redacted smoke test"
 const gitObjectIdPattern = /^[0-9a-f]{40}$/
 const unsafeTitlePatterns = [
@@ -250,6 +267,45 @@ function safeLocation(
   }
 }
 
+function safeHermeticNetworkDiagnostic(
+  annotations: TestResult["annotations"] | undefined
+): HermeticNetworkFailureDiagnostic | undefined {
+  const operations = (annotations ?? []).filter(
+    ({ type }) => type === HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.operation
+  )
+  const sources = (annotations ?? []).filter(
+    ({ type }) => type === HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.source
+  )
+  const categories = (annotations ?? []).filter(
+    ({ type }) => type === HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.category
+  )
+  if (
+    operations.length !== 1 ||
+    sources.length !== 1 ||
+    categories.length !== 1
+  ) {
+    return undefined
+  }
+  const operation = operations[0]?.description
+  const source = sources[0]?.description
+  const category = categories[0]?.description
+  if (
+    !operation ||
+    !source ||
+    !category ||
+    !approvedHermeticNetworkOperations.has(operation) ||
+    !approvedHermeticNetworkSources.has(source) ||
+    !approvedHermeticNetworkCategories.has(category)
+  ) {
+    return undefined
+  }
+  return {
+    operation: operation as HermeticNetworkFailureDiagnostic["operation"],
+    source: source as HermeticNetworkFailureDiagnostic["source"],
+    category: category as HermeticNetworkFailureDiagnostic["category"],
+  }
+}
+
 /**
  * CI evidence reporter with an intentionally narrow schema.
  *
@@ -307,8 +363,9 @@ export class PrivacySafeSmokeReporter implements Reporter {
   onTestEnd(test: TestCase, result: TestResult): void {
     this.completedAttempts += 1
     const file = safeFile(test.location.file)
+    const diagnostic = safeHermeticNetworkDiagnostic(result.annotations)
     this.progress(
-      `end completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s duration=${Math.max(0, Math.round(result.duration))}ms retry=${Math.max(0, result.retry)} status=${result.status} project=${safeProject(test)} ${file}:${test.location.line}`
+      `end completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s duration=${Math.max(0, Math.round(result.duration))}ms retry=${Math.max(0, result.retry)} status=${result.status} project=${safeProject(test)} ${file}:${test.location.line}${diagnostic ? ` diagnostic_operation=${diagnostic.operation} diagnostic_source=${diagnostic.source} diagnostic_category=${diagnostic.category}` : ""}`
     )
     const existing = this.specs.get(test.id)
     const location = safeLocation(result.error?.location)
@@ -316,6 +373,7 @@ export class PrivacySafeSmokeReporter implements Reporter {
       duration: Math.max(0, Math.round(result.duration)),
       retry: Math.max(0, result.retry),
       status: result.status,
+      ...(diagnostic ? { diagnostic } : {}),
       ...(location ? { error: { location } } : {}),
     }
     if (existing) {

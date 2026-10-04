@@ -265,6 +265,171 @@ describe("privacy-safe Playwright smoke reporter", () => {
     }
   })
 
+  it("emits the closed hermetic network diagnostic fields", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
+    const outputFile = join(directory, "results.json")
+    const progressFile = join(directory, "progress.log")
+    const sourceDirectory = join(directory, "e2e")
+    const sourceFile = join(
+      sourceDirectory,
+      "commerce-router-recovery.playwright.ts"
+    )
+    const title = "native router recovery remains isolated @commerce"
+
+    try {
+      mkdirSync(sourceDirectory)
+      writeFileSync(
+        sourceFile,
+        `test(${JSON.stringify(title)}, async () => {})\n`
+      )
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        progressFile,
+      })
+      reporter.onBegin?.(
+        { metadata: {} } as FullConfig,
+        { allTests: () => [1] } as unknown as Suite
+      )
+      const testCase = {
+        expectedStatus: "passed",
+        id: "router-network-failure",
+        location: { column: 1, file: sourceFile, line: 1 },
+        ok: () => false,
+        outcome: () => "unexpected",
+        tags: ["@commerce"],
+        title,
+      } as TestCase
+      reporter.onTestEnd?.(testCase, {
+        annotations: [
+          { type: "hermetic-network-operation", description: "deliver" },
+          {
+            type: "hermetic-network-source",
+            description: "current_document",
+          },
+          {
+            type: "hermetic-network-category",
+            description: "connection_refused",
+          },
+        ],
+        duration: 19,
+        retry: 0,
+        status: "failed",
+      } as TestResult)
+      reporter.onEnd?.({ status: "failed" } as FullResult)
+
+      const serialized = readFileSync(outputFile, "utf8")
+      const progress = readFileSync(progressFile, "utf8")
+      const report = JSON.parse(serialized) as {
+        suites: Array<{
+          specs: Array<{
+            tests: Array<{
+              results: Array<{ diagnostic?: unknown }>
+            }>
+          }>
+        }>
+      }
+      expect(
+        report.suites[0]?.specs[0]?.tests[0]?.results[0]?.diagnostic
+      ).toEqual({
+        operation: "deliver",
+        source: "current_document",
+        category: "connection_refused",
+      })
+      expect(progress).toContain(
+        "diagnostic_operation=deliver diagnostic_source=current_document diagnostic_category=connection_refused"
+      )
+    } finally {
+      rmSync(directory, { force: true, recursive: true })
+    }
+  })
+
+  it("drops arbitrary diagnostic annotations and raw failure details", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
+    const outputFile = join(directory, "results.json")
+    const progressFile = join(directory, "progress.log")
+    const sourceDirectory = join(directory, "e2e")
+    const sourceFile = join(sourceDirectory, "commerce.playwright.ts")
+    const privateSentinel = "private-diagnostic-must-not-be-serialized"
+    const titles = [
+      "router diagnostic rejects an unknown name @commerce",
+      "router diagnostic rejects an unknown value @commerce",
+    ]
+
+    try {
+      mkdirSync(sourceDirectory)
+      writeFileSync(
+        sourceFile,
+        titles
+          .map((title) => `test(${JSON.stringify(title)}, async () => {})`)
+          .join("\n")
+      )
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        progressFile,
+      })
+      reporter.onBegin?.(
+        { metadata: {} } as FullConfig,
+        { allTests: () => [1, 2] } as unknown as Suite
+      )
+      for (const [index, title] of titles.entries()) {
+        const testCase = {
+          expectedStatus: "passed",
+          id: `unsafe-router-diagnostic-${index}`,
+          location: { column: 1, file: sourceFile, line: index + 1 },
+          ok: () => false,
+          outcome: () => "unexpected",
+          tags: ["@commerce"],
+          title,
+        } as TestCase
+        reporter.onTestEnd?.(testCase, {
+          annotations:
+            index === 0
+              ? [{ type: privateSentinel, description: privateSentinel }]
+              : [
+                  {
+                    type: "hermetic-network-operation",
+                    description: privateSentinel,
+                  },
+                  {
+                    type: "hermetic-network-source",
+                    description: "current_document",
+                  },
+                  {
+                    type: "hermetic-network-category",
+                    description: privateSentinel,
+                  },
+                ],
+          duration: 23,
+          error: { message: privateSentinel, stack: privateSentinel },
+          retry: 0,
+          status: "failed",
+        } as TestResult)
+      }
+      reporter.onEnd?.({ status: "failed" } as FullResult)
+
+      const serialized = readFileSync(outputFile, "utf8")
+      const progress = readFileSync(progressFile, "utf8")
+      const report = JSON.parse(serialized) as {
+        suites: Array<{
+          specs: Array<{
+            tests: Array<{
+              results: Array<{ diagnostic?: unknown }>
+            }>
+          }>
+        }>
+      }
+      expect(serialized).not.toContain(privateSentinel)
+      expect(progress).not.toContain(privateSentinel)
+      expect(
+        report.suites[0]?.specs.every(
+          (spec) => spec.tests[0]?.results[0]?.diagnostic === undefined
+        )
+      ).toBe(true)
+    } finally {
+      rmSync(directory, { force: true, recursive: true })
+    }
+  })
+
   it("drops malformed or partial smoke evidence", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
 

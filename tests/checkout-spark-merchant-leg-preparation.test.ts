@@ -1432,9 +1432,9 @@ describe("Merchant next unpaid payout preparation entry", () => {
     })
   })
 
-  it("retains the first existing or expired intent instead of skipping to an unprepared leg", async () => {
-    for (const expired of [false, true]) {
-      for (const status of ["prepared", "submitted", "ambiguous"] as const) {
+  for (const expired of [false, true]) {
+    for (const status of ["prepared", "submitted", "ambiguous"] as const) {
+      it(`retains the first ${expired ? "expired" : "existing"} ${status} intent instead of skipping to an unprepared leg`, async () => {
         await withHarness(async (test) => {
           const initial = await test.stored.load(
             test.plan.checkoutId,
@@ -1478,9 +1478,9 @@ describe("Merchant next unpaid payout preparation entry", () => {
           expect(test.calls.history).toEqual([])
           expect(test.calls.wraps).toHaveLength(1)
         })
-      }
+      })
     }
-  })
+  }
 
   it("selects the next unpaid leg but re-attests a locally paid predecessor before preparing it", async () => {
     await withHarness(async (test) => {

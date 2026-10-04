@@ -8,20 +8,102 @@ import type {
 } from "@playwright/test"
 import type { HermeticLnurlResponder } from "./hermetic-lnurl"
 
+export const HERMETIC_NETWORK_FAILURE_OPERATIONS = [
+  "fetch",
+  "deliver",
+  "dispose",
+] as const
+
+export const HERMETIC_NETWORK_FAILURE_SOURCES = [
+  "navigation",
+  "source_unavailable",
+  "current_document",
+  "current_unavailable",
+] as const
+
+export const HERMETIC_NETWORK_FAILURE_CATEGORIES = [
+  "connection_refused",
+  "connection_reset",
+  "request_context_closed",
+  "transport_other",
+] as const
+
+export const HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS = {
+  operation: "hermetic-network-operation",
+  source: "hermetic-network-source",
+  category: "hermetic-network-category",
+} as const
+
+export type HermeticNetworkFailureDiagnostic = {
+  operation: (typeof HERMETIC_NETWORK_FAILURE_OPERATIONS)[number]
+  source: (typeof HERMETIC_NETWORK_FAILURE_SOURCES)[number]
+  category: (typeof HERMETIC_NETWORK_FAILURE_CATEGORIES)[number]
+}
+
 type HermeticCommerceNetworkOptions = {
   appUrls: readonly string[]
   relayUrl: string
   imageUrl: string
   /** Exact runner-owned responses only; this does not allow public transport. */
   lnurl?: HermeticLnurlResponder
+  /** Fixed content-free evidence only; callback failures never weaken isolation. */
+  onLocalFailure?: (diagnostic: HermeticNetworkFailureDiagnostic) => void
 }
 
-type ResourceDocument = { frame: Frame; marker: string | null }
+type ResourceDocument =
+  | { type: "navigation" }
+  | { type: "unavailable" }
+  | { type: "resource"; frame: Frame; marker: string | null }
+
+type ResourceFailureSource =
+  HermeticNetworkFailureDiagnostic["source"] | "abandoned_document"
 
 type FrameDocumentState = {
   marker: string | null
   revision: number
   settled: Promise<void>
+}
+
+function classifyTransportFailure(
+  error: unknown
+): HermeticNetworkFailureDiagnostic["category"] {
+  let text = ""
+  try {
+    if (error instanceof Error) {
+      text = `${error.name} ${error.message}`.toLowerCase()
+    } else if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      typeof error.code === "string"
+    ) {
+      text = error.code.toLowerCase()
+    }
+  } catch {
+    return "transport_other"
+  }
+  if (
+    text.includes("econnrefused") ||
+    text.includes("err_connection_refused")
+  ) {
+    return "connection_refused"
+  }
+  if (
+    text.includes("econnreset") ||
+    text.includes("err_connection_reset") ||
+    text.includes("socket hang up")
+  ) {
+    return "connection_reset"
+  }
+  if (
+    text.includes("request context disposed") ||
+    text.includes("target page, context or browser has been closed") ||
+    text.includes("target closed") ||
+    text.includes("browser has been closed")
+  ) {
+    return "request_context_closed"
+  }
+  return "transport_other"
 }
 
 async function abortStoppedRoute(route: Route): Promise<void> {
@@ -100,43 +182,55 @@ function createResourceDocumentTracker(documentKey: string) {
     return true
   }
 
-  return async (request: Request): Promise<ResourceDocument | null> => {
+  return async (request: Request): Promise<ResourceDocument> => {
     try {
       const frame = request.frame()
       const tracked = observePage(frame.page())
       // A failing document navigation is never a harmless old resource, but it
       // must install tracking before commit so old subresources retain their
       // exact initiating document identity.
-      if (request.isNavigationRequest()) return null
+      if (request.isNavigationRequest()) return { type: "navigation" }
       if (!tracked) {
-        return { frame, marker: await readDocumentMarker(frame, documentKey) }
+        return {
+          type: "resource",
+          frame,
+          marker: await readDocumentMarker(frame, documentKey),
+        }
       }
       const state = states.get(frame) ?? refresh(frame)
-      if (state.marker !== null) return { frame, marker: state.marker }
+      if (state.marker !== null) {
+        return { type: "resource", frame, marker: state.marker }
+      }
       await state.settled
       // A commit during the first marker read provides no positive original
       // identity. Preserve the fail-closed null marker instead of rebinding the
       // request to whichever document is current after the await.
-      if (states.get(frame) !== state) return { frame, marker: null }
-      return { frame, marker: state.marker }
+      if (states.get(frame) !== state) {
+        return { type: "resource", frame, marker: null }
+      }
+      return { type: "resource", frame, marker: state.marker }
     } catch {
-      return null
+      return { type: "unavailable" }
     }
   }
 }
 
-async function isAbandonedResourceDocument(
-  source: ResourceDocument | null,
+async function classifyResourceFailureSource(
+  source: ResourceDocument,
   documentKey: string
-): Promise<boolean> {
-  if (!source) return false
+): Promise<ResourceFailureSource> {
+  if (source.type === "navigation") return "navigation"
+  if (source.type === "unavailable") return "source_unavailable"
   try {
-    if (source.frame.isDetached() || source.frame.page().isClosed()) return true
-    if (source.marker === null) return false
+    if (source.frame.isDetached() || source.frame.page().isClosed()) {
+      return "abandoned_document"
+    }
+    if (source.marker === null) return "source_unavailable"
     const current = await readSettledDocumentMarker(source.frame, documentKey)
-    return current !== null && current !== source.marker
+    if (current === null) return "current_unavailable"
+    return current === source.marker ? "current_document" : "abandoned_document"
   } catch {
-    return false
+    return "current_unavailable"
   }
 }
 
@@ -215,6 +309,7 @@ export async function installHermeticCommerceNetwork(
 ): Promise<() => void> {
   const policy = createHermeticCommerceNetworkPolicy(options)
   const lnurl = options.lnurl
+  const onLocalFailure = options.onLocalFailure
   let tearingDown = false
   // Test-only document identity, not account/payment authority. Unlike URL or
   // framenavigated events, this stays unchanged for same-document navigation.
@@ -224,6 +319,38 @@ export async function installHermeticCommerceNetwork(
     Object.defineProperty(window, key, { value: crypto.randomUUID() })
   }, documentKey)
   const captureResourceDocument = createResourceDocumentTracker(documentKey)
+  const failLocalApplicationRequest = async (
+    route: Route,
+    sourceDocument: ResourceDocument,
+    operation: HermeticNetworkFailureDiagnostic["operation"],
+    error: unknown
+  ): Promise<void> => {
+    if (tearingDown) return abortStoppedRoute(route)
+    // Closing/reloading can abandon a resource while another document stays
+    // open. Require positive exact-frame/document evidence of abandonment;
+    // unknown/current resources and document navigations still fail closed.
+    const source = await classifyResourceFailureSource(
+      sourceDocument,
+      documentKey
+    )
+    if (source === "abandoned_document") {
+      // Returning alone leaves Playwright's handled promise pending and can
+      // hang unrouteAll({ behavior: "wait" }). Resolve this abandoned route;
+      // a source that is already torn down may have cancelled it first.
+      await abortStoppedRoute(route)
+      return
+    }
+    try {
+      onLocalFailure?.({
+        operation,
+        source,
+        category: classifyTransportFailure(error),
+      })
+    } catch {
+      // Diagnostic adapters cannot replace or suppress the strict failure.
+    }
+    throw new Error("Isolated local application request failed.")
+  }
   await context.route("**/*", async (route) => {
     if (tearingDown) return abortStoppedRoute(route)
     try {
@@ -264,31 +391,57 @@ export async function installHermeticCommerceNetwork(
       // Route handlers do not intercept every redirected request. Never let a
       // local server redirect this isolated scenario onto a public endpoint.
       if (tearingDown) return abortStoppedRoute(route)
+      let response
       try {
-        const response = await route.fetch({ maxRedirects: 0 })
-        try {
-          if (tearingDown) return abortStoppedRoute(route)
-          if (response.status() >= 300 && response.status() < 400) {
-            await route.abort("blockedbyclient")
-            return
-          }
+        response = await route.fetch({ maxRedirects: 0 })
+      } catch (error) {
+        return failLocalApplicationRequest(
+          route,
+          sourceDocument,
+          "fetch",
+          error
+        )
+      }
+      if (tearingDown) {
+        await abortStoppedRoute(route)
+        await response.dispose().catch(() => undefined)
+        return
+      }
+      let deliveryFailed = false
+      let deliveryError: unknown
+      try {
+        if (response.status() >= 300 && response.status() < 400) {
+          await route.abort("blockedbyclient")
+        } else {
           await route.fulfill({ response })
-        } finally {
-          await response.dispose()
         }
-      } catch {
-        if (tearingDown) return abortStoppedRoute(route)
-        // Closing/reloading can abandon a resource while another document stays
-        // open. Require positive exact-frame/document evidence of abandonment;
-        // unknown/current resources and document navigations still fail closed.
-        if (await isAbandonedResourceDocument(sourceDocument, documentKey)) {
-          // Returning alone leaves Playwright's handled promise pending and can
-          // hang unrouteAll({ behavior: "wait" }). Resolve this abandoned route;
-          // a source that is already torn down may have cancelled it first.
-          await abortStoppedRoute(route)
-          return
-        }
-        throw new Error("Isolated local application request failed.")
+      } catch (error) {
+        deliveryFailed = true
+        deliveryError = error
+      }
+      let disposalFailed = false
+      let disposalError: unknown
+      try {
+        await response.dispose()
+      } catch (error) {
+        disposalFailed = true
+        disposalError = error
+      }
+      if (deliveryFailed) {
+        return failLocalApplicationRequest(
+          route,
+          sourceDocument,
+          "deliver",
+          deliveryError
+        )
+      }
+      if (disposalFailed) {
+        return failLocalApplicationRequest(
+          route,
+          sourceDocument,
+          "dispose",
+          disposalError
+        )
       }
     } catch (error) {
       // Only explicit runner-owned teardown may settle current/unknown work.
