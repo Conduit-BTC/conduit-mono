@@ -514,8 +514,13 @@ function MerchantNavigationPanel({
         <NetworkBadge />
       </div>
 
-      <div className="mt-4 shrink-0 border-t border-[var(--border)] pb-[max(0px,env(safe-area-inset-bottom))] pt-4">
-        <MerchantProjectTip className="mb-2 min-h-11 w-full justify-start text-[var(--text-primary)]" />
+      <div className="mt-4 shrink-0 border-t border-[var(--border)] pb-[max(0px,env(safe-area-inset-bottom))] pr-1 pt-4">
+        <MerchantProjectTip
+          className={cn(
+            navItemClassName,
+            "mb-1 h-auto justify-start [&>svg]:size-4 [&>svg]:shrink-0"
+          )}
+        />
         <ReportBugLink onNavigate={onReportBug} />
       </div>
     </div>
