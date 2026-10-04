@@ -378,7 +378,7 @@ export async function retryEventMarketEnrollmentDelivery(
       throw new Error(
         "Set up a private-message inbox in Network settings, then retry saved participation."
       )
-    const result = await dependencies.publish(new NDKEvent(getNdk(), wrap), {
+    const result = await dependencies.publish(wrap, {
       intent: "recipient_event",
       authorPubkey: sender,
       accountPubkey: sender,

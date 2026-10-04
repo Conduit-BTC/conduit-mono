@@ -201,6 +201,43 @@ describe("owner kind-10002 evidence", () => {
     ).toThrow("requires publish targets")
   })
 
+  it("retains local publication errors through checkpoint normalization and retry", () => {
+    const signedEvent = relayEvent({ createdAt: 100 })
+    const relayUrl = "wss://nos.lol"
+    const staged = applyOwnerRelayListDistributionStage(undefined, {
+      pubkey: OWNER,
+      signedEvent,
+      publishRelayUrls: [relayUrl],
+      relayOutcomes: [pendingRelayOutcome(relayUrl)],
+      expectedCurrentEventId: null,
+      stagedAt: 1_000,
+    })
+    const failed = applyOwnerRelayListDistributionOutcomes(staged, {
+      publish: [{ relayUrl, status: "error" }],
+      observedAt: 1_100,
+    })
+    const restored = applyOwnerRelayListDistributionOutcomes(
+      structuredClone(failed),
+      {
+        readback: [{ relayUrl, status: "absent" }],
+        observedAt: 1_200,
+      }
+    )
+    expect(restored.pendingDistribution?.relayOutcomes[0]?.publishStatus).toBe(
+      "error"
+    )
+    expect(restored.pendingDistribution?.signedEvent).toEqual(
+      structuredClone(signedEvent)
+    )
+    const retried = applyOwnerRelayListDistributionOutcomes(restored, {
+      publish: [{ relayUrl, status: "acked" }],
+      observedAt: 1_300,
+    })
+    expect(retried.pendingDistribution?.relayOutcomes[0]?.publishStatus).toBe(
+      "acked"
+    )
+  })
+
   it("keeps exact per-relay outcomes immutable while retrying only unresolved work", () => {
     const signedEvent = relayEvent({
       createdAt: 100,

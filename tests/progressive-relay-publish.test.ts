@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -14,26 +13,23 @@ import {
   EVENT_KINDS,
   publishWithPlannerProgressive,
   type AccountNetworkLocalStateRepository,
-  type ExactRelayWriteStatus,
+  type ExclusiveRelayPublishStatus,
 } from "@conduit/core"
 
-const FAST_RELAY = "wss://fast-progressive.example"
-const SLOW_RELAY = "wss://slow-progressive.example"
-const ERROR_RELAY = "wss://error-progressive.example"
+const FAST_RELAY = "wss://fast-progressive.fixture.conduit.market"
+const SLOW_RELAY = "wss://slow-progressive.fixture.conduit.market"
+const ERROR_RELAY = "wss://error-progressive.fixture.conduit.market"
 
-function giftWrapEvent(): NDKEvent {
+function giftWrapEvent() {
   const recipientPubkey = getPublicKey(generateSecretKey())
-  return new NDKEvent(
-    undefined,
-    finalizeEvent(
-      {
-        kind: EVENT_KINDS.GIFT_WRAP,
-        created_at: Math.floor(Date.now() / 1_000),
-        tags: [["p", recipientPubkey]],
-        content: "encrypted",
-      },
-      generateSecretKey()
-    )
+  return finalizeEvent(
+    {
+      kind: EVENT_KINDS.GIFT_WRAP,
+      created_at: Math.floor(Date.now() / 1_000),
+      tags: [["p", recipientPubkey]],
+      content: "encrypted",
+    },
+    generateSecretKey()
   )
 }
 
@@ -55,10 +51,10 @@ afterEach(() => {
 
 describe("progressive relay publishing", () => {
   it("resolves the first relay ACK while exact-target settlement continues", async () => {
-    const fast = deferred<ExactRelayWriteStatus>()
-    const slow = deferred<ExactRelayWriteStatus>()
+    const fast = deferred<ExclusiveRelayPublishStatus>()
+    const slow = deferred<ExclusiveRelayPublishStatus>()
     const event = giftWrapEvent()
-    const signedBytes = JSON.stringify(event.rawEvent())
+    const signedBytes = JSON.stringify(event)
     const attempted: string[] = []
     __setRelayPublishTestOverrides({
       publishSignedEventFrameToRelay: async ({ relayUrl, signedEvent }) => {
@@ -85,7 +81,7 @@ describe("progressive relay publishing", () => {
     expect(accepted.successfulRelayUrls).toEqual([FAST_RELAY])
     expect(accepted.pendingRelayUrls).toEqual([SLOW_RELAY])
     expect(settlementComplete).toBe(false)
-    expect(JSON.stringify(event.rawEvent())).toBe(signedBytes)
+    expect(JSON.stringify(event)).toBe(signedBytes)
 
     slow.resolve("timed_out")
     const settled = await milestones.settled
@@ -95,12 +91,22 @@ describe("progressive relay publishing", () => {
     expect(settled.timedOutRelayUrls).toEqual([SLOW_RELAY])
     expect(settled.relayAttempts).toEqual(
       expect.arrayContaining([
-        { relayUrl: FAST_RELAY, attempt: 1, status: "acked" },
-        { relayUrl: SLOW_RELAY, attempt: 1, status: "timed_out" },
+        {
+          relayUrl: FAST_RELAY,
+          eventId: event.id,
+          attempt: 1,
+          status: "acked",
+        },
+        {
+          relayUrl: SLOW_RELAY,
+          eventId: event.id,
+          attempt: 1,
+          status: "timed_out",
+        },
       ])
     )
     expect(attempted.sort()).toEqual([FAST_RELAY, SLOW_RELAY].sort())
-    expect(JSON.stringify(event.rawEvent())).toBe(signedBytes)
+    expect(JSON.stringify(event)).toBe(signedBytes)
   })
 
   it("rejects foreground acceptance after zero ACKs and preserves every bounded outcome", async () => {
@@ -182,7 +188,7 @@ describe("progressive relay publishing", () => {
     const accountSecret = generateSecretKey()
     const accountPubkey = getPublicKey(accountSecret)
     const firstWriterStarted = deferred<void>()
-    const firstWrite = deferred<ExactRelayWriteStatus>()
+    const firstWrite = deferred<ExclusiveRelayPublishStatus>()
     let slowRelayExcluded = false
     const repository: Pick<AccountNetworkLocalStateRepository, "get"> = {
       get: async (pubkey) => ({
@@ -249,7 +255,7 @@ describe("progressive relay publishing", () => {
   it("does not pass signer authorization to relays started after the first ACK", async () => {
     const accountSecret = generateSecretKey()
     const accountPubkey = getPublicKey(accountSecret)
-    const firstWrite = deferred<ExactRelayWriteStatus>()
+    const firstWrite = deferred<ExclusiveRelayPublishStatus>()
     const attempted: string[] = []
     let signerCalls = 0
     __setRelayPublishTestOverrides({

@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Plus, Search } from "lucide-react"
 import {
   EVENT_KINDS,
@@ -22,9 +21,8 @@ import {
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
-  getNdk,
   getAccountSigner,
-  type UnsignedNostrEvent,
+  type SignedPublicNostrEvent,
   isCommerceReadIncomplete,
   prepareProductCatalog,
   recordBrowserTelemetryEvent,
@@ -1096,12 +1094,14 @@ async function publishProduct(
 async function deleteProduct(
   merchantPubkey: string,
   product: MerchantProductFamily,
-  onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>,
+  onSignedLocal: (
+    event: SignedPublicNostrEvent,
+    deliveryJobId: string
+  ) => Promise<void>,
   onSignerRequest?: (progress: ProductSignerRequestProgress) => void,
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean
 ): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
-  const ndk = getNdk()
   const signer = getAccountSigner()
   if (!signer) throw new Error("Signer not connected")
   const signerPubkey = await signer.getPublicKey()
@@ -1132,7 +1132,15 @@ async function deleteProduct(
     shouldContinue
   )
 
-  const deletion = new NDKEvent(ndk)
+  const deletion: SignedPublicNostrEvent = {
+    id: "",
+    sig: "",
+    pubkey: merchantPubkey,
+    kind: 0,
+    created_at: 0,
+    tags: [],
+    content: "",
+  }
   deletion.kind = EVENT_KINDS.DELETION
   deletion.created_at = Math.floor(Date.now() / 1000)
   deletion.tags = draft.tags
@@ -1143,10 +1151,16 @@ async function deleteProduct(
   deletion.pubkey = signerPubkey
   Object.assign(
     deletion,
-    await signer.signEvent(deletion.rawEvent() as UnsignedNostrEvent)
+    await signer.signEvent({
+      kind: deletion.kind,
+      pubkey: deletion.pubkey,
+      created_at: deletion.created_at,
+      tags: deletion.tags,
+      content: deletion.content,
+    })
   )
   const deliveryJob = await persistSignedProductDeletion({
-    signedEvent: deletion.rawEvent(),
+    signedEvent: deletion,
     currentWriteRelayUrls: currentWriteRelayPlan.relayUrls,
     currentAppRelayUrls: currentWriteRelayPlan.appRelayUrls,
     currentPersonalRelayUrls: currentWriteRelayPlan.personalRelayUrls,

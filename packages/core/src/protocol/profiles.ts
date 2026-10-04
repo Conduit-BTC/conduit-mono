@@ -1,4 +1,4 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { SignedPublicNostrEvent } from "./signed-event"
 import type { Profile } from "../types"
 import type { ProfileFormValues } from "../schemas"
 import type { CachedProfile } from "../db"
@@ -6,7 +6,6 @@ import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { getProfiles, type ProfileBatchQuery } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
-import { getNdk } from "./ndk"
 import { getAccountSigner } from "./session-signer"
 import type { UnsignedNostrEvent } from "./nostr-event-signer"
 import {
@@ -137,7 +136,7 @@ function parseProfilePublishContent(content: string | null | undefined): {
 }
 
 export function parseProfileEvent(
-  event: Pick<NDKEvent, "content" | "pubkey">
+  event: Pick<SignedPublicNostrEvent, "content" | "pubkey">
 ): Profile {
   return projectProfileContent(event.pubkey, event.content)
 }
@@ -296,7 +295,7 @@ export class ProfilePublishSupersededError extends Error {
 export function assertProfilePublishRetained(
   retainedProfile:
     Pick<CachedProfile, "eventId" | "eventCreatedAt"> | undefined,
-  publishedEvent: Pick<NDKEvent, "id" | "created_at">
+  publishedEvent: Pick<SignedPublicNostrEvent, "id" | "created_at">
 ): void {
   if (
     retainedProfile?.eventId !== publishedEvent.id ||
@@ -325,7 +324,6 @@ export async function publishProfileContext(
   options: PublishProfileOptions = {}
 ): Promise<SelectedProfileContext> {
   buildNip01ProfilePublishContent({ profile })
-  const ndk = getNdk()
   const signer = getAccountSigner()
   if (!signer) throw new Error("Signer not connected")
   const assertCurrentSession = () => {
@@ -372,21 +370,16 @@ export async function publishProfileContext(
     latestProfile: latest.profile,
     latestContent: latest.frontier?.rawContent,
   })
-  const event = new NDKEvent(ndk)
-  event.kind = EVENT_KINDS.PROFILE
-  event.created_at = getNextProfileEventCreatedAt(
-    latest.frontier?.eventCreatedAt
-  )
-  event.content = JSON.stringify(content)
-  event.tags = appendConduitClientTag([], appId)
-
-  assertSafeReplaceablePublish(event)
+  const draft: UnsignedNostrEvent = {
+    kind: EVENT_KINDS.PROFILE,
+    pubkey: pubkey,
+    created_at: getNextProfileEventCreatedAt(latest.frontier?.eventCreatedAt),
+    tags: appendConduitClientTag([], appId),
+    content: JSON.stringify(content),
+  }
+  assertSafeReplaceablePublish(draft)
   assertCurrentSession()
-  event.pubkey = pubkey
-  Object.assign(
-    event,
-    await signer.signEvent(event.rawEvent() as UnsignedNostrEvent)
-  )
+  const event = await signer.signEvent(draft)
   assertCurrentSession()
   await publishWithPlanner(event, {
     intent: "author_event",

@@ -1693,7 +1693,7 @@ export async function retryFutureMarketPrivateDelivery(input: {
       "Current private inbox routes are unavailable for exact-wrap retry."
     )
   const recipientDelivery = await publishWithPlanner(
-    new NDKEvent(getNdk(), record.signedRecipientWrap),
+    record.signedRecipientWrap,
     {
       intent: "recipient_event",
       authorPubkey: record.senderPubkey,
@@ -1706,19 +1706,16 @@ export async function retryFutureMarketPrivateDelivery(input: {
     }
   )
   assertFutureMarketReadCurrent(input.shouldContinue)
-  const selfDelivery = await publishWithPlanner(
-    new NDKEvent(getNdk(), record.signedSelfWrap),
-    {
-      intent: "recipient_event",
-      authorPubkey: record.senderPubkey,
-      authenticatedPubkey: input.authenticatedOwnerPubkey,
-      accountPubkey: record.senderPubkey,
-      recipientPubkeys: [record.senderPubkey],
-      exclusiveRelayUrls: senderInbox.relayUrls,
-      deliveryMode: "critical",
-      shouldContinue: input.shouldContinue,
-    }
-  )
+  const selfDelivery = await publishWithPlanner(record.signedSelfWrap, {
+    intent: "recipient_event",
+    authorPubkey: record.senderPubkey,
+    authenticatedPubkey: input.authenticatedOwnerPubkey,
+    accountPubkey: record.senderPubkey,
+    recipientPubkeys: [record.senderPubkey],
+    exclusiveRelayUrls: senderInbox.relayUrls,
+    deliveryMode: "critical",
+    shouldContinue: input.shouldContinue,
+  })
   assertFutureMarketReadCurrent(input.shouldContinue)
   return {
     recipientDelivered: recipientDelivery.successfulRelayUrls.length > 0,
