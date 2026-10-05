@@ -5,7 +5,7 @@ import {
   emptyAccountNetworkLocalState,
   type AccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
-import type { PublicRelayReadOptions } from "../packages/core/src/protocol/ndk"
+import type { PublicRelayReadOptions } from "../packages/core/src/protocol/relay-reader"
 import type {
   RelayListLookupOptions,
   RelayList,

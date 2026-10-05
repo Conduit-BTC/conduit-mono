@@ -39,7 +39,7 @@ import {
   type SignedPublicNostrEvent,
   type CachedProductTombstone,
   type CachedShippingOptionFrontier,
-  type FetchEventsFanoutOptions,
+  type PublicRelayReadOptions,
   type ProductSchema,
   type MerchantShippingPolicyReadResult,
 } from "@conduit/core"
@@ -192,7 +192,7 @@ function cacheOverrides() {
 }
 function fanoutResult(
   events: SignedPublicNostrEvent[],
-  options: FetchEventsFanoutOptions,
+  options: PublicRelayReadOptions,
   complete = true
 ) {
   return {
