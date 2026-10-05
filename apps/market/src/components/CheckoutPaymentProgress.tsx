@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react"
 import { LoaderCircle } from "lucide-react"
 
+import { shuffleLoadingMessages } from "./checkout-loading-messages"
+
 const LOADING_LINES = [
   "HODLing the door…",
   "Teaching ostriches to relay race…",
@@ -24,6 +26,7 @@ const LOADING_LINES = [
 
 /** Presentation only: this component cannot advance or confirm a payment. */
 export function CheckoutPaymentProgress({ pausing }: { pausing: boolean }) {
+  const [loadingLines] = useState(() => shuffleLoadingMessages(LOADING_LINES))
   const [line, setLine] = useState(0)
 
   useEffect(() => {
@@ -80,7 +83,7 @@ export function CheckoutPaymentProgress({ pausing }: { pausing: boolean }) {
             aria-hidden="true"
             className="mt-2 text-xs leading-5 text-[var(--text-secondary)]"
           >
-            {LOADING_LINES[line]}
+            {loadingLines[line]}
           </p>
           <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
             Please keep this page open while we check your payment.
