@@ -83,16 +83,17 @@ function uniquePubkeys(
   ).sort()
 }
 
-function getRelayHintKey(
+export function getProfileRelayHintKey(
+  pubkeys: readonly string[],
   relayHintsByPubkey: Record<string, string[] | undefined> | undefined
 ): string {
   if (!relayHintsByPubkey) return ""
 
-  return JSON.stringify(
-    Object.entries(relayHintsByPubkey)
-      .map(([pubkey, relayUrls]) => [pubkey, [...(relayUrls ?? [])].sort()])
-      .sort(([a], [b]) => String(a).localeCompare(String(b)))
-  )
+  const hints = uniquePubkeys(pubkeys).flatMap((pubkey) => {
+    const relayUrls = [...new Set(relayHintsByPubkey[pubkey] ?? [])].sort()
+    return relayUrls.length > 0 ? [[pubkey, relayUrls]] : []
+  })
+  return hints.length > 0 ? JSON.stringify(hints) : ""
 }
 
 function defaultReadPolicy(
@@ -137,8 +138,8 @@ export function useProfiles(
     [pubkeyKey]
   )
   const relayHintKey = useMemo(
-    () => getRelayHintKey(options.relayHintsByPubkey),
-    [options.relayHintsByPubkey]
+    () => getProfileRelayHintKey(unique, options.relayHintsByPubkey),
+    [unique, options.relayHintsByPubkey]
   )
   const [resolvedProfileState, setResolvedProfileState] = useState<{
     perspective: string

@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router"
 import { formatNpub, pubkeyToNpub } from "@conduit/core"
-import { Avatar, AvatarFallback, AvatarImage, Badge } from "@conduit/ui"
-import { MerchantAvatarFallback } from "./MerchantIdentity"
+import { Badge } from "@conduit/ui"
+import { DeferredMerchantAvatar } from "./DeferredMerchantAvatar"
 import type { MerchantIdentityView } from "../lib/marketBrowseModel"
 
 /**
@@ -23,14 +23,11 @@ export function SellerCard({
       params={{ identityRef: pubkeyToNpub(pubkey) }}
       className="flex h-full items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
     >
-      <Avatar className="size-11 shrink-0">
-        {identity.picture ? (
-          <AvatarImage src={identity.picture} alt="" />
-        ) : null}
-        <AvatarFallback className="bg-transparent">
-          <MerchantAvatarFallback />
-        </AvatarFallback>
-      </Avatar>
+      <DeferredMerchantAvatar
+        picture={identity.picture}
+        className="size-11 shrink-0"
+        fallbackClassName="bg-transparent"
+      />
       <span className="flex min-w-0 flex-1 flex-col">
         <span
           className={

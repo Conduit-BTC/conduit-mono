@@ -3,9 +3,6 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, X } from "lucide-react"
 import { normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
   Badge,
   Button,
   DropdownMenu,
@@ -16,7 +13,7 @@ import {
   RefreshChip,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
-import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
+import { DeferredMerchantAvatar } from "../../components/DeferredMerchantAvatar"
 import {
   PRODUCT_GRID_CLASS_NAME,
   ProductGridCardSkeleton,
@@ -31,6 +28,11 @@ import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
 import { normalizeFacetValues } from "../../lib/facets"
 import {
+  MERCHANT_PAGE_SIZE,
+  MERCHANT_SEARCH_PREVIEW_SIZE,
+  PRODUCT_PAGE_SIZE as PAGE_SIZE,
+} from "../../lib/clientHydration"
+import {
   type MarketBrowseSearch,
   type MarketBrowseSortOption,
 } from "../../lib/marketBrowseModel"
@@ -39,9 +41,6 @@ import {
   type ProductCatalogSourceMode,
 } from "../../lib/productCatalogRead"
 
-const PAGE_SIZE = 12
-/** Merchant matches shown inline; the rest stay one link away on /merchants. */
-const MATCHING_MERCHANT_LIMIT = 6
 const SORT_OPTIONS: Array<{
   value: MarketBrowseSortOption
   label: string
@@ -113,6 +112,8 @@ function ProductsPage() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [categoryMenuOpen, setCategoryMenuOpen] = useState(false)
   const [merchantMenuOpen, setMerchantMenuOpen] = useState(false)
+  const [visibleMerchantCount, setVisibleMerchantCount] =
+    useState(MERCHANT_PAGE_SIZE)
   const hasAutoPromptedConnect = useRef(false)
   const hasMoreRef = useRef(false)
   const loadMoreObserverRef = useRef<IntersectionObserver | null>(null)
@@ -153,6 +154,7 @@ function ProductsPage() {
     catalogSource: search.source ?? DEFAULT_MARKET_CATALOG_SOURCE,
     search,
     storeMenuOpen: merchantMenuOpen,
+    visibleMerchantCount,
     visibleCount,
   })
   const {
@@ -177,6 +179,7 @@ function ProductsPage() {
     shouldShowCategories,
     showCategorySkeleton,
     storeFacetOptions: merchantFacetOptions,
+    hasMoreStoreFacets,
     storeFacetTotal: merchantFacetTotal,
     storeTriggerLabel: merchantTriggerLabel,
     getMerchantIdentity,
@@ -201,7 +204,7 @@ function ProductsPage() {
         ? "Category search may miss matching products. Try removing category filters."
         : "Search results may be incomplete. Retry to check again."
   const visibleMatchingMerchants = useMemo(
-    () => matchingSellers.slice(0, MATCHING_MERCHANT_LIMIT),
+    () => matchingSellers.slice(0, MERCHANT_SEARCH_PREVIEW_SIZE),
     [matchingSellers]
   )
   const categoryTriggerLabel =
@@ -463,16 +466,12 @@ function ProductsPage() {
                     onCheckedChange={() => toggleMerchant(option.value)}
                     className="gap-2.5"
                   >
-                    <Avatar className="h-5 w-5 shrink-0">
-                      <AvatarImage
-                        src={identity.picture}
-                        alt=""
-                        className="object-cover"
-                      />
-                      <AvatarFallback>
-                        <MerchantAvatarFallback iconClassName="h-2.5 w-2.5" />
-                      </AvatarFallback>
-                    </Avatar>
+                    <DeferredMerchantAvatar
+                      picture={identity.picture}
+                      className="h-5 w-5 shrink-0"
+                      imageClassName="object-cover"
+                      iconClassName="h-2.5 w-2.5"
+                    />
                     <span
                       className={[
                         "min-w-0 flex-1 truncate",
@@ -487,6 +486,24 @@ function ProductsPage() {
                   </DropdownMenuCheckboxItem>
                 )
               })}
+              {hasMoreStoreFacets ? (
+                <div className="p-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      setVisibleMerchantCount(
+                        (count) => count + MERCHANT_PAGE_SIZE
+                      )
+                    }}
+                  >
+                    Show more merchants
+                  </Button>
+                </div>
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -555,7 +572,7 @@ function ProductsPage() {
         </div>
       )}
 
-      {visibleMatchingMerchants.length > 0 ? (
+      {search.q?.trim() ? (
         <section
           aria-labelledby="matching-merchants-heading"
           className="space-y-3"
@@ -574,22 +591,25 @@ function ProductsPage() {
               search={{ q: search.q, source: search.source }}
               className="text-sm text-secondary-400 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
-              {matchingSellers.length > visibleMatchingMerchants.length
-                ? `See all ${matchingSellers.length} merchants`
-                : "See all merchants"}
+              Search the merchant directory
             </Link>
           </div>
-          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {visibleMatchingMerchants.map((seller) => (
-              <li key={seller.pubkey}>
-                <SellerCard
-                  pubkey={seller.pubkey}
-                  identity={getMerchantIdentity(seller.pubkey)}
-                  listingCount={seller.listingCount}
-                />
-              </li>
-            ))}
-          </ul>
+          <p className="text-sm text-[var(--text-muted)]">
+            Merchant name results may be incomplete while profiles are loading.
+          </p>
+          {visibleMatchingMerchants.length > 0 ? (
+            <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {visibleMatchingMerchants.map((seller) => (
+                <li key={seller.pubkey}>
+                  <SellerCard
+                    pubkey={seller.pubkey}
+                    identity={getMerchantIdentity(seller.pubkey)}
+                    listingCount={seller.listingCount}
+                  />
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </section>
       ) : null}
 

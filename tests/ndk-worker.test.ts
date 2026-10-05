@@ -20,6 +20,8 @@ import {
   refreshNdkRelaySettingsWhenIdle,
   verifySignedEvents,
 } from "@conduit/core"
+import { isValidSignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
+import { snapshotSignedPublicEvent } from "../packages/core/src/protocol/verified-public-event"
 
 function fakeRelayWebSocket(relayEvent: NostrEvent) {
   return class FakeWebSocket {
@@ -119,7 +121,7 @@ function sequencedRelayWebSocket(
   }
 }
 
-describe("NDK relay worker verification fallback", () => {
+describe("Plain public reader worker verification", () => {
   const originalWebSocket = globalThis.WebSocket
   const originalWorker = globalThis.Worker
   const originalConfig = structuredClone(config)
@@ -297,14 +299,14 @@ describe("NDK relay worker verification fallback", () => {
       }
     }
 
-    let socket: DeferredWebSocket | null = null
+    const socket: { current?: DeferredWebSocket } = {}
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       writable: true,
       value: class extends DeferredWebSocket {
         constructor() {
           super()
-          socket = this
+          socket.current = this
         }
       },
     })
@@ -319,13 +321,13 @@ describe("NDK relay worker verification fallback", () => {
     await request
 
     refreshNdkRelaySettingsWhenIdle("account:test")
-    expect(socket?.closed).toBe(false)
-    socket?.finish()
+    expect(socket.current?.closed).toBe(false)
+    socket.current?.finish()
 
     const result = await read
     expect(result.relays[0]?.status).toBe("success")
     expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
-    expect(socket?.closed).toBe(true)
+    expect(socket.current?.closed).toBe(true)
   })
 
   it("fails closed when the verification worker errors after postMessage", async () => {
@@ -387,7 +389,7 @@ describe("NDK relay worker verification fallback", () => {
     expect(workerTerminates).toBe(1)
   })
 
-  it("verifies an EOSE-complete public event when the worker queue is saturated", async () => {
+  it("waits off-thread for the active worker batch and verifies queued events after release", async () => {
     const validEvent = finalizeEvent(
       {
         kind: EVENT_KINDS.ZAP_REQUEST,
@@ -398,164 +400,141 @@ describe("NDK relay worker verification fallback", () => {
       Uint8Array.from([...new Uint8Array(31), 1])
     )
     const invalidEvent = { ...validEvent, sig: "0".repeat(128) }
+    const requests: Array<{ reqId: number; items: (typeof validEvent)[] }> = []
+    const worker: { current?: ControlledWorker } = {}
 
-    class HoldingWorker {
+    class ControlledWorker {
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: Event) => void) | null = null
-
-      postMessage(): void {
-        workerPostMessages += 1
+      constructor() {
+        worker.current = this
       }
-
+      postMessage(message: {
+        reqId: number
+        items: (typeof validEvent)[]
+      }): void {
+        workerPostMessages += 1
+        requests.push(message)
+      }
       terminate(): void {
         workerTerminates += 1
       }
     }
 
-    Object.defineProperty(globalThis, "WebSocket", {
-      configurable: true,
-      writable: true,
-      value: sequencedRelayWebSocket([invalidEvent, validEvent]),
-    })
     Object.defineProperty(globalThis, "Worker", {
       configurable: true,
       writable: true,
-      value: HoldingWorker,
+      value: ControlledWorker,
     })
+    const first = verifySignedEvents([validEvent])
+    const second = verifySignedEvents([invalidEvent])
+    await Promise.resolve()
+    expect(workerPostMessages).toBe(1)
+    expect(requests).toHaveLength(1)
 
-    const saturatedBatches = Array.from({ length: 7 }, () =>
-      verifySignedEvents([validEvent]).catch(() => ({
-        events: [],
-        truncated: false,
-      }))
-    )
-    expect(workerPostMessages).toBe(7)
-
-    try {
-      const result = await fetchSignedEventsFanoutDetailed(
-        {
-          kinds: [EVENT_KINDS.ZAP_REQUEST],
-          "#p": ["1".repeat(64)],
-        },
-        {
-          relayUrls: ["wss://saturated-verifier.example"],
-          connectTimeoutMs: 50,
-          fetchTimeoutMs: 50,
-          reuseRelayConnections: false,
-        }
-      )
-
-      expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
-      expect(result.relays).toMatchObject([
-        {
-          relayUrl: "wss://saturated-verifier.example",
-          status: "partial",
-          eventCount: 1,
-          rejectedEventCount: 1,
-        },
-      ])
-    } finally {
-      __resetPublicReaderTestState()
-      await Promise.all(saturatedBatches)
-    }
-  })
-
-  it("reserves relay-read capacity for bounded verification fallback", async () => {
-    const validEvent = finalizeEvent(
-      {
-        kind: EVENT_KINDS.ZAP_REQUEST,
-        created_at: 10,
-        tags: [["p", "1".repeat(64)]],
-        content: "reserved-fallback-test",
+    const firstRequest = requests[0]!
+    worker.current?.onmessage?.({
+      data: {
+        reqId: firstRequest.reqId,
+        valid: firstRequest.items.map(isValidSignedPublicNostrEvent),
       },
-      Uint8Array.from([...new Uint8Array(31), 1])
-    )
-    const invalidEvent = { ...validEvent, sig: "0".repeat(128) }
+    } as MessageEvent)
+    await expect(first).resolves.toMatchObject({
+      events: [snapshotSignedPublicEvent(validEvent)],
+      truncated: false,
+    })
+    expect(workerPostMessages).toBe(2)
 
-    class HoldingWorker {
+    const secondRequest = requests[1]!
+    worker.current?.onmessage?.({
+      data: {
+        reqId: secondRequest.reqId,
+        valid: secondRequest.items.map(isValidSignedPublicNostrEvent),
+      },
+    } as MessageEvent)
+    await expect(second).resolves.toMatchObject({
+      events: [],
+      truncated: false,
+    })
+  })
+
+  it("waits for the eighth worker batch before completing its relay read", async () => {
+    const events = Array.from({ length: 8 }, (_, index) =>
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.PROFILE,
+          created_at: 10 + index,
+          tags: [],
+          content: `queued ${index}`,
+        },
+        Uint8Array.from([...new Uint8Array(31), 1])
+      )
+    )
+    const requests: Array<{ reqId: number; items: NostrEvent[] }> = []
+    const worker: { current?: ControlledWorker } = {}
+    class ControlledWorker {
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: Event) => void) | null = null
-
-      postMessage(): void {
-        workerPostMessages += 1
+      constructor() {
+        worker.current = this
       }
-
+      postMessage(message: { reqId: number; items: NostrEvent[] }): void {
+        workerPostMessages += 1
+        requests.push(message)
+      }
       terminate(): void {
         workerTerminates += 1
       }
     }
-
-    Object.defineProperty(globalThis, "WebSocket", {
-      configurable: true,
-      writable: true,
-      value: sequencedRelayWebSocket([invalidEvent, validEvent]),
-    })
     Object.defineProperty(globalThis, "Worker", {
       configurable: true,
       writable: true,
-      value: HoldingWorker,
+      value: ControlledWorker,
+    })
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: sequencedRelayWebSocket([events[7]!]),
     })
 
-    const occupiedReads = Array.from({ length: 7 }, (_, index) =>
-      fetchSignedEventsFanoutDetailed(
-        { kinds: [EVENT_KINDS.ZAP_REQUEST], "#p": ["1".repeat(64)] },
-        {
-          relayUrls: [`wss://occupied-verifier-${index}.example`],
-          connectTimeoutMs: 50,
-          fetchTimeoutMs: 50,
-          reuseRelayConnections: false,
-        }
-      )
+    const queuedBatches = events
+      .slice(0, 7)
+      .map((event) => verifySignedEvents([event]))
+    const relayRead = fetchSignedEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE] },
+      {
+        relayUrls: ["wss://eighth-read.example"],
+        connectTimeoutMs: 50,
+        fetchTimeoutMs: 50,
+        reuseRelayConnections: false,
+      }
     )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(workerPostMessages).toBe(1)
+    expect(requests[0]?.items[0]?.id).toBe(events[0]!.id)
 
-    let exactRead: ReturnType<typeof fetchSignedEventsFanoutDetailed> | null =
-      null
-    try {
-      const workerDeadline = Date.now() + 250
-      while (workerPostMessages < 7 && Date.now() < workerDeadline) {
-        await new Promise((resolve) => setTimeout(resolve, 0))
-      }
-      expect(workerPostMessages).toBe(7)
-
-      exactRead = fetchSignedEventsFanoutDetailed(
-        { kinds: [EVENT_KINDS.ZAP_REQUEST], "#p": ["1".repeat(64)] },
-        {
-          relayUrls: ["wss://reserved-verifier.example"],
-          connectTimeoutMs: 50,
-          fetchTimeoutMs: 50,
-          reuseRelayConnections: false,
-        }
-      )
-      const result = await Promise.race([
-        exactRead.then((value) => ({ state: "resolved" as const, value })),
-        new Promise<{ state: "timeout" }>((resolve) =>
-          setTimeout(() => resolve({ state: "timeout" }), 250)
-        ),
-      ])
-
-      expect(result.state).toBe("resolved")
-      if (result.state === "resolved") {
-        expect(result.value.events.map((event) => event.id)).toEqual([
-          validEvent.id,
-        ])
-        expect(result.value.relays).toMatchObject([
-          {
-            relayUrl: "wss://reserved-verifier.example",
-            status: "partial",
-            eventCount: 1,
-            rejectedEventCount: 1,
-          },
-        ])
-      }
-    } finally {
-      __resetPublicReaderTestState()
-      await Promise.allSettled(
-        exactRead ? [...occupiedReads, exactRead] : occupiedReads
-      )
+    for (let index = 0; index < 8; index += 1) {
+      const request = requests[index]!
+      expect(request.items).toHaveLength(1)
+      worker.current?.onmessage?.({
+        data: {
+          reqId: request.reqId,
+          valid: request.items.map(isValidSignedPublicNostrEvent),
+        },
+      } as MessageEvent)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(workerPostMessages).toBe(index === 7 ? 8 : index + 2)
     }
+    const results = await Promise.all(queuedBatches)
+    expect(results.map((result) => result.events[0]?.id)).toEqual(
+      events.slice(0, 7).map((event) => event.id)
+    )
+    const result = await relayRead
+    expect(result.events.map((event) => event.id)).toEqual([events[7]!.id])
+    expect(result.relays[0]?.status).toBe("success")
   })
 
-  it("verifies a valid hex-encoded Nostr signature in the sync fallback", async () => {
+  it("verifies a valid hex-encoded Nostr signature in the server-only sync fallback", async () => {
     const validEvent = finalizeEvent(
       {
         kind: EVENT_KINDS.PROFILE,
@@ -816,7 +795,7 @@ describe("NDK relay worker verification fallback", () => {
     expect(sockets.every((socket) => socket.readyState === 3)).toBe(true)
   })
 
-  it("closes shared relay connections when resetting NDK test state", async () => {
+  it("closes shared relay connections when resetting public reader test state", async () => {
     const firstEvent = finalizeEvent(
       {
         kind: EVENT_KINDS.PROFILE,
@@ -1677,36 +1656,100 @@ describe("NDK relay worker verification fallback", () => {
     expect(recovered.events.map((event) => event.id)).toEqual([validEvent.id])
   })
 
-  it("falls back to bounded verification when a worker times out", async () => {
+  it("cancels a queued worker batch while the active and unrelated queued reads finish", async () => {
+    const makeEvent = (createdAt: number) =>
+      finalizeEvent(
+        {
+          kind: EVENT_KINDS.PROFILE,
+          created_at: createdAt,
+          tags: [],
+          content: `queued cancellation ${createdAt}`,
+        },
+        Uint8Array.from([...new Uint8Array(31), 1])
+      )
+    const activeEvent = makeEvent(10)
+    const cancelledEvent = makeEvent(11)
+    const retainedEvent = makeEvent(12)
+    const posted: Array<{ reqId: number; items: NostrEvent[] }> = []
+    const worker: { current?: ControlledWorker } = {}
+    class ControlledWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      constructor() {
+        worker.current = this
+      }
+      postMessage(message: { reqId: number; items: NostrEvent[] }): void {
+        workerPostMessages += 1
+        posted.push(message)
+      }
+      terminate(): void {
+        workerTerminates += 1
+      }
+    }
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: ControlledWorker,
+    })
+    const active = verifySignedEvents([activeEvent])
+    const controller = new AbortController()
+    const cancelled = verifySignedEvents([cancelledEvent], {
+      signal: controller.signal,
+    })
+    const retained = verifySignedEvents([retainedEvent])
+    await Promise.resolve()
+    expect(workerPostMessages).toBe(1)
+    controller.abort()
+    await expect(cancelled).rejects.toMatchObject({ name: "AbortError" })
+    expect(workerTerminates).toBe(0)
+
+    const first = posted[0]!
+    worker.current?.onmessage?.({
+      data: {
+        reqId: first.reqId,
+        valid: first.items.map(isValidSignedPublicNostrEvent),
+      },
+    } as MessageEvent)
+    await expect(active).resolves.toMatchObject({
+      events: [snapshotSignedPublicEvent(activeEvent)],
+    })
+    expect(workerPostMessages).toBe(2)
+    const next = posted[1]!
+    expect(next.items.map((event) => event.id)).toEqual([retainedEvent.id])
+    worker.current?.onmessage?.({
+      data: {
+        reqId: next.reqId,
+        valid: next.items.map(isValidSignedPublicNostrEvent),
+      },
+    } as MessageEvent)
+    await expect(retained).resolves.toMatchObject({
+      events: [snapshotSignedPublicEvent(retainedEvent)],
+    })
+    expect(workerTerminates).toBe(0)
+  })
+
+  it("rejects worker verification after a persistent timeout without accepting the event", async () => {
     const validEvent = finalizeEvent(
       {
         kind: EVENT_KINDS.PROFILE,
         created_at: 10,
         tags: [],
-        content: JSON.stringify({ name: "worker timeout" }),
+        content: JSON.stringify({ name: "persistent timeout" }),
       },
       Uint8Array.from([...new Uint8Array(31), 1])
     )
-    let workerTerminates = 0
-
     class HangingWorker {
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: Event) => void) | null = null
-
       postMessage(): void {}
-
       terminate(): void {
         workerTerminates += 1
       }
     }
-
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       writable: true,
-      value: sequencedRelayWebSocket([
-        { ...validEvent, sig: "0".repeat(128) },
-        validEvent,
-      ]),
+      value: sequencedRelayWebSocket([validEvent]),
     })
     Object.defineProperty(globalThis, "Worker", {
       configurable: true,
@@ -1714,27 +1757,74 @@ describe("NDK relay worker verification fallback", () => {
       value: HangingWorker,
     })
     __setPublicReaderVerifyTimeoutMsForTests(10)
-
     const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls: ["wss://verification-timeout.example"],
         connectTimeoutMs: 50,
-        fetchTimeoutMs: 50,
+        fetchTimeoutMs: 100,
       }
     )
-    await Promise.resolve()
+    expect(result.events).toEqual([])
+    expect(result.relays[0]?.status).toBe("failed")
+    expect(workerTerminates).toBeGreaterThanOrEqual(1)
+  })
 
-    expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
-    expect(result.relays).toMatchObject([
+  it("replaces a timed-out worker and recovers the active batch once", async () => {
+    const validEvent = finalizeEvent(
       {
-        relayUrl: "wss://verification-timeout.example",
-        status: "partial",
-        eventCount: 1,
-        rejectedEventCount: 1,
+        kind: EVENT_KINDS.PROFILE,
+        created_at: 10,
+        tags: [],
+        content: JSON.stringify({ name: "transient timeout" }),
       },
-    ])
-    expect(workerTerminates).toBe(1)
+      Uint8Array.from([...new Uint8Array(31), 1])
+    )
+    let constructions = 0
+    class RecoveringWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      constructor() {
+        constructions += 1
+      }
+      postMessage(message: { reqId: number; items: NostrEvent[] }): void {
+        workerPostMessages += 1
+        if (constructions < 2) return
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: {
+              reqId: message.reqId,
+              valid: message.items.map(isValidSignedPublicNostrEvent),
+            },
+          } as MessageEvent)
+        )
+      }
+      terminate(): void {
+        workerTerminates += 1
+      }
+    }
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: sequencedRelayWebSocket([validEvent]),
+    })
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: RecoveringWorker,
+    })
+    __setPublicReaderVerifyTimeoutMsForTests(10)
+    const result = await fetchSignedEventsFanoutDetailed(
+      { kinds: [EVENT_KINDS.PROFILE] },
+      {
+        relayUrls: ["wss://verification-recovery.example"],
+        connectTimeoutMs: 50,
+        fetchTimeoutMs: 100,
+      }
+    )
+    expect(result.events.map((event) => event.id)).toEqual([validEvent.id])
+    expect(constructions).toBe(2)
+    expect(workerPostMessages).toBe(2)
   })
 
   it("rejects an oversized relay frame as an incomplete transport read", async () => {
