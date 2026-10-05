@@ -1,9 +1,106 @@
 import { describe, expect, it } from "bun:test"
 import { finalizeEvent } from "nostr-tools/pure"
-import { scanEventMarketCandidates } from "../packages/core/src/protocol/event-market-candidates"
+import {
+  __resetEventMarketTestOverrides,
+  __setEventMarketTestOverrides,
+  buildEventMarketRosterDraft,
+  discoverFutureEventMarkets,
+  getEventMarketReadPlan,
+} from "@conduit/core"
+import {
+  scanEventMarketCandidates,
+  type EventMarketDiscoveryContinuation,
+} from "../packages/core/src/protocol/event-market-candidates"
 import { fixture } from "./helpers/future-market-discovery-fixture"
 
 describe("event candidate discovery paging", () => {
+  it("hydrates continued coordinates from their observed source beyond the exact relay prefix", async () => {
+    const state = fixture(1)
+    const record = state.records[0]!
+    const relays = Array.from(
+      { length: 10 },
+      (_, index) => `wss://discovery-${index}.relay.dev`
+    )
+    const source = relays[9]!
+    const rosters = Array.from({ length: 129 }, (_, index) =>
+      finalizeEvent(
+        {
+          ...buildEventMarketRosterDraft({
+            organizerPubkey: record.author,
+            dTag: `continued-${index}`,
+            calendarCoordinate: `31923:${record.author}:date-0`,
+            state: "open",
+            merchants: [],
+          }),
+          created_at: 100,
+        },
+        record.secret
+      )
+    )
+    state.live.splice(0, state.live.length, ...rosters, record.calendar)
+    const basePlan = await state.dependencies.planDiscovery!({})
+    state.dependencies.planDiscovery = async () => ({
+      ...basePlan,
+      relayUrls: relays,
+      candidateRelayUrls: relays,
+    })
+    state.dependencies.plan = getEventMarketReadPlan
+    const fetch = state.dependencies.fetch
+    state.dependencies.fetch = async (filter, options) => {
+      const attempted = (options.relayUrls ?? []).slice(
+        0,
+        options.maxRelayAttempts ?? Infinity
+      )
+      const result = attempted.includes(source)
+        ? await fetch(filter, options)
+        : { events: [] }
+      return {
+        events: result.events,
+        relays: attempted.map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+        })),
+      }
+    }
+    __setEventMarketTestOverrides({ getRelayLists: async () => new Map() })
+    try {
+      // Replacing observed provenance with the full discovery plan buries the
+      // actual source behind the planner's eight-relay attempt bound.
+      const widened = await getEventMarketReadPlan({
+        organizerPubkey: record.author,
+        relayHints: relays,
+      })
+      expect(
+        widened.candidateRelayUrls.slice(0, widened.maxRelayAttempts)
+      ).not.toContain(source)
+      const first = await discoverFutureEventMarkets({}, state.dependencies)
+      expect(first.markets).toHaveLength(128)
+      expect(first.continuation?.pendingCoordinates).toHaveLength(1)
+      expect(first.markets.every((read) => read.calendar)).toBe(true)
+      // Round-trip the state just as a retained query continuation would.
+      const serialized = JSON.stringify(first.continuation)
+      const continuation = JSON.parse(
+        serialized
+      ) as EventMarketDiscoveryContinuation
+      const next = await discoverFutureEventMarkets(
+        { continuation },
+        state.dependencies
+      )
+      expect(next.markets).toHaveLength(1)
+      expect(next.markets[0]?.resolution.state).toBe("current")
+      expect(next.markets[0]?.calendar?.eventId).toBe(record.calendar.id)
+      expect(next.markets[0]?.observedRelayUrls).toContain(source)
+      expect(next.continuation).toBeUndefined()
+      const switched = await discoverFutureEventMarkets(
+        { organizerPubkeys: [], continuation },
+        state.dependencies
+      )
+      expect(switched.markets).toEqual([])
+    } finally {
+      __resetEventMarketTestOverrides()
+    }
+  }, 20_000)
+
   it("opens public discovery while keeping an empty Following audience empty", async () => {
     const state = fixture()
     const { discoverFutureEventMarkets } = await import("@conduit/core")

@@ -1,4 +1,4 @@
-import type { NDKFilter, NDKKind } from "@nostr-dev-kit/ndk"
+import type { Filter } from "nostr-tools"
 import {
   readEventMarketAuthorization,
   type EventMarketAuthorizationReadResult,
@@ -39,7 +39,10 @@ import {
   type EventMarketSchedule,
 } from "./event-market-schedule"
 import { parseProductEvent } from "./products"
-import { fetchEventsFanoutDetailed, type FetchEventsFanoutOptions } from "./ndk"
+import {
+  fetchSignedEventsFanoutDetailed,
+  type PublicRelayReadOptions,
+} from "./relay-reader"
 import {
   compareReplaceableEventFrontiers,
   isValidSignedPublicNostrEvent,
@@ -236,8 +239,8 @@ interface SignedFanoutResult {
 interface RosterReadDependencies {
   plan: typeof getEventMarketReadPlan
   fetch: (
-    filter: NDKFilter,
-    options: FetchEventsFanoutOptions
+    filter: Filter,
+    options: PublicRelayReadOptions
   ) => Promise<SignedFanoutResult>
   load: (coordinate: string) => Promise<SignedPublicNostrEvent[]>
   retain: (
@@ -250,16 +253,11 @@ interface RosterReadDependencies {
 const MAX_RETAINED_MARKET_RECORDS = 2_048
 
 async function fetchSigned(
-  filter: NDKFilter,
-  options: FetchEventsFanoutOptions
+  filter: Filter,
+  options: PublicRelayReadOptions
 ): Promise<SignedFanoutResult> {
-  const result = await fetchEventsFanoutDetailed(filter, options)
-  return {
-    events: result.events.map(
-      (event) => event.rawEvent() as SignedPublicNostrEvent
-    ),
-    relays: result.relays,
-  }
+  const result = await fetchSignedEventsFanoutDetailed(filter, options)
+  return { events: result.events, relays: result.relays }
 }
 
 async function loadRetained(
@@ -371,7 +369,7 @@ function fanoutOptions(
     shouldContinue?: () => boolean
     signal?: AbortSignal
   }
-): FetchEventsFanoutOptions {
+): PublicRelayReadOptions {
   return {
     relayUrls: plan.candidateRelayUrls,
     maxRelayAttempts: plan.maxRelayAttempts,
@@ -551,7 +549,7 @@ export async function readEventMarketRoster(
     }
   }
   const options = fanoutOptions(plan, input)
-  const safeFetch = async (filter: NDKFilter): Promise<SignedFanoutResult> => {
+  const safeFetch = async (filter: Filter): Promise<SignedFanoutResult> => {
     try {
       return await dependencies.fetch(filter, options)
     } catch (error) {
@@ -562,7 +560,7 @@ export async function readEventMarketRoster(
   }
   const [rosterRead, coordinateDeletions] = await Promise.all([
     safeFetch({
-      kinds: [EVENT_KINDS.EVENT_MARKET as NDKKind],
+      kinds: [EVENT_KINDS.EVENT_MARKET],
       authors: [decoded.authorPubkey],
       "#d": [decoded.dTag],
       limit: 64,
@@ -672,7 +670,7 @@ export async function readEventMarketRoster(
   if (linkedCoordinate.kind === EVENT_KINDS.CALENDAR) {
     const [masterRead, masterCoordinateDeletions] = await Promise.all([
       safeFetch({
-        kinds: [EVENT_KINDS.CALENDAR as NDKKind],
+        kinds: [EVENT_KINDS.CALENDAR],
         authors: [decoded.authorPubkey],
         "#d": [linkedCoordinate.dTag],
         limit: 64,
@@ -780,10 +778,7 @@ export async function readEventMarketRoster(
       const batch = members.slice(offset, offset + 32)
       const [memberRead, memberCoordinateDeletions] = await Promise.all([
         safeFetch({
-          kinds: [
-            EVENT_KINDS.CALENDAR_DATE as NDKKind,
-            EVENT_KINDS.CALENDAR_TIME as NDKKind,
-          ],
+          kinds: [EVENT_KINDS.CALENDAR_DATE, EVENT_KINDS.CALENDAR_TIME],
           authors: [decoded.authorPubkey],
           "#d": batch.map((member) => member.dTag),
           limit: 128,
@@ -943,7 +938,7 @@ export async function readEventMarketRoster(
   )
   const [calendarRead, calendarCoordinateDeletions] = await Promise.all([
     safeFetch({
-      kinds: [calendarCoordinate.kind as NDKKind],
+      kinds: [calendarCoordinate.kind],
       authors: [decoded.authorPubkey],
       "#d": [calendarCoordinate.dTag],
       limit: 64,
@@ -1181,7 +1176,7 @@ export async function readEventMarketProduct(
     }
   }
   const options = fanoutOptions(plan, input)
-  const safeFetch = async (filter: NDKFilter): Promise<SignedFanoutResult> => {
+  const safeFetch = async (filter: Filter): Promise<SignedFanoutResult> => {
     try {
       return await dependencies.fetch(filter, options)
     } catch (error) {
@@ -1874,9 +1869,9 @@ export async function discoverFutureEventMarkets(
       plan.relayUrls,
     ])
     if (input.continuation?.scope === scope)
-      for (const coordinate of input.continuation.pendingCoordinates) {
-        hints.set(coordinate, new Set(plan.relayUrls))
-        void scheduleExact(coordinate)
+      for (const pending of input.continuation.pendingCoordinates) {
+        hints.set(pending.coordinate, new Set(pending.relayHints))
+        void scheduleExact(pending.coordinate)
       }
     const scan = await scanEventMarketCandidates({
       authors,
@@ -1925,7 +1920,10 @@ export async function discoverFutureEventMarkets(
       continuation = {
         scope: scan.scope,
         pages: scan.pages,
-        pendingCoordinates: [...pending],
+        pendingCoordinates: [...pending].map((coordinate) => ({
+          coordinate,
+          relayHints: [...(hints.get(coordinate) ?? [])],
+        })),
       }
     finished = true
     const coverage =
@@ -2088,7 +2086,7 @@ export async function previewEventMarketMerchantProducts(
     if (input.signal?.aborted || input.shouldContinue?.() === false) throw error
     return { products: [], candidateCount: 0, coverage: "unavailable" }
   }
-  const fetch = async (filter: NDKFilter): Promise<SignedFanoutResult> => {
+  const fetch = async (filter: Filter): Promise<SignedFanoutResult> => {
     try {
       return await dependencies.fetch(filter, fanoutOptions(plan, input))
     } catch (error) {

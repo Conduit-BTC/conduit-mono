@@ -22,7 +22,7 @@ import {
   type ParsedShippingOption,
   type ProductSchema,
 } from "@conduit/core"
-import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
+import { __resetPublicReaderTestState } from "../packages/core/src/protocol/relay-reader"
 import {
   applyProductFulfillmentIntentForPublication,
   getProductPreservedFulfillmentFields,
@@ -265,7 +265,7 @@ afterEach(() => {
   resetFixturePublishers()
   __resetRelayPublishTestOverrides()
   __resetShippingTestOverrides()
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
 })
 
 describe("merchant-owned product mutation boundary", () => {
@@ -494,7 +494,7 @@ describe("merchant-owned product mutation boundary", () => {
             },
           ])
         ),
-      fetchEventsFanoutDetailed: async (filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (filter, options) => ({
         events: [],
         relays: (options?.relayUrls ?? []).map((relayUrl) => ({
           relayUrl,

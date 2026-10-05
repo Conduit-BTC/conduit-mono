@@ -1,6 +1,6 @@
-import type { NDKFilter, NDKKind } from "@nostr-dev-kit/ndk"
+import type { Filter } from "nostr-tools"
 import type { EventMarketReadPlan } from "./event-market"
-import type { FetchEventsFanoutOptions } from "./ndk"
+import type { PublicRelayReadOptions } from "./relay-reader"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -17,7 +17,8 @@ export interface EventMarketDiscoveryContinuation {
   /** Prevent reuse across an audience, account, or selected-relay change. */
   scope: string
   pages: CandidatePage[]
-  pendingCoordinates: string[]
+  /** Coordinate-specific observed sources, retained under the same scope. */
+  pendingCoordinates: Array<{ coordinate: string; relayHints: string[] }>
 }
 
 /** Fair, bounded NIP-01 paging; a full timestamp boundary is never skipped. */
@@ -25,11 +26,11 @@ export async function scanEventMarketCandidates(input: {
   authors?: readonly string[]
   accountPubkey?: string | null
   plan: EventMarketReadPlan
-  options: FetchEventsFanoutOptions
+  options: PublicRelayReadOptions
   continuation?: EventMarketDiscoveryContinuation
   fetch: (
-    filter: NDKFilter,
-    options: FetchEventsFanoutOptions
+    filter: Filter,
+    options: PublicRelayReadOptions
   ) => Promise<{
     events: SignedPublicNostrEvent[]
     relays: Array<{
@@ -76,8 +77,8 @@ export async function scanEventMarketCandidates(input: {
         const authorSet = page.authors ? new Set(page.authors) : undefined
         requests++
         const limit = page.boundary ? 513 : 129
-        const filter: NDKFilter = {
-          kinds: [30409 as NDKKind],
+        const filter: Filter = {
+          kinds: [30409],
           ...(page.authors ? { authors: page.authors } : {}),
           ...(page.until !== undefined ? { until: page.until } : {}),
           ...(page.boundary ? { since: page.until } : {}),

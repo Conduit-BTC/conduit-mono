@@ -29,7 +29,7 @@ import {
   type InboxDeclarationEvidenceRepository,
   type ResolveInboxDeclarationOptions,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 
 const OWNER_SECRET = new Uint8Array(32).fill(1)
 const OTHER_SECRET = new Uint8Array(32).fill(2)

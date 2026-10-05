@@ -42,7 +42,6 @@ export interface MerchantIdentityView {
 
 export async function refreshMarketBrowseData(input: {
   globalSearchEnabled: boolean
-  refreshDiscovery?: () => Promise<boolean>
   refreshCatalog: () => unknown
   refreshGlobalSearch: () => unknown
 }): Promise<void> {
@@ -51,26 +50,10 @@ export async function refreshMarketBrowseData(input: {
       ? Promise.resolve(input.refreshGlobalSearch())
       : Promise.resolve()
 
-  if (!input.refreshDiscovery) {
-    await Promise.all([
-      Promise.resolve(input.refreshCatalog()),
-      refreshGlobalSearch(),
-    ])
-    return
-  }
-
-  const discoveryRefresh = input.refreshDiscovery()
-  const globalSearchRefresh = refreshGlobalSearch()
-  let authorSetChanged = false
-  try {
-    authorSetChanged = await discoveryRefresh
-  } catch {
-    // The catalog still refreshes against the retained safe author set.
-  }
-  const catalogRefresh = authorSetChanged
-    ? Promise.resolve()
-    : Promise.resolve(input.refreshCatalog())
-  await Promise.all([catalogRefresh, globalSearchRefresh])
+  await Promise.all([
+    Promise.resolve(input.refreshCatalog()),
+    refreshGlobalSearch(),
+  ])
 }
 
 type BrowseFreshnessMeta = CommerceFreshnessMeta

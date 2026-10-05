@@ -1,6 +1,6 @@
 import { nip19 } from "@nostr-dev-kit/ndk"
 import { EVENT_KINDS } from "./kinds"
-import type { FetchEventsFanoutOptions } from "./ndk"
+import type { PublicRelayReadOptions } from "./relay-reader"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import {
@@ -860,8 +860,8 @@ export async function getEventMarketReadPlan(input: {
   organizerPubkey: string
   relayHints?: readonly string[]
   authenticatedPubkey?: string | null
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signal?: AbortSignal
 }): Promise<EventMarketReadPlan> {
   const authenticatedPubkey = input.authenticatedPubkey

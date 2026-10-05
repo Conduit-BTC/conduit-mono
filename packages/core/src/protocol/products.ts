@@ -1,8 +1,11 @@
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  inheritVerifiedPublicEvent,
+  snapshotSignedPublicEvent,
+} from "./verified-public-event"
 import {
   EVENT_GUEST_CONTACT_TAG,
   hasSignedEventGuestOptIn,
@@ -1083,24 +1086,25 @@ export function normalizeProductSummaryForDisplay(
  *   NIP-99/Open Markets tags and Markdown content.
  */
 export function parseProductEvent(
-  event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
+  event: Pick<
+    SignedPublicNostrEvent,
+    "content" | "pubkey" | "created_at" | "tags" | "id"
+  >
 ): ProductSchema {
   const rawEvent = (
     "rawEvent" in event && typeof event.rawEvent === "function"
       ? event.rawEvent()
       : event
   ) as SignedPublicNostrEvent
+  inheritVerifiedPublicEvent(
+    rawEvent,
+    event as unknown as SignedPublicNostrEvent
+  )
   const signedProductEvent = isValidSignedPublicNostrEvent(rawEvent)
-    ? {
-        id: rawEvent.id,
-        pubkey: rawEvent.pubkey,
-        created_at: rawEvent.created_at,
-        kind: rawEvent.kind,
-        content: rawEvent.content,
-        tags: rawEvent.tags.map((tag) => [...tag]),
-        sig: rawEvent.sig,
-      }
+    ? snapshotSignedPublicEvent(rawEvent)
     : undefined
+  if (signedProductEvent)
+    inheritVerifiedPublicEvent(signedProductEvent, rawEvent)
 
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")

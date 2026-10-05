@@ -175,7 +175,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       putCached: async (entry) => {
         cache.set(entry.pubkey, entry)
       },
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         fetchCalls.push({ authors: (filter.authors as string[]) ?? [] })
         const authors = (filter.authors as string[]) ?? []
         return authors.map((pubkey) =>
@@ -228,7 +228,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
         }
       | undefined
     __setRelayListTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => {
         capturedOptions = options
         return {
           events: [],
@@ -263,7 +263,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
     })
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           makeRelayListEvent({
             pubkey: "alice",
@@ -290,7 +290,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
     })
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           makeRelayListEvent({
             pubkey: "alice",
@@ -317,7 +317,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
     })
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           makeRelayListEvent({
             pubkey: "alice",
@@ -344,7 +344,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           makeRelayListEvent({
             pubkey: "alice",
@@ -371,7 +371,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const list = await getRelayList("alice", { skipCache: true })
@@ -390,7 +390,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         throw new Error("lookup unavailable")
       },
     })
@@ -416,7 +416,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       resolveNewerCommit = resolve
     })
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         fetchCall += 1
         if (fetchCall === 1) {
           return [
@@ -465,7 +465,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           makeRelayListEvent({
             pubkey: "alice",
@@ -500,7 +500,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       resolveLowerIdCommit = resolve
     })
     __setRelayListTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => {
         fetchCall += 1
         if (fetchCall !== 1) await lowerIdCommitted
         const event = makeRelayListEvent({
@@ -554,7 +554,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cachedAt: FIXED_NOW - RELAY_LIST_CACHE_TTL_MS - 1,
     })
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         throw new Error("boom")
       },
     })
@@ -597,7 +597,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
   it("distinguishes completed absence from unavailable relay-list discovery", async () => {
     const relayUrls = ["wss://one.example/", "wss://two.example/"]
     __setRelayListTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: [],
         relays: (options.relayUrls ?? []).map((relayUrl) => ({
           relayUrl,
@@ -615,7 +615,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     expect(unavailable.resolutionStates.get("alice")).toBe("lookup-unavailable")
 
     __setRelayListTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: [],
         relays: (options.relayUrls ?? []).map((relayUrl) => ({
           relayUrl,
@@ -638,7 +638,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       "wss://parked.conduit.market/",
     ]
     __setRelayListTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => {
         expect(options.skipHealthFilter).toBe(true)
         expect(options.relayUrls).toEqual(relayUrls)
         return {
@@ -674,7 +674,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cappedAppRelay,
     ]
     __setRelayListTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => {
         expect(options.relayUrls).toEqual(relayUrls)
         expect(options.maxRelayAttempts).toBe(1)
         return {
@@ -711,7 +711,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setRelayListTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: [],
         relays: (options.relayUrls ?? []).map((relayUrl) => ({
           relayUrl,
@@ -741,7 +741,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
   it("filters insecure relays from third-party lookup results without mutating the raw cache", async () => {
     __setRelayListTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         fetchCalls.push({ authors: (filter.authors as string[]) ?? [] })
         return [
           makeRelayListEvent({
@@ -777,7 +777,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
   it("preserves insecure relays when the lookup matches the authenticated pubkey", async () => {
     __setRelayListTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         fetchCalls.push({ authors: (filter.authors as string[]) ?? [] })
         return [
           makeRelayListEvent({
@@ -805,7 +805,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
   it("does not treat an insecure-result allowlist as authentication", async () => {
     __setRelayListTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           makeRelayListEvent({
             pubkey: "alice",
@@ -825,7 +825,7 @@ describe("getRelayList / getRelayLists cache behavior", () => {
 
   it("filters insecure relays only for non-authenticated pubkeys in batched lookups", async () => {
     __setRelayListTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         const authors = (filter.authors as string[]) ?? []
         fetchCalls.push({ authors })
         return authors.map((pubkey) =>

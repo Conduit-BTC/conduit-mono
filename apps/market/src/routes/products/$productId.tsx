@@ -15,7 +15,7 @@ import {
   buildProductDetailActionTelemetryProperties,
   createEventMarketPickupSnapshot,
   formatNpub,
-  getListingSafetyDisplay,
+  getListingAvailabilityDisplay,
   getProfileName,
   isCommerceReadIncomplete,
   parseAddressableCoordinate,
@@ -237,13 +237,13 @@ function ProductPage() {
     selectedProduct,
     shopperPricing.quote
   )
-  const listingSafety = productQuery.listingSafety
-  const listingSafetyDisplay = listingSafety
-    ? getListingSafetyDisplay(listingSafety)
+  const listingAvailability = productQuery.listingAvailability
+  const listingAvailabilityDisplay = listingAvailability
+    ? getListingAvailabilityDisplay(listingAvailability)
     : null
   const productUnavailable =
     !!product &&
-    !!listingSafety &&
+    !!listingAvailability &&
     !productQuery.isMarketVisible &&
     (!eventMarketReference ||
       (!eventMarketQuery.isPending && !eventMarketFulfillment))
@@ -769,25 +769,25 @@ function ProductPage() {
           </section>
         )}
 
-      {productUnavailable && product && listingSafetyDisplay && (
+      {productUnavailable && product && listingAvailabilityDisplay && (
         <section className="rounded-3xl border border-warning/30 bg-warning/10 p-8 text-center sm:p-10">
           <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-warning/30 bg-warning/10 text-warning">
             <SearchX className="h-6 w-6" />
           </div>
           <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
-            {listingSafety.state === "unsupported"
+            {listingAvailability.state === "unsupported"
               ? "Listing unsupported"
               : "Listing not available"}
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-[var(--text-secondary)]">
-            {listingSafety.state === "unsupported"
+            {listingAvailability.state === "unsupported"
               ? "This listing uses a product format the current Market client cannot safely support yet."
               : "This listing is not visible in Market or available for checkout right now."}
           </p>
           <div className="mx-auto mt-4 max-w-xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
             Current state:{" "}
             <span className="font-medium text-[var(--text-primary)]">
-              {listingSafetyDisplay.label}
+              {listingAvailabilityDisplay.label}
             </span>
           </div>
           <div className="mt-6 flex flex-wrap justify-center gap-3">

@@ -20,7 +20,11 @@ pages retain their position. Exact roster and calendar hydration runs four at a
 time, for up to 128 coordinates per pass. Only discovered or retained coordinates
 need organizer relay planning. Observed relay sources accompany exact reads.
 Remaining pages and coordinates are scoped continuations exposed by Market's
-Find more events action; refreshing starts a new scan at the newest records.
+Find more events action. Each pending coordinate keeps its observed relay hints
+through continuation so exact reads prioritize its actual sources within the
+bounded plan; the selected discovery relay set is not evidence that every
+coordinate was observed on every relay. Refreshing starts a new scan at the
+newest records.
 These are bounded reads, not proof of global Nostr absence. Account,
 relay, perspective and authentication generation belong to the query scope;
 cancelled or superseded progress cannot update the active view. Unrefreshed

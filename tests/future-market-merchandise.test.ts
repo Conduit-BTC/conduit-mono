@@ -158,7 +158,7 @@ function forbidPublicMerchandiseReads(): () => number {
   }
   __setEventMarketMerchandiseTestOverrides({
     getRelayLists: unexpectedRead,
-    fetchEventsFanoutDetailed: unexpectedRead,
+    fetchSignedEventsFanoutDetailed: unexpectedRead,
   })
   return () => reads
 }
@@ -350,7 +350,7 @@ describe("future organizer exact merchandise", () => {
     const filters: NDKFilter[] = []
     __setEventMarketMerchandiseTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: (async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
         filters.push(filter)
         const events = filter.kinds?.includes(30402) ? [candle] : []
         return {
@@ -393,7 +393,7 @@ describe("future organizer exact merchandise", () => {
       getAccountSigner: () =>
         ({ getPublicKey: async () => ORGANIZER }) as never,
       resolveInboxRelayUrls: async () => ["wss://future.embedded.inbox.test"],
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
         events: [
           new NDKEvent(
             undefined,
@@ -451,7 +451,7 @@ describe("future organizer exact merchandise", () => {
       getAccountSigner: () =>
         ({ getPublicKey: async () => ORGANIZER }) as never,
       resolveInboxRelayUrls: async () => ["wss://future.embedded.inbox.test"],
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
         events: [
           new NDKEvent(
             undefined,
@@ -930,7 +930,7 @@ describe("future organizer exact merchandise", () => {
             },
           ],
         ])) as never,
-      fetchEventsFanoutDetailed: (async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
         observedFilters.push(filter)
         const events = filter.kinds?.includes(30402) ? [product] : []
         return {
@@ -978,7 +978,7 @@ describe("future organizer exact merchandise", () => {
       let persistedWraps = 0
       __setEventMarketMerchandiseTestOverrides({
         getRelayLists: (async () => new Map()) as never,
-        fetchEventsFanoutDetailed: (async (filter, options) => {
+        fetchSignedEventsFanoutDetailed: (async (filter, options) => {
           const events =
             mismatched && filter.kinds?.includes(30402) ? [product] : []
           return {
@@ -1039,7 +1039,7 @@ describe("future organizer exact merchandise", () => {
     let current = true
     __setEventMarketMerchandiseTestOverrides({
       getRelayLists: (async () => new Map()) as never,
-      fetchEventsFanoutDetailed: (async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (_filter, options) => {
         current = false
         return {
           events: [new NDKEvent(undefined, product)],

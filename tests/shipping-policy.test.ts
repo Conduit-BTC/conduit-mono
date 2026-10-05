@@ -39,7 +39,7 @@ import {
   type SignedPublicNostrEvent,
   type CachedProductTombstone,
   type CachedShippingOptionFrontier,
-  type FetchEventsFanoutOptions,
+  type PublicRelayReadOptions,
   type ProductSchema,
   type MerchantShippingPolicyReadResult,
 } from "@conduit/core"
@@ -192,7 +192,7 @@ function cacheOverrides() {
 }
 function fanoutResult(
   events: SignedPublicNostrEvent[],
-  options: FetchEventsFanoutOptions,
+  options: PublicRelayReadOptions,
   complete = true
 ) {
   return {
@@ -858,7 +858,7 @@ describe("shipping policy read evidence", () => {
     let events = [signedPolicy()]
     let complete = true
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options = {}) =>
+      fetchSignedEventsFanoutDetailed: async (filter, options = {}) =>
         fanoutResult(
           filter.kinds?.includes(30406) ? events : [],
           options,
@@ -882,7 +882,7 @@ describe("shipping policy read evidence", () => {
   it("distinguishes complete empty from unavailable empty", async () => {
     cacheOverrides()
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options = {}) =>
+      fetchSignedEventsFanoutDetailed: async (_filter, options = {}) =>
         fanoutResult([], options),
     })
     expect(await fetchMerchantShippingPolicy(merchant)).toEqual({
@@ -890,7 +890,7 @@ describe("shipping policy read evidence", () => {
       coverageComplete: true,
     })
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options = {}) =>
+      fetchSignedEventsFanoutDetailed: async (_filter, options = {}) =>
         fanoutResult([], options, false),
     })
     expect(await fetchMerchantShippingPolicy(merchant)).toMatchObject({
@@ -914,7 +914,7 @@ describe("shipping policy read evidence", () => {
     )
     let events = [signedPolicy(), newer]
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options = {}) =>
+      fetchSignedEventsFanoutDetailed: async (filter, options = {}) =>
         fanoutResult(filter.kinds?.includes(30406) ? events : [], options),
     })
     expect(await fetchMerchantShippingPolicy(merchant)).toMatchObject({
@@ -947,7 +947,7 @@ describe("shipping policy read evidence", () => {
       ),
     ]
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options = {}) =>
+      fetchSignedEventsFanoutDetailed: async (filter, options = {}) =>
         fanoutResult(
           filter.kinds?.includes(30406) ? [event] : deletions,
           options
@@ -978,7 +978,7 @@ describe("shipping policy read evidence", () => {
         putCachedDeletionTombstones: async (rows) => {
           for (const row of rows) tombstones.set(row.id, row)
         },
-        fetchEventsFanoutDetailed: async (filter, options = {}) => {
+        fetchSignedEventsFanoutDetailed: async (filter, options = {}) => {
           if (fail) throw new Error("Relay unavailable")
           return fanoutResult(
             withDeletion && filter.kinds?.includes(5) ? [deletion] : [],
@@ -1044,7 +1044,7 @@ describe("shipping policy publication", () => {
       ]
       let complete = true
       __setShippingTestOverrides({
-        fetchEventsFanoutDetailed: async (filter, options = {}) =>
+        fetchSignedEventsFanoutDetailed: async (filter, options = {}) =>
           fanoutResult(
             filter.kinds?.includes(30406) ? events : [],
             options,
