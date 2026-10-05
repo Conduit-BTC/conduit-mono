@@ -46,6 +46,8 @@ type HermeticCommerceNetworkOptions = {
   imageUrl: string
   /** Exact runner-owned responses only; this does not allow public transport. */
   lnurl?: HermeticLnurlResponder
+  /** Isolated module-heavy lanes must not reuse idle loopback HTTP sockets. */
+  closeLocalConnections?: boolean
   /** Fixed content-free evidence only; callback failures never weaken isolation. */
   onLocalFailure?: (diagnostic: HermeticNetworkFailureDiagnostic) => void
 }
@@ -393,7 +395,12 @@ export async function installHermeticCommerceNetwork(
       if (tearingDown) return abortStoppedRoute(route)
       let response
       try {
-        response = await route.fetch({ maxRedirects: 0 })
+        response = await route.fetch({
+          maxRedirects: 0,
+          ...(options.closeLocalConnections
+            ? { headers: { ...request.headers(), connection: "close" } }
+            : {}),
+        })
       } catch (error) {
         return failLocalApplicationRequest(
           route,

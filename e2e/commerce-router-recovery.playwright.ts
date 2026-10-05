@@ -75,6 +75,10 @@ const networkOptions = {
   appUrls: [marketUrl, merchantUrl],
   relayUrl: TEST_RELAY_URL,
   imageUrl,
+  // API-request socket pooling differs from the browser's resource transport.
+  // Use fresh loopback sockets across cold/reloaded module graphs; never retry
+  // a reset or suppress a current-document request failure.
+  closeLocalConnections: true,
 }
 
 // Observe local retirement without exposing wallet machinery in the Merchant UI.

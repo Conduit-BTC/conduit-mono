@@ -124,6 +124,55 @@ test("the installed handler refuses redirects without following them", async () 
   expect(disposed).toBe(true)
 })
 
+test("one-request local sockets preserve request headers and redirect isolation", async () => {
+  let httpHandler: ((route: Route) => Promise<void>) | undefined
+  const context = {
+    addInitScript: async () => {},
+    route: async (_match: string, handler: (route: Route) => Promise<void>) => {
+      httpHandler = handler
+    },
+    routeWebSocket: async () => {},
+  } as unknown as BrowserContext
+  await installHermeticCommerceNetwork(context, {
+    ...options,
+    closeLocalConnections: true,
+  })
+  let observedOptions: unknown
+  let aborted = false
+  let disposed = false
+  await httpHandler!({
+    request: () => ({
+      url: () => `${options.appUrls[0]}/redirect`,
+      headers: () => ({
+        accept: "application/javascript",
+        "x-fixture": "local",
+      }),
+    }),
+    fetch: async (input: unknown) => {
+      observedOptions = input
+      return {
+        status: () => 302,
+        dispose: async () => {
+          disposed = true
+        },
+      }
+    },
+    abort: async () => {
+      aborted = true
+    },
+  } as unknown as Route)
+  expect(observedOptions).toEqual({
+    maxRedirects: 0,
+    headers: {
+      accept: "application/javascript",
+      "x-fixture": "local",
+      connection: "close",
+    },
+  })
+  expect(aborted).toBe(true)
+  expect(disposed).toBe(true)
+})
+
 test("public HTTP and WebSocket requests never reach a server", async () => {
   let httpHandler: ((route: Route) => Promise<void>) | undefined
   let socketHandler: ((socket: WebSocketRoute) => Promise<void>) | undefined
