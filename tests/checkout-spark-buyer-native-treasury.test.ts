@@ -52,6 +52,11 @@ import {
 } from "../apps/market/src/lib/checkout-spark-native-treasury"
 import { retireCheckoutSparkSettledShopper } from "../apps/market/src/lib/checkout-spark-settled-retirement"
 import { createCheckoutSparkSettledShopperRunner } from "../apps/market/src/lib/checkout-spark-settled-shopper-runner"
+import {
+  canContinueCheckoutSparkSettledRouteSession,
+  type CheckoutSparkSettledRouteSession,
+} from "../apps/market/src/lib/checkout-spark-settled-route-session"
+import { getCheckoutSparkSettledOutcomeMessage } from "../apps/market/src/lib/checkout-spark-settled-outcome-message"
 import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
 import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
 import { plainTestSigner } from "./helpers/plain-signer"
@@ -110,7 +115,9 @@ function invoice(amount: number, byte: number, createdAt = AT, expiry = 900) {
   }
 }
 
-async function fixture(options: { closed?: boolean } = {}) {
+async function fixture(
+  options: { closed?: boolean; commercePaid?: boolean } = {}
+) {
   const mnemonic = createRuntimeMnemonic()
   const merchant = plainTestSigner(NDKPrivateKeySigner.generate())
   const buyer = plainTestSigner(NDKPrivateKeySigner.generate())
@@ -419,24 +426,27 @@ async function fixture(options: { closed?: boolean } = {}) {
     })
   }
   control.registerPayout({ ...payout, feeSats: 4 })
-  const paid = await manager.sendCheckoutLightningObligation(walletId, {
-    network: "mainnet",
-    transferId: intent.transferId,
-    paymentRequest: intent.paymentRequest,
-    amountSats: intent.invoiceAmountSats,
-    maxFeeSats: 5,
-  })
-  if (paid.status !== "paid") throw new Error("Synthetic commerce must settle")
-  state = recordCheckoutSparkSettledLegStatus(state, {
-    legId: leg.legId,
-    transferId: intent.transferId,
-    paymentHash: intent.paymentHash,
-    status: "paid",
-    finalFeeSats: 4,
-    finalDebitSats: intent.invoiceAmountSats + 4,
-    observedAt: now + 1,
-  })
-  await repository.save(state, revision)
+  if (options.commercePaid !== false) {
+    const paid = await manager.sendCheckoutLightningObligation(walletId, {
+      network: "mainnet",
+      transferId: intent.transferId,
+      paymentRequest: intent.paymentRequest,
+      amountSats: intent.invoiceAmountSats,
+      maxFeeSats: 5,
+    })
+    if (paid.status !== "paid")
+      throw new Error("Synthetic commerce must settle")
+    state = recordCheckoutSparkSettledLegStatus(state, {
+      legId: leg.legId,
+      transferId: intent.transferId,
+      paymentHash: intent.paymentHash,
+      status: "paid",
+      finalFeeSats: 4,
+      finalDebitSats: intent.invoiceAmountSats + 4,
+      observedAt: now + 1,
+    })
+    await repository.save(state, revision)
+  }
   now += 20
   const order: OrderLifecycle = {
     orderId: plan.orderId,
@@ -826,125 +836,227 @@ describe("Market native treasury composed provider evidence", () => {
       }),
     15_000
   )
-  it.each(["in_progress", "completed", "cancelled"] as const)(
-    "the foreground buyer runner respects commerce-paid presentation: %s",
-    async (phase) =>
-      run(async (f) => {
-        await f.database.orderLifecycles.update(f.plan.orderId, { phase })
-        const previousAddress = process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
-        process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = ADDRESS
-        try {
-          const clock = () => {
-            f.setNow(f.now() + 1)
-            return f.now()
-          }
-          const initial = createCheckoutSparkSettledRecoveryPayload({
-            state: f.state(),
-            senderPubkey: f.buyer.pubkey,
-            mnemonic: f.mnemonic,
-            accountNumber: 0,
-            preparedAt: clock(),
-          })
-          let record: CheckoutSparkRecoveryDeliveryRecord | undefined
-          const relays = ["wss://relay.conduit.market"]
-          const delivered = await publishCheckoutSparkRecovery({
-            payload: initial,
-            signer: f.buyer,
-            persistExactWrap: async (saved) => {
-              record = saved
-            },
-            transport: {
-              recipientInboxRelays: relays,
-              publishFn: async () => ({
-                attemptedRelayUrls: relays,
-                successfulRelayUrls: relays,
-                failedRelayUrls: [],
-                relayFailureMessages: {},
+  const foregroundScenarios = [
+    "in_progress",
+    "completed",
+    "cancelled",
+    "completed_commerce_unpaid",
+    "completed_hidden",
+    "completed_unmounted",
+    "completed_changed_identity",
+    "completed_wrong_order",
+    "completed_changed_approval",
+    "completed_closed_wallet",
+    "completed_changed_plan",
+  ] as const
+  it.each(foregroundScenarios)(
+    "the foreground route and buyer runner respect commerce-paid presentation: %s",
+    async (scenario: (typeof foregroundScenarios)[number]) =>
+      run(
+        async (f) => {
+          const phase =
+            scenario === "in_progress"
+              ? "in_progress"
+              : scenario === "cancelled"
+                ? "cancelled"
+                : "completed"
+          await f.database.orderLifecycles.update(f.plan.orderId, { phase })
+          const previousAddress =
+            process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+          process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = ADDRESS
+          try {
+            const clock = () => {
+              f.setNow(f.now() + 1)
+              return f.now()
+            }
+            const initial = createCheckoutSparkSettledRecoveryPayload({
+              state: f.state(),
+              senderPubkey: f.buyer.pubkey,
+              mnemonic: f.mnemonic,
+              accountNumber: 0,
+              preparedAt: clock(),
+            })
+            let record: CheckoutSparkRecoveryDeliveryRecord | undefined
+            const relays = ["wss://relay.conduit.market"]
+            const delivered = await publishCheckoutSparkRecovery({
+              payload: initial,
+              signer: f.buyer,
+              persistExactWrap: async (saved) => {
+                record = saved
+              },
+              transport: {
+                recipientInboxRelays: relays,
+                publishFn: async () => ({
+                  attemptedRelayUrls: relays,
+                  successfulRelayUrls: relays,
+                  failedRelayUrls: [],
+                  relayFailureMessages: {},
+                }),
+              },
+            })
+            if (!record) throw new Error("Expected initial recovery")
+            const exactRecord = record
+            const runner = createCheckoutSparkSettledShopperRunner({
+              repository: f.repository,
+              readOrder: (id) => f.database.orderLifecycles.get(id),
+              readPreparation: () => ({
+                schemaVersion: 3,
+                checkoutId: f.plan.checkoutId,
+                planDigest: f.plan.planDigest,
+                recoveryHandoffId: initial.handoffId,
+                fundingInvoiceExposedAt: AT,
+                fundingSubmissionState: "provisional",
+                savedAt: AT,
               }),
-            },
-          })
-          if (!record) throw new Error("Expected initial recovery")
-          const exactRecord = record
-          const runner = createCheckoutSparkSettledShopperRunner({
-            repository: f.repository,
-            readOrder: (id) => f.database.orderLifecycles.get(id),
-            readPreparation: () => ({
-              schemaVersion: 3,
+              readInitialRecovery: () => ({
+                record: exactRecord,
+                deliveryProgress: delivered.deliveryProgress,
+                savedAt: AT,
+              }),
+              loadAuthorized: async () => ({
+                plan: f.plan,
+                state: f.state(),
+                fundingReceive: f.receive,
+                fundingInvoice: f.receive.paymentRequest,
+                recoveryHandoffId: initial.handoffId,
+              }),
+              sparkConfiguration: () => ({
+                status: "ready",
+                network: "mainnet",
+              }),
+              sparkManager: () => f.manager(),
+              now: clock,
+              wait: async () => {},
+            })
+            const acknowledged: string[] = []
+            const routeView: CheckoutSparkSettledRouteSession["view"] = {
+              orderId: f.plan.orderId,
+              phase,
+              merchantStatus: null,
+              checkoutSparkRouted: true,
+            }
+            const routeSession = {
+              enabled: true,
+              mounted: true,
+              visible: true,
+              actionsReady: true,
+              identityCurrent: true,
+              orderId: f.plan.orderId,
+              view: routeView,
+            }
+            let routeApprovalGeneration = 0
+            const approvalGeneration = routeApprovalGeneration
+            if (scenario === "completed_hidden") routeSession.visible = false
+            if (scenario === "completed_unmounted") routeSession.mounted = false
+            if (scenario === "completed_changed_identity")
+              routeSession.identityCurrent = false
+            if (scenario === "completed_wrong_order")
+              routeSession.view.orderId = "another-order"
+            if (scenario === "completed_changed_approval")
+              routeApprovalGeneration += 1
+            if (scenario === "completed_closed_wallet")
+              await f.manager().close(f.plan.walletId)
+            const approvedSessionIsCurrent = () =>
+              approvalGeneration === routeApprovalGeneration &&
+              canContinueCheckoutSparkSettledRouteSession(routeSession)
+            const input = {
               checkoutId: f.plan.checkoutId,
               planDigest: f.plan.planDigest,
-              recoveryHandoffId: initial.handoffId,
-              fundingInvoiceExposedAt: AT,
-              fundingSubmissionState: "provisional",
-              savedAt: AT,
-            }),
-            readInitialRecovery: () => ({
-              record: exactRecord,
-              deliveryProgress: delivered.deliveryProgress,
-              savedAt: AT,
-            }),
-            loadAuthorized: async () => ({
-              plan: f.plan,
-              state: f.state(),
-              fundingReceive: f.receive,
-              fundingInvoice: f.receive.paymentRequest,
-              recoveryHandoffId: initial.handoffId,
-            }),
-            sparkConfiguration: () => ({ status: "ready", network: "mainnet" }),
-            sparkManager: () => f.manager(),
-            now: clock,
-            wait: async () => {},
-          })
-          const acknowledged: string[] = []
-          const input = {
-            checkoutId: f.plan.checkoutId,
-            planDigest: f.plan.planDigest,
-            orderId: f.plan.orderId,
-            merchantPubkey: f.merchant.pubkey,
-            network: "mainnet" as const,
-            buyerPubkey: f.buyer.pubkey,
-            currentBuyerPubkey: () => f.buyer.pubkey,
-            shouldContinue: () => true,
-            fundingPayment: {
+              orderId: f.plan.orderId,
+              merchantPubkey: f.merchant.pubkey,
+              network: "mainnet" as const,
               buyerPubkey: f.buyer.pubkey,
-              shouldContinue: () => true,
-              paymentTarget: { type: "manual" as const },
-              timeoutMs: 1000,
-              appId: "market" as const,
-            },
-            acknowledgeRecoverySnapshot: async (
-              state: ReturnType<typeof f.state>
-            ) => {
-              acknowledged.push(state.treasuryFinalization!.status)
-            },
-            authorization: {
-              planDigest: f.plan.planDigest,
-              walletId: f.plan.walletId,
-              grossFundingSats: f.plan.funding.grossFundingSats,
-            },
-            fundingMode: "inspect" as const,
-          }
-          if (phase === "cancelled") {
+              currentBuyerPubkey: () => f.buyer.pubkey,
+              shouldContinue: approvedSessionIsCurrent,
+              fundingPayment: {
+                buyerPubkey: f.buyer.pubkey,
+                shouldContinue: approvedSessionIsCurrent,
+                paymentTarget: { type: "manual" as const },
+                timeoutMs: 1000,
+                appId: "market" as const,
+              },
+              acknowledgeRecoverySnapshot: async (
+                state: ReturnType<typeof f.state>
+              ) => {
+                acknowledged.push(state.treasuryFinalization!.status)
+                if (
+                  scenario === "in_progress" &&
+                  state.treasuryFinalization!.status === "prepared"
+                ) {
+                  routeView.phase = "completed"
+                  await f.database.orderLifecycles.update(f.plan.orderId, {
+                    phase: "completed",
+                  })
+                }
+              },
+              authorization: {
+                planDigest: f.plan.planDigest,
+                walletId: f.plan.walletId,
+                grossFundingSats: f.plan.funding.grossFundingSats,
+              },
+              fundingMode: "inspect" as const,
+            }
+            if (scenario === "completed_changed_plan")
+              input.authorization.planDigest = "different-plan"
+            if (!approvedSessionIsCurrent()) {
+              const result = await runner.run(input)
+              expect(result).toEqual({
+                status: "paused",
+                reason: "paused",
+              })
+              expect(getCheckoutSparkSettledOutcomeMessage(result)).toContain(
+                "active buyer session stopped"
+              )
+              expect(getCheckoutSparkSettledOutcomeMessage(result)).toContain(
+                "do not pay again"
+              )
+              expect(acknowledged).toEqual([])
+              expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(
+                0
+              )
+              return
+            }
+            if (
+              scenario === "completed_commerce_unpaid" ||
+              scenario === "completed_closed_wallet" ||
+              scenario === "completed_changed_plan"
+            ) {
+              expect(approvedSessionIsCurrent()).toBe(true)
+              expect(await runner.run(input)).toEqual({
+                status: "paused",
+                reason: "authorization_changed",
+              })
+              expect(acknowledged).toEqual([])
+              expect(f.control.snapshot().sendInvocationCount).toBe(
+                scenario === "completed_commerce_unpaid" ? 0 : 1
+              )
+              expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(
+                0
+              )
+              return
+            }
+            expect(await runner.run(input)).toEqual({ status: "complete" })
+            await f.loadState()
+            expect(acknowledged).toEqual(["prepared", "submitted", "paid"])
+            expect(f.state().treasuryFinalization!.status).toBe("paid")
+            expect(await runner.run(input)).toEqual({ status: "complete" })
+            expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+            expect(f.control.snapshot().sendInvocationCount).toBe(1)
+            routeApprovalGeneration += 1
             expect(await runner.run(input)).toEqual({
               status: "paused",
-              reason: "authorization_changed",
+              reason: "paused",
             })
-            expect(acknowledged).toEqual([])
-            expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(0)
-            return
+            expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+          } finally {
+            if (previousAddress === undefined)
+              delete process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+            else
+              process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = previousAddress
           }
-          expect(await runner.run(input)).toEqual({ status: "complete" })
-          await f.loadState()
-          expect(acknowledged).toEqual(["prepared", "submitted", "paid"])
-          expect(f.state().treasuryFinalization!.status).toBe("paid")
-          expect(await runner.run(input)).toEqual({ status: "complete" })
-          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
-          expect(f.control.snapshot().sendInvocationCount).toBe(1)
-        } finally {
-          if (previousAddress === undefined)
-            delete process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
-          else process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = previousAddress
-        }
-      }),
+        },
+        { commercePaid: scenario !== "completed_commerce_unpaid" }
+      ),
     15_000
   )
   it(

@@ -210,7 +210,9 @@ import {
   matchesCheckoutSparkSettledOrderControl,
   type CheckoutSparkSettledOrderControlState,
 } from "../lib/checkout-spark-settled-order-control"
+import { getCheckoutSparkSettledOutcomeMessage } from "../lib/checkout-spark-settled-outcome-message"
 import { getCheckoutSparkSettledPreparation } from "../lib/checkout-spark-settled-preparation"
+import { canContinueCheckoutSparkSettledRouteSession } from "../lib/checkout-spark-settled-route-session"
 import {
   createCheckoutSparkSettledShopperRunner,
   type CheckoutSparkSettledShopperProgress,
@@ -1137,25 +1139,18 @@ function OrderDetail({
   }
 
   function canContinueRouterSession(): boolean {
-    const current = currentViewRef.current
-    return (
-      isQuantumRouterEnabled() &&
-      viewMountedRef.current &&
-      document.visibilityState === "visible" &&
-      actionsReady &&
-      (guestIdentity
+    return canContinueCheckoutSparkSettledRouteSession({
+      enabled: isQuantumRouterEnabled(),
+      mounted: viewMountedRef.current,
+      visible: document.visibilityState === "visible",
+      actionsReady,
+      identityCurrent: guestIdentity
         ? getCurrentRouterGuestIdentity() !== null
         : authenticatedPubkey === buyerPubkey &&
-          isAuthGenerationCurrent(authGeneration)) &&
-      current.orderId === vm.orderId &&
-      current.phase !== "cancelled" &&
-      current.phase !== "completed" &&
-      current.merchantStatus !== "cancelled" &&
-      current.merchantStatus !== "refund_requested" &&
-      // Commerce may be verified while the optional fee still needs routing.
-      // Exact saved leg state, not the order's paid label, controls continuation.
-      current.checkoutSparkRouted === true
-    )
+          isAuthGenerationCurrent(authGeneration),
+      orderId: vm.orderId,
+      view: currentViewRef.current,
+    })
   }
 
   function canContinueRouterCleanupSession(): boolean {
@@ -1381,15 +1376,7 @@ function OrderDetail({
         currentViewRef.current.orderId === vm.orderId &&
         authGenerationRef.current === authGeneration
       ) {
-        setSettledRouterOutcome(
-          result.status === "complete"
-            ? "Your payment is recorded. Check the order status for confirmation."
-            : result.status === "funding_pending"
-              ? "Waiting for payment confirmation. Keep this order; resume to check the same payment, never pay it again."
-              : result.status === "paused" && result.reason === "zero_remainder"
-                ? "No approved checkout credit remains for the final Conduit payment. No additional payment was sent; merchant recovery is required."
-                : "Payment paused. Resume checks its saved status before continuing; do not pay separately."
-        )
+        setSettledRouterOutcome(getCheckoutSparkSettledOutcomeMessage(result))
       }
     } finally {
       routerActionInFlightRef.current = false

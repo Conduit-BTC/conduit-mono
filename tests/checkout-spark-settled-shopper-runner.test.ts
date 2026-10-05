@@ -35,6 +35,7 @@ import {
   type CheckoutSparkSettledShopperRunnerDependencies,
 } from "../apps/market/src/lib/checkout-spark-settled-shopper-runner"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"
+import { canContinueCheckoutSparkSettledRouteSession } from "../apps/market/src/lib/checkout-spark-settled-route-session"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -392,6 +393,45 @@ async function fixture() {
 }
 
 describe("foreground settled shopper routing", () => {
+  it("does not authorize a completed legacy checkout through the foreground route gate", async () => {
+    const f = await fixture()
+    try {
+      await f.database.orderLifecycles.update(f.plan.orderId, {
+        phase: "completed",
+        paymentStatus: "paid",
+      })
+      const foreground = () =>
+        canContinueCheckoutSparkSettledRouteSession({
+          enabled: true,
+          mounted: true,
+          visible: true,
+          actionsReady: true,
+          identityCurrent: f.authority.active,
+          orderId: f.plan.orderId,
+          view: {
+            orderId: f.plan.orderId,
+            phase: "completed",
+            merchantStatus: null,
+            checkoutSparkRouted: true,
+          },
+        })
+      expect(foreground()).toBe(true)
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(
+        await runner.run({
+          ...f.input,
+          shouldContinue: foreground,
+          fundingMode: "inspect",
+        })
+      ).toEqual({ status: "paused", reason: "authorization_changed" })
+      expect(f.calls.payer).toBe(0)
+      expect(f.calls.invoices).toEqual([])
+      expect(f.control.snapshot().sendInvocationCount).toBe(0)
+    } finally {
+      await f.cleanup()
+    }
+  })
+
   it("routes every frozen commerce leg then Conduit after one approved funding payment", async () => {
     const f = await fixture()
     try {

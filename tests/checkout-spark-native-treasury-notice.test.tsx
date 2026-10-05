@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import { CheckoutSparkNativeTreasuryNotice } from "../apps/market/src/components/CheckoutSparkNativeTreasuryNotice"
+import { getCheckoutSparkSettledOutcomeMessage } from "../apps/market/src/lib/checkout-spark-settled-outcome-message"
 
 describe("native Spark treasury disclosure", () => {
   it("records informed approval before funding without exposing treasury material", () => {
@@ -84,11 +85,16 @@ describe("native Spark treasury disclosure", () => {
     expect(route).toMatch(
       /prepared=\{settledRouterControl\.nativeTreasury\.prepared\}/
     )
-    expect(route).toMatch(
-      /result\.status === "paused" &&\s*result\.reason === "zero_remainder"/
-    )
     expect(route).toContain(
-      "No approved checkout credit remains for the final Conduit payment"
+      "setSettledRouterOutcome(getCheckoutSparkSettledOutcomeMessage(result))"
+    )
+    expect(
+      getCheckoutSparkSettledOutcomeMessage({
+        status: "paused",
+        reason: "zero_remainder",
+      })
+    ).toBe(
+      "No approved checkout credit remains for the final Conduit payment. No additional payment was sent; merchant recovery is required."
     )
   })
 })
