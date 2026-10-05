@@ -86,7 +86,7 @@
     "nostr-tools": "2.25.2",
     "prettier": "^3.9.9",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.70.1"
+    "typescript-eslint": "^8.71.0"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,cjs,mjs}": [
