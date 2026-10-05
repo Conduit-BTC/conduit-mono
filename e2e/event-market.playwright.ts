@@ -230,6 +230,7 @@ function createRelayHarness() {
   } | null = null
   const incompleteReadKinds = new Set<number>()
   const rejectedKinds = new Set<number>()
+  const rejectedReadKinds = new Set<number>()
   let rejectReads = false
   let rejectMarketDiscovery = false
 
@@ -239,6 +240,10 @@ function createRelayHarness() {
     incompleteRequests,
     incompleteReadsForKind(kind: number) {
       incompleteReadKinds.add(kind)
+    },
+    rejectReadKind(kind: number, reject: boolean) {
+      if (reject) rejectedReadKinds.add(kind)
+      else rejectedReadKinds.delete(kind)
     },
     rejectMarketDiscovery(reject: boolean) {
       rejectMarketDiscovery = reject
@@ -355,6 +360,9 @@ function createRelayHarness() {
             const respond = () => {
               if (
                 rejectReads ||
+                filters.some((filter) =>
+                  filter.kinds?.some((kind) => rejectedReadKinds.has(kind))
+                ) ||
                 (rejectMarketDiscovery &&
                   filters.some(
                     (filter) => filter.kinds?.includes(30409) && !filter["#d"]
@@ -2822,7 +2830,7 @@ test("merchant directory All Events resolves and refreshes without waiting for m
       my.getByRole("heading", { name: "You aren’t organizing any events" })
     ).toBeVisible()
     await expect(
-      all.getByRole("heading", { name: "No events found on your relays" })
+      all.getByRole("heading", { name: "No events found yet" })
     ).toBeVisible()
     await my.getByRole("button", { name: "Selling At", exact: true }).click()
     await expect(
@@ -2843,9 +2851,207 @@ test("merchant directory All Events resolves and refreshes without waiting for m
           request.filters.some((filter) => filter.kinds?.includes(30402))
         )
     ).toBe(false)
+    held.release()
+    await expect(
+      all.getByRole("heading", { name: "No events found on your relays" })
+    ).toBeVisible()
   } finally {
     held.release()
   }
+})
+
+for (const failure of ["held", "unavailable"] as const)
+  test(`merchant directory Organizing preserves exact product-linked evidence while owner discovery is ${failure} @merchant`, async ({
+    page,
+  }) => {
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay)
+    const createdAt = Math.floor(Date.now() / 1000) - 10
+    const calendar = signEvent(ORGANIZER_SECRET, {
+      kind: 31923,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["d", "owned-linked-fair"],
+        ["title", "Owned Linked Fair"],
+        ["start", "1893456000"],
+        ["D", "21915"],
+      ],
+    })
+    const market = signEvent(ORGANIZER_SECRET, {
+      kind: 30409,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["d", "owned-linked-fair"],
+        ["a", eventCoordinate(calendar)],
+        ["event_market", "2", "open"],
+      ],
+    })
+    const template = createMerchantTemplateProductEvent(createdAt)
+    const product = signEvent(ORGANIZER_SECRET, {
+      kind: template.kind,
+      created_at: createdAt,
+      content: template.content,
+      tags: [...template.tags, ["a", eventCoordinate(market)]],
+    })
+    relay.seed(calendar, market, product)
+    const held =
+      failure === "held"
+        ? relay.holdRelayRequests((request) =>
+            request.filters.some(
+              (filter) =>
+                filter.kinds?.includes(30409) &&
+                filter.authors?.includes(ORGANIZER_PUBKEY) &&
+                !filter["#d"]
+            )
+          )
+        : null
+    if (failure === "unavailable") relay.rejectMarketDiscovery(true)
+    try {
+      await gotoAs(page, merchantUrl, "/events", "organizer")
+      if (held) await held.captured
+      const my = page.getByRole("region", { name: "My Events timeline" })
+      await expect(
+        my.getByRole("button", { name: /^Open Owned Linked Fair/ })
+      ).toBeVisible()
+      await expect(
+        my.getByRole("status", { name: "Loading events" })
+      ).toHaveCount(0)
+      await expect(
+        my.getByRole("heading", { name: "Couldn’t connect to your relays" })
+      ).toHaveCount(0)
+      if (held)
+        await expect(
+          page.getByRole("button", { name: "Refresh Organizing", exact: true })
+        ).toBeDisabled()
+    } finally {
+      held?.release()
+    }
+  })
+
+test("merchant directory All Events keeps failed product discovery explicitly incomplete @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  relay.rejectReadKind(30402, true)
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  const my = page.getByRole("region", { name: "My Events timeline" })
+  const all = page.getByRole("region", { name: "All Events timeline" })
+  await my.getByRole("button", { name: "Selling At", exact: true }).click()
+  await expect(
+    my.getByRole("heading", { name: "No selling events found yet" })
+  ).toBeVisible()
+  await expect(
+    all.getByRole("heading", { name: "No events found yet" })
+  ).toBeVisible()
+  await expect(
+    all.getByRole("heading", { name: "No events found on your relays" })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Refresh All Events", exact: true })
+  ).toBeEnabled()
+})
+
+test("merchant directory Selling At isolates cached refresh results across delimiter-colliding coordinate sets @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1000) - 10
+  const createMarket = (dTag: string, title: string) => {
+    const calendar = signEvent(ORGANIZER_SECRET, {
+      kind: 31923,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["d", dTag],
+        ["title", title],
+        ["start", "1893456000"],
+        ["D", "21915"],
+      ],
+    })
+    const market = signEvent(ORGANIZER_SECRET, {
+      kind: 30409,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["d", dTag],
+        ["a", eventCoordinate(calendar)],
+        ["event_market", "2", "open"],
+        ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 1"],
+      ],
+    })
+    relay.seed(calendar, market)
+    return market
+  }
+  const first = createMarket("a", "First Fair")
+  const second = createMarket("b", "Second Fair")
+  const combined = createMarket(`a,${eventCoordinate(second)}`, "Combined Fair")
+  expect(
+    [eventCoordinate(first), eventCoordinate(second)].sort().join(",") ===
+      eventCoordinate(combined)
+  ).toBe(true)
+  const template = createMerchantTemplateProductEvent(createdAt)
+  const product = signEvent(MERCHANT_SECRET, {
+    kind: template.kind,
+    created_at: createdAt,
+    content: template.content,
+    tags: [
+      ...template.tags,
+      ["a", eventCoordinate(first)],
+      ["a", eventCoordinate(second)],
+    ],
+  })
+  relay.seed(product)
+  relay.rejectMarketDiscovery(true)
+  await gotoAs(page, merchantUrl, "/events?relation=selling", "merchant")
+  const my = page.getByRole("region", { name: "My Events timeline" })
+  await expect(
+    my.getByRole("button", { name: /^Open First Fair/ })
+  ).toBeVisible()
+  await expect(
+    my.getByRole("button", { name: /^Open Second Fair/ })
+  ).toBeVisible()
+  const refresh = page.getByRole("button", {
+    name: "Refresh Selling At",
+    exact: true,
+  })
+  const beforeRefresh = relay.requests.length
+  await refresh.click()
+  await expect
+    .poll(() =>
+      relay.requests
+        .slice(beforeRefresh)
+        .some((request) =>
+          request.filters.some(
+            (filter) => filter.kinds?.includes(30409) && filter["#d"]
+          )
+        )
+    )
+    .toBe(true)
+  await expect(refresh).toBeEnabled()
+  relay.remove(product)
+  relay.seed(
+    signEvent(MERCHANT_SECRET, {
+      kind: template.kind,
+      created_at: createdAt + 1,
+      content: template.content,
+      tags: [...template.tags, ["a", eventCoordinate(combined)]],
+    })
+  )
+  await refresh.click()
+  await expect(
+    my.getByRole("button", { name: /^Open Combined Fair/ })
+  ).toBeVisible()
+  await expect(refresh).toBeEnabled()
+  await expect(
+    my.getByRole("button", { name: /^Open First Fair/ })
+  ).toHaveCount(0)
+  await expect(
+    my.getByRole("button", { name: /^Open Second Fair/ })
+  ).toHaveCount(0)
 })
 
 for (const monthly of [false, true])

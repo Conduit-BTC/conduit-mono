@@ -153,7 +153,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       session.relayScope,
       authenticatedPubkey,
       authGeneration,
-      sellingCoordinates.join(","),
+      sellingCoordinates,
     ],
     queryFn: ({ signal }) =>
       hydrateMerchantProductMarkets({
@@ -201,7 +201,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     (!!futureQuery.data && futureQuery.data.coverage !== "complete")
   return {
     organizing: section(
-      ownQuery.data?.markets ?? [],
+      allReads,
       ownQuery.isPending,
       ownQuery.isFetching,
       ownQuery.isError || ownQuery.data?.coverage === "unavailable",
@@ -236,7 +236,12 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
         ownQuery.isError ||
         ownQuery.data?.coverage === "unavailable",
       networkLimited ||
-        (!!ownQuery.data && ownQuery.data.coverage !== "complete"),
+        (!!ownQuery.data && ownQuery.data.coverage !== "complete") ||
+        discovery.relationships.isInitialLoading ||
+        discovery.relationships.incomplete ||
+        discovery.relationships.unavailable ||
+        sellingQuery.isError ||
+        (sellingQuery.data?.failedCount ?? 0) > 0,
       () => {
         discovery.perspective.refetch()
         void ownQuery.refetch()
