@@ -113,4 +113,3 @@ export {
   type VerifySignedPublicNostrEventsResult,
 } from "./ndk"
 export * from "./event-market-calendar-retry"
-export * from "./event-market-product-association"

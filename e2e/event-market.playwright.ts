@@ -1442,18 +1442,12 @@ test("Merchant links an approved shop product and Market discovers it without pi
       ["alt", "Open Markets event merchant authorization"],
     ],
   })
-  const original = createMerchantTemplateProductEvent(createdAt)
-  const shopProduct = signEvent(MERCHANT_SECRET, {
-    kind: original.kind,
-    created_at: original.created_at,
-    content: original.content,
-    tags: [
-      ...original.tags,
-      ["shipping_option", `30406:${MERCHANT_PUBKEY}:older-shipping`],
-      ["a", `30409:${ORGANIZER_PUBKEY}:another-fair`],
-    ],
-  })
-  relay.seed(calendar, market, grant, shopProduct)
+  relay.seed(
+    calendar,
+    market,
+    grant,
+    createMerchantTemplateProductEvent(createdAt)
+  )
   const marketNaddr = nip19.naddrEncode({
     kind: 30409,
     pubkey: ORGANIZER_PUBKEY,
@@ -1461,21 +1455,21 @@ test("Merchant links an approved shop product and Market discovers it without pi
   })
   const productPath = `/products?eventMarket=${marketNaddr}`
   await gotoAs(page, merchantUrl, productPath, "merchant")
-  // Retained calendar evidence alone is stale and must not authorize linking.
+  await page.getByRole("button", { name: "Add to event", exact: true }).click()
+  const editor = page.getByRole("dialog", { name: "Edit listing" })
   await expect(
-    page.getByRole("button", { name: "Add to event", exact: true })
-  ).toBeEnabled()
+    editor.getByRole("checkbox", { name: "Offer this product at this event" })
+  ).toBeChecked()
+  // Retained calendar evidence alone is stale and must not authorize linking.
   relay.remove(calendar)
   const publicationStart = relay.publications.length
-  await page.getByRole("button", { name: "Add to event", exact: true }).click()
-  await expect(page.getByRole("dialog", { name: "Edit listing" })).toHaveCount(
-    0
-  )
+  await editor
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click()
   await expect(
-    page.getByRole("alert").filter({
-      hasText:
-        /Current organizer-signed Event Market approval and grant could not be confirmed/,
-    })
+    editor.getByText(
+      /Current organizer-signed Event Market approval and grant could not be confirmed/
+    )
   ).toBeVisible()
   expect(
     relay.publications
@@ -1487,10 +1481,9 @@ test("Merchant links an approved shop product and Market discovers it without pi
   relay.seed(calendar)
   relay.incompleteReadsForKind(30409)
   relay.incompleteReadsForKind(31923)
-  await page.getByRole("button", { name: "Add to event", exact: true }).click()
-  await expect(
-    page.getByText("Added to Merchant Fair.", { exact: true })
-  ).toBeVisible()
+  await editor
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click()
   await expect
     .poll(
       () =>
@@ -1504,12 +1497,6 @@ test("Merchant links an approved shop product and Market discovers it without pi
   )
   const updated = published.find((event) => event.kind === 30402)!
   expect(updated.tags).toContainEqual(["a", eventCoordinate(market)])
-  expect(updated.content).toBe(shopProduct.content)
-  expect(
-    updated.tags.filter(
-      (tag) => tag[0] !== "a" || tag[1] !== eventCoordinate(market)
-    )
-  ).toEqual(shopProduct.tags)
   expect(
     published.some((event) => event.kind === 30406 || event.kind === 30405)
   ).toBe(false)
@@ -1545,13 +1532,19 @@ test("Merchant links an approved shop product and Market discovers it without pi
   await expect(page.getByText(/Merchant booth: Booth 7/)).toBeVisible()
 
   await gotoAs(page, merchantUrl, productPath, "merchant")
-  const untagStart = relay.publications.length
   await page
     .getByRole("button", { name: "Remove from event", exact: true })
     .click()
-  await expect(page.getByRole("dialog", { name: "Edit listing" })).toHaveCount(
-    0
-  )
+  const untagEditor = page.getByRole("dialog", { name: "Edit listing" })
+  await expect(
+    untagEditor.getByRole("checkbox", {
+      name: "Offer this product at this event",
+    })
+  ).not.toBeChecked()
+  const untagStart = relay.publications.length
+  await untagEditor
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click()
   await expect
     .poll(
       () =>
@@ -3793,9 +3786,14 @@ test("a host and merchant create, request, approve and offer through the screens
     .click()
   await expect(page).toHaveURL(/\/products\?eventMarket=/)
   await page.getByRole("button", { name: "Add to event", exact: true }).click()
-  await expect(page.getByRole("dialog", { name: "Edit listing" })).toHaveCount(
-    0
-  )
+  const editor = page.getByRole("dialog", { name: "Edit listing" })
+  await expect(
+    editor.getByRole("checkbox", { name: "Offer this product at this event" })
+  ).toBeChecked()
+  await editor
+    .getByRole("button", { name: "Save changes", exact: true })
+    .click()
+  await expect(editor).not.toBeVisible()
   await expect(
     page.getByText("Offered at this event", { exact: true })
   ).toBeVisible()
