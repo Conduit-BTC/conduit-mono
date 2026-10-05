@@ -1,4 +1,3 @@
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -1102,8 +1101,11 @@ export function normalizeProductSummaryForDisplay(
  *   NIP-99/Open Markets tags and Markdown content.
  */
 export function parseProductEvent(
-  event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id"> &
-    Partial<Pick<NDKEvent, "kind" | "sig">>
+  event: Pick<
+    SignedPublicNostrEvent,
+    "content" | "pubkey" | "created_at" | "tags" | "id"
+  > &
+    Partial<Pick<SignedPublicNostrEvent, "kind" | "sig">>
 ): ProductSchema {
   const rawEvent = (
     "rawEvent" in event && typeof event.rawEvent === "function"

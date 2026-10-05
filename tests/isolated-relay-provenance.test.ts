@@ -11,7 +11,6 @@ import {
   type CachedProfile,
   type CachedRelayList,
 } from "@conduit/core"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -48,8 +47,8 @@ async function readAuthorPlan(
     putCached: async (entry) => {
       cache.set(entry.pubkey, entry)
     },
-    fetchEventsFanoutDetailed: async (_filter, fetchOptions) => ({
-      events: events as unknown as NDKEvent[],
+    fetchSignedEventsFanoutDetailed: async (_filter, fetchOptions) => ({
+      events: events.map((event) => structuredClone(event)),
       eventsVerified: events.every((event) =>
         verifyEvent(structuredClone(event))
       ),
@@ -217,14 +216,14 @@ describe("isolated signed author relay provenance", () => {
         putCachedProfiles: async (rows) => {
           for (const row of rows) profiles.set(row.pubkey, row)
         },
-        fetchEventsFanoutDetailed: async (_filter, options) => {
+        fetchSignedEventsFanoutDetailed: async (_filter, options) => {
           expect(options?.relayUrls).toEqual([ISOLATED_RELAY])
           expect(options?.independentRelayUrls).toEqual(
             declaredWriteRelay ? [ISOLATED_RELAY] : []
           )
           expect(verifyEvent(structuredClone(profile))).toBe(true)
           return {
-            events: [new NDKEvent(undefined, profile)],
+            events: [structuredClone(profile)],
             eventsVerified: true,
             admittedRelayUrls: [ISOLATED_RELAY],
             relays: [

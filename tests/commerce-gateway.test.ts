@@ -55,8 +55,8 @@ import type {
 } from "@conduit/core"
 import {
   attachEventSourceRelayUrl,
-  __resetNdkTestState,
-} from "@conduit/core/protocol/ndk"
+  __resetPublicReaderTestState,
+} from "@conduit/core/protocol/relay-reader"
 import {
   getCartAvailabilityBlockingMessage,
   getCartAvailabilityReadDecision,
@@ -423,7 +423,7 @@ beforeEach(async () => {
   // Commerce tests own the complete relay boundary. Keep secondary NIP-65
   // planning (including deletion-frontier reads) from reaching the network.
   __setRelayListTestOverrides({
-    fetchEventsFanout: async () => [],
+    fetchPublicEvents: async () => [],
     loadCached: async () => undefined,
     putCached: async () => {},
     now: () => FIXED_NOW,
@@ -517,7 +517,7 @@ describe("commerce gateway", () => {
     attachEventSourceRelayUrl(product, sourceRelayUrl)
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const relayUrls = options?.relayUrls ?? []
         productRelayAttempts.push([...relayUrls])
@@ -583,7 +583,7 @@ describe("commerce gateway", () => {
     )
     try {
       __setCommerceTestOverrides({
-        fetchEventsFanout: async (filter, options) => {
+        fetchPublicEvents: async (filter, options) => {
           if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
           attempts.push({
             relays: boundedTestRelayUrls(options),
@@ -646,7 +646,7 @@ describe("commerce gateway", () => {
           : undefined,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = boundedTestRelayUrls(options)
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           attempts.push(relayUrls)
@@ -699,7 +699,7 @@ describe("commerce gateway", () => {
     const productRelayAttempts: string[][] = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const relayUrls = [...(options?.relayUrls ?? [])]
         productRelayAttempts.push(relayUrls)
@@ -759,7 +759,7 @@ describe("commerce gateway", () => {
     let revalidating = false
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const relayUrls = [...(options?.relayUrls ?? [])]
         productRelayAttempts.push(relayUrls)
@@ -817,7 +817,7 @@ describe("commerce gateway", () => {
     const attempts: Array<{ dTags: string[]; relayUrls: string[] }> = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const dTags = filter["#d"] ?? []
         const relayUrls = boundedTestRelayUrls(options)
@@ -874,7 +874,7 @@ describe("commerce gateway", () => {
     const attempts: Array<{ dTags: string[]; relayUrls: string[] }> = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const dTags = filter["#d"] ?? []
         const relayUrls = boundedTestRelayUrls(options)
@@ -949,7 +949,7 @@ describe("commerce gateway", () => {
     }> = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = boundedTestRelayUrls(options)
         const dTags = [...(filter["#d"] ?? [])]
         const parentAddresses = [...(filter["#a"] ?? [])]
@@ -1058,7 +1058,7 @@ describe("commerce gateway", () => {
     }> = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const relayUrls = [...(options?.relayUrls ?? [])]
         attempts.push({
@@ -1201,7 +1201,7 @@ describe("commerce gateway", () => {
       })
 
       __setCommerceTestOverrides({
-        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        fetchPublicEventsWithDiagnostics: async (filter, options) => {
           const relayUrls = boundedTestRelayUrls(options)
           const dTags = [...(filter["#d"] ?? [])]
           const parentAddresses = [...(filter["#a"] ?? [])]
@@ -1363,7 +1363,7 @@ describe("commerce gateway", () => {
     const malformedVariationAddress = `30402:${MERCHANT_A_PUBKEY}:cross-author-shirt`
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         return [validParent, validVariation, malformedVariation].filter(
           (event) =>
@@ -1450,7 +1450,7 @@ describe("commerce gateway", () => {
         }
         return new Map()
       },
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return {
@@ -1601,7 +1601,7 @@ describe("commerce gateway", () => {
       ])
       const familyQueries: string[][] = []
       __setCommerceTestOverrides({
-        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        fetchPublicEventsWithDiagnostics: async (filter, options) => {
           const relayUrls = [...(options?.relayUrls ?? [])]
           const matched = !filter.kinds?.includes(EVENT_KINDS.PRODUCT)
             ? []
@@ -1698,7 +1698,7 @@ describe("commerce gateway", () => {
     }> = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const relayUrls = options?.relayUrls ?? []
         attempts.push({
@@ -1821,7 +1821,7 @@ describe("commerce gateway", () => {
     ]
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
     })
 
@@ -1918,7 +1918,7 @@ describe("commerce gateway", () => {
     ]
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
     })
 
@@ -1943,7 +1943,7 @@ describe("commerce gateway", () => {
     let productLimit: number | undefined
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         productLimit = filter.limit
         return events.slice(0, filter.limit ?? events.length) as never
@@ -1971,7 +1971,7 @@ describe("commerce gateway", () => {
     )
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? (events.slice(0, filter.limit ?? events.length) as never)
           : [],
@@ -1994,8 +1994,8 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutDetailed: async () => ({
+      fetchPublicEvents: async () => [],
+      fetchSignedEventsFanoutDetailed: async () => ({
         events: [event as never],
         relays: [
           {
@@ -2030,7 +2030,7 @@ describe("commerce gateway", () => {
     let relayStatus: "partial" | "success" = "partial"
 
     __setCommerceTestOverrides({
-      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
         await onProgress({
           relayUrl: options.relayUrls?.[0] ?? "wss://progressive.example",
           events: [event],
@@ -2084,7 +2084,7 @@ describe("commerce gateway", () => {
     ]
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         const matches = events.filter(
           (event) =>
@@ -2136,7 +2136,7 @@ describe("commerce gateway", () => {
     )
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         if (filter["#d"]) return [parent] as never
         if (filter["#a"]) {
@@ -2188,7 +2188,7 @@ describe("commerce gateway", () => {
     let maxConcurrentReads = 0
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         activeReads += 1
         maxConcurrentReads = Math.max(maxConcurrentReads, activeReads)
@@ -2273,7 +2273,7 @@ describe("commerce gateway", () => {
           activeRelayListReads -= 1
         }
       },
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         productReads += 1
         return wantedEvents.filter(
@@ -2341,7 +2341,7 @@ describe("commerce gateway", () => {
     let includeEverySibling = true
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         if (filter["#d"]) {
           return [parent, small, medium].filter((event) =>
@@ -2418,7 +2418,7 @@ describe("commerce gateway", () => {
     let primeCache = true
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         if (primeCache) return [parent, small, newerMedium] as never
         if (filter["#d"]) return [parent] as never
@@ -2459,7 +2459,7 @@ describe("commerce gateway", () => {
     let seenAuthors: string[] | undefined
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           seenAuthors = filter.authors
           return productEvents as never
@@ -2500,7 +2500,7 @@ describe("commerce gateway", () => {
     let seenAuthors: string[] | undefined
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           seenAuthors = filter.authors
           return productEvents as never
@@ -2631,7 +2631,7 @@ describe("commerce gateway", () => {
         "Linen bag",
       ])
     } finally {
-      __resetNdkTestState()
+      __resetPublicReaderTestState()
       if (descriptor) Object.defineProperty(globalThis, "WebSocket", descriptor)
       else Reflect.deleteProperty(globalThis, "WebSocket")
     }
@@ -2641,8 +2641,8 @@ describe("commerce gateway", () => {
     let status: "success" | "partial" | "failed" = "success"
     const productReads: string[] = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchPublicEvents: async () => [],
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT))
           productReads.push(filter.search ?? "catalog")
         return {
@@ -2693,7 +2693,7 @@ describe("commerce gateway", () => {
       title: "Old query",
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.search) return []
         seenSignal = options?.signal
         await gate
@@ -2746,7 +2746,7 @@ describe("commerce gateway", () => {
     })
     let finished = false
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         if (filter.search) return [first, second] as never
         await gate
@@ -2788,7 +2788,7 @@ describe("commerce gateway", () => {
       putCachedProducts: async () => {
         throw new Error("Synthetic product cache write failure")
       },
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         if (filter.search) return [indexed] as never
         exactReads += 1
@@ -2826,7 +2826,7 @@ describe("commerce gateway", () => {
         putCachedProducts: async () => {
           throw new Error("Synthetic product cache write failure")
         },
-        fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+        fetchPublicEventsWithDiagnostics: async (filter, options) => {
           const relayUrls = [...(options?.relayUrls ?? [])]
           if (filter.search) {
             return {
@@ -2888,7 +2888,7 @@ describe("commerce gateway", () => {
       putCachedProducts: async () => {
         throw new Error("Synthetic product cache write failure")
       },
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events: (filter.search
@@ -2926,7 +2926,7 @@ describe("commerce gateway", () => {
     })
     let revisionReads = 0
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.search) return [hit] as never
         revisionReads += 1
         return []
@@ -2987,7 +2987,7 @@ describe("commerce gateway", () => {
     const indexed = [hiddenChild, simple, child, parent]
     const current = [parent, child, hiddenChild, simple]
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         return (
           filter.search
@@ -3017,7 +3017,7 @@ describe("commerce gateway", () => {
     )
     const requests: Array<Record<string, unknown>> = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.search) requests.push(filter)
         return []
       },
@@ -3067,7 +3067,7 @@ describe("commerce gateway", () => {
     }> = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
         if (filter.search) {
           searchRequests.push({
@@ -3130,7 +3130,7 @@ describe("commerce gateway", () => {
     }> = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.search) return []
         searchFilters.push({ authors: filter.authors, limit: filter.limit })
         return [...outsideHits, semanticMatch]
@@ -3166,8 +3166,8 @@ describe("commerce gateway", () => {
     })
     const searchFilters: string[] = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchPublicEvents: async () => [],
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         if (filter.search) searchFilters.push(filter.search)
         const productRead = filter.kinds?.includes(EVENT_KINDS.PRODUCT)
         return {
@@ -3204,7 +3204,7 @@ describe("commerce gateway", () => {
       title: "Handmade cup",
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.search) return [indexedProduct] as never
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           throw new Error("catalog unavailable")
@@ -3239,7 +3239,7 @@ describe("commerce gateway", () => {
       ],
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.search) return [indexedProduct] as never
         if (filter.kinds?.includes(EVENT_KINDS.DELETION)) return [deletion]
         return []
@@ -3272,7 +3272,7 @@ describe("commerce gateway", () => {
     ]
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? (productEvents as never)
           : [],
@@ -3306,7 +3306,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         throw new Error("relay unavailable")
       },
     })
@@ -3460,7 +3460,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [productEvent as never]
         }
@@ -3494,7 +3494,7 @@ describe("commerce gateway", () => {
     const deletionFilters: Array<Record<string, unknown>> = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [productEvent as never]
         }
@@ -3538,7 +3538,7 @@ describe("commerce gateway", () => {
     const deletionFilters: Array<Record<string, unknown>> = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [productEvent as never]
         }
@@ -3577,7 +3577,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const result = await getMerchantStorefront({
@@ -3616,7 +3616,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
           return [
             makeSignedDeletionEvent({
@@ -3799,7 +3799,7 @@ describe("commerce gateway", () => {
     await cacheSignedProductListingEvent(localProduct)
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [
             makeProductEvent({
@@ -3836,7 +3836,7 @@ describe("commerce gateway", () => {
     await cacheSignedProductListingEvent(localProduct)
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [
             makeProductEvent({
@@ -3890,7 +3890,7 @@ describe("commerce gateway", () => {
     await cacheSignedProductListingEvent(winner)
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [loser as never]
         }
@@ -3985,11 +3985,11 @@ describe("commerce gateway", () => {
           (row) => !authors || authors.includes(row.pubkey)
         )
       },
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         networkReads++
         throw new Error("Cached reads cannot use relays")
       },
-      fetchEventsFanoutWithDiagnostics: async () => {
+      fetchPublicEventsWithDiagnostics: async () => {
         networkReads++
         throw new Error("Cached reads cannot use relays")
       },
@@ -4024,8 +4024,8 @@ describe("commerce gateway", () => {
       })
     )
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEvents: async () => [],
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? {
@@ -4067,7 +4067,7 @@ describe("commerce gateway", () => {
     })
     const deletionRelayAttempts: string[][] = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [liveProduct] as never
         }
@@ -4112,7 +4112,7 @@ describe("commerce gateway", () => {
 
     const deletionRelayAttempts: string[][] = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [product] as never
         }
@@ -4145,7 +4145,7 @@ describe("commerce gateway", () => {
     })
     let productFilter: Record<string, unknown> | null = null
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           productFilter = filter as Record<string, unknown>
           return [product] as never
@@ -4180,7 +4180,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([staleProduct] as never)
           : filter.kinds?.includes(EVENT_KINDS.DELETION)
@@ -4209,7 +4209,7 @@ describe("commerce gateway", () => {
       })
     )
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([staleProduct] as never)
           : [],
@@ -4238,7 +4238,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([staleProduct] as never)
           : filter.kinds?.includes(EVENT_KINDS.DELETION)
@@ -4264,7 +4264,7 @@ describe("commerce gateway", () => {
     const addressId = `30402:${MERCHANT_A_PUBKEY}:blocked-batch-item`
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([productEvent] as never)
           : [],
@@ -4312,7 +4312,7 @@ describe("commerce gateway", () => {
     ]
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
     })
 
@@ -4443,7 +4443,7 @@ describe("commerce gateway", () => {
     ]
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
     })
 
@@ -4528,7 +4528,7 @@ describe("commerce gateway", () => {
     ]
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
     })
 
@@ -4621,7 +4621,7 @@ describe("commerce gateway", () => {
     ]
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
     })
 
@@ -4669,7 +4669,7 @@ describe("commerce gateway", () => {
       })
     )
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([staleProduct] as never)
           : [],
@@ -4797,7 +4797,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const marketResult = await getMerchantStorefront({
@@ -4825,7 +4825,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([productEvent] as never)
           : [],
@@ -4865,7 +4865,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([productEvent] as never)
           : [],
@@ -4912,7 +4912,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([blockedEvent] as never)
           : [],
@@ -4939,7 +4939,7 @@ describe("commerce gateway", () => {
     ).toBe("Counterfeit goods display sample")
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const cachedMarketResult = await getMerchantStorefront({
@@ -4973,7 +4973,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (
           filter.kinds?.includes(EVENT_KINDS.PRODUCT) &&
           filter.authors?.includes(merchantPubkey) &&
@@ -5348,7 +5348,7 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner({} as never),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
           : [],
@@ -5434,7 +5434,7 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner({} as never),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
           : [],
@@ -5537,7 +5537,7 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner({} as never),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
           : [],
@@ -5591,7 +5591,7 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner({} as never),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
           : [],
@@ -5663,7 +5663,7 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner({} as never),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
           : [],
@@ -5710,7 +5710,7 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner({} as never),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
           : [],
@@ -5752,7 +5752,7 @@ describe("commerce gateway", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner({} as never),
       resolveInboxRelayUrls: async () => merchantReadRelays,
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
           seenRelayUrls = options?.relayUrls
         }
@@ -5819,7 +5819,7 @@ describe("commerce gateway", () => {
     __setCommerceTestOverrides({
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner({} as never),
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
           ? ([wrappedEvent] as never)
           : [],
@@ -6021,7 +6021,7 @@ describe("commerce gateway", () => {
 
   it("dedupes profile requests and serves cached profiles when relays fail later", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PROFILE)) {
           return [
             {
@@ -6046,7 +6046,7 @@ describe("commerce gateway", () => {
     expect(cachedProfiles.get("alice")?.displayName).toBe("Alice")
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         throw new Error("offline")
       },
     })
@@ -6064,7 +6064,7 @@ describe("commerce gateway", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events: [],
@@ -6091,7 +6091,7 @@ describe("commerce gateway", () => {
 
   it("certifies bounded profile absence only after every planned relay completes", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events: [],
@@ -6120,7 +6120,7 @@ describe("commerce gateway", () => {
 
   it("keeps profile absence incomplete when rejected events saturate the relay limit", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: [],
         relays: [...(options?.relayUrls ?? [])].map((relayUrl, index) => ({
           relayUrl,
@@ -6164,7 +6164,7 @@ describe("commerce gateway", () => {
           : undefined,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         expect(relayUrls).not.toContain(parkedRelayUrl)
         expect(options?.skipHealthFilter).toBe(true)
@@ -6195,7 +6195,7 @@ describe("commerce gateway", () => {
 
   it("keeps a live payment address positive when required relay coverage is partial", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events: [
@@ -6255,7 +6255,7 @@ describe("commerce gateway", () => {
       },
     ] as never
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events,
@@ -6303,7 +6303,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events,
@@ -6333,7 +6333,7 @@ describe("commerce gateway", () => {
 
   it("certifies a valid signed empty kind-0 after complete coverage", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           {
             id: "profile-valid-empty",
@@ -6378,7 +6378,7 @@ describe("commerce gateway", () => {
     })
     let seenRelayUrls: string[] | undefined
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         seenRelayUrls = options?.relayUrls
         return filter.kinds?.includes(EVENT_KINDS.PROFILE)
           ? ([
@@ -6423,7 +6423,7 @@ describe("commerce gateway", () => {
       }),
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         if (filter.kinds?.includes(EVENT_KINDS.PROFILE)) {
           genericReadRelayPlans.push(relayUrls)
@@ -6501,7 +6501,7 @@ describe("commerce gateway", () => {
         eventCreatedAt: 1,
         cachedAt: 1,
       }),
-      fetchEventsFanoutDetailed: async () => {
+      fetchSignedEventsFanoutDetailed: async () => {
         relayListFanoutCount += 1
         return { events: [], relays: [], eventsVerified: true }
       },
@@ -6544,7 +6544,7 @@ describe("commerce gateway", () => {
           ],
         ])
       },
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
         profileReadRelayUrls = [...(options?.relayUrls ?? [])]
         if (!profileReadRelayUrls.includes(remoteRelayUrl)) return []
@@ -6588,7 +6588,7 @@ describe("commerce gateway", () => {
         calledRequireNdk = true
         return undefined
       },
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         seenFilterAuthors = filter.authors
         seenOptions = options
         return [
@@ -6645,7 +6645,7 @@ describe("commerce gateway", () => {
     let seenRelayUrls: string[] | undefined
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         seenRelayUrls = options?.relayUrls
         if (
           filter.kinds?.includes(EVENT_KINDS.PROFILE) &&
@@ -6718,7 +6718,7 @@ describe("commerce gateway", () => {
 
     let seenRelayUrls: string[] | undefined
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (_filter, options) => {
+      fetchPublicEvents: async (_filter, options) => {
         seenRelayUrls = boundedTestRelayUrls(options)
         return []
       },
@@ -6739,7 +6739,7 @@ describe("commerce gateway", () => {
     let seenRelayUrls: string[] | undefined
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         seenRelayUrls = boundedTestRelayUrls(options)
         if (
           filter.kinds?.includes(EVENT_KINDS.PROFILE) &&
@@ -6789,7 +6789,7 @@ describe("commerce gateway", () => {
     let seenRelayUrls: string[] | undefined
     Object.assign(config, applyE2eRelayIsolation(config, [isolatedRelayUrl]))
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (_filter, options) => {
+      fetchPublicEvents: async (_filter, options) => {
         seenRelayUrls = options?.relayUrls
         return []
       },
@@ -6825,7 +6825,7 @@ describe("commerce gateway", () => {
       }),
     })
     __setCommerceTestOverrides({
-      fetchEventsFanoutProgressive: async (filter, options, onProgress) => {
+      fetchPublicEventsProgressive: async (filter, options, onProgress) => {
         activeFetches += 1
         maxActiveFetches = Math.max(maxActiveFetches, activeFetches)
         fetchCalls += 1
@@ -6885,7 +6885,7 @@ describe("commerce gateway", () => {
     let deletionFetchCalls = 0
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return productEvents as never
         }
@@ -6919,7 +6919,7 @@ describe("commerce gateway", () => {
     const progressNames: string[] = []
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
 
         return [
@@ -6951,7 +6951,7 @@ describe("commerce gateway", () => {
 
   it("uses the newest profile event with content instead of a newer bare event", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
 
         return [
@@ -7015,7 +7015,7 @@ describe("commerce gateway", () => {
       it(`retains payment frontier ${content} after a later ${gap} read`, async () => {
         let first = true
         __setCommerceTestOverrides({
-          fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+          fetchPublicEventsWithDiagnostics: async (_filter, options) => {
             const relayUrls = [...(options?.relayUrls ?? [])]
             const initial = first
             first = false
@@ -7075,7 +7075,7 @@ describe("commerce gateway", () => {
   it("preserves freshly observed payment authority when caching fails and on a later outage", async () => {
     let read = 0
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         if (++read > 1) throw new Error("Synthetic profile outage")
         return [
           {
@@ -7118,7 +7118,7 @@ describe("commerce gateway", () => {
       cachedAt: FIXED_NOW,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           {
             id: "older",
@@ -7163,7 +7163,7 @@ describe("commerce gateway", () => {
   for (const network of ["empty", "unavailable"] as const) {
     it(`reports unreadable durable payment authority after a successful removal write and ${network} network read`, async () => {
       __setCommerceTestOverrides({
-        fetchEventsFanout: async () =>
+        fetchPublicEvents: async () =>
           [
             {
               id: "persisted-removal",
@@ -7185,7 +7185,7 @@ describe("commerce gateway", () => {
         getCachedProfiles: async () => {
           throw new Error("Synthetic unreadable profile storage")
         },
-        fetchEventsFanout: async () => {
+        fetchPublicEvents: async () => {
           if (network === "unavailable")
             throw new Error("Synthetic network outage")
           return []
@@ -7209,7 +7209,7 @@ describe("commerce gateway", () => {
         if (++reads > 1) throw new Error("Synthetic unreadable profile storage")
         return []
       },
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
     const result = await getProfiles({
       pubkeys: ["merchant"],
@@ -7235,7 +7235,7 @@ describe("commerce gateway", () => {
           },
         ]
       },
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         throw new Error("Synthetic outage")
       },
     })
@@ -7252,7 +7252,7 @@ describe("commerce gateway", () => {
 
   it("retains unsaved authority through cache-read failure and lets a newer live repair supersede it", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           {
             id: "unsaved",
@@ -7276,7 +7276,7 @@ describe("commerce gateway", () => {
       getCachedProfiles: async () => {
         throw new Error("Synthetic storage failure")
       },
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         throw new Error("Synthetic profile outage")
       },
     })
@@ -7290,7 +7290,7 @@ describe("commerce gateway", () => {
       putCachedProfiles: async (rows) => {
         for (const row of rows) cachedProfiles.set(row.pubkey, row)
       },
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           {
             id: "repair",
@@ -7309,7 +7309,7 @@ describe("commerce gateway", () => {
     expect(repaired.meta.source).toBe("public")
     expect(repaired.meta.stale).toBe(false)
     expect(cachedProfiles.get("merchant")?.eventId).toBe("repair")
-    __setCommerceTestOverrides({ fetchEventsFanout: async () => [] })
+    __setCommerceTestOverrides({ fetchPublicEvents: async () => [] })
     const retained = await getProfiles(query)
     expect(retained.meta.profileFrontierStates).toEqual({
       merchant: "retained_valid",
@@ -7319,7 +7319,7 @@ describe("commerce gateway", () => {
 
   it("does not discard unsaved authority for a projection-only row with the same identity", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           {
             id: "unsaved",
@@ -7349,7 +7349,7 @@ describe("commerce gateway", () => {
           cachedAt: FIXED_NOW,
         },
       ],
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         throw new Error("Synthetic outage")
       },
     })
@@ -7363,7 +7363,7 @@ describe("commerce gateway", () => {
   for (const batch of [false, true]) {
     it(`retains a concurrently cached frontier after an empty ${batch ? "batch author" : "profile"} result`, async () => {
       __setCommerceTestOverrides({
-        fetchEventsFanout: async () => {
+        fetchPublicEvents: async () => {
           // Another reader finishes after this request's initial cache load.
           cachedProfiles.set("merchant", {
             pubkey: "merchant",
@@ -7421,7 +7421,7 @@ describe("commerce gateway", () => {
                 lud16: "enriched-obsolete@wallet.example",
               },
             ],
-      fetchEventsFanout: async () =>
+      fetchPublicEvents: async () =>
         [
           {
             id: "loser",
@@ -7463,7 +7463,7 @@ describe("commerce gateway", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PROFILE)
           ? ([
               {
@@ -7520,7 +7520,7 @@ describe("commerce gateway", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events: [
@@ -7577,7 +7577,7 @@ describe("commerce gateway", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return {
           events: [
@@ -7636,7 +7636,7 @@ describe("commerce gateway", () => {
         ...(currentLud16 ? { lud16: currentLud16 } : {}),
       })
       __setCommerceTestOverrides({
-        fetchEventsFanoutWithDiagnostics: async (_filter, options) => {
+        fetchPublicEventsWithDiagnostics: async (_filter, options) => {
           const relayUrls = [...(options?.relayUrls ?? [])]
           return {
             events: [
@@ -7691,7 +7691,7 @@ describe("commerce gateway", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PROFILE)
           ? ([
               {
@@ -7739,7 +7739,7 @@ describe("commerce gateway", () => {
       cachedAt: FIXED_NOW - 1_000,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PROFILE)
           ? ([
               {
@@ -7811,7 +7811,7 @@ describe("commerce gateway", () => {
         resumeDelayedFetch = resolve
       })
       __setCommerceTestOverrides({
-        fetchEventsFanout: async (filter) => {
+        fetchPublicEvents: async (filter) => {
           if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
 
           fetchCall += 1
@@ -7886,7 +7886,7 @@ describe("commerce gateway", () => {
     })
 
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const result = await getProfiles({
@@ -7903,7 +7903,7 @@ describe("commerce gateway", () => {
 
   it("does not cache bare profile misses as successful profile rows", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const result = await getProfiles({
@@ -7931,7 +7931,7 @@ describe("getProductsByIds diagnostics", () => {
     const literalAddressId = `30402:${merchantPubkey}:${literalDTag}`
     const productDTags: string[][] = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           productDTags.push([...(filter["#d"] ?? [])])
         }
@@ -7949,7 +7949,7 @@ describe("getProductsByIds diagnostics", () => {
     const lineTerminatorAddressId = `30402:${merchantPubkey}:${lineTerminatorDTag}`
     const productDTags: string[][] = []
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           productDTags.push([...(filter["#d"] ?? [])])
         }
@@ -7972,7 +7972,7 @@ describe("getProductsByIds diagnostics", () => {
     ]
     let productReads = 0
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) productReads += 1
         return []
       },
@@ -7997,7 +7997,7 @@ describe("getProductsByIds diagnostics", () => {
 
   it("reports a null issue only for an exact live coordinate match", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([
               makeProductEvent({
@@ -8035,7 +8035,7 @@ describe("getProductsByIds diagnostics", () => {
     const productRelayPlans: string[][] = []
     __setCommerceTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           productRelayPlans.push(relayUrls)
@@ -8065,7 +8065,7 @@ describe("getProductsByIds diagnostics", () => {
 
   it("types malformed references without dropping valid coordinates", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([
               makeProductEvent({
@@ -8100,7 +8100,7 @@ describe("getProductsByIds diagnostics", () => {
 
   it("returns product_missing only for an authoritative complete read", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const result = await getProductsByIds([addressId])
@@ -8114,7 +8114,7 @@ describe("getProductsByIds diagnostics", () => {
       getRelayLists: async () => {
         throw new Error("relay-list cache unavailable")
       },
-      fetchEventsFanoutWithDiagnostics: async () => {
+      fetchPublicEventsWithDiagnostics: async () => {
         productReads += 1
         throw new Error("product reads should not start")
       },
@@ -8135,7 +8135,7 @@ describe("getProductsByIds diagnostics", () => {
 
   it("keeps a partial read distinct from a missing listing", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async () => ({
+      fetchPublicEventsWithDiagnostics: async () => ({
         events: [],
         attemptedRelayUrls: ["wss://ok.example", "wss://down.example"],
         successfulRelayUrls: ["wss://ok.example"],
@@ -8154,7 +8154,7 @@ describe("getProductsByIds diagnostics", () => {
     const unavailablePubkey = getPublicKey(new Uint8Array(32).fill(19))
     const unavailableAddressId = `30402:${unavailablePubkey}:unavailable-item`
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         const unavailable = filter.authors?.includes(unavailablePubkey) ?? false
         return {
@@ -8197,8 +8197,8 @@ describe("getProductsByIds diagnostics", () => {
     })
     const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-partial-live`
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutWithDiagnostics: async (filter) =>
+      fetchPublicEvents: async () => [],
+      fetchPublicEventsWithDiagnostics: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? {
               events: [liveEvent],
@@ -8274,8 +8274,8 @@ describe("getProductsByIds diagnostics", () => {
           : undefined,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEvents: async () => [],
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = boundedTestRelayUrls(options)
         expect(relayUrls).not.toContain(parkedRelayUrl)
         return {
@@ -8363,8 +8363,8 @@ describe("getProductsByIds diagnostics", () => {
           : undefined,
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEvents: async () => [],
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = boundedTestRelayUrls(options)
         expect(relayUrls).not.toContain(parkedRelayUrl)
         expect(relayUrls).toEqual(ambientRelayUrls.slice(0, 6))
@@ -8416,7 +8416,7 @@ describe("getProductsByIds diagnostics", () => {
     const cachedAddressId = `30402:${newerCachedEvent.pubkey}:${dTag}`
     await cacheSignedProductListingEvent(newerCachedEvent)
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([olderLiveEvent] as never)
           : [],
@@ -8443,7 +8443,7 @@ describe("getProductsByIds diagnostics", () => {
       tags: [["a", deletedAddressId]],
     })
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return [productEvent as never]
         }
@@ -8469,8 +8469,8 @@ describe("getProductsByIds diagnostics", () => {
     })
     const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-deletion-partial`
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEvents: async () => [],
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
           return {
@@ -8509,8 +8509,8 @@ describe("getProductsByIds diagnostics", () => {
     })
     const liveAddressId = `30402:${liveEvent.pubkey}:diagnosed-deletion-unavailable`
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEvents: async () => [],
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? {
@@ -8558,8 +8558,8 @@ describe("getProductsByIds diagnostics", () => {
     const cachedAddressId = `30402:${cachedEvent.pubkey}:diagnosed-cached-partial`
     await cacheSignedProductListingEvent(cachedEvent)
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEvents: async () => [],
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         return filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? {
@@ -8596,7 +8596,7 @@ describe("getProductsByIds diagnostics", () => {
     const cachedAddressId = `30402:${cachedEvent.pubkey}:diagnosed-cached`
     await cacheSignedProductListingEvent(cachedEvent)
     __setCommerceTestOverrides({
-      fetchEventsFanoutWithDiagnostics: async () => ({
+      fetchPublicEventsWithDiagnostics: async () => ({
         events: [],
         attemptedRelayUrls: ["wss://down.example"],
         successfulRelayUrls: [],
@@ -8621,7 +8621,7 @@ describe("getProductsByIds diagnostics", () => {
     const cachedAddressId = `30402:${cachedEvent.pubkey}:diagnosed-cache-only`
     await cacheSignedProductListingEvent(cachedEvent)
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => [],
+      fetchPublicEvents: async () => [],
     })
 
     const result = await getProductsByIds([cachedAddressId])
@@ -8640,7 +8640,7 @@ describe("getProductsByIds diagnostics", () => {
     })
     const filteredAddressId = `30402:${merchantPubkey}:diagnosed-filtered`
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(EVENT_KINDS.PRODUCT)
           ? ([productEvent] as never)
           : [],

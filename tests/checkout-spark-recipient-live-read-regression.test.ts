@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -78,7 +77,7 @@ function fixture(
     putCached: async (row) => {
       relayLists.set(row.pubkey, row)
     },
-    fetchEventsFanoutDetailed: async (_filter, fetchOptions) => {
+    fetchSignedEventsFanoutDetailed: async (_filter, fetchOptions) => {
       const requestedRelayUrls = [...fetchOptions.relayUrls]
       const relayUrls = requestedRelayUrls.slice(
         0,
@@ -91,9 +90,7 @@ function fixture(
       observations.discoverySuccess += relayUrls.length - failedCount
       observations.discoveryFailure += failedCount
       return {
-        events: observedRelayLists.map(
-          (event) => new NDKEvent(undefined, event)
-        ),
+        events: observedRelayLists.map((event) => structuredClone(event)),
         eventsVerified: observedRelayLists.every((event) =>
           verifyEvent(structuredClone(event))
         ),
@@ -129,7 +126,7 @@ function fixture(
       }
       for (const row of rows) profiles.set(row.pubkey, row)
     },
-    fetchEventsFanoutDetailed: async (_filter, fetchOptions) => {
+    fetchSignedEventsFanoutDetailed: async (_filter, fetchOptions) => {
       const requestedRelayUrls = [...(fetchOptions?.relayUrls ?? [])]
       const relayUrls = requestedRelayUrls.slice(
         0,
@@ -139,7 +136,7 @@ function fixture(
       observations.profileAdmittedRelayUrls = relayUrls
       if (relayUrls.includes(AUTHOR_RELAY)) observations.authorReads += 1
       return {
-        events: observedProfiles.map((event) => new NDKEvent(undefined, event)),
+        events: observedProfiles.map((event) => structuredClone(event)),
         eventsVerified: observedProfiles.every((event) =>
           verifyEvent(structuredClone(event))
         ),

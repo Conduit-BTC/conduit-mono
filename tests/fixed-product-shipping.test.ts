@@ -722,7 +722,7 @@ describe("canonical fixed product shipping", () => {
     let relayListFetches = 0
     __setRelayListTestOverrides({
       now: () => 1,
-      fetchEventsFanoutDetailed: async () => {
+      fetchSignedEventsFanoutDetailed: async () => {
         relayListFetches += 1
         return { events: [], relays: [], eventsVerified: true }
       },
@@ -735,7 +735,7 @@ describe("canonical fixed product shipping", () => {
       }),
     })
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (_filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (_filter, options) => ({
         events: [],
         relays: (options?.relayUrls ?? []).map((relayUrl) => ({
           relayUrl,
@@ -825,7 +825,7 @@ describe("canonical fixed product shipping", () => {
       }),
     })
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         const events = filter.kinds?.includes(30406)
           ? [shippingEvent]
           : filter["#a"] && includeDeletion
@@ -965,7 +965,7 @@ describe("canonical fixed product shipping", () => {
       }),
     })
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         let events: NDKEvent[] = []
         if (filter.kinds?.includes(30406)) {
           const requestedDTags = new Set(filter["#d"] ?? [])
@@ -1129,7 +1129,7 @@ describe("canonical fixed product shipping", () => {
       }),
     })
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         const events = filter.kinds?.includes(30406)
           ? visibleShippingEvents
           : []
@@ -1232,7 +1232,7 @@ describe("canonical fixed product shipping", () => {
       }),
     })
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         if (filter["#e"]) {
           exactDeletionQueries.push([...filter["#e"]])
         }
@@ -1363,7 +1363,7 @@ describe("canonical fixed product shipping", () => {
       }),
     })
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         const events = filter.kinds?.includes(30406)
           ? [shippingReadCount++ === 0 ? firstRevision : strongerRevision]
           : []
@@ -1482,7 +1482,7 @@ describe("canonical fixed product shipping", () => {
       }),
     })
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: async (filter, options) => {
         const events = filter.kinds?.includes(30406)
           ? [shippingEvent]
           : filter["#e"] && includeDeletion
@@ -1765,7 +1765,7 @@ function createShippingReadHarness(
       }),
     })
     __setShippingTestOverrides({
-      fetchEventsFanoutDetailed: async (filter, fetchOptions) => {
+      fetchSignedEventsFanoutDetailed: async (filter, fetchOptions) => {
         let events: NDKEvent[] = []
         if (filter.kinds?.includes(30406)) {
           const requestedDTags = new Set(filter["#d"] ?? [])

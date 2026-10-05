@@ -1,3 +1,5 @@
+import type { SignedPublicNostrEvent } from "./signed-event"
+import type { Filter } from "nostr-tools"
 /**
  * Social commerce event-graph hydrator (scaffold).
  *
@@ -16,9 +18,8 @@
  *    work so a grid of cards does not stampede the relay set.
  */
 
-import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { db, type CachedProductSocialSummary } from "../db"
-import { fetchEventsFanout } from "./ndk"
+import { fetchPublicEvents } from "./relay-reader"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 
@@ -307,14 +308,14 @@ export async function getProductSocialSummary(
           return summary
         }
 
-        const filter: NDKFilter | undefined = input.coordinate
+        const filter: Filter | undefined = input.coordinate
           ? { "#a": [input.coordinate], kinds: [7, 1111, 9735] }
           : input.eventId
             ? { "#e": [input.eventId], kinds: [7, 1111, 9735] }
             : undefined
         if (!filter) return summary
 
-        const events = await fetchEventsFanout(filter, {
+        const events = await fetchPublicEvents(filter, {
           relayUrls,
           fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
         })
@@ -349,13 +350,13 @@ export async function getProductCommentsPreview(
     const authors = input.authorPubkey ? [input.authorPubkey] : []
     const relayUrls = await planRead("product_comments_preview", authors, tier)
     if (relayUrls.length === 0) return []
-    const filter: NDKFilter | undefined = input.coordinate
+    const filter: Filter | undefined = input.coordinate
       ? { "#a": [input.coordinate], kinds: [1111], limit }
       : input.eventId
         ? { "#e": [input.eventId], kinds: [1111], limit }
         : undefined
     if (!filter) return []
-    const events = await fetchEventsFanout(filter, {
+    const events = await fetchPublicEvents(filter, {
       relayUrls,
       fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
     })
@@ -378,18 +379,18 @@ export async function getProductCommentsPreview(
 export async function getProfileSocialFeed(
   pubkey: string,
   options: { limit?: number; tier?: HydrationTier } = {}
-): Promise<NDKEvent[]> {
+): Promise<SignedPublicNostrEvent[]> {
   const tier = options.tier ?? "detail"
   const limit = options.limit ?? 20
   return queue.enqueue(tier, async () => {
     const relayUrls = await planRead("profile_social_feed", [pubkey], tier)
     if (relayUrls.length === 0) return []
-    const filter: NDKFilter = {
+    const filter: Filter = {
       authors: [pubkey],
       kinds: [1, 6, 30023],
       limit,
     }
-    return fetchEventsFanout(filter, {
+    return fetchPublicEvents(filter, {
       relayUrls,
       fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
     })
@@ -398,7 +399,7 @@ export async function getProfileSocialFeed(
 
 /** Internal: derive counters from a bag of social events. */
 function aggregateSocialCounts(
-  events: readonly NDKEvent[]
+  events: readonly SignedPublicNostrEvent[]
 ): Pick<
   CachedProductSocialSummary,
   | "reactionCount"

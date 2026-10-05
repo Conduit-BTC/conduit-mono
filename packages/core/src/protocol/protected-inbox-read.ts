@@ -194,6 +194,8 @@ export async function readProtectedInbox(
           ...(options.since === undefined ? {} : { since: options.since }),
           ...(options.until === undefined ? {} : { until: options.until }),
           limit: options.limit,
+          ...(options.since === undefined ? {} : { since: options.since }),
+          ...(options.until === undefined ? {} : { until: options.until }),
         },
       ],
       operation: "private_inbox_read",

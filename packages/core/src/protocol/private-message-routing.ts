@@ -1,4 +1,3 @@
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
 import {
   applyInboxDeclarationEvidenceMerge,
@@ -15,10 +14,10 @@ import {
 } from "./inbox-declaration-evidence"
 import { EVENT_KINDS } from "./kinds"
 import {
-  fetchEventsFanoutWithDiagnostics,
+  fetchPublicEventsWithDiagnostics,
   getEventSourceRelayUrls,
-  type FetchEventsFanoutOptions,
-} from "./ndk"
+  type PublicRelayReadOptions,
+} from "./relay-reader"
 import {
   normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
@@ -155,7 +154,7 @@ export interface InboxDeclarationObservation {
 }
 
 export interface ResolveInboxDeclarationOptions {
-  fetchEventsWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
+  fetchEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
   /** Discovery relays; defaults to local reads + compatibility reads. */
   relayUrls?: readonly string[]
   now?: () => number
@@ -179,11 +178,11 @@ export interface ResolveInboxDeclarationOptions {
    * settings. This explicit authority may include ws://; relay hints may not.
    */
   ownerSelectedRelayUrls?: readonly string[]
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   /** Cancels queued or in-flight lookup I/O when account authority changes. */
   signal?: AbortSignal
   /** Live account session authority for non-signal declaration reads. */
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   /** Durable owner kind-10002 evidence seam (tests/non-browser adapters). */
   ownerRelayListEvidenceRepository?: OwnerRelayListEvidenceRepository
 }
@@ -773,9 +772,9 @@ async function readDurableOwnerReadRelayUrls(
 }
 
 function declarationEventsNewestFirst(
-  events: readonly NDKEvent[],
+  events: readonly SignedPublicNostrEvent[],
   pubkey: string
-): NDKEvent[] {
+): SignedPublicNostrEvent[] {
   return events
     .filter(
       (event) =>
@@ -791,14 +790,11 @@ function declarationEventsNewestFirst(
 }
 
 function toSignedDeclarationEvent(
-  event: NDKEvent,
+  event: SignedPublicNostrEvent,
   pubkey: string
 ): SignedPublicNostrEvent | null {
   try {
-    const signed =
-      typeof event.rawEvent === "function"
-        ? (event.rawEvent() as SignedPublicNostrEvent)
-        : (event as unknown as SignedPublicNostrEvent)
+    const signed = event
     const canonical =
       signed.pubkey === pubkey &&
       signed.pubkey === signed.pubkey.toLowerCase() &&
@@ -807,7 +803,17 @@ function toSignedDeclarationEvent(
       /^[0-9a-f]{64}$/.test(signed.pubkey) &&
       /^[0-9a-f]{64}$/.test(signed.id) &&
       /^[0-9a-f]{128}$/.test(signed.sig)
-    return canonical && isValidSignedPublicNostrEvent(signed) ? signed : null
+    return canonical && isValidSignedPublicNostrEvent(signed)
+      ? {
+          id: signed.id,
+          pubkey: signed.pubkey,
+          created_at: signed.created_at,
+          kind: signed.kind,
+          tags: signed.tags.map((tag) => [...tag]),
+          content: signed.content,
+          sig: signed.sig,
+        }
+      : null
   } catch {
     return null
   }
@@ -982,7 +988,7 @@ async function persistCachedLookupOutcome(
 }
 
 function declarationEventSourceRelayUrls(
-  event: NDKEvent,
+  event: SignedPublicNostrEvent,
   successfulRelayUrls: readonly string[]
 ): string[] {
   const successful = retainedRelayUrls(successfulRelayUrls)
@@ -997,9 +1003,9 @@ function declarationEventSourceRelayUrls(
 }
 
 function reconcileInboxReadDiagnostics(
-  result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>,
+  result: Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>,
   relayUrls: readonly string[]
-): Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>> {
+): Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>> {
   const planned = retainedRelayUrls(relayUrls)
   const plannedSet = new Set(planned)
   const successfulSet = new Set(
@@ -1034,14 +1040,14 @@ function reconcileInboxReadDiagnostics(
 async function reconcilePendingInboxCutoverReadbacks(input: {
   pubkey: string
   record: InboxDeclarationEvidenceRecord
-  fetchWithDiagnostics: typeof fetchEventsFanoutWithDiagnostics
+  fetchWithDiagnostics: typeof fetchPublicEventsWithDiagnostics
   repository: InboxDeclarationEvidenceRepository | undefined
   requestingAccountPubkey: string | null | undefined
   authenticatedPubkey: string | null | undefined
   ownerSelectedRelayUrls: readonly string[]
-  accountNetworkLocalStateRepository: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  accountNetworkLocalStateRepository: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   signal?: AbortSignal
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   observedAt: number
   now: () => number
 }): Promise<InboxDeclarationEvidenceRecord> {
@@ -1093,7 +1099,7 @@ async function reconcilePendingInboxCutoverReadbacks(input: {
     )
     if (relayUrls.length === 0) continue
 
-    let result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>
+    let result: Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>
     try {
       result = await input.fetchWithDiagnostics(
         {
@@ -1275,7 +1281,7 @@ export async function resolveInboxDeclaration(
   }
 
   const fetchWithDiagnostics =
-    options.fetchEventsWithDiagnostics ?? fetchEventsFanoutWithDiagnostics
+    options.fetchEventsWithDiagnostics ?? fetchPublicEventsWithDiagnostics
   const pendingRecoveryEvidence = declarationEvidenceCache.get(key)
   if (pendingRecoveryEvidence) {
     const reconciled = await reconcilePendingInboxCutoverReadbacks({
@@ -1329,7 +1335,7 @@ export async function resolveInboxDeclaration(
     ownerSelectedRelayUrls
   )
 
-  let result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>
+  let result: Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>
   try {
     result = await fetchWithDiagnostics(
       {

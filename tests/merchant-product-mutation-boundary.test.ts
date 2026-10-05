@@ -35,8 +35,8 @@ const {
   getProductShippingOptionAddress,
   getShippingOptionsByCoordinates,
 } = await import("@conduit/core")
-const { __resetNdkTestState } =
-  await import("../packages/core/src/protocol/ndk")
+const { __resetPublicReaderTestState } =
+  await import("../packages/core/src/protocol/relay-reader")
 const {
   applyProductFulfillmentIntentForPublication,
   getProductPreservedFulfillmentFields,
@@ -466,7 +466,7 @@ afterEach(() => {
   resetFixturePublishers()
   __resetRelayPublishTestOverrides()
   __resetShippingTestOverrides()
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
 })
 
 describe("merchant-owned product mutation boundary", () => {
@@ -782,7 +782,7 @@ describe("merchant-owned product mutation boundary", () => {
             },
           ])
         ),
-      fetchEventsFanoutDetailed: async (filter, options) => ({
+      fetchSignedEventsFanoutDetailed: async (filter, options) => ({
         events: [],
         relays: (options?.relayUrls ?? []).map((relayUrl) => ({
           relayUrl,

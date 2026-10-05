@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
@@ -30,6 +29,7 @@ const newer = finalizeEvent(
   secret
 )
 let cache = new Map<string, CachedProfile>()
+let observedProfile: typeof older | undefined
 const query = {
   pubkeys: [older.pubkey],
   skipCache: true,
@@ -39,10 +39,11 @@ const query = {
 
 beforeEach(() => {
   cache = new Map()
+  observedProfile = undefined
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   __setRelayListTestOverrides({
-    fetchEventsFanout: async () => [],
+    fetchPublicEvents: async () => [],
     loadCached: async () => undefined,
     putCached: async () => {},
   })
@@ -52,7 +53,10 @@ beforeEach(() => {
     putCachedProfiles: async (rows) => {
       for (const row of rows) cache.set(row.pubkey, row)
     },
-    fetchEventsFanout: async () => [new NDKEvent(undefined, older)],
+    fetchPublicEvents: async () => {
+      observedProfile = structuredClone(older)
+      return [observedProfile]
+    },
   })
 })
 afterEach(() => {
@@ -74,6 +78,9 @@ describe("checkout profile source retention", () => {
     expect(context.signedEvent).toEqual(structuredClone(older))
     expect(context.signedEvent).not.toBe(older)
     expect(context.signedEvent?.tags).not.toBe(older.tags)
+    expect(observedProfile).not.toHaveProperty("rawEvent")
+    expect(context.signedEvent).not.toBe(observedProfile)
+    expect(context.signedEvent?.tags).not.toBe(observedProfile?.tags)
     expect(
       progress.every(
         (value) => !value.profileContexts[older.pubkey]?.signedEvent
@@ -93,13 +100,13 @@ describe("checkout profile source retention", () => {
     })
     let count = 0
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         if (++count === 1) {
           started()
           await held
-          return [new NDKEvent(undefined, older)]
+          return [structuredClone(older)]
         }
-        return [new NDKEvent(undefined, newer)]
+        return [structuredClone(newer)]
       },
     })
     const pending = getProfiles(query)
@@ -121,7 +128,7 @@ describe("checkout profile source retention", () => {
 
   it("does not reconstruct signed bytes from a cached profile when the next read is empty", async () => {
     await getProfiles(query)
-    __setCommerceTestOverrides({ fetchEventsFanout: async () => [] })
+    __setCommerceTestOverrides({ fetchPublicEvents: async () => [] })
     const result = await getProfiles(query)
     expect(result.profileContexts[older.pubkey]?.frontier?.eventId).toBe(
       older.id

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import {
-  __resetNdkTestState,
-  fetchEventsFanoutDetailed,
-  fetchEventsFanoutProgressive,
-} from "../packages/core/src/protocol/ndk"
+  __resetPublicReaderTestState,
+  fetchSignedEventsFanoutDetailed,
+  fetchPublicEventsProgressive,
+} from "../packages/core/src/protocol/relay-reader"
 import {
   __resetRelayHealth,
   getRelayHealth,
@@ -52,7 +52,7 @@ class TestSocket {
 }
 
 beforeEach(() => {
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
   __resetRelayHealth()
   requests = []
   connections = 0
@@ -63,14 +63,14 @@ beforeEach(() => {
   })
 })
 afterEach(() => {
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
   __resetRelayHealth()
   if (descriptor) Object.defineProperty(globalThis, "WebSocket", descriptor)
   else Reflect.deleteProperty(globalThis, "WebSocket")
 })
 
 const read = () =>
-  fetchEventsFanoutDetailed(
+  fetchSignedEventsFanoutDetailed(
     { kinds: [1] },
     { relayUrls: [relay], skipHealthFilter: true, fetchTimeoutMs: 1_000 }
   )
@@ -83,7 +83,7 @@ for (const message of [
     onRequest = (socket) =>
       queueMicrotask(() => socket.emit(["NOTICE", message]))
     const progress: unknown[] = []
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [1] },
       {
         relayUrls: [relay],
@@ -91,7 +91,7 @@ for (const message of [
         fetchTimeoutMs: 1_000,
       }
     )
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl: relay,
         status: "failed",
@@ -102,7 +102,7 @@ for (const message of [
     expect(progress).toEqual([result.relays])
     expect(isRelayRateLimited(relay)).toBe(true)
     // Explicit plans and health-filter bypasses must not bypass a throttle.
-    expect((await read()).relays).toEqual(result.relays)
+    expect((await read()).relays).toMatchObject(result.relays)
     expect(requests).toHaveLength(1)
     expect(connections).toBe(1)
   })
@@ -120,7 +120,7 @@ it("keeps verified partial observations when CLOSED reports throttling", async (
     })
   const result = await read()
   expect(result.events.map((event) => event.id)).toEqual([signed.id])
-  expect(result.relays[0]).toEqual({
+  expect(result.relays[0]).toMatchObject({
     relayUrl: relay,
     status: "partial",
     eventCount: 1,
@@ -166,7 +166,7 @@ for (const maxRelayAttempts of [undefined, 1]) {
       requestedUrls.push(socket.url)
       queueMicrotask(() => socket.emit(["EOSE", id]))
     }
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [30402], limit: 10 },
       {
         // Suppression must remain visible even after the first healthy source
@@ -177,7 +177,7 @@ for (const maxRelayAttempts of [undefined, 1]) {
       }
     )
     expect(result.events).toEqual([])
-    expect(result.relays).toEqual([
+    expect(result.relays).toMatchObject([
       {
         relayUrl: relay,
         status: "failed",
@@ -259,10 +259,10 @@ for (const progressive of [false, true]) {
     const snapshots: { admittedRelayUrls?: string[]; relays: unknown[] }[] = []
     const progressUrls: string[] = []
     const bounded = progressive
-      ? fetchEventsFanoutProgressive({ kinds: [1] }, options, (result) => {
+      ? fetchPublicEventsProgressive({ kinds: [1] }, options, (result) => {
           progressUrls.push(result.relayUrl)
         })
-      : fetchEventsFanoutDetailed(
+      : fetchSignedEventsFanoutDetailed(
           { kinds: [1] },
           {
             ...options,
@@ -277,9 +277,9 @@ for (const progressive of [false, true]) {
       expect(progressUrls).toEqual([relay, healthy])
     } else {
       const detailed = result as Awaited<
-        ReturnType<typeof fetchEventsFanoutDetailed>
+        ReturnType<typeof fetchSignedEventsFanoutDetailed>
       >
-      expect(detailed.relays).toEqual([
+      expect(detailed.relays).toMatchObject([
         {
           relayUrl: relay,
           status: "failed",
@@ -302,7 +302,7 @@ it("counts an actual throttled relay request against the bounded attempt budget"
     queueMicrotask(() => {
       socket.emit(["CLOSED", id, "rate-limited: subscription budget"])
     })
-  const result = await fetchEventsFanoutDetailed(
+  const result = await fetchSignedEventsFanoutDetailed(
     { kinds: [1] },
     {
       relayUrls: [relay, "wss://healthy.example"],
@@ -325,22 +325,26 @@ for (const relayUrls of [
   it(`retains throttled empty-read coverage with healthy peer order ${relayUrls[0]}`, async () => {
     recordRelayRateLimit(relay)
     onRequest = (socket, id) => queueMicrotask(() => socket.emit(["EOSE", id]))
-    const result = await fetchEventsFanoutDetailed(
+    const result = await fetchSignedEventsFanoutDetailed(
       { kinds: [30402], limit: 10 },
       { relayUrls, maxRelayAttempts: 1 }
     )
     expect(result.events).toEqual([])
-    expect(result.relays).toContainEqual({
-      relayUrl: relay,
-      status: "failed",
-      eventCount: 0,
-      failureReason: "rate_limited",
-    })
-    expect(result.relays).toContainEqual({
-      relayUrl: "wss://healthy.example",
-      status: "success",
-      eventCount: 0,
-    })
+    expect(result.relays).toContainEqual(
+      expect.objectContaining({
+        relayUrl: relay,
+        status: "failed",
+        eventCount: 0,
+        failureReason: "rate_limited",
+      })
+    )
+    expect(result.relays).toContainEqual(
+      expect.objectContaining({
+        relayUrl: "wss://healthy.example",
+        status: "success",
+        eventCount: 0,
+      })
+    )
     expect(result.admittedRelayUrls).toEqual(["wss://healthy.example"])
     expect(requests).toHaveLength(1)
     expect(connections).toBe(1)

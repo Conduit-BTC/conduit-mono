@@ -49,7 +49,7 @@ import {
   type OwnPrivateMessageRelayReadiness,
   type ProgressivePublishSnapshot,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 
 const INBOX_OWNER_SECRET = new Uint8Array(32).fill(11)
 const INBOX_PEER_SECRET = new Uint8Array(32).fill(12)

@@ -487,7 +487,7 @@ describe("exact signed Merchant recovery source reads", () => {
       __setCommerceTestOverrides({
         readCheckoutSparkPlanSourceEvents: undefined,
         getRelayLists: async () => new Map(),
-        fetchEventsFanoutWithDiagnostics: async (filter) => {
+        fetchPublicEventsWithDiagnostics: async (filter) => {
           expect(filter.since).toBeUndefined()
           expect(filter.ids?.length).toBeGreaterThan(0)
           requested.push(...(filter.ids ?? []))
@@ -500,7 +500,7 @@ describe("exact signed Merchant recovery source reads", () => {
                   filter.kinds?.includes(event.kind) &&
                   filter.authors?.includes(event.pubkey)
               )
-              .map((event) => new NDKEvent(undefined, event)),
+              .map((event) => structuredClone(event)),
             attemptedRelayUrls: [FIRST_INBOX, SECOND_INBOX],
             successfulRelayUrls: [FIRST_INBOX],
             failedRelayUrls: [SECOND_INBOX],
@@ -556,7 +556,7 @@ describe("exact signed Merchant recovery source reads", () => {
     __setCommerceTestOverrides({
       readCheckoutSparkPlanSourceEvents: undefined,
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutWithDiagnostics: async (filter, options) => {
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
         expect(filter.authors).toEqual([MERCHANT])
         expect(filter.since).toBeUndefined()
         expect(options?.accountPubkey).toBe(MERCHANT)
@@ -565,7 +565,7 @@ describe("exact signed Merchant recovery source reads", () => {
         return {
           events: PLAN_SOURCES.filter((event) =>
             filter.ids?.includes(event.id)
-          ).map((event) => new NDKEvent(undefined, event)),
+          ).map((event) => structuredClone(event)),
           attemptedRelayUrls: [FIRST_INBOX, SECOND_INBOX],
           successfulRelayUrls: [FIRST_INBOX],
           failedRelayUrls: [SECOND_INBOX],

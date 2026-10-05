@@ -1,10 +1,7 @@
 import { expect, it, spyOn } from "bun:test"
 import { NDKRelaySet } from "@nostr-dev-kit/ndk"
-import {
-  __resetNdkTestState,
-  disconnectNdk,
-  getNdk,
-} from "../packages/core/src/protocol/ndk"
+import { disconnectNdk, getNdk } from "../packages/core/src/protocol/ndk"
+import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
 
 it("test reset closes compatibility sockets and cancels their background monitors", async () => {
   __resetNdkTestState()

@@ -1,13 +1,14 @@
-import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
+import type { SignedPublicNostrEvent } from "./signed-event"
+import type { Filter } from "nostr-tools"
 import { db, type CachedRelayList } from "../db"
 import { config } from "../config"
 import { EVENT_KINDS } from "./kinds"
 import {
-  fetchEventsFanout,
-  fetchEventsFanoutDetailed,
-  type FetchEventsFanoutOptions,
-  type FetchEventsFanoutResult,
-} from "./ndk"
+  fetchPublicEvents,
+  fetchSignedEventsFanoutDetailed,
+  type PublicRelayReadOptions,
+  type PublicRelayReadResult,
+} from "./relay-reader"
 import {
   getGeneralReadRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
@@ -77,9 +78,9 @@ export interface RelayListLookupOptions {
   /** Exact lookup targets independently authorized outside local source layers. */
   independentRelayUrls?: readonly string[]
   /** Injectable durable policy reader for the final per-relay I/O gate. */
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   /** Live caller authority for final account-scoped relay admission. */
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   /** Override `Date.now()` (test seam). */
   now?: () => number
   /** Cancel obsolete network work, such as after changing the selected order. */
@@ -100,8 +101,8 @@ export interface RelayListsDetailedResult {
 }
 
 interface RelayListTestOverrides {
-  fetchEventsFanout?: typeof fetchEventsFanout
-  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
+  fetchPublicEvents?: typeof fetchPublicEvents
+  fetchSignedEventsFanoutDetailed?: typeof fetchSignedEventsFanoutDetailed
   loadCached?: (pubkey: string) => Promise<CachedRelayList | undefined>
   putCached?: (entry: CachedRelayList) => Promise<void>
   now?: () => number
@@ -217,7 +218,7 @@ function preferencesToReadWrite(preferences: RelayPreference[]): {
  * empty list, which the planner can treat as "no NIP-65 hint".
  */
 export function parseRelayListEvent(
-  event: Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">,
+  event: Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">,
   options?: { sourceRelayUrls?: readonly string[]; cachedAt?: number }
 ): RelayList {
   const preferences = parseNip65RelayTags(event.tags ?? [])
@@ -297,7 +298,7 @@ function withLookupState(
  * timestamps resolve to the event with the lowest id.
  */
 export function pickLatestRelayListEvent<
-  T extends Pick<NDKEvent, "id" | "pubkey" | "created_at">,
+  T extends Pick<SignedPublicNostrEvent, "id" | "pubkey" | "created_at">,
 >(events: readonly T[], pubkey: string): T | undefined {
   let latest: T | undefined
   for (const event of events) {
@@ -395,7 +396,7 @@ async function retainStrongestRelayList(
 }
 
 async function runFetch(
-  filter: NDKFilter,
+  filter: Filter,
   relayUrls: readonly string[],
   options: Pick<
     RelayListLookupOptions,
@@ -410,9 +411,9 @@ async function runFetch(
     | "shouldContinue"
     | "signal"
   >
-): Promise<NDKEvent[]> {
+): Promise<SignedPublicNostrEvent[]> {
   if (relayUrls.length === 0) return []
-  const impl = testOverrides.fetchEventsFanout ?? fetchEventsFanout
+  const impl = testOverrides.fetchPublicEvents ?? fetchPublicEvents
   return (await impl(filter, {
     relayUrls: [...relayUrls],
     accountPubkey: options.accountPubkey,
@@ -428,11 +429,11 @@ async function runFetch(
     connectTimeoutMs: RELAY_LIST_CONNECT_TIMEOUT_MS,
     fetchTimeoutMs: RELAY_LIST_FETCH_TIMEOUT_MS,
     signal: options.signal,
-  })) as NDKEvent[]
+  })) as SignedPublicNostrEvent[]
 }
 
 async function runFetchDetailed(
-  filter: NDKFilter,
+  filter: Filter,
   relayUrls: readonly string[],
   options: Pick<
     RelayListLookupOptions,
@@ -447,12 +448,12 @@ async function runFetchDetailed(
     | "shouldContinue"
     | "signal"
   >
-): Promise<FetchEventsFanoutResult> {
+): Promise<PublicRelayReadResult> {
   if (relayUrls.length === 0) {
     return { events: [], relays: [], eventsVerified: true }
   }
-  if (testOverrides.fetchEventsFanoutDetailed) {
-    return await testOverrides.fetchEventsFanoutDetailed(filter, {
+  if (testOverrides.fetchSignedEventsFanoutDetailed) {
+    return await testOverrides.fetchSignedEventsFanoutDetailed(filter, {
       relayUrls: [...relayUrls],
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
@@ -470,8 +471,8 @@ async function runFetchDetailed(
       signal: options.signal,
     })
   }
-  if (testOverrides.fetchEventsFanout) {
-    const events = await testOverrides.fetchEventsFanout(filter, {
+  if (testOverrides.fetchPublicEvents) {
+    const events = await testOverrides.fetchPublicEvents(filter, {
       relayUrls: [...relayUrls],
       accountPubkey: options.accountPubkey,
       authenticatedPubkey: options.authenticatedPubkey,
@@ -498,7 +499,7 @@ async function runFetchDetailed(
       eventsVerified: true,
     }
   }
-  return await fetchEventsFanoutDetailed(filter, {
+  return await fetchSignedEventsFanoutDetailed(filter, {
     relayUrls: [...relayUrls],
     accountPubkey: options.accountPubkey,
     authenticatedPubkey: options.authenticatedPubkey,
@@ -756,7 +757,7 @@ export async function getRelayListsDetailed(
  * explicit refresh.
  */
 export async function ingestRelayListEvent(
-  event: Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">,
+  event: Pick<SignedPublicNostrEvent, "id" | "pubkey" | "tags" | "created_at">,
   sourceRelayUrls?: readonly string[]
 ): Promise<RelayList> {
   const fetched = parseRelayListEvent(event, {

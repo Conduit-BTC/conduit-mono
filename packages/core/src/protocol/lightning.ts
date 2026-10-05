@@ -1,4 +1,3 @@
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { secp256k1 } from "@noble/curves/secp256k1.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, concatBytes, hexToBytes } from "@noble/hashes/utils.js"
@@ -19,10 +18,10 @@ import {
 } from "./signed-event"
 import { EVENT_KINDS } from "./kinds"
 import {
-  fetchEventsFanout,
+  fetchPublicEvents,
   getEventSourceRelayUrls,
-  type FetchEventsFanoutOptions,
-} from "./ndk"
+  type PublicRelayReadOptions,
+} from "./relay-reader"
 
 // ─── LNURL / Zap helpers ──────────────────────────────────────────────────────
 
@@ -291,7 +290,7 @@ const MAX_OMF_ZAP_EVENT_FUTURE_SKEW_SECONDS = 5 * 60
 const MAX_OMF_ZAP_RECEIPT_PRE_REQUEST_SKEW_SECONDS = 5
 
 export type OmfZapoutReceiptEvent = Pick<
-  NDKEvent,
+  SignedPublicNostrEvent,
   "id" | "kind" | "pubkey" | "created_at" | "tags" | "content" | "sig"
 > & { rawEvent?: () => unknown }
 
@@ -1363,7 +1362,7 @@ export function parseOmfZapoutReceipt(
     recipientPubkey: requestRecipientPubkey,
     amountMsats: requestAmountMsats,
     comment: getPublicZapComment(signedRequest),
-    sourceRelayUrls: getEventSourceRelayUrls(event as NDKEvent),
+    sourceRelayUrls: getEventSourceRelayUrls(event as SignedPublicNostrEvent),
   }
 }
 
@@ -1520,7 +1519,7 @@ export function validateZapReceiptEvent({
   receiptNotAfterSeconds,
 }: {
   event: Pick<
-    NDKEvent,
+    SignedPublicNostrEvent,
     "id" | "kind" | "pubkey" | "created_at" | "content" | "tags" | "sig"
   > & { rawEvent?: () => unknown }
   zapRequestId: string
@@ -1640,16 +1639,16 @@ export async function waitForZapReceipt({
   lnurlNostrPubkey: string
   relayUrls: string[]
   accountPubkey?: string | null
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   receiptNotAfterSeconds?: number
   timeoutMs?: number
-}): Promise<NDKEvent | null> {
+}): Promise<SignedPublicNostrEvent | null> {
   const startedAt = Date.now()
   const stopAt = startedAt + Math.max(0, timeoutMs)
 
   do {
-    const events = (await fetchEventsFanout(
+    const events = (await fetchPublicEvents(
       {
         kinds: [EVENT_KINDS.ZAP_RECEIPT],
         authors: [lnurlNostrPubkey],
@@ -1667,7 +1666,7 @@ export async function waitForZapReceipt({
         connectTimeoutMs: 1_500,
         fetchTimeoutMs: 2_000,
       }
-    )) as NDKEvent[]
+    )) as SignedPublicNostrEvent[]
 
     const receipt = events.find((event) =>
       validateZapReceiptEvent({

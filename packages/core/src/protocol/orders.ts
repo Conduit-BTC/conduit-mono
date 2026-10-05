@@ -1,4 +1,4 @@
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import type { SignedPublicNostrEvent } from "./signed-event"
 import { z } from "zod"
 import { isSatsLikeCurrency } from "../pricing"
 import { EVENT_KINDS } from "./kinds"
@@ -41,7 +41,7 @@ import {
  * Parse a Conduit MVP order rumor event (kind 16) from its JSON content.
  */
 export function parseOrderRumorEvent(
-  event: Pick<NDKEvent, "content">
+  event: Pick<SignedPublicNostrEvent, "content">
 ): OrderSchema {
   const parsed = JSON.parse(event.content || "{}") as unknown
   return orderSchema.parse(expandOrderShippingPolicyQuotes(parsed))
@@ -134,9 +134,9 @@ function expandOrderShippingPolicyQuotes(input: unknown): unknown {
 }
 
 type OrderRumorEvent = Pick<
-  NDKEvent,
-  "id" | "created_at" | "content" | "tags" | "pubkey"
-> & { kind?: number }
+  SignedPublicNostrEvent,
+  "id" | "content" | "tags" | "pubkey"
+> & { created_at?: number; kind?: number }
 
 /** Private kind-16 buyer order hint; never payment or fulfillment evidence. */
 export const CHECKOUT_SPARK_ROUTER_ORDER_TAG = [

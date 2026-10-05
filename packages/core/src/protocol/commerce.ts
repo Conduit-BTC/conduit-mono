@@ -1,5 +1,6 @@
+import type { Filter } from "nostr-tools"
 import { liveQuery } from "dexie"
-import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { NostrKeySigner } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import {
@@ -55,13 +56,13 @@ import {
 } from "./follows"
 import {
   attachEventSourceRelayUrl,
-  fetchEventsFanout,
-  fetchEventsFanoutDetailed,
-  fetchEventsFanoutProgressive,
-  fetchEventsFanoutWithDiagnostics,
+  fetchPublicEvents,
+  fetchSignedEventsFanoutDetailed,
+  fetchPublicEventsProgressive,
+  fetchPublicEventsWithDiagnostics,
   getEventSourceRelayUrls,
   mergeEventSourceRelayUrls,
-} from "./ndk"
+} from "./relay-reader"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
@@ -575,10 +576,10 @@ type CommerceTestOverrides = {
   allowMissingProtectedReadAuthorization?: boolean
   getRelayLists?: typeof getRelayLists
   getRelayListsDetailed?: typeof getRelayListsDetailed
-  fetchEventsFanout?: typeof fetchEventsFanout
-  fetchEventsFanoutWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
-  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
-  fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
+  fetchPublicEvents?: typeof fetchPublicEvents
+  fetchPublicEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
+  fetchSignedEventsFanoutDetailed?: typeof fetchSignedEventsFanoutDetailed
+  fetchPublicEventsProgressive?: typeof fetchPublicEventsProgressive
   readLatestFollowLists?: typeof readLatestFollowLists
   getAccountSigner?: () => NostrKeySigner | undefined
   readProtectedInbox?: (
@@ -776,10 +777,10 @@ function commerceReadRelayUrls(): string[] {
 
 function hasCommerceFetchTestOverride(): boolean {
   return !!(
-    testOverrides.fetchEventsFanout ||
-    testOverrides.fetchEventsFanoutWithDiagnostics ||
-    testOverrides.fetchEventsFanoutDetailed ||
-    testOverrides.fetchEventsFanoutProgressive
+    testOverrides.fetchPublicEvents ||
+    testOverrides.fetchPublicEventsWithDiagnostics ||
+    testOverrides.fetchSignedEventsFanoutDetailed ||
+    testOverrides.fetchPublicEventsProgressive
   )
 }
 
@@ -1135,26 +1136,26 @@ async function planCommerceReadRelayPlan(input: {
 }
 
 async function runFetchEventsFanout(
-  filter: NDKFilter,
-  options?: Parameters<typeof fetchEventsFanout>[1]
-): Promise<NDKEvent[]> {
-  if (testOverrides.fetchEventsFanout) {
-    return (await testOverrides.fetchEventsFanout(
+  filter: Filter,
+  options?: Parameters<typeof fetchPublicEvents>[1]
+): Promise<SignedPublicNostrEvent[]> {
+  if (testOverrides.fetchPublicEvents) {
+    return (await testOverrides.fetchPublicEvents(
       filter,
       options
-    )) as NDKEvent[]
+    )) as SignedPublicNostrEvent[]
   }
-  if (testOverrides.fetchEventsFanoutWithDiagnostics) {
+  if (testOverrides.fetchPublicEventsWithDiagnostics) {
     return (
-      await testOverrides.fetchEventsFanoutWithDiagnostics(filter, options)
+      await testOverrides.fetchPublicEventsWithDiagnostics(filter, options)
     ).events
   }
   // A progressive-only test override owns the complete relay boundary. Its
   // fixture can pair an events-only override when deletion events are needed;
   // otherwise deletion discovery is deterministically empty instead of
   // escaping to the network during a unit test.
-  if (testOverrides.fetchEventsFanoutProgressive) return []
-  return (await fetchEventsFanout(filter, options)) as NDKEvent[]
+  if (testOverrides.fetchPublicEventsProgressive) return []
+  return (await fetchPublicEvents(filter, options)) as SignedPublicNostrEvent[]
 }
 
 /**
@@ -1163,17 +1164,17 @@ async function runFetchEventsFanout(
  * as complete coverage.
  */
 async function runFetchEventsFanoutWithDiagnostics(
-  filter: NDKFilter,
-  options?: Parameters<typeof fetchEventsFanoutWithDiagnostics>[1]
-): Promise<Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>> {
-  if (testOverrides.fetchEventsFanoutWithDiagnostics) {
-    return await testOverrides.fetchEventsFanoutWithDiagnostics(filter, options)
+  filter: Filter,
+  options?: Parameters<typeof fetchPublicEventsWithDiagnostics>[1]
+): Promise<Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>> {
+  if (testOverrides.fetchPublicEventsWithDiagnostics) {
+    return await testOverrides.fetchPublicEventsWithDiagnostics(filter, options)
   }
-  if (testOverrides.fetchEventsFanout) {
-    const events = (await testOverrides.fetchEventsFanout(
+  if (testOverrides.fetchPublicEvents) {
+    const events = (await testOverrides.fetchPublicEvents(
       filter,
       options
-    )) as NDKEvent[]
+    )) as SignedPublicNostrEvent[]
     const relayUrls = [...(options?.relayUrls ?? [])]
     const limit = filter.limit
     return {
@@ -1185,7 +1186,7 @@ async function runFetchEventsFanoutWithDiagnostics(
         typeof limit === "number" && events.length >= limit ? relayUrls : [],
     }
   }
-  return await fetchEventsFanoutWithDiagnostics(filter, options)
+  return await fetchPublicEventsWithDiagnostics(filter, options)
 }
 
 /**
@@ -1194,8 +1195,8 @@ async function runFetchEventsFanoutWithDiagnostics(
  * limit, so callers must not certify that bounded read as complete or fresh.
  */
 function isBoundedFanoutSaturated(
-  filter: NDKFilter,
-  events: readonly NDKEvent[],
+  filter: Filter,
+  events: readonly SignedPublicNostrEvent[],
   relayEventCounts: readonly number[] = []
 ): boolean {
   const limit = filter.limit
@@ -1208,17 +1209,17 @@ function isBoundedFanoutSaturated(
 }
 
 async function runFetchEventsFanoutDetailed(
-  filter: NDKFilter,
-  options?: Parameters<typeof fetchEventsFanoutDetailed>[1]
+  filter: Filter,
+  options?: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
 ): Promise<{
-  events: NDKEvent[]
+  events: SignedPublicNostrEvent[]
   degraded: boolean
   capped: boolean
   completedRelayUrls: string[]
   coverage: "complete" | "partial" | "unavailable"
 }> {
-  if (testOverrides.fetchEventsFanoutDetailed) {
-    const result = await testOverrides.fetchEventsFanoutDetailed(
+  if (testOverrides.fetchSignedEventsFanoutDetailed) {
+    const result = await testOverrides.fetchSignedEventsFanoutDetailed(
       filter,
       options
     )
@@ -1247,8 +1248,8 @@ async function runFetchEventsFanoutDetailed(
     }
   }
 
-  if (testOverrides.fetchEventsFanoutWithDiagnostics) {
-    const result = await testOverrides.fetchEventsFanoutWithDiagnostics(
+  if (testOverrides.fetchPublicEventsWithDiagnostics) {
+    const result = await testOverrides.fetchPublicEventsWithDiagnostics(
       filter,
       options
     )
@@ -1272,11 +1273,11 @@ async function runFetchEventsFanoutDetailed(
 
   // Most gateway tests replace the older event-only seam. Preserve that
   // deterministic contract while production reads use per-relay completion.
-  if (testOverrides.fetchEventsFanout) {
-    const events = (await testOverrides.fetchEventsFanout(
+  if (testOverrides.fetchPublicEvents) {
+    const events = (await testOverrides.fetchPublicEvents(
       filter,
       options
-    )) as NDKEvent[]
+    )) as SignedPublicNostrEvent[]
     const relayUrls = [...(options?.relayUrls ?? [])]
     const maxAttempts = options?.maxRelayAttempts
     return {
@@ -1291,7 +1292,7 @@ async function runFetchEventsFanoutDetailed(
     }
   }
 
-  const result = await fetchEventsFanoutDetailed(filter, options)
+  const result = await fetchSignedEventsFanoutDetailed(filter, options)
   return {
     events: result.events,
     completedRelayUrls: result.relays
@@ -1433,7 +1434,9 @@ function getTagValue(
   return null
 }
 
-function toEventCreatedAtSeconds(event: Pick<NDKEvent, "created_at">): number {
+function toEventCreatedAtSeconds(
+  event: Pick<SignedPublicNostrEvent, "created_at">
+): number {
   return event.created_at ?? 0
 }
 
@@ -1566,7 +1569,10 @@ async function preloadExactProductRelayLists(
   return { relayLists, unavailableAuthors }
 }
 
-function putMergedEvent(merged: Map<string, NDKEvent>, event: NDKEvent): void {
+function putMergedEvent(
+  merged: Map<string, SignedPublicNostrEvent>,
+  event: SignedPublicNostrEvent
+): void {
   const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
   const key = event.id || fallbackId
   const existing = merged.get(key)
@@ -1578,7 +1584,7 @@ function putMergedEvent(merged: Map<string, NDKEvent>, event: NDKEvent): void {
 }
 
 async function streamProductRecordChunks(input: {
-  baseFilter: NDKFilter
+  baseFilter: Filter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
   maxRelayAttempts?: number
@@ -1591,7 +1597,7 @@ async function streamProductRecordChunks(input: {
   signal?: AbortSignal
   shouldContinue?: () => boolean
   readPolicy?: CommerceReadPolicy
-  merged: Map<string, NDKEvent>
+  merged: Map<string, SignedPublicNostrEvent>
   deletionTimestamps?: DeletionTimestamps
   retainRevisions?: boolean
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
@@ -1609,7 +1615,7 @@ async function streamProductRecordChunks(input: {
     input.authorChunks.length
   )
   const fetchProgressive =
-    testOverrides.fetchEventsFanoutProgressive ?? fetchEventsFanoutProgressive
+    testOverrides.fetchPublicEventsProgressive ?? fetchPublicEventsProgressive
 
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
@@ -1618,7 +1624,7 @@ async function streamProductRecordChunks(input: {
         const authors = input.authorChunks[nextChunkIndex]
         nextChunkIndex += 1
 
-        const chunkFilter: NDKFilter = {
+        const chunkFilter: Filter = {
           ...input.baseFilter,
           ...(authors ? { authors } : {}),
         }
@@ -2580,7 +2586,7 @@ function productTombstoneIdForEvent(pubkey: string, eventId: string): string {
 }
 
 function tombstonesFromDeletionEvent(
-  event: NDKEvent,
+  event: SignedPublicNostrEvent,
   options: { observedLocally: boolean }
 ): CachedProductTombstone[] {
   if (!event.pubkey) throw new Error("Deletion event pubkey is required")
@@ -2590,9 +2596,7 @@ function tombstonesFromDeletionEvent(
   const rows = new Map<string, CachedProductTombstone>()
   const cachedAt = now()
   const sourceRelayUrls = getEventSourceRelayUrls(event)
-  const validated = validateProductDeletionEvent(
-    event.rawEvent() as SignedPublicNostrEvent
-  )
+  const validated = validateProductDeletionEvent(event)
   if (!validated) {
     throw new Error("Expected a valid signed product deletion event")
   }
@@ -3334,21 +3338,23 @@ function filterDeletedProductRecords(
 }
 
 export async function cacheSignedProductListingEvent(
-  signedEvent: SignedPublicNostrEvent | NDKEvent,
+  input: SignedPublicNostrEvent | { rawEvent(): unknown },
   options: {
     sourceRelayUrls?: readonly string[]
     persistence?: "required" | "best_effort"
   } = {}
 ): Promise<CommerceProductRecord> {
-  const event =
-    signedEvent instanceof NDKEvent
-      ? signedEvent
-      : new NDKEvent(undefined, signedEvent)
+  // Local publishing compatibility; relay reads already provide plain events.
+  const event = (
+    "rawEvent" in input ? input.rawEvent() : input
+  ) as SignedPublicNostrEvent
+  for (const relayUrl of getEventSourceRelayUrls(input))
+    attachEventSourceRelayUrl(event, relayUrl)
   if (
     event.kind !== EVENT_KINDS.PRODUCT ||
     !event.id ||
     !event.sig ||
-    !isValidSignedPublicNostrEvent(event.rawEvent() as SignedPublicNostrEvent)
+    !isValidSignedPublicNostrEvent(event)
   ) {
     throw new Error("Expected a valid signed product listing event")
   }
@@ -3385,14 +3391,13 @@ export async function cacheSignedProductListingEvent(
 export function projectSignedProductListingForLocalCommit(
   signedEvent: SignedPublicNostrEvent
 ): CachedProduct {
-  const event = new NDKEvent(undefined, signedEvent)
   if (
-    event.kind !== EVENT_KINDS.PRODUCT ||
+    signedEvent.kind !== EVENT_KINDS.PRODUCT ||
     !isValidSignedPublicNostrEvent(signedEvent)
   ) {
     throw new Error("Expected a valid signed product listing event")
   }
-  const [record] = dedupeProductEvents([event])
+  const [record] = dedupeProductEvents([signedEvent])
   if (!record) throw new Error("Could not parse signed product listing event")
   return toCachedProduct(record)
 }
@@ -3401,18 +3406,20 @@ export function projectSignedProductListingForLocalCommit(
 export function projectSignedProductDeletionForLocalCommit(
   signedEvent: SignedPublicNostrEvent
 ): CachedProductTombstone[] {
-  return tombstonesFromDeletionEvent(new NDKEvent(undefined, signedEvent), {
+  return tombstonesFromDeletionEvent(signedEvent, {
     observedLocally: true,
   })
 }
 
 export async function cacheSignedProductDeletionEvent(
-  signedEvent: SignedPublicNostrEvent | NDKEvent
+  input: SignedPublicNostrEvent | { rawEvent(): unknown }
 ): Promise<CachedProductTombstone[]> {
-  const event =
-    signedEvent instanceof NDKEvent
-      ? signedEvent
-      : new NDKEvent(undefined, signedEvent)
+  // Local publishing compatibility; relay reads already provide plain events.
+  const event = (
+    "rawEvent" in input ? input.rawEvent() : input
+  ) as SignedPublicNostrEvent
+  for (const relayUrl of getEventSourceRelayUrls(input))
+    attachEventSourceRelayUrl(event, relayUrl)
   const tombstones = tombstonesFromDeletionEvent(event, {
     observedLocally: true,
   })
@@ -3610,25 +3617,28 @@ function hasProfileContent(
   ].some((value) => typeof value === "string" && value.trim().length > 0)
 }
 
-function compareReplaceableProfileEvents(a: NDKEvent, b: NDKEvent): number {
+function compareReplaceableProfileEvents(
+  a: SignedPublicNostrEvent,
+  b: SignedPublicNostrEvent
+): number {
   const createdAt = (b.created_at ?? 0) - (a.created_at ?? 0)
   if (createdAt !== 0) return createdAt
   return (a.id || "\uffff").localeCompare(b.id || "\uffff")
 }
 
 function pickLatestProfileEvent(
-  events: readonly NDKEvent[],
+  events: readonly SignedPublicNostrEvent[],
   pubkey: string
-): NDKEvent | undefined {
+): SignedPublicNostrEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
     .sort(compareReplaceableProfileEvents)[0]
 }
 
 function pickLatestProfileEventWithContent(
-  events: readonly NDKEvent[],
+  events: readonly SignedPublicNostrEvent[],
   pubkey: string
-): NDKEvent | undefined {
+): SignedPublicNostrEvent | undefined {
   return events
     .filter((event) => event.pubkey === pubkey)
     .sort(compareReplaceableProfileEvents)
@@ -3638,7 +3648,7 @@ function pickLatestProfileEventWithContent(
 function mergeProfileEvents(
   pubkeys: readonly string[],
   currentProfiles: Record<string, Profile>,
-  events: readonly NDKEvent[],
+  events: readonly SignedPublicNostrEvent[],
   currentRows: ReadonlyMap<string, CachedProfile> = new Map()
 ): {
   profiles: Record<string, Profile>
@@ -3849,7 +3859,9 @@ type ProductDeletionCandidate = {
   sourceRelayUrls?: readonly string[]
 }
 
-function deletionCandidateFromEvent(event: NDKEvent): ProductDeletionCandidate {
+function deletionCandidateFromEvent(
+  event: SignedPublicNostrEvent
+): ProductDeletionCandidate {
   const dTag = getTagValue(event.tags ?? [], "d")
   return {
     pubkey: event.pubkey,
@@ -3914,7 +3926,7 @@ async function fetchProductDeletionTimestamps(
         })),
         options.authenticatedPubkey
       )
-      const filters: NDKFilter[] = [
+      const filters: Filter[] = [
         ...chunkStrings(productEventIds, 200).map((eventIdChunk) => ({
           kinds: [EVENT_KINDS.DELETION],
           authors: authorChunk,
@@ -3968,8 +3980,8 @@ async function fetchProductDeletionTimestamps(
         relayBatchSize
       )
       const fetchDeletionFilter = async (
-        filter: NDKFilter
-      ): Promise<NDKEvent[]> =>
+        filter: Filter
+      ): Promise<SignedPublicNostrEvent[]> =>
         (
           await mapWithConcurrency(
             deletionRelayBatches,
@@ -4010,7 +4022,7 @@ async function fetchProductDeletionTimestamps(
       })
     }
   )
-  const deletionEventsById = new Map<string, NDKEvent>()
+  const deletionEventsById = new Map<string, SignedPublicNostrEvent>()
   for (const deletionEvent of deletionEventBatches.flat()) {
     putMergedEvent(deletionEventsById, deletionEvent)
   }
@@ -4075,7 +4087,7 @@ async function fetchDeletionTimestampsForProductRecords(
 }
 
 function isDeletedByNip09(
-  event: Pick<NDKEvent, "id" | "pubkey" | "created_at">,
+  event: Pick<SignedPublicNostrEvent, "id" | "pubkey" | "created_at">,
   addressId: string | null,
   deletionTimestamps: DeletionTimestamps
 ): boolean {
@@ -4116,7 +4128,7 @@ const productParseCache = new Map<
 // dedupeProductEvents re-runs over the full accumulated set on every streaming
 // callback. Cache by id so each unique event is parsed/evaluated once instead
 // of O(callbacks x events).
-function parseAndEvaluateProductEvent(event: NDKEvent) {
+function parseAndEvaluateProductEvent(event: SignedPublicNostrEvent) {
   const cached = event.id ? productParseCache.get(event.id) : undefined
   if (cached) return cached
   const parsed = parseProductEvent(event)
@@ -4131,7 +4143,7 @@ function parseAndEvaluateProductEvent(event: NDKEvent) {
 }
 
 function dedupeProductEvents(
-  events: NDKEvent[],
+  events: SignedPublicNostrEvent[],
   deletionTimestamps?: DeletionTimestamps,
   retainRevisions = false
 ): CommerceProductRecord[] {
@@ -4282,7 +4294,7 @@ async function fetchPublicProductRecords(query: {
   /** Ranked discovery paints from signed hits and known local evidence first. */
   localDeletionEvidenceOnly?: boolean
 }): Promise<CommerceProductRecord[]> {
-  const filter: NDKFilter = {
+  const filter: Filter = {
     kinds: [EVENT_KINDS.PRODUCT],
   }
 
@@ -4386,14 +4398,14 @@ async function fetchPublicProductRecordsProgressive(
   },
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
 ): Promise<CommerceProductRecord[]> {
-  if (testOverrides.fetchEventsFanout) {
+  if (testOverrides.fetchPublicEvents) {
     const records = await fetchPublicProductRecords(query)
     query.signal?.throwIfAborted()
     onRecords(records, "test")
     return records
   }
 
-  const filter: NDKFilter = {
+  const filter: Filter = {
     kinds: [EVENT_KINDS.PRODUCT],
   }
 
@@ -4419,7 +4431,7 @@ async function fetchPublicProductRecordsProgressive(
     shouldContinue: query.shouldContinue,
     signal: query.signal,
   })
-  const merged = new Map<string, NDKEvent>()
+  const merged = new Map<string, SignedPublicNostrEvent>()
   const initialDeletionTimestamps = await getLocalProductDeletionTimestamps(
     undefined,
     query.authors
@@ -6229,7 +6241,7 @@ export function hasExactLiveProductAvailabilityEvidence(
 }
 
 function productAvailabilityCoverageFromFanout(
-  result: Awaited<ReturnType<typeof fetchEventsFanoutWithDiagnostics>>,
+  result: Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>,
   expectedRelayUrls: readonly string[] = []
 ): ProductAvailabilityCoverage {
   if (result.successfulRelayUrls.length === 0) return "unavailable"
@@ -6711,10 +6723,10 @@ async function readPreparedProductTargets(
   }
   const directReadEntries = Array.from(compatibleDirectReadBatches.values())
   let directReadCapped = false
-  const progressiveEvents: NDKEvent[] = []
+  const progressiveEvents: SignedPublicNostrEvent[] = []
   let progressiveKnownRecords: CommerceProductRecord[] = []
   let progressPublication = Promise.resolve()
-  const emitDirectProgress = (events: NDKEvent[]) => {
+  const emitDirectProgress = (events: SignedPublicNostrEvent[]) => {
     if (!options.onProgress) return Promise.resolve()
     // Order one author's snapshots without making other authors await its
     // persistence. Shared signed evidence is merged synchronously after I/O.
@@ -7566,7 +7578,7 @@ export async function getProfiles(
       authenticatedAuthorRelayUrls:
         sourceRelayHints.authenticatedAuthorRelayUrls,
     })
-    const profileFilter: NDKFilter = {
+    const profileFilter: Filter = {
       kinds: [EVENT_KINDS.PROFILE],
       authors: missing,
       limit: Math.max(10, missing.length * 3),
@@ -7630,7 +7642,7 @@ export async function getProfiles(
       // second time at the transport boundary.
       skipHealthFilter: query.requireCompleteEvidence ? true : undefined,
     }
-    const emitProgress = (events: readonly NDKEvent[]) => {
+    const emitProgress = (events: readonly SignedPublicNostrEvent[]) => {
       if (!query.onProgress) return
 
       const progress = mergeProfileEvents(
@@ -7693,7 +7705,7 @@ export async function getProfiles(
       (authorCriticalPaymentRead && knownAuthorRelayUrls.length > 0
         ? knownAuthorRelayUrls.length > relayPlan.maxRelayAttempts
         : relayPlan.candidateRelayUrls.length > relayPlan.maxRelayAttempts)
-    let events: NDKEvent[]
+    let events: SignedPublicNostrEvent[]
     if (query.requireCompleteEvidence) {
       const evidence = await runFetchEventsFanoutDetailed(
         profileFilter,
@@ -7711,15 +7723,15 @@ export async function getProfiles(
       emitProgress(events)
     } else {
       events =
-        query.onProgress && !testOverrides.fetchEventsFanout
-          ? await fetchEventsFanoutProgressive(
+        query.onProgress && !testOverrides.fetchPublicEvents
+          ? await fetchPublicEventsProgressive(
               profileFilter,
               fanoutOptions,
               ({ mergedEvents }) => emitProgress(mergedEvents)
             )
           : await runFetchEventsFanout(profileFilter, fanoutOptions)
 
-      if (query.onProgress && testOverrides.fetchEventsFanout) {
+      if (query.onProgress && testOverrides.fetchPublicEvents) {
         emitProgress(events)
       }
     }
@@ -7833,11 +7845,9 @@ export async function getProfiles(
       for (const [pubkey, context] of Object.entries(profileContexts)) {
         const frontier = context.frontier
         if (context.freshness !== "observed" || !frontier) continue
-        const event = events.find(
+        const signed = events.find(
           (candidate) => candidate.id === frontier.eventId
         )
-        const signed =
-          typeof event?.rawEvent === "function" ? event.rawEvent() : undefined
         if (
           !signed ||
           signed.kind !== EVENT_KINDS.PROFILE ||
@@ -8032,7 +8042,7 @@ async function fetchParsedOrderMessages(
 }
 
 type EventMarketInboxRelayRead = {
-  events: NDKEvent[]
+  events: SignedPublicNostrEvent[]
   complete: boolean
   singleRequestComplete: boolean
   successful: boolean
@@ -8040,7 +8050,7 @@ type EventMarketInboxRelayRead = {
 }
 
 type EventMarketInboxWrapRead = Awaited<
-  ReturnType<typeof fetchEventsFanoutWithDiagnostics>
+  ReturnType<typeof fetchPublicEventsWithDiagnostics>
 > & {
   scanKey: string
   scanCycle: EventMarketInboxScanCycle
@@ -8055,8 +8065,8 @@ function hasRelayOutcome(
 }
 
 function retainInboxEvents(
-  retained: Map<string, NDKEvent>,
-  events: readonly NDKEvent[]
+  retained: Map<string, SignedPublicNostrEvent>,
+  events: readonly SignedPublicNostrEvent[]
 ): void {
   for (const event of events) {
     if (event.id) retained.set(event.id, event)
@@ -8075,31 +8085,21 @@ function retainInboxEvents(
  * Resource exhaustion and stitched multi-call scans stay partial instead of
  * becoming false negative evidence.
  */
-async function readEventMarketInboxRelay(
+/** Keep strict gift-wrap paging on the authorized protected transport. */
+async function readEventMarketInboxPage(
   principalPubkey: string,
   relayUrl: string,
-  scan: EventMarketInboxRelayScan,
+  filter: Pick<Filter, "since" | "until"> & { limit: number },
   authorization: ProtectedReadAuthorization | null
-): Promise<EventMarketInboxRelayRead> {
-  const retained = new Map<string, NDKEvent>()
-  let successful = false
-  const shouldContinue = authorization
-    ? () => hasProtectedReadAuthority(authorization)
-    : undefined
-
-  for (
-    let pageIndex = 0;
-    pageIndex < EVENT_MARKET_HANDOFF_PAGE_BUDGET_PER_READ;
-    pageIndex += 1
+): Promise<Awaited<ReturnType<typeof fetchPublicEventsWithDiagnostics>>> {
+  // Existing wire fixtures own their complete test transport. Production never
+  // dispatches an inbox filter through a public reader.
+  if (
+    testOverrides.fetchPublicEventsWithDiagnostics ||
+    testOverrides.fetchPublicEvents
   ) {
-    assertInboxSyncAuthority(authorization)
-    const page = await runFetchEventsFanoutWithDiagnostics(
-      {
-        kinds: [EVENT_KINDS.GIFT_WRAP],
-        "#p": [principalPubkey],
-        limit: EVENT_MARKET_HANDOFF_PAGE_LIMIT,
-        ...(scan.until === undefined ? {} : { until: scan.until }),
-      },
+    return await runFetchEventsFanoutWithDiagnostics(
+      { kinds: [EVENT_KINDS.GIFT_WRAP], "#p": [principalPubkey], ...filter },
       {
         relayUrls: [relayUrl],
         ownerSelectedRelayUrls: [relayUrl],
@@ -8107,10 +8107,61 @@ async function readEventMarketInboxRelay(
         authenticatedPubkey: principalPubkey,
         accountNetworkLocalStateRepository:
           testOverrides.accountNetworkLocalStateRepository,
-        shouldContinue,
-        connectTimeoutMs: 4_000,
-        fetchTimeoutMs: 12_000,
+        shouldContinue: authorization
+          ? () => hasProtectedReadAuthority(authorization)
+          : undefined,
+        connectTimeoutMs: 4000,
+        fetchTimeoutMs: 12000,
       }
+    )
+  }
+  const result = await (testOverrides.readProtectedInbox ?? readProtectedInbox)(
+    {
+      principalPubkey,
+      relayUrls: [relayUrl],
+      ownerSelectedRelayUrls: [relayUrl],
+      authorization,
+      limit: filter.limit,
+      since: filter.since,
+      until: filter.until,
+      accountNetworkLocalStateRepository:
+        testOverrides.accountNetworkLocalStateRepository,
+      connectTimeoutMs: 4000,
+      queryTimeoutMs: 12000,
+    }
+  )
+  return {
+    events: result.events,
+    attemptedRelayUrls: result.relayResult.attemptedCount > 0 ? [relayUrl] : [],
+    successfulRelayUrls: result.coverage === "unavailable" ? [] : [relayUrl],
+    failedRelayUrls: result.coverage === "complete" ? [] : [relayUrl],
+    cappedRelayUrls: result.events.length >= filter.limit ? [relayUrl] : [],
+  }
+}
+
+async function readEventMarketInboxRelay(
+  principalPubkey: string,
+  relayUrl: string,
+  scan: EventMarketInboxRelayScan,
+  authorization: ProtectedReadAuthorization | null
+): Promise<EventMarketInboxRelayRead> {
+  const retained = new Map<string, SignedPublicNostrEvent>()
+  let successful = false
+
+  for (
+    let pageIndex = 0;
+    pageIndex < EVENT_MARKET_HANDOFF_PAGE_BUDGET_PER_READ;
+    pageIndex += 1
+  ) {
+    assertInboxSyncAuthority(authorization)
+    const page = await readEventMarketInboxPage(
+      principalPubkey,
+      relayUrl,
+      {
+        limit: EVENT_MARKET_HANDOFF_PAGE_LIMIT,
+        ...(scan.until === undefined ? {} : { until: scan.until }),
+      },
+      authorization
     )
     assertInboxSyncAuthority(authorization)
     retainInboxEvents(retained, page.events)
@@ -8155,25 +8206,15 @@ async function readEventMarketInboxRelay(
     }
     const boundaryCreatedAt = Math.min(...createdAts)
     assertInboxSyncAuthority(authorization)
-    const boundary = await runFetchEventsFanoutWithDiagnostics(
+    const boundary = await readEventMarketInboxPage(
+      principalPubkey,
+      relayUrl,
       {
-        kinds: [EVENT_KINDS.GIFT_WRAP],
-        "#p": [principalPubkey],
         since: boundaryCreatedAt,
         until: boundaryCreatedAt,
         limit: EVENT_MARKET_HANDOFF_BOUNDARY_LIMIT,
       },
-      {
-        relayUrls: [relayUrl],
-        ownerSelectedRelayUrls: [relayUrl],
-        accountPubkey: principalPubkey,
-        authenticatedPubkey: principalPubkey,
-        accountNetworkLocalStateRepository:
-          testOverrides.accountNetworkLocalStateRepository,
-        shouldContinue,
-        connectTimeoutMs: 4_000,
-        fetchTimeoutMs: 12_000,
-      }
+      authorization
     )
     assertInboxSyncAuthority(authorization)
     retainInboxEvents(retained, boundary.events)
@@ -8330,7 +8371,7 @@ async function readEventMarketInboxWraps(
   )
   assertInboxSyncAuthority(authorization)
   assertEventMarketInboxScanCurrent(key, cycle)
-  const events = new Map<string, NDKEvent>()
+  const events = new Map<string, SignedPublicNostrEvent>()
   relayReads.forEach((read) => retainInboxEvents(events, read.events))
   const freshComplete =
     startedFresh &&
@@ -8474,7 +8515,11 @@ async function advanceEventMarketPrivateMessageScan(input: {
     )
   })
   assertInboxSyncAuthority(input.authorization)
-  const outcomes = await unwrapGiftWraps(wraps, input.signer, unwrapOptions())
+  const outcomes = await unwrapGiftWraps(
+    wraps.map((event) => new NDKEvent(undefined, event)),
+    input.signer,
+    unwrapOptions()
+  )
   assertInboxSyncAuthority(input.authorization)
   assertEventMarketInboxScanCurrent(result.scanKey, cycle)
   const callMessages = new Map<string, ParsedEventMarketPrivateMessage>()
@@ -8525,8 +8570,7 @@ async function advanceEventMarketPrivateMessageScan(input: {
           message
         )
         cycle.evidenceCapped ||= cycleRetention.capped
-        const wrap = wrapsById.get(outcome.wrapId)?.rawEvent() as
-          SignedPublicNostrEvent | undefined
+        const wrap = wrapsById.get(outcome.wrapId)
         if (wrap && isValidSignedPublicNostrEvent(wrap)) {
           if (callMessages.has(message.id)) callWraps.set(message.id, wrap)
           if (cycle.messages.has(message.id))
@@ -8728,7 +8772,7 @@ async function fetchNewInboxWraps(
   limit: number,
   authorization: ProtectedReadAuthorization | null
 ): Promise<InboxWrapFetchResult> {
-  const filter: NDKFilter = {
+  const filter: Filter = {
     kinds: [EVENT_KINDS.GIFT_WRAP],
     "#p": [principalPubkey],
     limit,
@@ -8748,8 +8792,8 @@ async function fetchNewInboxWraps(
   )
 
   if (
-    testOverrides.fetchEventsFanoutWithDiagnostics ||
-    testOverrides.fetchEventsFanout
+    testOverrides.fetchPublicEventsWithDiagnostics ||
+    testOverrides.fetchPublicEvents
   ) {
     const result = await runFetchEventsFanoutWithDiagnostics(filter, {
       relayUrls: readPlan.relayUrls,
@@ -8769,7 +8813,9 @@ async function fetchNewInboxWraps(
     })
     const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
     return {
-      wraps: result.events.filter((event) => !successful?.has(event.id)),
+      wraps: result.events
+        .filter((event) => !successful?.has(event.id))
+        .map((event) => new NDKEvent(undefined, event)),
       inbox: {
         declarationState: declaration.state,
         coverage: deriveInboxReadCoverage(result),
@@ -9069,7 +9115,7 @@ async function runLegacyDmSync(
       !cachedIds.has(event.id) &&
       (!pending || pending.attempts < MAX_LEGACY_DM_DECRYPT_ATTEMPTS)
     ) {
-      candidates.set(event.id, event)
+      candidates.set(event.id, new NDKEvent(undefined, event))
     }
   }
   for (const event of candidates.values()) {
@@ -10139,7 +10185,7 @@ export async function readMerchantCheckoutSparkPlanSources(
             const read = await runFetchEventsFanoutDetailed(
               {
                 ids: batch.map((reference) => reference.eventId),
-                kinds: [kind] as NDKFilter["kinds"],
+                kinds: [kind],
                 authors: [
                   ...new Set(batch.map((reference) => reference.pubkey)),
                 ],
@@ -10163,7 +10209,7 @@ export async function readMerchantCheckoutSparkPlanSources(
               }
             )
             assertCurrent()
-            retain(read.events.map((event) => event.rawEvent()))
+            retain(read.events)
             completed ||= read.completedRelayUrls.length > 0
             degraded ||= read.degraded || read.capped
           } catch {
