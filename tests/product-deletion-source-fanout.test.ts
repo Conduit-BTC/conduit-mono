@@ -10,7 +10,7 @@ import {
   getMerchantStorefront,
   planProductDeletionRelays,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 import type { CachedProduct, CachedProductTombstone } from "@conduit/core"
 
 const FIXED_NOW = 1_700_000_000_000
@@ -74,7 +74,7 @@ beforeEach(() => {
   })
   __setCommerceTestOverrides({
     now: () => FIXED_NOW,
-    fetchEventsFanout: async (filter) =>
+    fetchPublicEvents: async (filter) =>
       filter.kinds?.includes(EVENT_KINDS.PRODUCT)
         ? (relayProducts as never)
         : [],

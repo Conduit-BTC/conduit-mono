@@ -11,7 +11,7 @@ import {
   type LnurlPayMetadata,
   type OmfZapoutReceiptEvent,
 } from "@conduit/core/protocol/lightning"
-import { fetchEventsFanoutDetailed } from "@conduit/core/protocol/ndk"
+import { fetchSignedEventsFanoutDetailed } from "@conduit/core/protocol/relay-reader"
 import { normalizePubkey } from "@conduit/core/utils"
 
 import {
@@ -72,7 +72,7 @@ export async function fetchZapoutAuthorityProfileEvents(
   relayUrls: string[]
 ): ReturnType<ZapoutAuthorityDependencies["fetchProfileEvents"]> {
   const limit = Math.min(300, Math.max(50, recipientPubkeys.length * 10))
-  const result = await fetchEventsFanoutDetailed(
+  const result = await fetchSignedEventsFanoutDetailed(
     {
       kinds: [EVENT_KINDS.PROFILE],
       authors: recipientPubkeys,

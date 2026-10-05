@@ -7,11 +7,11 @@ import { getAccountSigner } from "../packages/core/src/protocol/session-signer"
 import { afterEach, describe, expect, it } from "bun:test"
 import { type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
-  __resetNdkTestState,
   disconnectNdk,
   getNdk,
   refreshNdkRelaySettings,
 } from "../packages/core/src/protocol/ndk"
+import { __resetPublicReaderTestState } from "../packages/core/src/protocol/relay-reader"
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
@@ -37,7 +37,7 @@ function fakeSigner(pubkey: string): NDKSigner {
 describe("account authority independent of relay-client lifecycle", () => {
   afterEach(() => {
     clearTestAccountSigner()
-    __resetNdkTestState()
+    __resetPublicReaderTestState()
     disconnectNdk()
     restoreWindow()
   })

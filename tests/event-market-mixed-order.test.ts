@@ -101,7 +101,7 @@ describe("Event Market pickup with a digital order line", () => {
           sign: async () => "",
         } as never),
       resolveInboxRelayUrls: async () => ["wss://mixed-order.inbox.test"],
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
         events: [
           new NDKEvent(
             undefined,

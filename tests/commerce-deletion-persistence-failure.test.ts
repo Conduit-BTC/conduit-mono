@@ -116,7 +116,7 @@ describe("remote product deletion persistence failures", () => {
     })
     await cacheSignedProductListingEvent(product)
     __setCommerceTestOverrides({
-      fetchEventsFanout: async (filter) => {
+      fetchPublicEvents: async (filter) => {
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return [product]
         if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
           deletionReadAttempts += 1

@@ -1,10 +1,10 @@
 import { expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey } from "nostr-tools/pure"
 import {
-  __resetNdkTestState,
-  fetchEventsFanoutDetailed,
-  type FetchEventsFanoutResult,
-} from "../packages/core/src/protocol/ndk"
+  __resetPublicReaderTestState,
+  fetchSignedEventsFanoutDetailed,
+  type PublicRelayReadResult,
+} from "../packages/core/src/protocol/relay-reader"
 
 it("emits only verified cumulative relay results before the slow relay finishes", async () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket")
@@ -19,11 +19,11 @@ it("emits only verified cumulative relay results before the slow relay finishes"
   const slowGate = new Promise<void>((resolve) => {
     releaseSlow = resolve
   })
-  let firstProgress!: (value: FetchEventsFanoutResult) => void
-  const first = new Promise<FetchEventsFanoutResult>((resolve) => {
+  let firstProgress!: (value: PublicRelayReadResult) => void
+  const first = new Promise<PublicRelayReadResult>((resolve) => {
     firstProgress = resolve
   })
-  const snapshots: FetchEventsFanoutResult[] = []
+  const snapshots: PublicRelayReadResult[] = []
   class TestSocket {
     static CONNECTING = 0
     static OPEN = 1
@@ -70,7 +70,7 @@ it("emits only verified cumulative relay results before the slow relay finishes"
   })
   try {
     let finished = false
-    const read = fetchEventsFanoutDetailed(
+    const read = fetchSignedEventsFanoutDetailed(
       { kinds: [1] },
       {
         relayUrls: [fast, slow],
@@ -101,7 +101,7 @@ it("emits only verified cumulative relay results before the slow relay finishes"
     expect(snapshots.at(-1)?.relays).toHaveLength(2)
   } finally {
     releaseSlow()
-    __resetNdkTestState()
+    __resetPublicReaderTestState()
     if (descriptor) Object.defineProperty(globalThis, "WebSocket", descriptor)
     else Reflect.deleteProperty(globalThis, "WebSocket")
   }

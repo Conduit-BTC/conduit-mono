@@ -9,7 +9,7 @@ describe("private-message declaration authority propagation", () => {
     const messaging = await source("packages/core/src/protocol/messaging.ts")
 
     expect(messaging).toContain(
-      'shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]'
+      'shouldContinue?: PublicRelayReadOptions["shouldContinue"]'
     )
     expect(
       messaging.match(

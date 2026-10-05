@@ -195,7 +195,7 @@ describe("event-market organizer merchandise evidence", () => {
           ],
         ])
       }) as never,
-      fetchEventsFanoutDetailed: (async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
         observedRelayUrls.push(...options.relayUrls)
         observedOwnerSelectedRelayUrls.push(
           ...(options.ownerSelectedRelayUrls ?? [])
@@ -290,7 +290,7 @@ describe("event-market organizer merchandise evidence", () => {
             },
           ],
         ])) as never,
-      fetchEventsFanoutDetailed: (async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
         observedRelayUrls.push(...options.relayUrls)
         observedOwnerSelectedRelayUrls.push(
           ...(options.ownerSelectedRelayUrls ?? [])
@@ -406,7 +406,7 @@ describe("event-market organizer merchandise evidence", () => {
             },
           ],
         ])) as never,
-      fetchEventsFanoutDetailed: (async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
         observedFilters.push(filter)
         active += 1
         maxActive = Math.max(maxActive, active)

@@ -285,7 +285,7 @@ describe("Merchant event actor identity", () => {
       getCachedProducts: async () => [],
       getCachedProfiles: async (pubkeys) => pubkeys.map(() => undefined),
       putCachedProfiles: async () => {},
-      fetchEventsFanout: async (filter, options) => {
+      fetchPublicEvents: async (filter, options) => {
         const pubkey = filter.authors?.[0]
         if (!pubkey) return []
         const relayUrls = [...(options?.relayUrls ?? [])]

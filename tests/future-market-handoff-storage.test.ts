@@ -120,7 +120,7 @@ function setPrivateRead(wraps: NDKEvent[], available = true) {
   __setCommerceTestOverrides({
     allowMissingProtectedReadAuthorization: true,
     resolveInboxRelayUrls: async () => ["wss://handoff-storage.test"],
-    fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+    fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
       events: available ? wraps : [],
       attemptedRelayUrls: [...(options?.relayUrls ?? [])],
       successfulRelayUrls: available ? [...(options?.relayUrls ?? [])] : [],

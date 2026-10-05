@@ -1,14 +1,14 @@
-import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import type { Filter } from "nostr-tools"
 import type { FutureMarketReadyReceiptSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
 import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import {
-  fetchEventsFanoutDetailed,
+  fetchSignedEventsFanoutDetailed,
   getEventSourceRelayUrls,
-  type FetchEventsFanoutOptions,
-  type FetchEventsFanoutResult,
-} from "./ndk"
+  type PublicRelayReadOptions,
+  type PublicRelayReadResult,
+} from "./relay-reader"
 import {
   isProductDeletedByNip09,
   parseProductAddressCoordinate,
@@ -208,7 +208,7 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
     }
 
     try {
-      const parsed = parseProductEvent(new NDKEvent(undefined, event))
+      const parsed = parseProductEvent(event)
       if (
         parsed.id !== expectedAddress.addressId ||
         parsed.pubkey.toLowerCase() !== receipt.merchantPubkey.toLowerCase() ||
@@ -255,7 +255,7 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
 }
 
 interface EventMarketMerchandiseTestOverrides {
-  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
+  fetchSignedEventsFanoutDetailed?: typeof fetchSignedEventsFanoutDetailed
   getRelayLists?: typeof getRelayLists
 }
 
@@ -273,7 +273,7 @@ export function __resetEventMarketMerchandiseTestOverrides(): void {
 
 function combineCoverage(
   relayUrls: readonly string[],
-  results: readonly FetchEventsFanoutResult[]
+  results: readonly PublicRelayReadResult[]
 ): EventMarketReceiptMerchandiseCoverage {
   let completeRelayCount = 0
   let partialRelayCount = 0
@@ -300,14 +300,14 @@ function combineCoverage(
   }
 }
 
-function rawEvents(result: FetchEventsFanoutResult): {
+function rawEvents(result: PublicRelayReadResult): {
   events: SignedPublicNostrEvent[]
   sourceRelayUrlsById: Map<string, string[]>
 } {
   const events: SignedPublicNostrEvent[] = []
   const sourceRelayUrlsById = new Map<string, string[]>()
   for (const event of result.events) {
-    const raw = event.rawEvent() as SignedPublicNostrEvent
+    const raw = event
     events.push(raw)
     const id = raw.id.toLowerCase()
     sourceRelayUrlsById.set(id, [
@@ -325,9 +325,9 @@ export interface GetEventMarketReceiptMerchandiseInput {
   /** Future physical release terms remain pinned despite later listing deletion. */
   receiptRevisionPolicy?: "current_product" | "historical_physical_receipt"
   authenticatedPubkey?: string | null
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   readAccountRelaySettingsPlanningSnapshot?: typeof readDurableAccountRelaySettingsPlanningSnapshot
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signal?: AbortSignal
 }
 
@@ -417,20 +417,20 @@ export async function getEventMarketReceiptMerchandise(
   const addresses = Array.from(
     new Set(input.receipt.items.map((item) => item.product.coordinate))
   )
-  const filters: NDKFilter[] = [
+  const filters: Filter[] = [
     {
       kinds: [EVENT_KINDS.PRODUCT],
       authors: [merchant],
       ids: productIds,
       limit: MAX_RECEIPT_ITEMS,
     },
-    ...productIds.map((eventId): NDKFilter => ({
+    ...productIds.map((eventId): Filter => ({
       kinds: [EVENT_KINDS.DELETION],
       authors: [merchant],
       "#e": [eventId],
       limit: RECEIPT_DELETION_REVISIONS_PER_TARGET,
     })),
-    ...addresses.map((address): NDKFilter => ({
+    ...addresses.map((address): Filter => ({
       kinds: [EVENT_KINDS.DELETION],
       authors: [merchant],
       "#a": [address],
@@ -438,8 +438,9 @@ export async function getEventMarketReceiptMerchandise(
     })),
   ]
   const fetch =
-    testOverrides.fetchEventsFanoutDetailed ?? fetchEventsFanoutDetailed
-  const results: FetchEventsFanoutResult[] = []
+    testOverrides.fetchSignedEventsFanoutDetailed ??
+    fetchSignedEventsFanoutDetailed
+  const results: PublicRelayReadResult[] = []
   let remainingRelayUrls = [...relayUrls]
   for (
     let index = 0;

@@ -1,10 +1,14 @@
-import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
+import type { SignedPublicNostrEvent } from "./signed-event"
+import type { Filter } from "nostr-tools"
 import { config } from "../config"
 import { db, type CachedProfile } from "../db"
 import type { Profile } from "../types"
 import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanoutDetailed, type FetchEventsFanoutResult } from "./ndk"
+import {
+  fetchSignedEventsFanoutDetailed,
+  type PublicRelayReadResult,
+} from "./relay-reader"
 import {
   compareProfileFrontiers,
   projectCachedProfile,
@@ -199,14 +203,14 @@ export interface ProfileSearchDependencies {
     authenticatedPubkey: string | null
   ) => string[] | Promise<string[]>
   fetchEvents: (
-    filter: NDKFilter,
+    filter: Filter,
     options: {
       relayUrls: string[]
       accountPubkey?: string | null
       authenticatedPubkey?: string | null
       signal?: AbortSignal
     }
-  ) => Promise<FetchEventsFanoutResult>
+  ) => Promise<PublicRelayReadResult>
 }
 
 export function normalizeProfileSearchText(value: string): string {
@@ -250,12 +254,14 @@ export function scoreProfileSearchMatch(
   )
 }
 
-function eventFrontier(event: NDKEvent): ProfileFrontier {
+function eventFrontier(event: SignedPublicNostrEvent): ProfileFrontier {
   return { createdAt: event.created_at, eventId: event.id }
 }
 
-function pickLatestEventPerPubkey(events: readonly NDKEvent[]): NDKEvent[] {
-  const latest = new Map<string, NDKEvent>()
+function pickLatestEventPerPubkey(
+  events: readonly SignedPublicNostrEvent[]
+): SignedPublicNostrEvent[] {
+  const latest = new Map<string, SignedPublicNostrEvent>()
   for (const event of events) {
     if (event.kind !== EVENT_KINDS.PROFILE || !event.pubkey) continue
     const current = latest.get(event.pubkey)
@@ -299,7 +305,7 @@ export interface ProfileSearchRelaySummary {
  * data this client could not trust.
  */
 export function summarizeProfileSearchRelays(
-  result: Pick<FetchEventsFanoutResult, "relays" | "eventsVerified">,
+  result: Pick<PublicRelayReadResult, "relays" | "eventsVerified">,
   fetchLimit: number = NETWORK_FETCH_LIMIT
 ): Omit<ProfileSearchRelaySummary, "relaysPlanned"> {
   let relaysCompleted = 0
@@ -431,7 +437,7 @@ const defaultDependencies: ProfileSearchDependencies = {
         .filter((entry) => entry.readEnabled && entry.capabilities.search)
         .map((entry) => entry.url)
     )
-    return await fetchEventsFanoutDetailed(filter, {
+    return await fetchSignedEventsFanoutDetailed(filter, {
       relayUrls: options.relayUrls,
       appRelayUrls: options.relayUrls.filter((relayUrl) =>
         appRelaySet.has(relayUrl)
@@ -546,7 +552,7 @@ function profileSearchRelayKey(url: string): string {
 }
 
 function relayObservationIsComplete(
-  relay: FetchEventsFanoutResult["relays"][number],
+  relay: PublicRelayReadResult["relays"][number],
   fetchLimit: number
 ): boolean {
   return (
@@ -557,7 +563,7 @@ function relayObservationIsComplete(
 }
 
 function summarizeProfileSearchRelayChunks(
-  results: readonly (FetchEventsFanoutResult | null)[],
+  results: readonly (PublicRelayReadResult | null)[],
   relayUrls: readonly string[],
   fetchLimit: number = NETWORK_FETCH_LIMIT
 ): Omit<ProfileSearchRelaySummary, "relaysPlanned"> {
@@ -788,7 +794,7 @@ export async function searchNetworkProfiles(
         Math.max(0, deps.networkBudgetMs)
       )
 
-      let chunkResults: Array<FetchEventsFanoutResult | null>
+      let chunkResults: Array<PublicRelayReadResult | null>
       try {
         chunkResults = await mapProfileSearchAuthorChunks(
           chunkProfileSearchAuthors(authorPubkeys),

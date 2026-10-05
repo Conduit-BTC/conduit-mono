@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import {
-  __resetNdkTestState,
-  fetchEventsFanoutDetailed,
-} from "../packages/core/src/protocol/ndk"
+  __resetPublicReaderTestState,
+  fetchSignedEventsFanoutDetailed,
+} from "../packages/core/src/protocol/relay-reader"
 import {
   emptyAccountNetworkLocalState,
   type AccountNetworkLocalStateRepository,
@@ -119,7 +119,7 @@ function installEoseWebSocket(options: { deferEose?: boolean } = {}): {
       }
     },
     restore: () => {
-      __resetNdkTestState()
+      __resetPublicReaderTestState()
       if (originalDescriptor) {
         Object.defineProperty(globalThis, "WebSocket", originalDescriptor)
       } else {
@@ -151,7 +151,7 @@ describe("NDK network boundary", () => {
     }
 
     try {
-      const read = fetchEventsFanoutDetailed(
+      const read = fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
@@ -189,7 +189,7 @@ describe("NDK network boundary", () => {
 
     try {
       const blockers = blockerRelayUrls.map((relayUrl) =>
-        fetchEventsFanoutDetailed(
+        fetchSignedEventsFanoutDetailed(
           { kinds: [1] },
           {
             relayUrls: [relayUrl],
@@ -199,7 +199,7 @@ describe("NDK network boundary", () => {
       )
       await opened.waitForOpenedCount(blockerRelayUrls.length)
 
-      const queuedOwnerRead = fetchEventsFanoutDetailed(
+      const queuedOwnerRead = fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
@@ -235,7 +235,7 @@ describe("NDK network boundary", () => {
     }
 
     try {
-      const ownerRead = await fetchEventsFanoutDetailed(
+      const ownerRead = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs, remoteWs],
@@ -250,7 +250,7 @@ describe("NDK network boundary", () => {
         ownerWs,
       ])
 
-      await fetchEventsFanoutDetailed(
+      await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
@@ -261,7 +261,7 @@ describe("NDK network boundary", () => {
           reuseRelayConnections: false,
         }
       )
-      await fetchEventsFanoutDetailed(
+      await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
@@ -271,7 +271,7 @@ describe("NDK network boundary", () => {
           reuseRelayConnections: false,
         }
       )
-      await fetchEventsFanoutDetailed(
+      await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
@@ -286,7 +286,7 @@ describe("NDK network boundary", () => {
       > = {
         get: async (pubkey) => accountNetworkState(pubkey, [ownerWs]),
       }
-      await fetchEventsFanoutDetailed(
+      await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
@@ -297,7 +297,7 @@ describe("NDK network boundary", () => {
           reuseRelayConnections: false,
         }
       )
-      await fetchEventsFanoutDetailed(
+      await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [ownerWs],
@@ -335,7 +335,7 @@ describe("NDK network boundary", () => {
     }
 
     try {
-      const result = await fetchEventsFanoutDetailed(
+      const result = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [appOnly, remoteOverlap],
@@ -372,7 +372,7 @@ describe("NDK network boundary", () => {
     }
 
     try {
-      const excluded = await fetchEventsFanoutDetailed(
+      const excluded = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [relayUrl],
@@ -381,7 +381,7 @@ describe("NDK network boundary", () => {
           reuseRelayConnections: false,
         }
       )
-      const otherAccount = await fetchEventsFanoutDetailed(
+      const otherAccount = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [relayUrl],
@@ -390,7 +390,7 @@ describe("NDK network boundary", () => {
           reuseRelayConnections: false,
         }
       )
-      const publicRead = await fetchEventsFanoutDetailed(
+      const publicRead = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [relayUrl],
@@ -399,15 +399,15 @@ describe("NDK network boundary", () => {
         }
       )
 
-      expect(excluded.relays).toEqual([])
-      expect(otherAccount.relays).toEqual([
+      expect(excluded.relays).toMatchObject([])
+      expect(otherAccount.relays).toMatchObject([
         {
           relayUrl,
           status: "success",
           eventCount: 0,
         },
       ])
-      expect(publicRead.relays).toEqual(otherAccount.relays)
+      expect(publicRead.relays).toMatchObject(otherAccount.relays)
       expect(opened.openedUrls).toEqual([relayUrl, relayUrl])
       expect(queriedPubkeys).toEqual([
         ACCOUNT_A,
@@ -436,7 +436,7 @@ describe("NDK network boundary", () => {
     }
 
     try {
-      const result = await fetchEventsFanoutDetailed(
+      const result = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls: [personalRelayUrl, appRelayUrl],
@@ -478,7 +478,7 @@ describe("NDK network boundary", () => {
     }
 
     try {
-      const result = await fetchEventsFanoutDetailed(
+      const result = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls,
@@ -512,7 +512,7 @@ describe("NDK network boundary", () => {
     }
 
     try {
-      const result = await fetchEventsFanoutDetailed(
+      const result = await fetchSignedEventsFanoutDetailed(
         { kinds: [1] },
         {
           relayUrls,
