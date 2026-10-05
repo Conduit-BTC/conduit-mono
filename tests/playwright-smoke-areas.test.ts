@@ -673,6 +673,123 @@ describe("Playwright smoke area validation", () => {
     ).toEqual(expected)
   })
 
+  it("explains native timeout phase and body-vs-teardown without changing first-attempt failure", () => {
+    const report: PlaywrightJsonReport = {
+      ...reportWithSpecs([
+        {
+          file: "e2e/commerce-router-recovery.playwright.ts",
+          line: 1338,
+          ok: false,
+          tags: ["commerce"],
+          tests: [
+            {
+              expectedStatus: "passed",
+              status: "unexpected",
+              results: [
+                {
+                  status: "timedOut",
+                  duration: 240_001,
+                  retry: 0,
+                  router: {
+                    phase: "cold Merchant reload navigation completes",
+                    lifecycle: "teardown",
+                    body: "failed",
+                  },
+                },
+              ],
+            },
+          ],
+          title: "native router recovery remains isolated @commerce",
+        },
+      ]),
+      config: { metadata: { smokeEvidence } },
+      errors: [],
+      stats: { flaky: 0, skipped: 0, unexpected: 1 },
+    } as PlaywrightJsonReport
+    const expected = buildPlaywrightSmokeManifest(
+      report,
+      ["commerce"],
+      smokeEvidence
+    )
+    let message = ""
+    try {
+      validatePlaywrightSmokeExecution(
+        report,
+        expected,
+        ["commerce"],
+        smokeEvidence
+      )
+    } catch (error) {
+      message = error instanceof Error ? error.message : ""
+    }
+
+    expect(message).toContain("did not pass cleanly on its first attempt")
+    expect(message).toContain("retry=0 status=timedOut duration=240001ms")
+    expect(message).toContain(
+      'router_phase="cold Merchant reload navigation completes" router_lifecycle=teardown router_body=failed'
+    )
+  })
+
+  it("never formats arbitrary router data from execution JSON", () => {
+    const privateSentinel = "private-router-json-must-not-be-serialized"
+    const safe = {
+      phase: "cold Merchant reload navigation completes",
+      lifecycle: "body",
+      body: "running",
+    }
+    const invalid = [
+      { ...safe, phase: privateSentinel },
+      { ...safe, lifecycle: privateSentinel },
+      { ...safe, body: privateSentinel },
+      { ...safe, extra: privateSentinel },
+      { ...safe, lifecycle: ["body"], body: ["running"] },
+      { ...safe, lifecycle: "teardown" },
+      { ...safe, body: "completed" },
+      [safe],
+      privateSentinel,
+      null,
+      safe,
+    ]
+    for (const [index, router] of invalid.entries()) {
+      const report: PlaywrightJsonReport = {
+        ...reportWithSpecs([
+          {
+            file:
+              index === invalid.length - 1
+                ? "e2e/commerce.playwright.ts"
+                : "e2e/commerce-router-recovery.playwright.ts",
+            line: 1338,
+            ok: false,
+            tags: ["commerce"],
+            tests: [
+              {
+                expectedStatus: "passed",
+                status: "unexpected",
+                results: [{ status: "timedOut", retry: 0, router }],
+              },
+            ],
+            title: "native router diagnostics remain private @commerce",
+          },
+        ]),
+        config: { metadata: { smokeEvidence } },
+      }
+      let message = ""
+      try {
+        validatePlaywrightSmokeExecution(
+          report,
+          buildPlaywrightSmokeManifest(report, ["commerce"], smokeEvidence),
+          ["commerce"],
+          smokeEvidence
+        )
+      } catch (error) {
+        message = error instanceof Error ? error.message : ""
+      }
+      expect(message).toContain("did not pass cleanly on its first attempt")
+      expect(message).not.toContain(privateSentinel)
+      expect(message).not.toContain("router_phase=")
+    }
+  })
+
   it("reconciles project-specific discovery and execution rows", () => {
     const projectSpec = {
       file: "e2e/mobile.playwright.ts",

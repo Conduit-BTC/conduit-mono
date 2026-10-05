@@ -19,6 +19,11 @@ import {
   HERMETIC_NETWORK_FAILURE_SOURCES,
   type HermeticNetworkFailureDiagnostic,
 } from "../../e2e/helpers/hermetic-network"
+import {
+  formatRouterSmokeDiagnostic,
+  routerSmokeDiagnosticFromAnnotations,
+  type RouterSmokeDiagnostic,
+} from "./router_smoke_diagnostic"
 
 type ReporterOptions = {
   outputFile: string
@@ -39,6 +44,7 @@ type SafeLocation = {
 
 type SafeResult = {
   diagnostic?: HermeticNetworkFailureDiagnostic
+  router?: RouterSmokeDiagnostic
   duration: number
   error?: { location: SafeLocation }
   retry: number
@@ -364,8 +370,12 @@ export class PrivacySafeSmokeReporter implements Reporter {
     this.completedAttempts += 1
     const file = safeFile(test.location.file)
     const diagnostic = safeHermeticNetworkDiagnostic(result.annotations)
+    const router =
+      file === "e2e/commerce-router-recovery.playwright.ts"
+        ? routerSmokeDiagnosticFromAnnotations(result.annotations)
+        : undefined
     this.progress(
-      `end completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s duration=${Math.max(0, Math.round(result.duration))}ms retry=${Math.max(0, result.retry)} status=${result.status} project=${safeProject(test)} ${file}:${test.location.line}${diagnostic ? ` diagnostic_operation=${diagnostic.operation} diagnostic_source=${diagnostic.source} diagnostic_category=${diagnostic.category}` : ""}`
+      `end completed=${this.completedAttempts} elapsed=${Math.round((Date.now() - this.startedAt) / 1000)}s duration=${Math.max(0, Math.round(result.duration))}ms retry=${Math.max(0, result.retry)} status=${result.status} project=${safeProject(test)} ${file}:${test.location.line}${diagnostic ? ` diagnostic_operation=${diagnostic.operation} diagnostic_source=${diagnostic.source} diagnostic_category=${diagnostic.category}` : ""}${router ? ` ${formatRouterSmokeDiagnostic(router)}` : ""}`
     )
     const existing = this.specs.get(test.id)
     const location = safeLocation(result.error?.location)
@@ -374,6 +384,7 @@ export class PrivacySafeSmokeReporter implements Reporter {
       retry: Math.max(0, result.retry),
       status: result.status,
       ...(diagnostic ? { diagnostic } : {}),
+      ...(router ? { router } : {}),
       ...(location ? { error: { location } } : {}),
     }
     if (existing) {

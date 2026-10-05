@@ -7,6 +7,10 @@ import {
   safePlaywrightSmokeId,
   safePlaywrightSmokeTitle,
 } from "./playwright_smoke_reporter"
+import {
+  formatRouterSmokeDiagnostic,
+  parseRouterSmokeDiagnostic,
+} from "./router_smoke_diagnostic"
 
 type PlaywrightJsonSpec = {
   file?: string
@@ -30,6 +34,7 @@ type PlaywrightJsonResult = {
   error?: PlaywrightJsonError
   errors?: PlaywrightJsonError[]
   retry?: number
+  router?: unknown
   status?: string
 }
 
@@ -118,7 +123,10 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
 }
 
-function firstAttemptDiagnostic(result?: PlaywrightJsonResult): string {
+function firstAttemptDiagnostic(
+  result: PlaywrightJsonResult | undefined,
+  specFile?: string
+): string {
   const reportedStatus = result?.status
   const status =
     reportedStatus === "failed" ||
@@ -148,8 +156,12 @@ function firstAttemptDiagnostic(result?: PlaywrightJsonResult): string {
     file !== "unknown"
       ? `${file}${location?.line ? `:${location.line}` : ""}${location?.column ? `:${location.column}` : ""}`
       : "unavailable"
+  const router =
+    manifestFile(specFile) === "e2e/commerce-router-recovery.playwright.ts"
+      ? parseRouterSmokeDiagnostic(result?.router)
+      : undefined
 
-  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}.`
+  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}${router ? ` ${formatRouterSmokeDiagnostic(router)}` : ""}.`
 }
 
 export function buildPlaywrightSmokeManifest(
@@ -337,7 +349,7 @@ export function validatePlaywrightSmokeExecution(
         resultStatuses[0] !== "passed"
       ) {
         errors.push(
-          `Playwright smoke did not pass cleanly on its first attempt: ${formatSpec(spec)}.\n${firstAttemptDiagnostic(test.results?.[0])}`
+          `Playwright smoke did not pass cleanly on its first attempt: ${formatSpec(spec)}.\n${firstAttemptDiagnostic(test.results?.[0], spec.file)}`
         )
       }
     }

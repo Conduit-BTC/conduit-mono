@@ -25,6 +25,171 @@ import {
 } from "../scripts/ci/playwright_smoke_reporter"
 
 describe("privacy-safe Playwright smoke reporter", () => {
+  it("retains a closed router phase and body timeout boundary without raw errors", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
+    const outputFile = join(directory, "results.json")
+    const progressFile = join(directory, "progress.log")
+    const sourceDirectory = join(directory, "e2e")
+    const sourceFile = join(
+      sourceDirectory,
+      "commerce-router-recovery.playwright.ts"
+    )
+    const title = "native router recovery remains isolated @commerce"
+    const router = {
+      phase: "cold Merchant reload navigation completes",
+      lifecycle: "body",
+      body: "running",
+    }
+    const privateSentinel = "private-router-error-must-not-be-serialized"
+
+    try {
+      mkdirSync(sourceDirectory)
+      writeFileSync(
+        sourceFile,
+        `test(${JSON.stringify(title)}, async () => {})`
+      )
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        progressFile,
+      })
+      reporter.onBegin?.(
+        { metadata: {} } as FullConfig,
+        { allTests: () => [1] } as unknown as Suite
+      )
+      const testCase = {
+        expectedStatus: "passed",
+        id: "router-body-timeout",
+        location: { column: 1, file: sourceFile, line: 1 },
+        ok: () => false,
+        outcome: () => "unexpected",
+        tags: ["@commerce"],
+        title,
+      } as TestCase
+      reporter.onTestEnd?.(testCase, {
+        annotations: [
+          { type: "router-phase", description: JSON.stringify(router) },
+        ],
+        duration: 240_001,
+        error: { message: privateSentinel, stack: privateSentinel },
+        retry: 0,
+        status: "timedOut",
+      } as TestResult)
+      reporter.onEnd?.({ status: "timedout" } as FullResult)
+
+      const serialized = readFileSync(outputFile, "utf8")
+      const progress = readFileSync(progressFile, "utf8")
+      const report = JSON.parse(serialized)
+      expect(report.suites[0].specs[0].tests[0].results[0].router).toEqual(
+        router
+      )
+      expect(progress).toContain(
+        'router_phase="cold Merchant reload navigation completes" router_lifecycle=body router_body=running'
+      )
+      expect(serialized).not.toContain(privateSentinel)
+      expect(progress).not.toContain(privateSentinel)
+    } finally {
+      rmSync(directory, { force: true, recursive: true })
+    }
+  })
+
+  it("drops unknown, partial, duplicate, inconsistent, non-string and non-router tuples", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
+    const outputFile = join(directory, "results.json")
+    const progressFile = join(directory, "progress.log")
+    const sourceDirectory = join(directory, "e2e")
+    const sourceFile = join(
+      sourceDirectory,
+      "commerce-router-recovery.playwright.ts"
+    )
+    const ordinarySourceFile = join(sourceDirectory, "commerce.playwright.ts")
+    const title = "native router diagnostics reject unapproved data @commerce"
+    const privateSentinel = "private-router-annotation-must-not-be-serialized"
+    const safe = {
+      phase: "cold Merchant reload navigation completes",
+      lifecycle: "body",
+      body: "running",
+    }
+    const annotation = (value: unknown) => ({
+      type: "router-phase",
+      description: JSON.stringify(value),
+    })
+    const invalidAnnotations = [
+      [annotation({ ...safe, phase: privateSentinel })],
+      [annotation({ ...safe, lifecycle: privateSentinel })],
+      [annotation({ ...safe, body: privateSentinel })],
+      [annotation({ phase: safe.phase, lifecycle: safe.lifecycle })],
+      [annotation({ ...safe, extra: privateSentinel })],
+      [annotation(safe), annotation(safe)],
+      [annotation(safe), annotation({ ...safe, lifecycle: "teardown" })],
+      [annotation({ ...safe, lifecycle: "teardown" })],
+      [annotation({ ...safe, body: "completed" })],
+      [annotation({ ...safe, lifecycle: ["body"], body: ["running"] })],
+      [{ type: "router-phase", description: privateSentinel }],
+      [annotation(safe)],
+    ]
+
+    try {
+      mkdirSync(sourceDirectory)
+      writeFileSync(
+        sourceFile,
+        `test(${JSON.stringify(title)}, async () => {})`
+      )
+      writeFileSync(
+        ordinarySourceFile,
+        `test(${JSON.stringify(title)}, async () => {})`
+      )
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        progressFile,
+      })
+      reporter.onBegin?.(
+        { metadata: {} } as FullConfig,
+        { allTests: () => invalidAnnotations } as unknown as Suite
+      )
+      for (const [index, annotations] of invalidAnnotations.entries()) {
+        reporter.onTestEnd?.(
+          {
+            expectedStatus: "passed",
+            id: `router-invalid-tuple-${index}`,
+            location: {
+              column: 1,
+              file:
+                index === invalidAnnotations.length - 1
+                  ? ordinarySourceFile
+                  : sourceFile,
+              line: 1,
+            },
+            ok: () => false,
+            outcome: () => "unexpected",
+            tags: ["@commerce"],
+            title,
+          } as TestCase,
+          {
+            annotations,
+            duration: 3,
+            retry: 0,
+            status: "timedOut",
+          } as TestResult
+        )
+      }
+      reporter.onEnd?.({ status: "timedout" } as FullResult)
+      const serialized = readFileSync(outputFile, "utf8")
+      const progress = readFileSync(progressFile, "utf8")
+      const report = JSON.parse(serialized)
+      expect(
+        report.suites[0].specs.every(
+          (spec: { tests: Array<{ results: Array<{ router?: unknown }> }> }) =>
+            spec.tests[0]?.results[0]?.router === undefined
+        )
+      ).toBe(true)
+      expect(serialized).not.toContain(privateSentinel)
+      expect(progress).not.toContain(privateSentinel)
+      expect(progress).not.toContain("router_phase=")
+    } finally {
+      rmSync(directory, { force: true, recursive: true })
+    }
+  })
+
   it("persists only the smoke verifier's content-free status fields", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
     const outputFile = join(directory, "results.json")

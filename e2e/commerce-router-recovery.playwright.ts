@@ -19,6 +19,10 @@ import {
 } from "../apps/market/node_modules/@buildonspark/spark-sdk/dist/index.node.js"
 import { openPlaywrightRouterClock } from "../scripts/dev/playwright_router_clock"
 import {
+  createRouterSmokeRecorder,
+  type RouterSmokePhase,
+} from "../scripts/ci/router_smoke_diagnostic"
+import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
 } from "../tests/support/bolt11-fixture"
@@ -142,7 +146,7 @@ async function publishSupplierListing(
   page: Page,
   supplier: RuntimeSignerIdentity,
   productTitle: string,
-  onStage: (stage: string) => void
+  onStage: (stage: RouterSmokePhase) => void
 ): Promise<void> {
   onStage("merchant product page")
   await page.goto(`${merchantUrl}/products`)
@@ -234,6 +238,7 @@ async function rehearseRouter(
   continuation: "buyer" | "cold-merchant" | "partial-cold-merchant" = "buyer"
 ): Promise<void> {
   test.setTimeout(240_000)
+  const phaseRecorder = createRouterSmokeRecorder(test.info().annotations)
   const sharedClock = openPlaywrightRouterClock()
   sharedClock.reset()
   const productTitle = "Isolated supplier router download"
@@ -365,7 +370,12 @@ async function rehearseRouter(
       control().registerPayout(invoice)
     },
   })
-  let stage = "isolated setup"
+  let stage: RouterSmokePhase = "isolated setup"
+  let bodyCompleted = false
+  const setStage = (next: RouterSmokePhase) => {
+    stage = next
+    phaseRecorder.phase(next)
+  }
   try {
     await seedIdentity(merchant, merchantName, merchantAddress)
     await seedIdentity(supplier, "Isolated Router Supplier", supplierAddress)
@@ -390,13 +400,13 @@ async function rehearseRouter(
     })
     const merchantPage = await merchantContext.newPage()
     await installRealTestSigner(merchantPage, merchant, TEST_RELAY_URL)
-    stage = "mounted supplier listing publication"
+    setStage("mounted supplier listing publication")
     await publishSupplierListing(
       merchantPage,
       supplier,
       productTitle,
       (next) => {
-        stage = next
+        setStage(next)
       }
     )
     await expect
@@ -425,7 +435,7 @@ async function rehearseRouter(
 
     const catalogPath = `/${nip19.npubEncode(merchant.pubkey)}`
 
-    stage = "mounted buyer cart and private order"
+    setStage("mounted buyer cart and private order")
     const buyerContext = await browser.newContext({ serviceWorkers: "block" })
     contexts.push(buyerContext)
     await buyerContext.grantPermissions(["local-network-access"], {
@@ -445,9 +455,9 @@ async function rehearseRouter(
     const page = await buyerContext.newPage()
     const buyerPersistence = installPersistenceReloadBarrier(page, marketUrl)
     await installRealTestSigner(page, buyer, TEST_RELAY_URL)
-    stage = "buyer catalog product load"
+    setStage("buyer catalog product load")
     await page.goto(`${marketUrl}${catalogPath}`)
-    stage = "browser SDK module preload without wallet initialization"
+    setStage("browser SDK module preload without wallet initialization")
     const sdkLoaded = await page.evaluate(async () => {
       try {
         const path = "/src/lib/spark-sdk.ts"
@@ -461,14 +471,14 @@ async function rehearseRouter(
       }
     })
     expect(sdkLoaded).toBe(true)
-    stage = "buyer catalog product visibility"
+    setStage("buyer catalog product visibility")
     const product = page.getByRole("listitem").filter({ hasText: productTitle })
     await expect(product).toBeVisible({ timeout: 30_000 })
     await expect(product.getByText("~ ₿1,113", { exact: true })).toBeVisible()
     await expect(product.getByText(/Estimated total/)).toBeVisible()
-    stage = "buyer add product to cart"
+    setStage("buyer add product to cart")
     await product.getByRole("button", { name: "Add", exact: true }).click()
-    stage = "buyer continue to checkout"
+    setStage("buyer continue to checkout")
     await page
       .getByRole("region", { name: "Cart inventory", exact: true })
       .getByRole("link", { name: "Continue to checkout", exact: true })
@@ -489,15 +499,15 @@ async function rehearseRouter(
     await expect(page.getByText(supplierAddress, { exact: false })).toHaveCount(
       0
     )
-    stage = "buyer router prepare eligibility"
+    setStage("buyer router prepare eligibility")
     const prepare = page.getByRole("button", {
       name: "Continue to payment",
       exact: true,
     })
     await expect(prepare).toBeEnabled({ timeout: 30_000 })
-    stage = "buyer router order submission"
+    setStage("buyer router order submission")
     await prepare.click()
-    stage = "buyer order preparation completion"
+    setStage("buyer order preparation completion")
     await expect
       .poll(
         async () => {
@@ -524,7 +534,7 @@ async function rehearseRouter(
     expect(lnurl.snapshot().metadataRequests).toBeGreaterThanOrEqual(2)
     expect(lnurl.snapshot().invoicesIssued).toBe(0)
 
-    stage = "inline price and authorization without a popup"
+    setStage("inline price and authorization without a popup")
     const external = page.getByRole("button", {
       name: "Use external wallet",
       exact: true,
@@ -596,7 +606,7 @@ async function rehearseRouter(
     expect(control().snapshot()).toEqual(beforeConsent)
     expect(lnurl.snapshot().invoicesIssued).toBe(0)
 
-    stage = "single consent for external funding and automatic routing"
+    setStage("single consent for external funding and automatic routing")
     await external.click()
     // Hold only the synthetic provider's final native transfer status. The
     // application still prepares, submits, persists, and later reconciles its
@@ -609,7 +619,7 @@ async function rehearseRouter(
     if (continuation !== "buyer") {
       const partialRecovery = continuation === "partial-cold-merchant"
       if (partialRecovery) {
-        stage = "buyer completes commerce before disappearing"
+        setStage("buyer completes commerce before disappearing")
         control().completeFunding()
         await expect
           .poll(() => control().nativeSnapshot().nativePaymentCount, {
@@ -619,9 +629,11 @@ async function rehearseRouter(
         expect(control().snapshot().sendInvocationCount).toBe(2)
         expect(control().snapshot().outgoingPaymentCount).toBe(2)
       }
-      stage = partialRecovery
-        ? "buyer disappears after commerce and before the remaining payment"
-        : "buyer disappears before any payout preparation"
+      setStage(
+        partialRecovery
+          ? "buyer disappears after commerce and before the remaining payment"
+          : "buyer disappears before any payout preparation"
+      )
       const orderId = new URL(page.url()).searchParams.get("order")
       expect(typeof orderId === "string" && orderId.length > 0).toBe(true)
       beginNetworkTeardown.get(buyerContext)?.()
@@ -636,7 +648,7 @@ async function rehearseRouter(
 
       // A fresh browser has no buyer or former Merchant IndexedDB/session state.
       // Recovery must come from the real signed private order/inbox messages.
-      stage = "cold Merchant discovers the signed recovery"
+      setStage("cold Merchant discovers the signed recovery")
       const coldContext = await browser.newContext({ serviceWorkers: "block" })
       contexts.push(coldContext)
       await coldContext.grantPermissions(["local-network-access"], {
@@ -667,7 +679,9 @@ async function rehearseRouter(
       })
       const recoveredOrder = recovery
       await expect(recoveredOrder).toBeVisible({ timeout: 45_000 })
-      stage = "Merchant order sorting keeps the selected payment target stable"
+      setStage(
+        "Merchant order sorting keeps the selected payment target stable"
+      )
       const sort = coldPage.getByRole("combobox", {
         name: "Sort orders",
         exact: true,
@@ -685,7 +699,7 @@ async function rehearseRouter(
         await expect(recoveredOrder).toBeVisible()
         expect(coldPage.url() === selectedUrl).toBe(true)
       }
-      stage = "cold Merchant respects the frozen shopper handoff"
+      setStage("cold Merchant respects the frozen shopper handoff")
       await expect(
         recovery.getByRole("button", {
           name: "Pause",
@@ -707,49 +721,50 @@ async function rehearseRouter(
       // the same time so their actual signed expiry remains meaningful. Reopen
       // after the Date jump instead of firing every in-flight network timeout
       // with fastForward; the worker's real handoff scheduling has unit coverage.
-      stage =
+      setStage(
         "cold Merchant automatically continues after handoff without a prompt"
+      )
       const resumedClockTime = sharedClock.advanceBy(46 * 60_000)
-      stage = "cold Merchant browser clock follows the isolated clock advance"
+      setStage("cold Merchant browser clock follows the isolated clock advance")
       await coldPage.clock.setSystemTime(resumedClockTime)
-      stage = "cold Merchant stays paused across the isolated clock advance"
+      setStage("cold Merchant stays paused across the isolated clock advance")
       await expect(
         recovery.getByRole("button", {
           name: "Resume payment processing",
           exact: true,
         })
       ).toBeVisible()
-      stage = "cold Merchant has no sends before reopening"
+      setStage("cold Merchant has no sends before reopening")
       expect(control().snapshot()).toEqual(beforeHandoff)
-      stage = "cold Merchant reload navigation completes"
+      setStage("cold Merchant reload navigation completes")
       try {
         await coldPersistence.reload()
       } catch (error) {
         if (error instanceof Error) {
           if (error.message === "Persistence reload local request failed.") {
-            stage = "cold Merchant reload rejected a failed local request"
+            setStage("cold Merchant reload rejected a failed local request")
           } else if (
             error.message === "Persistence reload work did not settle."
           ) {
-            stage = "cold Merchant reload rejected pending local work"
+            setStage("cold Merchant reload rejected pending local work")
           } else if (
             error.message === "Persistence reload barrier was disposed."
           ) {
-            stage = "cold Merchant reload rejected a disposed barrier"
+            setStage("cold Merchant reload rejected a disposed barrier")
           } else if (error.name === "TimeoutError") {
-            stage = "cold Merchant reload navigation timed out"
+            setStage("cold Merchant reload navigation timed out")
           }
         }
         throw error
       }
-      stage = "cold Merchant enables automatic recovery on reopening"
+      setStage("cold Merchant enables automatic recovery on reopening")
       await expect(
         recovery.getByRole("button", {
           name: "Pause",
           exact: true,
         })
       ).toBeVisible({ timeout: 30_000 })
-      stage = "cold Merchant submits the final native treasury transfer"
+      setStage("cold Merchant submits the final native treasury transfer")
       await expect
         .poll(() => control().nativeSnapshot().nativePaymentCount, {
           timeout: 75_000,
@@ -785,10 +800,10 @@ async function rehearseRouter(
         ],
       })
 
-      stage = "cold Merchant preserves recovery while residual funds remain"
+      setStage("cold Merchant preserves recovery while residual funds remain")
       if (!partialRecovery) control().setAdditionalOwnedSats(1)
       control().setNativeCompletion(true)
-      stage = "cold Merchant reconciles the completed transfer without replay"
+      setStage("cold Merchant reconciles the completed transfer without replay")
       await coldPersistence.reload()
       await expect
         .poll(
@@ -798,7 +813,7 @@ async function rehearseRouter(
           }
         )
         .toBe("TRANSFER_STATUS_COMPLETED")
-      stage = "cold Merchant retains accurate recovery verification status"
+      setStage("cold Merchant retains accurate recovery verification status")
       await expect(
         recovery.getByRole("heading", {
           name: partialRecovery
@@ -819,8 +834,9 @@ async function rehearseRouter(
           })
         ).toHaveCount(0)
       }
-      stage =
+      setStage(
         "cold Merchant payments match the frozen destinations and allocations"
+      )
       const expected = [
         { lud16: merchantAddress, amountSats: 751 },
         { lud16: supplierAddress, amountSats: 249 },
@@ -857,7 +873,9 @@ async function rehearseRouter(
         ],
       })
       expect(control().snapshot().debitedSats).toBe(1_113)
-      stage = "Merchant sends only the verified supplier's private notification"
+      setStage(
+        "Merchant sends only the verified supplier's private notification"
+      )
       if (partialRecovery) {
         expect(await supplierNoticeCount()).toBe(0)
       } else {
@@ -868,8 +886,9 @@ async function rehearseRouter(
         // Provider evidence prevents replay, but a new device cannot invent the
         // buyer's local invoice-origin proof. Keep recovery, never claim full
         // recipient verification or retire it from a zero balance alone.
-        stage =
+        setStage(
           "cold Merchant never replays prior payments or invents recipient proof"
+        )
         const pauseBeforeReplayCheck = recovery.getByRole("button", {
           name: "Pause",
           exact: true,
@@ -899,36 +918,37 @@ async function rehearseRouter(
         expect(await merchantWalletState(coldPage, orderId)).toBe("active")
         expect(control().snapshot()).toEqual(completed)
         expect(completed.sendInvocationCount).toBe(2)
-        stage = "recovery access check opens payment details"
+        setStage("recovery access check opens payment details")
         await recovery.getByText("Payment details", { exact: true }).click()
-        stage = "recovery access check starts account verification"
+        setStage("recovery access check starts account verification")
         await recovery
           .getByRole("button", { name: "Check recovery access", exact: true })
           .click()
-        stage = "recovery access check confirms account access"
+        setStage("recovery access check confirms account access")
         await expect(
           recovery.getByText(
             "Recovery access confirmed for this order. Automatic payments are paused. This check did not inspect funds or recipient payments, reveal the recovery phrase, or move money.",
             { exact: true }
           )
         ).toBeVisible()
-        stage = "recovery access check remains paused"
+        setStage("recovery access check remains paused")
         await expect(
           recovery.getByRole("button", {
             name: "Resume payment processing",
             exact: true,
           })
         ).toBeVisible()
-        stage = "recovery access check preserves provider history"
+        setStage("recovery access check preserves provider history")
         expect(control().snapshot()).toEqual(completed)
-        stage = "recovery access check publishes no public payment event"
+        setStage("recovery access check publishes no public payment event")
         expect(
           (await readTestRelayEvents({ kinds: [9_734, 9_735] })).length
         ).toBe(0)
+        bodyCompleted = true
         return
       }
 
-      stage = "cold Merchant drains automatic recovery before retirement"
+      setStage("cold Merchant drains automatic recovery before retirement")
       const pauseBeforeRetirement = recovery.getByRole("button", {
         name: "Pause",
         exact: true,
@@ -942,34 +962,36 @@ async function rehearseRouter(
           })
         ).toBeVisible()
       }
-      stage = "cold Merchant retires only after fresh terminal zero evidence"
+      setStage("cold Merchant retires only after fresh terminal zero evidence")
       control().setAdditionalOwnedSats(0)
       await coldPersistence.reload()
       await expect
         .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
         .toBe("retired")
       const completed = control().snapshot()
-      stage =
+      setStage(
         "cold Merchant reload automatically checks without replaying payouts"
+      )
       await coldPersistence.reload()
-      stage = "cold Merchant retired recovery remains visible after reload"
+      setStage("cold Merchant retired recovery remains visible after reload")
       await expect(recoveredOrder).toBeVisible({ timeout: 30_000 })
       // The order row can be visible before the worker loads the persisted
       // retirement tombstone. Wait for that read, not merely a mounted row.
-      stage = "cold Merchant retains retirement tombstone after reload"
+      setStage("cold Merchant retains retirement tombstone after reload")
       await expect
         .poll(() => merchantWalletState(coldPage, orderId), { timeout: 45_000 })
         .toBe("retired")
-      stage = "cold Merchant retired reload does not replay payments"
+      setStage("cold Merchant retired reload does not replay payments")
       expect(control().snapshot()).toEqual(completed)
       expect(completed.sendInvocationCount).toBe(2)
       expect(await supplierNoticeCount()).toBe(1)
       expect(
         (await readTestRelayEvents({ kinds: [9_734, 9_735] })).length
       ).toBe(0)
+      bodyCompleted = true
       return
     }
-    stage = "external QR remains mounted during funding polls"
+    setStage("external QR remains mounted during funding polls")
     await page
       .getByRole("button", { name: "Show QR code", exact: true })
       .click()
@@ -1011,7 +1033,7 @@ async function rehearseRouter(
     // native receive/transfer history and derive its own exact credit proof.
     control().completeFunding()
 
-    stage = "automatic commerce payouts and pending native treasury transfer"
+    setStage("automatic commerce payouts and pending native treasury transfer")
     await expect
       .poll(
         () => {
@@ -1020,14 +1042,14 @@ async function rehearseRouter(
             nativePayments === 0 &&
             control().snapshot().outgoingPaymentCount === 2
           ) {
-            stage = "native treasury transfer not submitted after commerce"
+            setStage("native treasury transfer not submitted after commerce")
           }
           return nativePayments
         },
         { timeout: 45_000 }
       )
       .toBe(1)
-    stage = "pending native treasury buyer progress"
+    setStage("pending native treasury buyer progress")
     await expect(
       page.getByText("Completing payment", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
@@ -1054,7 +1076,7 @@ async function rehearseRouter(
     await expect(
       page.getByText("Order payment verified", { exact: true }).first()
     ).toBeVisible({ timeout: 30_000 })
-    stage = "pending native treasury accounting"
+    setStage("pending native treasury accounting")
     expect(control().snapshot()).toEqual({
       fundingInvoiceCount: 1,
       sendInvocationCount: 2,
@@ -1075,7 +1097,7 @@ async function rehearseRouter(
     })
     await expect(confirmation).toBeHidden()
 
-    stage = "partial payout receipt preserves pending native finalization"
+    setStage("partial payout receipt preserves pending native finalization")
     const partialReceipt = page.getByRole("region", {
       name: "Payment history",
       includeHidden: true,
@@ -1105,13 +1127,13 @@ async function rehearseRouter(
       exact: true,
     })
     await expect(resume).toBeEnabled({ timeout: 30_000 })
-    stage = "explicitly reconcile the completed native transfer"
+    setStage("explicitly reconcile the completed native transfer")
     await resume.click()
     await expect(confirmation).toBeHidden()
     await expect(
       page.getByText("Payment recorded", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    stage = "terminal buyer reconciliation without replay"
+    setStage("terminal buyer reconciliation without replay")
     await expect(
       page.getByText(
         /Your payment is recorded\. Delivery confirmation is separate/
@@ -1201,7 +1223,7 @@ async function rehearseRouter(
       await expect(receipt.getByText(/not a live wallet balance/)).toBeVisible()
       await expect(receipt.getByRole("button")).toHaveCount(0)
     }
-    stage = "actual payout receipt uses provider fees"
+    setStage("actual payout receipt uses provider fees")
     await assertRecordedReceipt()
     const sent = control().outgoingInvoices()
     // Compare native-executed invoices, not all fee-fitting callback attempts.
@@ -1235,7 +1257,7 @@ async function rehearseRouter(
       expect(control().snapshot()).toEqual(settled)
     }
 
-    stage = "explicit buyer cleanup retains residual recovery"
+    setStage("explicit buyer cleanup retains residual recovery")
     const cleanup = page.getByRole("button", {
       name: "Check wallet cleanup",
       exact: true,
@@ -1266,17 +1288,17 @@ async function rehearseRouter(
 
     // Historical accounting must not claim fresh wallet balance: the extra
     // native owned-funds observation changes cleanup, not recorded debit totals.
-    stage = "recorded receipt remains historical with additional owned funds"
+    setStage("recorded receipt remains historical with additional owned funds")
     await assertRecordedReceipt()
 
-    stage = "explicit buyer cleanup verifies terminal zero funds"
+    setStage("explicit buyer cleanup verifies terminal zero funds")
     control().setAdditionalOwnedSats(0)
     await cleanup.click()
     await expect(
       page.getByText("Payment complete", { exact: true })
     ).toBeVisible({ timeout: 30_000 })
     expect(control().snapshot()).toEqual(settled)
-    stage = "retired buyer order survives reload without replay"
+    setStage("retired buyer order survives reload without replay")
     await buyerPersistence.reload()
     await expect(
       page.getByText("Payment complete", { exact: true })
@@ -1284,7 +1306,7 @@ async function rehearseRouter(
     await expect(
       page.getByText("Order payment verified", { exact: true }).first()
     ).toBeVisible()
-    stage = "retired payout receipt survives reload"
+    setStage("retired payout receipt survives reload")
     await assertRecordedReceipt()
     await refresh.click()
     await expect(refresh).toBeEnabled()
@@ -1302,13 +1324,15 @@ async function rehearseRouter(
     )
     // This buyer-led case is not evidence for cold Merchant takeover, browser
     // suspension, real provider fees, or production funded settlement.
+    bodyCompleted = true
   } catch {
+    phaseRecorder.failed()
     // Never serialize underlying assertions, DOM, invoices or generated keys.
     throw new Error(`Isolated router smoke failed during ${stage}.`)
   } finally {
-    // Fixed authored phase only; no error, DOM, invoice or identity content.
-    // The ordinary privacy-safe reporter deliberately omits annotations.
-    test.info().annotations.push({ type: "router-phase", description: stage })
+    // A blocked body remains running until it actually unwinds. Only a
+    // positively finished body earns completed while cleanup is in progress.
+    phaseRecorder.teardown(bodyCompleted)
     // End owned network work before draining fixture responses. This is
     // teardown only, never permission to hide failures during assertions.
     for (const beginTeardown of beginNetworkTeardown.values()) beginTeardown()
@@ -1328,6 +1352,7 @@ async function rehearseRouter(
     await transport.close()
     for (const actor of [merchant, buyer, supplier])
       disposeRuntimeSignerIdentity(actor)
+    phaseRecorder.complete()
   }
 }
 
