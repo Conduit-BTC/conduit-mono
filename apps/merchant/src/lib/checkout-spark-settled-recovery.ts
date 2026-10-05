@@ -379,6 +379,7 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
   const module = await import("@buildonspark/spark-sdk")
   const { SparkReadonlyClient, SparkWallet, DefaultSparkSigner, UUID } = module
   const nativeNetwork = input.network === "mainnet" ? "MAINNET" : "REGTEST"
+  let sspIdentityPublicKey: string | undefined
   const wallet = await initializeMerchantSparkWalletWithCleanup<
     InstanceType<typeof SparkWallet>
   >(async (capture) => {
@@ -386,6 +387,7 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
       constructor(...args: ConstructorParameters<typeof SparkWallet>) {
         super(...args)
         capture(this)
+        sspIdentityPublicKey = this.config.getSspIdentityPublicKey()
       }
     }
     return (
@@ -512,6 +514,7 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
       } as SparkCheckoutReceiveCreditNativeTransfer
     },
     async openRetirementReader() {
+      if (closed) throw new Error("Checkout Spark retirement reader is closed.")
       if (!retirementReader) {
         const signer = new DefaultSparkSigner()
         const seed = await signer.mnemonicToSeed(input.mnemonic)
@@ -526,15 +529,67 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
         )
       }
       const reader = retirementReader
+      const sparkAddress = await readWithTimeout(
+        wallet.getSparkAddress(),
+        5_000,
+        "Retirement wallet address"
+      )
+      const walletIdentityPublicKey = await readWithTimeout(
+        wallet.getIdentityPublicKey(),
+        5_000,
+        "Retirement wallet identity"
+      )
+      if (closed) throw new Error("Checkout Spark retirement reader is closed.")
+      const readerSspIdentityPublicKey = sspIdentityPublicKey
+      const observedInternalTransferIds = new Set<string>()
+      async function readSwapEvidence(params: {
+        sparkAddress: string
+        transferId: string
+      }) {
+        if (
+          closed ||
+          params.sparkAddress !== sparkAddress ||
+          !observedInternalTransferIds.has(params.transferId) ||
+          !readerSspIdentityPublicKey
+        )
+          throw new Error("Checkout Spark swap evidence is out of scope.")
+        const transfer = await readWithTimeout(
+          wallet.getTransferFromSsp(params.transferId),
+          5_000,
+          "Retirement internal swap evidence"
+        )
+        if (closed)
+          throw new Error("Checkout Spark retirement reader is closed.")
+        return transfer
+          ? {
+              walletIdentityPublicKey,
+              sspIdentityPublicKey: readerSspIdentityPublicKey,
+              transfer,
+            }
+          : null
+      }
       return {
-        sparkAddress: await wallet.getSparkAddress(),
+        sparkAddress,
         reader: {
-          getTransfers: (params) =>
-            readWithTimeout(
+          getTransfers: async (params) => {
+            if (closed || params.sparkAddress !== sparkAddress)
+              throw new Error(
+                "Checkout Spark retirement reader is out of scope."
+              )
+            const result = await readWithTimeout(
               reader.getTransfers(params),
               5_000,
               "Retirement history"
-            ),
+            )
+            if (closed)
+              throw new Error("Checkout Spark retirement reader is closed.")
+            for (const transfer of result.transfers) {
+              if ([4, 5, 30, 40].includes(transfer.type))
+                observedInternalTransferIds.add(transfer.id)
+            }
+            return result
+          },
+          getInternalSwapEvidence: readSwapEvidence,
           getPendingTransfers: (address) =>
             readWithTimeout(
               reader.getPendingTransfers(address),

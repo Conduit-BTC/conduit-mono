@@ -26,6 +26,10 @@ type NativeHistoryTransfer = Awaited<
   ReturnType<CheckoutSparkNativeRetirementReader["getPendingTransfers"]>
 >[number]
 
+/** Public deterministic secp256k1 test point; never a provider destination. */
+export const HERMETIC_SPARK_SSP_IDENTITY_PUBLIC_KEY =
+  "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+
 interface HermeticPayout {
   paymentRequest: string
   preimage: string
@@ -188,6 +192,7 @@ function createHermeticWalletNative(input: {
   let nativeCompleted = true
   let nativeLostResponse = false
   let extraHistory: NativeHistoryTransfer[] = []
+  const extraSspTransfers = new Map<string, NativeSspTransfer>()
   const outgoing = new Map<
     string,
     {
@@ -235,7 +240,9 @@ function createHermeticWalletNative(input: {
               : []
           })
           .concat(
-            extraHistory.filter((row) => request.types.includes(row.type))
+            extraHistory.filter((row) =>
+              request.types.some((type) => type === row.type)
+            )
           )
         return page(transfers, request.limit, request.offset)
       },
@@ -326,6 +333,7 @@ function createHermeticWalletNative(input: {
         assertOpen()
         if (!input.nativeInvoiceCodec) unsupported()
         return {
+          offset: -1,
           invoiceStatuses: invoices.map((invoice) => {
             const decoded = input.nativeInvoiceCodec!.decodeSparkAddress(
               invoice,
@@ -422,6 +430,8 @@ function createHermeticWalletNative(input: {
       },
       async getTransferFromSsp(id) {
         assertOpen()
+        const extra = extraSspTransfers.get(id)
+        if (extra) return structuredClone(extra)
         const saved = outgoing.get(id)
         return saved ? structuredClone(saved.transfer) : undefined
       },
@@ -574,6 +584,14 @@ function createHermeticWalletNative(input: {
       },
       setExtraHistory(transfers: readonly NativeHistoryTransfer[]) {
         extraHistory = structuredClone([...transfers])
+      },
+      /** Raw external-provider replies only; core derives any swap evidence. */
+      setExtraSspTransfers(transfers: readonly NativeSspTransfer[]) {
+        if (transfers.some((transfer) => !transfer.sparkId)) unsupported()
+        extraSspTransfers.clear()
+        for (const transfer of transfers) {
+          extraSspTransfers.set(transfer.sparkId!, structuredClone(transfer))
+        }
       },
       addUnattributedAvailableSats(sats: number) {
         if (

@@ -555,13 +555,37 @@ export function adaptFirstPartySparkWallet(input: {
     }
     let closed = false
     let cleanupPromise: Promise<void> | undefined
+    const observedInternalTransferIds = new Set<string>()
     const session: SparkCheckoutRetirementSession = {
       sparkAddress,
       reader: {
         getTransfers: (params) =>
-          read(params.sparkAddress, () =>
-            native.reader.getTransfers({ ...params, types: [...params.types] })
-          ),
+          read(params.sparkAddress, async () => {
+            const result = await native.reader.getTransfers({
+              ...params,
+              types: [...params.types],
+            })
+            for (const transfer of result.transfers) {
+              if ([4, 5, 30, 40].includes(transfer.type))
+                observedInternalTransferIds.add(transfer.id)
+            }
+            return result
+          }),
+        ...(native.reader.getInternalSwapEvidence
+          ? {
+              getInternalSwapEvidence: (params: {
+                sparkAddress: string
+                transferId: string
+              }) =>
+                read(params.sparkAddress, () => {
+                  if (!observedInternalTransferIds.has(params.transferId))
+                    throw new Error(
+                      "Checkout Spark swap evidence is out of scope."
+                    )
+                  return native.reader.getInternalSwapEvidence!({ ...params })
+                }),
+            }
+          : {}),
         getPendingTransfers: (address) =>
           read(address, () => native.reader.getPendingTransfers(address)),
         getAvailableBalance: (address) =>
@@ -2455,13 +2479,42 @@ export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
       }
       class CheckoutSparkWallet extends module.SparkWallet {
         async openRetirementReader() {
+          const sparkAddress = await this.getSparkAddress()
+          const walletIdentityPublicKey = await this.getIdentityPublicKey()
+          const sspIdentityPublicKey = this.config.getSspIdentityPublicKey()
           // Reuse the initialized exact-account signer without retaining or
           // exporting recovery material, and request identity-authenticated data.
           const reader = RetirementReadonlyClient.createWithSigner(
             { log: false, network: retirementNetwork },
             this.config.signer
           )
-          return { reader, cleanup: () => reader.cleanup() }
+          return {
+            reader: {
+              getTransfers: (params) => reader.getTransfers(params),
+              getPendingTransfers: (address) =>
+                reader.getPendingTransfers(address),
+              getAvailableBalance: (address) =>
+                reader.getAvailableBalance(address),
+              getOwnedBalance: (address) => reader.getOwnedBalance(address),
+              getInternalSwapEvidence: async (params) => {
+                if (params.sparkAddress !== sparkAddress)
+                  throw new Error(
+                    "Checkout Spark swap evidence is out of scope."
+                  )
+                const transfer = await this.getTransferFromSsp(
+                  params.transferId
+                )
+                return transfer
+                  ? {
+                      walletIdentityPublicKey,
+                      sspIdentityPublicKey,
+                      transfer,
+                    }
+                  : null
+              },
+            } satisfies CheckoutSparkNativeRetirementReader,
+            cleanup: () => reader.cleanup(),
+          }
         }
       }
       const { wallet } = await CheckoutSparkWallet.initialize(input)

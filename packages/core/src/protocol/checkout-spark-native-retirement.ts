@@ -28,6 +28,53 @@ interface NativeTransfer {
   status: number
   network: number
   totalValue: number
+  /** Raw authenticated participant/leaf facts are needed only for extra swaps. */
+  senders?: unknown
+  receivers?: unknown
+  leaves?: unknown
+}
+
+interface SwapTransferFacts {
+  senderId: string
+  senderIdentity: string
+  receiverId: string
+  receiverIdentity: string
+  receiverStatus: number
+  receiverSats: number
+  leaves: {
+    id: string
+    value: number
+    senderId: string
+    receiverId: string
+  }[]
+}
+
+interface HistoryTransfer {
+  id: string
+  type: number
+  status: number
+  network: number
+  totalValue: number
+  swapFacts?: SwapTransferFacts
+}
+
+interface SwapRequestFacts {
+  requestId: string
+  walletIdentity: string
+  sspIdentity: string
+  network: CheckoutSparkNetwork
+  outboundId: string
+  inboundId: string
+  value: number
+  inboundLeafIds: string[]
+}
+
+export interface CheckoutSparkInternalSwapEvidence {
+  /** Frozen, caller-validated exact checkout and configured SSP identities. */
+  walletIdentityPublicKey: string
+  sspIdentityPublicKey: string
+  /** Unmodified first-party getTransferFromSsp response, validated here. */
+  transfer: unknown
 }
 
 /**
@@ -45,6 +92,10 @@ export interface CheckoutSparkNativeRetirementReader {
   getPendingTransfers(sparkAddress: string): Promise<NativeTransfer[]>
   getAvailableBalance(sparkAddress: string): Promise<bigint>
   getOwnedBalance(sparkAddress: string): Promise<bigint>
+  getInternalSwapEvidence?(input: {
+    sparkAddress: string
+    transferId: string
+  }): Promise<CheckoutSparkInternalSwapEvidence | null>
 }
 
 export interface CollectCheckoutSparkNativeRetirementEvidenceInput {
@@ -74,11 +125,247 @@ async function guardedRead<T>(
   return result
 }
 
+function object(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function positiveSats(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0
+}
+
+function identity(value: unknown): string | null {
+  return typeof value === "string" && /^(02|03)[0-9a-f]{64}$/i.test(value)
+    ? value.toLowerCase()
+    : null
+}
+
+function bytesIdentity(value: unknown): string | null {
+  if (!(value instanceof Uint8Array) || value.length !== 33) return null
+  return identity(
+    Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("")
+  )
+}
+
+function satsAmount(value: unknown): number | null {
+  const amount = object(value)
+  return amount?.originalUnit === "SATOSHI" &&
+    Number.isSafeInteger(amount.originalValue) &&
+    (amount.originalValue as number) >= 0
+    ? (amount.originalValue as number)
+    : null
+}
+
+/** Snapshot only historical edge/value facts, never current owner or secrets. */
+function snapshotSwapTransfer(
+  transfer: NativeTransfer
+): SwapTransferFacts | null {
+  if (
+    !Array.isArray(transfer.senders) ||
+    transfer.senders.length !== 1 ||
+    !Array.isArray(transfer.receivers) ||
+    transfer.receivers.length !== 1 ||
+    !Array.isArray(transfer.leaves) ||
+    transfer.leaves.length < 1 ||
+    transfer.leaves.length > PAGE_SIZE * MAX_PAGES
+  )
+    return null
+  const sender = object(transfer.senders[0])
+  const receiver = object(transfer.receivers[0])
+  const senderIdentity = bytesIdentity(sender?.identityPublicKey)
+  const receiverIdentity = bytesIdentity(receiver?.identityPublicKey)
+  if (
+    !sender ||
+    !receiver ||
+    !isIdentifier(sender.id) ||
+    !isIdentifier(receiver.id) ||
+    sender.id === receiver.id ||
+    !senderIdentity ||
+    !receiverIdentity ||
+    senderIdentity === receiverIdentity ||
+    receiver.status !== 6 ||
+    !positiveSats(receiver.amountSats)
+  )
+    return null
+  const leaves: SwapTransferFacts["leaves"] = []
+  let sum = 0
+  for (const raw of transfer.leaves) {
+    const edge = object(raw)
+    const leaf = object(edge?.leaf)
+    if (
+      !edge ||
+      !leaf ||
+      !isIdentifier(leaf.id) ||
+      !positiveSats(leaf.value) ||
+      edge.transferSenderId !== sender.id ||
+      edge.transferReceiverId !== receiver.id
+    )
+      return null
+    sum += leaf.value
+    if (!Number.isSafeInteger(sum)) return null
+    leaves.push({
+      id: leaf.id,
+      value: leaf.value,
+      senderId: sender.id,
+      receiverId: receiver.id,
+    })
+  }
+  if (
+    sum !== receiver.amountSats ||
+    sum !== transfer.totalValue ||
+    new Set(leaves.map(({ id }) => id)).size !== leaves.length
+  )
+    return null
+  return {
+    senderId: sender.id,
+    senderIdentity,
+    receiverId: receiver.id,
+    receiverIdentity,
+    receiverStatus: 6,
+    receiverSats: receiver.amountSats,
+    leaves: leaves.sort((left, right) => left.id.localeCompare(right.id)),
+  }
+}
+
+function snapshotSwapRequest(
+  evidence: CheckoutSparkInternalSwapEvidence,
+  transfer: HistoryTransfer,
+  network: CheckoutSparkNetwork
+): SwapRequestFacts | null {
+  const walletIdentity = identity(evidence.walletIdentityPublicKey)
+  const sspIdentity = identity(evidence.sspIdentityPublicKey)
+  const response = object(evidence.transfer)
+  const request = object(response?.userRequest)
+  const outbound = object(request?.outboundTransfer)
+  const inbound = object(request?.inboundTransfer)
+  if (
+    !walletIdentity ||
+    !sspIdentity ||
+    walletIdentity === sspIdentity ||
+    !response ||
+    response.sparkId !== transfer.id ||
+    satsAmount(response.totalAmount) !== transfer.totalValue ||
+    !request ||
+    request.typename !== "LeavesSwapRequest" ||
+    !isIdentifier(request.id) ||
+    request.status !== "SUCCEEDED" ||
+    request.network !== (network === "mainnet" ? "MAINNET" : "REGTEST") ||
+    satsAmount(request.fee) !== 0 ||
+    !positiveSats(satsAmount(request.totalAmount)) ||
+    !outbound ||
+    !inbound ||
+    !isIdentifier(outbound.sparkId) ||
+    !isIdentifier(inbound.sparkId) ||
+    outbound.sparkId === inbound.sparkId ||
+    ![outbound.sparkId, inbound.sparkId].includes(transfer.id) ||
+    (outbound.userRequestId !== undefined &&
+      outbound.userRequestId !== request.id) ||
+    (inbound.userRequestId !== undefined &&
+      inbound.userRequestId !== request.id) ||
+    satsAmount(outbound.totalAmount) !== satsAmount(request.totalAmount) ||
+    satsAmount(inbound.totalAmount) !== satsAmount(request.totalAmount) ||
+    !Array.isArray(request.swapLeaves) ||
+    request.swapLeaves.length < 1 ||
+    request.swapLeaves.length > PAGE_SIZE * MAX_PAGES
+  )
+    return null
+  const inboundLeafIds: string[] = []
+  for (const leaf of request.swapLeaves) {
+    const leafId = object(leaf)?.leafId
+    if (!isIdentifier(leafId)) return null
+    inboundLeafIds.push(leafId)
+  }
+  if (new Set(inboundLeafIds).size !== inboundLeafIds.length) return null
+  return {
+    requestId: request.id,
+    walletIdentity,
+    sspIdentity,
+    network,
+    outboundId: outbound.sparkId,
+    inboundId: inbound.sparkId,
+    value: satsAmount(request.totalAmount)!,
+    inboundLeafIds: inboundLeafIds.sort(),
+  }
+}
+
+/** Every extra ID needs positive, unique, terminal net-zero swap evidence. */
+async function proveInternalSwapScope(
+  input: CollectCheckoutSparkNativeRetirementEvidenceInput,
+  history: readonly HistoryTransfer[],
+  closedReturns: ReadonlyMap<string, number>
+): Promise<SwapRequestFacts[] | null> {
+  const extras = history.filter(
+    ({ id }) =>
+      !input.expectedTransferIds.includes(id) && !closedReturns.has(id)
+  )
+  if (extras.length === 0) return []
+  const readEvidence = input.authenticatedReader.getInternalSwapEvidence
+  if (
+    !readEvidence ||
+    extras.length % 2 !== 0 ||
+    extras.some(
+      ({ type, swapFacts }) => ![4, 5, 30, 40].includes(type) || !swapFacts
+    )
+  )
+    return null
+  const requests = new Map<string, SwapRequestFacts>()
+  let context: string | undefined
+  for (const transfer of extras) {
+    const evidence = await guardedRead(input, () =>
+      readEvidence.call(input.authenticatedReader, {
+        sparkAddress: input.sparkAddress,
+        transferId: transfer.id,
+      })
+    )
+    if (!evidence) return null
+    const request = snapshotSwapRequest(evidence, transfer, input.network)
+    if (!request) return null
+    const currentContext = `${request.walletIdentity}:${request.sspIdentity}`
+    if (context !== undefined && context !== currentContext) return null
+    context = currentContext
+    const prior = requests.get(request.requestId)
+    if (prior && JSON.stringify(prior) !== JSON.stringify(request)) return null
+    requests.set(request.requestId, request)
+  }
+  const covered = new Set<string>()
+  for (const request of requests.values()) {
+    const outbound = extras.find(({ id }) => id === request.outboundId)
+    const inbound = extras.find(({ id }) => id === request.inboundId)
+    if (
+      !outbound?.swapFacts ||
+      !inbound?.swapFacts ||
+      !(
+        (outbound.type === 4 && inbound.type === 5) ||
+        (outbound.type === 30 && inbound.type === 40)
+      ) ||
+      covered.has(outbound.id) ||
+      covered.has(inbound.id) ||
+      outbound.totalValue !== request.value ||
+      inbound.totalValue !== request.value ||
+      outbound.swapFacts.senderIdentity !== request.walletIdentity ||
+      outbound.swapFacts.receiverIdentity !== request.sspIdentity ||
+      inbound.swapFacts.senderIdentity !== request.sspIdentity ||
+      inbound.swapFacts.receiverIdentity !== request.walletIdentity ||
+      JSON.stringify(inbound.swapFacts.leaves.map(({ id }) => id).sort()) !==
+        JSON.stringify(request.inboundLeafIds)
+    )
+      return null
+    covered.add(outbound.id)
+    covered.add(inbound.id)
+  }
+  return covered.size === extras.length
+    ? [...requests.values()].sort((left, right) =>
+        left.requestId.localeCompare(right.requestId)
+      )
+    : null
+}
+
 async function readCompleteHistory(
   input: CollectCheckoutSparkNativeRetirementEvidenceInput,
   closedReturns: ReadonlyMap<string, number>
-): Promise<NativeTransfer[] | null> {
-  const history: NativeTransfer[] = []
+): Promise<HistoryTransfer[] | null> {
+  const history: HistoryTransfer[] = []
   let offset = 0
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await guardedRead(input, () =>
@@ -117,15 +404,23 @@ async function readCompleteHistory(
       )
     )
       return null
-    history.push(
-      ...result.transfers.map(({ id, type, status, network, totalValue }) => ({
+    for (const transfer of result.transfers) {
+      const { id, type, status, network, totalValue } = transfer
+      const extra =
+        input.requireExactHistoryScope &&
+        !input.expectedTransferIds.includes(id) &&
+        !closedReturns.has(id)
+      const swapFacts = extra ? snapshotSwapTransfer(transfer) : undefined
+      if (extra && !swapFacts) return null
+      history.push({
         id,
         type,
         status,
         network,
         totalValue,
-      }))
-    )
+        ...(swapFacts ? { swapFacts } : {}),
+      })
+    }
     offset = result.offset
     if (offset < 0) break
   }
@@ -141,6 +436,27 @@ async function readCompleteHistory(
   )
     return null
   return history.sort((left, right) => left.id.localeCompare(right.id))
+}
+
+async function readStableHistoryScope(
+  input: CollectCheckoutSparkNativeRetirementEvidenceInput,
+  closedReturns: ReadonlyMap<string, number>
+): Promise<boolean> {
+  const first = await readCompleteHistory(input, closedReturns)
+  if (!first) return false
+  const firstSwaps = input.requireExactHistoryScope
+    ? await proveInternalSwapScope(input, first, closedReturns)
+    : []
+  if (!firstSwaps) return false
+  const second = await readCompleteHistory(input, closedReturns)
+  if (!second || JSON.stringify(first) !== JSON.stringify(second)) return false
+  const secondSwaps = input.requireExactHistoryScope
+    ? await proveInternalSwapScope(input, second, closedReturns)
+    : []
+  return (
+    secondSwaps !== null &&
+    JSON.stringify(firstSwaps) === JSON.stringify(secondSwaps)
+  )
 }
 
 /** Exact checkout-attributed pre-send scope, not a wallet sweep authorization. */
@@ -166,7 +482,11 @@ export async function proveCheckoutSparkNativeTreasuryHistory(
         input.expectedTransferIds.length
     )
       return false
-    input = { ...input, expectedTransferIds: [...input.expectedTransferIds] }
+    input = {
+      ...input,
+      expectedTransferIds: [...input.expectedTransferIds],
+      requireExactHistoryScope: true,
+    }
     const proofs = [...(input.closedReturnedProofs ?? [])]
     if (proofs.length > PAGE_SIZE * MAX_PAGES) return false
     const closed = new Map<string, number>()
@@ -192,19 +512,7 @@ export async function proveCheckoutSparkNativeTreasuryHistory(
     const startedAt = input.now()
     if (!Number.isSafeInteger(startedAt) || startedAt < input.stateUpdatedAt)
       return false
-    const first = await readCompleteHistory(input, closed)
-    const second = await readCompleteHistory(input, closed)
-    if (
-      !first ||
-      !second ||
-      JSON.stringify(first) !== JSON.stringify(second) ||
-      first.some(
-        (transfer) =>
-          !input.expectedTransferIds.includes(transfer.id) &&
-          !closed.has(transfer.id)
-      )
-    )
-      return false
+    if (!(await readStableHistoryScope(input, closed))) return false
     const available = await guardedRead(input, () =>
       input.authenticatedReader.getAvailableBalance(input.sparkAddress)
     )
@@ -282,19 +590,7 @@ export async function collectCheckoutSparkNativeRetirementEvidence(
     if (!Number.isSafeInteger(startedAt) || startedAt < input.stateUpdatedAt)
       return null
     const reader = input.authenticatedReader
-    const first = await readCompleteHistory(input, closedReturns)
-    if (!first) return null
-    const second = await readCompleteHistory(input, closedReturns)
-    if (!second || JSON.stringify(first) !== JSON.stringify(second)) return null
-    if (
-      input.requireExactHistoryScope &&
-      first.some(
-        (transfer) =>
-          !input.expectedTransferIds.includes(transfer.id) &&
-          !closedReturns.has(transfer.id)
-      )
-    )
-      return null
+    if (!(await readStableHistoryScope(input, closedReturns))) return null
     const available = await guardedRead(input, () =>
       reader.getAvailableBalance(input.sparkAddress)
     )

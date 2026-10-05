@@ -48,7 +48,8 @@ redirect to a new destination. See [deployment configuration](quantum-router-dep
 Preparation requires fresh authenticated exact credit, recipient-origin
 evidence, successful commerce history and net-zero closed attempts. Before
 sending, two complete equal wallet-history scans must contain only these known
-IDs. Available and owned funds must equal the attributed remainder, with no
+payment IDs or positively proven internal swaps described below. Available and
+owned funds must equal the attributed remainder, with no
 pending transfers. Extra deposits, unknown outgoing activity, partial history
 or unavailable evidence pause collection rather than enlarge or subsidize it.
 
@@ -100,3 +101,17 @@ Synthetic tests exercise amount attribution, recipient binding, relay recovery,
 possible-send replay protection and retirement. They do not establish deployed
 provider behavior. Funded buyer routing and cold Merchant recovery on the
 candidate build remain maintainer-owned release validation.
+
+## Session Context Updates
+
+<!-- session-doc-update:7105ba65b8da -->
+
+### 2026-10-05
+
+Completed internal denomination swaps may appear alongside the expected payment
+IDs. Each extra swap needs fresh authenticated SDK history and SSP request
+evidence: a unique succeeded zero-fee primary/counter pair on the frozen network,
+exact checkout-to-configured-SSP and return ownership, exact returned-leaf links,
+and equal conserved values. Two complete stable scans must agree on both history
+and request facts. Type labels, equal amounts, balance alone, partial pairs and
+unavailable evidence cannot authorize collection or exact-history retirement.

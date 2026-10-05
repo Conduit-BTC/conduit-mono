@@ -237,6 +237,9 @@ The pinned native adapter supports only its verified zero-fee path. A fee,
 unknown capability, inadequate funds or uncertain evidence pauses this leg.
 Pre-send authenticated full-history scans must contain only the exact funding,
 verified commerce and separately proven net-zero closed-attempt identifiers.
+Positively verified, zero-net internal Spark swaps are also permitted only when
+exact SSP linkage, wallet ownership, returned leaves and value conservation are
+proven; unknown transfers remain blocked.
 Available and owned funds must equal the attributed remainder, with no pending
 activity. Unknown history or extra funds cannot subsidize or enlarge collection.
 Before admission, atomically persist the exact intent and possible-send state

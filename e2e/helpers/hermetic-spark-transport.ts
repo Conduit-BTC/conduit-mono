@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { schnorr } from "../../packages/core/node_modules/@noble/curves/secp256k1.js"
 import type { BrowserContext } from "@playwright/test"
 import type { SparkNativeWallet } from "../../apps/market/src/lib/spark-sdk"
+import type { CheckoutSparkNativeRetirementReader } from "@conduit/core"
 import type { createHermeticSparkNative } from "./hermetic-spark-native"
 import type {
   HermeticSparkRequest,
@@ -31,6 +32,14 @@ const walletMethods = new Set<WalletMethod>([
 
 function unavailable(): never {
   throw new Error("Hermetic Spark transport unavailable")
+}
+
+function serializeParticipant(raw: unknown) {
+  if (!raw || typeof raw !== "object") return raw
+  const participant = raw as { identityPublicKey?: unknown }
+  return participant.identityPublicKey instanceof Uint8Array
+    ? { ...participant, identityPublicKey: [...participant.identityPublicKey] }
+    : raw
 }
 
 /** Runner-owned native sessions only; never receives application proof records. */
@@ -131,6 +140,7 @@ export function createHermeticSparkTransport(
                 command.args[0] as string[]
               )
               return {
+                ...result,
                 invoiceStatuses: result.invoiceStatuses.map((entry) => ({
                   ...entry,
                   ...(entry.transferType?.$case === "satsTransfer"
@@ -215,11 +225,29 @@ export function createHermeticSparkTransport(
               !Array.isArray(command.args)
             )
               unavailable()
-            return await Reflect.apply(
-              opened.reader[command.method],
+            const method = opened.reader[command.method]
+            if (typeof method !== "function") unavailable()
+            const result = await Reflect.apply(
+              method,
               opened.reader,
               command.args
             )
+            if (command.method !== "getTransfers") return result
+            const page = result as Awaited<
+              ReturnType<CheckoutSparkNativeRetirementReader["getTransfers"]>
+            >
+            return {
+              ...page,
+              transfers: page.transfers.map((transfer) => ({
+                ...transfer,
+                ...(Array.isArray(transfer.senders)
+                  ? { senders: transfer.senders.map(serializeParticipant) }
+                  : {}),
+                ...(Array.isArray(transfer.receivers)
+                  ? { receivers: transfer.receivers.map(serializeParticipant) }
+                  : {}),
+              })),
+            }
           }
           case "reader.close": {
             const reader = readers.get(command.handle)

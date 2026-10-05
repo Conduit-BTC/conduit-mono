@@ -3,6 +3,7 @@ import type {
   SparkNativeWallet,
 } from "../../apps/market/src/lib/spark-sdk"
 import type { CheckoutSparkNativeRetirementReader } from "@conduit/core"
+import { HERMETIC_SPARK_SSP_IDENTITY_PUBLIC_KEY } from "./hermetic-spark-native"
 import type {
   HermeticSparkRequestFn,
   WalletMethod,
@@ -43,6 +44,17 @@ function hex(bytes: Uint8Array) {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("")
 }
 
+function reviveParticipant(raw: unknown) {
+  if (!raw || typeof raw !== "object") return raw
+  const participant = raw as { identityPublicKey?: unknown }
+  const key = participant.identityPublicKey
+  return Array.isArray(key) &&
+    key.length === 33 &&
+    key.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+    ? { ...participant, identityPublicKey: Uint8Array.from(key) }
+    : raw
+}
+
 /** Test-only external SDK replacement; application adapters are not replaced. */
 export function createHermeticSparkSdkFacade(input: {
   request: HermeticSparkRequestFn
@@ -53,11 +65,15 @@ export function createHermeticSparkSdkFacade(input: {
     #closed = false
     protected readonly config: {
       signer: InstanceType<PureSdk["DefaultSparkSigner"]>
+      getSspIdentityPublicKey(): string
     }
     constructor(options?: NativeConfig, _signer?: unknown) {
       void _signer
       requireRegtest(options)
-      this.config = { signer: new input.pureSdk.DefaultSparkSigner() }
+      this.config = {
+        signer: new input.pureSdk.DefaultSparkSigner(),
+        getSspIdentityPublicKey: () => HERMETIC_SPARK_SSP_IDENTITY_PUBLIC_KEY,
+      }
     }
     static async initialize<T extends SparkWallet>(
       this: new (options?: NativeConfig, signer?: unknown) => T,
@@ -142,6 +158,7 @@ export function createHermeticSparkSdkFacade(input: {
     async querySparkInvoices(invoices: string[]) {
       const result = await this.call("querySparkInvoices", [invoices])
       return {
+        ...result,
         invoiceStatuses: result.invoiceStatuses.map((entry) => ({
           ...entry,
           ...(entry.transferType?.$case === "satsTransfer"
@@ -277,7 +294,9 @@ export function createHermeticSparkSdkFacade(input: {
     private async call<K extends ReaderMethod>(
       method: K,
       args: unknown[]
-    ): Promise<Awaited<ReturnType<CheckoutSparkNativeRetirementReader[K]>>> {
+    ): Promise<
+      Awaited<ReturnType<NonNullable<CheckoutSparkNativeRetirementReader[K]>>>
+    > {
       if (this.#closed) unavailable()
       this.#opening ??= this.open()
       const opened = await this.#opening
@@ -287,7 +306,9 @@ export function createHermeticSparkSdkFacade(input: {
         handle: opened.handle,
         method,
         args,
-      })) as Awaited<ReturnType<CheckoutSparkNativeRetirementReader[K]>>
+      })) as Awaited<
+        ReturnType<NonNullable<CheckoutSparkNativeRetirementReader[K]>>
+      >
     }
     async getTransfers(request: {
       sparkAddress: string
@@ -299,7 +320,7 @@ export function createHermeticSparkSdkFacade(input: {
     }) {
       if (this.#closed) unavailable()
       if (this.authMode === "none") return { transfers: [], offset: -1 }
-      return this.call("getTransfers", [
+      const result = await this.call("getTransfers", [
         {
           ...request,
           types: request.types ?? [0, 1, 2, 3, 4, 5, 30, 40],
@@ -307,6 +328,18 @@ export function createHermeticSparkSdkFacade(input: {
           offset: request.offset ?? 0,
         },
       ])
+      return {
+        ...result,
+        transfers: result.transfers.map((transfer) => ({
+          ...transfer,
+          ...(Array.isArray(transfer.senders)
+            ? { senders: transfer.senders.map(reviveParticipant) }
+            : {}),
+          ...(Array.isArray(transfer.receivers)
+            ? { receivers: transfer.receivers.map(reviveParticipant) }
+            : {}),
+        })),
+      }
     }
     async getPendingTransfers(address: string) {
       if (this.#closed) unavailable()

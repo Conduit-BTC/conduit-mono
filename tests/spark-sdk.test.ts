@@ -262,6 +262,181 @@ describe("first-party Spark SDK adapter", () => {
     expect(opens).toBe(1)
   })
 
+  it("exposes internal swap evidence only for this reader's observed exact-wallet history", async () => {
+    const evidence = {
+      walletIdentityPublicKey: RECEIVE_IDENTITY_KEY,
+      sspIdentityPublicKey: "03" + "55".repeat(32),
+      transfer: { sparkId: "observed-primary-swap" },
+    }
+    let evidenceReads = 0
+    const client = await openClient(
+      createFactory(
+        createNativeWallet({
+          async openRetirementReader() {
+            return {
+              reader: {
+                ...emptyRetirementReader(),
+                getTransfers: async () => ({
+                  transfers: [
+                    {
+                      id: "observed-primary-swap",
+                      type: 4,
+                      status: 5,
+                      network: 1,
+                      totalValue: 100,
+                    },
+                  ],
+                  offset: -1,
+                }),
+                getInternalSwapEvidence: async () => {
+                  evidenceReads++
+                  return evidence
+                },
+              },
+              cleanup: async () => {},
+            }
+          },
+        }),
+        {
+          decodeSparkAddress: () => ({
+            identityPublicKey: RECEIVE_IDENTITY_KEY,
+          }),
+        }
+      )
+    )
+    try {
+      const session = await client.openCheckoutRetirementReader!({
+        walletId: "wallet-personal",
+        network: "mainnet",
+        receiverIdentityPublicKey: RECEIVE_IDENTITY_KEY,
+      })
+      const request = {
+        sparkAddress: session.sparkAddress,
+        transferId: "observed-primary-swap",
+      }
+      await expect(
+        session.reader.getInternalSwapEvidence!(request)
+      ).rejects.toThrow()
+      await session.reader.getTransfers({
+        sparkAddress: session.sparkAddress,
+        types: [4, 5],
+        limit: 100,
+        offset: 0,
+      })
+      expect(await session.reader.getInternalSwapEvidence!(request)).toEqual(
+        evidence
+      )
+      await expect(
+        session.reader.getInternalSwapEvidence!({
+          ...request,
+          sparkAddress: "spark1another-wallet",
+        })
+      ).rejects.toThrow()
+      await expect(
+        session.reader.getInternalSwapEvidence!({
+          ...request,
+          transferId: "unobserved-swap",
+        })
+      ).rejects.toThrow()
+      await session.cleanup()
+      await expect(
+        session.reader.getInternalSwapEvidence!(request)
+      ).rejects.toThrow()
+      expect(evidenceReads).toBe(1)
+    } finally {
+      await client.disconnect()
+    }
+  })
+
+  it("preserves internal swap evidence through the wallet manager and revokes an in-flight read on close", async () => {
+    const evidence = {
+      walletIdentityPublicKey: RECEIVE_IDENTITY_KEY,
+      sspIdentityPublicKey: "03" + RECEIVE_IDENTITY_KEY.slice(2),
+      transfer: { sparkId: "observed-primary-swap" },
+    }
+    const pending = deferred<typeof evidence>()
+    let stall = false
+    const manager = new SparkWalletManager(
+      createFactory(
+        createNativeWallet({
+          async openRetirementReader() {
+            return {
+              reader: {
+                ...emptyRetirementReader(),
+                getTransfers: async () => ({
+                  transfers: [
+                    {
+                      id: "observed-primary-swap",
+                      type: 4,
+                      status: 5,
+                      network: 1,
+                      totalValue: 100,
+                    },
+                  ],
+                  offset: -1,
+                }),
+                getInternalSwapEvidence: async () =>
+                  stall ? pending.promise : evidence,
+              },
+              cleanup: async () => {},
+            }
+          },
+        }),
+        {
+          decodeSparkAddress: () => ({
+            identityPublicKey: RECEIVE_IDENTITY_KEY,
+          }),
+        }
+      ),
+      async () => ({ release: async () => {} }),
+      new MemorySparkDirectTransferSafetyStore()
+    )
+    await manager.openWithMnemonic({
+      walletId: "wallet-personal",
+      mnemonic: MNEMONIC,
+      accountNumber: 1,
+    })
+    try {
+      const session = await manager.openCheckoutRetirementReader(
+        "wallet-personal",
+        {
+          network: "mainnet",
+          receiverIdentityPublicKey: RECEIVE_IDENTITY_KEY,
+        }
+      )
+      expect(typeof session.reader.getInternalSwapEvidence).toBe("function")
+      await session.reader.getTransfers({
+        sparkAddress: session.sparkAddress,
+        types: [4, 5],
+        limit: 100,
+        offset: 0,
+      })
+      const request = {
+        sparkAddress: session.sparkAddress,
+        transferId: "observed-primary-swap",
+      }
+      expect(await session.reader.getInternalSwapEvidence!(request)).toEqual(
+        evidence
+      )
+      stall = true
+      const result = session.reader.getInternalSwapEvidence!(request).catch(
+        (error: unknown) => error
+      )
+      await manager.close("wallet-personal")
+      pending.resolve(evidence)
+      expect(await result).toMatchObject({
+        message: "Checkout Spark retirement session is closed.",
+      })
+      await expect(
+        session.reader.getInternalSwapEvidence!(request)
+      ).rejects.toThrow("locked")
+      await session.cleanup()
+    } finally {
+      pending.resolve(evidence)
+      await manager.close("wallet-personal")
+    }
+  })
+
   it("revokes in-flight retirement reads when their wallet session closes", async () => {
     const pending = deferred<bigint>()
     let readerCleanups = 0

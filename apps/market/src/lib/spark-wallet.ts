@@ -666,6 +666,14 @@ export class SparkWalletManager {
       sparkAddress: session.sparkAddress,
       reader: {
         getTransfers: (input) => read(() => session.reader.getTransfers(input)),
+        ...(session.reader.getInternalSwapEvidence
+          ? {
+              getInternalSwapEvidence: (input: {
+                sparkAddress: string
+                transferId: string
+              }) => read(() => session.reader.getInternalSwapEvidence!(input)),
+            }
+          : {}),
         getPendingTransfers: (address) =>
           read(() => session.reader.getPendingTransfers(address)),
         getAvailableBalance: (address) =>

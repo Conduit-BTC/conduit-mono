@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto"
 import { createRuntimeMnemonic } from "./runtime-wallet-fixtures"
 import { mock } from "bun:test"
-import { createHermeticSparkNative } from "../../e2e/helpers/hermetic-spark-native"
+import {
+  createHermeticSparkNative,
+  HERMETIC_SPARK_SSP_IDENTITY_PUBLIC_KEY as SSP_IDENTITY,
+} from "../../e2e/helpers/hermetic-spark-native"
 import { createHermeticSparkTransport } from "../../e2e/helpers/hermetic-spark-transport"
 import { createHermeticSparkSdkFacade } from "../../e2e/helpers/hermetic-spark-sdk-facade"
 import { collectCheckoutSparkNativeRetirementEvidence } from "../../packages/core/src/protocol/checkout-spark-native-retirement"
@@ -16,6 +19,9 @@ import {
 
 const NOW = 1_800_000_000_000
 const MNEMONIC = createRuntimeMnemonic()
+const SWAP_PRIMARY = "6e7247ed-b1f0-40cc-bebf-bd548910cace"
+const SWAP_COUNTER = "a91407e3-c5ec-4c9b-80f9-2bdc1dadc88d"
+const UNRELATED_IDENTITY = `03${SSP_IDENTITY.slice(2)}`
 let stage = "setup"
 
 function check(value: unknown) {
@@ -32,6 +38,60 @@ function invoice(amountSats: number, preimage: Uint8Array) {
       { tag: "x", words: [28, 4] },
     ],
   })
+}
+
+function internalSwap(walletIdentity: string) {
+  const amount = { originalUnit: "SATOSHI", originalValue: 100 }
+  const key = (identity: string) =>
+    Uint8Array.from(Buffer.from(identity, "hex"))
+  const row = (id: string, type: 4 | 5, sender: string, receiver: string) => ({
+    id,
+    type,
+    status: 5,
+    network: 2,
+    totalValue: 100,
+    senders: [{ id: `${id}:sender`, identityPublicKey: key(sender) }],
+    receivers: [
+      {
+        id: `${id}:receiver`,
+        identityPublicKey: key(receiver),
+        status: 6,
+        amountSats: 100,
+      },
+    ],
+    leaves: [
+      {
+        leaf: { id: `${id}:leaf`, value: 100 },
+        transferSenderId: `${id}:sender`,
+        transferReceiverId: `${id}:receiver`,
+      },
+    ],
+  })
+  const userRequest = {
+    typename: "LeavesSwapRequest",
+    id: "hermetic-leaves-swap",
+    status: "SUCCEEDED",
+    network: "REGTEST",
+    createdAt: new Date(NOW).toISOString(),
+    updatedAt: new Date(NOW).toISOString(),
+    totalAmount: amount,
+    targetAmount: amount,
+    fee: { originalUnit: "SATOSHI", originalValue: 0 },
+    outboundTransfer: { sparkId: SWAP_PRIMARY, totalAmount: amount },
+    inboundTransfer: { sparkId: SWAP_COUNTER, totalAmount: amount },
+    swapLeaves: [{ leafId: `${SWAP_COUNTER}:leaf` }],
+  }
+  return {
+    history: [
+      row(SWAP_PRIMARY, 4, walletIdentity, SSP_IDENTITY),
+      row(SWAP_COUNTER, 5, SSP_IDENTITY, walletIdentity),
+    ],
+    ssp: [SWAP_PRIMARY, SWAP_COUNTER].map((sparkId) => ({
+      sparkId,
+      totalAmount: amount,
+      userRequest,
+    })),
+  }
 }
 
 async function run() {
@@ -87,13 +147,7 @@ async function run() {
     () => sdk
   )
   let buyer:
-    | Awaited<
-        ReturnType<
-          InstanceType<
-            typeof import("../../apps/market/src/lib/spark-sdk").FirstPartySparkSdkFactory
-          >["open"]
-        >
-      >
+    | import("../../apps/market/src/lib/spark-wallet").SparkWalletManager
     | undefined
   let merchant:
     | Awaited<
@@ -106,28 +160,41 @@ async function run() {
     stage = "Market default module loader"
     const { FirstPartySparkSdkFactory } =
       await import("../../apps/market/src/lib/spark-sdk")
+    const { SparkWalletManager } =
+      await import("../../apps/market/src/lib/spark-wallet")
     const factory = new FirstPartySparkSdkFactory({
       network: "regtest",
       now: () => NOW,
       wait: async () => {},
     })
-    buyer = await factory.open({
+    buyer = new SparkWalletManager(factory)
+    await buyer.openWithMnemonic({
       walletId: "hermetic-sdk-composition",
       mnemonic: MNEMONIC,
       accountNumber: 0,
     })
     stage = "Market native funding"
-    const receive = await buyer.createCheckoutReceive!({
-      receiveMode: "ordinary_settled_v3",
-      description: "Offline composition",
-      requiredNetSats: 100,
-      grossFundingSats: 100,
-      expirySecs: 900,
-    })
+    const receive = await buyer.createCheckoutReceive(
+      "hermetic-sdk-composition",
+      {
+        receiveMode: "ordinary_settled_v3",
+        description: "Offline composition",
+        requiredNetSats: 100,
+        grossFundingSats: 100,
+        expirySecs: 900,
+      }
+    )
     const identity = receive.receiverIdentityPublicKey!
     const control = fixture.control.forIdentity(identity)
+    stage = "Normal SDK internal swap fixture"
+    const swap = internalSwap(identity)
+    control.setExtraHistory(swap.history)
+    control.setExtraSspTransfers(swap.ssp)
     control.completeFunding()
-    const credit = await buyer.attestCheckoutReceiveCredit!(receive)
+    const credit = await buyer.attestCheckoutReceiveCredit(
+      "hermetic-sdk-composition",
+      receive
+    )
     check(credit?.creditedSats === 100)
     stage = "Market native payout"
     const preimage = new Uint8Array(32).fill(73)
@@ -146,15 +213,32 @@ async function run() {
       completionTimeoutSecs: 0,
     }
     check(
-      (await buyer.sendCheckoutLightningObligation!(target)).status === "paid"
+      (
+        await buyer.sendCheckoutLightningObligation(
+          "hermetic-sdk-composition",
+          target
+        )
+      ).status === "paid"
     )
-    stage = "Market authenticated retirement reader"
-    const buyerNative = await buyer.openCheckoutRetirementReader!({
-      walletId: "hermetic-sdk-composition",
-      network: "regtest",
-      receiverIdentityPublicKey: identity,
-    })
+    stage = "Market manager authenticated retirement reader"
+    const buyerNative = await buyer.openCheckoutRetirementReader(
+      "hermetic-sdk-composition",
+      {
+        network: "regtest",
+        receiverIdentityPublicKey: identity,
+      }
+    )
     try {
+      let rejectedAddress = false
+      try {
+        await buyerNative.reader.getInternalSwapEvidence!({
+          sparkAddress: `${buyerNative.sparkAddress}:unrelated`,
+          transferId: SWAP_PRIMARY,
+        })
+      } catch {
+        rejectedAddress = true
+      }
+      check(rejectedAddress)
       const collect = () =>
         collectCheckoutSparkNativeRetirementEvidence({
           authenticatedReader: buyerNative.reader,
@@ -163,6 +247,7 @@ async function run() {
           sparkAddress: buyerNative.sparkAddress,
           stateUpdatedAt: NOW,
           expectedTransferIds: [credit!.transferId, target.transferId],
+          requireExactHistoryScope: true,
           now: () => NOW + 1,
         })
       control.setAdditionalOwnedSats(1)
@@ -170,6 +255,24 @@ async function run() {
       control.setAdditionalOwnedSats(0)
       const evidence = await collect()
       check(evidence?.fundingReceiveTerminal && evidence.sendHistoryTerminal)
+      stage = "Market rejects unrelated internal swap"
+      const unrelated = internalSwap(UNRELATED_IDENTITY)
+      control.setExtraHistory(unrelated.history)
+      check((await collect()) === null)
+      control.setExtraHistory(swap.history)
+      stage = "Market rejects conflicting internal swap request"
+      control.setExtraSspTransfers(
+        swap.ssp.map((transfer) => ({
+          ...transfer,
+          userRequest: {
+            ...transfer.userRequest,
+            swapLeaves: [{ leafId: "unrelated-leaf" }],
+          },
+        }))
+      )
+      check((await collect()) === null)
+      control.setExtraSspTransfers(swap.ssp)
+      check((await collect())?.sendHistoryTerminal)
       check(control.snapshot().sendInvocationCount === 1)
     } finally {
       await buyerNative.cleanup()
@@ -181,7 +284,17 @@ async function run() {
       buyerReaderClosed = true
     }
     check(buyerReaderClosed)
-    await buyer.disconnect()
+    let buyerSwapReaderClosed = false
+    try {
+      await buyerNative.reader.getInternalSwapEvidence!({
+        sparkAddress: buyerNative.sparkAddress,
+        transferId: SWAP_PRIMARY,
+      })
+    } catch {
+      buyerSwapReaderClosed = true
+    }
+    check(buyerSwapReaderClosed)
+    await buyer.close("hermetic-sdk-composition")
     buyer = undefined
     stage = "Merchant actual recovery opener"
     const { openMerchantCheckoutSparkRecoveryWallet } =
@@ -191,28 +304,56 @@ async function run() {
       accountNumber: 0,
       network: "regtest",
     })
-    await merchant.ensurePrivateReady()
+    await merchant.ensurePrivateReady!()
     check((await merchant.getIdentityPublicKey()) === identity)
     check(
       (await merchant.getLightningReceiveRequest(receive.id))?.status ===
         "TRANSFER_COMPLETED"
     )
     check(
-      (await merchant.getTransferFromSsp(target.transferId))?.sparkId ===
+      (await merchant.getTransferFromSsp!(target.transferId))?.sparkId ===
         target.transferId
     )
     stage = "Merchant authenticated retirement reader"
     const native = await merchant.openRetirementReader!()
-    const result = await collectCheckoutSparkNativeRetirementEvidence({
-      authenticatedReader: native.reader,
-      walletId: "hermetic-sdk-composition",
-      network: "regtest",
-      sparkAddress: native.sparkAddress,
-      stateUpdatedAt: NOW,
-      expectedTransferIds: [credit!.transferId, target.transferId],
-      now: () => NOW + 1,
-    })
+    let merchantRejectedAddress = false
+    try {
+      await native.reader.getInternalSwapEvidence!({
+        sparkAddress: `${native.sparkAddress}:unrelated`,
+        transferId: SWAP_COUNTER,
+      })
+    } catch {
+      merchantRejectedAddress = true
+    }
+    check(merchantRejectedAddress)
+    const collectMerchant = () =>
+      collectCheckoutSparkNativeRetirementEvidence({
+        authenticatedReader: native.reader,
+        walletId: "hermetic-sdk-composition",
+        network: "regtest",
+        sparkAddress: native.sparkAddress,
+        stateUpdatedAt: NOW,
+        expectedTransferIds: [credit!.transferId, target.transferId],
+        requireExactHistoryScope: true,
+        now: () => NOW + 1,
+      })
+    const result = await collectMerchant()
     check(result?.fundingReceiveTerminal && result.sendHistoryTerminal)
+    stage = "Merchant rejects unrelated internal swap"
+    control.setExtraHistory(internalSwap(UNRELATED_IDENTITY).history)
+    check((await collectMerchant()) === null)
+    control.setExtraHistory(swap.history)
+    stage = "Merchant rejects conflicting internal swap request"
+    control.setExtraSspTransfers(
+      swap.ssp.map((transfer) => ({
+        ...transfer,
+        userRequest: { ...transfer.userRequest, status: "FAILED" },
+      }))
+    )
+    check((await collectMerchant()) === null)
+    control.setExtraSspTransfers(swap.ssp)
+    check((await collectMerchant())?.sendHistoryTerminal)
+    const closedMerchant = merchant
     await merchant.cleanup()
     merchant = undefined
     let closed = false
@@ -222,11 +363,29 @@ async function run() {
       closed = true
     }
     check(closed)
+    let merchantSwapReaderClosed = false
+    try {
+      await native.reader.getInternalSwapEvidence!({
+        sparkAddress: native.sparkAddress,
+        transferId: SWAP_COUNTER,
+      })
+    } catch {
+      merchantSwapReaderClosed = true
+    }
+    check(merchantSwapReaderClosed)
+    stage = "Merchant rejects reopening after cleanup"
+    let merchantReopenRejected = false
+    try {
+      await closedMerchant.openRetirementReader!()
+    } catch {
+      merchantReopenRejected = true
+    }
+    check(merchantReopenRejected)
     check(control.snapshot().outgoingPaymentCount === 1)
     check(nativeInitializationAttempts === 0)
     process.stdout.write("Hermetic SDK composition passed\n")
   } finally {
-    await buyer?.disconnect()
+    await buyer?.close("hermetic-sdk-composition")
     await merchant?.cleanup()
     await transport.close()
   }
