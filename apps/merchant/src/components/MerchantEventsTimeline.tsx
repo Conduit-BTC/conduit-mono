@@ -229,8 +229,20 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       ownQuery.isPending,
       ownQuery.isFetching,
       ownQuery.isError || ownQuery.data?.coverage === "unavailable",
-      ownerIncomplete,
-      () => ownQuery.refetch({ cancelRefetch: false })
+      ownerIncomplete ||
+        discovery.relationships.isInitialLoading ||
+        discovery.relationships.incomplete ||
+        discovery.relationships.unavailable,
+      () =>
+        Promise.all([
+          !ownQuery.isFetching && !ownQuery.isPaused
+            ? ownQuery.refetch({ cancelRefetch: false })
+            : undefined,
+          discovery.relationships.incomplete ||
+          discovery.relationships.unavailable
+            ? discovery.relationships.refetch()
+            : undefined,
+        ])
     ),
     selling: section(
       allReads,
