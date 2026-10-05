@@ -241,6 +241,116 @@ afterEach(() => {
   __resetProtectedReadSigner()
 })
 
+describe("public relay result accounting", () => {
+  const event = finalizeEvent(
+    { kind: 1, created_at: 1_700_000_000, tags: [], content: "fixture" },
+    PRIVATE_KEY_A
+  )
+
+  function behavior(
+    status: "success" | "partial" | "failed"
+  ): FakeRelayBehavior {
+    return {
+      onSend: (socket, frame) => {
+        if (frame[0] !== "REQ") return
+        if (status === "failed") {
+          socket.relay(["CLOSED", frame[1], "restricted: fixture"])
+          return
+        }
+        socket.relay(["EVENT", frame[1], event])
+        if (status === "partial") {
+          socket.relay(["EVENT", frame[1], { ...event, id: "invalid" }])
+        }
+        socket.relay(["EOSE", frame[1]])
+      },
+    }
+  }
+
+  for (const status of ["success", "partial", "failed"] as const) {
+    it(`accounts for a ${status} public source`, async () => {
+      const harness = new FakeRelayHarness().at(
+        "wss://public.example",
+        behavior(status)
+      )
+      const result = await createExecutor(harness).query(publicRequest())
+
+      expect(result).toMatchObject({
+        status: status === "failed" ? "unavailable" : status,
+        attemptedCount: 1,
+        completedCount: status === "success" ? 1 : 0,
+        failedCount: status === "success" ? 0 : 1,
+        authoritativeEmpty: false,
+      })
+      expect(result.relays).toHaveLength(1)
+      expect(source(result).status).toBe(status)
+      expect(result.events.map((value) => value.id)).toEqual(
+        status === "failed" ? [] : [event.id]
+      )
+      expect(result.completedCount + result.failedCount).toBe(
+        result.relays.length
+      )
+    })
+  }
+
+  for (const phase of ["before planning", "after REQ"] as const) {
+    it(`accounts for a public source aborted ${phase}`, async () => {
+      const controller = new AbortController()
+      const harness = new FakeRelayHarness().at("wss://public.example", {
+        onSend: (_, frame) => {
+          if (frame[0] === "REQ") controller.abort()
+        },
+      })
+      if (phase === "before planning") controller.abort()
+      const result = await createExecutor(harness).query(publicRequest(), {
+        signal: controller.signal,
+      })
+
+      expect(result).toMatchObject({
+        status: "aborted",
+        attemptedCount: phase === "before planning" ? 0 : 1,
+        completedCount: 0,
+        failedCount: phase === "before planning" ? 0 : 1,
+        events: [],
+        authoritativeEmpty: false,
+      })
+      expect(result.relays).toHaveLength(phase === "before planning" ? 0 : 1)
+      if (phase === "after REQ") {
+        expect(source(result)).toMatchObject({
+          status: "aborted",
+          failure: "aborted",
+        })
+      }
+      expect(harness.sockets).toHaveLength(phase === "before planning" ? 0 : 1)
+      expect(result.completedCount + result.failedCount).toBe(
+        result.relays.length
+      )
+    })
+  }
+
+  it("partitions mixed public outcomes while retaining useful evidence", async () => {
+    const statuses = ["success", "partial", "failed"] as const
+    const relayUrls = statuses.map((status) => `wss://${status}.example`)
+    const harness = new FakeRelayHarness()
+    for (const [index, status] of statuses.entries()) {
+      harness.at(relayUrls[index], behavior(status))
+    }
+    const result = await createExecutor(harness).query(publicRequest(relayUrls))
+
+    expect(result).toMatchObject({
+      status: "partial",
+      attemptedCount: 3,
+      completedCount: 1,
+      failedCount: 2,
+      authoritativeEmpty: false,
+    })
+    expect(result.relays.map((relay) => relay.status)).toEqual([...statuses])
+    expect(result.events.map((value) => value.id)).toEqual([event.id])
+    expect(result.completedCount + result.failedCount).toBe(
+      result.relays.length
+    )
+  })
+})
+
 describe("NDK-neutral relay executor NIP-42 state machine", () => {
   for (const teardown of ["closeAll", "dispose"] as const) {
     it(`idle refresh during planning preserves ownership until ${teardown}`, async () => {
@@ -395,7 +505,22 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       )
 
       executor[teardown]()
-      await expect(pending).resolves.toMatchObject({ status: "aborted" })
+      const result = await pending
+      expect(result).toMatchObject({
+        status: "aborted",
+        attemptedCount: 8,
+        completedCount: 0,
+        failedCount: 8,
+      })
+      // The queued ninth request never became an attempted source result.
+      expect(result.publicRead?.requestedRelayUrls).toHaveLength(9)
+      expect(result.relays).toHaveLength(8)
+      expect(result.relays.every((relay) => relay.status === "aborted")).toBe(
+        true
+      )
+      expect(result.completedCount + result.failedCount).toBe(
+        result.relays.length
+      )
       await expect(siblingRead).resolves.toMatchObject({ status: "success" })
       // The sibling's completed read proves the shared queue has advanced.
       expect(harness.sockets).toHaveLength(8)

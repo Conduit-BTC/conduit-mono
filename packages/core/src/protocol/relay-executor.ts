@@ -142,6 +142,7 @@ export interface RelayQueryResult {
   relays: RelaySourceResult[]
   attemptedCount: number
   completedCount: number
+  /** All non-success source results, including partial and aborted reads. */
   failedCount: number
   authoritativeEmpty: boolean
 }
@@ -1360,7 +1361,8 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
       relays,
       attemptedCount: read.attemptedRelayUrls?.length ?? 0,
       completedCount,
-      failedCount: relays.filter((source) => source.status === "failed").length,
+      failedCount: relays.filter((source) => source.status !== "success")
+        .length,
       authoritativeEmpty: false,
     }
   }
