@@ -195,17 +195,30 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
   const networkPending =
     discovery.perspective.isInitialLoading ||
     (futureAuthors.length > 0 && futureQuery.isPending)
-  const networkLimited =
-    networkPending ||
-    discovery.perspective.incomplete ||
+  const ownerIncomplete =
+    ownQuery.isError ||
+    (!!ownQuery.data && ownQuery.data.coverage !== "complete")
+  const futureIncomplete =
+    futureQuery.isError ||
     (!!futureQuery.data && futureQuery.data.coverage !== "complete")
+  const perspectiveNeedsRetry =
+    !discovery.perspective.isInitialLoading && discovery.perspective.incomplete
+  const ownerNeedsRetry = !ownQuery.isPending && ownerIncomplete
+  const futureNeedsRetry = !futureQuery.isPending && futureIncomplete
+  const relationshipsNeedRetry =
+    !discovery.relationships.isInitialLoading &&
+    (discovery.relationships.incomplete || discovery.relationships.unavailable)
+  const knownRosterFailed =
+    sellingQuery.isError || (sellingQuery.data?.failedCount ?? 0) > 0
+  const networkLimited =
+    networkPending || discovery.perspective.incomplete || futureIncomplete
   return {
     organizing: section(
       allReads,
       ownQuery.isPending,
       ownQuery.isFetching,
       ownQuery.isError || ownQuery.data?.coverage === "unavailable",
-      !!ownQuery.data && ownQuery.data.coverage !== "complete",
+      ownerIncomplete,
       () => {
         void ownQuery.refetch()
       }
@@ -213,16 +226,26 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     selling: section(
       allReads,
       discovery.relationships.isInitialLoading,
-      discovery.relationships.isFetching || sellingQuery.isFetching,
+      discovery.relationships.isFetching ||
+        sellingQuery.isFetching ||
+        (perspectiveNeedsRetry && discovery.perspective.isFetching) ||
+        (ownerNeedsRetry && ownQuery.isFetching) ||
+        (futureNeedsRetry && futureQuery.isFetching),
       discovery.relationships.unavailable,
       networkLimited ||
         ownQuery.isPending ||
-        (!!ownQuery.data && ownQuery.data.coverage !== "complete") ||
+        ownerIncomplete ||
         discovery.relationships.incomplete ||
-        (sellingQuery.data?.failedCount ?? 0) > 0,
+        knownRosterFailed,
       () => {
         discovery.relationships.refetch()
         if (sellingCoordinates.length) void sellingQuery.refetch()
+        // Recover failed included sources without restarting pending sibling reads.
+        if (perspectiveNeedsRetry && !discovery.perspective.isFetching)
+          discovery.perspective.refetch()
+        if (ownerNeedsRetry && !ownQuery.isFetching) void ownQuery.refetch()
+        if (futureNeedsRetry && !futureQuery.isFetching)
+          void futureQuery.refetch()
       }
     ),
     all: section(
@@ -230,22 +253,27 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       networkPending || ownQuery.isPending,
       discovery.perspective.isFetching ||
         futureQuery.isFetching ||
-        ownQuery.isFetching,
+        ownQuery.isFetching ||
+        (relationshipsNeedRetry && discovery.relationships.isFetching) ||
+        sellingQuery.isFetching,
       futureQuery.isError ||
         futureQuery.data?.coverage === "unavailable" ||
         ownQuery.isError ||
         ownQuery.data?.coverage === "unavailable",
       networkLimited ||
-        (!!ownQuery.data && ownQuery.data.coverage !== "complete") ||
+        ownerIncomplete ||
         discovery.relationships.isInitialLoading ||
         discovery.relationships.incomplete ||
         discovery.relationships.unavailable ||
-        sellingQuery.isError ||
-        (sellingQuery.data?.failedCount ?? 0) > 0,
+        knownRosterFailed,
       () => {
         discovery.perspective.refetch()
         void ownQuery.refetch()
         if (futureAuthors.length) void futureQuery.refetch()
+        if (relationshipsNeedRetry && !discovery.relationships.isFetching)
+          discovery.relationships.refetch()
+        if (sellingCoordinates.length && !sellingQuery.isFetching)
+          void sellingQuery.refetch()
       }
     ),
     accountPubkey,
