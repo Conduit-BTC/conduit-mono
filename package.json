@@ -75,7 +75,7 @@
     "@getalby/sdk": "^8.0.3",
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@playwright/test": "^1.62.1",
-    "@tanstack/router-generator": "^1.167.38",
+    "@tanstack/router-generator": "^1.167.40",
     "dexie": "^4.4.6",
     "eslint": "^10.11.0",
     "eslint-plugin-react": "^7.37.4",

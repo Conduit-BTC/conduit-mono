@@ -19,7 +19,7 @@
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@scure/bip39": "2.4.0",
     "@tanstack/react-query": "^5.103.1",
-    "@tanstack/react-router": "^1.170.38",
+    "@tanstack/react-router": "^1.170.41",
     "lucide-react": "^1.48.0",
     "nostr-tools": "2.25.2",
     "qrcode.react": "^4.2.0",
@@ -34,8 +34,8 @@
     "@tanstack/react-query-devtools": "^5.103.1",
     "@tanstack/router-core": "^1.171.16",
     "@tanstack/router-devtools": "^1.167.2",
-    "@tanstack/router-generator": "^1.167.38",
-    "@tanstack/router-plugin": "^1.168.40",
+    "@tanstack/router-generator": "^1.167.40",
+    "@tanstack/router-plugin": "^1.168.42",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
@@ -43,6 +43,6 @@
     "postcss": "^8.5.28",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
-    "vite": "^8.3.1"
+    "vite": "^8.3.2"
   }
 }
