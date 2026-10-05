@@ -25,6 +25,7 @@ import {
   getAccountSuggestionTarget,
 } from "../lib/accountSearch"
 import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
+import { MERCHANT_PAGE_SIZE } from "../lib/clientHydration"
 
 export interface MerchantsSearch {
   source?: ProductCatalogSourceMode
@@ -52,10 +53,13 @@ export const Route = createFileRoute("/merchants")({
 function MerchantsPage() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
+  const [visibleSellerCount, setVisibleSellerCount] =
+    useState(MERCHANT_PAGE_SIZE)
   const directory = useSellerDirectory({
     catalogSource: search.source ?? "combined",
     query: search.q ?? "",
     accountSearchSettleMs: 0,
+    visibleSellerCount,
   })
   const updateSearch = useCallback(
     (updates: Partial<MerchantsSearch>) => {
@@ -73,6 +77,10 @@ function MerchantsPage() {
   )
   const [queryValue, setQueryValue] = useState(search.q ?? "")
   const queryInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    setVisibleSellerCount(MERCHANT_PAGE_SIZE)
+  }, [search.q, search.source])
 
   useEffect(() => {
     // Mirror the URL into the field only while the user is not typing, so a
@@ -101,6 +109,8 @@ function MerchantsPage() {
       device: directory.accountSearch.isDeviceFetching,
       network: directory.accountSearch.isNetworkFetching,
     })
+  const visibleSellers = directory.filteredSellers.slice(0, visibleSellerCount)
+  const hasMoreToCheck = directory.sellers.length > visibleSellerCount
 
   return (
     <div className="mx-auto max-w-6xl space-y-7">
@@ -143,7 +153,7 @@ function MerchantsPage() {
               : "Discovered merchants"}
           </h1>
           <span className="text-sm tabular-nums text-[var(--text-muted)]">
-            {directory.filteredSellers.length} of {directory.sellers.length}
+            {visibleSellers.length} of {directory.sellers.length}
             {directory.isFetching ? " · updating" : ""}
           </span>
         </div>
@@ -168,11 +178,13 @@ function MerchantsPage() {
               ? directory.isFetching
                 ? "Loading listings from your perspective..."
                 : "No merchants have been discovered from this perspective yet."
-              : "No discovered merchant name matches this search. Names still loading are not matched yet."}
+              : directory.query && hasMoreToCheck
+                ? "No checked merchant name matches yet. More merchant names can be checked below."
+                : "No discovered merchant name matches this search. Some profiles may still be unavailable."}
           </p>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {directory.filteredSellers.map((seller) => (
+            {visibleSellers.map((seller) => (
               <li key={seller.pubkey}>
                 <SellerCard
                   pubkey={seller.pubkey}
@@ -183,6 +195,24 @@ function MerchantsPage() {
             ))}
           </ul>
         )}
+        {hasMoreToCheck ? (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() =>
+              setVisibleSellerCount((count) => count + MERCHANT_PAGE_SIZE)
+            }
+          >
+            {directory.query
+              ? "Check more merchant names"
+              : "Show more merchants"}
+          </Button>
+        ) : null}
+        {directory.query && hasMoreToCheck ? (
+          <p className="text-sm text-[var(--text-muted)]">
+            More discovered merchants have names that have not been checked.
+          </p>
+        ) : null}
       </section>
 
       {showNetworkSection ? (

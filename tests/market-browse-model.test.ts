@@ -60,7 +60,7 @@ describe("market browse model helpers", () => {
     capped: false,
   }
 
-  it("refreshes dependent browse sources after discovery settles", async () => {
+  it("refreshes the catalog and enabled search without a discovery prerequisite", async () => {
     const refreshes: string[] = []
     await refreshMarketBrowseData({
       globalSearchEnabled: false,
@@ -69,35 +69,12 @@ describe("market browse model helpers", () => {
     })
     expect(refreshes).toEqual(["catalog"])
 
-    let settleDiscovery: ((changed: boolean) => void) | undefined
-    const refresh = refreshMarketBrowseData({
+    await refreshMarketBrowseData({
       globalSearchEnabled: true,
-      refreshDiscovery: () => {
-        refreshes.push("discovery")
-        return new Promise<boolean>((resolve) => {
-          settleDiscovery = resolve
-        })
-      },
       refreshCatalog: () => refreshes.push("catalog"),
       refreshGlobalSearch: () => refreshes.push("global-search"),
     })
-    expect(refreshes).toEqual(["catalog", "discovery", "global-search"])
-    settleDiscovery?.(false)
-    await refresh
-    expect(refreshes).toEqual([
-      "catalog",
-      "discovery",
-      "global-search",
-      "catalog",
-    ])
-
-    await refreshMarketBrowseData({
-      globalSearchEnabled: false,
-      refreshDiscovery: async () => true,
-      refreshCatalog: () => refreshes.push("obsolete-catalog"),
-      refreshGlobalSearch: () => refreshes.push("global-search"),
-    })
-    expect(refreshes).not.toContain("obsolete-catalog")
+    expect(refreshes).toEqual(["catalog", "catalog", "global-search"])
   })
 
   it("settles only after every directly refreshed browse source", async () => {

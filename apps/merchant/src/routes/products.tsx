@@ -13,13 +13,13 @@ import {
   canonicalizeProductPrice,
   decodeEventMarketReference,
   compileProductFulfillmentIntent,
-  evaluateListingSafety,
+  evaluateListingAvailability,
   getCachedMerchantStorefront,
   getProductDeletionDelivery,
   getProductListingDelivery,
   getRejectedProductListingDeliveries,
   getStagedProductListingDeliveries,
-  getListingSafetyDisplay,
+  getListingAvailabilityDisplay,
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
@@ -31,7 +31,7 @@ import {
   readProductSupplierReadiness,
   readEventMarketRoster,
   type CommerceResult,
-  type ListingSafetyEvaluation,
+  type ListingAvailabilityEvaluation,
   type PreparedProductFamily,
   type ProductSchema,
   type ProductDeletionDeliveryJob,
@@ -238,7 +238,7 @@ type MerchantProduct = {
   eventCreatedAt: number
   sourceRelayUrls: string[]
   product: ProductSchema
-  safety: ListingSafetyEvaluation
+  availability: ListingAvailabilityEvaluation
 }
 
 type MerchantProductFamily = MerchantProduct & {
@@ -674,24 +674,6 @@ function RejectedProductPublicationNotice({
   )
 }
 
-function getStatusPillVariant(
-  tone: ReturnType<typeof getListingSafetyDisplay>["tone"]
-): "success" | "warning" | "error" | "info" | "neutral" {
-  return tone
-}
-
-function getZapPolicyLabel(product: ProductSchema): string {
-  if (!product.publicZapPolicyKnown) return "Zap policy: unknown"
-  if (!product.publicZapEnabled) return "Private invoice only"
-
-  switch (product.zapMessagePolicy) {
-    case "custom":
-      return "Public zap: shopper custom"
-    case "generic_only":
-      return "Public zap: generic"
-  }
-}
-
 function getZapPolicyBadge(product: ProductSchema): {
   left: string
   right: string
@@ -708,17 +690,14 @@ function getZapPolicyBadge(product: ProductSchema): {
   }
 }
 
-function ListingSafetySummary({
+function ListingAvailabilitySummary({
   item,
   onEdit,
 }: {
   item: MerchantProductFamily
   onEdit?: () => void
 }) {
-  const display = getListingSafetyDisplay(item.safety)
-  const isActive = item.safety.state === "active"
-  const isPolicyWarning = item.safety.state === "flagged"
-  const zapPolicyLabel = getZapPolicyLabel(item.product)
+  const display = getListingAvailabilityDisplay(item.availability)
 
   if (item.product.type === "variable" && item.variationForm.supported) {
     return (
@@ -759,16 +738,6 @@ function ListingSafetySummary({
     )
   }
 
-  if (isActive) {
-    return (
-      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
-        <StatusPill variant="success" className="text-[10px]">
-          {display.label}
-        </StatusPill>
-      </div>
-    )
-  }
-
   return (
     <article className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -777,42 +746,18 @@ function ListingSafetySummary({
             {item.product.title}
           </div>
           <div className="mt-2 leading-6">{display.summary}</div>
+          <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">
+            {display.merchantAction}
+          </p>
         </div>
-        <StatusPill
-          variant={getStatusPillVariant(display.tone)}
-          className="text-[10px]"
-        >
+        <StatusPill variant={display.tone} className="text-[10px]">
           {display.label}
         </StatusPill>
       </div>
 
-      <div className="mt-3 grid gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-xs text-[var(--text-secondary)] sm:grid-cols-2">
-        <div>
-          <span className="font-medium text-[var(--text-primary)]">
-            Market visibility:
-          </span>{" "}
-          {isPolicyWarning ? "Active" : "Hidden"}
-        </div>
-        <div>
-          <span className="font-medium text-[var(--text-primary)]">
-            Checkout:
-          </span>{" "}
-          {isPolicyWarning ? "Available" : "Disabled"}
-        </div>
-        <div>
-          <span className="font-medium text-[var(--text-primary)]">
-            Zap checkout:
-          </span>{" "}
-          {zapPolicyLabel}
-        </div>
-      </div>
-
-      <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
-        {display.merchantAction}
-      </p>
       {onEdit && (
         <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
-          {isPolicyWarning ? "Review listing" : "Fix listing"}
+          Fix listing
         </Button>
       )}
     </article>
@@ -843,7 +788,8 @@ async function fetchMerchantProducts(
         eventCreatedAt: record.eventCreatedAt,
         sourceRelayUrls: record.sourceRelayUrls ?? [],
         product,
-        safety: record.safety ?? evaluateListingSafety(product),
+        availability:
+          record.availability ?? evaluateListingAvailability(product),
       }
     }),
     meta: result.meta,
@@ -866,7 +812,8 @@ async function fetchCachedMerchantProducts(
       eventCreatedAt: record.eventCreatedAt,
       sourceRelayUrls: record.sourceRelayUrls ?? [],
       product: record.product,
-      safety: record.safety ?? evaluateListingSafety(record.product),
+      availability:
+        record.availability ?? evaluateListingAvailability(record.product),
     })),
     meta: result.meta,
   }
@@ -1541,13 +1488,13 @@ function ProductsPage() {
         const hasFamilyImage = [family.root, ...family.variations].some(
           (record) => getProductImageCandidates(record.product).length > 0
         )
-        const safety =
+        const availability =
           family.root.product.type === "variable" && variationForm.supported
-            ? evaluateListingSafety(family.root.product, undefined, {
+            ? evaluateListingAvailability(family.root.product, {
                 variationGroupRole: "parent",
                 hasGroupImage: hasFamilyImage,
               })
-            : family.root.safety
+            : family.root.availability
         const prepared = prepareProductCatalog(
           [family.root, ...family.variations],
           {
@@ -1561,7 +1508,7 @@ function ProductsPage() {
 
         return {
           ...family.root,
-          safety,
+          availability,
           variations: family.variations,
           orphanVariation: family.orphanVariation,
           variationForm,
@@ -3257,7 +3204,7 @@ function ProductsPage() {
                     ? "This product's options need repair before editing"
                     : item.product.stock === 0
                       ? "Out of stock"
-                      : !item.safety.marketVisible
+                      : !item.availability.marketVisible
                         ? "Hidden or unavailable in your shop"
                         : null
               return (
@@ -3605,7 +3552,7 @@ function ProductsPage() {
               ? getProductFamilyStockDisplay(item.family.inventorySummary)
               : getProductStockDisplay(item.product.stock)
             const rejectedListingRecovery = getRejectedListingRecovery(item)
-            if (!item.safety.marketVisible) {
+            if (!item.availability.marketVisible) {
               return (
                 <div key={item.addressId} className="grid gap-2">
                   {rejectedListingRecovery && item.variationForm.supported && (
@@ -3613,7 +3560,7 @@ function ProductsPage() {
                       onReview={() => openEditDialog(item)}
                     />
                   )}
-                  <ListingSafetySummary
+                  <ListingAvailabilitySummary
                     item={item}
                     onEdit={
                       item.variationForm.supported
@@ -3647,7 +3594,8 @@ function ProductsPage() {
             }
 
             const isActive =
-              item.safety.state === "active" || isConstrainedVariationFamily
+              item.availability.state === "active" ||
+              isConstrainedVariationFamily
             const productUrl = getShareableProductUrl(
               item.addressId,
               item.sourceRelayUrls
@@ -3661,7 +3609,7 @@ function ProductsPage() {
                   />
                 )}
                 {!isActive && (
-                  <ListingSafetySummary
+                  <ListingAvailabilitySummary
                     item={item}
                     onEdit={() => openEditDialog(item)}
                   />

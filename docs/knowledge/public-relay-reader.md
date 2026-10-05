@@ -72,7 +72,7 @@ these guarantees to hostile-input and scheduling-barrier proofs.
 
 Bounds remain eight concurrent reads, 128 queued reads, bounded inbound frames
 and bytes, 512 new signature checks per source, a bounded verification proof
-cache, worker backpressure with cooperative fallback, explicit subscription
+cache, one posted worker batch and bounded queued signed bytes, explicit subscription
 CLOSE and a 20-second idle socket lifetime. Non-reused sockets close at the end
 of the operation.
 
@@ -103,6 +103,14 @@ scripts. Those belong to private envelope and final SDK cleanup work. Local
 publication cache inputs still accept existing publisher objects structurally;
 relay read outputs never require them. Protected scan results retain their
 plain signed wraps directly so private receipt authority can survive reload.
+
+Browser verification sends complete canonical signed events to the worker for
+both hashing and signature checks. Execution deadlines start after posting;
+one timed-out batch may retry on a replacement worker. Queue saturation or
+persistent worker failure reports unavailable verification without browser-thread
+crypto fallback. Worker-free server/test runtimes retain cooperative verification.
+Exact signed-byte proofs may be reused by parsers and schemas, but never confer
+relay-source provenance or derive from persisted display projections.
 
 ## Validation boundary
 

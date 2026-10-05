@@ -66,6 +66,7 @@ export function useMarketHeaderSuggestions(input: {
       settledQuery === normalizedQuery &&
       isRemoteMarketSearchEligible(normalizedQuery),
     accountSearchSettleMs: MARKET_SEARCH_SETTLE_MS,
+    hydrateSellerProfiles: false,
     query,
   })
   const accountSearch = sellerDirectory.accountSearch

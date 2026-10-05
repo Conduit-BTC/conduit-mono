@@ -36,6 +36,7 @@ function signMerchantEvent(input: {
 
 function productEvent(
   overrides: {
+    title?: string
     createdAt?: number
     price?: number
     currency?: string
@@ -52,7 +53,7 @@ function productEvent(
   const currency = overrides.currency ?? "SATS"
   const tags: string[][] = [
     ["d", overrides.dTag ?? PRODUCT_D_TAG],
-    ["title", "CND-150 test product"],
+    ["title", overrides.title ?? "CND-150 test product"],
     ["price", String(overrides.price ?? 10), currency],
     ["type", "simple", shippingCost === undefined ? "digital" : "physical"],
     ["image", "https://cdn.conduit.market/cnd-150.png"],
@@ -138,6 +139,17 @@ function authorize(
 }
 
 describe("anonymous public zap checkout authorization", () => {
+  it("does not apply client content keywords to valid signed purchase terms", () => {
+    const result = authorize({
+      productEvents: [
+        productEvent({ title: "Counterfeit goods display fixture" }),
+      ],
+    })
+    expect(result.pricing.itemSubtotalSats).toBe(10)
+    expect(result.authorization.amountMsats).toBe(10_000)
+    expect(result.pricing.items[0]?.productAddress).toBe(PRODUCT_ADDRESS)
+  })
+
   it("parses only bounded public product coordinates", () => {
     expect(
       parseAnonZapCheckoutIntent({
