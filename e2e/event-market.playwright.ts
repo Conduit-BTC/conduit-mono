@@ -2828,8 +2828,25 @@ test("merchant directory resolves Organizing and Selling At while calendar disco
     ).toBe(true)
     expect(
       sellingRequests.some((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(3))
+      )
+    ).toBe(true)
+    expect(
+      sellingRequests.some((request) =>
         request.filters.some(
-          (filter) => filter.kinds?.includes(3) || filter.kinds?.includes(30409)
+          (filter) =>
+            filter.kinds?.includes(30409) &&
+            filter.authors?.includes(MERCHANT_PUBKEY)
+        )
+      )
+    ).toBe(true)
+    // The already-running organizer read is neither restarted nor awaited.
+    expect(
+      sellingRequests.some((request) =>
+        request.filters.some(
+          (filter) =>
+            filter.kinds?.includes(30409) &&
+            filter.authors?.includes(ORGANIZER_PUBKEY)
         )
       )
     ).toBe(false)
@@ -3312,6 +3329,244 @@ test("merchant directory All Events retries known roster refreshes after exact-r
   await expect(
     all.getByRole("button", { name: /^Open Known Retry Fair/ })
   ).toHaveCount(0)
+})
+
+function createTimelineRefreshFixture(owned = false) {
+  const createdAt = Math.floor(Date.now() / 1000) - 10
+  const secret = owned ? MERCHANT_SECRET : ORGANIZER_SECRET
+  const calendar = signEvent(secret, {
+    kind: 31923,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "healthy-refresh-fair"],
+      ["title", "Healthy Refresh Fair"],
+      ["start", "1893456000"],
+      ["D", "21915"],
+    ],
+  })
+  const market = signEvent(secret, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "healthy-refresh-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+      ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 1"],
+    ],
+  })
+  const template = createMerchantTemplateProductEvent(createdAt)
+  const product = signEvent(MERCHANT_SECRET, {
+    kind: template.kind,
+    created_at: createdAt,
+    content: template.content,
+    tags: [...template.tags, ["a", eventCoordinate(market)]],
+  })
+  return { calendar, market, product, createdAt }
+}
+
+for (const newFollow of [false, true])
+  test(`merchant directory Selling At refreshes healthy ${newFollow ? "perspective" : "roster discovery"} to find new membership @merchant`, async ({
+    page,
+  }) => {
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay)
+    const { calendar, market, createdAt } = createTimelineRefreshFixture()
+    relay.seed(
+      createFollowList(
+        "merchant",
+        newFollow ? [] : [ORGANIZER_PUBKEY],
+        createdAt
+      )
+    )
+    await gotoAs(page, merchantUrl, "/events?relation=selling", "merchant")
+    const my = page.getByRole("region", { name: "My Events timeline" })
+    const all = page.getByRole("region", { name: "All Events timeline" })
+    await expect(
+      all.getByRole("heading", { name: "No events found on your relays" })
+    ).toBeVisible()
+    await expect(
+      my.getByRole("heading", { name: "You aren’t selling at any events" })
+    ).toBeVisible()
+    relay.seed(calendar, market)
+    if (newFollow)
+      relay.seed(
+        createFollowList("merchant", [ORGANIZER_PUBKEY], createdAt + 1)
+      )
+    const before = relay.requests.length
+    await page
+      .getByRole("button", { name: "Refresh Selling At", exact: true })
+      .click()
+    await expect
+      .poll(() =>
+        relay.requests
+          .slice(before)
+          .some((request) =>
+            request.filters.some(
+              (filter) =>
+                filter.kinds?.includes(newFollow ? 3 : 30409) &&
+                filter.authors?.includes(
+                  newFollow ? MERCHANT_PUBKEY : ORGANIZER_PUBKEY
+                )
+            )
+          )
+      )
+      .toBe(true)
+    await expect(
+      my.getByRole("button", { name: /^Open Healthy Refresh Fair/ })
+    ).toBeVisible()
+    // Membership discovery does not require a product association.
+    expect(relay.events().some((event) => event.kind === 30402)).toBe(false)
+  })
+
+test("merchant directory All Events refreshes healthy products to find an event outside the perspective graph @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const { calendar, market, product, createdAt } =
+    createTimelineRefreshFixture()
+  relay.seed(createFollowList("merchant", [], createdAt))
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  const all = page.getByRole("region", { name: "All Events timeline" })
+  await expect(
+    all.getByRole("heading", { name: "No events found on your relays" })
+  ).toBeVisible()
+  relay.seed(calendar, market, product)
+  const before = relay.requests.length
+  await page
+    .getByRole("button", { name: "Refresh All Events", exact: true })
+    .click()
+  await expect
+    .poll(() =>
+      relay.requests
+        .slice(before)
+        .some((request) =>
+          request.filters.some((filter) => filter.kinds?.includes(30402))
+        )
+    )
+    .toBe(true)
+  await expect(
+    all.getByRole("button", { name: /^Open Healthy Refresh Fair/ })
+  ).toBeVisible()
+})
+
+test("merchant directory Organizing refreshes healthy exact evidence while owner discovery remains unavailable @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const { calendar, market, product, createdAt } =
+    createTimelineRefreshFixture(true)
+  relay.seed(
+    calendar,
+    market,
+    product,
+    createFollowList("merchant", [], createdAt)
+  )
+  relay.rejectMarketDiscovery(true)
+  await gotoAs(page, merchantUrl, "/events", "merchant")
+  const my = page.getByRole("region", { name: "My Events timeline" })
+  await expect(
+    my.getByRole("button", { name: /^Open Healthy Refresh Fair/ })
+  ).toBeVisible()
+  relay.seed(
+    signEvent(MERCHANT_SECRET, {
+      kind: calendar.kind,
+      created_at: createdAt + 1,
+      content: calendar.content,
+      tags: calendar.tags.map((tag) =>
+        tag[0] === "title" ? ["title", "Updated Owned Fair"] : tag
+      ),
+    })
+  )
+  const before = relay.requests.length
+  await page
+    .getByRole("button", { name: "Refresh Organizing", exact: true })
+    .click()
+  await expect
+    .poll(() =>
+      relay.requests
+        .slice(before)
+        .some((request) =>
+          request.filters.some(
+            (filter) => filter.kinds?.includes(30409) && filter["#d"]
+          )
+        )
+    )
+    .toBe(true)
+  await expect(
+    my.getByRole("button", { name: /^Open Updated Owned Fair/ })
+  ).toBeVisible()
+})
+
+test("merchant directory All Events refreshes settled products while an exact relationship read is already running @merchant", async ({
+  page,
+}) => {
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const { calendar, market, product, createdAt } =
+    createTimelineRefreshFixture()
+  const owned = createTimelineRefreshFixture(true)
+  relay.seed(
+    calendar,
+    market,
+    product,
+    owned.calendar,
+    owned.market,
+    createFollowList("merchant", [], createdAt)
+  )
+  // Exact relationships start only after product discovery has settled. The
+  // separate owned event lets All Events resolve while this source stays held.
+  const isHeldExact = (filter: RelayFilter) =>
+    filter.kinds?.includes(30409) &&
+    filter.authors?.includes(ORGANIZER_PUBKEY) &&
+    !!filter["#d"]
+  const held = relay.holdRelayRequests((request) =>
+    request.filters.some(isHeldExact)
+  )
+  try {
+    await gotoAs(page, merchantUrl, "/events?relation=selling", "merchant")
+    await held.captured
+    const all = page.getByRole("region", { name: "All Events timeline" })
+    await expect(
+      all.getByRole("button", { name: /^Open Healthy Refresh Fair/ })
+    ).toBeVisible()
+    const selling = page.getByRole("button", {
+      name: "Refresh Selling At",
+      exact: true,
+    })
+    const allRefresh = page.getByRole("button", {
+      name: "Refresh All Events",
+      exact: true,
+    })
+    await expect(selling).toBeDisabled()
+    await expect(allRefresh).toBeEnabled()
+    const before = relay.requests.length
+    await allRefresh.click()
+    await expect
+      .poll(() =>
+        relay.requests
+          .slice(before)
+          .some((request) =>
+            request.filters.some((filter) => filter.kinds?.includes(30402))
+          )
+      )
+      .toBe(true)
+    await expect(allRefresh).toBeEnabled()
+    expect(
+      relay.requests
+        .slice(before)
+        .some((request) => request.filters.some(isHeldExact))
+    ).toBe(false)
+    // All Events finishes its own refresh without waiting for or restarting the exact read.
+    await expect(selling).toBeDisabled()
+    held.release()
+    await expect(selling).toBeEnabled()
+  } finally {
+    held.release()
+  }
 })
 
 for (const monthly of [false, true])

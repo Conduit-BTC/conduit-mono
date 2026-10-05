@@ -182,7 +182,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     isFetching: boolean,
     unavailable: boolean,
     limited: boolean,
-    refetch: () => void
+    refetch: () => Promise<unknown>
   ) => ({
     marketReads: reads,
     futureOccurrences: reads.flatMap(projectFutureMerchantTimelineOccurrences),
@@ -201,17 +201,28 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
   const futureIncomplete =
     futureQuery.isError ||
     (!!futureQuery.data && futureQuery.data.coverage !== "complete")
-  const perspectiveNeedsRetry =
-    !discovery.perspective.isInitialLoading && discovery.perspective.incomplete
-  const ownerNeedsRetry = !ownQuery.isPending && ownerIncomplete
-  const futureNeedsRetry = !futureQuery.isPending && futureIncomplete
-  const relationshipsNeedRetry =
-    !discovery.relationships.isInitialLoading &&
-    (discovery.relationships.incomplete || discovery.relationships.unavailable)
   const knownRosterFailed =
     sellingQuery.isError || (sellingQuery.data?.failedCount ?? 0) > 0
   const networkLimited =
     networkPending || discovery.perspective.incomplete || futureIncomplete
+  const refetchIncludedSources = () =>
+    Promise.all([
+      discovery.perspective.refetch(),
+      discovery.relationships.refetch(),
+      !ownQuery.isFetching && !ownQuery.isPaused
+        ? ownQuery.refetch({ cancelRefetch: false })
+        : undefined,
+      futureAuthors.length > 0 &&
+      !futureQuery.isFetching &&
+      !futureQuery.isPaused
+        ? futureQuery.refetch({ cancelRefetch: false })
+        : undefined,
+      sellingCoordinates.length > 0 &&
+      !sellingQuery.isFetching &&
+      !sellingQuery.isPaused
+        ? sellingQuery.refetch({ cancelRefetch: false })
+        : undefined,
+    ])
   return {
     organizing: section(
       allReads,
@@ -219,34 +230,19 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       ownQuery.isFetching,
       ownQuery.isError || ownQuery.data?.coverage === "unavailable",
       ownerIncomplete,
-      () => {
-        void ownQuery.refetch()
-      }
+      () => ownQuery.refetch({ cancelRefetch: false })
     ),
     selling: section(
       allReads,
       discovery.relationships.isInitialLoading,
-      discovery.relationships.isFetching ||
-        sellingQuery.isFetching ||
-        (perspectiveNeedsRetry && discovery.perspective.isFetching) ||
-        (ownerNeedsRetry && ownQuery.isFetching) ||
-        (futureNeedsRetry && futureQuery.isFetching),
+      discovery.relationships.isFetching || sellingQuery.isFetching,
       discovery.relationships.unavailable,
       networkLimited ||
         ownQuery.isPending ||
         ownerIncomplete ||
         discovery.relationships.incomplete ||
         knownRosterFailed,
-      () => {
-        discovery.relationships.refetch()
-        if (sellingCoordinates.length) void sellingQuery.refetch()
-        // Recover failed included sources without restarting pending sibling reads.
-        if (perspectiveNeedsRetry && !discovery.perspective.isFetching)
-          discovery.perspective.refetch()
-        if (ownerNeedsRetry && !ownQuery.isFetching) void ownQuery.refetch()
-        if (futureNeedsRetry && !futureQuery.isFetching)
-          void futureQuery.refetch()
-      }
+      refetchIncludedSources
     ),
     all: section(
       allReads,
@@ -254,7 +250,6 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       discovery.perspective.isFetching ||
         futureQuery.isFetching ||
         ownQuery.isFetching ||
-        (relationshipsNeedRetry && discovery.relationships.isFetching) ||
         sellingQuery.isFetching,
       futureQuery.isError ||
         futureQuery.data?.coverage === "unavailable" ||
@@ -266,21 +261,14 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
         discovery.relationships.incomplete ||
         discovery.relationships.unavailable ||
         knownRosterFailed,
-      () => {
-        discovery.perspective.refetch()
-        void ownQuery.refetch()
-        if (futureAuthors.length) void futureQuery.refetch()
-        if (relationshipsNeedRetry && !discovery.relationships.isFetching)
-          discovery.relationships.refetch()
-        if (sellingCoordinates.length && !sellingQuery.isFetching)
-          void sellingQuery.refetch()
-      }
+      refetchIncludedSources
     ),
     accountPubkey,
     authenticatedPubkey,
     authGeneration,
     authGenerationRef,
     isAuthGenerationCurrent,
+    refreshScope: session.relayScope,
   }
 }
 
@@ -340,6 +328,26 @@ function MerchantEventTimelineSection({
     isAuthGenerationCurrent,
   } = data
   const [open, setOpen] = useState(true)
+  const [refreshing, setRefreshing] = useState<Record<string, boolean>>({})
+  const refreshKey = JSON.stringify([
+    data.refreshScope,
+    merchantPubkey,
+    authGeneration,
+    relationship,
+  ])
+  const isFetching = data.isFetching || refreshing[refreshKey] === true
+  async function refresh() {
+    setRefreshing((current) => ({ ...current, [refreshKey]: true }))
+    try {
+      await data.refetch()
+    } finally {
+      setRefreshing((current) => {
+        const next = { ...current }
+        delete next[refreshKey]
+        return next
+      })
+    }
+  }
   const viewportKey = `${merchantPubkey}:${relationship}`
   const [presentationLimits, setPresentationLimits] = useState<
     Record<string, TimelinePresentationLimits>
@@ -382,7 +390,7 @@ function MerchantEventTimelineSection({
     return paginateEventTimeline(rows, activePresentationLimits, nowMs)
   }, [activePresentationLimits, nowMs, visibleFutureOccurrences])
   const timelineAnchor = useEventTimelineAnchor({
-    isFetching: data.isFetching,
+    isFetching,
     itemCount: open ? visibleFutureOccurrences.length : 0,
     pastCount: presentation.past.length,
     viewportKey,
@@ -530,14 +538,14 @@ function MerchantEventTimelineSection({
           variant="ghost"
           size="sm"
           aria-label={`Refresh ${relationship === "all" ? "All Events" : RELATIONSHIP_LABELS[relationship]}`}
-          disabled={data.isFetching}
-          onClick={data.refetch}
+          disabled={isFetching}
+          onClick={refresh}
           className="shrink-0"
         >
           <RefreshCw
             className={cn(
               "size-4",
-              data.isFetching && "animate-spin motion-reduce:animate-none"
+              isFetching && "animate-spin motion-reduce:animate-none"
             )}
             aria-hidden="true"
           />
@@ -593,7 +601,7 @@ function MerchantEventTimelineSection({
               </p>
             ) : null}
             <EventTimelineViewport
-              busy={data.isFetching}
+              busy={isFetching}
               currentAndFutureEvents={renderMixedEntries(
                 presentation.currentAndFuture
               )}

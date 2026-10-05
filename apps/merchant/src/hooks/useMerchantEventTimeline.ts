@@ -37,7 +37,7 @@ export interface MerchantEventTimelineDiscovery {
     isInitialLoading: boolean
     isFetching: boolean
     incomplete: boolean
-    refetch: () => void
+    refetch: () => Promise<void>
   }
   relationships: {
     markets: EventMarketRosterReadResult[]
@@ -45,7 +45,7 @@ export interface MerchantEventTimelineDiscovery {
     isFetching: boolean
     incomplete: boolean
     unavailable: boolean
-    refetch: () => void
+    refetch: () => Promise<void>
   }
 }
 
@@ -297,14 +297,52 @@ export function useMerchantEventTimeline(input: {
   const refreshConduit = conduitQuery.refetch
   const refreshProducts = productsQuery.refetch
   const refreshExact = exactQuery.refetch
-  const refetchPerspective = useCallback(() => {
-    if (followingEnabled) void refreshFollowing()
-    if (conduitEnabled) void refreshConduit()
-  }, [followingEnabled, conduitEnabled, refreshFollowing, refreshConduit])
-  const refetchRelationships = useCallback(() => {
-    if (merchantPubkey) void refreshProducts()
-    if (productReferences.length > 0) void refreshExact()
-  }, [merchantPubkey, productReferences.length, refreshProducts, refreshExact])
+  // Each source skips its own active read; a running sibling does not suppress
+  // a settled source, and explicit refresh never cancels background progress.
+  const refetchPerspective = useCallback(async () => {
+    await Promise.all([
+      followingEnabled && !followingQuery.isFetching && !followingQuery.isPaused
+        ? refreshFollowing({ cancelRefetch: false })
+        : undefined,
+      conduitEnabled && !conduitQuery.isFetching && !conduitQuery.isPaused
+        ? refreshConduit({ cancelRefetch: false })
+        : undefined,
+    ])
+  }, [
+    followingEnabled,
+    conduitEnabled,
+    followingQuery.isFetching,
+    followingQuery.isPaused,
+    conduitQuery.isFetching,
+    conduitQuery.isPaused,
+    refreshFollowing,
+    refreshConduit,
+  ])
+  const refetchRelationships = useCallback(async () => {
+    await Promise.all([
+      merchantPubkey &&
+      session.relaySettingsReady &&
+      !productsQuery.isFetching &&
+      !productsQuery.isPaused
+        ? refreshProducts({ cancelRefetch: false })
+        : undefined,
+      productReferences.length > 0 &&
+      !exactQuery.isFetching &&
+      !exactQuery.isPaused
+        ? refreshExact({ cancelRefetch: false })
+        : undefined,
+    ])
+  }, [
+    merchantPubkey,
+    session.relaySettingsReady,
+    productReferences.length,
+    productsQuery.isFetching,
+    productsQuery.isPaused,
+    exactQuery.isFetching,
+    exactQuery.isPaused,
+    refreshProducts,
+    refreshExact,
+  ])
   return {
     perspective: {
       organizerPubkeys: authorPubkeys,
