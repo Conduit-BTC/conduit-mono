@@ -1,11 +1,11 @@
-// Web Worker: batch schnorr signature verification off the main thread.
-// The main thread does the cheap sha256 event-id check (needed for the
-// verified-id cache and to bind content to id); this worker only runs the
-// expensive schnorr.verify over already-id-checked (sig, id, pubkey) tuples.
-import { schnorr } from "@noble/curves/secp256k1.js"
-import { hexToBytes } from "@noble/curves/utils.js"
+// Bind canonical event bytes to their id and verify Schnorr off the UI thread.
+// The reader and product parser reuse only exact, immutable verified proofs.
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
-type VerifyItem = { sig: string; id: string; pubkey: string }
+type VerifyItem = SignedPublicNostrEvent
 type VerifyRequest = { reqId: number; items: VerifyItem[] }
 
 const ctx = self as unknown as {
@@ -17,11 +17,7 @@ ctx.onmessage = (event) => {
   const { reqId, items } = event.data
   const valid = items.map((item) => {
     try {
-      return schnorr.verify(
-        hexToBytes(item.sig),
-        hexToBytes(item.id),
-        hexToBytes(item.pubkey)
-      )
+      return isValidSignedPublicNostrEvent(item)
     } catch {
       return false
     }

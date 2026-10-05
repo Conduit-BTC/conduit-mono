@@ -945,7 +945,7 @@ describe("progressive exact product reads", () => {
       expect(
         cached.diagnostics.some((row) => row.addressId === address(parent))
       ).toBe(false)
-      expect(cached.data[0]!.safety.state).not.toBe("blocked")
+      expect(cached.data[0]!.availability.state).toBe("hidden")
     } finally {
       held.release()
       await read.catch(() => undefined)
@@ -1130,7 +1130,7 @@ describe("progressive exact product reads", () => {
     expect(snapshots).toEqual([])
   })
 
-  it("keeps the newest cached revision and the existing merchant-hidden safety exception", async () => {
+  it("keeps the newest cached revision and admits hidden exact listings regardless of title", async () => {
     const old = listing(fastSecret, "hidden", [["visibility", "private"]])
     const newer = listing(
       fastSecret,
@@ -1138,15 +1138,15 @@ describe("progressive exact product reads", () => {
       [["visibility", "private"]],
       150
     )
-    const unsafe = listing(fastSecret, "Counterfeit goods", [
+    const titledHidden = listing(fastSecret, "Counterfeit goods", [
       ["visibility", "private"],
     ])
     const slow = listing(slowSecret, "other")
     await cacheSignedProductListingEvent(newer)
-    const { held, fastReturned } = installHeldRead([old, unsafe], slow)
+    const { held, fastReturned } = installHeldRead([old, titledHidden], slow)
     const snapshots: ProductsByIdsResult[] = []
-    const read = getProductsByIds([old, unsafe, slow].map(address), {
-      includeMerchantHiddenProductIds: [address(old), address(unsafe)],
+    const read = getProductsByIds([old, titledHidden, slow].map(address), {
+      includeMerchantHiddenProductIds: [address(old), address(titledHidden)],
       onProgress: (snapshot) => snapshots.push(snapshot),
     })
     try {
@@ -1155,16 +1155,15 @@ describe("progressive exact product reads", () => {
         snapshots[0]?.data.find((record) => record.addressId === address(old))
           ?.eventId
       ).toBe(newer.id)
-      expect(
-        snapshots[0]?.data.some(
-          (record) => record.addressId === address(unsafe)
-        )
-      ).toBe(false)
     } finally {
       held.release()
       await read.catch(() => undefined)
     }
-    await read
+    const final = await read
+    expect(
+      final.data.find((record) => record.addressId === address(titledHidden))
+        ?.availability.state
+    ).toBe("hidden")
   })
   it("keeps variation families browse-only and retracts a deleted child during final cache persistence", async () => {
     const parent = listing(fastSecret, "family", [

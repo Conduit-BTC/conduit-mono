@@ -1855,7 +1855,7 @@ describe("commerce gateway", () => {
       "Conduit Shirt",
       "Conduit Sticker",
     ])
-    expect(parent?.safety?.state).toBe("active")
+    expect(parent?.availability?.state).toBe("active")
     expect(
       parent?.family?.children.map((variation) => variation.product.id)
     ).toEqual([
@@ -2055,6 +2055,241 @@ describe("commerce gateway", () => {
     expect(partial.meta.degraded).toBe(true)
     expect(complete.data).toHaveLength(1)
     expect(complete.meta.degraded).toBe(false)
+  })
+
+  it("does not reuse a parsed listing or signed proof after same-id input mutation", async () => {
+    const event = makeSignedProductEvent({
+      dTag: "parser-cache-mutation",
+      createdAt: 100,
+      title: "Signed original",
+    }).rawEvent() as SignedPublicNostrEvent
+    __setCommerceTestOverrides({
+      fetchPublicEvents: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? [event] : [],
+    })
+    const first = await getMarketplaceProducts({
+      authorPubkeys: [event.pubkey],
+    })
+    expect(first.data).toHaveLength(1)
+    expect(first.data[0]?.product.signedProductEvent?.content).toBe(
+      event.content
+    )
+
+    // A transport seam may reuse an object. Its old event id must not keep a
+    // prior projection or proof alive after any signed field changes.
+    const original = structuredClone(event)
+    event.content = "Modified unsigned content"
+    event.tags = event.tags.map((tag) =>
+      tag[0] === "visibility" ? ["visibility", "private"] : [...tag]
+    )
+    if (!event.tags.some((tag) => tag[0] === "visibility"))
+      event.tags.push(["visibility", "private"])
+    cachedProducts = []
+    const second = await getMarketplaceProducts({
+      authorPubkeys: [event.pubkey],
+    })
+    expect(second.data).toEqual([])
+    expect(cachedProducts).toHaveLength(1)
+    expect(cachedProducts[0]?.signedProductEvent).toBeUndefined()
+    expect(cachedProducts[0]?.visibility).toBe("private")
+    expect(first.data[0]?.product.signedProductEvent).toEqual(original)
+  })
+
+  it("persists a progressive browse batch before the remaining relay read completes", async () => {
+    const event = makeSignedProductEvent({
+      dTag: "early-cache",
+      createdAt: 100,
+      title: "Early cached cup",
+    }).rawEvent() as SignedPublicNostrEvent
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let ready!: (persisted: boolean) => void
+    const firstBatch = new Promise<boolean>((resolve) => {
+      ready = resolve
+    })
+    __setCommerceTestOverrides({
+      fetchPublicEventsWithDiagnostics: async () => ({
+        events: [],
+        relays: [],
+      }),
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
+        await onProgress({
+          relayUrl: options.relayUrls?.[0] ?? "wss://early.example",
+          events: [event],
+          mergedEvents: [event],
+        })
+        ready(cachedProducts.some((row) => row.eventId === event.id))
+        await pending
+        return [event]
+      },
+    })
+    const read = getMarketplaceProductsProgressive(
+      { authorPubkeys: [event.pubkey] },
+      () => {}
+    )
+    try {
+      expect(await firstBatch).toBe(true)
+    } finally {
+      release()
+      await read
+    }
+  })
+
+  it("coalesces concurrent relay batches while retaining revisions, sources, and families", async () => {
+    const older = makeSignedProductEvent({
+      dTag: "progressive-revision",
+      createdAt: 100,
+      title: "Older terms",
+    }).rawEvent() as SignedPublicNostrEvent
+    const newer = makeSignedProductEvent({
+      dTag: "progressive-revision",
+      createdAt: 110,
+      title: "Current terms",
+    }).rawEvent() as SignedPublicNostrEvent
+    const sameNewer = structuredClone(newer)
+    const parent = makeSignedGammaProductEvent({
+      dTag: "progressive-family",
+      createdAt: 100,
+      title: "Family",
+      type: "variable",
+    }).rawEvent() as SignedPublicNostrEvent
+    const child = makeSignedGammaProductEvent({
+      dTag: "progressive-child",
+      createdAt: 101,
+      title: "Small",
+      type: "variation",
+      parentProductId: `30402:${parent.pubkey}:progressive-family`,
+      size: "Small",
+    }).rawEvent() as SignedPublicNostrEvent
+    attachEventSourceRelayUrl(newer, "wss://first-source.example")
+    attachEventSourceRelayUrl(sameNewer, "wss://second-source.example")
+    const snapshots: Array<{
+      ids: string[]
+      sourceUrls: string[]
+      familyChildren: string[]
+    }> = []
+    __setCommerceTestOverrides({
+      fetchPublicEventsWithDiagnostics: async () => ({
+        events: [],
+        relays: [],
+      }),
+      fetchPublicEventsProgressive: async (_filter, _options, onProgress) => {
+        const batches = [[older], [newer], [sameNewer], [parent, child]]
+        await Promise.all(
+          batches.map((events, index) =>
+            onProgress({
+              relayUrl: `wss://batch-${index}.example`,
+              events,
+              mergedEvents: events,
+              status: "success",
+            })
+          )
+        )
+        return [older, newer, sameNewer, parent, child]
+      },
+    })
+
+    const result = await getMarketplaceProductsProgressive(
+      { merchantPubkey: MERCHANT_A_PUBKEY, limit: 10 },
+      (progress) => {
+        const current = progress.data.find(
+          (record) =>
+            record.addressId === `30402:${newer.pubkey}:progressive-revision`
+        )
+        const family = progress.data.find(
+          (record) =>
+            record.addressId === `30402:${parent.pubkey}:progressive-family`
+        )
+        snapshots.push({
+          ids: progress.data.map((record) => record.eventId),
+          sourceUrls: current?.sourceRelayUrls ?? [],
+          familyChildren:
+            family?.family?.children.map((record) => record.eventId) ?? [],
+        })
+      }
+    )
+
+    expect(snapshots).toHaveLength(2)
+    for (const snapshot of snapshots) {
+      expect(snapshot.ids).toContain(newer.id)
+      expect(snapshot.ids).not.toContain(older.id)
+      expect(snapshot.sourceUrls).toEqual([
+        "wss://first-source.example",
+        "wss://second-source.example",
+      ])
+      expect(snapshot.familyChildren).toEqual([child.id])
+    }
+    expect(result.data.map((record) => record.eventId)).toEqual(
+      snapshots[1]!.ids
+    )
+    expect(cachedProducts.some((row) => row.eventId === newer.id)).toBe(true)
+  })
+
+  it("drops queued catalog progress when its scope is cancelled", async () => {
+    const controller = new AbortController()
+    const event = makeSignedProductEvent({
+      dTag: "cancelled-progress",
+      createdAt: 100,
+      title: "Cancelled progress",
+    }).rawEvent() as SignedPublicNostrEvent
+    let releaseQueued!: () => void
+    const queued = new Promise<void>((resolve) => {
+      releaseQueued = resolve
+    })
+    const snapshots: string[][] = []
+    __setCommerceTestOverrides({
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
+        const callback = onProgress({
+          relayUrl: options.relayUrls?.[0] ?? "wss://cancelled.example",
+          events: [event],
+          mergedEvents: [event],
+        })
+        releaseQueued()
+        await callback
+        return [event]
+      },
+    })
+
+    const read = getMarketplaceProductsProgressive(
+      { merchantPubkey: MERCHANT_A_PUBKEY, signal: controller.signal },
+      (progress) =>
+        snapshots.push(progress.data.map((record) => record.eventId))
+    )
+    await queued
+    controller.abort()
+    await expect(read).rejects.toThrow()
+    expect(snapshots).toEqual([])
+    expect(cachedProducts).toEqual([])
+  })
+
+  it("flushes a transport's unawaited final progress before deletion resolution", async () => {
+    const event = makeSignedProductEvent({
+      dTag: "final-progress-flush",
+      createdAt: 100,
+      title: "Final progress flush",
+    }).rawEvent() as SignedPublicNostrEvent
+    const snapshots: string[][] = []
+    __setCommerceTestOverrides({
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
+        void onProgress({
+          relayUrl: options.relayUrls?.[0] ?? "wss://final-progress.example",
+          events: [event],
+          mergedEvents: [event],
+        })
+        return [event]
+      },
+    })
+
+    const result = await getMarketplaceProductsProgressive(
+      { merchantPubkey: MERCHANT_A_PUBKEY },
+      (progress) =>
+        snapshots.push(progress.data.map((record) => record.eventId))
+    )
+    expect(snapshots).toEqual([[event.id], [event.id]])
+    expect(result.data[0]?.eventId).toBe(event.id)
+    expect(cachedProducts.some((row) => row.eventId === event.id)).toBe(true)
   })
 
   it("marks a saturated variation-group read as degraded", async () => {
@@ -2517,7 +2752,7 @@ describe("commerce gateway", () => {
     ])
   })
 
-  it("preserves controlled relay relevance through real signatures, revisions, safety and Market facets", async () => {
+  it("preserves controlled relay relevance through real signatures, revisions, availability and Market facets", async () => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket")
     const first = makeSignedProductEvent({
       dTag: "shared",
@@ -4253,13 +4488,14 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(0)
   })
 
-  it("keeps market-hidden products out of batched Market reads", async () => {
+  it("keeps explicitly hidden products out of batched Market reads", async () => {
     const productEvent = makeProductEvent({
       pubkey: MERCHANT_A_PUBKEY,
       dTag: "blocked-batch-item",
       id: "event-blocked-batch",
       createdAt: 100,
       title: "Counterfeit goods display sample",
+      visibilityTag: "hidden",
     })
     const addressId = `30402:${MERCHANT_A_PUBKEY}:blocked-batch-item`
 
@@ -4277,13 +4513,13 @@ describe("commerce gateway", () => {
 
     expect(marketResult.data).toHaveLength(0)
     expect(merchantResult.data).toHaveLength(1)
-    expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
+    expect(merchantResult.data[0]?.availability?.state).toBe("hidden")
   })
 
-  it("scopes the merchant-hidden buyer exception to exact safe pickup coordinates", async () => {
+  it("scopes the merchant-hidden buyer exception to exact pickup coordinates", async () => {
     const eventProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-event-item`
     const ordinaryProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-ordinary-item`
-    const blockedProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-blocked-item`
+    const titledProductId = `30402:${EVENT_TEST_MERCHANT_PUBKEY}:private-blocked-item`
     const events = [
       makeProductEvent({
         pubkey: EVENT_TEST_MERCHANT_PUBKEY,
@@ -4317,15 +4553,15 @@ describe("commerce gateway", () => {
     })
 
     const result = await getProductsByIds(
-      [eventProductId, ordinaryProductId, blockedProductId],
+      [eventProductId, ordinaryProductId, titledProductId],
       {
-        includeMerchantHiddenProductIds: [eventProductId, blockedProductId],
+        includeMerchantHiddenProductIds: [eventProductId, titledProductId],
       }
     )
 
-    expect(result.data.map((record) => record.addressId)).toEqual([
-      eventProductId,
-    ])
+    expect(result.data.map((record) => record.addressId).sort()).toEqual(
+      [eventProductId, titledProductId].sort()
+    )
     expect(
       result.diagnostics.find(
         (diagnostic) => diagnostic.productId === eventProductId
@@ -4338,9 +4574,9 @@ describe("commerce gateway", () => {
     ).toBe("listing_filtered")
     expect(
       result.diagnostics.find(
-        (diagnostic) => diagnostic.productId === blockedProductId
+        (diagnostic) => diagnostic.productId === titledProductId
       )?.issue
-    ).toBe("listing_filtered")
+    ).toBeNull()
   })
 
   it("isolates explicitly hidden event listings without inventing event semantics for public shipping", async () => {
@@ -4815,7 +5051,7 @@ describe("commerce gateway", () => {
     expect(merchantResult.data[0]?.product.title).toBe("Needs Image")
   })
 
-  it("suppresses blocked launch-safety listings from Market while Merchant can inspect them", async () => {
+  it("admits formerly blocked title text to Market and product detail", async () => {
     const productEvent = makeProductEvent({
       pubkey: "merchant",
       dTag: "blocked-item",
@@ -4848,14 +5084,15 @@ describe("commerce gateway", () => {
       includeMarketHidden: true,
     })
 
-    expect(marketResult.data).toHaveLength(0)
-    expect(publicDetail.data).toBeNull()
+    expect(marketResult.data).toHaveLength(1)
+    expect(marketResult.data[0]?.availability?.state).toBe("active")
+    expect(publicDetail.data?.availability?.state).toBe("active")
     expect(merchantResult.data).toHaveLength(1)
-    expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
-    expect(merchantDetail.data?.safety?.state).toBe("blocked")
+    expect(merchantResult.data[0]?.availability?.state).toBe("active")
+    expect(merchantDetail.data?.availability?.state).toBe("active")
   })
 
-  it("keeps policy-warning listings visible in Market while Merchant can inspect the warning", async () => {
+  it("admits formerly warned title text in Market and Merchant", async () => {
     const productEvent = makeProductEvent({
       pubkey: "merchant",
       dTag: "warning-item",
@@ -4882,12 +5119,12 @@ describe("commerce gateway", () => {
     })
 
     expect(marketResult.data).toHaveLength(1)
-    expect(marketResult.data[0]?.safety?.state).toBe("flagged")
+    expect(marketResult.data[0]?.availability?.state).toBe("active")
     expect(merchantResult.data).toHaveLength(1)
-    expect(merchantResult.data[0]?.safety?.state).toBe("flagged")
+    expect(merchantResult.data[0]?.availability?.state).toBe("active")
   })
 
-  it("does not resurrect an older cached active listing after a newer blocked replacement", async () => {
+  it("keeps a newer signed replacement visible over an older cached listing", async () => {
     cachedProducts.push({
       id: "30402:merchant:replacement-item",
       pubkey: "merchant",
@@ -4928,7 +5165,10 @@ describe("commerce gateway", () => {
       limit: 10,
     })
 
-    expect(marketResult.data).toHaveLength(0)
+    expect(marketResult.data).toHaveLength(1)
+    expect(marketResult.data[0]?.product.title).toBe(
+      "Counterfeit goods display sample"
+    )
     expect(merchantResult.data).toHaveLength(1)
     expect(merchantResult.data[0]?.product.title).toBe(
       "Counterfeit goods display sample"
@@ -4952,8 +5192,11 @@ describe("commerce gateway", () => {
       limit: 10,
     })
 
-    expect(cachedMarketResult.data).toHaveLength(0)
-    expect(cachedMerchantResult.data[0]?.safety?.state).toBe("blocked")
+    expect(cachedMarketResult.data).toHaveLength(1)
+    expect(cachedMarketResult.data[0]?.product.title).toBe(
+      "Counterfeit goods display sample"
+    )
+    expect(cachedMerchantResult.data[0]?.availability?.state).toBe("active")
   })
 
   it("resolves product detail from a NIP-89 naddr handler URL", async () => {
@@ -8630,13 +8873,14 @@ describe("getProductsByIds diagnostics", () => {
     expect(result.diagnostics[0]?.issue).toBe("cached_only")
   })
 
-  it("types market-filtered listings instead of calling them missing", async () => {
+  it("types merchant-hidden listings as filtered instead of missing", async () => {
     const productEvent = makeProductEvent({
       pubkey: merchantPubkey,
       dTag: "diagnosed-filtered",
       id: "event-diagnosed-filtered",
       createdAt: 100,
       title: "Counterfeit goods display sample",
+      visibilityTag: "hidden",
     })
     const filteredAddressId = `30402:${merchantPubkey}:diagnosed-filtered`
     __setCommerceTestOverrides({
