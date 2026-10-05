@@ -16,8 +16,18 @@ export interface PublicDeploymentProfile {
   publicFeatures: PublicDeploymentFeatures
 }
 
+export interface PublicDeploymentTreasury {
+  mainnetAddress: string
+  regtestAddress: string
+  retiredAddresses: string[]
+}
+
 interface PagesProfilesFile {
   schemaVersion: number
+  quantumRouterTreasury: {
+    mainnetAddress: string | null
+    retiredMainnetAddresses: string[]
+  }
   apps: Record<
     string,
     {
@@ -35,6 +45,7 @@ export interface ResolvedDeploymentProfile {
   releaseChannel: string
   lightningNetwork: string
   publicFeatures: PublicDeploymentFeatures
+  quantumRouterTreasury: PublicDeploymentTreasury
   configDigest: string
 }
 
@@ -57,6 +68,29 @@ const profilesPath = fileURLToPath(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function assertTreasuryConfiguration(
+  value: unknown
+): asserts value is PagesProfilesFile["quantumRouterTreasury"] {
+  // Bounded static-address syntax only. The pinned SDK checks checksum,
+  // identity and canonical encoding offline in tests and before preparation.
+  const isMainnetAddress = (address: unknown): address is string =>
+    typeof address === "string" &&
+    /^spark1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{62}$/.test(address)
+  if (
+    !isRecord(value) ||
+    (value.mainnetAddress !== null &&
+      !isMainnetAddress(value.mainnetAddress)) ||
+    !Array.isArray(value.retiredMainnetAddresses) ||
+    value.retiredMainnetAddresses.length > 16 ||
+    !value.retiredMainnetAddresses.every(isMainnetAddress) ||
+    new Set(value.retiredMainnetAddresses).size !==
+      value.retiredMainnetAddresses.length ||
+    value.retiredMainnetAddresses.includes(value.mainnetAddress)
+  ) {
+    throw new Error("Pages deployment treasury configuration is invalid.")
+  }
 }
 
 function assertProfile(
@@ -120,6 +154,7 @@ export function parsePagesProfiles(value: unknown): PagesProfilesFile {
   if (!isRecord(value.apps) || !isRecord(value.profiles)) {
     throw new Error("Pages deployment profiles must define apps and profiles.")
   }
+  assertTreasuryConfiguration(value.quantumRouterTreasury)
   for (const [name, app] of Object.entries(value.apps)) {
     if (
       !isRecord(app) ||
@@ -201,7 +236,8 @@ function digestPublicConfig(value: object): string {
 }
 
 export function resolveDeploymentProfile(
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  pagesProfiles: PagesProfilesFile = loadPagesProfiles()
 ): ResolvedDeploymentProfile {
   const name = selectDeploymentProfileName(env)
   if (name === "local") {
@@ -219,15 +255,36 @@ export function resolveDeploymentProfile(
           env.VITE_QUANTUM_ROUTER_ENABLED?.trim().toLowerCase() ?? ""
         ),
       },
+      quantumRouterTreasury: {
+        mainnetAddress: env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS?.trim() || "",
+        regtestAddress:
+          env.VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS?.trim() || "",
+        retiredAddresses:
+          env.VITE_CONDUIT_SPARK_RETIRED_TREASURY_ADDRESSES?.split(",")
+            .map((address) => address.trim())
+            .filter(Boolean) ?? [],
+      },
     }
     return { name, ...local, configDigest: digestPublicConfig(local) }
   }
 
-  const profile = loadPagesProfiles().profiles[name]
+  const configuration = parsePagesProfiles(pagesProfiles)
+  const profile = configuration.profiles[name]
   const publicConfig = {
     releaseChannel: profile.releaseChannel,
     lightningNetwork: profile.lightningNetwork,
     publicFeatures: profile.publicFeatures,
+    quantumRouterTreasury: {
+      mainnetAddress:
+        profile.lightningNetwork === "mainnet"
+          ? (configuration.quantumRouterTreasury.mainnetAddress ?? "")
+          : "",
+      regtestAddress: "",
+      retiredAddresses:
+        profile.lightningNetwork === "mainnet"
+          ? [...configuration.quantumRouterTreasury.retiredMainnetAddresses]
+          : [],
+    },
   }
   return {
     name,

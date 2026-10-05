@@ -89,7 +89,7 @@ export function createConduitBuildContract(appDir: string): {
     sourceUrl,
   })
 
-  const define = {
+  const define: Record<string, string> = {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(
       readPackageVersion(appDir)
     ),
@@ -118,6 +118,17 @@ export function createConduitBuildContract(appDir: string): {
     "import.meta.env.VITE_LIGHTNING_NETWORK": JSON.stringify(
       profile.lightningNetwork
     ),
+  }
+
+  // Local Vite dotenv settings are loaded after this contract is created.
+  // Only managed profiles override treasury variables; staging clears all rails.
+  if (profile.name !== "local") {
+    define["import.meta.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS"] =
+      JSON.stringify(profile.quantumRouterTreasury.mainnetAddress)
+    define["import.meta.env.VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS"] =
+      JSON.stringify(profile.quantumRouterTreasury.regtestAddress)
+    define["import.meta.env.VITE_CONDUIT_SPARK_RETIRED_TREASURY_ADDRESSES"] =
+      JSON.stringify(profile.quantumRouterTreasury.retiredAddresses.join(","))
   }
 
   const deploymentManifestPlugin: Plugin = {

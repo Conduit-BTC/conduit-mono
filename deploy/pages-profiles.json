@@ -1,5 +1,9 @@
 {
   "schemaVersion": 1,
+  "quantumRouterTreasury": {
+    "mainnetAddress": "spark1pgssxg8d048c6ge7ysvjq0zg8xz7l8ryqjxmyhrlm7s56rjfns0ylpxymhm9sn",
+    "retiredMainnetAddresses": []
+  },
   "apps": {
     "market": {
       "package": "@conduit/market",

@@ -68,6 +68,30 @@ for (const [app, appConfig] of Object.entries(profiles.apps)) {
         `${manifestPath} public config digest is not present in the compiled runtime.`
       )
     }
+    const expectedTreasury = resolvedProfile.quantumRouterTreasury
+    const expectedAddresses = [
+      expectedTreasury.mainnetAddress,
+      expectedTreasury.regtestAddress,
+      ...expectedTreasury.retiredAddresses,
+    ].filter(Boolean)
+    if (
+      expectedAddresses.some((address) => !compiledJavaScript.includes(address))
+    ) {
+      throw new Error(
+        `${manifestPath} is missing the compiled treasury destination policy.`
+      )
+    }
+    if (
+      resolvedProfile.lightningNetwork !== "mainnet" &&
+      [
+        profiles.quantumRouterTreasury.mainnetAddress,
+        ...profiles.quantumRouterTreasury.retiredMainnetAddresses,
+      ].some((address) => address && compiledJavaScript.includes(address))
+    ) {
+      throw new Error(
+        `${manifestPath} contains a mainnet treasury policy on an unsupported network.`
+      )
+    }
   }
 }
 

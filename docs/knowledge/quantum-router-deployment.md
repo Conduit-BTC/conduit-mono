@@ -46,11 +46,17 @@ readable but are not silently rewritten or dispatched.
 
 ## Native final fee collection
 
-Both apps may be built with the same public static treasury receive address:
-`VITE_CONDUIT_SPARK_TREASURY_ADDRESS` (mainnet), or
-`VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS` (isolated regtest).
+Managed mainnet preview and production builds use the single public static
+treasury receive address in `deploy/pages-profiles.json` under
+`quantumRouterTreasury.mainnetAddress`. The shared build contract compiles the
+same policy into both Market and Merchant; dashboard treasury overrides cannot
+redirect either app. Signet staging compiles empty treasury settings.
+
+Local builds retain explicit `VITE_CONDUIT_SPARK_TREASURY_ADDRESS` (mainnet) or
+`VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS` (isolated regtest), including Vite
+dotenv configuration. The managed destination is not an implicit local default.
 Never put treasury signing material in a client build.
-Without a configured address, new checkouts retain their Lightning fee rail.
+An explicitly absent destination retains the Lightning fee rail for new plans.
 With a valid configured address, new plans freeze a native final allocation;
 invalid, invoice-bearing or wrong-network addresses fail before wallet creation.
 This configuration does not rewrite historical funded orders.
@@ -62,8 +68,10 @@ commerce settlement. One native transfer collects the settled Conduit
 allocation plus unused authorized commerce reserves. This is not a wallet
 balance sweep, a Lightning invoice, or a treasury signing capability.
 
-During rotation, retain approved old destinations in the comma-separated
-`VITE_CONDUIT_SPARK_RETIRED_TREASURY_ADDRESSES` in both builds.
+During managed rotation, retain approved old destinations in
+`quantumRouterTreasury.retiredMainnetAddresses` in the same shared configuration.
+Local builds use the comma-separated
+`VITE_CONDUIT_SPARK_RETIRED_TREASURY_ADDRESSES` for explicit prior approvals.
 Recovery checks the saved address against that explicit set; it does not
 redirect existing plans. Native final collection requires fresh exact history,
 zero provider fee and claimed-transfer evidence. Uncertain transfers remain
@@ -91,7 +99,12 @@ for the distinct expiry, renewal and attribution boundaries.
 ## Verification
 
 Build manifests expose `quantumRouterEnabled` alongside the resolved profile
-and public configuration digest, which covers the selected network.
+and public configuration digest, which covers the selected network and resolved
+current/retired treasury policy. Raw treasury destinations are not included in
+manifests or diagnostics. Build parsing bounds static-address syntax; offline
+tests and pre-wallet preparation use the pinned SDK to validate checksum,
+identity, canonical encoding and network. Artifact verification checks the
+compiled destination policy in both apps and excludes mainnet policy on staging.
 Managed-profile parsing, artifact verification
 and preview CI assert that value for every app. Pure capability tests cover
 hosted admission without local flags, production-host/profile mismatches,
