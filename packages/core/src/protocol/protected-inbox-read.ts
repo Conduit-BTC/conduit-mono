@@ -41,6 +41,9 @@ export interface ReadProtectedInboxOptions {
   /** Compatibility-only inbox targets contributed by the App Relays layer. */
   appRelayUrls?: readonly string[]
   limit: number
+  /** Inclusive timestamp window for bounded protected inbox pagination. */
+  since?: number
+  until?: number
   authorization: ProtectedReadAuthorization | null
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
@@ -178,6 +181,8 @@ export async function readProtectedInbox(
           "#p": [principalPubkey],
           ...(eventId ? { ids: [eventId] } : {}),
           limit: options.limit,
+          ...(options.since === undefined ? {} : { since: options.since }),
+          ...(options.until === undefined ? {} : { until: options.until }),
         },
       ],
       operation: "private_inbox_read",

@@ -54,7 +54,7 @@ function scenario() {
   let failReads = false
   let failNetwork = false
   __setRelayListTestOverrides({
-    fetchEventsFanout: async () => [],
+    fetchPublicEvents: async () => [],
     loadCached: async () => undefined,
     putCached: async () => {},
   })
@@ -68,7 +68,7 @@ function scenario() {
       if (failWrites) throw new Error("Synthetic storage failure")
       rows.forEach((row) => durable.set(row.pubkey, row))
     },
-    fetchEventsFanoutWithDiagnostics: async () => {
+    fetchPublicEventsWithDiagnostics: async () => {
       if (failNetwork) throw new Error("Synthetic network failure")
       return {
         events,

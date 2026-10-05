@@ -3,7 +3,6 @@
  * The Open Markets content remains a human-readable description; clients that
  * do not understand the extension must not treat its base price as a quote.
  */
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { z } from "zod"
 import {
   getCurrencyFractionDigits,
@@ -1219,7 +1218,7 @@ export function quoteShippingPolicy(input: {
       event.created_at !== item.productCreatedAt
     )
       return { status: "invalid_items" }
-    const product = parseProductEvent(new NDKEvent(undefined, event))
+    const product = parseProductEvent(event)
     if (
       !product ||
       product.priceEvidenceMalformed ||

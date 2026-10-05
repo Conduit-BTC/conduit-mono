@@ -1,4 +1,3 @@
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
 import {
   db,
@@ -12,11 +11,11 @@ import {
 } from "../db"
 import { EVENT_KINDS } from "./kinds"
 import {
-  fetchEventsFanoutWithDiagnostics,
+  fetchPublicEventsWithDiagnostics,
   getEventSourceRelayUrls,
-  type FetchEventsFanoutOptions,
-  type FetchEventsFanoutDiagnosticsResult,
-} from "./ndk"
+  type PublicRelayReadOptions,
+  type PublicRelayReadDiagnosticsResult,
+} from "./relay-reader"
 import {
   normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
@@ -131,7 +130,7 @@ export interface OwnerRelayListResolution {
 
 export interface ResolveOwnerRelayListOptions {
   relayUrls?: readonly string[]
-  fetchEventsWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
+  fetchEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
   evidenceRepository?: OwnerRelayListEvidenceRepository
   /** Account on whose behalf this discovery I/O is admitted. */
   requestingAccountPubkey?: string | null
@@ -139,11 +138,11 @@ export interface ResolveOwnerRelayListOptions {
   authenticatedPubkey?: string | null
   /** Exact lookup targets explicitly selected by that authenticated owner. */
   ownerSelectedRelayUrls?: readonly string[]
-  accountNetworkLocalStateRepository?: FetchEventsFanoutOptions["accountNetworkLocalStateRepository"]
+  accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   /** Cancels queued or in-flight lookup I/O when account authority changes. */
   signal?: AbortSignal
   /** Live account session authority for non-signal owner reads. */
-  shouldContinue?: FetchEventsFanoutOptions["shouldContinue"]
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   now?: () => number
 }
 
@@ -1015,9 +1014,9 @@ export function accountNetworkDiscoveryRelayUrls(): string[] {
 }
 
 function normalizeDiagnostics(
-  result: FetchEventsFanoutDiagnosticsResult,
+  result: PublicRelayReadDiagnosticsResult,
   plannedRelayUrls: readonly string[]
-): FetchEventsFanoutDiagnosticsResult {
+): PublicRelayReadDiagnosticsResult {
   // The plan was authority-filtered before final I/O. Preserve an admitted
   // owner-selected ws:// target while discarding any unplanned diagnostics.
   const planned = normalizeOwnerSelectedRelayUrls(plannedRelayUrls)
@@ -1102,7 +1101,7 @@ function ownerAuthorizedLookupRelayPlan(input: {
 }
 
 function deriveCoverage(
-  result: FetchEventsFanoutDiagnosticsResult,
+  result: PublicRelayReadDiagnosticsResult,
   plannedRelayUrls: readonly string[]
 ): OwnerRelayListLookupCoverage {
   if (result.successfulRelayUrls.length === 0) return "unavailable"
@@ -1118,7 +1117,7 @@ function deriveCoverage(
 }
 
 function toSignedOwnerRelayListEvent(
-  event: NDKEvent,
+  event: SignedPublicNostrEvent,
   pubkey: NormalizedOwnerRelayListPubkey
 ): SignedPublicNostrEvent | null {
   try {
@@ -1155,7 +1154,7 @@ function newestEvent(
 }
 
 function eventSourceRelayUrls(
-  event: NDKEvent,
+  event: SignedPublicNostrEvent,
   successfulRelayUrls: readonly string[]
 ): string[] {
   const successful = new Set(normalizeSourceRelayUrls(successfulRelayUrls))
@@ -1258,8 +1257,8 @@ export async function resolveOwnerRelayList(
   })
   const relayUrls = lookupPlan.relayUrls
   const fetchEvents =
-    options.fetchEventsWithDiagnostics ?? fetchEventsFanoutWithDiagnostics
-  let result: FetchEventsFanoutDiagnosticsResult
+    options.fetchEventsWithDiagnostics ?? fetchPublicEventsWithDiagnostics
+  let result: PublicRelayReadDiagnosticsResult
   if (relayUrls.length === 0) {
     result = {
       events: [],

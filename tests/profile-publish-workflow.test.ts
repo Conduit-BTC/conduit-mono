@@ -21,7 +21,7 @@ import {
   ProfilePublishSupersededError,
   type CachedProfile,
 } from "@conduit/core"
-import { __resetNdkTestState } from "../packages/core/src/protocol/ndk"
+import { __resetPublicReaderTestState } from "../packages/core/src/protocol/relay-reader"
 
 const SECRET = generateSecretKey()
 const PUBKEY = getPublicKey(SECRET)
@@ -57,10 +57,10 @@ beforeEach(() => {
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   __resetRelayPublishTestOverrides()
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
   setSigner(new NDKPrivateKeySigner(Buffer.from(SECRET).toString("hex")))
   __setRelayListTestOverrides({
-    fetchEventsFanout: async () => [],
+    fetchPublicEvents: async () => [],
     loadCached: async () => undefined,
     putCached: async () => {},
   })
@@ -74,7 +74,7 @@ beforeEach(() => {
       if (failWrites) throw new Error("Synthetic storage write failure")
       durable = rows.find((row) => row.pubkey === PUBKEY) ?? durable
     },
-    fetchEventsFanoutWithDiagnostics: async () => {
+    fetchPublicEventsWithDiagnostics: async () => {
       if (failNetwork) throw new Error("Synthetic network failure")
       afterNetwork?.()
       return {
@@ -107,7 +107,7 @@ afterEach(() => {
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   __resetRelayPublishTestOverrides()
-  __resetNdkTestState()
+  __resetPublicReaderTestState()
 })
 
 describe("selected profile publish workflow", () => {

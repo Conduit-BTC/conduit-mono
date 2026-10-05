@@ -821,7 +821,7 @@ describe("future Event Market private physical handoff", () => {
           getAccountSigner: () =>
             ({ getPublicKey: async () => principal }) as never,
           resolveInboxRelayUrls: async () => ["wss://future.inbox.test"],
-          fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+          fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
             events: rumors.map(
               (rumor) =>
                 new NDKEvent(
@@ -856,7 +856,7 @@ describe("future Event Market private physical handoff", () => {
       expect(organizerRead.coverageDegraded).toBe(true)
       expect(organizerRead.claims[0]?.state).toBe("ready_for_pickup")
       __setCommerceTestOverrides({
-        fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+        fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
           events: [],
           attemptedRelayUrls: [...(options?.relayUrls ?? [])],
           successfulRelayUrls: [],
@@ -894,7 +894,7 @@ describe("future Event Market private physical handoff", () => {
         })
       ).toBe(false)
       __setCommerceTestOverrides({
-        fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+        fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
           events: [],
           attemptedRelayUrls: [...(options?.relayUrls ?? [])],
           successfulRelayUrls: [],
@@ -1138,7 +1138,7 @@ describe("future Event Market private physical handoff", () => {
       allowMissingProtectedReadAuthorization: true,
       getAccountSigner: () => plainTestSigner(signer as never),
       resolveInboxRelayUrls: async () => ["wss://fresh.inbox.test"],
-      fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
         events: [
           new NDKEvent(
             undefined,
@@ -1234,7 +1234,7 @@ describe("future Event Market private physical handoff", () => {
           allowMissingProtectedReadAuthorization: true,
           getAccountSigner: () => plainTestSigner(signer as never),
           resolveInboxRelayUrls: async () => ["wss://restart.inbox.test"],
-          fetchEventsFanoutWithDiagnostics: async (_filter, options) => ({
+          fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
             events: available ? [selfWrap] : [],
             attemptedRelayUrls: [...(options?.relayUrls ?? [])],
             successfulRelayUrls: available

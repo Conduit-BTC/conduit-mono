@@ -125,7 +125,7 @@ function reader(frontiers = new Map<string, CachedShippingOptionFrontier>()) {
     getCachedDeletionTombstones: async () => [],
     putCachedDeletionTombstones: async () => undefined,
     deletionFallbackStorage: null,
-    fetchEventsFanoutDetailed: async (filter, options = {}) => {
+    fetchSignedEventsFanoutDetailed: async (filter, options = {}) => {
       if (mode === "unavailable") throw new Error("Synthetic relay outage")
       const events = filter.kinds?.includes(30406)
         ? mode === "partial_empty" ||

@@ -26,7 +26,7 @@ import {
   type ShopperPresetsDocument,
   type ShopperPresetsValue,
 } from "@conduit/core"
-import { attachEventSourceRelayUrl } from "@conduit/core/protocol/ndk"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 
 const nowMs = 1_770_000_000_000
 const password = "correct horse battery staple 7"

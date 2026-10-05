@@ -149,7 +149,7 @@ describe("local product deletion observation", () => {
       // override. Only the database operations and observer delivery are controlled.
       __setCommerceTestOverrides({
         putCachedProductTombstones: undefined,
-        fetchEventsFanout: async () => {
+        fetchPublicEvents: async () => {
           throw new Error("Unexpected relay read")
         },
       })
@@ -216,7 +216,7 @@ describe("local product deletion observation", () => {
 
   it("announces committed signed evidence before the write returns without relay I/O", async () => {
     __setCommerceTestOverrides({
-      fetchEventsFanout: async () => {
+      fetchPublicEvents: async () => {
         throw new Error("Unexpected relay read")
       },
     })
@@ -332,7 +332,7 @@ describe("local product deletion observation", () => {
     let observedBeforeWrite = false
     __setCommerceTestOverrides({
       now: () => 1_700_000_000_000,
-      fetchEventsFanout: async (filter) =>
+      fetchPublicEvents: async (filter) =>
         filter.kinds?.includes(30402)
           ? [product]
           : filter.kinds?.includes(5)
