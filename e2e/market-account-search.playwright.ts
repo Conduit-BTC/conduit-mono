@@ -452,7 +452,7 @@ test("merchants tab lists discovered merchants and filters by name @market", asy
     .getByRole("textbox", { name: "Filter merchants" })
     .fill("zzzz-no-match")
   await expect(page).toHaveURL(/\/merchants\?.*q=zzzz-no-match/)
-  await expect(directory).toContainText("No discovered merchant name matches")
+  await expect(directory).toContainText("No matching merchant names found yet")
   await expect(networkAccounts).toBeVisible()
 })
 
@@ -538,35 +538,167 @@ test("product search lists matching merchants above the product results @market"
   ).toHaveCount(0)
 })
 
-test("merchant menu and directory reveal twelve rows at a time @market", async ({
+test("merchant picker and directory load more rows on scroll @market", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
   await page.goto(`${marketUrl}/products`)
   await seedMerchantImageRows(page)
   await page.reload()
   await expect(
     page.getByText(/Hydration product \d+/, { exact: true }).first()
   ).toBeVisible()
-  await page.getByRole("button", { name: "All merchants", exact: true }).click()
-  await expect(page.getByRole("menuitemcheckbox")).toHaveCount(13)
-  await page.getByRole("button", { name: "Show more merchants" }).click()
-  await expect(page.getByRole("menuitemcheckbox")).toHaveCount(25)
+  await expect(page.getByText("48 products", { exact: true })).toBeVisible()
+  await page
+    .getByRole("combobox", { name: "All merchants", exact: true })
+    .click()
+  const list = page.getByRole("listbox", { name: "All merchants" })
+  await expect(list.getByRole("option")).toHaveCount(13)
+  await expect(
+    list.getByRole("option", { name: "All merchants Selected", exact: true })
+  ).not.toContainText("48")
+  for (const expectedCount of [25, 37, 49]) {
+    await list.evaluate((element) => {
+      element.scrollTop = element.scrollHeight
+    })
+    await expect(list.getByRole("option")).toHaveCount(expectedCount)
+  }
   await page.keyboard.press("Escape")
+  await expect(
+    page.getByRole("combobox", { name: "All merchants", exact: true })
+  ).toBeFocused()
 
   await page.goto(`${marketUrl}/merchants`)
   const directory = page.locator(
     'section[aria-labelledby="discovered-merchants-heading"]'
   )
   await expect(directory.getByRole("link")).toHaveCount(12)
-  await expect(directory).toContainText("12 of 48")
   for (const expectedCount of [24, 36, 48]) {
-    await directory.getByRole("button", { name: "Show more merchants" }).click()
+    await directory
+      .getByRole("link")
+      .last()
+      .evaluate((element) => {
+        element.scrollIntoView({ block: "end" })
+      })
     await expect(directory.getByRole("link")).toHaveCount(expectedCount)
-    await expect(directory).toContainText(`${expectedCount} of 48`)
+    await expect(directory).toContainText(`${expectedCount} of 48 merchants`)
   }
   await expect(
-    directory.getByRole("button", { name: "Show more merchants" })
+    directory.getByRole("button", { name: "Load more merchants" })
   ).toHaveCount(0)
+})
+
+test("merchant picker searches beyond its first page and preserves multi-selection @market", async ({
+  page,
+}) => {
+  await page.goto(`${marketUrl}/products`)
+  await seedMerchantImageRows(page)
+  await page.reload()
+  await page
+    .getByRole("combobox", { name: "All merchants", exact: true })
+    .click()
+  const list = page.getByRole("listbox", { name: "All merchants" })
+  const input = page.getByRole("combobox", {
+    name: "Search merchants",
+    exact: true,
+  })
+  await input.fill("Fixture Merchant 47")
+  const match = list.getByRole("option", { name: /Fixture Merchant 47/ })
+  await expect(match).toBeVisible()
+  await expect(list.getByRole("option")).toHaveCount(2)
+  await input.press("ArrowDown")
+  await input.press("Enter")
+  await expect
+    .poll(() =>
+      JSON.parse(new URL(page.url()).searchParams.get("merchant") ?? "[]")
+    )
+    .toEqual([OFFSCREEN_MERCHANT_PUBKEY])
+  expect(new URL(page.url()).searchParams.has("q")).toBe(false)
+  await expect(match).toContainText("Selected")
+  await expect(list).toBeVisible()
+  await input.fill("Fixture Merchant 46")
+  await list.getByRole("option", { name: /Fixture Merchant 46/ }).click()
+  await expect
+    .poll(
+      () =>
+        JSON.parse(new URL(page.url()).searchParams.get("merchant") ?? "[]")
+          .length
+    )
+    .toBe(2)
+  await input.fill("merchant-that-does-not-exist")
+  await expect(list.getByRole("option")).toHaveCount(1)
+  await expect(
+    page.getByText(
+      /Merchant name results may be incomplete|No matching merchant/
+    )
+  ).toBeVisible()
+  await list.getByRole("option", { name: /All merchants/ }).click()
+  await expect
+    .poll(() => new URL(page.url()).searchParams.has("merchant"))
+    .toBe(false)
+  await input.fill("")
+  await expect(list.getByRole("option")).toHaveCount(13)
+  if (process.env.FOLLOWUP_UI_EVIDENCE) {
+    await page.screenshot({
+      path: `${process.env.FOLLOWUP_UI_EVIDENCE}/merchant-picker.png`,
+    })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(input).toBeVisible()
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth
+        )
+      )
+      .toBe(true)
+    await page.screenshot({
+      path: `${process.env.FOLLOWUP_UI_EVIDENCE}/merchant-picker-mobile.png`,
+    })
+  }
+  await page.keyboard.press("Escape")
+
+  await page.goto(`${marketUrl}/merchants?q=Fixture%20Merchant%2047`)
+  const directory = page.locator(
+    'section[aria-labelledby="discovered-merchants-heading"]'
+  )
+  await expect(
+    directory.getByRole("link", { name: /Fixture Merchant 47/ })
+  ).toBeVisible()
+  await expect(directory).toContainText("1 of 1 merchants")
+  await expect(
+    directory.getByRole("button", { name: "Check more merchant names" })
+  ).toHaveCount(0)
+})
+
+test("merchant paging retains an action when intersection observers are unavailable @market", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "IntersectionObserver", {
+      value: undefined,
+      configurable: true,
+    })
+  })
+  await page.goto(`${marketUrl}/products`)
+  await seedMerchantImageRows(page)
+  await page.reload()
+  await page
+    .getByRole("combobox", { name: "All merchants", exact: true })
+    .click()
+  const list = page.getByRole("listbox", { name: "All merchants" })
+  await expect(list.getByRole("option")).toHaveCount(13)
+  await list.getByRole("button", { name: "Load more", exact: true }).click()
+  await expect(list.getByRole("option")).toHaveCount(25)
+  await page.keyboard.press("Escape")
+  await page.goto(`${marketUrl}/merchants`)
+  const directory = page.locator(
+    'section[aria-labelledby="discovered-merchants-heading"]'
+  )
+  await expect(directory.getByRole("link")).toHaveCount(12)
+  const more = directory.getByRole("button", { name: "Load more merchants" })
+  await more.focus()
+  await more.press("Enter")
+  await expect(directory.getByRole("link")).toHaveCount(24)
 })
 
 test("merchant avatars wait for visible rows and banners wait for profile navigation @market", async ({
@@ -607,31 +739,26 @@ test("merchant avatars wait for visible rows and banners wait for profile naviga
   await expect(directory.getByRole("link")).toHaveCount(12)
   await expect(target).toHaveCount(0)
   expect(targetAvatarRequests).toBe(0)
-  // Prepare offscreen rows without scrolling the paging control into view.
-  // The preceding case covers paging clicks; this case isolates image loading.
+  expect(bannerRequests).toBe(0)
   for (const expectedCount of [24, 36, 48]) {
     await directory
-      .getByRole("button", { name: "Show more merchants" })
-      .evaluate((button) => button.click())
+      .getByRole("link")
+      .last()
+      .evaluate((element) => {
+        element.scrollIntoView({ block: "end" })
+      })
     await expect(directory.getByRole("link")).toHaveCount(expectedCount)
   }
-  await expect(
-    directory.getByRole("button", { name: "Show more merchants" })
-  ).toHaveCount(0)
   await expect(target).toBeAttached()
-  expect(
-    await target.evaluate(
-      (element) => element.getBoundingClientRect().top - window.innerHeight
-    )
-  ).toBeGreaterThan(300)
-  await expect(targetAvatar).toHaveCount(0)
-  expect(targetAvatarRequests).toBe(0)
-  expect(bannerRequests).toBe(0)
-
   await target.scrollIntoViewIfNeeded()
   await expect(targetAvatar).toBeVisible()
   await expect.poll(() => targetAvatarRequests).toBeGreaterThan(0)
   expect(bannerRequests).toBe(0)
+  if (process.env.FOLLOWUP_UI_EVIDENCE) {
+    await page.screenshot({
+      path: `${process.env.FOLLOWUP_UI_EVIDENCE}/merchant-directory.png`,
+    })
+  }
 
   await target.click()
   await expect(page).toHaveURL(

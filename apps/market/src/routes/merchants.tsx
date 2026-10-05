@@ -9,6 +9,7 @@ import {
   Badge,
   Button,
   Input,
+  ScrollLoadMore,
 } from "@conduit/ui"
 import {
   MARKET_SOURCE_OPTIONS,
@@ -110,7 +111,10 @@ function MerchantsPage() {
       network: directory.accountSearch.isNetworkFetching,
     })
   const visibleSellers = directory.filteredSellers.slice(0, visibleSellerCount)
-  const hasMoreToCheck = directory.sellers.length > visibleSellerCount
+  const hasMoreSellers = directory.filteredSellers.length > visibleSellerCount
+  const loadMoreSellers = useCallback(() => {
+    setVisibleSellerCount(visibleSellerCount + MERCHANT_PAGE_SIZE)
+  }, [visibleSellerCount])
 
   return (
     <div className="mx-auto max-w-6xl space-y-7">
@@ -153,7 +157,8 @@ function MerchantsPage() {
               : "Discovered merchants"}
           </h1>
           <span className="text-sm tabular-nums text-[var(--text-muted)]">
-            {visibleSellers.length} of {directory.sellers.length}
+            {visibleSellers.length} of {directory.filteredSellers.length}{" "}
+            merchants
             {directory.isFetching ? " · updating" : ""}
           </span>
         </div>
@@ -178,9 +183,9 @@ function MerchantsPage() {
               ? directory.isFetching
                 ? "Loading listings from your perspective..."
                 : "No merchants have been discovered from this perspective yet."
-              : directory.query && hasMoreToCheck
-                ? "No checked merchant name matches yet. More merchant names can be checked below."
-                : "No discovered merchant name matches this search. Some profiles may still be unavailable."}
+              : directory.accountSearch.isFetching
+                ? "Searching merchant names..."
+                : "No matching merchant names found yet. Some profiles may still be unavailable."}
           </p>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -195,22 +200,22 @@ function MerchantsPage() {
             ))}
           </ul>
         )}
-        {hasMoreToCheck ? (
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() =>
-              setVisibleSellerCount((count) => count + MERCHANT_PAGE_SIZE)
-            }
-          >
-            {directory.query
-              ? "Check more merchant names"
-              : "Show more merchants"}
-          </Button>
+        {hasMoreSellers ? (
+          <ScrollLoadMore
+            label="Load more merchants"
+            onLoadMore={loadMoreSellers}
+          />
         ) : null}
-        {directory.query && hasMoreToCheck ? (
-          <p className="text-sm text-[var(--text-muted)]">
-            More discovered merchants have names that have not been checked.
+        {directory.query &&
+        directory.filteredSellers.length > 0 &&
+        directory.accountSearch.data?.evidence !== "present_current" ? (
+          <p
+            role="status"
+            className="text-pretty text-sm text-[var(--text-muted)]"
+          >
+            {directory.accountSearch.isFetching
+              ? "Searching merchant names..."
+              : "Merchant name results may be incomplete."}
           </p>
         ) : null}
       </section>

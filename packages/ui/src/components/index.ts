@@ -5,6 +5,11 @@ export {
 export { EventGuestReceiptVerifier } from "./EventGuestReceiptVerifier"
 export { Avatar, AvatarImage, AvatarFallback } from "./Avatar"
 export {
+  MultiSelectCombobox,
+  type MultiSelectComboboxOption,
+} from "./MultiSelectCombobox"
+export { ScrollLoadMore } from "./ScrollLoadMore"
+export {
   SearchSuggestions,
   flattenSearchSuggestionGroups,
   getSearchSuggestionInputProps,

@@ -40,22 +40,6 @@ export interface MerchantIdentityView {
   relayHints: string[]
 }
 
-export async function refreshMarketBrowseData(input: {
-  globalSearchEnabled: boolean
-  refreshCatalog: () => unknown
-  refreshGlobalSearch: () => unknown
-}): Promise<void> {
-  const refreshGlobalSearch = () =>
-    input.globalSearchEnabled
-      ? Promise.resolve(input.refreshGlobalSearch())
-      : Promise.resolve()
-
-  await Promise.all([
-    Promise.resolve(input.refreshCatalog()),
-    refreshGlobalSearch(),
-  ])
-}
-
 type BrowseFreshnessMeta = CommerceFreshnessMeta
 
 export function isMarketBrowseRefreshStale(input: {

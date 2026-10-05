@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
   getResultPresentation,
   RefreshChip,
+  MultiSelectCombobox,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { DeferredMerchantAvatar } from "../../components/DeferredMerchantAvatar"
@@ -112,6 +113,7 @@ function ProductsPage() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [categoryMenuOpen, setCategoryMenuOpen] = useState(false)
   const [merchantMenuOpen, setMerchantMenuOpen] = useState(false)
+  const [merchantQuery, setMerchantQuery] = useState("")
   const [visibleMerchantCount, setVisibleMerchantCount] =
     useState(MERCHANT_PAGE_SIZE)
   const hasAutoPromptedConnect = useRef(false)
@@ -154,6 +156,7 @@ function ProductsPage() {
     catalogSource: search.source ?? DEFAULT_MARKET_CATALOG_SOURCE,
     search,
     storeMenuOpen: merchantMenuOpen,
+    merchantQuery,
     visibleMerchantCount,
     visibleCount,
   })
@@ -180,7 +183,7 @@ function ProductsPage() {
     showCategorySkeleton,
     storeFacetOptions: merchantFacetOptions,
     hasMoreStoreFacets,
-    storeFacetTotal: merchantFacetTotal,
+    merchantSearchStatus,
     storeTriggerLabel: merchantTriggerLabel,
     getMerchantIdentity,
   } = browseModel
@@ -213,6 +216,10 @@ function ProductsPage() {
       : selectedTags.length === 1
         ? "1 category"
         : `${selectedTags.length} categories`
+
+  const loadMoreMerchants = useCallback(() => {
+    setVisibleMerchantCount(visibleMerchantCount + MERCHANT_PAGE_SIZE)
+  }, [visibleMerchantCount])
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
@@ -428,84 +435,43 @@ function ProductsPage() {
           <span className="min-w-20 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
             Merchant
           </span>
-          <DropdownMenu
+          <MultiSelectCombobox
             open={merchantMenuOpen}
-            onOpenChange={setMerchantMenuOpen}
-          >
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="min-w-0 flex-1 justify-between text-xs sm:w-auto sm:min-w-[150px] sm:flex-none"
-              >
-                {merchantTriggerLabel}
-                <ChevronDown className="size-4 opacity-60" aria-hidden="true" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="max-h-80 w-72 overflow-y-scroll [scrollbar-gutter:stable]">
-              <DropdownMenuCheckboxItem
-                checked={selectedMerchants.length === 0}
-                onSelect={(event) => event.preventDefault()}
-                onCheckedChange={() => updateSearch({ merchant: undefined })}
-                className="justify-between gap-3"
-              >
-                <span className="font-semibold text-primary-500">
-                  All merchants
-                </span>
-                <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                  [{merchantFacetTotal}]
-                </span>
-              </DropdownMenuCheckboxItem>
-              {merchantFacetOptions.map((option) => {
-                const identity = getMerchantIdentity(option.value)
-                return (
-                  <DropdownMenuCheckboxItem
-                    key={option.value}
-                    checked={option.selected}
-                    onSelect={(event) => event.preventDefault()}
-                    onCheckedChange={() => toggleMerchant(option.value)}
-                    className="gap-2.5"
-                  >
-                    <DeferredMerchantAvatar
-                      picture={identity.picture}
-                      className="h-5 w-5 shrink-0"
-                      imageClassName="object-cover"
-                      iconClassName="h-2.5 w-2.5"
-                    />
-                    <span
-                      className={[
-                        "min-w-0 flex-1 truncate",
-                        identity.status === "pending" ? "animate-pulse" : "",
-                      ].join(" ")}
-                    >
-                      {option.label}
-                    </span>
-                    <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                      [{option.count}]
-                    </span>
-                  </DropdownMenuCheckboxItem>
-                )
-              })}
-              {hasMoreStoreFacets ? (
-                <div className="p-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    onClick={(event) => {
-                      event.preventDefault()
-                      setVisibleMerchantCount(
-                        (count) => count + MERCHANT_PAGE_SIZE
-                      )
-                    }}
-                  >
-                    Show more merchants
-                  </Button>
-                </div>
-              ) : null}
-            </DropdownMenuContent>
-          </DropdownMenu>
+            onOpenChange={(open) => {
+              setMerchantMenuOpen(open)
+              if (!open) {
+                setMerchantQuery("")
+                setVisibleMerchantCount(MERCHANT_PAGE_SIZE)
+              }
+            }}
+            label={merchantTriggerLabel}
+            allLabel="All merchants"
+            searchLabel="Search merchants"
+            search={merchantQuery}
+            onSearchChange={(query) => {
+              setMerchantQuery(query)
+              setVisibleMerchantCount(MERCHANT_PAGE_SIZE)
+            }}
+            selectedValues={selectedMerchants}
+            onToggle={toggleMerchant}
+            onClear={() => updateSearch({ merchant: undefined })}
+            options={merchantFacetOptions.map((option) => ({
+              value: option.value,
+              label: option.label,
+              detail: `${option.count} ${option.count === 1 ? "product" : "products"}`,
+              icon: (
+                <DeferredMerchantAvatar
+                  picture={getMerchantIdentity(option.value).picture}
+                  className="size-5 shrink-0"
+                  imageClassName="object-cover"
+                  iconClassName="size-2.5"
+                />
+              ),
+            }))}
+            hasMore={hasMoreStoreFacets}
+            onLoadMore={loadMoreMerchants}
+            status={merchantSearchStatus}
+          />
         </div>
         {hasActiveFilters && (
           <Button
@@ -616,7 +582,7 @@ function ProductsPage() {
       <div className="flex min-h-10 flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]">
         <div className="flex items-center gap-1">
           <span>
-            {filtered.length} {filtered.length === 1 ? "result" : "results"}
+            {filtered.length} {filtered.length === 1 ? "product" : "products"}
           </span>
           <RefreshChip
             iconOnly
