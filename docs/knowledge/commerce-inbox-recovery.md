@@ -28,6 +28,13 @@ fallback relays. These plans remain separate for recent reads and older pages.
 
 Recent reads and demand-driven older pages use the protected reader and isolated
 NIP-42 executor. Per-relay overlapping inclusive ranges deduplicate wrapper IDs.
+A changed saturated or incomplete recent window invalidates that source's older
+cursor and restarts paging from the newest range, retaining all prior wrappers.
+A device-local fingerprint avoids repeatedly restarting an unchanged recent
+window. Versioned range writes prevent an in-flight older page or another tab
+from overwriting the restart. Existing cursors without this metadata are repaired
+on their next saturated or incomplete recent read. These checks are scoped to
+the account, relay and transport; they do not establish global relay completeness.
 Partial and capped pages retain valid signed positive observations without
 advancing the cursor. Capped equal-timestamp pages retain unresolved range evidence; an empty or short
 page describes that bounded observation, not global historical absence.

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { v2 } from "nostr-tools/nip44"
-import { wrapEvent } from "nostr-tools/nip59"
+import { createRumor, createSeal, wrapEvent } from "nostr-tools/nip59"
 import { ConduitDB } from "../packages/core/src/db"
 import { unwrapPrivateMessageEnvelope } from "../packages/core/src/protocol/messaging"
 import {
@@ -1096,3 +1096,197 @@ it("keeps legacy recent and history reads on their own bounded relay plan", asyn
   await owner.loadOlder(options)
   expect(calls).toEqual(recentCalls)
 })
+
+function historyRecoveryFixture() {
+  const fixture = setup()
+  // Retention must work even while the user has paused signer opening.
+  fixture.signer.decryptNip44 = async () => {
+    throw new NostrSignerError("authorization_denied")
+  }
+  const sender = generateSecretKey()
+  const wrapKey = generateSecretKey()
+  const relayUrl = "wss://history.synthetic.example"
+  const events: ProtectedInboxReadResult["events"] = []
+  const append = (count: number, timestamp?: number) => {
+    for (let index = 0; index < count; index++) {
+      const createdAt = timestamp ?? 1_700_000_000 + events.length
+      const rumor = createRumor(
+        {
+          kind: 14,
+          created_at: createdAt,
+          tags: [["p", fixture.pubkey]],
+          content: `synthetic-history-${events.length}`,
+        },
+        sender
+      )
+      const seal = createSeal(rumor, sender, fixture.pubkey)
+      events.push(
+        finalizeEvent(
+          {
+            kind: 1059,
+            created_at: createdAt,
+            tags: [["p", fixture.pubkey]],
+            content: v2.encrypt(
+              JSON.stringify(seal),
+              v2.utils.getConversationKey(wrapKey, fixture.pubkey)
+            ),
+          },
+          wrapKey
+        )
+      )
+    }
+  }
+  const calls: import("../packages/core/src/protocol/protected-inbox-read").ReadProtectedInboxOptions[] =
+    []
+  const read = async (
+    input: (typeof calls)[number]
+  ): Promise<ProtectedInboxReadResult> => {
+    calls.push(input)
+    const selected = events
+      .filter(
+        (event) =>
+          (input.until === undefined || event.created_at <= input.until) &&
+          (input.since === undefined || event.created_at >= input.since)
+      )
+      .sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id))
+      .slice(0, input.limit)
+    const result = completeRead(selected)
+    result.relayResult.observations = [{ type: "eose", relayIndex: 0 }]
+    result.relayResult.relays = [
+      {
+        relayIndex: 0,
+        status: "success",
+        auth: "not_challenged",
+        eventCount: selected.length,
+        duplicateCount: 0,
+        malformedCount: 0,
+        unusableCount: 0,
+      },
+    ]
+    return result
+  }
+  return {
+    ...fixture,
+    append,
+    events,
+    calls,
+    read,
+    rangeId: fixture.store.key(`${relayUrl}:nip17`),
+    options: {
+      includeLegacy: false,
+      declaration: {
+        pubkey: fixture.pubkey,
+        state: "declared" as const,
+        relayUrls: [relayUrl],
+        stale: false,
+        fetchedAt: Date.now(),
+      },
+      read,
+    },
+  }
+}
+
+it("reconciles a newer saturated window before resuming saved history after reload", async () => {
+  const f = historyRecoveryFixture()
+  f.append(60)
+  await f.owner.syncRecent(f.options)
+  await f.owner.loadOlder(f.options)
+  const prior = await f.database.commerceInboxRanges.get(f.rangeId)
+  expect(f.owner.getSnapshot().diagnostics.states.permission_declined).toBe(1)
+  expect(prior?.until).toBe(1_700_000_009)
+  f.append(80)
+  await f.owner.syncRecent(f.options)
+  f.owner.stop()
+  const reloaded = new CommerceInbox(f.owner.authorization, f.signer, f.store)
+  owners.push(reloaded)
+  // A repeated unchanged recent window must not keep resetting history work.
+  for (let page = 0; page < 4; page++) {
+    await reloaded.loadOlder(f.options)
+    await reloaded.syncRecent(f.options)
+    if (
+      (await f.database.commerceInboxRanges.get(f.rangeId))?.status ===
+      "source_eose"
+    )
+      break
+  }
+  const retained = await f.store.wrappers()
+  expect(retained.length).toBe(f.events.length)
+  expect(
+    f.events.every((event) => retained.some((row) => row.event.id === event.id))
+  ).toBe(true)
+  expect((await f.database.commerceInboxRanges.get(f.rangeId))?.status).toBe(
+    "source_eose"
+  )
+}, 60_000)
+
+it.each(["partial", "capped"] as const)(
+  "does not advance reopened history through a %s page",
+  async (status: "partial" | "capped") => {
+    const f = historyRecoveryFixture()
+    f.append(60)
+    await f.owner.syncRecent(f.options)
+    await f.owner.loadOlder(f.options)
+    if (status === "capped") f.append(512, 1_700_001_000)
+    else f.append(80)
+    await f.owner.syncRecent(f.options)
+    await f.owner.loadOlder({
+      ...f.options,
+      read: async (input) => {
+        const result = await f.read(input)
+        if (status === "partial") {
+          result.coverage = "partial"
+          result.relayResult.status = "partial"
+        }
+        return result
+      },
+    })
+    const range = await f.database.commerceInboxRanges.get(f.rangeId)
+    expect(range?.status).toBe(status)
+    expect(range?.until).toBeUndefined()
+    expect(range?.pageCount).toBe(0)
+    expect((await f.store.wrappers()).length).toBe(
+      status === "capped" ? 562 : 100
+    )
+  },
+  60_000
+)
+
+it("does not let an in-flight history page overwrite a newer recent-window reset", async () => {
+  const f = historyRecoveryFixture()
+  f.append(60)
+  await f.owner.syncRecent(f.options)
+  await f.owner.loadOlder(f.options)
+  f.append(80)
+  let release!: () => void
+  let started!: () => void
+  const hold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const reading = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  const page = f.owner.loadOlder({
+    ...f.options,
+    read: async (input) => {
+      const result = await f.read(input)
+      started()
+      await hold
+      return result
+    },
+  })
+  await reading
+  try {
+    await f.owner.syncRecent(f.options)
+  } finally {
+    release()
+  }
+  const reset = await f.database.commerceInboxRanges.get(f.rangeId)
+  await page
+  expect(await f.database.commerceInboxRanges.get(f.rangeId)).toEqual(reset)
+  expect(reset?.status).toBe("partial")
+  expect(reset?.until).toBeUndefined()
+  await f.owner.loadOlder(f.options)
+  const resumed = await f.database.commerceInboxRanges.get(f.rangeId)
+  expect(resumed?.until).toBe(1_700_000_089)
+  expect(resumed?.status).toBe("advanced")
+}, 60_000)

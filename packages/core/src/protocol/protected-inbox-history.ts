@@ -108,7 +108,7 @@ function isValidHistoryEvent(
   )
 }
 
-function isCleanRelayRead(
+export function isCompleteProtectedInboxRead(
   read: ProtectedInboxReadResult,
   limit: number,
   principalPubkey: string,
@@ -255,7 +255,7 @@ export async function visitProtectedInboxHistoryPage(
     return retainIncomplete("unavailable", page.events)
   }
   if (
-    !isCleanRelayRead(
+    !isCompleteProtectedInboxRead(
       page,
       PAGE_LIMIT,
       principal,
@@ -279,7 +279,7 @@ export async function visitProtectedInboxHistoryPage(
       return retainIncomplete("unavailable", [...selected, ...boundary.events])
     }
     if (
-      !isCleanRelayRead(
+      !isCompleteProtectedInboxRead(
         boundary,
         BOUNDARY_LIMIT,
         principal,

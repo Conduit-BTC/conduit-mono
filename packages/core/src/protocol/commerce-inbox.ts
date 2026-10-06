@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha2.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import {
   parseCheckoutSparkRecoveryRumor,
   checkoutRecoveryPayloadDigest,
@@ -57,6 +59,7 @@ import {
 import {
   visitProtectedInboxHistoryPage,
   bindProtectedInboxHistoryCursor,
+  isCompleteProtectedInboxRead,
 } from "./protected-inbox-history"
 import {
   planInboxReadRelays,
@@ -695,6 +698,63 @@ export class CommerceInbox {
     if (this.work) await this.work
     return this.snapshot
   }
+  private async reconcileRecentHistory(
+    relayUrl: string,
+    transport: NonNullable<ReadProtectedInboxOptions["transport"]>,
+    result: ProtectedInboxReadResult
+  ): Promise<void> {
+    const complete = isCompleteProtectedInboxRead(
+      result,
+      50,
+      this.store.principal,
+      undefined,
+      undefined,
+      transport
+    )
+    const restart = !complete || result.events.length >= 50
+    const recentReadKey = bytesToHex(
+      sha256(
+        new TextEncoder().encode(
+          `${complete}:${result.events
+            .map((event) => event.id)
+            .sort()
+            .join(":")}`
+        )
+      )
+    )
+    const ranges = this.store.database.commerceInboxRanges
+    const id = this.store.key(`${relayUrl}:${transport}`)
+    await this.store.database.transaction("rw", ranges, async () => {
+      this.assertCurrent()
+      const stored = await ranges.get(id)
+      if (stored?.recentReadKey === recentReadKey || (!stored && !restart))
+        return
+      // A changed capped/incomplete window may conceal a gap above the saved
+      // cursor. Revisit from the top; unchanged windows preserve paging progress.
+      await ranges.put({
+        ...(stored ?? {
+          id,
+          accountPubkey: this.store.principal,
+          relayUrl,
+          status: "partial" as const,
+          observedAt: Date.now(),
+          observedCount: 0,
+        }),
+        ...(restart
+          ? {
+              until: undefined,
+              status: "partial" as const,
+              pageCount: 0,
+              observedAt: Date.now(),
+              observedCount: result.events.length,
+            }
+          : {}),
+        recentReadKey,
+        revision: (stored?.revision ?? 0) + 1,
+      })
+      this.assertCurrent()
+    })
+  }
   async syncRecent(
     options: {
       includeLegacy?: boolean
@@ -755,6 +815,7 @@ export class CommerceInbox {
           await Promise.all(pending)
           for (const event of result.events)
             await this.ingest(event, [relayUrl])
+          await this.reconcileRecentHistory(relayUrl, transport, result)
           results.push(result)
           sources.push({
             sourceIndex: this.sourceIndex(relayUrl),
@@ -915,24 +976,35 @@ export class CommerceInbox {
           },
         })
         this.assertCurrent()
-        await this.store.database.commerceInboxRanges.put({
-          id,
-          accountPubkey: this.store.principal,
-          relayUrl,
-          until:
-            page.status === "source_eose"
-              ? undefined
-              : (page.nextCursor?.until ?? stored?.until),
-          pageCount:
-            stored?.status === "source_eose"
-              ? 1
-              : (stored?.pageCount ?? 0) +
-                (page.status === "advanced" || page.status === "source_eose"
-                  ? 1
-                  : 0),
-          status: page.status,
-          observedAt: Date.now(),
-          observedCount: page.range.observedCount,
+        const ranges = this.store.database.commerceInboxRanges
+        await this.store.database.transaction("rw", ranges, async () => {
+          this.assertCurrent()
+          const current = await ranges.get(id)
+          // Another tab or a recent sync may have replaced this frontier while
+          // the page was in flight. Keep its observations, but not its cursor.
+          if ((current?.revision ?? 0) !== (stored?.revision ?? 0)) return
+          await ranges.put({
+            ...stored,
+            id,
+            accountPubkey: this.store.principal,
+            relayUrl,
+            until:
+              page.status === "source_eose"
+                ? undefined
+                : (page.nextCursor?.until ?? stored?.until),
+            pageCount:
+              stored?.status === "source_eose"
+                ? 1
+                : (stored?.pageCount ?? 0) +
+                  (page.status === "advanced" || page.status === "source_eose"
+                    ? 1
+                    : 0),
+            status: page.status,
+            observedAt: Date.now(),
+            observedCount: page.range.observedCount,
+            revision: (stored?.revision ?? 0) + 1,
+          })
+          this.assertCurrent()
         })
       }
     await this.refresh()
