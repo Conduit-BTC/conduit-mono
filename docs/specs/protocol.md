@@ -136,6 +136,11 @@ The exception is constrained as follows:
   requires the exact plan, order, objective takeover boundary, and current
   settlement evidence; no new retention window is introduced. The guest
   Nostr key is not used as a wallet seed or shared with the merchant.
+- New normal router plans freeze a two-minute shopper-to-Merchant takeover
+  deadline at preparation, separately from the fifteen-minute funding invoice.
+  Imported plans retain their saved deadline. Handoff does not invalidate an
+  admitted attempt or authorize replay; both actors reconcile the exact saved
+  invoice and transfer identity before any continuation.
 - Conduit clients must not project canonical advisory rumors carrying the exact
   versioned `["conduit", "order-companion", "1", "<kind-16-id>"]` marker, the
   `subject=conduit-order-notification` marker, and one non-empty `order` and `p`

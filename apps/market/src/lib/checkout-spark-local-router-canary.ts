@@ -44,7 +44,7 @@ export function checkoutSparkSettledTimingForContext(
     input.fastHandoffFlag === "true"
   return {
     fundingExpirySecs: (fastHandoff ? 2 : 15) * 60,
-    takeoverAfterMs: (fastHandoff ? 3 : 45) * 60_000,
+    takeoverAfterMs: (fastHandoff ? 3 : 2) * 60_000,
   }
 }
 

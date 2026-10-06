@@ -211,17 +211,17 @@ describe("settled router guest UI contracts", () => {
     const routerWallets = section(
       orders,
       "const routerPayerWallets =",
-      "const routerTargetValue ="
+      "const routerFundingSelection ="
     )
     expect(routerWallets).not.toContain("!guestIdentity")
     expect(routerWallets).toContain("candidate.id === fundingWalletId")
   })
 
-  it("offers available WebLN only in the guest router rail choice", () => {
+  it("retains available WebLN in the router funding choices without legacy guest auto-payment", () => {
     const routerOptions = section(
       orders,
       "const routerPayerOptions =",
-      "const routerTargetValue ="
+      "const routerFundingSelection ="
     )
     expect(routerOptions).toContain("weblnAvailable: hasWebLN()")
     expect(routerOptions).not.toContain("!guestIdentity")
@@ -257,9 +257,28 @@ describe("settled router guest UI contracts", () => {
       "externalFundingInvoice.authGeneration === authGeneration"
     )
     expect(disclosure).toContain("onBeforeInvoiceUse={() =>")
-    expect(disclosure).toContain("!canContinueRouterSession()")
     expect(disclosure).toContain(
+      "canUseRouterExternalInvoice(externalFundingInvoice)"
+    )
+    const invoiceUseGuard = section(
+      orders,
+      "function canUseRouterExternalInvoice(",
+      "async function continueSettledRouterCheckout("
+    )
+    expect(invoiceUseGuard).toContain("!canContinueRouterSession()")
+    expect(invoiceUseGuard).toContain(
       'saved.fundingSubmissionState === "provisional"'
+    )
+    expect(invoiceUseGuard).toContain(
+      "saved.externalFundingExposedAt === invoice.exposedAt"
+    )
+    expect(invoiceUseGuard).toContain("invoice.buyerPubkey !== buyerPubkey")
+    expect(invoiceUseGuard).toContain("invoice.orderId !== vm.orderId")
+    expect(invoiceUseGuard).toContain(
+      "invoice.checkoutId !== routerBinding?.checkoutId"
+    )
+    expect(invoiceUseGuard).toContain(
+      "invoice.planDigest !== routerBinding.planDigest"
     )
     const messages = section(
       orders,

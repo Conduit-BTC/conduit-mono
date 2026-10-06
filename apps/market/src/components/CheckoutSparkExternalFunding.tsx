@@ -3,7 +3,18 @@ import type { BtcUsdRateQuote, ShopperPricePreference } from "@conduit/core"
 import { subscribeToTimeBoundaries } from "@conduit/ui"
 
 import type { CheckoutSparkExternalFundingInvoice } from "../lib/checkout-spark-settled-funding"
-import { InvoicePayment } from "./InvoicePayment"
+import {
+  InvoicePayment,
+  type ExternalInvoicePaymentAction,
+} from "./InvoicePayment"
+import type { ExternalInvoicePaymentActionResult } from "./invoice-payment-action"
+
+export type CheckoutSparkExternalFundingPreparation = {
+  amountSats: number
+  cashAppAvailable: boolean
+  disabled: boolean
+  onApprove: (action: ExternalInvoicePaymentAction) => void
+}
 
 export function CheckoutSparkExternalFunding({
   externalInvoice,
@@ -11,6 +22,8 @@ export function CheckoutSparkExternalFunding({
   onBeforeInvoiceUse,
   preference,
   quote,
+  preparation,
+  actionResult,
   now = Date.now,
 }: {
   externalInvoice: CheckoutSparkExternalFundingInvoice | null
@@ -18,6 +31,8 @@ export function CheckoutSparkExternalFunding({
   onBeforeInvoiceUse: () => boolean
   preference: ShopperPricePreference
   quote: BtcUsdRateQuote | null
+  preparation?: CheckoutSparkExternalFundingPreparation
+  actionResult?: ExternalInvoicePaymentActionResult
   now?: () => number
 }) {
   const [boundaryNow, setBoundaryNow] = useState(now)
@@ -66,7 +81,34 @@ export function CheckoutSparkExternalFunding({
   }
 
   // Unmount every disclosure surface, including an already-open QR/details.
-  if (!externalInvoice || !isCurrent()) return null
+  if (!externalInvoice) {
+    if (
+      !enabled ||
+      !preparation ||
+      preparation.amountSats <= 0 ||
+      !Number.isSafeInteger(preparation.amountSats * 1_000)
+    )
+      return null
+    return (
+      <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+        <p className="text-sm font-medium text-[var(--text-secondary)]">
+          External wallet
+        </p>
+        <InvoicePayment
+          invoice={null}
+          expectedAmountSats={preparation.amountSats}
+          preference={preference}
+          quote={quote}
+          guestSession={false}
+          onBeforeInvoiceUse={() => false}
+          onPrepareInvoice={preparation.onApprove}
+          preparationDisabled={preparation.disabled}
+          cashAppPreparationAvailable={preparation.cashAppAvailable}
+        />
+      </section>
+    )
+  }
+  if (!isCurrent()) return null
 
   return (
     <section
@@ -80,10 +122,7 @@ export function CheckoutSparkExternalFunding({
       }}
     >
       <p className="text-sm leading-6 text-[var(--text-secondary)]">
-        Pay this invoice only once from your external wallet. Then return here
-        to finish your order. Your payment is checked while this order is
-        visible; if paused, choose Resume payment. Opening a wallet is not
-        payment confirmation.
+        Pay once, then return here to finish; if paused, choose Resume payment.
       </p>
       <InvoicePayment
         key={externalInvoice.invoice}
@@ -93,6 +132,7 @@ export function CheckoutSparkExternalFunding({
         quote={quote}
         guestSession={false}
         onBeforeInvoiceUse={canUseInvoice}
+        actionResult={actionResult}
       />
     </section>
   )

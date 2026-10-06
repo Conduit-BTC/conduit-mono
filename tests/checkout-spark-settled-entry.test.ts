@@ -266,7 +266,7 @@ describe("settled Spark checkout entry", () => {
         expect(terms.grossFundingSats).toBe(gross)
         expect(terms.grossFundingSats).toBe(1_113)
         expect(terms.fundingExpirySecs).toBe(15 * 60)
-        expect(terms.takeoverAt).toBe(NOW + 45 * 60_000)
+        expect(terms.takeoverAt).toBe(NOW + 2 * 60_000)
         expect(terms.recipients).toEqual([
           {
             kind: "merchant",

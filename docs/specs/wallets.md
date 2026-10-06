@@ -212,6 +212,14 @@ failure and fee-policy failures pause new dispatch. Invoice expiry and the
 saved objective shopper-to-Merchant takeover boundary remain separate limits;
 polling cannot extend either or infer abandonment from a missing heartbeat.
 
+Normal new plans freeze Merchant takeover two minutes after preparation while
+requesting a fifteen-minute funding invoice. Existing plans keep their original
+deadlines. Buyer admission ends at that boundary; already admitted operations
+remain queryable and must drain or reconcile under their exact saved identifiers.
+Merchant eligibility is not proof of an unattempted payment and must not bypass
+those records, recipient attribution, or provider idempotency. The five-minute
+checking budget does not extend buyer dispatch beyond the frozen handoff.
+
 ### Native final treasury allocation
 
 New version-four plans may replace only the Conduit Lightning leg with one

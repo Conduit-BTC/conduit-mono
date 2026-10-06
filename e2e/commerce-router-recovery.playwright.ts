@@ -545,9 +545,24 @@ async function rehearseRouter(
 
     setStage("inline price and authorization without a popup")
     const external = page.getByRole("button", {
-      name: "Use external wallet",
+      name: "Show QR code",
       exact: true,
     })
+    await expect(external).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Open Lightning wallet", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Copy invoice", exact: true })
+    ).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Use external wallet", exact: true })
+    ).toHaveCount(0)
+    // Regtest is not a Cash App destination. Mainnet presentation is covered
+    // separately without enabling any external transport in this fixture.
+    await expect(
+      page.getByText("Pay with Cash App", { exact: true })
+    ).toHaveCount(0)
     const confirmation = page.getByRole("alertdialog", {
       name: "Approve automatic checkout payments?",
       exact: true,
@@ -603,7 +618,7 @@ async function rehearseRouter(
     await page.setViewportSize({ width: 1280, height: 720 })
     const beforeConsent = control().snapshot()
     await expect(
-      page.getByText(/Pay this invoice only once from your external wallet/)
+      page.getByText(/Pay once, then return here to finish/)
     ).toHaveCount(0)
     expect(control().snapshot()).toEqual(beforeConsent)
     expect(lnurl.snapshot().invoicesIssued).toBe(0)
@@ -616,7 +631,7 @@ async function rehearseRouter(
     control().setNativeCompletion(false)
     await expect(confirmation).toBeHidden()
     await expect(
-      page.getByText(/Pay this invoice only once from your external wallet/)
+      page.getByText(/Pay once, then return here to finish/)
     ).toBeVisible({ timeout: 30_000 })
     if (continuation !== "buyer") {
       const partialRecovery = continuation === "partial-cold-merchant"

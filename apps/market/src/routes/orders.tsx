@@ -91,6 +91,15 @@ import {
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CheckoutSparkFundingExpiry } from "../components/CheckoutSparkFundingExpiry"
 import { CheckoutSparkExternalFunding } from "../components/CheckoutSparkExternalFunding"
+import {
+  performExternalInvoicePaymentAction,
+  type ExternalInvoicePaymentAction,
+  type ExternalInvoicePaymentActionResult,
+} from "../components/invoice-payment-action"
+import {
+  applyCheckoutSparkFundingChoice,
+  resolveCheckoutSparkFundingSelection,
+} from "../components/checkout-spark-funding-selection"
 import { CheckoutSparkPaymentReceipt } from "../components/CheckoutSparkPaymentReceipt"
 import { CheckoutPaymentProgress } from "../components/CheckoutPaymentProgress"
 import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
@@ -198,6 +207,7 @@ import { publishBuyerOrderMessage } from "../lib/order-publish"
 import {
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
+  resolveCheckoutPaymentTarget,
 } from "../lib/checkout-payment-target"
 import { assertLegacyOrderPaymentAllowed } from "../lib/checkout-spark-order-admission"
 import {
@@ -240,6 +250,7 @@ type RouterConfirmation = {
   >
   external: boolean
   payerValue: string
+  externalAction?: ExternalInvoicePaymentAction
 }
 
 function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
@@ -845,7 +856,11 @@ function OrderDetail({
     string | null
   >(null)
   const [externalFundingInvoice, setExternalFundingInvoice] = useState<
-    (CheckoutSparkExternalFundingInvoice & { authGeneration: number }) | null
+    | (CheckoutSparkExternalFundingInvoice & {
+        authGeneration: number
+        actionResult?: ExternalInvoicePaymentActionResult
+      })
+    | null
   >(null)
   const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
@@ -1090,16 +1105,27 @@ function OrderDetail({
     selectedTarget: { type: "manual" },
     // Router funding is device-local, independent of a Nostr account signer.
     weblnAvailable: hasWebLN(),
-  }).filter((option) => option.target.type !== "manual")
-  const routerTargetValue = routerTarget
-    ? getCheckoutPaymentTargetValue(routerTarget)
-    : ""
-  const routerSelectedOption = routerPayerOptions.find(
-    (option) => option.value === routerTargetValue
-  )
+  })
+  const routerFundingSelection = resolveCheckoutSparkFundingSelection({
+    selection: routerTarget,
+    defaultTarget: resolveCheckoutPaymentTarget({
+      selection: null,
+      eligibleWallets: routerPayerWallets,
+      weblnAvailable: hasWebLN(),
+    }),
+    options: routerPayerOptions,
+    guestSession: !!guestIdentity,
+  })
+  const routerTargetValue =
+    routerFundingSelection.selectedOption?.value ??
+    (routerTarget ? getCheckoutPaymentTargetValue(routerTarget) : "")
+  const routerSelectedOption = routerFundingSelection.selectedOption
+  const routerSelectedTarget = routerSelectedOption?.target
   const routerPayerWallet =
-    routerTarget?.type === "wallet"
-      ? routerPayerWallets.find((wallet) => wallet.id === routerTarget.walletId)
+    routerSelectedTarget?.type === "wallet"
+      ? routerPayerWallets.find(
+          (wallet) => wallet.id === routerSelectedTarget.walletId
+        )
       : null
 
   async function readSettledRouterControl() {
@@ -1235,6 +1261,37 @@ function OrderDetail({
     }
   }
 
+  function canUseRouterExternalInvoice(
+    invoice: CheckoutSparkExternalFundingInvoice
+  ) {
+    if (
+      invoice.buyerPubkey !== buyerPubkey ||
+      invoice.orderId !== vm.orderId ||
+      invoice.checkoutId !== routerBinding?.checkoutId ||
+      invoice.planDigest !== routerBinding.planDigest ||
+      !canContinueRouterSession()
+    )
+      return false
+    try {
+      const now = Date.now()
+      const saved = getCheckoutSparkSettledPreparation(invoice.checkoutId)
+      return (
+        saved?.planDigest === invoice.planDigest &&
+        saved.fundingSubmissionState === "provisional" &&
+        saved.externalFundingExposedAt === invoice.exposedAt &&
+        Number.isSafeInteger(invoice.exposedAt) &&
+        Number.isSafeInteger(invoice.expiresAt) &&
+        Number.isSafeInteger(invoice.takeoverAt) &&
+        invoice.exposedAt > 0 &&
+        invoice.exposedAt <= now &&
+        now < invoice.expiresAt &&
+        now < invoice.takeoverAt
+      )
+    } catch {
+      return false
+    }
+  }
+
   async function continueSettledRouterCheckout(
     confirmation: RouterConfirmation
   ): Promise<void> {
@@ -1276,12 +1333,18 @@ function OrderDetail({
           "This invoice cannot be opened for external payment. Check its saved funding status."
         )
       }
-      if (
-        paying &&
-        !exposeExternalInvoice &&
-        (!routerSelectedOption || routerTargetValue !== confirmation.payerValue)
-      ) {
-        throw new Error("Choose a ready wallet before funding this order.")
+      const namedExternalChoice =
+        confirmation.externalAction !== undefined &&
+        exposeExternalInvoice &&
+        confirmation.payerValue === "manual" &&
+        routerPayerOptions.some((option) => option.target.type === "manual")
+      const selectedChoice =
+        routerSelectedOption &&
+        routerTargetValue === confirmation.payerValue &&
+        exposeExternalInvoice ===
+          (routerSelectedOption.target.type === "manual")
+      if (paying && !namedExternalChoice && !selectedChoice) {
+        throw new Error("Choose how to pay before funding this order.")
       }
       const preparation = getCheckoutSparkSettledPreparation(current.checkoutId)
       const currentGuestIdentity = getCurrentRouterGuestIdentity()
@@ -1298,6 +1361,7 @@ function OrderDetail({
         paying && !exposeExternalInvoice
           ? routerSelectedOption!.target
           : ({ type: "manual" } as const)
+      let externalActionHandled = false
       const result = await routerRunner.run({
         checkoutId: current.checkoutId,
         planDigest: current.planDigest,
@@ -1325,9 +1389,41 @@ function OrderDetail({
           })
         },
         onExternalInvoice: (invoice) => {
-          if (approvedSessionIsCurrent()) {
+          if (
+            !approvedSessionIsCurrent() ||
+            !canUseRouterExternalInvoice(invoice)
+          )
+            return
+          if (!confirmation.externalAction) {
             setExternalFundingInvoice({ ...invoice, authGeneration })
+            return
           }
+          // Observation polls may return the same reservation again. A named
+          // browser handoff belongs to this explicit click exactly once.
+          if (externalActionHandled) return
+          externalActionHandled = true
+          // Keep the already-reserved links available even if a clipboard
+          // permission prompt stalls or an asynchronous wallet popup is blocked.
+          setExternalFundingInvoice({ ...invoice, authGeneration })
+          void performExternalInvoicePaymentAction({
+            action: confirmation.externalAction,
+            invoice: invoice.invoice,
+            expectedAmountSats: invoice.amountSats,
+            onBeforeInvoiceUse: () =>
+              approvedSessionIsCurrent() &&
+              canUseRouterExternalInvoice(invoice),
+          }).then((actionResult) => {
+            if (
+              approvedSessionIsCurrent() &&
+              canUseRouterExternalInvoice(invoice)
+            ) {
+              setExternalFundingInvoice({
+                ...invoice,
+                authGeneration,
+                actionResult,
+              })
+            }
+          })
         },
         fundingPayment: {
           buyerPubkey,
@@ -2465,8 +2561,7 @@ function OrderDetail({
                 <CheckoutPaymentProgress pausing={routerPausing} />
               )}
               {settledRouterControl.status === "pay_funding" &&
-                !guestIdentity &&
-                routerPayerOptions.length > 0 && (
+                routerFundingSelection.showSelector && (
                   <div className="grid max-w-sm gap-1.5">
                     <label
                       htmlFor={`settled-router-payer-${vm.orderId}`}
@@ -2477,10 +2572,12 @@ function OrderDetail({
                     <Select
                       value={routerTargetValue}
                       onValueChange={(value) =>
-                        setRouterTarget(
-                          routerPayerOptions.find(
-                            (option) => option.value === value
-                          )?.target ?? null
+                        setRouterTarget((selection) =>
+                          applyCheckoutSparkFundingChoice({
+                            selection,
+                            value,
+                            options: routerPayerOptions,
+                          })
                         )
                       }
                       disabled={busy || wallets.loading}
@@ -2528,7 +2625,9 @@ function OrderDetail({
                   void withBusy(() =>
                     continueSettledRouterCheckout({
                       control: settledRouterControl,
-                      external: false,
+                      external:
+                        settledRouterControl.status === "pay_funding" &&
+                        routerSelectedOption?.target.type === "manual",
                       payerValue: routerTargetValue,
                     })
                   )
@@ -2553,8 +2652,8 @@ function OrderDetail({
                   Pause payment
                 </Button>
               )}
-              {(settledRouterControl.status === "pay_funding" ||
-                settledRouterControl.status === "check_funding") &&
+              {settledRouterControl.status === "check_funding" &&
+                !externalFundingInvoice &&
                 settledRouterControl.externalFundingAvailable && (
                   <Button
                     type="button"
@@ -2573,46 +2672,50 @@ function OrderDetail({
                       )
                     }
                   >
-                    {settledRouterControl.status === "pay_funding"
-                      ? "Use external wallet"
-                      : "Reopen external invoice"}
+                    Reopen external invoice
                   </Button>
                 )}
               <CheckoutSparkExternalFunding
                 externalInvoice={externalFundingInvoice}
                 enabled={
-                  settledRouterControl.status === "check_funding" &&
                   settledRouterControl.externalFundingAvailable === true &&
-                  externalFundingInvoice?.buyerPubkey === buyerPubkey &&
-                  externalFundingInvoice.authGeneration === authGeneration &&
-                  externalFundingInvoice.orderId === vm.orderId &&
-                  externalFundingInvoice.checkoutId ===
-                    settledRouterControl.checkoutId &&
-                  externalFundingInvoice.planDigest ===
-                    settledRouterControl.planDigest &&
-                  canContinueRouterSession()
+                  canContinueRouterSession() &&
+                  ((settledRouterControl.status === "pay_funding" &&
+                    !externalFundingInvoice) ||
+                    (settledRouterControl.status === "check_funding" &&
+                      externalFundingInvoice?.authGeneration ===
+                        authGeneration &&
+                      canUseRouterExternalInvoice(externalFundingInvoice)))
                 }
-                onBeforeInvoiceUse={() => {
-                  if (
-                    !externalFundingInvoice ||
-                    externalFundingInvoice.authGeneration !== authGeneration ||
-                    !canContinueRouterSession()
-                  )
-                    return false
-                  try {
-                    const saved = getCheckoutSparkSettledPreparation(
-                      externalFundingInvoice.checkoutId
-                    )
-                    return (
-                      saved?.planDigest === externalFundingInvoice.planDigest &&
-                      saved.fundingSubmissionState === "provisional" &&
-                      saved.externalFundingExposedAt ===
-                        externalFundingInvoice.exposedAt
-                    )
-                  } catch {
-                    return false
-                  }
-                }}
+                preparation={
+                  settledRouterControl.status === "pay_funding"
+                    ? {
+                        amountSats: settledRouterControl.grossFundingSats,
+                        cashAppAvailable:
+                          settledRouterControl.network === "mainnet",
+                        disabled:
+                          busy ||
+                          !actionsReady ||
+                          settledRouterQuery.isFetching,
+                        onApprove: (externalAction) => {
+                          void withBusy(() =>
+                            continueSettledRouterCheckout({
+                              control: settledRouterControl,
+                              external: true,
+                              payerValue: "manual",
+                              externalAction,
+                            })
+                          )
+                        },
+                      }
+                    : undefined
+                }
+                actionResult={externalFundingInvoice?.actionResult}
+                onBeforeInvoiceUse={() =>
+                  !!externalFundingInvoice &&
+                  externalFundingInvoice.authGeneration === authGeneration &&
+                  canUseRouterExternalInvoice(externalFundingInvoice)
+                }
                 preference={shopperPricing.preference}
                 quote={shopperPricing.quote}
               />

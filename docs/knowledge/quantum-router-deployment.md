@@ -91,7 +91,7 @@ loopback relay isolation and both explicit rehearsal flags. Ordinary mock builds
 and hosted profiles do not acquire router activation from this test exception.
 
 Public builds retain the normal fifteen-minute requested funding lifetime and
-forty-five-minute handoff. Saved deadlines stay immutable. See
+two-minute handoff from preparation. Saved deadlines stay immutable. See
 [invoice lifetimes](checkout-spark-invoice-lifetimes.md) and
 [recipient verification compatibility](checkout-spark-recipient-verification-compat.md)
 for the distinct expiry, renewal and attribution boundaries.

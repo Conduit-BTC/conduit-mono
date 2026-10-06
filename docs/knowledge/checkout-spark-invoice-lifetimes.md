@@ -7,7 +7,7 @@ delete its order or recovery evidence.
 ## Funding
 
 The settled checkout entry requests a 15-minute funding invoice and freezes a
-45-minute shopper-to-Merchant handoff. These are application settings, not a
+two-minute shopper-to-Merchant handoff from preparation. These are application settings, not a
 Spark five-minute limit. Spark's [`createLightningInvoice` API](https://docs.spark.money/api-reference/wallet/create-lightning-invoice)
 accepts an explicit `expirySeconds`; the adapter validates the actual signed
 invoice rather than assuming the requested duration was honored.
@@ -29,6 +29,13 @@ Merchant always follows the deadline frozen in the recovered plan, not its
 current environment. Remove the demo flag and restart the development server
 to restore normal timing for subsequent orders. Never rewrite an existing
 plan or advance a live device clock to accelerate recovery.
+
+For normal new plans, the existing sixty-second buyer preparation buffer means
+new payout preparation ends after the first minute; saved prepared attempts can
+still dispatch before the two-minute handoff. A payment admitted before handoff
+must settle or reconcile under its same identifier, even if completion is late.
+Merchant can inspect late funding throughout the original fifteen-minute invoice
+lifetime; handoff is neither invoice cancellation nor settlement evidence.
 
 ### External-wallet disclosure
 

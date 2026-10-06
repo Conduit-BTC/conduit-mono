@@ -446,7 +446,7 @@ describe("offline guest supplier settled checkout composition", () => {
         { kind: "conduit" },
       ])
       expect(plan.commerceQuote.commerceTotalSats).toBe(3_031)
-      expect(plan.takeoverAt).toBe(createdAt + 45 * 60_000)
+      expect(plan.takeoverAt).toBe(createdAt + 2 * 60_000)
       expect(plan.funding.expiresAt - plan.funding.createdAt).toBe(15 * 60_000)
       const initial = await openCheckoutSparkRecoveryDelivery({
         record: getCheckoutSparkRecoveryDelivery(recoveryHandoffId, storage)!

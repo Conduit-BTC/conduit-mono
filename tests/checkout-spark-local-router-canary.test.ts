@@ -42,7 +42,7 @@ describe("checkout Spark local router canary gate", () => {
     ]) {
       expect(checkoutSparkSettledTimingForContext(context)).toEqual({
         fundingExpirySecs: 900,
-        takeoverAfterMs: 2_700_000,
+        takeoverAfterMs: 120_000,
       })
     }
   })

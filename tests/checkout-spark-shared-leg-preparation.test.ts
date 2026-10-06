@@ -679,48 +679,53 @@ describe("shared settled Spark payout preparation", () => {
     }
   })
 
-  it("respects a new demo plan's three-minute handoff without shortening an existing plan", () => {
-    const timing = checkoutSparkSettledTimingForContext({
-      dev: true,
-      flag: "true",
-      hostname: "127.0.0.1",
-      rehearsalFlag: "true",
-      fastHandoffFlag: "true",
-    })
-    const original = creditedState()
-    const demo = createCheckoutSparkSettledReconciliation(
-      freezeCheckoutSparkSettledPlan({
-        ...original.plan,
-        takeoverAt: CREATED_AT + timing.takeoverAfterMs,
+  it.each([false, true])(
+    "respects a new plan's frozen handoff without shortening an existing plan (rehearsal: %s)",
+    (rehearsal) => {
+      const timing = checkoutSparkSettledTimingForContext({
+        dev: rehearsal,
+        flag: rehearsal ? "true" : undefined,
+        hostname: rehearsal ? "127.0.0.1" : "shop.conduit.market",
+        rehearsalFlag: rehearsal ? "true" : undefined,
+        fastHandoffFlag: rehearsal ? "true" : undefined,
       })
-    )
-    const buyerCutoff = demo.plan.takeoverAt - 60_000
-    expect(() =>
-      assertCheckoutSparkSettledBuyerPreparationWindow(demo, buyerCutoff - 1)
-    ).not.toThrow()
-    expect(() =>
-      assertCheckoutSparkSettledBuyerPreparationWindow(demo, buyerCutoff)
-    ).toThrow("buyer payout authority has ended")
-    expect(() =>
-      assertCheckoutSparkSettledMerchantPreparationWindow(
-        demo,
-        demo.plan.takeoverAt - 1
+      expect(timing.takeoverAfterMs).toBe((rehearsal ? 3 : 2) * 60_000)
+      expect(timing.fundingExpirySecs).toBe((rehearsal ? 2 : 15) * 60)
+      const original = creditedState()
+      const demo = createCheckoutSparkSettledReconciliation(
+        freezeCheckoutSparkSettledPlan({
+          ...original.plan,
+          takeoverAt: CREATED_AT + timing.takeoverAfterMs,
+        })
       )
-    ).toThrow("merchant payout authority has not begun")
-    expect(() =>
-      assertCheckoutSparkSettledMerchantPreparationWindow(
-        demo,
-        demo.plan.takeoverAt
-      )
-    ).not.toThrow()
-    expect(original.plan.takeoverAt).toBe(TAKEOVER_AT)
-    expect(() =>
-      assertCheckoutSparkSettledMerchantPreparationWindow(
-        original,
-        demo.plan.takeoverAt
-      )
-    ).toThrow("merchant payout authority has not begun")
-  })
+      const buyerCutoff = demo.plan.takeoverAt - 60_000
+      expect(() =>
+        assertCheckoutSparkSettledBuyerPreparationWindow(demo, buyerCutoff - 1)
+      ).not.toThrow()
+      expect(() =>
+        assertCheckoutSparkSettledBuyerPreparationWindow(demo, buyerCutoff)
+      ).toThrow("buyer payout authority has ended")
+      expect(() =>
+        assertCheckoutSparkSettledMerchantPreparationWindow(
+          demo,
+          demo.plan.takeoverAt - 1
+        )
+      ).toThrow("merchant payout authority has not begun")
+      expect(() =>
+        assertCheckoutSparkSettledMerchantPreparationWindow(
+          demo,
+          demo.plan.takeoverAt
+        )
+      ).not.toThrow()
+      expect(original.plan.takeoverAt).toBe(TAKEOVER_AT)
+      expect(() =>
+        assertCheckoutSparkSettledMerchantPreparationWindow(
+          original,
+          demo.plan.takeoverAt
+        )
+      ).toThrow("merchant payout authority has not begun")
+    }
+  )
 
   for (const seam of ["load", "reload", "invoice", "fee", "save"] as const) {
     it(`rejects revoked authority while ${seam} is awaited without acknowledging a stale result`, async () => {
