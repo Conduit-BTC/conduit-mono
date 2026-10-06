@@ -55,7 +55,10 @@ Writes use canonical empty-tag NIP-59 seals and public NIP-44 v2. Envelope,
 recipient, seal/rumor author and supplied rumor-hash checks remain mandatory.
 Authenticated participant metadata is retained for reading. Sending remains
 two-party: replies and attachments target the selected counterparty only, and
-extra incoming recipient tags cannot authorize fanout. Self-authored external
+extra incoming recipient tags cannot authorize fanout. Conversation and read-state
+identity use transport plus counterparty, so two-party replies remain with their
+incoming messages even when those messages carry extra participant metadata.
+Self-authored external
 commerce records require one unambiguous authenticated recipient for replies.
 Kind-15 AES-GCM downloads require
 an explicit user action, a bounded stream, encrypted-file SHA-256 verification
@@ -79,7 +82,9 @@ consumer before generic rendering and are excluded from general search.
 
 Private attachments reject files larger than 8 MiB before allocating file bytes.
 
-Signed bytes and the authorized relay plan are staged before delivery I/O. Retry
+Signed bytes and the authorized relay plan are staged before delivery I/O, after
+caller-owned pre-publish persistence callbacks succeed. A rejected persistence
+callback must leave no generic delivery job that can bypass that boundary. Retry
 replays those bytes against saved targets and stronger current refusal evidence.
 Concurrent acknowledgements merge atomically. A relay ACK describes delivery;
 it does not prove the recipient read the message or paid an order. Initial-order

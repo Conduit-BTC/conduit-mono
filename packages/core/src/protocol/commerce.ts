@@ -8807,10 +8807,8 @@ function buildDirectConversationSummaries(
   for (const message of messages) {
     const counterparty = counterpartyOf(message, principalPubkey)
     if (!counterparty) continue
-    const threadId =
-      (message.participants?.length ?? 0) > 2
-        ? message.conversationId!
-        : `${message.transport}:${counterparty}`
+    // The product supports two-party replies; extra p tags remain message metadata.
+    const threadId = `${message.transport}:${counterparty}`
     const bucket = grouped.get(threadId) ?? []
     bucket.push(message)
     grouped.set(threadId, bucket)
@@ -8957,11 +8955,10 @@ export async function markDirectMessageConversationRead(input: {
       (message) =>
         message.senderPubkey !== input.principalPubkey &&
         message.recipientPubkey === input.principalPubkey &&
-        (input.conversationId
-          ? (message.conversationId ??
-              `${message.transport}:${input.counterpartyPubkey}`) ===
-            input.conversationId
-          : message.senderPubkey === input.counterpartyPubkey) &&
+        message.senderPubkey === input.counterpartyPubkey &&
+        (!input.conversationId ||
+          `${message.transport}:${input.counterpartyPubkey}` ===
+            input.conversationId) &&
         (!input.transport || message.transport === input.transport)
     )
     .map((message) => message.id)

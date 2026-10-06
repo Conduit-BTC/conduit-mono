@@ -411,7 +411,7 @@ describe("shared direct-message gateway", () => {
     ).toBe(0)
   })
 
-  it("retains group participants and reply parent in the direct projection", async () => {
+  it("retains extra recipients as metadata while replies and read state stay in one counterparty thread", async () => {
     const h = setup()
     const third = getPublicKey(generateSecretKey())
     h.events.push(
@@ -426,8 +426,39 @@ describe("shared direct-message gateway", () => {
     const participants = [h.buyer, h.merchant, third].sort()
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.participants).toEqual(participants)
-    expect(result.data[0]?.id).toBe(`nip17:${participants.join(":")}`)
     expect(result.data[0]?.messages[0]?.replyTo).toBe("synthetic-parent")
+    h.events.push(
+      signedRumor(
+        h.buyerSecret,
+        h.buyer,
+        14,
+        "two-party reply",
+        [["p", h.merchant]],
+        1_700_000_001
+      ).wrap
+    )
+    const replied = await getDirectMessageConversationList({
+      principalPubkey: h.buyer,
+    })
+    expect(replied.data).toHaveLength(1)
+    expect(replied.data[0]?.id).toBe(`nip17:${h.merchant}`)
+    expect(
+      replied.data[0]?.messages?.map((message) => message.content)
+    ).toEqual(["group reply", "two-party reply"])
+    expect(
+      await markDirectMessageConversationRead({
+        principalPubkey: h.buyer,
+        counterpartyPubkey: h.merchant,
+        transport: "nip17",
+        conversationId: `nip17:${h.merchant}`,
+      })
+    ).toBe(1)
+    const cached = await getCachedDirectMessageConversationList({
+      principalPubkey: h.buyer,
+    })
+    expect(cached.data).toHaveLength(1)
+    expect(cached.data[0]?.messageCount).toBe(2)
+    expect(cached.data[0]?.unreadFromCounterparty).toBe(0)
   })
 
   it("fences old-account state after a session change", async () => {

@@ -292,13 +292,16 @@ test("extra authenticated recipients cannot expand buyer or merchant replies @co
 }, testInfo) => {
   const buyer = createRuntimeSignerIdentity()
   const seller = createRuntimeSignerIdentity()
+  const merchantOwner = createRuntimeSignerIdentity()
+  const merchantPeer = createRuntimeSignerIdentity()
   const extra = createRuntimeSignerIdentity()
+  const identities = [buyer, seller, merchantOwner, merchantPeer, extra]
   const relayUrl = `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
   const contexts = []
   try {
     const createdAt = Math.floor(Date.now() / 1000)
     await publishTestRelayEvents(
-      [buyer, seller, extra].flatMap((identity) => [
+      identities.flatMap((identity) => [
         signRuntimeTestEvent(identity, {
           kind: 10050,
           created_at: createdAt,
@@ -314,8 +317,8 @@ test("extra authenticated recipients cannot expand buyer or merchant replies @co
       ])
     )
     for (const app of ["market", "merchant"] as const) {
-      const recipient = app === "market" ? buyer : seller
-      const sender = app === "market" ? seller : buyer
+      const recipient = app === "market" ? buyer : merchantOwner
+      const sender = app === "market" ? seller : merchantPeer
       const rumor = {
         kind: 14,
         pubkey: sender.pubkey,
@@ -421,10 +424,232 @@ test("extra authenticated recipients cannot expand buyer or merchant replies @co
           { timeout: 30_000 }
         )
         .toEqual({ acceptedByPeer: true, unapprovedRecipients: 0 })
+      const conversation = page
+        .locator("main span")
+        .filter({ hasText: /^synthetic extra recipient input$/ })
+      await expect(conversation).toBeVisible()
+      await expect(
+        page
+          .locator("main span")
+          .filter({ hasText: /^synthetic two-party reply$/ })
+      ).toBeVisible()
+      await page.reload()
+      const restoredThread = page
+        .getByRole("button")
+        .filter({ hasText: "synthetic two-party reply", visible: true })
+      await expect(restoredThread).toHaveCount(1)
+      await restoredThread.click()
+      await expect(
+        page
+          .locator("main span")
+          .filter({ hasText: /^synthetic extra recipient input$/ })
+      ).toBeVisible()
+      await expect(
+        page
+          .locator("main span")
+          .filter({ hasText: /^synthetic two-party reply$/ })
+      ).toBeVisible()
     }
   } finally {
     await Promise.all(contexts.map((context) => context.close()))
-    for (const identity of [buyer, seller, extra])
-      disposeRuntimeSignerIdentity(identity)
+    for (const identity of identities) disposeRuntimeSignerIdentity(identity)
+  }
+})
+
+test("domain persistence rejection leaves no generic delivery to retry @commerce", async ({
+  page,
+}) => {
+  const sender = createRuntimeSignerIdentity()
+  const peer = createRuntimeSignerIdentity()
+  const relayUrl = `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
+  try {
+    await installRealTestSigner(page, sender, relayUrl)
+    await page.goto(
+      `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}/messages?tab=dms`
+    )
+    await expect(page.getByLabel("Open account menu")).toBeVisible({
+      timeout: 15_000,
+    })
+    const evidence = await page.evaluate(
+      async ({ root, principal, recipient, relay }) => {
+        const { getCommerceInbox } = await import(`${root}/commerce-inbox.ts`)
+        const { getAccountSigner } = await import(`${root}/session-signer.ts`)
+        const { createParticipantMessageRumor, publishPrivateMessage } =
+          await import(`${root}/messaging.ts`)
+        const { retryPrivateDeliveries, resumePrivateDelivery } = await import(
+          `${root}/private-message-delivery.ts`
+        )
+        const owner = getCommerceInbox(principal)
+        await owner.initialize()
+        const rumor = createParticipantMessageRumor({
+          senderPubkey: principal,
+          recipientPubkeys: [recipient],
+          content: "synthetic domain boundary",
+          appId: "market",
+        })
+        let publishes = 0
+        const publisher = async (
+          _event: unknown,
+          options: { exclusiveRelayUrls: string[] }
+        ) => {
+          publishes++
+          return {
+            plan: {},
+            attemptedRelayUrls: options.exclusiveRelayUrls,
+            successfulRelayUrls: options.exclusiveRelayUrls,
+            failedRelayUrls: [],
+            relayFailureMessages: {},
+          }
+        }
+        const input = {
+          rumor,
+          senderPubkey: principal,
+          recipientPubkey: recipient,
+          accountPubkey: principal,
+          authenticatedPubkey: principal,
+          signer: getAccountSigner(),
+          rumorKind: 14,
+          selfCopy: true,
+          recipientInboxRelays: [relay],
+          senderInboxRelays: [relay],
+          inspectOwnInboxReadiness: async () => ({
+            state: "ready",
+            eventId: "synthetic",
+            relayUrls: [relay],
+            stale: false,
+            distributionRepairable: false,
+          }),
+          publishFn: publisher,
+        }
+        let rejected = false
+        try {
+          await publishPrivateMessage({
+            ...input,
+            onWrapped: async () => {
+              throw new Error("synthetic domain persistence rejection")
+            },
+          })
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            error.message !== "synthetic domain persistence rejection"
+          )
+            throw error
+          rejected = true
+        }
+        const rows =
+          await owner.store.database.commerceInboxDeliveries.toArray()
+        // Make any abandoned job eligible immediately instead of waiting for its lease.
+        for (const row of rows)
+          await owner.store.database.commerceInboxDeliveries.update(row.id, {
+            claim: undefined,
+          })
+        const resolve = async (pubkey: string) => ({
+          pubkey,
+          state: "declared",
+          relayUrls: [relay],
+          stale: false,
+          fetchedAt: Date.now(),
+        })
+        await retryPrivateDeliveries(
+          principal,
+          publisher,
+          undefined,
+          owner.store,
+          resolve
+        )
+        const resumedRejected = await resumePrivateDelivery(
+          owner.store,
+          rumor.id,
+          recipient,
+          publisher
+        )
+        const rejectedEvidence = {
+          rejected,
+          abandonedJobs: rows.length,
+          resumed: !!resumedRejected,
+          publishes,
+        }
+        if (rows.length)
+          return {
+            rejectedEvidence,
+            successfulBoundary: false,
+            exactRetry: false,
+          }
+        let persisted: {
+          wrappedToRecipient: { id: string }
+          wrappedToSelf: { id: string }
+        } | null = null
+        try {
+          await publishPrivateMessage({
+            ...input,
+            onWrapped: async (prepared: typeof persisted) => {
+              persisted = prepared
+            },
+            publishFn: async () => {
+              throw new Error("synthetic transport interruption")
+            },
+          })
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            error.message !== "synthetic transport interruption"
+          )
+            throw error
+        }
+        const jobs =
+          await owner.store.database.commerceInboxDeliveries.toArray()
+        let exactRetry = true
+        let retried = 0
+        await retryPrivateDeliveries(
+          principal,
+          async (
+            event: { id: string },
+            options: { exclusiveRelayUrls: string[] }
+          ) => {
+            retried++
+            exactRetry &&=
+              !!persisted &&
+              [persisted.wrappedToRecipient, persisted.wrappedToSelf].some(
+                (saved) => JSON.stringify(saved) === JSON.stringify(event)
+              )
+            return publisher(event, options)
+          },
+          undefined,
+          owner.store,
+          resolve
+        )
+        const resumed = await resumePrivateDelivery(
+          owner.store,
+          rumor.id,
+          recipient,
+          publisher
+        )
+        return {
+          rejectedEvidence,
+          successfulBoundary: !!persisted && jobs.length === 1 && !!resumed,
+          exactRetry: exactRetry && retried === 2,
+        }
+      },
+      {
+        root: `/@fs${process.cwd()}/packages/core/src/protocol`,
+        principal: sender.pubkey,
+        recipient: peer.pubkey,
+        relay: relayUrl,
+      }
+    )
+    expect(evidence).toEqual({
+      rejectedEvidence: {
+        rejected: true,
+        abandonedJobs: 0,
+        resumed: false,
+        publishes: 0,
+      },
+      successfulBoundary: true,
+      exactRetry: true,
+    })
+  } finally {
+    disposeRuntimeSignerIdentity(sender)
+    disposeRuntimeSignerIdentity(peer)
   }
 })

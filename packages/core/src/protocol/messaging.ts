@@ -1610,49 +1610,6 @@ export async function publishPrivateMessage(
   const deliveryStore = deliveryAuthorization
     ? new CommerceInboxStore(deliveryAuthorization)
     : null
-  const stagedId =
-    deliveryStore && !progressiveRecipientDelivery
-      ? await stagePrivateDelivery(deliveryStore, {
-          rumorId: input.rumor.id,
-          senderPubkey,
-          createdAt: Date.now(),
-          legs: [
-            ...(!progressiveRecipientDelivery
-              ? [
-                  {
-                    recipientPubkey,
-                    event: wrappedToRecipient,
-                    relayUrls: [...recipientRoute.relayUrls],
-                    ownerSelectedRelayUrls: [],
-                    compatibility:
-                      recipientRoute.route === "compatibility_order",
-                    relaySources: { ...recipientRoute.relaySources },
-                    truncated: recipientRoute.truncated,
-                    acknowledged: [],
-                    failed: [],
-                  },
-                ]
-              : []),
-            ...(wrappedToSelf && senderRoute && senderRoute.route !== "blocked"
-              ? [
-                  {
-                    recipientPubkey: senderPubkey,
-                    event: wrappedToSelf,
-                    relayUrls: [...senderRoute.relayUrls],
-                    ownerSelectedRelayUrls: [
-                      ...senderRoute.ownerSelectedRelayUrls,
-                    ],
-                    compatibility: false,
-                    relaySources: { ...senderRoute.relaySources },
-                    truncated: senderRoute.truncated,
-                    acknowledged: [],
-                    failed: [],
-                  },
-                ]
-              : []),
-          ],
-        })
-      : null
   const preparedRecipientDelivery: PreparedPrivateMessageRecipientDelivery | null =
     recoverableRoutingAuthority || recoverableCompatibilityPlan
       ? {
@@ -1924,6 +1881,45 @@ export async function publishPrivateMessage(
   if (preparedRecipientDelivery) {
     await input.onRecipientPublishStarting?.(preparedRecipientDelivery)
   }
+  // A generic retry must never bypass the caller's durable persistence boundary.
+  // Only make these exact wraps retryable after every pre-publish callback succeeds.
+  const stagedId = deliveryStore
+    ? await stagePrivateDelivery(deliveryStore, {
+        rumorId: input.rumor.id,
+        senderPubkey,
+        createdAt: Date.now(),
+        legs: [
+          {
+            recipientPubkey,
+            event: wrappedToRecipient,
+            relayUrls: [...recipientRoute.relayUrls],
+            ownerSelectedRelayUrls: [],
+            compatibility: recipientRoute.route === "compatibility_order",
+            relaySources: { ...recipientRoute.relaySources },
+            truncated: recipientRoute.truncated,
+            acknowledged: [],
+            failed: [],
+          },
+          ...(wrappedToSelf && senderRoute && senderRoute.route !== "blocked"
+            ? [
+                {
+                  recipientPubkey: senderPubkey,
+                  event: wrappedToSelf,
+                  relayUrls: [...senderRoute.relayUrls],
+                  ownerSelectedRelayUrls: [
+                    ...senderRoute.ownerSelectedRelayUrls,
+                  ],
+                  compatibility: false,
+                  relaySources: { ...senderRoute.relaySources },
+                  truncated: senderRoute.truncated,
+                  acknowledged: [],
+                  failed: [],
+                },
+              ]
+            : []),
+        ],
+      })
+    : null
   try {
     recipientDelivery = await publishFn(
       wrappedToRecipient as SignedPublicNostrEvent,
