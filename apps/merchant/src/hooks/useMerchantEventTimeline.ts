@@ -21,6 +21,7 @@ import {
 import {
   getMerchantProductMarketReferences,
   hydrateMerchantProductMarkets,
+  isMerchantTimelineMarketReadIncomplete,
   MERCHANT_EVENT_RELATIONSHIP_TARGET_LIMIT,
 } from "../lib/merchant-event-relationship-hydration"
 // This is the same public perspective used by Market. Merchant reads the
@@ -286,12 +287,7 @@ export function useMerchantEventTimeline(input: {
     (exactQuery.data?.failedCount ?? 0) > 0 ||
     productReferences.length > MERCHANT_EVENT_RELATIONSHIP_TARGET_LIMIT ||
     (exactQuery.data?.markets ?? []).some(
-      (read) =>
-        read.resolution.state !== "current" ||
-        read.coverage !== "complete" ||
-        read.calendarCoverage !== "complete" ||
-        (read.schedule?.kind === "series" &&
-          read.scheduleCoverage !== "complete")
+      isMerchantTimelineMarketReadIncomplete
     )
   const refreshFollowing = followingQuery.refetch
   const refreshConduit = conduitQuery.refetch

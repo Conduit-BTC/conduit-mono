@@ -27,6 +27,7 @@ import {
 import { useMerchantEventTimeline } from "../hooks/useMerchantEventTimeline"
 import {
   hydrateMerchantProductMarkets,
+  isMerchantTimelineMarketReadIncomplete,
   mergeMerchantTimelineMarketReads,
 } from "../lib/merchant-event-relationship-hydration"
 
@@ -201,8 +202,12 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
   const futureIncomplete =
     futureQuery.isError ||
     (!!futureQuery.data && futureQuery.data.coverage !== "complete")
-  const knownRosterFailed =
-    sellingQuery.isError || (sellingQuery.data?.failedCount ?? 0) > 0
+  const knownRosterIncomplete =
+    sellingQuery.isError ||
+    (sellingQuery.data?.failedCount ?? 0) > 0 ||
+    (sellingQuery.data?.markets ?? []).some(
+      isMerchantTimelineMarketReadIncomplete
+    )
   const networkLimited =
     networkPending || discovery.perspective.incomplete || futureIncomplete
   const refetchIncludedSources = () =>
@@ -230,6 +235,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       ownQuery.isFetching,
       ownQuery.isError || ownQuery.data?.coverage === "unavailable",
       ownerIncomplete ||
+        knownRosterIncomplete ||
         discovery.relationships.isInitialLoading ||
         discovery.relationships.incomplete ||
         discovery.relationships.unavailable,
@@ -238,10 +244,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
           !ownQuery.isFetching && !ownQuery.isPaused
             ? ownQuery.refetch({ cancelRefetch: false })
             : undefined,
-          discovery.relationships.incomplete ||
-          discovery.relationships.unavailable
-            ? discovery.relationships.refetch()
-            : undefined,
+          discovery.relationships.refetch(),
         ])
     ),
     selling: section(
@@ -253,7 +256,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
         ownQuery.isPending ||
         ownerIncomplete ||
         discovery.relationships.incomplete ||
-        knownRosterFailed,
+        knownRosterIncomplete,
       refetchIncludedSources
     ),
     all: section(
@@ -272,7 +275,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
         discovery.relationships.isInitialLoading ||
         discovery.relationships.incomplete ||
         discovery.relationships.unavailable ||
-        knownRosterFailed,
+        knownRosterIncomplete,
       refetchIncludedSources
     ),
     accountPubkey,

@@ -2810,11 +2810,14 @@ test("merchant directory resolves Organizing and Selling At while calendar disco
     ).toBe(true)
     expect(
       ownRequests.some((request) =>
-        request.filters.some(
-          (filter) => filter.kinds?.includes(3) || filter.kinds?.includes(30402)
-        )
+        request.filters.some((filter) => filter.kinds?.includes(3))
       )
     ).toBe(false)
+    expect(
+      ownRequests.some((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(30402))
+      )
+    ).toBe(true)
     await my.getByRole("button", { name: "Selling At", exact: true }).click()
     await expect(
       my.getByRole("heading", { name: "No selling events found yet" })
@@ -3462,54 +3465,70 @@ test("merchant directory All Events refreshes healthy products to find an event 
   ).toBeVisible()
 })
 
-test("merchant directory Organizing refreshes healthy exact evidence while owner discovery remains unavailable @merchant", async ({
-  page,
-}) => {
-  const relay = createRelayHarness()
-  await installSyntheticEnvironment(page, relay)
-  const { calendar, market, product, createdAt } =
-    createTimelineRefreshFixture(true)
-  relay.seed(
-    calendar,
-    market,
-    product,
-    createFollowList("merchant", [], createdAt)
-  )
-  relay.rejectMarketDiscovery(true)
-  await gotoAs(page, merchantUrl, "/events", "merchant")
-  const my = page.getByRole("region", { name: "My Events timeline" })
-  await expect(
-    my.getByRole("button", { name: /^Open Healthy Refresh Fair/ })
-  ).toBeVisible()
-  relay.seed(
-    signEvent(MERCHANT_SECRET, {
-      kind: calendar.kind,
-      created_at: createdAt + 1,
-      content: calendar.content,
-      tags: calendar.tags.map((tag) =>
-        tag[0] === "title" ? ["title", "Updated Owned Fair"] : tag
-      ),
-    })
-  )
-  const before = relay.requests.length
-  await page
-    .getByRole("button", { name: "Refresh Organizing", exact: true })
-    .click()
-  await expect
-    .poll(() =>
-      relay.requests
-        .slice(before)
-        .some((request) =>
-          request.filters.some(
-            (filter) => filter.kinds?.includes(30409) && filter["#d"]
-          )
-        )
+for (const ownerObservation of ["empty", "unavailable"] as const)
+  test(`merchant directory Organizing refreshes healthy exact evidence while owner discovery remains ${ownerObservation} @merchant`, async ({
+    page,
+  }) => {
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay)
+    const { calendar, market, product, createdAt } =
+      createTimelineRefreshFixture(true)
+    relay.seed(
+      calendar,
+      market,
+      product,
+      createFollowList("merchant", [], createdAt)
     )
-    .toBe(true)
-  await expect(
-    my.getByRole("button", { name: /^Open Updated Owned Fair/ })
-  ).toBeVisible()
-})
+    if (ownerObservation === "unavailable") relay.rejectMarketDiscovery(true)
+    else relay.omitMarketDiscovery(true)
+    await gotoAs(page, merchantUrl, "/events", "merchant")
+    const my = page.getByRole("region", { name: "My Events timeline" })
+    await expect(
+      my.getByRole("button", { name: /^Open Healthy Refresh Fair/ })
+    ).toBeVisible()
+    await my.getByRole("button", { name: "Selling At", exact: true }).click()
+    await expect(
+      page.getByRole("button", { name: "Refresh Selling At", exact: true })
+    ).toBeEnabled()
+    await my.getByRole("button", { name: "Organizing", exact: true }).click()
+    relay.seed(
+      signEvent(MERCHANT_SECRET, {
+        kind: calendar.kind,
+        created_at: createdAt + 1,
+        content: calendar.content,
+        tags: calendar.tags.map((tag) =>
+          tag[0] === "title" ? ["title", "Updated Owned Fair"] : tag
+        ),
+      })
+    )
+    const before = relay.requests.length
+    await page
+      .getByRole("button", { name: "Refresh Organizing", exact: true })
+      .click()
+    await expect
+      .poll(() =>
+        relay.requests
+          .slice(before)
+          .some((request) =>
+            request.filters.some((filter) => filter.kinds?.includes(30402))
+          )
+      )
+      .toBe(true)
+    await expect
+      .poll(() =>
+        relay.requests
+          .slice(before)
+          .some((request) =>
+            request.filters.some(
+              (filter) => filter.kinds?.includes(30409) && filter["#d"]
+            )
+          )
+      )
+      .toBe(true)
+    await expect(
+      my.getByRole("button", { name: /^Open Updated Owned Fair/ })
+    ).toBeVisible()
+  })
 
 for (const failure of ["products-held", "exact-held", "unavailable"] as const)
   test(`merchant directory Organizing scopes empty owner discovery while an owned relationship is ${failure} @merchant`, async ({
