@@ -305,7 +305,15 @@ export async function advanceCheckoutSparkSettledShopper(
         }),
       acknowledgeRecoverySnapshot,
     })
-    await assertAuthority()
+    if (step.outcome === "paid" || step.outcome === "already_paid") {
+      // This exact terminal fact was proved and durably saved before returning.
+      // A later ACK crossing handoff must not downgrade it to paused. Reporting
+      // the result grants no new send; the runner reloads the order and plan
+      // before presenting completion. Withdrawn sessions still fail closed.
+      assertSession()
+    } else {
+      await assertAuthority()
+    }
     return { status: "outgoing_step", step }
   }
   if (!nextLeg.intent) {

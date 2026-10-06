@@ -730,7 +730,8 @@ async function createForegroundRunner(
 }
 
 async function runForeground(
-  test: (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>
+  test: (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>,
+  takeoverAfterMs = 45 * 60_000
 ) {
   await run(
     async (f) => {
@@ -744,11 +745,280 @@ async function runForeground(
         else process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = previousAddress
       }
     },
-    { takeoverAfterMs: 45 * 60_000 }
+    { takeoverAfterMs }
   )
 }
 
 describe("Market native treasury composed provider evidence", () => {
+  it(
+    "normal two-minute handoff completes a verified native payment just before the cutoff without Resume",
+    async () =>
+      runForeground(async (f) => {
+        expect(f.plan.takeoverAt - f.plan.createdAt).toBe(120_000)
+        f.hooks.beforeNativeFulfill = async () => {
+          expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+          f.setNow(f.plan.takeoverAt - 500)
+        }
+        const { runner, input } = await createForegroundRunner(f)
+        const result = await runner.run(input)
+        const final = (await f.loadState()).state
+        expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+        expect(final.legs.every((leg) => leg.status === "paid")).toBe(true)
+        expect(final.treasuryFinalization).toMatchObject({
+          status: "paid",
+          finalFeeSats: 0,
+          providerTransferId: f.control.nativeSnapshot().transfers[0]!.id,
+        })
+        expect(result).toEqual({ status: "complete" })
+        expect(getCheckoutSparkSettledOutcomeMessage(result)).not.toContain(
+          "Resume"
+        )
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+      }, 120_000),
+    15_000
+  )
+  it(
+    "normal two-minute handoff drains an admitted native payment across cutoff without claiming fresh buyer completion or resending",
+    async () =>
+      runForeground(async (f) => {
+        let entered!: () => void
+        let release!: () => void
+        const admission = new Promise<void>((resolve) => {
+          entered = resolve
+        })
+        const completion = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        f.hooks.beforeNativeFulfill = async () => {
+          entered()
+          await completion
+        }
+        const { runner, input } = await createForegroundRunner(f)
+        const running = runner.run(input)
+        try {
+          await admission
+          const admitted = structuredClone(
+            (await f.loadState()).state.treasuryFinalization!
+          )
+          expect(admitted.status).toBe("submitted")
+          expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+          f.setNow(f.plan.takeoverAt + 1)
+          release()
+          expect(await running).toEqual({
+            status: "paused",
+            reason: "unavailable",
+          })
+          const retained = (await f.loadState()).state.treasuryFinalization!
+          expect(retained.status).toBe("submitted")
+          expect(retained.intent).toEqual(admitted.intent)
+          expect(retained.providerTransferId).toBeNull()
+          expect(retained.finalDebitSats).toBeNull()
+          // The synthetic provider settled the admitted operation, but buyer
+          // authority ended before fresh receipt proof could be accepted.
+          expect(f.control.nativeSnapshot().transfers[0]!.status).toBe(
+            "TRANSFER_STATUS_COMPLETED"
+          )
+          expect(await runner.run(input)).toEqual({
+            status: "paused",
+            reason: "authorization_changed",
+          })
+          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+          expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+          expect((await f.loadState()).state.treasuryFinalization).toEqual(
+            retained
+          )
+        } finally {
+          release()
+          await running
+        }
+      }, 120_000),
+    15_000
+  )
+  it(
+    "normal two-minute handoff preserves a pending native attempt at cutoff and never readmits its payment",
+    async () =>
+      runForeground(async (f) => {
+        f.control.setNativeCompletion(false)
+        let pending:
+          CheckoutSparkSettledReconciliation["treasuryFinalization"] | undefined
+        const { runner, input } = await createForegroundRunner(f, {
+          wait: async () => {
+            pending = structuredClone(
+              (await f.loadState()).state.treasuryFinalization
+            )
+            expect(pending!.status).toBe("ambiguous")
+            expect(pending!.providerTransferId).toBe(
+              f.control.nativeSnapshot().transfers[0]!.id
+            )
+            expect(pending!.finalDebitSats).toBeNull()
+            f.setNow(f.plan.takeoverAt)
+          },
+        })
+        expect(await runner.run(input)).toEqual({
+          status: "paused",
+          reason: "authorization_changed",
+        })
+        expect((await f.loadState()).state.treasuryFinalization).toEqual(
+          pending!
+        )
+        // Later provider completion does not restore buyer dispatch or turn a
+        // missing buyer proof into permission to submit the saved intent again.
+        f.control.setNativeCompletion(true)
+        expect(await runner.run(input)).toEqual({
+          status: "paused",
+          reason: "authorization_changed",
+        })
+        expect((await f.loadState()).state.treasuryFinalization).toEqual(
+          pending!
+        )
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+      }, 120_000),
+    15_000
+  )
+  it(
+    "normal two-minute handoff reports recorded completion when only the paid recovery ACK crosses cutoff",
+    async () =>
+      runForeground(async (f) => {
+        let paidBeforeCutoff = false
+        f.hooks.beforeNativeFulfill = async () => {
+          f.setNow(f.plan.takeoverAt - 500)
+        }
+        const { runner, input } = await createForegroundRunner(f, {
+          acknowledge: async (state) => {
+            if (state.treasuryFinalization!.status !== "paid") return
+            const saved = (await f.loadState()).state
+            expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+            expect(saved.legs.every((leg) => leg.status === "paid")).toBe(true)
+            expect(saved.treasuryFinalization).toMatchObject({
+              status: "paid",
+              finalFeeSats: 0,
+              finalDebitSats:
+                saved.treasuryFinalization!.intent!.authorizedDebitSats,
+              providerTransferId: f.control.nativeSnapshot().transfers[0]!.id,
+            })
+            paidBeforeCutoff = true
+            f.setNow(f.plan.takeoverAt + 1)
+          },
+        })
+        const result = await runner.run(input)
+        const final = (await f.loadState()).state
+        expect(paidBeforeCutoff).toBe(true)
+        expect(f.now()).toBeGreaterThan(f.plan.takeoverAt)
+        expect(final.legs.every((leg) => leg.status === "paid")).toBe(true)
+        expect(final.treasuryFinalization!.status).toBe("paid")
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+        // Paid was positively verified and durably saved under buyer authority.
+        // A later ACK delay may not downgrade that recorded fact to Resume UX.
+        expect(result).toEqual({ status: "complete" })
+        expect(getCheckoutSparkSettledOutcomeMessage(result)).not.toContain(
+          "Resume"
+        )
+      }, 120_000),
+    15_000
+  )
+  it(
+    "normal two-minute handoff preserves paid proof without completion after session revocation in the paid ACK",
+    async () =>
+      runForeground(async (f) => {
+        let sessionCurrent = true
+        let paid: CheckoutSparkSettledReconciliation["treasuryFinalization"]
+        const { runner, input } = await createForegroundRunner(f, {
+          acknowledge: async (state) => {
+            if (state.treasuryFinalization!.status !== "paid") return
+            const saved = (await f.loadState()).state
+            expect(saved.legs.every((leg) => leg.status === "paid")).toBe(true)
+            expect(saved.treasuryFinalization!.status).toBe("paid")
+            paid = structuredClone(saved.treasuryFinalization)
+            sessionCurrent = false
+          },
+        })
+        const result = await runner.run({
+          ...input,
+          shouldContinue: () => sessionCurrent,
+        })
+        expect(paid).toBeDefined()
+        expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+        expect(result).toEqual({ status: "paused", reason: "paused" })
+        const final = (await f.loadState()).state
+        expect(final.legs.every((leg) => leg.status === "paid")).toBe(true)
+        expect(final.treasuryFinalization).toEqual(paid!)
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+      }, 120_000),
+    15_000
+  )
+  it(
+    "normal two-minute handoff preserves paid proof without completion after buyer identity changes in the paid ACK",
+    async () =>
+      runForeground(async (f) => {
+        let currentBuyerPubkey = f.buyer.pubkey
+        let paid: CheckoutSparkSettledReconciliation["treasuryFinalization"]
+        const { runner, input } = await createForegroundRunner(f, {
+          acknowledge: async (state) => {
+            if (state.treasuryFinalization!.status !== "paid") return
+            const saved = (await f.loadState()).state
+            expect(saved.legs.every((leg) => leg.status === "paid")).toBe(true)
+            expect(saved.treasuryFinalization!.status).toBe("paid")
+            paid = structuredClone(saved.treasuryFinalization)
+            currentBuyerPubkey = f.merchant.pubkey
+          },
+        })
+        const result = await runner.run({
+          ...input,
+          currentBuyerPubkey: () => currentBuyerPubkey,
+        })
+        expect(paid).toBeDefined()
+        expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+        expect(result).toEqual({ status: "paused", reason: "paused" })
+        const final = (await f.loadState()).state
+        expect(final.legs.every((leg) => leg.status === "paid")).toBe(true)
+        expect(final.treasuryFinalization).toEqual(paid!)
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+      }, 120_000),
+    15_000
+  )
+  it(
+    "normal two-minute handoff preserves paid proof without completion after order cancellation in the paid ACK",
+    async () =>
+      runForeground(async (f) => {
+        let paid: CheckoutSparkSettledReconciliation["treasuryFinalization"]
+        const { runner, input } = await createForegroundRunner(f, {
+          acknowledge: async (state) => {
+            if (state.treasuryFinalization!.status !== "paid") return
+            const saved = (await f.loadState()).state
+            expect(saved.legs.every((leg) => leg.status === "paid")).toBe(true)
+            expect(saved.treasuryFinalization!.status).toBe("paid")
+            paid = structuredClone(saved.treasuryFinalization)
+            const order = await f.database.orderLifecycles.get(f.plan.orderId)
+            if (!order) throw new Error("Expected current synthetic order")
+            await f.database.orderLifecycles.put({
+              ...order,
+              phase: "cancelled",
+            })
+          },
+        })
+        const result = await runner.run(input)
+        expect(paid).toBeDefined()
+        expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+        expect(result).toEqual({
+          status: "paused",
+          reason: "authorization_changed",
+        })
+        expect(
+          (await f.database.orderLifecycles.get(f.plan.orderId))!.phase
+        ).toBe("cancelled")
+        const final = (await f.loadState()).state
+        expect(final.legs.every((leg) => leg.status === "paid")).toBe(true)
+        expect(final.treasuryFinalization).toEqual(paid!)
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+      }, 120_000),
+    15_000
+  )
   it.each(["pending", "unknown"] as const)(
     "automatically reconciles the same delayed native %s attempt to receiver-claimed without Resume",
     async (observation) =>
