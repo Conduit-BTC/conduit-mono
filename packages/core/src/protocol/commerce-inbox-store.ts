@@ -18,6 +18,7 @@ import {
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 import { isValidSignedPublicNostrEvent } from "./signed-event"
+import { MAX_RELAY_MESSAGE_CHARS } from "./relay-wire-limits"
 
 export type InboxDecodeState =
   | "queued"
@@ -281,7 +282,8 @@ export class CommerceInboxStore {
     if (
       !isValidSignedPublicNostrEvent(event) ||
       ![1059, 4].includes(event.kind) ||
-      event.content.length > 262_144 ||
+      JSON.stringify(["EVENT", "0".repeat(64), event]).length >
+        MAX_RELAY_MESSAGE_CHARS ||
       event.tags.filter((t) => t[0] === "p").length !== 1 ||
       !(
         event.tags.some((t) => t[0] === "p" && t[1] === this.principal) ||
@@ -399,66 +401,102 @@ export class CommerceInboxStore {
     this.assertCurrent()
     const logicalId = projection ? projectionIdentity(projection).id : undefined
     const id = logicalId ? this.key(logicalId) : undefined
-    const value =
-      projection && logicalId
-        ? await this.seal(projection, logicalId)
+    const commerceRecord =
+      projection?.kind === "record" && projection.record.category === "commerce"
+        ? projection.record
         : undefined
-    await this.database.transaction(
-      "rw",
-      this.database.commerceInboxWrappers,
-      this.database.commerceInboxRecords,
-      this.database.commerceInboxDeletions,
-      async () => {
-        this.assertCurrent()
-        const current = await this.database.commerceInboxWrappers.get(row.id)
-        if (
-          current?.claim?.owner !== owner ||
-          current.state === "deleted" ||
-          current.state === "expired"
+    // Encrypt outside IndexedDB transactions, then check the cipher revision
+    // so a concurrent local association cannot be overwritten by this decode.
+    for (let attempt = 0; attempt < 32; attempt++) {
+      const retained =
+        commerceRecord && id
+          ? await this.database.commerceInboxRecords.get(id)
+          : undefined
+      let nextProjection = projection
+      if (commerceRecord && retained?.kind === "record" && logicalId) {
+        const saved = await this.open<InboxProjection>(
+          retained.value,
+          logicalId
         )
-          return
-        const expiresAt = Math.min(
-          current.expiresAt ?? Infinity,
-          innerExpiresAt ?? Infinity
-        )
-        if (expiresAt <= Date.now()) {
+        if (saved.kind === "record" && saved.record.category === "commerce")
+          nextProjection = {
+            kind: "record",
+            record: {
+              ...commerceRecord,
+              association: saved.record.association,
+            },
+          }
+      }
+      const value =
+        nextProjection && logicalId
+          ? await this.seal(nextProjection, logicalId)
+          : undefined
+      const committed = await this.database.transaction(
+        "rw",
+        this.database.commerceInboxWrappers,
+        this.database.commerceInboxRecords,
+        this.database.commerceInboxDeletions,
+        async () => {
+          this.assertCurrent()
+          const current = await this.database.commerceInboxWrappers.get(row.id)
+          if (
+            current?.claim?.owner !== owner ||
+            current.state === "deleted" ||
+            current.state === "expired"
+          )
+            return true
+          const expiresAt = Math.min(
+            current.expiresAt ?? Infinity,
+            innerExpiresAt ?? Infinity
+          )
+          if (expiresAt <= Date.now()) {
+            await this.database.commerceInboxWrappers.put({
+              ...current,
+              state: "expired",
+              claim: undefined,
+            })
+            return true
+          }
+          if (projection && logicalId && id && value) {
+            const previous = await this.database.commerceInboxRecords.get(id)
+            if (
+              commerceRecord &&
+              previous?.value.nonce.join(",") !==
+                retained?.value.nonce.join(",")
+            )
+              return false
+            const author = projectionIdentity(projection).author
+            const deleted = await this.database.commerceInboxDeletions.get(
+              this.key(`${author}:${logicalId}`)
+            )
+            if (!previous?.deleted && !deleted)
+              await this.database.commerceInboxRecords.put({
+                id,
+                accountPubkey: this.principal,
+                logicalId,
+                wrapId: row.event.id,
+                createdAt: projectionIdentity(projection).createdAt,
+                kind: projection.kind,
+                read: previous?.read ?? 0,
+                value,
+                expiresAt: Number.isFinite(expiresAt) ? expiresAt : undefined,
+              })
+          }
           await this.database.commerceInboxWrappers.put({
             ...current,
-            state: "expired",
+            state,
+            clientSealMetadata:
+              row.clientSealMetadata ?? current.clientSealMetadata,
+            rulesVersion: INBOX_DECODE_RULES_VERSION,
             claim: undefined,
           })
-          return
+          this.assertCurrent()
+          return true
         }
-        if (projection && logicalId && id && value) {
-          const previous = await this.database.commerceInboxRecords.get(id)
-          const author = projectionIdentity(projection).author
-          const deleted = await this.database.commerceInboxDeletions.get(
-            this.key(`${author}:${logicalId}`)
-          )
-          if (!previous?.deleted && !deleted)
-            await this.database.commerceInboxRecords.put({
-              id,
-              accountPubkey: this.principal,
-              logicalId,
-              wrapId: row.event.id,
-              createdAt: projectionIdentity(projection).createdAt,
-              kind: projection.kind,
-              read: previous?.read ?? 0,
-              value,
-              expiresAt: Number.isFinite(expiresAt) ? expiresAt : undefined,
-            })
-        }
-        await this.database.commerceInboxWrappers.put({
-          ...current,
-          state,
-          clientSealMetadata:
-            row.clientSealMetadata ?? current.clientSealMetadata,
-          rulesVersion: INBOX_DECODE_RULES_VERSION,
-          claim: undefined,
-        })
-        this.assertCurrent()
-      }
-    )
+      )
+      if (committed) return
+    }
+    throw new Error("Inbox record changed concurrently; retry opening")
   }
   async putProjection(
     projection: InboxProjection,

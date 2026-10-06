@@ -792,7 +792,20 @@ export class CommerceInbox {
         for (const relayUrl of plan.relayUrls) {
           const { transport } = plan
           const pending: Promise<void>[] = []
-          const result = await (options.read ?? readProtectedInbox)({
+          const rejected = new Set<string>()
+          const ingestObserved = async (event: SignedNostrEvent) => {
+            try {
+              await this.ingest(event, [relayUrl])
+            } catch (error) {
+              if (
+                !(error instanceof NostrSignerError) ||
+                error.code !== "invalid_response"
+              )
+                throw error
+              rejected.add(event.id)
+            }
+          }
+          let result = await (options.read ?? readProtectedInbox)({
             principalPubkey: this.store.principal,
             transport,
             authorization: this.authorization,
@@ -809,12 +822,12 @@ export class CommerceInbox {
             ),
             limit: 50,
             onEvent: (event) => {
-              pending.push(this.ingest(event, [relayUrl]))
+              pending.push(ingestObserved(event))
             },
           })
           await Promise.all(pending)
-          for (const event of result.events)
-            await this.ingest(event, [relayUrl])
+          for (const event of result.events) await ingestObserved(event)
+          if (rejected.size) result = { ...result, coverage: "partial" }
           await this.reconcileRecentHistory(relayUrl, transport, result)
           results.push(result)
           sources.push({
@@ -831,7 +844,7 @@ export class CommerceInbox {
             received: result.events.length,
             malformed: result.relayResult.relays.reduce(
               (n, r) => n + r.malformedCount,
-              0
+              rejected.size
             ),
             unusable: result.relayResult.relays.reduce(
               (n, r) => n + r.unusableCount,

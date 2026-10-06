@@ -31,6 +31,8 @@ import {
 } from "../packages/core/src/protocol/protected-read-authorization"
 import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
 
+import { MAX_RELAY_MESSAGE_CHARS } from "../packages/core/src/protocol/relay-wire-limits"
+
 const databases: ConduitDB[] = []
 const owners: CommerceInbox[] = []
 function setup() {
@@ -245,6 +247,86 @@ describe("durable account-owned commerce inbox", () => {
     await owner.associate(record, "synthetic-later-association")
     expect(await store.projections()).toHaveLength(0)
     expect(await owner.search("synthetic-correlation")).toHaveLength(0)
+  })
+
+  it.each(["rewrap", "retry"] as const)(
+    "preserves local associations through %s and encrypted reload",
+    async (operation) => {
+      const { owner, database, pubkey, signer, wrapper } = setup()
+      const sender = generateSecretKey()
+      const rumor = {
+        kind: 16,
+        pubkey: getPublicKey(sender),
+        created_at: 1_700_000_000,
+        tags: [
+          ["p", pubkey],
+          ["type", "future-commerce"],
+          ["order", "synthetic-correlation"],
+        ],
+        content: '{"version":99}',
+      }
+      await owner.ingest(wrapEvent(rumor, sender, pubkey))
+      const record = (await owner.waitForDecode()).externalRecords[0]!
+      await owner.associate(record, "synthetic-local-order")
+
+      if (operation === "rewrap") {
+        await owner.ingest(wrapEvent(rumor, sender, pubkey))
+        await owner.waitForDecode()
+      } else {
+        const decrypt = signer.decryptNip44.bind(signer)
+        signer.decryptNip44 = async () => {
+          throw new NostrSignerError("authorization_denied")
+        }
+        await owner.ingest(wrapper(2))
+        expect(
+          (await owner.waitForDecode()).diagnostics.states.permission_declined
+        ).toBe(1)
+        signer.decryptNip44 = decrypt
+        await owner.retryDecode()
+      }
+
+      const retained = await readRetainedCommerceInbox(
+        pubkey,
+        () => true,
+        database
+      )
+      expect(retained.externalRecords).toHaveLength(1)
+      expect(retained.externalRecords[0]).toMatchObject({
+        category: "commerce",
+        association: "synthetic-local-order",
+      })
+      expect(retained.orderMessages).toHaveLength(0)
+    }
+  )
+
+  it("preserves a concurrent association while a decoded projection is being encrypted", async () => {
+    const { owner, store, wrapper } = setup()
+    await owner.ingest(
+      wrapper(1, 16, [
+        ["type", "future-commerce"],
+        ["order", "synthetic-correlation"],
+      ])
+    )
+    const record = (await owner.waitForDecode()).externalRecords[0]!
+    await owner.associate(record, "synthetic-old-order")
+    const seal = store.seal.bind(store)
+    let edited = false
+    const probe = spyOn(store, "seal").mockImplementation(async (...args) => {
+      if (!edited) {
+        edited = true
+        await owner.associate(record, "synthetic-new-order")
+      }
+      return seal(...args)
+    })
+    try {
+      await owner.retryDecode()
+    } finally {
+      probe.mockRestore()
+    }
+    expect(owner.getSnapshot().externalRecords[0]).toMatchObject({
+      category: "commerce",
+      association: "synthetic-new-order",
+    })
   })
 
   it("separates transport failures and exports source freshness without identifiers", async () => {
@@ -1290,3 +1372,61 @@ it("does not let an in-flight history page overwrite a newer recent-window reset
   expect(resumed?.until).toBe(1_700_000_089)
   expect(resumed?.status).toBe("advanced")
 }, 60_000)
+
+it("retains large gift wraps and valid neighbors while rejecting oversized complete frames", async () => {
+  const { owner, store, database, pubkey, wrapper } = setup()
+  const sender = generateSecretKey()
+  const large = wrapEvent(
+    {
+      kind: 14,
+      pubkey: getPublicKey(sender),
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [["p", pubkey]],
+      content: "x".repeat(150_000),
+    },
+    sender,
+    pubkey
+  )
+  expect(large.content.length).toBeGreaterThan(262_144)
+  expect(
+    JSON.stringify(["EVENT", "0".repeat(64), large]).length
+  ).toBeLessThanOrEqual(MAX_RELAY_MESSAGE_CHARS)
+  // Metadata also counts toward the wire bound, even with small ciphertext.
+  const oversized = finalizeEvent(
+    {
+      ...wrapper(1),
+      tags: [
+        ["p", pubkey],
+        ["metadata", "x".repeat(MAX_RELAY_MESSAGE_CHARS)],
+      ],
+    },
+    sender
+  )
+  expect(oversized.content.length).toBeLessThan(262_144)
+  await expect(store.receive(oversized)).rejects.toThrow("invalid_response")
+  const neighbor = wrapper(2)
+  const snapshot = await owner.syncRecent({
+    includeLegacy: false,
+    declaration: {
+      pubkey,
+      state: "declared",
+      relayUrls: ["wss://large.synthetic.example"],
+      stale: false,
+      fetchedAt: Date.now(),
+    },
+    read: async ({ onEvent }) => {
+      for (const event of [oversized, large, neighbor]) onEvent?.(event)
+      return completeRead([oversized, large, neighbor])
+    },
+  })
+  expect(
+    snapshot.directMessages.map((message) => message.content).sort()
+  ).toEqual(["private-synthetic-2", "x".repeat(150_000)].sort())
+  expect(snapshot.diagnostics.coverage).toBe("partial")
+  expect(snapshot.diagnostics.sources[0]?.malformed).toBe(1)
+  expect(
+    await database.commerceInboxWrappers.get(store.key(oversized.id))
+  ).toBeUndefined()
+  const retained = await readRetainedCommerceInbox(pubkey, () => true, database)
+  expect(retained.directMessages).toHaveLength(2)
+})

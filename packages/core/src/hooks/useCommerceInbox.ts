@@ -10,7 +10,7 @@ import {
 import { projectCommerceInbox } from "../protocol/commerce"
 
 /** Own browser wakeups and subscription cleanup independently of React renders. */
-function observeInbox(
+export function observeInbox(
   owner: CommerceInbox,
   sync: boolean,
   changed: (snapshot: CommerceInboxSnapshot) => void,
@@ -37,7 +37,7 @@ function observeInbox(
   )
   const timer = sync ? setInterval(refresh, 30_000) : undefined
   const resume = () => {
-    if (document.visibilityState !== "hidden") refresh()
+    if (sync && document.visibilityState !== "hidden") refresh()
   }
   window.addEventListener("online", resume)
   window.addEventListener("focus", resume)
