@@ -9,8 +9,10 @@ import {
   createCheckoutSparkSettledReconciliation,
   createCheckoutSparkSettledRecoveryPayload,
   createCheckoutSparkSettledRecoveryProgressPayload,
+  deriveCheckoutSparkNativeTreasuryInvoiceId,
   freezeCheckoutSparkPlan,
   freezeCheckoutSparkSettledPlan,
+  freezeCheckoutSparkSettledTreasuryPlan,
   parseCheckoutSparkRecoveryRumor,
   recordCheckoutSparkSettledCredit,
   type NostrKeySigner,
@@ -42,6 +44,12 @@ const PREPARED_AT = CREATED_AT + 1_000
 const NOW = CREATED_AT + 3_000
 const ORDER_ID = "guest-router-recovery-fixture"
 const MNEMONIC = createRuntimeMnemonic()
+const RECOVERY_CASES = [
+  [3, "initial"],
+  [3, "progress"],
+  [4, "initial"],
+  [4, "progress"],
+] as const
 
 function memoryStorage() {
   const values = new Map<string, string>()
@@ -62,7 +70,11 @@ function guest() {
   return { identity, storage }
 }
 
-function state(orderId = ORDER_ID, merchantPubkey = merchant.pubkey) {
+function state(
+  orderId = ORDER_ID,
+  merchantPubkey = merchant.pubkey,
+  version: 3 | 4 = 3
+) {
   const plan = freezeCheckoutSparkSettledPlan({
     checkoutId: "guest-router-checkout",
     orderId,
@@ -128,21 +140,49 @@ function state(orderId = ORDER_ID, merchantPubkey = merchant.pubkey) {
       },
     ],
   })
-  return createCheckoutSparkSettledReconciliation(plan)
+  if (version === 3) return createCheckoutSparkSettledReconciliation(plan)
+  // Opaque destination/invoice fixtures exercise the shared recovery schema,
+  // not SDK decoding, provider authority, or a native transfer.
+  const nativeIdentity = {
+    ...plan,
+    sparkAddress: "spark-guest-treasury.fixture",
+    receiverIdentityPublicKey: `03${"e".repeat(64)}`,
+    senderIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+  }
+  return createCheckoutSparkSettledReconciliation(
+    freezeCheckoutSparkSettledTreasuryPlan({
+      ...plan,
+      nativeTreasury: {
+        schemaVersion: 1,
+        sparkAddress: nativeIdentity.sparkAddress,
+        receiverIdentityPublicKey: nativeIdentity.receiverIdentityPublicKey,
+        senderIdentityPublicKey: nativeIdentity.senderIdentityPublicKey,
+        invoiceId: deriveCheckoutSparkNativeTreasuryInvoiceId(nativeIdentity),
+        invoiceRequest: "spark-guest-treasury-invoice.fixture",
+        feePolicy: "zero_required",
+        residualPolicy: "unused_commerce_reserves",
+      },
+    })
+  )
 }
 
 const initialState = state()
+const nativeInitialState = state(ORDER_ID, merchant.pubkey, 4)
+type RecoveryPayloadOverrides = {
+  state?: ReturnType<typeof state>
+  senderPubkey?: string
+  preparedAt?: number
+  planVersion?: 3 | 4
+}
 
 function initialPayload(
   identity: GuestOrderSigningIdentity,
-  overrides: {
-    state?: ReturnType<typeof state>
-    senderPubkey?: string
-    preparedAt?: number
-  } = {}
+  overrides: RecoveryPayloadOverrides = {}
 ) {
   return createCheckoutSparkSettledRecoveryPayload({
-    state: overrides.state ?? initialState,
+    state:
+      overrides.state ??
+      (overrides.planVersion === 4 ? nativeInitialState : initialState),
     senderPubkey: overrides.senderPubkey ?? identity.pubkey,
     preparedAt: overrides.preparedAt ?? PREPARED_AT,
     mnemonic: MNEMONIC,
@@ -150,8 +190,11 @@ function initialPayload(
   })
 }
 
-function progressPayload(identity: GuestOrderSigningIdentity) {
-  const initial = initialPayload(identity)
+function progressPayload(
+  identity: GuestOrderSigningIdentity,
+  overrides: RecoveryPayloadOverrides = {}
+) {
+  const initial = initialPayload(identity, overrides)
   const credited = recordCheckoutSparkSettledCredit(initial.state, {
     requestId: initial.plan.funding.requestId,
     paymentHash: initial.plan.funding.paymentHash,
@@ -164,9 +207,21 @@ function progressPayload(identity: GuestOrderSigningIdentity) {
   return createCheckoutSparkSettledRecoveryProgressPayload({
     initialHandoffId: initial.handoffId,
     state: credited,
-    senderPubkey: identity.pubkey,
-    preparedAt: NOW,
+    senderPubkey: overrides.senderPubkey ?? identity.pubkey,
+    preparedAt: overrides.preparedAt ?? NOW,
   })
+}
+
+function recoveryPayload(
+  identity: GuestOrderSigningIdentity,
+  version: 3 | 4,
+  phase: "initial" | "progress",
+  overrides: RecoveryPayloadOverrides = {}
+) {
+  const input = { ...overrides, planVersion: version }
+  return phase === "initial"
+    ? initialPayload(identity, input)
+    : progressPayload(identity, input)
 }
 
 function serialize(rumor: NDKEvent): string {
@@ -203,14 +258,11 @@ function deferred() {
 }
 
 describe("bounded guest Spark recovery wrapping capability", () => {
-  it.each(["initial", "progress"] as const)(
-    "encrypts and signs a real merchant-only NIP-59 %s handoff",
-    async (phase) => {
+  it.each(RECOVERY_CASES)(
+    "encrypts and signs a real merchant-only NIP-59 v%i %s handoff",
+    async (version, phase) => {
       const { identity } = guest()
-      const payload =
-        phase === "initial"
-          ? initialPayload(identity)
-          : progressPayload(identity)
+      const payload = recoveryPayload(identity, version, phase)
       const rumor = buildCheckoutSparkRecoveryRumor(payload)
       const signer = capability(identity)
       const wrapped = await wrapPrivateMessage(
@@ -249,7 +301,13 @@ describe("bounded guest Spark recovery wrapping capability", () => {
       expect(
         parseCheckoutSparkRecoveryRumor(new NDKEvent(undefined, opened))
       ).toEqual(payload)
-      expect(payload.plan.schemaVersion).toBe(3)
+      expect(payload.plan.schemaVersion).toBe(version)
+      if (version === 4) {
+        expect(payload.state.schemaVersion).toBe(5)
+        expect(payload.plan.nativeTreasury).toEqual(
+          nativeInitialState.plan.nativeTreasury
+        )
+      }
       if (phase === "progress") {
         expect(JSON.stringify(payload)).not.toContain(MNEMONIC)
         expect(JSON.stringify(payload)).not.toContain("accountNumber")
@@ -309,11 +367,19 @@ describe("bounded guest Spark recovery wrapping capability", () => {
     expect(signed).toBe(0)
   })
 
-  it.each([1, 4, 14, 16, 30_402, 10_059])(
-    "does not sign generic/private/public/order kind %s directly",
-    async (kind) => {
+  it.each(
+    RECOVERY_CASES.flatMap(([version, phase]) =>
+      [1, 4, 14, 16, 30_402, 10_059].map(
+        (kind) => [version, phase, kind] as const
+      )
+    )
+  )(
+    "does not sign v%i %s recovery as kind %i directly",
+    async (version, phase, kind) => {
       const { identity } = guest()
-      const rumor = buildCheckoutSparkRecoveryRumor(initialPayload(identity))
+      const rumor = buildCheckoutSparkRecoveryRumor(
+        recoveryPayload(identity, version, phase)
+      )
       rumor.kind = kind
       await expect(
         capability(identity).signEvent(rumor.rawEvent() as UnsignedNostrEvent)
@@ -321,42 +387,58 @@ describe("bounded guest Spark recovery wrapping capability", () => {
     }
   )
 
-  it("does not broaden the original guest order signer's recovery permissions", async () => {
-    const { identity } = guest()
-    capability(identity)
-    await expect(
-      identity.signer.signEvent(
-        buildCheckoutSparkRecoveryRumor(
-          initialPayload(identity)
-        ).rawEvent() as UnsignedNostrEvent
-      )
-    ).rejects.toThrow()
-  })
-
-  it("rejects another recipient and buyer self-copy without exposing NIP-04 or implicit-scheme encryption", async () => {
-    const { identity } = guest()
-    const signer = capability(identity)
-    const value = serialize(
-      buildCheckoutSparkRecoveryRumor(initialPayload(identity))
-    )
-    for (const recipient of [other.pubkey, identity.pubkey]) {
-      await expect(signer.encryptNip44(recipient, value)).rejects.toThrow()
-    }
-    expect("encrypt" in signer).toBe(false)
-    expect("encryptNip04" in signer).toBe(false)
-    expect("encryptionEnabled" in signer).toBe(false)
-  })
-
-  it.each(["order", "merchant", "sender"] as const)(
-    "rejects an otherwise canonical recovery for another %s",
-    async (field) => {
+  it.each(RECOVERY_CASES)(
+    "does not broaden the original guest order signer for v%i %s recovery",
+    async (version, phase) => {
       const { identity } = guest()
-      const payload = initialPayload(
+      capability(identity)
+      await expect(
+        identity.signer.signEvent(
+          buildCheckoutSparkRecoveryRumor(
+            recoveryPayload(identity, version, phase)
+          ).rawEvent() as UnsignedNostrEvent
+        )
+      ).rejects.toThrow()
+    }
+  )
+
+  it.each(RECOVERY_CASES)(
+    "rejects other recipients and buyer self-copy for v%i %s without exposing other encryption schemes",
+    async (version, phase) => {
+      const { identity } = guest()
+      const signer = capability(identity)
+      const value = serialize(
+        buildCheckoutSparkRecoveryRumor(
+          recoveryPayload(identity, version, phase)
+        )
+      )
+      for (const recipient of [other.pubkey, identity.pubkey]) {
+        await expect(signer.encryptNip44(recipient, value)).rejects.toThrow()
+      }
+      expect("encrypt" in signer).toBe(false)
+      expect("encryptNip04" in signer).toBe(false)
+      expect("encryptionEnabled" in signer).toBe(false)
+    }
+  )
+
+  it.each(
+    RECOVERY_CASES.flatMap(([version, phase]) =>
+      (["order", "merchant", "sender"] as const).map(
+        (field) => [version, phase, field] as const
+      )
+    )
+  )(
+    "rejects canonical v%i %s recovery for another %s",
+    async (version, phase, field) => {
+      const { identity } = guest()
+      const payload = recoveryPayload(
         identity,
+        version,
+        phase,
         field === "order"
-          ? { state: state("another-order") }
+          ? { state: state("another-order", merchant.pubkey, version) }
           : field === "merchant"
-            ? { state: state(ORDER_ID, other.pubkey) }
+            ? { state: state(ORDER_ID, other.pubkey, version) }
             : { senderPubkey: other.pubkey }
       )
       const rumor = buildCheckoutSparkRecoveryRumor(payload)
@@ -405,44 +487,59 @@ describe("bounded guest Spark recovery wrapping capability", () => {
     await expect(encryptRumor(capability(identity), rumor)).rejects.toThrow()
   })
 
-  it.each(["p", "type", "order", "checkout", "handoff"])(
-    "rejects duplicate %s binding tags",
-    async (name) => {
+  it.each(
+    RECOVERY_CASES.flatMap(([version, phase]) =>
+      ["p", "type", "order", "checkout", "handoff"].map(
+        (name) => [version, phase, name] as const
+      )
+    )
+  )(
+    "rejects v%i %s with duplicate %s binding tags",
+    async (version, phase, name) => {
       const { identity } = guest()
-      const rumor = buildCheckoutSparkRecoveryRumor(initialPayload(identity))
+      const rumor = buildCheckoutSparkRecoveryRumor(
+        recoveryPayload(identity, version, phase)
+      )
       rumor.tags.push([...rumor.tags.find((tag) => tag[0] === name)!])
       rumor.id = rumor.getEventHash()
       await expect(encryptRumor(capability(identity), rumor)).rejects.toThrow()
     }
   )
 
-  it.each([
-    "extra-tag",
-    "generic-order",
-    "signed",
-    "unknown-payload-field",
-    "changed-state",
-    "noncanonical-content",
-  ])("rejects %s plaintext without granting a seal", async (change) => {
-    const { identity } = guest()
-    const payload = initialPayload(identity)
-    const rumor = buildCheckoutSparkRecoveryRumor(payload)
-    if (change === "extra-tag") rumor.tags.push(["extra", "not-canonical"])
-    if (change === "generic-order")
-      rumor.tags.find((tag) => tag[0] === "type")![1] = "order"
-    if (change === "signed") rumor.sig = "a".repeat(128)
-    if (change === "unknown-payload-field")
-      rumor.content = JSON.stringify({ ...payload, extra: true })
-    if (change === "changed-state")
-      rumor.content = JSON.stringify({
-        ...payload,
-        state: { ...payload.state, updatedAt: PREPARED_AT + 1 },
-      })
-    if (change === "noncanonical-content")
-      rumor.content = JSON.stringify(payload, null, 2)
-    rumor.id = rumor.getEventHash()
-    await expect(encryptRumor(capability(identity), rumor)).rejects.toThrow()
-  })
+  it.each(
+    RECOVERY_CASES.flatMap(([version, phase]) =>
+      [
+        "extra-tag",
+        "generic-order",
+        "signed",
+        "unknown-payload-field",
+        "changed-state",
+        "noncanonical-content",
+      ].map((change) => [version, phase, change] as const)
+    )
+  )(
+    "rejects v%i %s %s plaintext without granting a seal",
+    async (version, phase, change) => {
+      const { identity } = guest()
+      const payload = recoveryPayload(identity, version, phase)
+      const rumor = buildCheckoutSparkRecoveryRumor(payload)
+      if (change === "extra-tag") rumor.tags.push(["extra", "not-canonical"])
+      if (change === "generic-order")
+        rumor.tags.find((tag) => tag[0] === "type")![1] = "order"
+      if (change === "signed") rumor.sig = "a".repeat(128)
+      if (change === "unknown-payload-field")
+        rumor.content = JSON.stringify({ ...payload, extra: true })
+      if (change === "changed-state")
+        rumor.content = JSON.stringify({
+          ...payload,
+          state: { ...payload.state, updatedAt: PREPARED_AT + 1 },
+        })
+      if (change === "noncanonical-content")
+        rumor.content = JSON.stringify(payload, null, 2)
+      rumor.id = rumor.getEventHash()
+      await expect(encryptRumor(capability(identity), rumor)).rejects.toThrow()
+    }
+  )
 
   it("rejects malformed JSON and generic message encryption", async () => {
     const { identity } = guest()
@@ -522,9 +619,40 @@ describe("bounded guest Spark recovery wrapping capability", () => {
     ).rejects.toThrow()
   })
 
-  it.each(["session", "takeover"] as const)(
-    "rejects expiry at %s while encryption is awaiting",
-    async (boundary) => {
+  it.each(RECOVERY_CASES)(
+    "rejects an expired guest before v%i %s encryption or authorized seal signing",
+    async (version, phase) => {
+      const { identity } = guest()
+      let clock = NOW
+      let signed = 0
+      const originalSign = identity.signer.signEvent.bind(identity.signer)
+      identity.signer.signEvent = async (event) => {
+        signed += 1
+        return originalSign(event)
+      }
+      const signer = capability(identity, () => clock)
+      const rumor = buildCheckoutSparkRecoveryRumor(
+        recoveryPayload(identity, version, phase)
+      )
+      const ciphertext = await encryptRumor(signer, rumor)
+      clock = identity.expiresAt
+      await expect(
+        signer.signEvent(seal(identity, ciphertext))
+      ).rejects.toThrow()
+      expect(signed).toBe(0)
+      await expect(encryptRumor(signer, rumor)).rejects.toThrow()
+    }
+  )
+
+  it.each(
+    RECOVERY_CASES.flatMap(([version, phase]) =>
+      (["session", "takeover"] as const).map(
+        (boundary) => [version, phase, boundary] as const
+      )
+    )
+  )(
+    "rejects v%i %s expiry at %s while encryption is awaiting",
+    async (version, phase, boundary) => {
       const { identity } = guest()
       let clock = NOW
       const started = deferred()
@@ -537,23 +665,28 @@ describe("bounded guest Spark recovery wrapping capability", () => {
         return ciphertext
       }
       const signer = capability(identity, () => clock)
+      const payload = recoveryPayload(identity, version, phase)
       const pending = encryptRumor(
         signer,
-        buildCheckoutSparkRecoveryRumor(initialPayload(identity))
+        buildCheckoutSparkRecoveryRumor(payload)
       )
       await started.promise
       clock =
-        boundary === "session"
-          ? identity.expiresAt
-          : initialState.plan.takeoverAt
+        boundary === "session" ? identity.expiresAt : payload.plan.takeoverAt
       held.resolve()
       await expect(pending).rejects.toThrow()
     }
   )
 
-  it.each(["session", "takeover"] as const)(
-    "consumes permission before awaiting sign and rejects expiry at %s",
-    async (boundary) => {
+  it.each(
+    RECOVERY_CASES.flatMap(([version, phase]) =>
+      (["session", "takeover"] as const).map(
+        (boundary) => [version, phase, boundary] as const
+      )
+    )
+  )(
+    "consumes v%i %s permission before awaiting sign and rejects expiry at %s",
+    async (version, phase, boundary) => {
       const { identity } = guest()
       let clock = NOW
       const started = deferred()
@@ -566,18 +699,17 @@ describe("bounded guest Spark recovery wrapping capability", () => {
         return signature
       }
       const signer = capability(identity, () => clock)
+      const payload = recoveryPayload(identity, version, phase)
       const ciphertext = await encryptRumor(
         signer,
-        buildCheckoutSparkRecoveryRumor(initialPayload(identity))
+        buildCheckoutSparkRecoveryRumor(payload)
       )
       const event = seal(identity, ciphertext)
       const pending = signer.signEvent(event)
       await started.promise
       await expect(signer.signEvent(event)).rejects.toThrow()
       clock =
-        boundary === "session"
-          ? identity.expiresAt
-          : initialState.plan.takeoverAt
+        boundary === "session" ? identity.expiresAt : payload.plan.takeoverAt
       held.resolve()
       await expect(pending).rejects.toThrow()
     }
