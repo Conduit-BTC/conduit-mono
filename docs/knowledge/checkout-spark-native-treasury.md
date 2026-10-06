@@ -23,8 +23,10 @@ fresh exact proof of terminal closure and zero net debit.
 The checkout's small inbound network allowance is not a ceiling on unused
 outgoing reserves. The final collection can therefore differ from the displayed
 coordination estimate, while the fixed buyer funding total cannot increase.
-Pre-funding approval explains this policy. The receipt reports the actual
-Conduit allocation, collected unused reserves and native total separately.
+Pre-funding approval explains this policy in a concise note. Recorded payment
+data retains the actual Conduit allocation, collected unused reserves and
+native total separately; the ordinary buyer view shows aggregate payment
+accounting without another native-transfer detail panel.
 
 ## Frozen destination and request
 
@@ -86,7 +88,7 @@ Released archived legal text is unchanged. Publication requires the existing
 
 ## Provider references and validation boundary
 
-The implementation is pinned to Spark SDK 0.12.1, with a pure injected codec and
+The implementation is pinned to Spark SDK 0.13.0, with a pure injected codec and
 provider port in Core and separate app adapters. Relevant public references:
 
 - [Spark invoices](https://docs.spark.money/wallets/spark-invoices)

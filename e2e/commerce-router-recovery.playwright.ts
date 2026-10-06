@@ -9,6 +9,7 @@ import {
 } from "@playwright/test"
 import { nip19 } from "nostr-tools"
 import { getEventHash, verifyEvent } from "nostr-tools/pure"
+import { CANONICAL_COMMERCE_DISCOVERY_RELAYS } from "../packages/core/src/config"
 import {
   decodeSparkAddress,
   DefaultSparkSigner,
@@ -71,8 +72,9 @@ const merchantName = "Isolated Router Merchant"
 // rejected by the real payout URL policy, so use allowed-shaped test targets.
 const merchantAddress = "router-merchant@wallet.conduit.market"
 const supplierAddress = "router-supplier@wallet.conduit.market"
-const merchantProfileRelay = "wss://relay.conduit.market/"
-const supplierProfileRelay = "wss://relay.damus.io/"
+const merchantProfileRelay = new URL(CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!)
+  .href
+const supplierProfileRelay = merchantProfileRelay
 const treasuryIdentityPublicKey =
   "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
 const networkOptions = {
@@ -197,11 +199,13 @@ async function publishSupplierListing(
     .getByLabel("Supplier 1 npub")
     .fill(nip19.npubEncode(supplier.pubkey))
   await dialog.getByLabel("Supplier 1 share (%)", { exact: true }).fill("25")
-  await dialog.getByText("Advanced profile discovery", { exact: true }).click()
-  await dialog.getByLabel("Your profile relay hint").fill(merchantProfileRelay)
-  await dialog
-    .getByLabel("Supplier 1 profile relay hint")
-    .fill(supplierProfileRelay)
+  await expect(
+    dialog.getByText("Advanced profile discovery", { exact: true })
+  ).toHaveCount(0)
+  await expect(dialog.getByLabel("Your profile relay hint")).toHaveCount(0)
+  await expect(dialog.getByLabel("Supplier 1 profile relay hint")).toHaveCount(
+    0
+  )
   onStage("product publication submission")
   const publish = dialog.getByRole("button", {
     name: "Publish product",
@@ -496,6 +500,11 @@ async function rehearseRouter(
     await expect(
       checkoutPrice.getByText("₿1,000", { exact: true })
     ).toBeVisible()
+    const approvalNote = page.getByText(
+      "Your fixed total of 1,113 sats includes a best-effort 111 sats Conduit fee estimate and payment reserves; Conduit is paid last, including unused authorized reserves, with no increase to your total.",
+      { exact: true }
+    )
+    await expect(approvalNote).toBeVisible()
     await expect(page.getByText(supplierAddress, { exact: false })).toHaveCount(
       0
     )
@@ -565,21 +574,14 @@ async function rehearseRouter(
       paymentPlan.getByText("111-sat minimum + network estimate", {
         exact: true,
       })
-    ).toBeVisible()
-    const nativeAuthorization = page.getByRole("region", {
-      name: "Native Spark treasury authorization",
-      exact: true,
-    })
-    await expect(nativeAuthorization).toBeVisible()
+    ).toHaveCount(0)
     await expect(
-      nativeAuthorization.getByText(/best-effort Conduit allocation estimate/)
-    ).toBeVisible()
-    await expect(
-      nativeAuthorization.getByText(/fixed 1,113 sats buyer total/)
-    ).toBeVisible()
-    await expect(
-      nativeAuthorization.getByText(/every exact recipient payment is verified/)
-    ).toBeVisible()
+      page.getByRole("region", {
+        name: "Native Spark treasury authorization",
+        exact: true,
+      })
+    ).toHaveCount(0)
+    await expect(approvalNote).toHaveCount(0)
     await expect(
       paymentPlan.getByText(/sats base share$/, { exact: false })
     ).toHaveCount(0)
@@ -1022,10 +1024,11 @@ async function rehearseRouter(
             window.clearInterval(interval)
             observer.disconnect()
             resolve(remained)
-          }, 5_200)
+          }, 15_200)
         })
     )
     expect(qrStayedVisible).toBe(true)
+    setStage("external QR records two bounded funding observations")
     expect(fundingObservations - observationsBeforeQr).toBeGreaterThanOrEqual(2)
     await expect(qr).toBeVisible()
     expect(control().snapshot().outgoingPaymentCount).toBe(0)
@@ -1058,21 +1061,16 @@ async function rehearseRouter(
         name: "Resume payment",
         exact: true,
       })
-    ).toBeEnabled({ timeout: 30_000 })
-    const preparedNativeAuthorization = page.getByRole("region", {
-      name: "Native Spark treasury authorization",
-      exact: true,
-    })
+    ).toBeDisabled()
     await expect(
-      preparedNativeAuthorization.getByText(
-        /final Conduit payment is prepared for 113 sats/
-      )
-    ).toBeVisible()
+      page.getByRole("button", { name: "Pause payment", exact: true })
+    ).toBeEnabled()
     await expect(
-      preparedNativeAuthorization.getByText(
-        /2 sats of unused, authorized recipient fee reserves/
-      )
-    ).toBeVisible()
+      page.getByRole("region", {
+        name: "Native Spark treasury authorization",
+        exact: true,
+      })
+    ).toHaveCount(0)
     await expect(
       page.getByText("Order payment verified", { exact: true }).first()
     ).toBeVisible({ timeout: 30_000 })
@@ -1121,14 +1119,10 @@ async function rehearseRouter(
     ).toHaveCount(0)
 
     const pendingNative = control().nativeSnapshot()
+    // The same approved foreground run must reconcile this existing send.
+    // Completing the oracle must not require a second consent or submission.
     control().setNativeCompletion(true)
-    const resume = page.getByRole("button", {
-      name: "Resume payment",
-      exact: true,
-    })
-    await expect(resume).toBeEnabled({ timeout: 30_000 })
-    setStage("explicitly reconcile the completed native transfer")
-    await resume.click()
+    setStage("automatically reconcile the completed native transfer")
     await expect(confirmation).toBeHidden()
     await expect(
       page.getByText("Payment recorded", { exact: true })
@@ -1196,30 +1190,21 @@ async function rehearseRouter(
         name: "Completed native Spark payment",
         exact: true,
       })
-      await expect(nativeReceipt).toBeVisible()
-      await expect(
-        nativeReceipt.getByText("Base Conduit allocation", { exact: true })
-      ).toBeVisible()
-      await expect(
-        nativeReceipt.getByText("Unused recipient fee reserves included", {
-          exact: true,
-        })
-      ).toBeVisible()
-      await expect(
-        nativeReceipt.getByText("Final Conduit payment", { exact: true })
-      ).toBeVisible()
-      await expect(
-        nativeReceipt.getByText("111 sats", { exact: true })
-      ).toBeVisible()
-      await expect(
-        nativeReceipt.getByText("2 sats", { exact: true })
-      ).toBeVisible()
-      await expect(
-        nativeReceipt.getByText("113 sats", { exact: true })
-      ).toBeVisible()
-      await expect(
-        nativeReceipt.getByText("0 sats", { exact: true })
-      ).toBeVisible()
+      await expect(nativeReceipt).toHaveCount(0)
+      for (const [label, amount] of [
+        ["Funding credited", "1,113 sats"],
+        ["Recorded payouts", "1,113 sats"],
+        ["Recorded outgoing fees", "0 sats"],
+        ["Recorded total debited", "1,113 sats"],
+        ["Unspent from recorded checkout credit", "0 sats"],
+      ] as const) {
+        await expect(
+          receipt
+            .getByText(label, { exact: true })
+            .locator("..")
+            .getByText(amount, { exact: true })
+        ).toBeVisible()
+      }
       await expect(receipt.getByText(/not a live wallet balance/)).toBeVisible()
       await expect(receipt.getByRole("button")).toHaveCount(0)
     }
@@ -1356,7 +1341,7 @@ async function rehearseRouter(
   }
 }
 
-test("native router funding settles commerce and the exact native treasury payment without duplicate payouts @commerce", async ({
+test("native router funding automatically reconciles commerce and the exact native treasury payment without duplicate payouts @commerce", async ({
   browser,
 }) => rehearseRouter(browser))
 

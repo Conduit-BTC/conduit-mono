@@ -7,7 +7,7 @@ import { HERMETIC_SPARK_BINDING } from "./hermetic-spark-transport-types"
 const rootId = "\0conduit:hermetic-spark-sdk"
 const pureId = "\0conduit:hermetic-spark-pure"
 const pureImport = "virtual:conduit-hermetic-spark-pure"
-export const HERMETIC_SPARK_SDK_VERSION = "0.12.1"
+export const HERMETIC_SPARK_SDK_VERSION = "0.13.0"
 const pureExports = [
   ["DefaultSparkSigner", "signer/signer.ts"],
   ["UUID", "utils/transfer-id.ts"],

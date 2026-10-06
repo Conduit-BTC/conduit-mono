@@ -20,7 +20,6 @@ it("shows the four buyer totals inline without exposing splits or adding a click
     "1,000 sats",
     "113 sats",
     "1,113 sats",
-    "111-sat minimum + network estimate",
   ]) {
     expect(html).toContain(text)
   }
@@ -32,11 +31,13 @@ it("shows the four buyer totals inline without exposing splits or adding a click
     "@",
     "dialog",
     "<button",
+    "111-sat minimum",
+    "network estimate",
   ])
     expect(html).not.toContain(text)
 })
 
-it("labels the percentage separately from the added network estimate", () => {
+it("keeps the full fee and shipping totals without redundant fee-helper copy", () => {
   const html = renderToStaticMarkup(
     <CheckoutCoordinationSummary
       price={calculateCheckoutSparkBuyerPrice({
@@ -45,7 +46,7 @@ it("labels the percentage separately from the added network estimate", () => {
       })}
     />
   )
-  expect(html).toContain("2.1% + network estimate")
+  expect(html).not.toContain("2.1% + network estimate")
   expect(html).toContain("2,250 sats")
   expect(html).toContain("10,000 sats")
   expect(html).toContain("102,250 sats")

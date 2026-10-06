@@ -61,8 +61,8 @@ is also unchanged. Neither budget is an invoice-validity rule imposed by Spark.
 
 This follows [Spark's expiry guidance](https://docs.spark.money/wallets/withdraw-to-lightning#check-expiry-before-paying)
 and the [BOLT11 payer requirements](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md#payer--payee-requirements).
-The pinned SDK 0.12.1 does not perform a local invoice-expiry check before its
-Lightning swap. Its send path may lock funds before an expired request is
+The pinned SDK 0.13.0 does not perform a local invoice-expiry check before its
+unquoted Lightning swap. Its send path may lock funds before an expired request is
 rejected; a thrown call is therefore not proof of a safe, unattempted payment.
 
 ## Persistence and retry

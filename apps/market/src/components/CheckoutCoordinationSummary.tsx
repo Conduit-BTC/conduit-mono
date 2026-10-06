@@ -11,10 +11,6 @@ export function CheckoutCoordinationSummary({
   estimate?: boolean
   formatSats?: (sats: number) => string
 }) {
-  const feeLabel =
-    price.coordinationFeeSats === 0
-      ? "No fee"
-      : `${price.minimumApplies ? "111-sat minimum" : "2.1%"}${price.networkAllowanceSats > 0 ? " + network estimate" : ""}`
   return (
     <section aria-label="Order price" className="text-sm">
       <dl className="space-y-3 text-[var(--text-secondary)]">
@@ -31,12 +27,7 @@ export function CheckoutCoordinationSummary({
           </dd>
         </div>
         <div className="flex items-start justify-between gap-4">
-          <dt>
-            Coordination fee{" "}
-            <span className="mt-0.5 block text-xs text-[var(--text-muted)]">
-              {feeLabel}
-            </span>
-          </dt>
+          <dt>Coordination fee</dt>
           <dd className="shrink-0 text-right tabular-nums">
             {formatSats(price.coordinationFeeSats)}
           </dd>

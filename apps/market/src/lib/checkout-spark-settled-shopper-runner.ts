@@ -38,7 +38,7 @@ export interface CheckoutSparkSettledShopperRunInput extends Omit<
   onExternalInvoice?: (
     invoice: Readonly<CheckoutSparkExternalFundingInvoice>
   ) => void
-  /** Total funding observations in this foreground activation; never retries sends. */
+  /** Bound pending observations in this foreground activation; never retries sends. */
   fundingPoll?: { attempts: number; intervalMs: number }
 }
 
@@ -49,6 +49,7 @@ export type CheckoutSparkSettledShopperPauseReason =
   | "authorization_changed"
   | "unavailable"
   | "funding_action_stopped"
+  | "reconciliation_timeout"
   | "step_limit"
 
 export type CheckoutSparkSettledShopperRunResult =
@@ -109,7 +110,8 @@ export function createCheckoutSparkSettledShopperRunner(
     input: CheckoutSparkSettledShopperRunInput,
     generation: number
   ): Promise<CheckoutSparkSettledShopperRunResult> {
-    const current = () => {
+    const reconciliationDeadline = now() + 5 * 60_000
+    const sessionCurrent = () => {
       if (generation !== epoch || !input.shouldContinue()) return false
       if (!input.guestIdentity)
         return input.currentBuyerPubkey() === input.buyerPubkey
@@ -127,8 +129,13 @@ export function createCheckoutSparkSettledShopperRunner(
         guest.expiresAt === input.guestIdentity.expiresAt
       )
     }
+    // Admission guards must also revoke after a slow pre-send await. An
+    // already admitted SDK operation drains with its possible-send marker kept.
+    const current = () => sessionCurrent() && now() < reconciliationDeadline
     const assertCurrent = () => {
-      if (!current()) throw new RoutingPaused("paused")
+      if (!sessionCurrent()) throw new RoutingPaused("paused")
+      if (now() >= reconciliationDeadline)
+        throw new RoutingPaused("reconciliation_timeout")
     }
     const fundingShouldContinue = input.fundingPayment.shouldContinue
     if (input.fundingPayment.buyerPubkey !== input.buyerPubkey) {
@@ -154,11 +161,11 @@ export function createCheckoutSparkSettledShopperRunner(
         assertCurrent()
       },
     }
-    const poll = input.fundingPoll ?? { attempts: 10, intervalMs: 2_000 }
+    const poll = input.fundingPoll ?? { attempts: 63, intervalMs: 2_000 }
     if (
       !Number.isSafeInteger(poll.attempts) ||
       poll.attempts < 1 ||
-      poll.attempts > 30 ||
+      poll.attempts > 63 ||
       !Number.isSafeInteger(poll.intervalMs) ||
       poll.intervalMs < 1 ||
       poll.intervalMs > 5_000 ||
@@ -166,6 +173,21 @@ export function createCheckoutSparkSettledShopperRunner(
     )
       throw new RoutingPaused("authorization_changed")
     let fundingObservations = 0
+    let pendingObservations = 0
+    async function waitForPendingObservation(): Promise<boolean> {
+      pendingObservations += 1
+      const remainingMs = reconciliationDeadline - now()
+      if (pendingObservations >= poll.attempts || remainingMs <= 0) return false
+      await wait(
+        Math.min(
+          remainingMs,
+          5_000,
+          poll.intervalMs * 2 ** Math.min(pendingObservations - 1, 2)
+        )
+      )
+      if (!sessionCurrent()) throw new RoutingPaused("paused")
+      return now() < reconciliationDeadline
+    }
     let remainingSteps: number | undefined
     let externalInvoice:
       Readonly<CheckoutSparkExternalFundingInvoice> | undefined
@@ -223,6 +245,8 @@ export function createCheckoutSparkSettledShopperRunner(
         throw new RoutingPaused("authorization_changed")
       }
       if (control.status === "complete") return { status: "complete" }
+      if (now() >= reconciliationDeadline)
+        return { status: "paused", reason: "reconciliation_timeout" }
       remainingSteps ??= state.legs.length * 2 + poll.attempts + 1
       if (remainingSteps-- <= 0) throw new RoutingPaused("step_limit")
       const funding =
@@ -276,7 +300,10 @@ export function createCheckoutSparkSettledShopperRunner(
                 },
         },
         { ...dependencies, repository }
-      )
+      ).catch((error: unknown) => {
+        assertCurrent()
+        throw error
+      })
       assertCurrent()
       if (result.status === "funding") {
         if (result.funding.status === "funded") continue
@@ -290,20 +317,28 @@ export function createCheckoutSparkSettledShopperRunner(
         ) {
           return { status: "paused", reason: "funding_action_stopped" }
         }
-        if (fundingObservations >= poll.attempts) {
+        if (!(await waitForPendingObservation())) {
           return {
             status: "funding_pending",
             ...(externalInvoice ? { externalInvoice } : {}),
           }
         }
-        await wait(poll.intervalMs)
-        assertCurrent()
         continue
       }
       if (result.status === "payout_prepared") continue
       if (
         result.step.outcome === "paid" ||
         result.step.outcome === "already_paid"
+      )
+        continue
+      // The one-step engine owns the durable possible-send marker and exact
+      // intent. Re-entering it can inspect that same attempt, never replay it.
+      // Conflicting, failed, expired-authority and fee-policy results stop here.
+      if (
+        (result.step.reason === "provider_evidence_unavailable" ||
+          result.step.reason === "prior_possible_send" ||
+          (result.step.outcome === "send_ambiguous" && !result.step.reason)) &&
+        (await waitForPendingObservation())
       )
         continue
       return {

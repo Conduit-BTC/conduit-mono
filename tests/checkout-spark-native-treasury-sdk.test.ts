@@ -9,6 +9,7 @@ import {
 import {
   adaptFirstPartySparkWallet,
   FirstPartySparkSdkFactory,
+  loadFirstPartySparkModule,
   prepareCheckoutTreasuryRequest,
   SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
   type SparkNativeModule,
@@ -18,7 +19,10 @@ import type {
   SparkCheckoutTreasuryInput,
   SparkCheckoutTreasurySendInput,
 } from "../apps/market/src/lib/spark-wallet"
-import { createCheckoutSparkNativeTreasurySdkAdapter } from "../packages/core/src/protocol/checkout-spark-treasury-sdk"
+import {
+  createCheckoutSparkNativeTreasurySdkAdapter,
+  getCheckoutSparkNativeTreasuryPolicyForSdkVersion,
+} from "../packages/core/src/protocol/checkout-spark-treasury-sdk"
 
 // Public points and synthetic requests only. No SDK wallet or network is opened.
 const SENDER =
@@ -182,6 +186,69 @@ function fixture(
 }
 
 describe("native checkout treasury SDK boundary", () => {
+  it("leaves every unreviewed SDK version without native send capability", async () => {
+    expect(getCheckoutSparkNativeTreasuryPolicyForSdkVersion("0.13.0")).toBe(
+      SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY
+    )
+    for (const version of [
+      undefined,
+      null,
+      "0.12.1",
+      "0.13.1",
+      "^0.13.0",
+      "0.14.0",
+      { version: "0.13.0" },
+    ]) {
+      const f = fixture({
+        queryStatus: 0,
+        module: {
+          nativeTreasuryPolicy:
+            getCheckoutSparkNativeTreasuryPolicyForSdkVersion(version),
+        },
+      })
+      expect(f.nativeModule.nativeTreasuryPolicy).toBeUndefined()
+      expect(await f.client.preflightCheckoutTreasury(f.request)).toBe(
+        "unavailable"
+      )
+      expect(
+        await f.client.sendCheckoutTreasury({
+          ...f.request,
+          priorSendMayHaveOccurred: false,
+        })
+      ).toEqual({ status: "ambiguous" })
+      expect(f.fulfills).toEqual([])
+    }
+  })
+
+  it("enables reviewed native fulfillment through the actual installed SDK loader without opening a wallet", async () => {
+    const installedPackage = await Bun.file(
+      new URL(
+        "../apps/market/node_modules/@buildonspark/spark-sdk/package.json",
+        import.meta.url
+      )
+    ).json()
+    expect(installedPackage.version).toBe("0.13.0")
+    const installedModule = await loadFirstPartySparkModule()
+    expect(installedModule.nativeTreasuryPolicy).toBe(
+      SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY
+    )
+    const f = fixture({
+      queryStatus: 0,
+      module: {
+        ...installedModule,
+        nativeTreasuryPolicy: installedModule.nativeTreasuryPolicy,
+        initialize: unused,
+      },
+    })
+    expect(f.request.nativeTreasury).toMatchObject({
+      schemaVersion: 1,
+      feePolicy: "zero_required",
+      residualPolicy: "unused_commerce_reserves",
+    })
+    expect(await f.client.preflightCheckoutTreasury(f.request)).toBe("ready")
+    expect(f.fulfills).toEqual([])
+  })
+
   it("shares exact proof with cold, read-only Merchant adapters without enabling fulfillment", async () => {
     const f = fixture()
     const readOnly = createCheckoutSparkNativeTreasurySdkAdapter({

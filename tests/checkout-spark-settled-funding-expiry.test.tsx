@@ -21,6 +21,9 @@ describe("settled Spark funding expiry notice", () => {
       })
     )
     expect(markup).toContain("5:00 left")
+    expect(markup).toMatch(
+      /<span class="block text-\[var\(--secondary\)\]">.*5:00 left/
+    )
     expect(markup).not.toContain("lnbc")
   })
 
@@ -31,6 +34,9 @@ describe("settled Spark funding expiry notice", () => {
     )
 
     expect(markup).toContain("Time has ended; do not pay this invoice.")
+    expect(markup).toMatch(
+      /<span class="block text-\[var\(--secondary\)\]">Time has ended/
+    )
     expect(markup).not.toContain("0:00 left")
   })
 
@@ -47,15 +53,12 @@ describe("settled Spark funding expiry notice", () => {
     )
   })
 
-  it("warns before preparation that the funding clock starts immediately", async () => {
+  it("keeps preparation concise and leaves the saved invoice countdown in Orders", async () => {
     const route = await Bun.file("apps/market/src/routes/checkout.tsx").text()
-    expect(route).toMatch(/funding invoice valid\s+for\{" "\}/)
-    expect(route).toContain(
-      "{getCheckoutSparkSettledTiming().fundingExpirySecs / 60}"
-    )
-    expect(route).toMatch(
-      /minutes\. Recipients and the funding amount are fixed/
-    )
-    expect(route).toContain("Continue when you are ready to pay")
+    expect(route.includes("Continue to payment")).toBe(true)
+    expect(route.includes("Continue when you are ready to pay")).toBe(false)
+    expect(route.includes("getCheckoutSparkSettledTiming()")).toBe(false)
+    const orders = await Bun.file("apps/market/src/routes/orders.tsx").text()
+    expect(orders.includes("<CheckoutSparkFundingExpiry")).toBe(true)
   })
 })

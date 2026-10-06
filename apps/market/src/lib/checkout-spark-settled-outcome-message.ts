@@ -20,6 +20,8 @@ const pauseMessages: Record<CheckoutSparkSettledShopperPauseReason, string> = {
     "The funding action stopped before confirmation. Check the same saved payment; do not pay again.",
   step_limit:
     "Payment paused after its bounded checks. Resume checks saved progress before continuing; do not pay again.",
+  reconciliation_timeout:
+    "Payment checks reached their time limit. Keep this order and check its saved status; do not pay again.",
   authority_not_started:
     "Payment authority is not active yet. Keep the saved recovery details; do not pay separately.",
   authority_transferred:

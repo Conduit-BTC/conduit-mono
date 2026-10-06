@@ -62,6 +62,44 @@ function renderEditor(value = editorValue(), validation = validPreview()) {
 }
 
 describe("merchant supplier allocation editor", () => {
+  it("uses automatic discovery without exposing advanced relay controls or changing saved hints", () => {
+    const value = editorValue()
+    const before = structuredClone(value)
+    const html = renderEditor(value)
+
+    expect(html.includes("Advanced profile discovery")).toBe(false)
+    expect(html.includes("profile relay hint")).toBe(false)
+    expect(html).toContain("Supplier 1 npub")
+    expect(html).toContain("Supplier 1 share (%)")
+    expect(html).toContain("Your share: 75%")
+    expect(value).toEqual(before)
+  })
+
+  it("lets an explicit new split repair hidden draft hints without clearing them on render", async () => {
+    const value = {
+      ...editorValue(),
+      merchantRelayHint: "ws://127.0.0.1:7777",
+    }
+    const before = structuredClone(value)
+    const html = renderEditor(value, {
+      canPublish: false,
+      error: "Each allocation recipient needs a safe public relay hint.",
+    })
+
+    expect(html.includes("Start a new split")).toBe(true)
+    expect(value).toEqual(before)
+    const { startNewSupplierAllocation } =
+      await import("../apps/merchant/src/components/ProductSupplierAllocationEditor")
+    expect(startNewSupplierAllocation(value)).toEqual({
+      enabled: true,
+      merchantWeight: "1",
+      merchantRelayHint: "",
+      suppliers: [],
+    })
+    expect(value).toEqual(before)
+    expect(renderEditor().includes("Start a new split")).toBe(false)
+  })
+
   it("discloses public terms even while allocation authoring is disabled", () => {
     const html = renderEditor(
       { ...editorValue(), enabled: false },
@@ -140,7 +178,7 @@ describe("merchant supplier allocation editor", () => {
       (match) => match[1]
     )
 
-    expect(inputIds).toHaveLength(7)
+    expect(inputIds).toHaveLength(4)
     expect(new Set(inputIds).size).toBe(inputIds.length)
     expect(inputIds.every((id) => labeledIds.includes(id))).toBe(true)
     expect(html).toContain("Supplier 1 npub")

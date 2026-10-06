@@ -8,6 +8,7 @@ import {
 import { createHermeticSparkTransport } from "../../e2e/helpers/hermetic-spark-transport"
 import { createHermeticSparkSdkFacade } from "../../e2e/helpers/hermetic-spark-sdk-facade"
 import { collectCheckoutSparkNativeRetirementEvidence } from "../../packages/core/src/protocol/checkout-spark-native-retirement"
+import { prepareCheckoutSparkNativeTreasuryRequest } from "../../packages/core/src/protocol/checkout-spark-treasury-sdk"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -303,6 +304,7 @@ async function run() {
       mnemonic: MNEMONIC,
       accountNumber: 0,
       network: "regtest",
+      outgoing: true,
     })
     await merchant.ensurePrivateReady!()
     check((await merchant.getIdentityPublicKey()) === identity)
@@ -314,6 +316,31 @@ async function run() {
       (await merchant.getTransferFromSsp!(target.transferId))?.sparkId ===
         target.transferId
     )
+    stage = "Merchant reviewed native SDK capability"
+    const nativeTreasury = prepareCheckoutSparkNativeTreasuryRequest(
+      { ...sdk, parseTransferId: (value) => sdk.UUID.parse(value) },
+      {
+        network: "regtest",
+        sparkAddress: pureSdk.encodeSparkAddress({
+          identityPublicKey: SSP_IDENTITY,
+          network: "REGTEST",
+        }),
+        senderIdentityPublicKey: identity,
+        invoiceId: "0197f9a0-0000-5000-8000-000000000001",
+      }
+    )
+    // The fixture's commerce payout used all funds. The reviewed real opener
+    // must reach the balance check, not silently disable native capability.
+    const nativePreflight =
+      await merchant.nativeTreasury!.preflightCheckoutTreasury({
+        network: "regtest",
+        nativeTreasury,
+        amountSats: 1,
+        authorizedDebitSats: 1,
+      })
+    stage = `Merchant reviewed native SDK capability (${nativePreflight})`
+    check(nativePreflight === "insufficient_funds")
+    check(control.nativeSnapshot().nativeSendInvocationCount === 0)
     stage = "Merchant authenticated retirement reader"
     const native = await merchant.openRetirementReader!()
     let merchantRejectedAddress = false

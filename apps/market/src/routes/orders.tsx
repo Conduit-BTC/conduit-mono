@@ -91,7 +91,6 @@ import {
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { CheckoutSparkFundingExpiry } from "../components/CheckoutSparkFundingExpiry"
 import { CheckoutSparkExternalFunding } from "../components/CheckoutSparkExternalFunding"
-import { CheckoutSparkNativeTreasuryNotice } from "../components/CheckoutSparkNativeTreasuryNotice"
 import { CheckoutSparkPaymentReceipt } from "../components/CheckoutSparkPaymentReceipt"
 import { CheckoutPaymentProgress } from "../components/CheckoutPaymentProgress"
 import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
@@ -2448,18 +2447,6 @@ function OrderDetail({
                   expiresAt={settledRouterControl.fundingExpiresAt}
                 />
               )}
-              {settledRouterControl.nativeTreasury && (
-                <CheckoutSparkNativeTreasuryNotice
-                  estimatedBaseConduitAllocationSats={
-                    settledRouterControl.nativeTreasury
-                      .estimatedBaseConduitAllocationSats
-                  }
-                  fixedCheckoutTotalSats={
-                    settledRouterControl.nativeTreasury.fixedCheckoutTotalSats
-                  }
-                  prepared={settledRouterControl.nativeTreasury.prepared}
-                />
-              )}
               {!row.receipt && (
                 <details className="text-xs leading-5 text-[var(--text-secondary)]">
                   <summary className="cursor-pointer">Payment details</summary>
@@ -2470,61 +2457,60 @@ function OrderDetail({
                     {settledRouterControl.creditedSats !== null
                       ? ` · exact credit: ${settledRouterControl.creditedSats.toLocaleString()} sats`
                       : " · exact credit pending"}
-                    .{" "}
-                    {settledRouterControl.nativeTreasury
-                      ? "Lightning recipient payments are checked against their saved invoices, actual fees and payment proofs. The final Conduit payment uses native Spark and only the actual post-credit Conduit allocation plus verified unused recipient fee reserves."
-                      : "Each recipient payment is checked against its saved invoice, actual fee and payment proof before the next payout starts."}
+                    . Each recipient payment is verified before the next starts.
                   </p>
                 </details>
               )}
-              {routerProgress && (
+              {routerProgress && routerProgress.phase !== "funding" && (
                 <CheckoutPaymentProgress pausing={routerPausing} />
               )}
-              {settledRouterControl.status === "pay_funding" && (
-                <div className="grid max-w-sm gap-1.5">
-                  <label
-                    htmlFor={`settled-router-payer-${vm.orderId}`}
-                    className="text-xs font-medium text-[var(--text-secondary)]"
-                  >
-                    Pay with
-                  </label>
-                  <Select
-                    value={routerTargetValue}
-                    onValueChange={(value) =>
-                      setRouterTarget(
-                        routerPayerOptions.find(
-                          (option) => option.value === value
-                        )?.target ?? null
-                      )
-                    }
-                    disabled={busy || wallets.loading}
-                  >
-                    <SelectTrigger
-                      id={`settled-router-payer-${vm.orderId}`}
-                      className={PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME}
+              {settledRouterControl.status === "pay_funding" &&
+                !guestIdentity &&
+                routerPayerOptions.length > 0 && (
+                  <div className="grid max-w-sm gap-1.5">
+                    <label
+                      htmlFor={`settled-router-payer-${vm.orderId}`}
+                      className="text-xs font-medium text-[var(--text-secondary)]"
                     >
-                      <PaymentTargetSelectValue
-                        target={routerSelectedOption?.target ?? null}
+                      Pay with
+                    </label>
+                    <Select
+                      value={routerTargetValue}
+                      onValueChange={(value) =>
+                        setRouterTarget(
+                          routerPayerOptions.find(
+                            (option) => option.value === value
+                          )?.target ?? null
+                        )
+                      }
+                      disabled={busy || wallets.loading}
+                    >
+                      <SelectTrigger
+                        id={`settled-router-payer-${vm.orderId}`}
+                        className={PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME}
+                      >
+                        <PaymentTargetSelectValue
+                          target={routerSelectedOption?.target ?? null}
+                          eligibleWallets={routerPayerWallets}
+                          walletDisplayLabels={getWalletDisplayLabels(
+                            routerPayerWallets
+                          )}
+                          weblnAvailable={weblnAvailable}
+                          placeholder="Choose a ready wallet"
+                        />
+                      </SelectTrigger>
+                      <PaymentTargetSelectContent
+                        options={routerPayerOptions}
                         eligibleWallets={routerPayerWallets}
                         walletDisplayLabels={getWalletDisplayLabels(
                           routerPayerWallets
                         )}
+                        staleWalletValue={null}
                         weblnAvailable={weblnAvailable}
-                        placeholder="Choose a ready wallet"
                       />
-                    </SelectTrigger>
-                    <PaymentTargetSelectContent
-                      options={routerPayerOptions}
-                      eligibleWallets={routerPayerWallets}
-                      walletDisplayLabels={getWalletDisplayLabels(
-                        routerPayerWallets
-                      )}
-                      staleWalletValue={null}
-                      weblnAvailable={weblnAvailable}
-                    />
-                  </Select>
-                </div>
-              )}
+                    </Select>
+                  </div>
+                )}
               <Button
                 type="button"
                 className="h-11 px-4 text-sm"

@@ -164,7 +164,7 @@ function createHermeticWalletNative(input: {
 }) {
   const network = input.network
   const nativeNetwork = network === "mainnet" ? "MAINNET" : "REGTEST"
-  // Spark 0.12.1 protobuf Network: MAINNET=1, REGTEST=2.
+  // Spark 0.13.0 protobuf Network: MAINNET=1, REGTEST=2.
   const historyNetwork = network === "mainnet" ? 1 : 2
   const identityPublicKey = input.identityPublicKey
   const issueFundingInvoice = input.issueFundingInvoice
@@ -218,7 +218,7 @@ function createHermeticWalletNative(input: {
     const reader: CheckoutSparkNativeRetirementReader = {
       async getTransfers(request) {
         assertAddress(request.sparkAddress)
-        // Spark 0.12.1 protobuf: PREIMAGE_SWAP=0, COMPLETED=5.
+        // Spark 0.13.0 protobuf: PREIMAGE_SWAP=0, COMPLETED=5.
         const transfers = history()
           .flatMap(({ id, totalValue, type, status }) => {
             const nativeType = type === "TRANSFER" ? 1 : 0

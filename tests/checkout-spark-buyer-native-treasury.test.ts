@@ -38,6 +38,7 @@ import {
   type CheckoutSparkRecoveryDeliveryRecord,
   type CheckoutSparkNativeTreasuryTarget,
   type CheckoutSparkSettledOutgoingTarget,
+  type CheckoutSparkSettledReconciliation,
   type OrderLifecycle,
 } from "@conduit/core"
 import {
@@ -51,7 +52,10 @@ import {
   createBuyerCheckoutSparkNativeTreasuryProvider,
 } from "../apps/market/src/lib/checkout-spark-native-treasury"
 import { retireCheckoutSparkSettledShopper } from "../apps/market/src/lib/checkout-spark-settled-retirement"
-import { createCheckoutSparkSettledShopperRunner } from "../apps/market/src/lib/checkout-spark-settled-shopper-runner"
+import {
+  createCheckoutSparkSettledShopperRunner,
+  type CheckoutSparkSettledShopperRunInput,
+} from "../apps/market/src/lib/checkout-spark-settled-shopper-runner"
 import {
   canContinueCheckoutSparkSettledRouteSession,
   type CheckoutSparkSettledRouteSession,
@@ -116,7 +120,11 @@ function invoice(amount: number, byte: number, createdAt = AT, expiry = 900) {
 }
 
 async function fixture(
-  options: { closed?: boolean; commercePaid?: boolean } = {}
+  options: {
+    closed?: boolean
+    commercePaid?: boolean
+    takeoverAfterMs?: number
+  } = {}
 ) {
   const mnemonic = createRuntimeMnemonic()
   const merchant = plainTestSigner(NDKPrivateKeySigner.generate())
@@ -154,6 +162,7 @@ async function fixture(
       >
     ) => void
     beforeNativeQuery?: () => void
+    beforeNativeFulfill?: () => Promise<void>
     hideNativeQueries?: boolean
   } = {}
   let now = AT + 100
@@ -197,6 +206,10 @@ async function fixture(
                     })),
                   }
                 return wallet.querySparkInvoices!(invoices)
+              },
+              async fulfillSparkInvoice(invoices) {
+                await hooks.beforeNativeFulfill?.()
+                return wallet.fulfillSparkInvoice!(invoices)
               },
               async queryHTLC(request) {
                 reads.closed++
@@ -266,7 +279,7 @@ async function fixture(
   const plan = freezeCheckoutSparkSettledTreasuryPlan({
     ...identity,
     merchantPubkey: merchant.pubkey,
-    takeoverAt: AT + 120_000,
+    takeoverAt: AT + (options.takeoverAfterMs ?? 120_000),
     nativeTreasury,
     funding: {
       requestId: receive.id,
@@ -603,7 +616,306 @@ async function run(
   }
 }
 
+async function createForegroundRunner(
+  f: Awaited<ReturnType<typeof fixture>>,
+  options: {
+    wait?: (milliseconds: number) => Promise<void>
+    acknowledge?: (state: CheckoutSparkSettledReconciliation) => Promise<void>
+  } = {}
+) {
+  const initial = createCheckoutSparkSettledRecoveryPayload({
+    state: f.state(),
+    senderPubkey: f.buyer.pubkey,
+    mnemonic: f.mnemonic,
+    accountNumber: 0,
+    preparedAt: f.now(),
+  })
+  let record: CheckoutSparkRecoveryDeliveryRecord | undefined
+  const relays = ["wss://relay.conduit.market"]
+  const delivered = await publishCheckoutSparkRecovery({
+    payload: initial,
+    signer: f.buyer,
+    persistExactWrap: async (saved) => {
+      record = saved
+    },
+    transport: {
+      recipientInboxRelays: relays,
+      publishFn: async () => ({
+        attemptedRelayUrls: relays,
+        successfulRelayUrls: relays,
+        failedRelayUrls: [],
+        relayFailureMessages: {},
+      }),
+    },
+  })
+  if (!record) throw new Error("Expected initial recovery")
+  const exactRecord = record
+  const acknowledged: string[] = []
+  const clock = () => {
+    f.setNow(f.now() + 1)
+    return f.now()
+  }
+  const runner = createCheckoutSparkSettledShopperRunner({
+    repository: f.repository,
+    readOrder: (id) => f.database.orderLifecycles.get(id),
+    readPreparation: () => ({
+      schemaVersion: 3,
+      checkoutId: f.plan.checkoutId,
+      planDigest: f.plan.planDigest,
+      recoveryHandoffId: initial.handoffId,
+      fundingInvoiceExposedAt: AT,
+      fundingSubmissionState: "provisional",
+      savedAt: AT,
+    }),
+    readInitialRecovery: () => ({
+      record: exactRecord,
+      deliveryProgress: delivered.deliveryProgress,
+      savedAt: AT,
+    }),
+    loadAuthorized: async () => ({
+      plan: f.plan,
+      state: f.state(),
+      fundingReceive: f.receive,
+      fundingInvoice: f.receive.paymentRequest,
+      recoveryHandoffId: initial.handoffId,
+    }),
+    sparkConfiguration: () => ({ status: "ready", network: "mainnet" }),
+    sparkManager: () => f.manager(),
+    now: clock,
+    wait: options.wait ?? (async () => {}),
+  })
+  const shouldContinue = () =>
+    canContinueCheckoutSparkSettledRouteSession({
+      enabled: true,
+      mounted: true,
+      visible: true,
+      actionsReady: true,
+      identityCurrent: true,
+      orderId: f.plan.orderId,
+      view: {
+        orderId: f.plan.orderId,
+        phase: "in_progress",
+        merchantStatus: null,
+        checkoutSparkRouted: true,
+      },
+    })
+  const input: CheckoutSparkSettledShopperRunInput = {
+    checkoutId: f.plan.checkoutId,
+    planDigest: f.plan.planDigest,
+    orderId: f.plan.orderId,
+    merchantPubkey: f.merchant.pubkey,
+    network: "mainnet",
+    buyerPubkey: f.buyer.pubkey,
+    currentBuyerPubkey: () => f.buyer.pubkey,
+    shouldContinue,
+    fundingPayment: {
+      buyerPubkey: f.buyer.pubkey,
+      shouldContinue,
+      paymentTarget: { type: "manual" },
+      timeoutMs: 1000,
+      appId: "market",
+    },
+    acknowledgeRecoverySnapshot: async (state) => {
+      acknowledged.push(state.treasuryFinalization!.status)
+      await options.acknowledge?.(state)
+    },
+    authorization: {
+      planDigest: f.plan.planDigest,
+      walletId: f.plan.walletId,
+      grossFundingSats: f.plan.funding.grossFundingSats,
+    },
+    fundingMode: "inspect",
+  }
+  return { runner, input, acknowledged }
+}
+
+async function runForeground(
+  test: (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>
+) {
+  await run(
+    async (f) => {
+      const previousAddress = process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+      process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = ADDRESS
+      try {
+        await test(f)
+      } finally {
+        if (previousAddress === undefined)
+          delete process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+        else process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = previousAddress
+      }
+    },
+    { takeoverAfterMs: 45 * 60_000 }
+  )
+}
+
 describe("Market native treasury composed provider evidence", () => {
+  it.each(["pending", "unknown"] as const)(
+    "automatically reconciles the same delayed native %s attempt to receiver-claimed without Resume",
+    async (observation) =>
+      runForeground(async (f) => {
+        f.control.setNativeCompletion(false)
+        if (observation === "unknown") {
+          f.control.setNativeLostResponse(true)
+          f.hooks.beforeNativeQuery = () => {
+            if (f.control.nativeSnapshot().nativeSendInvocationCount > 0)
+              f.hooks.hideNativeQueries = true
+          }
+        }
+        let waits = 0
+        let pendingIntent: CheckoutSparkSettledReconciliation["treasuryFinalization"]
+        const { runner, input, acknowledged } = await createForegroundRunner(
+          f,
+          {
+            wait: async (milliseconds) => {
+              f.setNow(f.now() + milliseconds)
+              const saved = await f.loadState()
+              expect(
+                saved.state.treasuryFinalization!.finalDebitSats
+              ).toBeNull()
+              expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(
+                1
+              )
+              if (++waits === 1) {
+                pendingIntent = structuredClone(
+                  saved.state.treasuryFinalization
+                )
+                expect(pendingIntent!.status).toBe(
+                  observation === "pending" ? "ambiguous" : "submitted"
+                )
+                expect(pendingIntent!.providerTransferId).toBe(
+                  observation === "pending"
+                    ? f.control.nativeSnapshot().transfers[0]!.id
+                    : null
+                )
+              } else {
+                expect(saved.state.treasuryFinalization!.intent).toEqual(
+                  pendingIntent!.intent
+                )
+                f.hooks.beforeNativeQuery = undefined
+                f.hooks.hideNativeQueries = false
+                f.control.setNativeCompletion(true)
+              }
+            },
+          }
+        )
+        expect(await runner.run(input)).toEqual({ status: "complete" })
+        const final = (await f.loadState()).state.treasuryFinalization!
+        const native = f.control.nativeSnapshot()
+        expect(waits).toBe(2)
+        expect(final.intent).toEqual(pendingIntent!.intent)
+        expect(final).toMatchObject({
+          status: "paid",
+          providerTransferId: native.transfers[0]!.id,
+          finalFeeSats: 0,
+          finalDebitSats: pendingIntent!.intent!.authorizedDebitSats,
+        })
+        expect(native.transfers[0]!.sparkInvoice).toBe(
+          f.plan.nativeTreasury!.invoiceRequest
+        )
+        expect(native.nativeSendInvocationCount).toBe(1)
+        expect(native.nativePaymentCount).toBe(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(1)
+        expect(acknowledged).toEqual(["prepared", "submitted"])
+      }),
+    15_000
+  )
+  it.each(["prepared", "submitted"] as const)(
+    "does not enter native fulfillment when the %s recovery ACK crosses the foreground deadline",
+    async (status) =>
+      runForeground(async (f) => {
+        const { runner, input, acknowledged } = await createForegroundRunner(
+          f,
+          {
+            acknowledge: async (state) => {
+              if (state.treasuryFinalization!.status === status)
+                f.setNow(f.now() + 300_000)
+            },
+          }
+        )
+        expect(await runner.run(input)).toEqual({
+          status: "paused",
+          reason: "reconciliation_timeout",
+        })
+        const final = (await f.loadState()).state.treasuryFinalization!
+        expect(final.status).toBe(status)
+        expect(final.intent!.invoiceId).toBe(f.plan.nativeTreasury!.invoiceId)
+        expect(final.intent!.invoiceRequest).toBe(
+          f.plan.nativeTreasury!.invoiceRequest
+        )
+        expect(final.finalDebitSats).toBeNull()
+        expect(final.providerTransferId).toBeNull()
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(0)
+        expect(f.control.nativeSnapshot().nativePaymentCount).toBe(0)
+        expect(f.control.snapshot().sendInvocationCount).toBe(1)
+        expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+        expect(acknowledged).toEqual(
+          status === "prepared" ? ["prepared"] : ["prepared", "submitted"]
+        )
+      }),
+    15_000
+  )
+  it(
+    "drains admitted native fulfillment across the deadline and later reconciles its exact attempt without replay",
+    async () =>
+      runForeground(async (f) => {
+        let entered!: () => void
+        let release!: () => void
+        const admission = new Promise<void>((resolve) => {
+          entered = resolve
+        })
+        const completion = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        f.control.setNativeCompletion(false)
+        f.hooks.beforeNativeFulfill = async () => {
+          entered()
+          await completion
+        }
+        const { runner, input } = await createForegroundRunner(f)
+        const running = runner.run(input)
+        try {
+          await admission
+          const admitted = (await f.loadState()).state.treasuryFinalization!
+          expect(admitted.status).toBe("submitted")
+          expect(admitted.finalDebitSats).toBeNull()
+          f.setNow(f.now() + 300_000)
+          expect(await runner.run(input)).toEqual({
+            status: "paused",
+            reason: "busy",
+          })
+          release()
+          expect(await running).toEqual({
+            status: "paused",
+            reason: "reconciliation_timeout",
+          })
+          const retained = (await f.loadState()).state.treasuryFinalization!
+          expect(retained.status).toBe("submitted")
+          expect(retained.intent).toEqual(admitted.intent)
+          expect(retained.finalDebitSats).toBeNull()
+          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+          expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+          expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+          const exactTransfer = f.control.nativeSnapshot().transfers[0]!
+          f.hooks.beforeNativeFulfill = undefined
+          f.control.setNativeCompletion(true)
+          expect(await runner.run(input)).toEqual({ status: "complete" })
+          const final = (await f.loadState()).state.treasuryFinalization!
+          expect(final.intent).toEqual(admitted.intent)
+          expect(final.providerTransferId).toBe(exactTransfer.id)
+          expect(final.status).toBe("paid")
+          expect(final.finalFeeSats).toBe(0)
+          expect(final.finalDebitSats).toBe(
+            admitted.intent!.authorizedDebitSats
+          )
+          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+          expect(f.control.snapshot().sendInvocationCount).toBe(1)
+        } finally {
+          release()
+          await running
+        }
+      }),
+    15_000
+  )
   it(
     "re-reads exact funding, invoice origin, winner and two complete scoped histories before preparing",
     async () =>

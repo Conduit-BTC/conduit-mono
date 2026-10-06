@@ -33,6 +33,18 @@ export interface ProductSupplierAllocationEditorProps {
   onRetryReadiness?: () => void
 }
 
+/** Only an explicit authoring reset discards saved discovery hints. */
+export function startNewSupplierAllocation(
+  value: ProductSupplierAllocationEditorValue
+): ProductSupplierAllocationEditorValue {
+  return {
+    ...value,
+    merchantWeight: "1",
+    merchantRelayHint: "",
+    suppliers: [],
+  }
+}
+
 function readinessMessage(
   result: ProductSupplierRecipientReadiness | undefined,
   checking: boolean
@@ -74,6 +86,11 @@ export function ProductSupplierAllocationEditor({
     (recipient) => recipient.role === "merchant"
   )
   const merchantPercentage = getMerchantPercentage(value)
+  const blockedSavedHints =
+    !validation.canPublish &&
+    Boolean(validation.error) &&
+    (Boolean(value.merchantRelayHint.trim()) ||
+      value.suppliers.some((supplier) => Boolean(supplier.relayHint.trim())))
 
   return (
     <fieldset
@@ -111,18 +128,16 @@ export function ProductSupplierAllocationEditor({
       </label>
       {value.enabled ? (
         <div className="grid min-w-0 grid-cols-1 gap-4">
-          {!merchantPercentage ? (
+          {!merchantPercentage || blockedSavedHints ? (
             <div className="grid justify-items-start gap-2">
               <p className="text-xs text-error">
-                The saved shares need repair before you can edit percentages.
+                The saved split needs repair before publishing.
               </p>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() =>
-                  onChange({ ...value, merchantWeight: "1", suppliers: [] })
-                }
+                onClick={() => onChange(startNewSupplierAllocation(value))}
               >
                 Start a new split
               </Button>
@@ -273,62 +288,6 @@ export function ProductSupplierAllocationEditor({
             future orders; existing orders keep their original terms. Setup
             checks do not prove receipt of money.
           </p>
-          <details className="text-xs text-[var(--text-secondary)]">
-            <summary className="cursor-pointer py-2">
-              Advanced profile discovery
-            </summary>
-            <div className="mt-2 grid gap-3">
-              <p className="leading-5 text-[var(--text-muted)]">
-                Profiles are discovered automatically. Add a public relay hint
-                only if a profile cannot be found. This does not change anyone's
-                private inbox.
-              </p>
-              <div className="grid gap-1.5">
-                <Label htmlFor={`${id}-merchant-relay`}>
-                  Your profile relay hint
-                </Label>
-                <Input
-                  id={`${id}-merchant-relay`}
-                  value={value.merchantRelayHint}
-                  placeholder="Automatic"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  onChange={(event) =>
-                    onChange({
-                      ...value,
-                      merchantRelayHint: event.target.value,
-                    })
-                  }
-                />
-              </div>
-              {value.suppliers.map((supplier, index) => (
-                <div key={index} className="grid gap-1.5">
-                  <Label htmlFor={`${id}-supplier-relay-${index}`}>
-                    Supplier {index + 1} profile relay hint
-                  </Label>
-                  <Input
-                    id={`${id}-supplier-relay-${index}`}
-                    value={supplier.relayHint}
-                    placeholder="Automatic"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    onChange={(event) =>
-                      onChange({
-                        ...value,
-                        suppliers: value.suppliers.map((row, rowIndex) =>
-                          rowIndex === index
-                            ? { ...row, relayHint: event.target.value }
-                            : row
-                        ),
-                      })
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          </details>
         </div>
       ) : null}
       {validation.error ? (

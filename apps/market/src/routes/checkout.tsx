@@ -1,6 +1,5 @@
 import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
 import { CheckoutSparkNativeTreasuryNotice } from "../components/CheckoutSparkNativeTreasuryNotice"
-import { getCheckoutSparkSettledTiming } from "../lib/checkout-spark-local-router-canary"
 import {
   AlertCircle,
   AlertTriangle,
@@ -5254,16 +5253,6 @@ function CheckoutPage() {
                       >
                         Continue to payment
                       </Button>
-                      <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">
-                        Continue when you are ready to pay: this creates a
-                        temporary checkout wallet and a funding invoice valid
-                        for{" "}
-                        {getCheckoutSparkSettledTiming().fundingExpirySecs / 60}{" "}
-                        minutes. Recipients and the funding amount are fixed
-                        before payment. Recovery is sent privately to the
-                        merchant; relay acceptance does not prove receipt. The
-                        coordination fee is included in the payment total.
-                      </p>
                     </div>
                   )}
                   {!routerBranchTargetCheckout &&

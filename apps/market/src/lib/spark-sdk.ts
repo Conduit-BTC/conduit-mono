@@ -1,10 +1,12 @@
 import {
   config,
+  CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
   createCheckoutSparkNativeTreasurySdkAdapter,
   decodeLightningInvoiceAmount,
   decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
   ensureSparkPrivateModeReady,
+  getCheckoutSparkNativeTreasuryPolicyForSdkVersion,
   getLightningInvoiceNetwork,
   getWalletNetworkFromLightningConfig,
   hasCheckoutSparkProviderSendWindow,
@@ -250,7 +252,7 @@ export interface SparkNativeModule {
 }
 
 export const SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY =
-  "spark-sdk-0.12.1-invoice-zero-fee-v1" as const
+  CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY
 
 interface FirstPartySparkSdkFactoryOptions {
   network: SupportedSparkNetwork
@@ -2421,9 +2423,9 @@ export async function loadFirstPartySparkModule(): Promise<SparkNativeModule> {
     eventNames,
     // Any dependency upgrade must re-review native fee/debit semantics before
     // enabling this path. There is no public native fee estimate/max-fee API.
-    ...(marketPackage.dependencies["@buildonspark/spark-sdk"] === "0.12.1"
-      ? { nativeTreasuryPolicy: SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY }
-      : {}),
+    nativeTreasuryPolicy: getCheckoutSparkNativeTreasuryPolicyForSdkVersion(
+      marketPackage.dependencies["@buildonspark/spark-sdk"]
+    ),
     encodeSparkAddress: module.encodeSparkAddress,
     parseTransferId: (value) => module.UUID.parse(value),
     inspectLightningReceiveQuote({ quote, receiverIdentityPubkey, network }) {

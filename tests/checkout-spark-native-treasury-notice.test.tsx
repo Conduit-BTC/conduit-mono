@@ -4,8 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { CheckoutSparkNativeTreasuryNotice } from "../apps/market/src/components/CheckoutSparkNativeTreasuryNotice"
 import { getCheckoutSparkSettledOutcomeMessage } from "../apps/market/src/lib/checkout-spark-settled-outcome-message"
 
-describe("native Spark treasury disclosure", () => {
-  it("records informed approval before funding without exposing treasury material", () => {
+describe("checkout payment approval disclosure", () => {
+  it("keeps required approval in a plain note without treasury jargon", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkNativeTreasuryNotice
         estimatedBaseConduitAllocationSats={111}
@@ -14,13 +14,18 @@ describe("native Spark treasury disclosure", () => {
       />
     )
 
-    expect(html).toContain("Before funding")
-    expect(html).toContain("111 sats")
-    expect(html).toContain("best-effort Conduit allocation estimate")
-    expect(html).toContain("unused, authorized recipient fee reserves")
-    expect(html).toContain("fixed 1,113 sats buyer total")
-    expect(html).toContain("configured Spark treasury")
-    expect(html).toContain("saved order total cannot increase")
+    expect(html).toContain("fixed total of 1,113 sats")
+    expect(html).toContain("best-effort 111 sats Conduit fee estimate")
+    expect(html).toContain("payment reserves")
+    expect(html).toContain("Conduit is paid last")
+    expect(html).toContain("unused authorized reserves")
+    expect(html).toContain("no increase to your total")
+    expect(html).toStartWith("<p ")
+    expect(html).not.toContain("<section")
+    expect(html).not.toContain("<h3")
+    expect(html).not.toContain("rounded-")
+    expect(html).not.toContain("Spark")
+    expect(html).not.toContain("treasury")
     expect(html).not.toContain("up to 2 sats")
     expect(html).not.toContain("spark-treasury.fixture")
     expect(html).not.toContain("spark-invoice.fixture")
@@ -49,7 +54,7 @@ describe("native Spark treasury disclosure", () => {
     expect(route).toMatch(/fixedCheckoutTotalSats=\{routerPrice\.totalSats\}/)
   })
 
-  it("shows the exact prepared native amount and zero-fee cap without claiming completion", () => {
+  it("does not turn prepared payment data into another detail panel or completion claim", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkNativeTreasuryNotice
         estimatedBaseConduitAllocationSats={111}
@@ -63,27 +68,24 @@ describe("native Spark treasury disclosure", () => {
       />
     )
 
-    expect(html).toContain("final Conduit payment is prepared for 114 sats")
-    expect(html).toContain("actual 110 sats Conduit allocation")
-    expect(html).toContain(
-      "4 sats of unused, authorized recipient fee reserves"
-    )
-    expect(html).toContain("native Spark fee cap is 0 sats")
-    expect(html).toContain("fixed 1,113 sats buyer total")
+    expect(html).toContain("fixed total of 1,113 sats")
+    expect(html).toContain("Conduit is paid last")
+    expect(html).not.toContain("114 sats")
+    expect(html).not.toContain("110 sats")
+    expect(html).not.toContain("4 sats")
+    expect(html).not.toContain("fee cap")
+    expect(html).not.toContain("<section")
+    expect(html).not.toContain("Spark")
+    expect(html).not.toContain("treasury")
     expect(html).not.toContain("completed")
   })
 
-  it("uses the native sidecar in Orders without requiring a Lightning review", async () => {
+  it("keeps native dispatch independent of a treasury detail panel or Lightning review", async () => {
     const route = await Bun.file("apps/market/src/routes/orders.tsx").text()
 
-    expect(route).toMatch(
-      /settledRouterControl\.nativeTreasury && \(\s*<CheckoutSparkNativeTreasuryNotice/
-    )
+    expect(route.includes("CheckoutSparkNativeTreasuryNotice")).toBe(false)
     expect(route).toMatch(
       /settledRouterControl\.status === "route_payout" &&\s*!settledRouterControl\.payoutReview &&\s*!settledRouterControl\.nativeTreasury\?\.prepared/
-    )
-    expect(route).toMatch(
-      /prepared=\{settledRouterControl\.nativeTreasury\.prepared\}/
     )
     expect(route).toContain(
       "setSettledRouterOutcome(getCheckoutSparkSettledOutcomeMessage(result))"

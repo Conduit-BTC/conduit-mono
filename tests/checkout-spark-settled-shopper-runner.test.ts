@@ -108,7 +108,7 @@ async function fixture() {
     hidePayoutHistory?: boolean
     beforePayoutRead?: () => Promise<void>
     beforeNativeSend?: () => Promise<void>
-    beforeWait?: () => Promise<void>
+    beforeWait?: (milliseconds: number) => Promise<void>
     beforeAck?: () => Promise<void>
     wrongOrigin?: boolean
     feeOverCap?: boolean
@@ -336,8 +336,8 @@ async function fixture() {
           )
         },
       }),
-    wait: async () => {
-      await hooks.beforeWait?.()
+    wait: async (milliseconds) => {
+      await hooks.beforeWait?.(milliseconds)
     },
   }
   const input: CheckoutSparkSettledShopperRunInput = {
@@ -484,6 +484,159 @@ describe("foreground settled shopper routing", () => {
       expect(f.calls.payer).toBe(1)
       expect(f.control.snapshot().sendInvocationCount).toBe(3)
     } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("keeps the same foreground approval while funding arrives after the old polling budget", async () => {
+    const f = await fixture()
+    try {
+      f.hooks.completeFunding = false
+      let observations = 0
+      f.hooks.beforeWait = async () => {
+        observations += 1
+        f.authority.now += 5_000
+        if (observations === 11) f.control.completeFunding()
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(await runner.run({ ...f.input, fundingPoll: undefined })).toEqual({
+        status: "complete",
+      })
+      expect(f.calls.payer).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(3)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("bounds pending funding checks to five minutes with backoff and no second funding send", async () => {
+    const f = await fixture()
+    try {
+      f.hooks.completeFunding = false
+      const waits: number[] = []
+      f.hooks.beforeWait = async (milliseconds) => {
+        waits.push(milliseconds)
+        f.authority.now += milliseconds
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(await runner.run({ ...f.input, fundingPoll: undefined })).toEqual({
+        status: "funding_pending",
+      })
+      expect(waits.slice(0, 3)).toEqual([2_000, 4_000, 5_000])
+      expect(waits.reduce((total, value) => total + value, 0)).toBe(300_000)
+      expect(f.calls.payer).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(0)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("reconciles a delayed exact outgoing result without resending the possible-send attempt", async () => {
+    const f = await fixture()
+    try {
+      f.hooks.failSendAfterAdmission = true
+      f.hooks.hidePayoutHistory = true
+      f.hooks.beforeWait = async () => {
+        f.hooks.failSendAfterAdmission = false
+        f.hooks.hidePayoutHistory = false
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(
+        await runner.run({
+          ...f.input,
+          fundingPoll: { attempts: 3, intervalMs: 1 },
+        })
+      ).toEqual({ status: "complete" })
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(3)
+      expect(f.control.snapshot().sendInvocationCount).toBe(3)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("does not enter the funding payer after a pre-admission await crosses the five-minute budget", async () => {
+    const f = await fixture()
+    try {
+      f.input.fundingPayment.beforeSend = async () => {
+        f.authority.now += 300_000
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect((await runner.run(f.input)).status).toBe("paused")
+      expect(f.calls.payer).toBe(0)
+      expect(f.calls.invoices).toHaveLength(0)
+      expect(f.control.snapshot().sendInvocationCount).toBe(0)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("does not dispatch an unsent payout after recovery acknowledgment crosses the five-minute budget", async () => {
+    const f = await fixture()
+    try {
+      let acknowledgments = 0
+      f.hooks.beforeAck = async () => {
+        if (++acknowledgments === 2) f.authority.now += 300_000
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(await runner.run(f.input)).toEqual({
+        status: "paused",
+        reason: "reconciliation_timeout",
+      })
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(0)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("drains an admitted payout across the budget and later reconciles it without replay", async () => {
+    const f = await fixture()
+    try {
+      f.hooks.beforeNativeSend = async () => {
+        f.authority.now += 300_000
+        f.hooks.beforeNativeSend = undefined
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      expect(await runner.run(f.input)).toEqual({
+        status: "paused",
+        reason: "reconciliation_timeout",
+      })
+      expect(f.calls.payer).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(1)
+      expect(await runner.run({ ...f.input, fundingMode: "inspect" })).toEqual({
+        status: "complete",
+      })
+      expect(f.calls.payer).toBe(1)
+      expect(f.calls.invoices).toHaveLength(3)
+      expect(f.control.snapshot().sendInvocationCount).toBe(3)
+    } finally {
+      await f.cleanup()
+    }
+  }, 20_000)
+
+  it("revokes pending funding checks immediately on explicit pause", async () => {
+    const f = await fixture()
+    const entered = deferred()
+    const release = deferred()
+    try {
+      f.hooks.completeFunding = false
+      f.hooks.beforeWait = async () => {
+        entered.resolve()
+        await release.promise
+      }
+      const runner = createCheckoutSparkSettledShopperRunner(f.dependencies)
+      const running = runner.run({ ...f.input, fundingPoll: undefined })
+      await entered.promise
+      const pausing = runner.pause()
+      release.resolve()
+      expect(await running).toEqual({ status: "paused", reason: "paused" })
+      await pausing
+      expect(f.calls.payer).toBe(1)
+      expect(f.control.snapshot().sendInvocationCount).toBe(0)
+    } finally {
+      release.resolve()
       await f.cleanup()
     }
   }, 20_000)

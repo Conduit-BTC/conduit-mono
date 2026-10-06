@@ -202,6 +202,16 @@ outcomes never authorize a replacement invoice, new transfer identifier, or
 blind retry. Router completion requires every planned payout, including the
 Conduit leg; wallet retirement remains a separate evidence-gated action.
 
+Within that same approved foreground activation, the client may automatically
+check delayed funding and reconcile the exact saved outgoing attempt for up to
+five minutes, with bounded backoff. These checks do not re-enter a funding
+payer, replace an invoice, create a new transfer identity or restore withdrawn
+authorization. Positive exact completion may advance the frozen plan; missing
+or unavailable history never authorizes replay. Conflicting evidence, terminal
+failure and fee-policy failures pause new dispatch. Invoice expiry and the
+saved objective shopper-to-Merchant takeover boundary remain separate limits;
+polling cannot extend either or infer abandonment from a missing heartbeat.
+
 ### Native final treasury allocation
 
 New version-four plans may replace only the Conduit Lightning leg with one

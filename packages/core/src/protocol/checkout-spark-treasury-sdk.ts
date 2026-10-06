@@ -5,7 +5,16 @@ import type {
 } from "./checkout-spark-treasury-finalization"
 
 export const CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY =
-  "spark-sdk-0.12.1-invoice-zero-fee-v1" as const
+  "spark-sdk-0.13.0-invoice-zero-fee-v1" as const
+
+/** Dependency upgrades require a fresh review of native fee/debit semantics. */
+export function getCheckoutSparkNativeTreasuryPolicyForSdkVersion(
+  version: unknown
+): typeof CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY | undefined {
+  return version === "0.13.0"
+    ? CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY
+    : undefined
+}
 
 export type CheckoutSparkNativeTreasurySdkNetwork = "MAINNET" | "REGTEST"
 export interface CheckoutSparkNativeTreasurySdkPrepareInput {

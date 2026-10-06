@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { nip19 } from "nostr-tools"
 import { verifyEvent, type Event } from "nostr-tools/pure"
+import { CANONICAL_COMMERCE_DISCOVERY_RELAYS } from "../packages/core/src/config"
 import {
   publishTestRelayEvents,
   readTestRelayEvents,
@@ -32,8 +33,9 @@ const productSummary =
   "Synthetic digital listing for isolated commerce verification."
 // Public relay hints are signed terms, not transport targets for this smoke.
 // The network policy blocks both; only the configured loopback relay is used.
-const merchantProfileRelay = "wss://relay.conduit.market/"
-const supplierProfileRelay = "wss://relay.damus.io/"
+const merchantProfileRelay = new URL(CANONICAL_COMMERCE_DISCOVERY_RELAYS[0]!)
+  .href
+const supplierProfileRelay = merchantProfileRelay
 const networkOptions = {
   appUrls: [marketUrl, merchantUrl],
   relayUrl: TEST_RELAY_URL,
@@ -92,14 +94,10 @@ async function expectSupplierDraft(
   await expect(
     dialog.getByLabel("Merchant weight", { exact: true })
   ).toHaveCount(0)
-  if (!(await dialog.getByLabel("Your profile relay hint").isVisible())) {
-    await dialog
-      .getByText("Advanced profile discovery", { exact: true })
-      .click()
-  }
-  await expect(dialog.getByLabel("Your profile relay hint")).toHaveValue(
-    merchantProfileRelay
-  )
+  await expect(
+    dialog.getByText("Advanced profile discovery", { exact: true })
+  ).toHaveCount(0)
+  await expect(dialog.getByLabel("Your profile relay hint")).toHaveCount(0)
   // Keep generated identity values out of assertion diagnostics.
   await expect
     .poll(
@@ -108,8 +106,8 @@ async function expectSupplierDraft(
         supplierNpub
     )
     .toBe(true)
-  await expect(dialog.getByLabel("Supplier 1 profile relay hint")).toHaveValue(
-    supplierProfileRelay
+  await expect(dialog.getByLabel("Supplier 1 profile relay hint")).toHaveCount(
+    0
   )
   await expect(
     dialog.getByLabel("Supplier 1 share (%)", { exact: true })
@@ -379,14 +377,13 @@ test("supplier percentages and readiness gate publish exact signed terms consume
     await expect(
       dialog.getByText("Your share: 75%", { exact: true })
     ).toBeVisible()
-    await expect(dialog.getByLabel("Your profile relay hint")).toBeHidden()
+    await expect(
+      dialog.getByText("Advanced profile discovery", { exact: true })
+    ).toHaveCount(0)
+    await expect(dialog.getByLabel("Your profile relay hint")).toHaveCount(0)
     await expect(
       dialog.getByLabel("Supplier 1 profile relay hint")
-    ).toBeHidden()
-    await expect(dialog.getByLabel("Your profile relay hint")).toHaveValue("")
-    await expect(
-      dialog.getByLabel("Supplier 1 profile relay hint")
-    ).toHaveValue("")
+    ).toHaveCount(0)
     const publish = dialog.getByRole("button", {
       name: "Publish product",
       exact: true,
@@ -472,16 +469,7 @@ test("supplier percentages and readiness gate publish exact signed terms consume
     await merchantPage.setViewportSize(
       desktopViewport ?? { width: 1280, height: 720 }
     )
-    stage = "advanced profile hints and saved supplier draft"
-    await dialog
-      .getByText("Advanced profile discovery", { exact: true })
-      .click()
-    await dialog
-      .getByLabel("Your profile relay hint")
-      .fill(merchantProfileRelay)
-    await dialog
-      .getByLabel("Supplier 1 profile relay hint")
-      .fill(supplierProfileRelay)
+    stage = "automatic profile discovery and saved supplier draft"
     await expectSupplierDraft(dialog, supplierNpub)
 
     stage = "draft close, reload, and resume"

@@ -78,8 +78,8 @@ zero provider fee and claimed-transfer evidence. Uncertain transfers remain
 query-only and cannot be retried by removing a pause flag.
 
 The fixed funding total remains the buyer's authorized maximum.
-The Conduit fee estimate is best-effort, while the receipt shows the actual
-native collection and unused reserves separately. Any proposed Terms wording
+The Conduit fee estimate is best-effort, while recorded payment data retains
+the actual native collection and unused reserves separately. Any proposed Terms wording
 requires a maintainer-owned new legal release with an effective date; this
 feature does not modify released archived prose. See the [native final
 collection note](checkout-spark-native-treasury.md) for accounting, safety

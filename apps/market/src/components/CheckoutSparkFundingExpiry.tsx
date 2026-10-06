@@ -31,7 +31,7 @@ export function CheckoutSparkFundingExpiry({
           timeStyle: "medium",
         })}
       </time>
-      <span className="block text-[var(--text-primary)]">
+      <span className="block text-[var(--secondary)]">
         {expired ? (
           "Time has ended; do not pay this invoice."
         ) : (

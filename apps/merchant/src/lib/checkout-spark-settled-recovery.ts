@@ -8,11 +8,11 @@ import {
   classifyCheckoutSparkSettledExactOutgoingHistory,
   collectCheckoutSparkNativeRetirementEvidence,
   createCheckoutSparkNativeTreasurySdkAdapter,
-  CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
   deriveCheckoutSparkNativeTreasuryBudget,
   proveCheckoutSparkNativeTreasuryHistory,
   recordCheckoutSparkNativeTreasuryStatus,
   ensureSparkPrivateModeReady,
+  getCheckoutSparkNativeTreasuryPolicyForSdkVersion,
   getCheckoutSparkSettledClosedGeneration,
   getCheckoutSparkSettledLegGeneration,
   inspectSparkCheckoutLightningReturnedAttempt,
@@ -415,12 +415,9 @@ export async function openMerchantCheckoutSparkRecoveryWallet(input: {
       isClosed: () => closed,
       read: (read) => readWithTimeout(read(), 5_000, "Treasury provider read"),
       codec: {
-        ...(merchantPackage.dependencies["@buildonspark/spark-sdk"] === "0.12.1"
-          ? {
-              nativeTreasuryPolicy:
-                CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
-            }
-          : {}),
+        nativeTreasuryPolicy: getCheckoutSparkNativeTreasuryPolicyForSdkVersion(
+          merchantPackage.dependencies["@buildonspark/spark-sdk"]
+        ),
         parseTransferId: (value) => UUID.parse(value),
         encodeSparkAddress: module.encodeSparkAddress,
         decodeSparkAddress: module.decodeSparkAddress,
