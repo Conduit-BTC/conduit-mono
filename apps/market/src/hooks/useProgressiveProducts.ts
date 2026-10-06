@@ -79,6 +79,8 @@ type ProgressiveListQuery =
       enabled?: boolean
       /** Resolve scope/cache while a ranked search owns product network reads. */
       networkEnabled?: boolean
+      /** Resolve scope without preparing display products for selector metadata. */
+      cacheEnabled?: boolean
     }
   | {
       scope: "storefront"
@@ -455,7 +457,10 @@ export function useProgressiveProducts(
     input.scope === "marketplace" && !perspectiveMarketplaceRead
       ? input.tags
       : undefined
-  const canReadCache = queryEnabled && catalogReady
+  const canReadCache =
+    queryEnabled &&
+    catalogReady &&
+    (input.scope !== "marketplace" || input.cacheEnabled !== false)
 
   const cachedQuery = useQuery({
     queryKey: [

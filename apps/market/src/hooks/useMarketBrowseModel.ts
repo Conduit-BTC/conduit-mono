@@ -4,14 +4,11 @@ import {
   getMarketplaceProducts,
   normalizePubkey,
   useAuth,
+  useConduitSession,
   useProfileSearch,
   type PricingRateInput,
 } from "@conduit/core"
-import {
-  filterProductsByFacets,
-  getCategoryFacetOptions,
-  getStoreFacetOptions,
-} from "../lib/facets"
+import { filterProductsByFacets, getCategoryFacetOptions } from "../lib/facets"
 import {
   getBrowseSearchKey,
   getGlobalProductSearchQueryKey,
@@ -21,7 +18,6 @@ import {
   isMarketBrowseRefreshStale,
   mergeProductSearchResults,
   sortBrowseProducts,
-  sortStoreFacetOptionsByRecentPublisher,
   type MarketBrowseSearch,
   type MarketProductCardView,
 } from "../lib/marketBrowseModel"
@@ -31,7 +27,6 @@ import {
   getBrowseBackgroundHydrationPubkeys,
   getPagedMerchantPubkeys,
   MERCHANT_SEARCH_PREVIEW_SIZE,
-  PRODUCT_PAGE_SIZE,
 } from "../lib/clientHydration"
 import {
   isRemoteMarketSearchEligible,
@@ -40,11 +35,11 @@ import {
 import {
   filterSellersByName,
   getMerchantNameSearchFeedback,
-  groupDiscoveredSellers,
 } from "../lib/sellerDirectory"
 import { useShopperPresets } from "./useShopperPresets"
 import { useMerchantIdentities } from "./useMerchantIdentities"
 import { useProgressiveProducts } from "./useProgressiveProducts"
+import { useMarketplaceBrowseRead } from "./useMarketplaceBrowseRead"
 
 interface UseMarketBrowseModelInput {
   btcUsdRate: PricingRateInput
@@ -67,6 +62,7 @@ export function useMarketBrowseModel({
 }: UseMarketBrowseModelInput) {
   const { pubkey, status, authGeneration } = useAuth()
   const queryClient = useQueryClient()
+  const session = useConduitSession()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -101,13 +97,29 @@ export function useMarketBrowseModel({
     perspectivePubkey: status === "connected" && pubkey ? pubkey : null,
     authenticatedPubkey: status === "connected" ? pubkey : null,
     sort: "newest",
-    networkEnabled: !isSearching,
+    networkEnabled: false,
+    cacheEnabled: isSearching,
   })
+  const browseRead = useMarketplaceBrowseRead({
+    scope: productsQuery,
+    search: { ...search, merchant: selectedMerchants },
+    accountPubkey: status === "connected" ? pubkey : null,
+    authGeneration,
+    shouldContinue: shouldContinueAccountRead,
+    visibleCount,
+  })
+  const browseProducts = useMemo(
+    () => browseRead.records.map((row) => row.product),
+    [browseRead.records]
+  )
   const catalogAuthorPubkeys = productsQuery.catalogAuthorPubkeys
   const globalSearchEnabled =
     isRemoteSearchEligible && catalogAuthorPubkeys !== undefined
-  // Merchant and category facets filter this response locally, preserving rank
-  // without repeating the same relay search when a selection changes.
+  // Each explicit scope gets its own ranked read across the eligible catalog.
+  const catalogAuthorSet = useMemo(
+    () => new Set(catalogAuthorPubkeys),
+    [catalogAuthorPubkeys]
+  )
   const globalSearchKey = getGlobalProductSearchQueryKey({
     query: normalizedSearchQuery,
     pubkey,
@@ -117,7 +129,13 @@ export function useMarketBrowseModel({
   })
   const globalSearchQuery = useQuery({
     ...MARKET_SEARCH_QUERY_POLICY,
-    queryKey: globalSearchKey,
+    queryKey: [
+      ...globalSearchKey,
+      selectedMerchants,
+      selectedTags,
+      authGeneration,
+      session.relayScope,
+    ],
     queryFn: ({ signal }) =>
       getMarketplaceProducts({
         authenticatedPubkey: status === "connected" ? pubkey : null,
@@ -125,10 +143,22 @@ export function useMarketBrowseModel({
         signal,
         textQuery: normalizedSearchQuery,
         searchIndex: true,
-        authorPubkeys: catalogAuthorPubkeys,
+        authorPubkeys: selectedMerchants.length
+          ? selectedMerchants.filter((author) => catalogAuthorSet.has(author))
+          : catalogAuthorPubkeys,
+        tags: selectedTags,
         onProgress: (snapshot) => {
           if (!signal.aborted && shouldContinueAccountRead())
-            queryClient.setQueryData(globalSearchKey, snapshot)
+            queryClient.setQueryData(
+              [
+                ...globalSearchKey,
+                selectedMerchants,
+                selectedTags,
+                authGeneration,
+                session.relayScope,
+              ],
+              snapshot
+            )
         },
         readPolicy: {
           maxRelays: 12,
@@ -161,24 +191,31 @@ export function useMarketBrowseModel({
     isSearching && !globalSearchQuery.data && cachedSearchProducts.length > 0
   const familiesByProductId = useMemo(() => {
     const families = { ...productsQuery.familiesByProductId }
-    for (const record of globalSearchQuery.data?.data ?? []) {
+    for (const record of [
+      ...browseRead.records,
+      ...(globalSearchQuery.data?.data ?? []),
+    ]) {
       if (record.family) families[record.product.id] = record.family
     }
     return families
-  }, [globalSearchQuery.data, productsQuery.familiesByProductId])
+  }, [
+    globalSearchQuery.data,
+    productsQuery.familiesByProductId,
+    browseRead.records,
+  ])
   const productData = useMemo(
     () =>
       isSearching
         ? isShowingCachedSearch
           ? cachedSearchProducts
           : globalSearchProducts
-        : productsQuery.products,
+        : browseProducts,
     [
+      browseProducts,
       isSearching,
       isShowingCachedSearch,
       cachedSearchProducts,
       globalSearchProducts,
-      productsQuery.products,
     ]
   )
   const merchantCandidateProducts = useMemo(
@@ -191,14 +228,22 @@ export function useMarketBrowseModel({
         : productsQuery.products,
     [globalSearchEnabled, globalSearchProducts, productsQuery.products]
   )
-  const refreshCatalog = productsQuery.refetch
+  const refreshScope = productsQuery.refetch
+  const refreshCatalog = browseRead.pages.refetch
   const refreshGlobalSearch = globalSearchQuery.refetch
   const refetch = useCallback(async () => {
     await Promise.all([
-      refreshCatalog(),
+      refreshScope(),
+      !isSearching ? refreshCatalog() : undefined,
       globalSearchEnabled ? refreshGlobalSearch() : undefined,
     ])
-  }, [globalSearchEnabled, refreshCatalog, refreshGlobalSearch])
+  }, [
+    globalSearchEnabled,
+    isSearching,
+    refreshScope,
+    refreshCatalog,
+    refreshGlobalSearch,
+  ])
   const preparedProductsQuery = {
     ...productsQuery,
     isInitialLoading:
@@ -206,15 +251,22 @@ export function useMarketBrowseModel({
         ? !isShowingCachedSearch &&
           (!globalSearchEnabled ||
             (productData.length === 0 && globalSearchQuery.isPending))
-        : productsQuery.isInitialLoading,
+        : isSearching
+          ? productsQuery.isInitialLoading
+          : catalogAuthorPubkeys === undefined ||
+            (browseRead.pages.isPending && !productData.length),
     isHydrating:
       isSearching && isRemoteSearchEligible
         ? globalSearchEnabled && globalSearchQuery.isFetching
-        : productsQuery.isHydrating,
+        : isSearching
+          ? productsQuery.isHydrating
+          : browseRead.pages.isFetching,
     error:
       isSearching && isRemoteSearchEligible
         ? globalSearchQuery.error
-        : productsQuery.error,
+        : isSearching
+          ? productsQuery.error
+          : browseRead.pages.error,
     isRefreshStale:
       isSearching && isRemoteSearchEligible
         ? isShowingCachedSearch ||
@@ -224,8 +276,22 @@ export function useMarketBrowseModel({
           !!globalSearchQuery.data?.meta.degraded ||
           !!globalSearchQuery.data?.meta.capped
         : isMarketBrowseRefreshStale({
-            catalogMeta: productsQuery.meta,
-            catalogError: productsQuery.error,
+            catalogMeta: isSearching
+              ? productsQuery.meta
+              : browseRead.pages.data?.pages.length
+                ? {
+                    ...browseRead.pages.data.pages[0].meta,
+                    capped: browseRead.pages.data.pages.some(
+                      (page) => page.meta.capped
+                    ),
+                    degraded: browseRead.pages.data.pages.some(
+                      (page) => page.meta.degraded
+                    ),
+                  }
+                : null,
+            catalogError: isSearching
+              ? productsQuery.error
+              : browseRead.pages.error,
             catalogPaused: productsQuery.isRefreshPaused,
             discoveryStale: productsQuery.discoveryStale,
             globalSearchEnabled: false,
@@ -235,12 +301,16 @@ export function useMarketBrowseModel({
           }),
     refetch,
   }
-  const allMerchantPubkeys = useMemo(() => {
-    if (merchantCandidateProducts.length === 0) return []
-    const set = new Set<string>()
-    for (const product of merchantCandidateProducts) set.add(product.pubkey)
-    return Array.from(set).sort()
-  }, [merchantCandidateProducts])
+  const allMerchantPubkeys = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...(catalogAuthorPubkeys ?? []),
+          ...merchantCandidateProducts.map((product) => product.pubkey),
+        ])
+      ),
+    [catalogAuthorPubkeys, merchantCandidateProducts]
+  )
   const filteredProducts = useMemo(
     () =>
       filterProductsByFacets(productData, {
@@ -252,7 +322,7 @@ export function useMarketBrowseModel({
   )
   const hasUnavailablePriceForSort = useMemo(
     () =>
-      !isSearching &&
+      browseRead.scoped &&
       hasUnavailablePriceForBrowseSort(
         filteredProducts,
         search.sort,
@@ -263,21 +333,29 @@ export function useMarketBrowseModel({
       btcUsdRate,
       familiesByProductId,
       filteredProducts,
-      isSearching,
+      browseRead.scoped,
       search.sort,
     ]
   )
   const filtered = useMemo(
     () =>
-      isSearching
-        ? filteredProducts
-        : sortBrowseProducts(
-            filteredProducts,
-            search.sort,
-            btcUsdRate,
-            familiesByProductId,
-            shopperPresets.discoveryDestination
-          ),
+      sortBrowseProducts(
+        filteredProducts,
+        browseRead.scoped
+          ? (search.sort ?? (isSearching ? "relevance" : "newest"))
+          : "newest",
+        btcUsdRate,
+        familiesByProductId,
+        browseRead.mode === "discover"
+          ? shopperPresets.discoveryDestination
+          : undefined
+      ).sort((a, b) =>
+        (!browseRead.scoped && browseRead.mode !== "discover") ||
+        (browseRead.scoped &&
+          ((!isSearching && !search.sort) || search.sort === "newest"))
+          ? b.updatedAt - a.updatedAt
+          : 0
+      ),
     [
       btcUsdRate,
       familiesByProductId,
@@ -285,6 +363,8 @@ export function useMarketBrowseModel({
       isSearching,
       search.sort,
       shopperPresets.discoveryDestination,
+      browseRead.scoped,
+      browseRead.mode,
     ]
   )
   const visibleProducts = useMemo(
@@ -295,56 +375,31 @@ export function useMarketBrowseModel({
     () =>
       Array.from(
         new Set(
-          filtered
-            .slice(0, visibleCount + PRODUCT_PAGE_SIZE)
-            .map((product) => product.pubkey)
+          filtered.slice(0, visibleCount + 24).map((product) => product.pubkey)
         )
       ),
     [filtered, visibleCount]
   )
-  const storeFacetSortProducts = useMemo(
-    () =>
-      filterProductsByFacets(productData, {
-        q: isSearching ? undefined : search.q,
-        tags: selectedTags,
-      }),
-    [isSearching, productData, search.q, selectedTags]
-  )
-  // Establish menu order before profile hydration so the next page belongs
-  // to the rows the shopper will actually see, not the raw product order.
   const orderedStoreFacets = useMemo(
     () =>
-      sortStoreFacetOptionsByRecentPublisher(
-        getStoreFacetOptions(
-          productData,
-          {
-            q: isSearching ? undefined : search.q,
-            merchants: selectedMerchants,
-            tags: selectedTags,
-          },
-          (merchantPubkey) => merchantPubkey
-        ),
-        storeFacetSortProducts
-      ),
-    [
-      isSearching,
-      productData,
-      search.q,
-      selectedMerchants,
-      selectedTags,
-      storeFacetSortProducts,
-    ]
+      allMerchantPubkeys.map((pubkey) => ({
+        value: pubkey,
+        label: pubkey,
+        count: browseRead.metadata.data?.merchants[pubkey] ?? 0,
+        selected: selectedMerchantSet.has(pubkey),
+      })),
+    [allMerchantPubkeys, browseRead.metadata.data, selectedMerchantSet]
   )
-  const menuMerchantPubkeys = useMemo(
-    () => orderedStoreFacets.map((option) => option.value),
-    [orderedStoreFacets]
+  const menuMerchantPubkeys = allMerchantPubkeys
+  const merchantProfileSearch = useProfileSearch(
+    storeMenuOpen ? merchantQuery : normalizedSearchQuery,
+    {
+      enabled: storeMenuOpen || isSearching,
+      authorPubkeys: menuMerchantPubkeys,
+      accountPubkey: status === "connected" ? pubkey : null,
+      limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
+    }
   )
-  const merchantProfileSearch = useProfileSearch(merchantQuery, {
-    enabled: storeMenuOpen,
-    authorPubkeys: menuMerchantPubkeys,
-    accountPubkey: status === "connected" ? pubkey : null,
-    limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
-  })
   const searchedProfiles = useMemo(
     () =>
       Object.fromEntries(
@@ -417,36 +472,54 @@ export function useMarketBrowseModel({
       }),
     [isSearching, productData, search.q, selectedMerchants]
   )
-  const categoryFacetOptions = useMemo(
-    () =>
-      getCategoryFacetOptions(productData, {
-        q: isSearching ? undefined : search.q,
-        merchants: selectedMerchants,
-        tags: selectedTags,
-      }),
-    [isSearching, productData, search.q, selectedMerchants, selectedTags]
-  )
+  const categoryFacetOptions = useMemo(() => {
+    const counts = new Map(
+      Object.entries(browseRead.metadata.data?.categories ?? {})
+    )
+    for (const option of getCategoryFacetOptions(productData, {}))
+      if (!counts.has(option.value)) counts.set(option.value, option.count)
+    for (const tag of [
+      "art",
+      "books",
+      "clothing",
+      "food",
+      "home",
+      "electronics",
+      ...selectedTags,
+    ])
+      if (!counts.has(tag)) counts.set(tag, 0)
+    return [...counts]
+      .map(([tag, count]) => ({
+        value: tag,
+        label: tag,
+        count,
+        selected: selectedTagSet.has(tag),
+      }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+  }, [browseRead.metadata.data, productData, selectedTags, selectedTagSet])
   const storeFacetOptions = useMemo(() => {
     const matching = merchantQuery.trim()
       ? new Set(
           filterSellersByName(
-            groupDiscoveredSellers(storeFacetSortProducts),
+            allMerchantPubkeys.map((pubkey) => ({
+              pubkey,
+              listingCount: browseRead.metadata.data?.merchants[pubkey] ?? 0,
+              latestListingAt: 0,
+            })),
             getMerchantIdentity,
             merchantQuery
           ).map((seller) => seller.pubkey)
         )
       : null
-    return orderedStoreFacets
-      .filter((option) => !matching || matching.has(option.value))
-      .map((option) => ({
-        ...option,
-        label: getMerchantIdentity(option.value).displayName,
-      }))
+    return orderedStoreFacets.filter(
+      (option) => !matching || matching.has(option.value)
+    )
   }, [
     getMerchantIdentity,
     merchantQuery,
     orderedStoreFacets,
-    storeFacetSortProducts,
+    allMerchantPubkeys,
+    browseRead.metadata.data,
   ])
   /**
    * Storefronts whose own name matches the text query, taken from the same
@@ -457,15 +530,26 @@ export function useMarketBrowseModel({
     const query = search.q?.trim() ?? ""
     if (!query) return []
     return filterSellersByName(
-      groupDiscoveredSellers(merchantCandidateProducts),
+      allMerchantPubkeys.map((pubkey) => ({
+        pubkey,
+        listingCount: browseRead.metadata.data?.merchants[pubkey] ?? 0,
+        latestListingAt: 0,
+      })),
       getMerchantIdentity,
       query
     )
-  }, [getMerchantIdentity, merchantCandidateProducts, search.q])
-  const visibleStoreFacetOptions = storeFacetOptions.slice(
-    0,
-    visibleMerchantCount
-  )
+  }, [
+    getMerchantIdentity,
+    allMerchantPubkeys,
+    browseRead.metadata.data,
+    search.q,
+  ])
+  const visibleStoreFacetOptions = storeFacetOptions
+    .slice(0, visibleMerchantCount)
+    .map((option) => ({
+      ...option,
+      label: getMerchantIdentity(option.value).displayName,
+    }))
   const merchantSearchStatus = !merchantQuery.trim()
     ? undefined
     : getMerchantNameSearchFeedback({
@@ -490,11 +574,15 @@ export function useMarketBrowseModel({
         selectedMerchants,
         selectedTags,
         sort: search.sort,
+        view: search.view,
+        older: search.older,
       }),
     [
       effectiveCatalogSource,
       search.q,
       search.sort,
+      search.view,
+      search.older,
       selectedMerchants,
       selectedTags,
     ]
@@ -520,7 +608,14 @@ export function useMarketBrowseModel({
       search.sort ||
       selectedMerchants.length > 0
     ),
-    hasMore: visibleCount < filtered.length,
+    hasMore:
+      visibleCount < filtered.length ||
+      (!isSearching && !!browseRead.pages.hasNextPage),
+    scoped: browseRead.scoped,
+    browseMode: browseRead.mode,
+    boundaryBlocked:
+      browseRead.pages.data?.pages.some((page) => page.boundaryBlocked) ??
+      false,
     hasUnavailablePriceForSort,
     matchingSellers,
     isUpdatingListings: preparedProductsQuery.isHydrating,
@@ -535,8 +630,7 @@ export function useMarketBrowseModel({
     shouldShowCategories:
       categoryFacetOptions.length > 0 ||
       (productsQuery.isInitialLoading && categoryFacetOptions.length === 0),
-    showCategorySkeleton:
-      productsQuery.isInitialLoading && categoryFacetOptions.length === 0,
+    showCategorySkeleton: false,
     storeFacetOptions: visibleStoreFacetOptions,
     hasMoreStoreFacets: storeFacetOptions.length > visibleMerchantCount,
     merchantSearchStatus,

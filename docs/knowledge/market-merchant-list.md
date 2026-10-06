@@ -39,6 +39,10 @@ the shared list does not imply that every organizer was queried.
 
 ## Browse loading
 
+The category-led `/products` feed uses separate bounded pages and full-scope
+selector metadata; see [category-led product browsing](category-led-product-browsing.md).
+The merchant directory retains the progressive catalog path below.
+
 Market shares one progressive catalog query across matching consumers, scoped
 by catalog authors, source, account/session authority, and relay settings. A
 warm query is reused for one minute; an explicit refresh starts one replacement
@@ -110,9 +114,10 @@ profile route. Kind-0 profile metadata is a complete event, so fetching names
 also receives other metadata fields, but receiving an image URL does not
 download that image.
 
-These client scheduling changes preserve relay selection and catalog scope.
-Revealing another page is display pagination, not relay pagination, and a first
-page does not establish complete relay coverage.
+The directory and merchant menu retain their existing catalog scope and relay
+selection. Their row paging is display pagination. Products use the bounded
+relay pagination described in the category-led browsing note. A first page
+does not establish complete relay coverage.
 
 ## Initial review basis
 

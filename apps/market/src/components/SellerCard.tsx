@@ -12,10 +12,12 @@ export function SellerCard({
   pubkey,
   identity,
   listingCount,
+  countIsCached = false,
 }: {
   pubkey: string
   identity: MerchantIdentityView
-  listingCount: number
+  listingCount?: number
+  countIsCached?: boolean
 }) {
   return (
     <Link
@@ -43,7 +45,9 @@ export function SellerCard({
         </span>
       </span>
       <Badge variant="secondary" className="shrink-0 text-[10px]">
-        {listingCount} {listingCount === 1 ? "listing" : "listings"}
+        {listingCount === undefined
+          ? "Browse catalog"
+          : `${listingCount} ${countIsCached ? "cached" : listingCount === 1 ? "listing" : "listings"}`}
       </Badge>
     </Link>
   )

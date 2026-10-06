@@ -19,9 +19,12 @@ import {
   type ProductCatalogSourceMode,
 } from "./productCatalogRead"
 
-export type MarketBrowseSortOption = "newest" | "price_asc" | "price_desc"
+export type MarketBrowseSortOption =
+  "newest" | "relevance" | "price_asc" | "price_desc"
 
 export interface MarketBrowseSearch {
+  view?: "discover" | "recent" | "all"
+  older?: boolean
   merchant?: string[]
   q?: string
   source?: ProductCatalogSourceMode
@@ -214,6 +217,8 @@ export function sortBrowseProducts(
   destination?: { country: string; postalCode: string } | null
 ): Product[] {
   switch (sort) {
+    case "relevance":
+      return products
     case "price_asc":
       return Array.from(products).sort(
         (a, b) =>
@@ -307,6 +312,8 @@ export function getBrowseSearchKey(input: {
   selectedTags: readonly string[]
   selectedMerchants: readonly string[]
   sort?: MarketBrowseSortOption
+  view?: string
+  older?: boolean
 }): string {
-  return `${input.q}-${input.source}-${input.selectedTags.slice().sort().join(",")}-${input.sort}-${input.selectedMerchants.slice().sort().join(",")}`
+  return `${input.view}-${input.older}-${input.q}-${input.source}-${input.selectedTags.slice().sort().join(",")}-${input.sort}-${input.selectedMerchants.slice().sort().join(",")}`
 }

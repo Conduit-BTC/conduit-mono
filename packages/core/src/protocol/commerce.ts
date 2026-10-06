@@ -1144,6 +1144,11 @@ async function runFetchEventsFanoutDetailed(
   options?: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
 ): Promise<{
   events: SignedPublicNostrEvent[]
+  relays?: {
+    relayUrl: string
+    eventCount: number
+    rejectedEventCount?: number
+  }[]
   degraded: boolean
   capped: boolean
   coverage: "complete" | "partial" | "unavailable"
@@ -1155,6 +1160,7 @@ async function runFetchEventsFanoutDetailed(
     )
     return {
       events: result.events,
+      relays: result.relays,
       coverage:
         result.relays.length === 0 ||
         result.relays.every((relay) => relay.status === "failed")
@@ -1213,6 +1219,7 @@ async function runFetchEventsFanoutDetailed(
   const result = await fetchSignedEventsFanoutDetailed(filter, options)
   return {
     events: result.events,
+    relays: result.relays,
     coverage:
       result.relays.length === 0 ||
       result.relays.every((relay) => relay.status === "failed")
@@ -4247,6 +4254,15 @@ async function fetchPublicProductRecords(query: {
   shouldContinue?: () => boolean
   extraRelayUrls?: readonly string[]
   searchText?: string
+  tags?: string[]
+  since?: number
+  until?: number
+  relayHintMode?: "skip"
+  boundCandidates?: boolean
+  onCandidateWindow?: (
+    events: readonly { id: string; created_at: number }[],
+    boundaryUntil?: number
+  ) => void
   limit?: number
   readPolicy?: CommerceReadPolicy
   onTransportStatus?: (degraded: boolean, capped: boolean) => void
@@ -4264,6 +4280,9 @@ async function fetchPublicProductRecords(query: {
   if (query.dTags) filter["#d"] = query.dTags
   if (query.parentAddresses) filter["#a"] = query.parentAddresses
   if (query.searchText) filter.search = query.searchText
+  if (query.tags?.length) filter["#t"] = query.tags
+  if (query.since !== undefined) filter.since = query.since
+  if (query.until !== undefined) filter.until = query.until
 
   const productSearchRelayUrls = config.searchIndexRelayUrls.slice(0, 1)
   const relayPlan = query.searchText
@@ -4281,6 +4300,7 @@ async function fetchPublicProductRecords(query: {
             ? "author_products"
             : "commerce_products",
         authors: query.authors,
+        relayHintMode: query.relayHintMode,
         authenticatedPubkey: query.authenticatedPubkey,
         accountPubkey: query.accountPubkey,
         maxRelays: query.extraRelayUrls?.length
@@ -4308,10 +4328,36 @@ async function fetchPublicProductRecords(query: {
     shouldContinue: query.shouldContinue,
     signal: query.signal,
     preserveEventOrder: !!query.searchText,
+    maxEventsPerRelay: query.boundCandidates ? query.limit : undefined,
     connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
   })
   query.onTransportStatus?.(result.degraded, result.capped)
+  if (query.onCandidateWindow) {
+    // A union's oldest event can skip a denser source's unseen older rows.
+    // Advance only as far as every saturated source's signed window allows.
+    const oldestByRelay = new Map<string, number>()
+    for (const event of result.events)
+      for (const relayUrl of getEventSourceRelayUrls(event))
+        oldestByRelay.set(
+          relayUrl,
+          Math.min(oldestByRelay.get(relayUrl) ?? Infinity, event.created_at)
+        )
+    const sourceFrontiers = (result.relays ?? [])
+      .filter(
+        (source) =>
+          source.eventCount + (source.rejectedEventCount ?? 0) >=
+          (query.limit ?? Infinity)
+      )
+      .flatMap((source) => {
+        const oldest = oldestByRelay.get(source.relayUrl)
+        return oldest === undefined ? [] : [oldest]
+      })
+    query.onCandidateWindow(
+      result.events,
+      sourceFrontiers.length ? Math.max(...sourceFrontiers) : undefined
+    )
+  }
   query.onSearchCoverage?.(result.coverage)
 
   const deletionTimestamps = query.localDeletionEvidenceOnly
@@ -4653,6 +4699,11 @@ async function getRankedMarketplaceProducts(
   const hits = (
     await fetchPublicProductRecords({
       searchText: query.textQuery!.trim(),
+      boundCandidates: true,
+      authors: authors ? uniqueStrings(authors) : undefined,
+      tags: query.tags?.length
+        ? canonicalizeProductTags(query.tags)
+        : undefined,
       accountPubkey: query.accountPubkey,
       authenticatedPubkey: query.authenticatedPubkey,
       signal: query.signal,
@@ -4782,6 +4833,342 @@ async function getRankedMarketplaceProducts(
   }
 }
 
+/** Selector hints use the full known scope, independently of browse sampling.
+ * Cached display fields are metadata, never signed/action-time authority. */
+export async function getMarketplaceCatalogMetadata(authorPubkeys: string[]) {
+  const merchants = new Map(authorPubkeys.map((pubkey) => [pubkey, 0]))
+  const categories = new Map<string, number>()
+  await getLocalProductDeletionTimestamps(undefined, authorPubkeys)
+  const resolveDeletion = prepareProductDeletionResolver(
+    getLocalProductDeletionSnapshot().evidence
+  )
+  const visit = (row: CachedProduct) => {
+    if (!merchants.has(row.pubkey) || row.type === "variation") return
+    if (
+      row.visibility === "private" ||
+      resolveDeletion({
+        authorPubkey: row.pubkey,
+        eventId: row.eventId,
+        addressId: row.dTag ? row.id : null,
+        createdAt: cachedProductEventCreatedAt(row),
+      }).deleted
+    )
+      return
+    merchants.set(row.pubkey, (merchants.get(row.pubkey) ?? 0) + 1)
+    for (const tag of canonicalizeProductTags(row.tags))
+      categories.set(tag, (categories.get(tag) ?? 0) + 1)
+  }
+  if (testOverrides.getCachedProducts) {
+    for (const row of await testOverrides.getCachedProducts(
+      undefined,
+      authorPubkeys
+    ))
+      visit(row)
+  } else if (authorPubkeys.length) {
+    // Cursor projection avoids normalizing/allocating a full display catalog.
+    await db.products.where("pubkey").anyOf(authorPubkeys).each(visit)
+  }
+  return {
+    merchants: Object.fromEntries(merchants),
+    categories: Object.fromEntries(categories),
+  }
+}
+
+export interface MarketplaceBrowseCursor {
+  authorOffset?: number
+  until?: number
+  /** Inclusive timestamp overlap; never skip an unseen tied event. */
+  boundaryIds?: string[]
+  boundaryLimit?: number
+}
+export interface MarketplaceBrowsePage extends CommerceResult<
+  CommerceProductRecord[]
+> {
+  nextCursor?: MarketplaceBrowseCursor
+  boundaryBlocked: boolean
+  candidateCount: number
+}
+export interface MarketplaceBrowseQuery extends MarketplaceProductsQuery {
+  mode: "discover" | "recent" | "all"
+  /** Explicit merchant navigation retains the shared NIP-65 read path. */
+  merchantScope?: boolean
+  includeOlder?: boolean
+  pageCursor?: MarketplaceBrowseCursor
+}
+
+/** Bounded discovery/scoped browsing, through the existing signed read owner.
+ * No recency condition applies to Discover or explicit facets. */
+export async function getMarketplaceBrowsePage(
+  query: MarketplaceBrowseQuery
+): Promise<MarketplaceBrowsePage> {
+  const controller = new AbortController()
+  const abort = () => controller.abort(query.signal?.reason)
+  if (query.signal?.aborted) abort()
+  else query.signal?.addEventListener("abort", abort, { once: true })
+  // Includes planner/queue waits, not just socket execution.
+  const deadline = setTimeout(
+    () => controller.abort(new Error("Browse read deadline exceeded")),
+    20_000
+  )
+  const signal = controller.signal
+  const assertCurrent = () => {
+    signal.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+  }
+  try {
+    assertCurrent()
+    const authors = uniqueStrings(query.authorPubkeys ?? [])
+    const scoped =
+      !!query.tags?.length || !!query.merchantPubkey || !!query.merchantScope
+    const discover = query.mode === "discover" && !scoped
+    const selectedAuthors = query.merchantPubkey
+      ? [query.merchantPubkey]
+      : authors
+    const readPolicy = {
+      maxRelays: query.merchantScope ? 8 : 2,
+      connectTimeoutMs: 2_000,
+      fetchTimeoutMs: 3_000,
+    }
+    let degraded = false
+    let capped = false
+    let candidateCount = 0
+    let candidateBoundary: number | undefined
+    let candidateWindow: readonly { id: string; created_at: number }[] = []
+    const fetch = async (
+      readAuthors: string[],
+      limit: number,
+      until?: number
+    ) => {
+      assertCurrent()
+      if (!readAuthors.length) return []
+      const rows = await fetchPublicProductRecords({
+        authors: readAuthors,
+        tags: query.tags?.length
+          ? canonicalizeProductTags(query.tags)
+          : undefined,
+        since:
+          !scoped && query.mode === "recent" && !query.includeOlder
+            ? Math.floor(now() / 1000) - 30 * 86400
+            : undefined,
+        until,
+        limit,
+        relayHintMode: query.merchantScope ? undefined : "skip",
+        boundCandidates: true,
+        localDeletionEvidenceOnly: true,
+        onCandidateWindow: (events, boundaryUntil) => {
+          candidateBoundary = boundaryUntil
+          candidateWindow = events
+          candidateCount += events.length
+        },
+        retainRevisions: true,
+        readPolicy,
+        signal,
+        authenticatedPubkey: query.authenticatedPubkey,
+        accountPubkey: query.accountPubkey,
+        shouldContinue: query.shouldContinue,
+        onTransportStatus: (partial, saturated) => {
+          degraded ||= partial
+          capped ||= saturated
+        },
+      })
+      assertCurrent()
+      return rows
+    }
+    const cachedCandidates = async (readAuthors: string[], limit: number) => {
+      if (!readAuthors.length) return []
+      const allowed = new Set(readAuthors)
+      const tags = new Set(canonicalizeProductTags(query.tags))
+      const matches = (row: CachedProduct) =>
+        allowed.has(row.pubkey) &&
+        (!tags.size ||
+          canonicalizeProductTags(row.tags).some((tag) => tags.has(tag))) &&
+        (query.mode !== "recent" ||
+          scoped ||
+          query.includeOlder ||
+          cachedProductEventCreatedAt(row) >=
+            Math.floor(now() / 1000) - 30 * 86400) &&
+        (query.pageCursor?.until === undefined ||
+          cachedProductEventCreatedAt(row) <= query.pageCursor.until)
+      const rows = testOverrides.getCachedProducts
+        ? (await testOverrides.getCachedProducts(undefined, readAuthors))
+            .filter(matches)
+            .slice(0, limit)
+        : await db.products
+            .where("pubkey")
+            .anyOf(readAuthors)
+            .filter(matches)
+            .limit(limit)
+            .toArray()
+      return rows.map(fromCachedProduct)
+    }
+    let live: CommerceProductRecord[] = []
+    let nextCursor: MarketplaceBrowseCursor | undefined
+    let boundaryBlocked = false
+    if (discover) {
+      const offset = query.pageCursor?.authorOffset ?? 0
+      // Twelve merchants, four display candidates each. Read at most two
+      // batches to fill sparse catalogs; two concurrent authors, no retries.
+      let consumed = 0
+      while (consumed < 24 && offset + consumed < authors.length) {
+        const batch = authors.slice(offset + consumed, offset + consumed + 12)
+        let index = 0
+        const batches: CommerceProductRecord[][] = new Array(batch.length)
+        await Promise.all(
+          Array.from({ length: Math.min(2, batch.length) }, async () => {
+            while (index < batch.length) {
+              const i = index++
+              batches[i] = [
+                ...(await cachedCandidates([batch[i]], 8)),
+                ...(await fetch([batch[i]], 8)),
+              ]
+            }
+          })
+        )
+        live.push(...batches.flat())
+        consumed += batch.length
+        if (live.length >= 96) break
+      }
+      if (offset + consumed < authors.length)
+        nextCursor = { authorOffset: offset + consumed }
+    } else {
+      const cursor = query.pageCursor
+      const limit = cursor?.boundaryLimit ?? 96
+      const fetched = await fetch(selectedAuthors, limit, cursor?.until)
+      live = [...(await cachedCandidates(selectedAuthors, limit)), ...fetched]
+      const oldest =
+        candidateBoundary ??
+        (candidateWindow.length
+          ? Math.min(...candidateWindow.map((event) => event.created_at))
+          : undefined)
+      if (capped && oldest !== undefined) {
+        const boundaryIds = candidateWindow
+          .filter((event) => event.created_at === oldest)
+          .map((event) => event.id)
+        if (oldest === cursor?.until) {
+          if (limit < 384)
+            nextCursor = {
+              until: oldest,
+              boundaryIds: uniqueStrings([
+                ...(cursor.boundaryIds ?? []),
+                ...boundaryIds,
+              ]),
+              boundaryLimit: Math.min(limit * 2, 384),
+            }
+          else boundaryBlocked = true
+        } else nextCursor = { until: oldest, boundaryIds }
+      }
+    }
+    assertCurrent()
+    // One shared revocation read per page avoids repeating NIP-65/deletion
+    // planning for every merchant while retaining signed negative evidence.
+    await fetchProductDeletionTimestamps(
+      live.map(deletionCandidateFromRecord),
+      {
+        readPolicy,
+        signal,
+        accountPubkey: query.accountPubkey,
+        authenticatedPubkey: query.authenticatedPubkey,
+        shouldContinue: query.shouldContinue,
+      }
+    )
+    assertCurrent()
+    // Read only observed coordinates and their family context from the cache;
+    // stronger cached revisions survive relay omission. No full-cache merge.
+    const cached = await getCachedExactProductRecords(
+      live.map((row) => row.addressId),
+      live
+    )
+    const familyTargets = uniqueStrings(
+      live
+        .filter(
+          (row) =>
+            row.product.type === "variable" || row.product.type === "variation"
+        )
+        .map((row) => row.addressId)
+    ).slice(0, 32)
+    if (familyTargets.length) {
+      const familyRead = await readProductsByIds(
+        familyTargets,
+        {
+          signal,
+          accountPubkey: query.accountPubkey,
+          authenticatedPubkey: query.authenticatedPubkey,
+          shouldContinue: query.shouldContinue,
+        },
+        [...cached, ...live]
+      )
+      degraded ||= !!familyRead.meta.degraded || familyTargets.length >= 32
+      capped ||= !!familyRead.meta.capped
+      live.push(
+        ...familyRead.data.flatMap(
+          (row) => row.exactReadContext?.records ?? [row]
+        )
+      )
+      assertCurrent()
+    }
+    const deletions = await getLocalProductDeletionTimestamps(
+      undefined,
+      selectedAuthors
+    )
+    const records = mergeCachedAndLiveProductRecords({
+      cached,
+      live,
+      deletionTimestamps: deletions,
+    })
+    await cacheProductRecords(records)
+    assertCurrent()
+    const currentDeletions = await getLocalProductDeletionTimestamps(
+      undefined,
+      selectedAuthors
+    )
+    const resolved = mergeCachedAndLiveProductRecords({
+      cached,
+      live,
+      deletionTimestamps: currentDeletions,
+    })
+    const meta = createMeta(
+      "marketplace_products",
+      "public",
+      PRODUCT_CAPABILITIES,
+      { degraded, capped: capped || !!nextCursor || boundaryBlocked }
+    )
+    const data = filterProductRecordsForRead(resolved)
+      .filter(createProductQueryMatcher(query))
+      .filter(
+        (row) =>
+          scoped ||
+          query.mode !== "recent" ||
+          query.includeOlder ||
+          row.eventCreatedAt >= Math.floor(now() / 1000) - 30 * 86400
+      )
+    // Discovery caps each merchant after family/deletion preparation.
+    const merchantCandidates = new Map<string, CommerceProductRecord[]>()
+    if (discover) {
+      for (const row of data) {
+        const candidates = merchantCandidates.get(row.product.pubkey) ?? []
+        if (candidates.length < 4) candidates.push(row)
+        merchantCandidates.set(row.product.pubkey, candidates)
+      }
+    }
+    const selection: CommerceProductRecord[] = []
+    for (let rank = 0; discover && rank < 4; rank++)
+      for (const candidates of merchantCandidates.values())
+        if (candidates[rank] && selection.length < 96)
+          selection.push(candidates[rank])
+    return {
+      data: withProductFamilyReadEvidence(discover ? selection : data, meta),
+      meta,
+      nextCursor,
+      boundaryBlocked,
+      candidateCount,
+    }
+  } finally {
+    clearTimeout(deadline)
+    query.signal?.removeEventListener("abort", abort)
+  }
+}
+
 export async function getMarketplaceProducts(
   query: MarketplaceProductsQuery = {}
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
@@ -4808,7 +5195,23 @@ export async function getMarketplaceProducts(
   }
 
   if (query.searchIndex && query.textQuery?.trim()) {
-    return getRankedMarketplaceProducts(query)
+    const controller = new AbortController()
+    const abort = () => controller.abort(query.signal?.reason)
+    if (query.signal?.aborted) abort()
+    else query.signal?.addEventListener("abort", abort, { once: true })
+    const deadline = setTimeout(
+      () => controller.abort(new Error("Search read deadline exceeded")),
+      20_000
+    )
+    try {
+      return await getRankedMarketplaceProducts({
+        ...query,
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(deadline)
+      query.signal?.removeEventListener("abort", abort)
+    }
   }
 
   try {
