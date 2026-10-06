@@ -7,6 +7,7 @@ import {
   safePlaywrightSmokeId,
   safePlaywrightSmokeTitle,
 } from "./playwright_smoke_reporter"
+import { safeProductSubmitBlockers } from "./product_submit_diagnostics"
 
 type PlaywrightJsonSpec = {
   file?: string
@@ -26,6 +27,7 @@ type PlaywrightJsonSpec = {
 }
 
 type PlaywrightJsonResult = {
+  productSubmitBlockers?: unknown
   duration?: number
   error?: PlaywrightJsonError
   errors?: PlaywrightJsonError[]
@@ -149,7 +151,11 @@ function firstAttemptDiagnostic(result?: PlaywrightJsonResult): string {
       ? `${file}${location?.line ? `:${location.line}` : ""}${location?.column ? `:${location.column}` : ""}`
       : "unavailable"
 
-  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}.`
+  const blockers = safeProductSubmitBlockers(result?.productSubmitBlockers)
+  const readiness = blockers
+    ? ` Product submit blockers: ${blockers.join(", ") || "none"}.`
+    : ""
+  return `First attempt: retry=${retry} status=${status} duration=${duration} error=${errorLocation}.${readiness}`
 }
 
 export function buildPlaywrightSmokeManifest(

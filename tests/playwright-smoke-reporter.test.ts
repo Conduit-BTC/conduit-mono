@@ -24,6 +24,15 @@ import {
   safePlaywrightSmokeId,
 } from "../scripts/ci/playwright_smoke_reporter"
 
+import {
+  decodeProductSubmitDiagnostic,
+  productSubmitDiagnosticAttachment,
+} from "../scripts/ci/product_submit_diagnostics"
+import {
+  buildPlaywrightSmokeManifest,
+  validatePlaywrightSmokeExecution,
+} from "../scripts/ci/validate_playwright_smoke_areas"
+
 describe("privacy-safe Playwright smoke reporter", () => {
   it("persists only the smoke verifier's content-free status fields", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-reporter-"))
@@ -200,6 +209,201 @@ describe("privacy-safe Playwright smoke reporter", () => {
         expect(statSync(outputFile).mode & 0o777).toBe(0o600)
         expect(statSync(progressFile).mode & 0o777).toBe(0o600)
       }
+    } finally {
+      rmSync(directory, { force: true, recursive: true })
+    }
+  })
+
+  it("preserves only bounded shipping submit categories for the failed attempt", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-readiness-"))
+    const outputFile = join(directory, "results.json")
+    const progressFile = join(directory, "progress.log")
+    const sourceFile = join(
+      directory,
+      "e2e/merchant-shipping-tables.playwright.ts"
+    )
+    const sentinel = "private-readiness-value-must-not-be-serialized"
+    const evidence = {
+      baseSha: "a".repeat(40),
+      sourceHeadSha: "b".repeat(40),
+      testedSha: "c".repeat(40),
+    }
+    try {
+      mkdirSync(join(directory, "e2e"))
+      writeFileSync(
+        sourceFile,
+        'test("shipping smoke @merchant", async () => {})'
+      )
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        progressFile,
+      })
+      reporter.onBegin(
+        { metadata: { smokeEvidence: evidence } } as FullConfig,
+        { allTests: () => [1] } as unknown as Suite
+      )
+      const testCase = {
+        expectedStatus: "passed",
+        id: "shipping-test",
+        location: { file: sourceFile, line: 1, column: 1 },
+        ok: () => true,
+        outcome: () => "flaky",
+        tags: ["@merchant"],
+        title: "shipping smoke @merchant",
+      } as TestCase
+      const attachment = {
+        name: productSubmitDiagnosticAttachment,
+        contentType: "application/json",
+        body: Buffer.from(
+          JSON.stringify({ blockers: ["form-invalid", "signer-unready"] })
+        ),
+        path: sentinel,
+      }
+      reporter.onTestEnd(testCase, {
+        attachments: [
+          attachment,
+          { ...attachment, name: sentinel, body: Buffer.from(sentinel) },
+        ],
+        duration: 100,
+        error: { location: testCase.location, message: sentinel },
+        retry: 0,
+        status: "failed",
+      } as unknown as TestResult)
+      reporter.onTestEnd(testCase, {
+        attachments: [attachment],
+        duration: 50,
+        retry: 1,
+        status: "passed",
+      } as unknown as TestResult)
+      reporter.onEnd({ status: "passed" } as FullResult)
+      const serialized = readFileSync(outputFile, "utf8")
+      const progress = readFileSync(progressFile, "utf8")
+      const report = JSON.parse(serialized)
+      const attempts = report.suites[0].specs[0].tests[0].results
+      expect(attempts[0].productSubmitBlockers).toEqual([
+        "signer-unready",
+        "form-invalid",
+      ])
+      expect(attempts[1].productSubmitBlockers).toBeUndefined()
+      expect(progress).toContain("blockers=signer-unready,form-invalid")
+      expect(serialized).not.toContain(sentinel)
+      expect(progress).not.toContain(sentinel)
+      const manifest = buildPlaywrightSmokeManifest(
+        report,
+        ["merchant"],
+        evidence
+      )
+      expect(() =>
+        validatePlaywrightSmokeExecution(
+          report,
+          manifest,
+          ["merchant"],
+          evidence
+        )
+      ).toThrow("Product submit blockers: signer-unready, form-invalid.")
+      // A retry pass must still fail the aggregate acceptance policy.
+      expect(() =>
+        validatePlaywrightSmokeExecution(
+          report,
+          manifest,
+          ["merchant"],
+          evidence
+        )
+      ).toThrow("retry-dependent smoke tests as flaky")
+      attempts[0].productSubmitBlockers = [sentinel]
+      try {
+        validatePlaywrightSmokeExecution(
+          report,
+          manifest,
+          ["merchant"],
+          evidence
+        )
+      } catch (error) {
+        expect(String(error)).not.toContain(sentinel)
+      }
+    } finally {
+      rmSync(directory, { force: true, recursive: true })
+    }
+  })
+
+  it("drops malformed, oversized, file-backed, duplicated, and unrelated readiness attachments", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-readiness-"))
+    const sentinel = "private-diagnostic-sentinel"
+    const valid = {
+      name: productSubmitDiagnosticAttachment,
+      contentType: "application/json",
+      body: Buffer.from(JSON.stringify({ blockers: ["save-pending"] })),
+    }
+    try {
+      const sourceFile = join(
+        directory,
+        "e2e/merchant-shipping-tables.playwright.ts"
+      )
+      mkdirSync(join(directory, "e2e"))
+      writeFileSync(
+        sourceFile,
+        'test("shipping smoke @merchant", async () => {})'
+      )
+      for (const [index, attachments, file] of [
+        [0, [{ ...valid, body: Buffer.from(sentinel) }], sourceFile],
+        [
+          1,
+          [
+            {
+              ...valid,
+              body: Buffer.from(JSON.stringify({ blockers: [sentinel] })),
+            },
+          ],
+          sourceFile,
+        ],
+        [
+          2,
+          [
+            {
+              ...valid,
+              body: Buffer.from(
+                JSON.stringify({ blockers: ["save-pending"], secret: sentinel })
+              ),
+            },
+          ],
+          sourceFile,
+        ],
+        [3, [{ ...valid, body: Buffer.alloc(257, 65) }], sourceFile],
+        [4, [{ ...valid, body: undefined, path: sourceFile }], sourceFile],
+        [5, [valid, valid], sourceFile],
+        [6, [valid], join(directory, "e2e/other.playwright.ts")],
+        [7, [{ ...valid, contentType: "text/plain" }], sourceFile],
+      ] as const) {
+        const outputFile = join(directory, `results-${index}.json`)
+        const reporter = new PrivacySafeSmokeReporter({ outputFile })
+        const testCase = {
+          expectedStatus: "passed",
+          id: "shipping-test",
+          location: { file, line: 1 },
+          ok: () => false,
+          outcome: () => "unexpected",
+          tags: ["@merchant"],
+          title: "shipping smoke @merchant",
+        } as TestCase
+        reporter.onTestEnd(testCase, {
+          attachments,
+          duration: 1,
+          retry: 0,
+          status: "failed",
+        } as unknown as TestResult)
+        reporter.onEnd({ status: "failed" } as FullResult)
+        const serialized = readFileSync(outputFile, "utf8")
+        expect(serialized).not.toContain("productSubmitBlockers")
+        expect(serialized).not.toContain(sentinel)
+      }
+      expect(
+        decodeProductSubmitDiagnostic(Buffer.from('{"blockers":[]}'))
+      ).toEqual([])
+      expect(
+        decodeProductSubmitDiagnostic(
+          Buffer.from('{"blockers":["unavailable"]}')
+        )
+      ).toEqual(["unavailable"])
     } finally {
       rmSync(directory, { force: true, recursive: true })
     }

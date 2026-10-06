@@ -11,6 +11,7 @@ import {
   seedTestRelayIdentity,
   TEST_RELAY_URL,
 } from "./helpers/auth"
+import { expectProductSubmitReady } from "./helpers/product-submit-readiness"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
@@ -253,6 +254,11 @@ for (const { reopen, invalid } of [
     await expect(replace).toHaveCount(0)
     await expect(page.getByText("Published", { exact: true })).toBeVisible()
   })
+}
+
+async function fillAndConfirm(control: Locator, value: string): Promise<void> {
+  await control.fill(value)
+  await expect(control).toHaveValue(value)
 }
 
 async function chooseCountry(page: Page, label: string, country: string) {
@@ -569,10 +575,14 @@ for (const [viewportName, width, height] of [
       await activate(page.getByRole("button", { name: "Add product" }).first())
       const dialog = page.getByRole("dialog", { name: "Add product" })
       await expect(dialog).toBeVisible()
-      await dialog
-        .getByLabel("Title", { exact: true })
-        .fill(`Table product ${index}`)
-      await dialog.getByLabel("Price", { exact: true }).fill("1000")
+      await expect(
+        dialog.getByRole("button", { name: "Publish product", exact: true })
+      ).toHaveAttribute("data-product-submit-blockers", "form-invalid")
+      await fillAndConfirm(
+        dialog.getByLabel("Title", { exact: true }),
+        `Table product ${index}`
+      )
+      await fillAndConfirm(dialog.getByLabel("Price", { exact: true }), "1000")
       await expect(
         dialog.getByLabel("Currency", { exact: true })
       ).toContainText("SATS")
@@ -582,31 +592,43 @@ for (const [viewportName, width, height] of [
       if (index === 1) {
         await dialog.getByLabel("Weight unit", { exact: true }).click()
         await page.getByRole("option", { name: "Ounces", exact: true }).click()
+        await expect(
+          dialog.getByLabel("Weight unit", { exact: true })
+        ).toHaveText("Ounces")
       } else {
         await dialog.getByLabel("Weight unit", { exact: true }).click()
         await page.getByRole("option", { name: "Grams", exact: true }).click()
+        await expect(
+          dialog.getByLabel("Weight unit", { exact: true })
+        ).toHaveText("Grams")
         await dialog.getByLabel("Currency", { exact: true }).click()
         await page.getByRole("option", { name: "USD", exact: true }).click()
+        await expect(dialog.getByLabel("Currency", { exact: true })).toHaveText(
+          "USD"
+        )
         await expect(
           dialog.getByText("Shipping uses SATS; this product uses USD.", {
             exact: true,
           })
         ).toBeVisible()
       }
-      await dialog
-        .getByLabel("Shipping weight", { exact: true })
-        .fill(index === 1 ? "8" : weight)
+      await fillAndConfirm(
+        dialog.getByLabel("Shipping weight", { exact: true }),
+        index === 1 ? "8" : weight
+      )
       await dialog.getByText("Packing and dimensions", { exact: true }).click()
-      await dialog
-        .getByLabel("Extra packing weight", { exact: true })
-        .fill(index === 1 ? "1" : "50")
-      await dialog
-        .getByLabel("Handling per item", { exact: true })
-        .fill(index === 1 ? "25" : "1.25")
+      await fillAndConfirm(
+        dialog.getByLabel("Extra packing weight", { exact: true }),
+        index === 1 ? "1" : "50"
+      )
+      await fillAndConfirm(
+        dialog.getByLabel("Handling per item", { exact: true }),
+        index === 1 ? "25" : "1.25"
+      )
       await dialog.getByRole("button", { name: "Add by URL" }).click()
-      await dialog
-        .getByLabel("Primary image URL")
-        .fill(`https://media.conduit.market/shipping-table-${index}.png`)
+      await expect(dialog.getByLabel("Primary image URL")).toBeFocused()
+      const imageUrl = `https://media.conduit.market/shipping-table-${index}.png`
+      await fillAndConfirm(dialog.getByLabel("Primary image URL"), imageUrl)
       const tags = dialog.getByRole("combobox", { name: "Tags", exact: true })
       await tags.fill("shipping, table, test")
       await tags.press("Tab")
@@ -623,9 +645,10 @@ for (const [viewportName, width, height] of [
           path: testInfo.outputPath("shipping-product-mobile.png"),
         })
       }
-      await expect(
-        dialog.getByRole("button", { name: "Publish product", exact: true })
-      ).toBeEnabled()
+      await expectProductSubmitReady(
+        dialog.getByRole("button", { name: "Publish product", exact: true }),
+        testInfo
+      )
       await dialog
         .getByRole("button", { name: "Publish product", exact: true })
         .click()
