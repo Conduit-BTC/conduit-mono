@@ -32,10 +32,12 @@ import {
   ReplaceablePublishSafetyError,
   assertSafeReplaceablePublish,
 } from "./replaceable-safety"
+import { type SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  sameSignedPublicEvent,
+} from "./verified-public-event"
 
 export type FollowListEventLike = {
   id?: string
@@ -81,7 +83,7 @@ export interface FollowListAuthorRead {
   hintRelayUrls?: string[]
   plannedRelayUrls: string[]
   relays: RelayReadSourceStatus[]
-  eventsVerified: boolean
+  verificationComplete: boolean
   coverage: FollowListCoverageState
   relayListState: RelayListResolutionState
   relayHintTruncated: boolean
@@ -95,7 +97,7 @@ export interface FollowListReadResult {
   authors: FollowListAuthorRead[]
   plannedRelayUrls: string[]
   relays: RelayReadSourceStatus[]
-  eventsVerified: boolean
+  verificationComplete: boolean
 }
 
 /**
@@ -251,7 +253,9 @@ function cloneOwnContactListSnapshot(
 ): CachedOwnContactListSnapshot {
   return {
     ...snapshot,
-    event: cloneSignedEvent(snapshot.event),
+    event: isVerifiedNostrEvent(snapshot.event)
+      ? snapshot.event
+      : cloneSignedEvent(snapshot.event),
     sourceRelayUrls: [...snapshot.sourceRelayUrls],
   }
 }
@@ -266,7 +270,7 @@ function isValidOwnContactListSnapshot(
     snapshot.event.pubkey === pubkey &&
     snapshot.event.kind === EVENT_KINDS.CONTACT_LIST &&
     (snapshot.state === "observed" || snapshot.state === "pending") &&
-    isValidSignedPublicNostrEvent(snapshot.event)
+    isVerifiedNostrEvent(snapshot.event)
   )
 }
 
@@ -275,7 +279,7 @@ function toRetainedOwnFollowListSnapshot(
 ): RetainedOwnFollowListSnapshot {
   return {
     pubkey: snapshot.pubkey,
-    event: cloneSignedEvent(snapshot.event),
+    event: snapshot.event,
     sourceRelayUrls: [...snapshot.sourceRelayUrls],
     state: snapshot.state,
   }
@@ -327,11 +331,13 @@ function rememberOwnContactListSnapshot(
     const oldestKey = observedOwnFollowLists.keys().next().value
     if (oldestKey) observedOwnFollowLists.delete(oldestKey)
   }
-  observedOwnFollowLists.set(snapshot.pubkey, {
-    event: cloneSignedEvent(chosen.event),
-    eventSourceRelayUrls: [...chosen.sourceRelayUrls],
-    state: chosen.state,
-  })
+  if (isVerifiedNostrEvent(chosen.event)) {
+    observedOwnFollowLists.set(snapshot.pubkey, {
+      event: chosen.event,
+      eventSourceRelayUrls: [...chosen.sourceRelayUrls],
+      state: chosen.state,
+    })
+  }
   return chosen
 }
 
@@ -350,6 +356,11 @@ async function loadOwnContactListSnapshot(
   throwIfFollowReadAborted(signal)
 
   if (stored) {
+    const admission = await admitPublicEvent(stored.event, { signal })
+    throwIfFollowReadAborted(signal)
+    if (admission.status === "verified") {
+      stored = { ...stored, event: admission.event }
+    }
     if (!isValidOwnContactListSnapshot(stored, pubkey)) {
       // Ignore corrupt rows in place. Deleting by pubkey after this read would
       // race a valid pending snapshot written by another tab. The next
@@ -429,14 +440,41 @@ async function persistOwnContactListSnapshot(
   }
 ): Promise<CachedOwnContactListSnapshot> {
   const normalized = cloneOwnContactListSnapshot(snapshot)
+  const currentBeforeTransaction =
+    followListTestOverrides.loadOwnContactListSnapshot
+      ? await followListTestOverrides.loadOwnContactListSnapshot(
+          normalized.pubkey
+        )
+      : await db.ownContactListSnapshots.get(normalized.pubkey)
+  const currentAdmission = currentBeforeTransaction
+    ? await admitPublicEvent(currentBeforeTransaction.event)
+    : null
+  const admittedCurrent =
+    currentBeforeTransaction && currentAdmission?.status === "verified"
+      ? { ...currentBeforeTransaction, event: currentAdmission.event }
+      : undefined
   const chooseAfterBaseCheck = (
     current: CachedOwnContactListSnapshot | undefined
   ): CachedOwnContactListSnapshot => {
+    if (current && !admittedCurrent) {
+      throw new ReplaceablePublishSafetyError(
+        "Refusing to replace unverified retained follow-list evidence."
+      )
+    }
+    if (
+      current &&
+      admittedCurrent &&
+      !sameSignedPublicEvent(current.event, admittedCurrent.event)
+    ) {
+      throw new ReplaceablePublishSafetyError(
+        "Refusing to replace follow-list evidence changed during verification."
+      )
+    }
     const validCurrent = isValidOwnContactListSnapshot(
-      current,
+      admittedCurrent,
       normalized.pubkey
     )
-      ? current
+      ? admittedCurrent
       : undefined
     if (validCurrent && options.expectedBaseEvent === null) {
       throw new ReplaceablePublishSafetyError(
@@ -504,7 +542,7 @@ async function preserveStrongestOwnFollowList(
 
   const observedEvent =
     observedOwnerFrontier?.event ??
-    (read.event && read.eventsVerified ? read.event : undefined)
+    (read.event && read.verificationComplete ? read.event : undefined)
   if (observedEvent) {
     const networkSnapshot: CachedOwnContactListSnapshot = {
       pubkey: read.pubkey,
@@ -524,7 +562,7 @@ async function preserveStrongestOwnFollowList(
       })
       retainedWinner = persisted
       if (
-        read.eventsVerified &&
+        read.verificationComplete &&
         read.event?.id === observedEvent.id &&
         persisted.event.id === read.event.id
       ) {
@@ -545,7 +583,7 @@ async function preserveStrongestOwnFollowList(
     ...read,
     event: retainedWinner.event,
     eventSourceRelayUrls: [...retainedWinner.sourceRelayUrls],
-    eventsVerified: true,
+    verificationComplete: true,
     coverage: "limited",
     snapshotState: retainedWinner.state,
   }
@@ -656,7 +694,7 @@ export async function readLatestFollowLists(
       authors: [],
       plannedRelayUrls: [],
       relays: [],
-      eventsVerified: true,
+      verificationComplete: true,
     }
   }
 
@@ -827,7 +865,7 @@ export async function readLatestFollowLists(
             hintRelayUrls: selectedHints,
             plannedRelayUrls: [],
             relays: [],
-            eventsVerified: true,
+            verificationComplete: true,
             coverage: "unavailable",
             relayListState,
             relayHintTruncated,
@@ -889,7 +927,7 @@ export async function readLatestFollowLists(
               status: "failed",
               eventCount: 0,
             })),
-            eventsVerified: true,
+            verificationComplete: true,
             coverage: "unavailable",
             relayListState,
             relayHintTruncated,
@@ -905,22 +943,20 @@ export async function readLatestFollowLists(
 
       const relays: RelayReadSourceStatus[] = result.relays
       const plannedRelayUrls = relays.map(({ relayUrl }) => relayUrl)
-      const usesVerifiedReader =
-        fetchEvents === fetchSignedEventsFanoutDetailed &&
-        result.eventsVerified === true
       const candidateOverflow =
         result.events.length > FOLLOW_LIST_MAX_VERIFICATION_CANDIDATES
       const candidates = result.events.slice(
         0,
         FOLLOW_LIST_MAX_VERIFICATION_CANDIDATES
       )
-      const verification = usesVerifiedReader
-        ? { events: candidates, truncated: false }
-        : await verifySignedEvents(candidates, {
-            signal: options.signal,
-            maxEvents: FOLLOW_LIST_MAX_VERIFICATION_CANDIDATES,
-          })
-      const eventsVerified = !candidateOverflow && !verification.truncated
+      const verification = await verifySignedEvents(candidates, {
+        signal: options.signal,
+        maxEvents: FOLLOW_LIST_MAX_VERIFICATION_CANDIDATES,
+      })
+      const verificationComplete =
+        !candidateOverflow &&
+        !verification.truncated &&
+        verification.events.length === candidates.length
       const responseCapped = relays.some(
         (relay) =>
           relay.eventCount + (relay.rejectedEventCount ?? 0) >=
@@ -955,7 +991,7 @@ export async function readLatestFollowLists(
         relayListState === "missing"
       const coverage: FollowListCoverageState = !hasUsableSource
         ? "unavailable"
-        : eventsVerified &&
+        : verificationComplete &&
             relayDiscoveryComplete &&
             !capped &&
             relays.every((relay) => relay.status === "success")
@@ -972,7 +1008,7 @@ export async function readLatestFollowLists(
           hintRelayUrls: selectedHints,
           plannedRelayUrls,
           relays,
-          eventsVerified,
+          verificationComplete,
           coverage,
           relayListState,
           relayHintTruncated,
@@ -1007,7 +1043,9 @@ export async function readLatestFollowLists(
       new Set(authors.flatMap(({ plannedRelayUrls }) => plannedRelayUrls))
     ),
     relays: authors.flatMap(({ relays }) => relays),
-    eventsVerified: authors.every(({ eventsVerified }) => eventsVerified),
+    verificationComplete: authors.every(
+      ({ verificationComplete }) => verificationComplete
+    ),
   }
 }
 
@@ -1160,7 +1198,7 @@ export function requirePublishableContactListSnapshot(
   const completeEmptyNetworkReadIsPublishable =
     !author?.event &&
     author?.snapshotState === "none" &&
-    author.eventsVerified &&
+    author.verificationComplete &&
     author.coverage === "complete" &&
     !author.relayHintTruncated &&
     hasCurrentRelayDiscovery &&
@@ -1185,7 +1223,7 @@ export function requirePublishableContactListSnapshot(
 
   if (
     !author?.event ||
-    !author.eventsVerified ||
+    !author.verificationComplete ||
     (author.coverage !== "complete" && !exactOwnerLocalEvidenceIsPublishable) ||
     !hasCurrentRelayDiscovery ||
     !hasCompletedSource

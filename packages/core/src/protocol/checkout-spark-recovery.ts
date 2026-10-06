@@ -786,7 +786,10 @@ export async function inspectCheckoutSparkRecoveryWrap(input: {
   if (!hasExactOuterRecipient(input.signedRecipientWrap, signerPubkey)) {
     throw new Error("Checkout Spark recovery signer is not the merchant.")
   }
-  const wrapped = new NDKEvent(getNdk(), input.signedRecipientWrap)
+  const wrapped = new NDKEvent(getNdk(), {
+    ...input.signedRecipientWrap,
+    tags: input.signedRecipientWrap.tags.map((tag) => [...tag]),
+  })
   let rumor: NDKEvent | null
   try {
     rumor = input.giftUnwrap

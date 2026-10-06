@@ -11,6 +11,10 @@ import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { validateProductDeletionEvent } from "./product-deletion"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import {
+  admitPublicEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
+import {
   getConfiguredIsolatedE2eRelayUrl,
   normalizeUntrustedRelayHintsForContext,
   tryNormalizeRelayUrl,
@@ -108,7 +112,7 @@ export interface ProductDeletionDeliveryOptions {
 }
 
 function cloneSignedEvent(
-  event: SignedPublicNostrEvent
+  event: SignedPublicNostrEvent | VerifiedNostrEvent
 ): SignedPublicNostrEvent {
   return {
     id: event.id,
@@ -343,13 +347,20 @@ export function planProductDeletionRelays(
     }))
 }
 
-function assertSignedDeletionEvent(event: SignedPublicNostrEvent): void {
-  const validated = validateProductDeletionEvent(event)
+async function assertSignedDeletionEvent(
+  event: SignedPublicNostrEvent
+): Promise<VerifiedNostrEvent> {
+  const admission = await admitPublicEvent(event)
+  const validated =
+    admission.status === "verified"
+      ? validateProductDeletionEvent(admission.event)
+      : null
   if (!validated || validated.evidence.length === 0) {
     throw new Error(
       "Product deletion outbox requires a valid signed kind-5 event with a safe product target"
     )
   }
+  return validated.signedEvent
 }
 
 function relayPlanMatches(
@@ -477,14 +488,17 @@ export async function persistProductDeletionDelivery(
   input: PersistProductDeletionDeliveryInput,
   options: ProductDeletionDeliveryOptions = {}
 ): Promise<ProductDeletionDeliveryJob> {
-  assertSignedDeletionEvent(input.signedEvent)
+  const signedEvent = await assertSignedDeletionEvent(input.signedEvent)
   const repository = getRepository(options)
   const relayPlan = planProductDeletionRelays(input)
-  const existing = await repository.get(input.signedEvent.id)
+  const existing = await repository.get(signedEvent.id)
 
   if (existing) {
     if (
-      !signedEventMatches(existing.signedEvent, input.signedEvent) ||
+      !signedEventMatches(
+        existing.signedEvent,
+        cloneSignedEvent(signedEvent)
+      ) ||
       !relayPlanMatches(existing.relayPlan, relayPlan)
     ) {
       throw new Error(
@@ -496,8 +510,8 @@ export async function persistProductDeletionDelivery(
 
   const createdAt = getNow(options)
   const job: ProductDeletionDeliveryJob = {
-    id: input.signedEvent.id,
-    signedEvent: cloneSignedEvent(input.signedEvent),
+    id: signedEvent.id,
+    signedEvent: cloneSignedEvent(signedEvent),
     relayPlan: cloneRelayPlan(relayPlan),
     relayDelivery: relayPlan.map(({ relayUrl }) => ({
       relayUrl,
@@ -744,7 +758,7 @@ async function deliverProductDeletionJobUnlocked(
   if (!stored) {
     throw new Error("Product deletion delivery job not found")
   }
-  assertSignedDeletionEvent(stored.signedEvent)
+  await assertSignedDeletionEvent(stored.signedEvent)
   await retireUnapprovedPersistedRelayTargets(
     repository,
     id,
@@ -765,7 +779,7 @@ async function deliverProductDeletionJobUnlocked(
   // Revalidate it after the claim and use only its author as the policy account.
   // Active auth may admit that author's exact owner-selected ws:// subset, but
   // cannot replace the author or alter the immutable event and relay plan.
-  assertSignedDeletionEvent(claimed.signedEvent)
+  await assertSignedDeletionEvent(claimed.signedEvent)
   const accountPubkey = claimed.signedEvent.pubkey
 
   const outstandingRelayUrls = claimed.relayDelivery
@@ -832,7 +846,7 @@ async function deliverProductDeletionJobUnlocked(
         continue
       }
       const exactSignedEvent = cloneSignedEvent(current.signedEvent)
-      assertSignedDeletionEvent(exactSignedEvent)
+      await assertSignedDeletionEvent(exactSignedEvent)
       if (!signedEventMatches(exactSignedEvent, claimed.signedEvent)) {
         throw new Error(
           "Product deletion delivery job signed event is immutable"

@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
 import NDK, {
   NDKEvent,
@@ -165,7 +166,9 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
       (events) => events.length > 0
     )
 
-    const parsedAfterCreate = parseProductEvent(eventsAfterCreate[0]!)
+    const parsedAfterCreate = parseProductEvent(
+      await admitFixture(eventsAfterCreate[0]!)
+    )
     expect(parsedAfterCreate.title).toBe(baseTitle)
     expect(parsedAfterCreate.price).toBe(12.34)
     expect(parsedAfterCreate.stock).toBe(12)
@@ -203,12 +206,12 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
         const events = await ndk.fetchEvents(filter)
         return Array.from(events) as NDKEvent[]
       },
-      (events) => {
+      async (events) => {
         if (events.length === 0) return false
         const latest = events
           .slice()
           .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0]
-        const parsed = parseProductEvent(latest!)
+        const parsed = parseProductEvent(await admitFixture(latest!))
         return parsed.title.includes("(updated)")
       }
     )
@@ -216,7 +219,9 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
     const latestAfterUpdate = eventsAfterUpdate
       .slice()
       .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0]!
-    const parsedAfterUpdate = parseProductEvent(latestAfterUpdate)
+    const parsedAfterUpdate = parseProductEvent(
+      await admitFixture(latestAfterUpdate)
+    )
     expect(parsedAfterUpdate.title).toBe(`${baseTitle} (updated)`)
     expect(parsedAfterUpdate.price).toBe(99.99)
     expect(parsedAfterUpdate.stock).toBe(8)

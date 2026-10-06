@@ -75,6 +75,7 @@ import {
   paymentProofMessageSchema,
 } from "../packages/core/src/schemas"
 import { makeBoundBolt11Fixture } from "./support/bolt11-fixture"
+import { publicFixturePubkey, signFixture } from "./helpers/public-event"
 
 const FAKE_PUBKEY = "a".repeat(64)
 const FAKE_SECRET = "b".repeat(64)
@@ -3023,27 +3024,32 @@ describe("payCheckoutInvoice", () => {
 // ─── shipping eligibility ───────────────────────────────────────────────────
 
 describe("shipping destination eligibility", () => {
-  it("parses product-level shipping option references and snapshots", () => {
-    const product = parseProductEvent({
-      id: "product-event",
-      pubkey: FAKE_PUBKEY,
-      created_at: 1,
-      content: "",
-      tags: [
-        ["d", "notebook"],
-        ["title", "Notebook"],
-        ["price", "1000", "SATS"],
-        ["type", "simple", "physical"],
-        ["shipping_cost", "500"],
-        ["shipping_option", `30406:${FAKE_PUBKEY}:conduit-default`],
-        ["shipping_country", "US", "CA"],
-        ["shipping_restrict", "US", "787**"],
-        ["shipping_exclude", "US", "78799"],
-      ],
-    })
+  it("parses product-level shipping option references and snapshots", async () => {
+    const product = parseProductEvent(
+      await signFixture(
+        {
+          id: "product-event",
+          pubkey: FAKE_PUBKEY,
+          created_at: 1,
+          content: "",
+          tags: [
+            ["d", "notebook"],
+            ["title", "Notebook"],
+            ["price", "1000", "SATS"],
+            ["type", "simple", "physical"],
+            ["shipping_cost", "500"],
+            ["shipping_option", `30406:${publicFixturePubkey}:conduit-default`],
+            ["shipping_country", "US", "CA"],
+            ["shipping_restrict", "US", "787**"],
+            ["shipping_exclude", "US", "78799"],
+          ],
+        },
+        30402
+      )
+    )
 
     expect(product.shippingOptionId).toBe(
-      `30406:${FAKE_PUBKEY}:conduit-default`
+      `30406:${publicFixturePubkey}:conduit-default`
     )
     expect(product.shippingCountries).toEqual(["US", "CA"])
     expect(product.shippingCountryRules?.[0]).toMatchObject({
@@ -3112,21 +3118,26 @@ describe("shipping destination eligibility", () => {
     ).toEqual({ eligible: false, reason: "country_unsupported" })
   })
 
-  it("parses postal include and exclude rules", () => {
-    const parsed = parseShippingOptionEvent({
-      id: "shipping-event",
-      pubkey: FAKE_PUBKEY,
-      created_at: 1,
-      tags: [
-        ["d", "conduit-default"],
-        ["title", "Standard Shipping"],
-        ["price", "0", "SATS"],
-        ["country", "US", "CA"],
-        ["service", "standard"],
-        ["restrict", "US", "787**", "94105"],
-        ["exclude", "US", "78799"],
-      ],
-    })
+  it("parses postal include and exclude rules", async () => {
+    const parsed = parseShippingOptionEvent(
+      await signFixture(
+        {
+          id: "shipping-event",
+          pubkey: FAKE_PUBKEY,
+          created_at: 1,
+          tags: [
+            ["d", "conduit-default"],
+            ["title", "Standard Shipping"],
+            ["price", "0", "SATS"],
+            ["country", "US", "CA"],
+            ["service", "standard"],
+            ["restrict", "US", "787**", "94105"],
+            ["exclude", "US", "78799"],
+          ],
+        },
+        30406
+      )
+    )
 
     expect(parsed?.countries).toEqual(["US", "CA"])
     expect(parsed?.countryRules.find((rule) => rule.code === "US")).toEqual({
@@ -3137,67 +3148,87 @@ describe("shipping destination eligibility", () => {
     })
   })
 
-  it("rejects non-finite shipping prices", () => {
+  it("rejects non-finite shipping prices", async () => {
     expect(
-      parseShippingOptionEvent({
-        id: "shipping-event",
-        pubkey: FAKE_PUBKEY,
-        created_at: 1,
-        tags: [
-          ["d", "conduit-default"],
-          ["price", "Infinity", "SATS"],
-          ["country", "US"],
-        ],
-      })
+      parseShippingOptionEvent(
+        await signFixture(
+          {
+            id: "shipping-event",
+            pubkey: FAKE_PUBKEY,
+            created_at: 1,
+            tags: [
+              ["d", "conduit-default"],
+              ["price", "Infinity", "SATS"],
+              ["country", "US"],
+            ],
+          },
+          30406
+        )
+      )
     ).toBeNull()
   })
 
-  it("rejects replacement shipping options without destinations", () => {
-    const parsed = parseShippingOptionEvent({
-      id: "shipping-event",
-      pubkey: FAKE_PUBKEY,
-      created_at: 2,
-      tags: [
-        ["d", "conduit-default"],
-        ["title", "Standard Shipping"],
-        ["price", "0", "SATS"],
-        ["country"],
-        ["service", "standard"],
-      ],
-    })
+  it("rejects replacement shipping options without destinations", async () => {
+    const parsed = parseShippingOptionEvent(
+      await signFixture(
+        {
+          id: "shipping-event",
+          pubkey: FAKE_PUBKEY,
+          created_at: 2,
+          tags: [
+            ["d", "conduit-default"],
+            ["title", "Standard Shipping"],
+            ["price", "0", "SATS"],
+            ["country"],
+            ["service", "standard"],
+          ],
+        },
+        30406
+      )
+    )
 
     expect(parsed).toBeNull()
   })
 
-  it("ignores empty non-default shipping options", () => {
+  it("ignores empty non-default shipping options", async () => {
     expect(
-      parseShippingOptionEvent({
-        id: "shipping-event",
-        pubkey: FAKE_PUBKEY,
-        created_at: 2,
-        tags: [
-          ["d", "custom-option"],
-          ["price", "0", "SATS"],
-        ],
-      })
+      parseShippingOptionEvent(
+        await signFixture(
+          {
+            id: "shipping-event",
+            pubkey: FAKE_PUBKEY,
+            created_at: 2,
+            tags: [
+              ["d", "custom-option"],
+              ["price", "0", "SATS"],
+            ],
+          },
+          30406
+        )
+      )
     ).toBeNull()
   })
 
-  it("matches country include, postal include, postal exclude, and unknown readiness", () => {
-    const parsed = parseShippingOptionEvent({
-      id: "shipping-event",
-      pubkey: FAKE_PUBKEY,
-      created_at: 1,
-      tags: [
-        ["d", "conduit-default"],
-        ["title", "Standard Shipping"],
-        ["price", "0", "SATS"],
-        ["country", "US"],
-        ["service", "standard"],
-        ["restrict", "US", "787**"],
-        ["exclude", "US", "78799"],
-      ],
-    })
+  it("matches country include, postal include, postal exclude, and unknown readiness", async () => {
+    const parsed = parseShippingOptionEvent(
+      await signFixture(
+        {
+          id: "shipping-event",
+          pubkey: FAKE_PUBKEY,
+          created_at: 1,
+          tags: [
+            ["d", "conduit-default"],
+            ["title", "Standard Shipping"],
+            ["price", "0", "SATS"],
+            ["country", "US"],
+            ["service", "standard"],
+            ["restrict", "US", "787**"],
+            ["exclude", "US", "78799"],
+          ],
+        },
+        30406
+      )
+    )
     expect(parsed).not.toBeNull()
     const options = parsed ? [parsed] : []
 

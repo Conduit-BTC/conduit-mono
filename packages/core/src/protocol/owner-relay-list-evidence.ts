@@ -27,10 +27,12 @@ import {
   hasCompletedExactNetworkPreferenceReadback,
   type NetworkPreferenceDistributionOutcomeUpdate,
 } from "./network-preference-delivery"
+import { type SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  admitPublicEvent,
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 
 export type {
   NormalizedOwnerRelayListPubkey,
@@ -177,7 +179,30 @@ export function normalizeOwnerRelayListPubkey(
 function cloneRecord(
   record: OwnerRelayListEvidenceRecord
 ): OwnerRelayListEvidenceRecord {
-  return structuredClone(record)
+  const cloned = structuredClone(record)
+  if (record.current && cloned.current) {
+    cloned.current.signedEvent = record.current.signedEvent
+  }
+  if (record.lastUsable && cloned.lastUsable) {
+    cloned.lastUsable.signedEvent = record.lastUsable.signedEvent
+  }
+  if (record.pendingDistribution && cloned.pendingDistribution) {
+    cloned.pendingDistribution.signedEvent =
+      record.pendingDistribution.signedEvent
+  }
+  return cloned
+}
+
+function cloneOwnerEventEvidence(
+  evidence: OwnerRelayListEventEvidence
+): OwnerRelayListEventEvidence {
+  return { ...structuredClone(evidence), signedEvent: evidence.signedEvent }
+}
+
+function cloneOwnerPendingDistribution(
+  pending: PendingOwnerRelayListDistribution
+): PendingOwnerRelayListDistribution {
+  return { ...structuredClone(pending), signedEvent: pending.signedEvent }
 }
 
 function assertTimestamp(value: number, label: string): number {
@@ -312,7 +337,7 @@ function normalizePendingDistribution(
     throw new Error("Owner relay-list pending work requires publish targets")
   }
   return {
-    signedEvent: structuredClone(pending.signedEvent),
+    signedEvent: pending.signedEvent,
     publishRelayUrls,
     relayOutcomes: normalizeRelayOutcomes(
       publishRelayUrls,
@@ -326,7 +351,7 @@ function normalizePendingDistribution(
 }
 
 function parseOwnerRelayPreferences(
-  tags: readonly string[][]
+  tags: readonly (readonly string[])[]
 ): ParsedRelayPreferences {
   const byUrl = new Map<string, RelayPreference>()
   let relayTagCount = 0
@@ -374,8 +399,10 @@ function assertOwnerRelayListEvent(
   pubkey: NormalizedOwnerRelayListPubkey,
   event: SignedPublicNostrEvent
 ): void {
-  if (!isValidSignedPublicNostrEvent(event)) {
-    throw new Error("Owner relay-list evidence requires a valid signed event")
+  if (!isVerifiedNostrEvent(event)) {
+    throw new Error(
+      "Owner relay-list evidence requires an admitted signed event"
+    )
   }
   if (
     event.id !== event.id.toLowerCase() ||
@@ -425,7 +452,7 @@ function eventEvidenceFromObservation(
         : parsed.relayTagCount === 0
           ? "signed_empty"
           : "malformed",
-    signedEvent: structuredClone(observation.signedEvent),
+    signedEvent: observation.signedEvent,
     preferences: parsed.preferences,
     sourceRelayUrls: normalizeSourceRelayUrls(
       observation.sourceRelayUrls ?? []
@@ -452,7 +479,7 @@ function mergeSameEvent(
   candidate: OwnerRelayListEventEvidence
 ): OwnerRelayListEventEvidence {
   return {
-    ...structuredClone(current),
+    ...cloneOwnerEventEvidence(current),
     sourceRelayUrls: normalizeSourceRelayUrls([
       ...current.sourceRelayUrls,
       ...candidate.sourceRelayUrls,
@@ -473,14 +500,14 @@ function mergeEventEvidence(
   current: OwnerRelayListEventEvidence | undefined,
   candidate: OwnerRelayListEventEvidence
 ): OwnerRelayListEventEvidence {
-  if (!current) return structuredClone(candidate)
+  if (!current) return cloneOwnerEventEvidence(candidate)
   const comparison = compareReplaceableFrontier(
     candidate.signedEvent,
     current.signedEvent
   )
-  if (comparison < 0) return structuredClone(current)
+  if (comparison < 0) return cloneOwnerEventEvidence(current)
   if (comparison === 0) return mergeSameEvent(current, candidate)
-  return structuredClone(candidate)
+  return cloneOwnerEventEvidence(candidate)
 }
 
 function mergeLastUsableEvidence(
@@ -488,7 +515,7 @@ function mergeLastUsableEvidence(
   candidate: OwnerRelayListEventEvidence
 ): OwnerRelayListEventEvidence | undefined {
   if (candidate.state === "malformed") {
-    return current ? structuredClone(current) : undefined
+    return current ? cloneOwnerEventEvidence(current) : undefined
   }
   return mergeEventEvidence(current, candidate)
 }
@@ -600,7 +627,7 @@ function validateRetainedRecord(
     current
   )
   if (pendingDistribution && current) {
-    current.signedEvent = structuredClone(pendingDistribution.signedEvent)
+    current.signedEvent = pendingDistribution.signedEvent
   }
   return {
     pubkey,
@@ -626,10 +653,10 @@ export function applyOwnerRelayListEvidenceReconciliation(
     : undefined
   const lookup = createLookupEvidence(input.lookup)
   let current = retained?.current
-    ? structuredClone(retained.current)
+    ? cloneOwnerEventEvidence(retained.current)
     : undefined
   let lastUsable = retained?.lastUsable
-    ? structuredClone(retained.lastUsable)
+    ? cloneOwnerEventEvidence(retained.lastUsable)
     : undefined
   for (const observation of input.observations ?? []) {
     const candidate = eventEvidenceFromObservation(pubkey, observation, now)
@@ -654,7 +681,7 @@ export function applyOwnerRelayListEvidenceReconciliation(
     pendingDistribution &&
     current?.signedEvent.id === pendingDistribution.signedEvent.id
   ) {
-    current.signedEvent = structuredClone(pendingDistribution.signedEvent)
+    current.signedEvent = pendingDistribution.signedEvent
   }
   const latestLookup = mergeLookupEvidence(
     retained?.latestLookup,
@@ -731,9 +758,9 @@ export function applyOwnerRelayListDistributionStage(
   if (record.current?.signedEvent.id !== input.signedEvent.id) {
     throw new OwnerRelayListDistributionConflictError()
   }
-  record.current.signedEvent = structuredClone(input.signedEvent)
+  record.current.signedEvent = input.signedEvent
   record.pendingDistribution = {
-    signedEvent: structuredClone(input.signedEvent),
+    signedEvent: input.signedEvent,
     publishRelayUrls,
     relayOutcomes,
     stagedAt,
@@ -813,20 +840,64 @@ function applyRepositoryReconciliation(
   }
 }
 
+async function admitOwnerRecord(
+  record: OwnerRelayListEvidenceRecord | undefined
+): Promise<OwnerRelayListEvidenceRecord | undefined> {
+  if (!record) return undefined
+  const admitted = cloneRecord(record)
+  const admit = async (event: SignedPublicNostrEvent) => {
+    const result = await admitPublicEvent(event)
+    if (result.status !== "verified") {
+      throw new Error("Retained owner relay-list evidence is not verified")
+    }
+    return result.event
+  }
+  if (admitted.current) {
+    admitted.current.signedEvent = await admit(admitted.current.signedEvent)
+  }
+  if (admitted.lastUsable) {
+    admitted.lastUsable.signedEvent = await admit(
+      admitted.lastUsable.signedEvent
+    )
+  }
+  if (admitted.pendingDistribution) {
+    admitted.pendingDistribution.signedEvent = await admit(
+      admitted.pendingDistribution.signedEvent
+    )
+  }
+  return admitted
+}
+
 function createDexieRepository(): OwnerRelayListEvidenceRepository {
   return {
     async get(pubkey) {
       const record = await db.ownerRelayListEvidence.get(pubkey)
-      return record ? cloneRecord(record) : undefined
+      try {
+        return await admitOwnerRecord(record)
+      } catch {
+        return undefined
+      }
     },
     async reconcile(input) {
       const pubkey = normalizeOwnerRelayListPubkey(input.pubkey)
       if (!pubkey) {
         throw new Error("Owner relay-list evidence requires a valid hex pubkey")
       }
+      const before = await db.ownerRelayListEvidence.get(pubkey)
+      let admittedBefore: OwnerRelayListEvidenceRecord | undefined
+      try {
+        admittedBefore = await admitOwnerRecord(before)
+      } catch {
+        admittedBefore = undefined
+      }
       return await db.transaction("rw", db.ownerRelayListEvidence, async () => {
         const existing = await db.ownerRelayListEvidence.get(pubkey)
-        const record = applyRepositoryReconciliation(existing, input)
+        if (JSON.stringify(existing) !== JSON.stringify(before)) {
+          throw new Error(
+            "Owner relay-list evidence changed during verification"
+          )
+        }
+        const record = applyRepositoryReconciliation(admittedBefore, input)
         if (!existing || JSON.stringify(existing) !== JSON.stringify(record)) {
           await db.ownerRelayListEvidence.put(cloneRecord(record))
         }
@@ -847,14 +918,24 @@ export function createInMemoryOwnerRelayListEvidenceRepository(
   return {
     async get(pubkey) {
       const record = records.get(pubkey)
-      return record ? cloneRecord(record) : undefined
+      try {
+        return await admitOwnerRecord(record)
+      } catch {
+        return undefined
+      }
     },
     async reconcile(input) {
       const pubkey = normalizeOwnerRelayListPubkey(input.pubkey)
       if (!pubkey) {
         throw new Error("Owner relay-list evidence requires a valid hex pubkey")
       }
-      const record = applyRepositoryReconciliation(records.get(pubkey), input)
+      let admittedBefore: OwnerRelayListEvidenceRecord | undefined
+      try {
+        admittedBefore = await admitOwnerRecord(records.get(pubkey))
+      } catch {
+        admittedBefore = undefined
+      }
+      const record = applyRepositoryReconciliation(admittedBefore, input)
       records.set(pubkey, cloneRecord(record))
       return cloneRecord(record)
     },
@@ -924,7 +1005,9 @@ function mergeEvidenceRecords(
     merged = applyOwnerRelayListEvidenceReconciliation(
       {
         ...merged,
-        pendingDistribution: structuredClone(candidate.pendingDistribution),
+        pendingDistribution: cloneOwnerPendingDistribution(
+          candidate.pendingDistribution
+        ),
       },
       {
         pubkey: candidate.pubkey,
@@ -1117,26 +1200,17 @@ function deriveCoverage(
 }
 
 function toSignedOwnerRelayListEvent(
-  event: SignedPublicNostrEvent,
+  event: VerifiedNostrEvent,
   pubkey: NormalizedOwnerRelayListPubkey
-): SignedPublicNostrEvent | null {
+): VerifiedNostrEvent | null {
   try {
-    if (!event.sig) return null
-    const signed: SignedPublicNostrEvent = {
-      id: event.id,
-      pubkey: event.pubkey,
-      created_at: event.created_at ?? 0,
-      kind: event.kind ?? 0,
-      tags: event.tags.map((tag) => [...tag]),
-      content: event.content,
-      sig: event.sig,
-    }
+    const signed = event
     return signed.pubkey === pubkey &&
       signed.kind === EVENT_KINDS.RELAY_LIST &&
       signed.id === signed.id.toLowerCase() &&
       signed.pubkey === signed.pubkey.toLowerCase() &&
       signed.sig === signed.sig.toLowerCase() &&
-      isValidSignedPublicNostrEvent(signed)
+      isVerifiedNostrEvent(signed)
       ? signed
       : null
   } catch {
@@ -1194,12 +1268,12 @@ function resolutionFromRecord(
     stale: Boolean(
       current && (!confirmsCurrent || current.state === "malformed")
     ),
-    current: current ? structuredClone(current) : undefined,
+    current: current ? cloneOwnerEventEvidence(current) : undefined,
     lastUsable: record.lastUsable
-      ? structuredClone(record.lastUsable)
+      ? cloneOwnerEventEvidence(record.lastUsable)
       : undefined,
     pendingDistribution: record.pendingDistribution
-      ? structuredClone(record.pendingDistribution)
+      ? cloneOwnerPendingDistribution(record.pendingDistribution)
       : undefined,
     lookup: { ...record.latestLookup },
     observation,

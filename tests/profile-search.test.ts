@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import { admitFixture } from "./helpers/public-event"
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   normalizeProfileSearchText,
   rankProfileSearchMatches,
@@ -18,33 +20,54 @@ import {
   type ProfileSearchResult,
 } from "../packages/core/src/protocol/profile-search"
 
-const ALICE = "a".repeat(64)
-const ALICIA = "b".repeat(64)
-const CAROL = "c".repeat(64)
-const MALICE = "d".repeat(64)
-const ERIN = "e".repeat(64)
-const FRANK = "f".repeat(64)
-const GRACE = "9".repeat(64)
+const eventSecrets = new Map<string, Uint8Array>()
+function fixturePubkey(index: number): string {
+  const secret = new Uint8Array(32)
+  new DataView(secret.buffer).setUint32(28, index + 1)
+  const pubkey = getPublicKey(secret)
+  eventSecrets.set(pubkey, secret)
+  return pubkey
+}
+const ALICE = fixturePubkey(0)
+const ALICIA = fixturePubkey(1)
+const CAROL = fixturePubkey(2)
+const MALICE = fixturePubkey(3)
+const ERIN = fixturePubkey(4)
+const FRANK = fixturePubkey(5)
+const GRACE = fixturePubkey(6)
+const generatedAuthors: string[] = []
 
 function authorPubkeys(count: number): string[] {
-  return Array.from({ length: count }, (_, index) =>
-    (index + 1).toString(16).padStart(64, "0")
-  )
+  while (generatedAuthors.length < count) {
+    generatedAuthors.push(fixturePubkey(generatedAuthors.length + 7))
+  }
+  return generatedAuthors.slice(0, count).sort()
 }
 
-function profileEvent(
+function unadmittedProfileEvent(
   pubkey: string,
   content: Record<string, string>,
   createdAt = 100
 ): NDKEvent {
-  return {
-    kind: 0,
-    pubkey,
-    id: `${pubkey.slice(0, 8)}-${createdAt}`,
-    created_at: createdAt,
-    content: JSON.stringify(content),
-    tags: [],
-  } as unknown as NDKEvent
+  const secret = eventSecrets.get(pubkey)
+  if (!secret) throw new Error("Profile fixture requires a signing key")
+  return finalizeEvent(
+    {
+      kind: 0,
+      created_at: createdAt,
+      content: JSON.stringify(content),
+      tags: [],
+    },
+    secret
+  ) as unknown as NDKEvent
+}
+
+async function profileEvent(
+  pubkey: string,
+  content: Record<string, string>,
+  createdAt = 100
+) {
+  return await admitFixture(unadmittedProfileEvent(pubkey, content, createdAt))
 }
 
 function match(
@@ -93,7 +116,6 @@ function deps(
       relays: [
         { relayUrl: "wss://search.example", status: "success", eventCount: 0 },
       ],
-      eventsVerified: true,
     }),
     ...overrides,
   }
@@ -250,7 +272,9 @@ describe("profile search evidence", () => {
             },
             { relayUrl: "wss://f.example", status: "failed", eventCount: 0 },
           ],
-          eventsVerified: false,
+          events: [
+            unadmittedProfileEvent(ALICE, { name: "Unadmitted" }),
+          ] as never[],
         },
         24
       )
@@ -297,7 +321,6 @@ describe("profile search relay plan", () => {
               status: "success" as const,
               eventCount: 0,
             })),
-            eventsVerified: true,
           }
         },
       })
@@ -324,7 +347,7 @@ describe("profile search author transport chunks", () => {
           attemptedAuthors.push(chunk)
           if (chunk.length > 64) throw new Error("authors filter too large")
           const events = chunk.includes(target)
-            ? [profileEvent(target, { name: "Alice Target" })]
+            ? [await profileEvent(target, { name: "Alice Target" })]
             : []
           return {
             events,
@@ -335,7 +358,6 @@ describe("profile search author transport chunks", () => {
                 eventCount: events.length,
               },
             ],
-            eventsVerified: true,
           }
         },
       })
@@ -360,7 +382,7 @@ describe("profile search author transport chunks", () => {
           const chunk = filter.authors ?? []
           if (!chunk.includes(target)) throw new Error("chunk unavailable")
           return {
-            events: [profileEvent(target, { name: "Alice Retained" })],
+            events: [await profileEvent(target, { name: "Alice Retained" })],
             relays: [
               {
                 relayUrl: "wss://search.example",
@@ -368,7 +390,6 @@ describe("profile search author transport chunks", () => {
                 eventCount: 1,
               },
             ],
-            eventsVerified: true,
           }
         },
       })
@@ -415,7 +436,6 @@ describe("profile search author transport chunks", () => {
                 eventCount: attempt === 1 ? 24 : 0,
               },
             ],
-            eventsVerified: true,
           }
         },
       })
@@ -443,7 +463,6 @@ describe("profile search author transport chunks", () => {
                 eventCount: attempt === 1 ? 20 : 10,
               },
             ],
-            eventsVerified: true,
           }
         },
       })
@@ -477,7 +496,6 @@ describe("profile search author transport chunks", () => {
                 eventCount: 0,
               },
             ],
-            eventsVerified: true,
           }
         },
       })
@@ -514,7 +532,6 @@ describe("profile search author transport chunks", () => {
                 eventCount: 0,
               },
             ],
-            eventsVerified: true,
           }
         },
       })
@@ -541,7 +558,9 @@ describe("profile search author transport chunks", () => {
           attemptedAuthors.push(chunk)
           if (chunk.includes(target)) {
             return {
-              events: [profileEvent(target, { name: "Alice Before Deadline" })],
+              events: [
+                await profileEvent(target, { name: "Alice Before Deadline" }),
+              ],
               relays: [
                 {
                   relayUrl: "wss://search.example",
@@ -549,7 +568,6 @@ describe("profile search author transport chunks", () => {
                   eventCount: 1,
                 },
               ],
-              eventsVerified: true,
             }
           }
 
@@ -563,7 +581,6 @@ describe("profile search author transport chunks", () => {
                 eventCount: 0,
               },
             ],
-            eventsVerified: true,
           }
         },
       })
@@ -597,7 +614,6 @@ describe("account-scoped search plan", () => {
               status: "success" as const,
               eventCount: 0,
             })),
-            eventsVerified: true,
           }
         },
       })
@@ -652,7 +668,6 @@ describe("account-scoped search plan", () => {
               status: "success" as const,
               eventCount: 0,
             })),
-            eventsVerified: true,
           }
         },
       })
@@ -711,7 +726,7 @@ describe("profile search phase integration", () => {
         },
         fetchEvents: async () => {
           relayReads += 1
-          return { events: [], relays: [], eventsVerified: true }
+          return { events: [], relays: [] }
         },
       })
     )
@@ -731,8 +746,8 @@ describe("profile search phase integration", () => {
           filters.push(filter)
           return {
             events: [
-              profileEvent(ALICE, { name: "Alice Allowed" }),
-              profileEvent(ALICIA, { name: "Alice Outside" }),
+              await profileEvent(ALICE, { name: "Alice Allowed" }),
+              await profileEvent(ALICIA, { name: "Alice Outside" }),
             ],
             relays: [
               {
@@ -741,7 +756,6 @@ describe("profile search phase integration", () => {
                 eventCount: 2,
               },
             ],
-            eventsVerified: true,
           }
         },
       })
@@ -762,7 +776,7 @@ describe("profile search phase integration", () => {
       },
       fetchEvents: async () => {
         reads += 1
-        return { events: [], relays: [], eventsVerified: true }
+        return { events: [], relays: [] }
       },
     })
 
@@ -786,7 +800,7 @@ describe("profile search phase integration", () => {
       deps({
         fetchEvents: async () => {
           fetched += 1
-          return { events: [], relays: [], eventsVerified: true }
+          return { events: [], relays: [] }
         },
       })
     )
@@ -810,14 +824,18 @@ describe("profile search phase integration", () => {
           filters.push(filter)
           return {
             events: [
-              profileEvent(ALICIA, { name: "Alicia", display_name: "Old" }, 50),
-              profileEvent(
+              await profileEvent(
+                ALICIA,
+                { name: "Alicia", display_name: "Old" },
+                50
+              ),
+              await profileEvent(
                 ALICIA,
                 { name: "Alicia", display_name: "Alice B" },
                 90
               ),
-              profileEvent(ALICE, { name: "alice", about: "newer" }, 200),
-              profileEvent(MALICE, { about: "alice fan" }, 10),
+              await profileEvent(ALICE, { name: "alice", about: "newer" }, 200),
+              await profileEvent(MALICE, { about: "alice fan" }, 10),
             ],
             relays: [
               {
@@ -826,7 +844,6 @@ describe("profile search phase integration", () => {
                 eventCount: 4,
               },
             ],
-            eventsVerified: true,
           }
         },
       })
@@ -863,7 +880,7 @@ describe("profile search phase integration", () => {
       { query: "alice" },
       deps({
         fetchEvents: async () => ({
-          events: [profileEvent(ALICE, { name: "alice" })],
+          events: [await profileEvent(ALICE, { name: "alice" })],
           relays: [
             {
               relayUrl: "wss://search.example",
@@ -871,7 +888,6 @@ describe("profile search phase integration", () => {
               eventCount: 24,
             },
           ],
-          eventsVerified: true,
         }),
       })
     )
@@ -891,7 +907,6 @@ describe("profile search phase integration", () => {
               eventCount: 0,
             },
           ],
-          eventsVerified: true,
         }),
       })
     )
@@ -900,19 +915,17 @@ describe("profile search phase integration", () => {
   })
 
   it("picks the lowest event id when two kind-0 events share a timestamp", async () => {
-    const lower = {
-      ...profileEvent(ALICE, { name: "alice low" }, 100),
-      id: "0a",
-    }
-    const higher = {
-      ...profileEvent(ALICE, { name: "alice high" }, 100),
-      id: "0b",
-    }
+    const candidates = [
+      await profileEvent(ALICE, { name: "alice first" }, 100),
+      await profileEvent(ALICE, { name: "alice second" }, 100),
+    ].sort((left, right) => left.id.localeCompare(right.id))
+    const lower = candidates[0]!
+    const higher = candidates[1]!
     const result = await searchNetworkProfiles(
       { query: "alice" },
       deps({
         fetchEvents: async () => ({
-          events: [higher as NDKEvent, lower as NDKEvent],
+          events: [higher, lower],
           relays: [
             {
               relayUrl: "wss://search.example",
@@ -920,14 +933,13 @@ describe("profile search phase integration", () => {
               eventCount: 2,
             },
           ],
-          eventsVerified: true,
         }),
       })
     )
-    expect(result.matches[0]?.profile.name).toBe("alice low")
+    expect(result.matches[0]?.profile.name).toBe(JSON.parse(lower.content).name)
     expect(result.matches[0]?.frontier).toEqual({
       createdAt: 100,
-      eventId: "0a",
+      eventId: lower.id,
     })
   })
 
@@ -942,7 +954,6 @@ describe("profile search phase integration", () => {
             { relayUrl: "wss://one.example", status: "success", eventCount: 0 },
             { relayUrl: "wss://two.example", status: "failed", eventCount: 0 },
           ],
-          eventsVerified: true,
         }),
       })
     )
@@ -968,7 +979,7 @@ describe("profile search phase integration", () => {
             ],
           ]),
         fetchEvents: async () => ({
-          events: [profileEvent(ALICE, { name: "Alice" }, createdAt)],
+          events: [await profileEvent(ALICE, { name: "Alice" }, createdAt)],
           relays: [
             {
               relayUrl: "wss://search.example",
@@ -976,7 +987,6 @@ describe("profile search phase integration", () => {
               eventCount: 1,
             },
           ],
-          eventsVerified: true,
         }),
       })
 
@@ -1058,7 +1068,7 @@ describe("phased profile search", () => {
           new Set(pubkeys.filter((pubkey) => pubkey === ALICE)),
         fetchEvents: async () => {
           fetched += 1
-          return { events: [], relays: [], eventsVerified: true }
+          return { events: [], relays: [] }
         },
       })
     )
@@ -1081,7 +1091,7 @@ describe("phased profile search", () => {
           return [{ pubkey: ALICE, name: "alice", cachedAt: 1 }]
         },
         fetchEvents: async () => ({
-          events: [profileEvent(ALICIA, { name: "Alicia" })],
+          events: [await profileEvent(ALICIA, { name: "Alicia" })],
           relays: [
             {
               relayUrl: "wss://search.example",
@@ -1089,7 +1099,6 @@ describe("phased profile search", () => {
               eventCount: 1,
             },
           ],
-          eventsVerified: true,
         }),
       })
     )
@@ -1339,7 +1348,7 @@ describe("profile search device reads and retirement", () => {
           throw new Error("indexeddb unavailable")
         },
         fetchEvents: async () => ({
-          events: [profileEvent(ALICE, { name: "Alice" }, 200)],
+          events: [await profileEvent(ALICE, { name: "Alice" }, 200)],
           relays: [
             {
               relayUrl: "wss://search.example",
@@ -1347,7 +1356,6 @@ describe("profile search device reads and retirement", () => {
               eventCount: 1,
             },
           ],
-          eventsVerified: true,
         }),
       })
     )
@@ -1375,7 +1383,7 @@ describe("profile search device reads and retirement", () => {
       },
       fetchEvents: async () => {
         fetched += 1
-        return { events: [], relays: [], eventsVerified: true }
+        return { events: [], relays: [] }
       },
     })
 
@@ -1402,7 +1410,7 @@ describe("profile search device reads and retirement", () => {
       loadCachedProfiles: async () => [cachedRow],
       loadCachedProfileRows: async () => new Map([[ALICE, cachedRow]]),
       fetchEvents: async () => ({
-        events: [profileEvent(ALICE, { name: "Bob" }, 200)],
+        events: [await profileEvent(ALICE, { name: "Bob" }, 200)],
         relays: [
           {
             relayUrl: "wss://search.example",
@@ -1410,7 +1418,6 @@ describe("profile search device reads and retirement", () => {
             eventCount: 1,
           },
         ],
-        eventsVerified: true,
       }),
     })
 
@@ -1435,7 +1442,7 @@ describe("profile search device reads and retirement", () => {
         loadCachedProfiles: async () => [cachedRow],
         loadCachedProfileRows: async () => new Map([[ALICE, cachedRow]]),
         fetchEvents: async () => ({
-          events: [profileEvent(ALICE, { name: "Bob" }, 200)],
+          events: [await profileEvent(ALICE, { name: "Bob" }, 200)],
           relays: [
             {
               relayUrl: "wss://search.example",
@@ -1443,7 +1450,6 @@ describe("profile search device reads and retirement", () => {
               eventCount: 1,
             },
           ],
-          eventsVerified: true,
         }),
       })
     )

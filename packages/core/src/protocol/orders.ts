@@ -235,7 +235,7 @@ export type BuildLightningPaymentProofMessageInput = z.input<
 >
 
 function getTagValue(
-  tags: string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   name: string
 ): string | null {
   for (const tag of tags ?? []) {
@@ -245,7 +245,7 @@ function getTagValue(
 }
 
 function parseNumericTag(
-  tags: string[][] | undefined,
+  tags: readonly (readonly string[])[] | undefined,
   name: string
 ): number | undefined {
   const value = getTagValue(tags, name)

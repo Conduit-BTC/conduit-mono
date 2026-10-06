@@ -440,7 +440,7 @@ function requirePreparedAnonZap(
     kind: rawEvent.kind,
     createdAt: rawEvent.created_at,
     content: rawEvent.content,
-    tags: rawEvent.tags,
+    tags: rawEvent.tags.map((tag) => [...tag]),
   }
   const draftValidation = validateAnonZapRequestDraft(draft)
   const merchantPubkey = normalizePubkey(ctx.merchantPubkey)

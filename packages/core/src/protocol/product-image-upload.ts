@@ -1077,7 +1077,7 @@ export async function uploadPreparedProductImage(
             tags: draft.tags.map((tag) => [...tag]),
           })
           assertLiveAuthority(expectedPubkey, input.shouldContinue)
-          return signed
+          return { ...signed, tags: signed.tags.map((tag) => [...tag]) }
         },
         input.prepared.sha256,
         {

@@ -1,3 +1,4 @@
+import { admitFixture } from "./helpers/public-event"
 import { describe, expect, it, spyOn } from "bun:test"
 import {
   finalizeEvent,
@@ -136,13 +137,15 @@ function item(
   }
 }
 
-function guestOrder() {
+async function guestOrder() {
   const fixture = item("soap")
   if (fixture.fulfillment?.type !== "event_market_pickup")
     throw new Error("Missing pickup")
   const cart = {
     ...createCartItemFromProduct(
-      parseProductEvent(fixture.fulfillment.product.signedEvent),
+      parseProductEvent(
+        await admitFixture(fixture.fulfillment.product.signedEvent)
+      ),
       fixture.fulfillment
     ),
     quantity: 1,
@@ -174,7 +177,7 @@ function guestOrder() {
 }
 
 describe("merchant opt-in contact-free immediate handoff", () => {
-  it("uses a single exact signed opt-in; ambiguous and unknown policy require contact", () => {
+  it("uses a single exact signed opt-in; ambiguous and unknown policy require contact", async () => {
     expect(hasSignedEventGuestOptIn([])).toBe(false)
     expect(
       hasSignedEventGuestOptIn([["conduit_event_guest", "contact_optional"]])
@@ -189,19 +192,21 @@ describe("merchant opt-in contact-free immediate handoff", () => {
       false
     )
     const product = parseProductEvent(
-      finalizeEvent(
-        {
-          kind: 30402,
-          created_at: 100,
-          tags: [
-            ["d", "policy"],
-            ["title", "Policy"],
-            ["price", "1", "SAT"],
-            ["type", "simple", "physical"],
-          ],
-          content: JSON.stringify({ eventGuestContactOptional: true }),
-        },
-        merchantSecret
+      await admitFixture(
+        finalizeEvent(
+          {
+            kind: 30402,
+            created_at: 100,
+            tags: [
+              ["d", "policy"],
+              ["title", "Policy"],
+              ["price", "1", "SAT"],
+              ["type", "simple", "physical"],
+            ],
+            content: JSON.stringify({ eventGuestContactOptional: true }),
+          },
+          merchantSecret
+        )
       )
     )
     expect(product.eventGuestContactOptional).toBe(false)
@@ -215,12 +220,14 @@ describe("merchant opt-in contact-free immediate handoff", () => {
     ])
     expect(
       parseProductEvent(
-        finalizeEvent({ ...draft, created_at: 101 }, merchantSecret)
+        await admitFixture(
+          finalizeEvent({ ...draft, created_at: 101 }, merchantSecret)
+        )
       ).eventGuestContactOptional
     ).toBe(true)
   })
-  it("creates a valid contact-free private order without email, phone or receipt secret", () => {
-    const { order, receipt } = guestOrder()
+  it("creates a valid contact-free private order without email, phone or receipt secret", async () => {
+    const { order, receipt } = await guestOrder()
     const parsed = orderSchema.parse(order)
     expect(parsed.guestContact).toBeUndefined()
     expect(JSON.stringify(parsed)).not.toContain(receipt.claimSecret)
@@ -241,8 +248,8 @@ describe("merchant opt-in contact-free immediate handoff", () => {
       true
     )
   })
-  it("recovers contact-free orders after the event without trusting sender time as observation time", () => {
-    const { order, receipt } = guestOrder()
+  it("recovers contact-free orders after the event without trusting sender time as observation time", async () => {
+    const { order, receipt } = await guestOrder()
     const fulfillment = order.items[0]!.fulfillment
     if (fulfillment?.type !== "event_market_pickup")
       throw new Error("Missing pickup")
@@ -275,8 +282,8 @@ describe("merchant opt-in contact-free immediate handoff", () => {
       now.mockRestore()
     }
   })
-  it("rejects absent opt-in, an expired/future occurrence and organizer handoff", () => {
-    const { order, cart } = guestOrder()
+  it("rejects absent opt-in, an expired/future occurrence and organizer handoff", async () => {
+    const { order, cart } = await guestOrder()
     if (cart.fulfillment?.type !== "event_market_pickup")
       throw new Error("Missing pickup")
     expect(
@@ -338,8 +345,8 @@ describe("merchant opt-in contact-free immediate handoff", () => {
       }).success
     ).toBe(false)
   })
-  it("retains one contact for ordinary guest pickup and both for shipping", () => {
-    const { order } = guestOrder()
+  it("retains one contact for ordinary guest pickup and both for shipping", async () => {
+    const { order } = await guestOrder()
     expect(
       orderSchema.safeParse({
         ...order,
@@ -377,8 +384,8 @@ describe("merchant opt-in contact-free immediate handoff", () => {
       }).success
     ).toBe(false)
   })
-  it("binds each receipt to one order and merchant; invented or damaged receipts fail", () => {
-    const { order, receipt } = guestOrder()
+  it("binds each receipt to one order and merchant; invented or damaged receipts fail", async () => {
+    const { order, receipt } = await guestOrder()
     const parsed = orderSchema.parse(order)
     expect(receipt.claimSecret).toHaveLength(64)
     expect(verifyEventGuestReceipt(receipt, parsed, merchant)).toBe(true)

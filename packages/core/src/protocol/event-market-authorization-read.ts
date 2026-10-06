@@ -14,10 +14,25 @@ import {
   fetchSignedEventsFanoutDetailed,
   type PublicRelayReadOptions,
 } from "./relay-reader"
+import { type SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  isVerifiedNostrEvent,
+  verifySignedEvents,
+} from "./verified-public-event"
+
+async function admitRows(
+  rows: readonly SignedPublicNostrEvent[],
+  signal?: AbortSignal
+) {
+  const verified = []
+  for (let offset = 0; offset < rows.length; offset += 64) {
+    const batch = await verifySignedEvents(rows.slice(offset, offset + 64), {
+      signal,
+    })
+    verified.push(...batch.events)
+  }
+  return verified
+}
 
 export interface EventMarketAuthorizationReadResult {
   marketCoordinate: string
@@ -64,9 +79,7 @@ async function loadRetained(
     .where("marketCoordinate")
     .equals(coordinate)
     .toArray()
-  return rows
-    .map((row) => row.signedEvent)
-    .filter(isValidSignedPublicNostrEvent)
+  return admitRows(rows.map((row) => row.signedEvent))
 }
 async function retainSigned(
   coordinate: string,
@@ -150,7 +163,7 @@ export async function readEventMarketAuthorization(
   let retained = true
   let cached: SignedPublicNostrEvent[] = []
   try {
-    cached = await dependencies.load(coordinate)
+    cached = await admitRows(await dependencies.load(coordinate), input.signal)
   } catch {
     retained = false
   }
@@ -159,7 +172,7 @@ export async function readEventMarketAuthorization(
     knownIds: ReadonlySet<string>
   ): boolean =>
     event.pubkey === market.authorPubkey &&
-    isValidSignedPublicNostrEvent(event) &&
+    isVerifiedNostrEvent(event) &&
     (event.kind === EVENT_KINDS.EVENT_MARKET_AUTH
       ? event.tags.some((tag) => tag[0] === "a" && tag[1] === coordinate) &&
         event.tags.some(
@@ -210,7 +223,11 @@ export async function readEventMarketAuthorization(
   }
   const fetch = async (filter: PublicRelayFilter): Promise<Fanout> => {
     try {
-      return await dependencies.fetch(filter, options(plan, input))
+      const result = await dependencies.fetch(filter, options(plan, input))
+      return {
+        ...result,
+        events: await admitRows(result.events, input.signal),
+      }
     } catch (error) {
       if (input.signal?.aborted || input.shouldContinue?.() === false)
         throw error

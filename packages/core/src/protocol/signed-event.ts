@@ -1,17 +1,13 @@
 import { schnorr } from "@noble/curves/secp256k1.js"
 import { hexToBytes } from "@noble/curves/utils.js"
 import { sha256 } from "@noble/hashes/sha2.js"
-import {
-  hasVerifiedPublicEvent,
-  rememberVerifiedPublicEvent,
-} from "./verified-public-event"
 
 export type SignedPublicNostrEvent = {
   id: string
   pubkey: string
   created_at: number
   kind: number
-  tags: string[][]
+  tags: readonly (readonly string[])[]
   content: string
   sig: string
 }
@@ -88,9 +84,6 @@ export function isValidSignedPublicNostrEvent(
   event: SignedPublicNostrEvent
 ): boolean {
   try {
-    // Reuse only an exact immutable signed snapshot, including signature and
-    // every canonical field. A matching id alone never establishes validity.
-    if (hasVerifiedPublicEvent(event)) return true
     if (
       !HEX_64.test(event.id) ||
       !HEX_64.test(event.pubkey) ||
@@ -115,7 +108,6 @@ export function isValidSignedPublicNostrEvent(
       hexToBytes(event.id),
       hexToBytes(event.pubkey)
     )
-    if (valid) rememberVerifiedPublicEvent(event)
     return valid
   } catch {
     return false

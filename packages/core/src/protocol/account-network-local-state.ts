@@ -22,10 +22,8 @@ import {
   type RelayScanResult,
   type RelaySettingsState,
 } from "./relay-settings"
-import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+import type { SignedPublicNostrEvent } from "./signed-event"
+import { isVerifiedNostrEvent } from "./verified-public-event"
 
 export type {
   AccountNetworkFrontierReference,
@@ -615,8 +613,8 @@ function assertAuthoritativeOwnEvent(
   expectedKind: number,
   label: string
 ): void {
-  if (!isValidSignedPublicNostrEvent(event)) {
-    throw new Error(`${label} must be a valid signed event`)
+  if (!isVerifiedNostrEvent(event)) {
+    throw new Error(`${label} must be an admitted signed event`)
   }
   if (
     event.id !== event.id.toLowerCase() ||

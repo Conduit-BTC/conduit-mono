@@ -344,7 +344,10 @@ export async function retryEventMarketEnrollmentDelivery(
   if (!signer)
     throw new Error("Connect the saved participation sender's signer.")
   const recovered = await dependencies.unwrap(
-    new NDKEvent(getNdk(), record.signedSelfWrap),
+    new NDKEvent(getNdk(), {
+      ...record.signedSelfWrap,
+      tags: record.signedSelfWrap.tags.map((tag) => [...tag]),
+    }),
     signer
   )
   const exact =

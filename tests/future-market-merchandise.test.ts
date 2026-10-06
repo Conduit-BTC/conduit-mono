@@ -32,6 +32,8 @@ import {
   __setCommerceTestOverrides,
 } from "@conduit/core/protocol/commerce"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
+import type { PublicRelayReadOptions } from "@conduit/core/protocol/relay-reader"
 
 const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
@@ -67,6 +69,13 @@ function productEvent(
     },
     secret
   )
+}
+
+async function admitted(event: SignedPublicNostrEvent) {
+  const result = await admitPublicEvent(event)
+  if (result.status !== "verified")
+    throw new Error(`Fixture admission failed: ${result.status}`)
+  return result.event
 }
 
 function signedApproval(
@@ -171,7 +180,7 @@ describe("future organizer exact merchandise", () => {
     const publicReads = forbidPublicMerchandiseReads()
     const local = resolveFutureMarketReceiptMerchandiseEvidence({
       receipt,
-      events: [newer],
+      events: [await admitted(original), await admitted(newer)],
       coverage: COVERAGE,
     })
     const fetched = await getFutureMarketReceiptMerchandise({ receipt })
@@ -211,7 +220,7 @@ describe("future organizer exact merchandise", () => {
     valid.items[0]!.selectedSpecifications = [{ key: "Size", value: "Small" }]
     const validResolution = resolveFutureMarketReceiptMerchandiseEvidence({
       receipt: valid,
-      events: [],
+      events: [await admitted(variation)],
       coverage: COVERAGE,
     })
     expect(
@@ -230,7 +239,7 @@ describe("future organizer exact merchandise", () => {
       receipt.items[0]!.selectedSpecifications = forged
       const resolution = resolveFutureMarketReceiptMerchandiseEvidence({
         receipt,
-        events: [],
+        events: [await admitted(variation)],
         coverage: COVERAGE,
       })
       expect(resolution.state).toBe("malformed")
@@ -260,7 +269,10 @@ describe("future organizer exact merchandise", () => {
       receiptFor([original], true),
     ]
     receipts[0]!.items[0]!.product.signedEvent!.sig = "0".repeat(128)
-    receipts[1]!.items[0]!.product.signedEvent = newer
+    receipts[1]!.items[0]!.product.signedEvent = {
+      ...newer,
+      tags: newer.tags.map((tag) => [...tag]),
+    }
     receipts[2]!.items[0]!.product.coordinate = `30402:${MERCHANT}:other`
     receipts[3]!.items[0]!.product.createdAt += 1_000
     for (const payload of receipts) {
@@ -350,17 +362,19 @@ describe("future organizer exact merchandise", () => {
     const filters: NDKFilter[] = []
     __setEventMarketMerchandiseTestOverrides({
       getRelayLists: async () => new Map(),
-      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (
+        filter: NDKFilter,
+        options: PublicRelayReadOptions
+      ) => {
         filters.push(filter)
         const events = filter.kinds?.includes(30402) ? [candle] : []
         return {
-          events: events.map((event) => new NDKEvent(undefined, event)),
-          relays: options.relayUrls.map((relayUrl) => ({
+          events: await Promise.all(events.map(admitted)),
+          relays: (options.relayUrls ?? []).map((relayUrl: string) => ({
             relayUrl,
             status: "success",
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       }) as never,
     })
@@ -395,17 +409,14 @@ describe("future organizer exact merchandise", () => {
       resolveInboxRelayUrls: async () => ["wss://future.embedded.inbox.test"],
       fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
         events: [
-          new NDKEvent(
-            undefined,
-            finalizeEvent(
-              {
-                kind: 1059,
-                created_at: rumor.created_at!,
-                tags: [["p", ORGANIZER]],
-                content: rumor.id!,
-              },
-              MERCHANT_SECRET
-            )
+          finalizeEvent(
+            {
+              kind: 1059,
+              created_at: rumor.created_at!,
+              tags: [["p", ORGANIZER]],
+              content: rumor.id!,
+            },
+            MERCHANT_SECRET
           ),
         ],
         attemptedRelayUrls: [...(options?.relayUrls ?? [])],
@@ -453,17 +464,14 @@ describe("future organizer exact merchandise", () => {
       resolveInboxRelayUrls: async () => ["wss://future.embedded.inbox.test"],
       fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
         events: [
-          new NDKEvent(
-            undefined,
-            finalizeEvent(
-              {
-                kind: 1059,
-                created_at: rumor.created_at!,
-                tags: [["p", ORGANIZER]],
-                content: rumor.id!,
-              },
-              MERCHANT_SECRET
-            )
+          finalizeEvent(
+            {
+              kind: 1059,
+              created_at: rumor.created_at!,
+              tags: [["p", ORGANIZER]],
+              content: rumor.id!,
+            },
+            MERCHANT_SECRET
           ),
         ],
         attemptedRelayUrls: [...(options?.relayUrls ?? [])],
@@ -578,7 +586,7 @@ describe("future organizer exact merchandise", () => {
         payload.grant.eventId = bundle[2].id
         payload.grant.createdAt = bundle[2].created_at * 1000
       }
-      expect(verifyFutureMarketReceiptAuthority(payload)).toBe(false)
+      expect(await verifyFutureMarketReceiptAuthority(payload)).toBe(false)
       const publicReads = forbidPublicMerchandiseReads()
       let privateReads = 0
       let signatures = 0
@@ -627,7 +635,7 @@ describe("future organizer exact merchandise", () => {
     })
   }
 
-  it("authenticates only the original signed series membership, independent of current time and relay edits", () => {
+  it("authenticates only the original signed series membership, independent of current time and relay edits", async () => {
     const payload = receiptFor([productEvent("soap", "Signed soap")], true)
     const bundle = payload.authorityEvidence!
     const masterCoordinate = `31924:${ORGANIZER}:fair-series`
@@ -638,33 +646,33 @@ describe("future organizer exact merchandise", () => {
       )
     )
     payload.market.eventId = bundle[0].id
-    expect(verifyFutureMarketReceiptAuthority(payload)).toBe(false)
+    expect(await verifyFutureMarketReceiptAuthority(payload)).toBe(false)
     const master = signedApproval(31924, [
       ["d", "fair-series"],
       ["title", "Fair dates"],
       ["a", payload.calendar.coordinate],
     ])
     bundle.push(master)
-    expect(verifyFutureMarketReceiptAuthority(payload)).toBe(true)
+    expect(await verifyFutureMarketReceiptAuthority(payload)).toBe(true)
     const wrongDate = signedApproval(31924, [
       ["d", "fair-series"],
       ["title", "Fair dates"],
       ["a", `31923:${ORGANIZER}:other-day`],
     ])
     bundle[bundle.length - 1] = wrongDate
-    expect(verifyFutureMarketReceiptAuthority(payload)).toBe(false)
+    expect(await verifyFutureMarketReceiptAuthority(payload)).toBe(false)
     bundle[bundle.length - 1] = master
     bundle.push(signedApproval(5, [["e", master.id]], CREATED_AT + 5))
-    expect(verifyFutureMarketReceiptAuthority(payload)).toBe(false)
+    expect(await verifyFutureMarketReceiptAuthority(payload)).toBe(false)
   })
 
-  it("authenticates every exact revision and preserves quantities and selected specifications", () => {
+  it("authenticates every exact revision and preserves quantities and selected specifications", async () => {
     const soap = productEvent("soap", "Signed citrus soap")
     const candle = productEvent("candle", "Signed citrus candle")
     const receipt = receiptFor([soap, candle])
     const resolution = resolveFutureMarketReceiptMerchandiseEvidence({
       receipt,
-      events: [soap, candle],
+      events: [await admitted(soap), await admitted(candle)],
       coverage: COVERAGE,
     })
     expect(resolution.state).toBe("verified")
@@ -698,13 +706,13 @@ describe("future organizer exact merchandise", () => {
     )
   })
 
-  it("keeps the historical signed revision when the coordinate has a newer revision", () => {
+  it("keeps the historical signed revision when the coordinate has a newer revision", async () => {
     const historical = productEvent("soap", "Historical soap")
     const newer = productEvent("soap", "New soap", CREATED_AT + 100)
     const receipt = receiptFor([historical])
     const resolution = resolveFutureMarketReceiptMerchandiseEvidence({
       receipt,
-      events: [newer, historical],
+      events: [await admitted(newer), await admitted(historical)],
       coverage: COVERAGE,
     })
     expect(resolution.state).toBe("verified")
@@ -712,7 +720,7 @@ describe("future organizer exact merchandise", () => {
     expect(
       resolveFutureMarketReceiptMerchandiseEvidence({
         receipt,
-        events: [newer],
+        events: [await admitted(newer)],
         coverage: COVERAGE,
       }).state
     ).toBe("missing")
@@ -737,7 +745,7 @@ describe("future organizer exact merchandise", () => {
     ).toBe("unavailable")
   })
 
-  it("blocks timestamp, coordinate, merchant, and signature mismatches", () => {
+  it("blocks timestamp, coordinate, merchant, and signature mismatches", async () => {
     const product = productEvent("soap", "Signed soap")
     const receipt = receiptFor([product])
     for (const changedReceipt of [
@@ -769,7 +777,7 @@ describe("future organizer exact merchandise", () => {
       expect(
         resolveFutureMarketReceiptMerchandiseEvidence({
           receipt: changedReceipt,
-          events: [product],
+          events: [await admitted(product)],
           coverage: COVERAGE,
         }).state
       ).toBe("malformed")
@@ -783,7 +791,7 @@ describe("future organizer exact merchandise", () => {
     expect(
       resolveFutureMarketReceiptMerchandiseEvidence({
         receipt: receiptFor([otherMerchantProduct]),
-        events: [otherMerchantProduct],
+        events: [await admitted(otherMerchantProduct)],
         coverage: COVERAGE,
       }).state
     ).toBe("malformed")
@@ -796,13 +804,13 @@ describe("future organizer exact merchandise", () => {
     ).toBe("malformed")
   })
 
-  it("blocks the whole release if one exact item is missing", () => {
+  it("blocks the whole release if one exact item is missing", async () => {
     const soap = productEvent("soap", "Signed soap")
     const candle = productEvent("candle", "Signed candle")
     const receipt = receiptFor([soap, candle])
     const missing = resolveFutureMarketReceiptMerchandiseEvidence({
       receipt,
-      events: [soap],
+      events: [await admitted(soap)],
       coverage: COVERAGE,
     })
     expect(missing.items.map((item) => item.state)).toEqual([
@@ -814,7 +822,7 @@ describe("future organizer exact merchandise", () => {
     )
   })
 
-  it("retains signed historical physical terms after a later product deletion", () => {
+  it("retains signed historical physical terms after a later product deletion", async () => {
     const product = productEvent("soap", "Historical signed soap")
     const deletion = finalizeEvent(
       {
@@ -831,7 +839,7 @@ describe("future organizer exact merchandise", () => {
     )
     const resolution = resolveFutureMarketReceiptMerchandiseEvidence({
       receipt: receiptFor([product]),
-      events: [product, deletion],
+      events: [await admitted(product), await admitted(deletion)],
       coverage: COVERAGE,
     })
     expect(isVerifiedEventMarketReceiptMerchandiseResolution(resolution)).toBe(
@@ -840,7 +848,7 @@ describe("future organizer exact merchandise", () => {
     expect(resolution.items[0]!.title).toBe("Historical signed soap")
   })
 
-  it("rejects a signed digital revision as organizer physical merchandise", () => {
+  it("rejects a signed digital revision as organizer physical merchandise", async () => {
     const product = finalizeEvent(
       {
         kind: 30402,
@@ -857,7 +865,7 @@ describe("future organizer exact merchandise", () => {
     )
     const resolution = resolveFutureMarketReceiptMerchandiseEvidence({
       receipt: receiptFor([product]),
-      events: [product],
+      events: [await admitted(product)],
       coverage: COVERAGE,
     })
     expect(resolution.state).toBe("malformed")
@@ -866,7 +874,7 @@ describe("future organizer exact merchandise", () => {
     )
   })
 
-  it("rejects hidden or private exact merchandise without substituting a newer revision", () => {
+  it("rejects hidden or private exact merchandise without substituting a newer revision", async () => {
     for (const visibility of ["hidden", "private"]) {
       const product = finalizeEvent(
         {
@@ -885,7 +893,7 @@ describe("future organizer exact merchandise", () => {
       )
       const resolution = resolveFutureMarketReceiptMerchandiseEvidence({
         receipt: receiptFor([product]),
-        events: [product],
+        events: [await admitted(product)],
         coverage: COVERAGE,
       })
       expect(resolution.state).toBe("malformed")
@@ -895,11 +903,11 @@ describe("future organizer exact merchandise", () => {
     }
   })
 
-  it("permits positive signed exact evidence with degraded public relay coverage", () => {
+  it("permits positive signed exact evidence with degraded public relay coverage", async () => {
     const product = productEvent("soap", "Signed soap")
     const resolution = resolveFutureMarketReceiptMerchandiseEvidence({
       receipt: receiptFor([product]),
-      events: [product],
+      events: [await admitted(product)],
       coverage: {
         attemptedRelayCount: 2,
         completeRelayCount: 0,
@@ -930,17 +938,19 @@ describe("future organizer exact merchandise", () => {
             },
           ],
         ])) as never,
-      fetchSignedEventsFanoutDetailed: (async (filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (
+        filter: NDKFilter,
+        options: PublicRelayReadOptions
+      ) => {
         observedFilters.push(filter)
         const events = filter.kinds?.includes(30402) ? [product] : []
         return {
-          events: events.map((event) => new NDKEvent(undefined, event)),
-          relays: options.relayUrls.map((relayUrl) => ({
+          events: await Promise.all(events.map(admitted)),
+          relays: (options.relayUrls ?? []).map((relayUrl: string) => ({
             relayUrl,
             status: "success",
             eventCount: events.length,
           })),
-          eventsVerified: true,
         }
       }) as never,
     })
@@ -978,17 +988,19 @@ describe("future organizer exact merchandise", () => {
       let persistedWraps = 0
       __setEventMarketMerchandiseTestOverrides({
         getRelayLists: (async () => new Map()) as never,
-        fetchSignedEventsFanoutDetailed: (async (filter, options) => {
+        fetchSignedEventsFanoutDetailed: (async (
+          filter: NDKFilter,
+          options: PublicRelayReadOptions
+        ) => {
           const events =
             mismatched && filter.kinds?.includes(30402) ? [product] : []
           return {
-            events: events.map((event) => new NDKEvent(undefined, event)),
-            relays: options.relayUrls.map((relayUrl) => ({
+            events: await Promise.all(events.map(admitted)),
+            relays: (options.relayUrls ?? []).map((relayUrl: string) => ({
               relayUrl,
               status: "success",
               eventCount: events.length,
             })),
-            eventsVerified: true,
           }
         }) as never,
       })
@@ -1039,16 +1051,18 @@ describe("future organizer exact merchandise", () => {
     let current = true
     __setEventMarketMerchandiseTestOverrides({
       getRelayLists: (async () => new Map()) as never,
-      fetchSignedEventsFanoutDetailed: (async (_filter, options) => {
+      fetchSignedEventsFanoutDetailed: (async (
+        _filter: NDKFilter,
+        options: PublicRelayReadOptions
+      ) => {
         current = false
         return {
-          events: [new NDKEvent(undefined, product)],
-          relays: options.relayUrls.map((relayUrl) => ({
+          events: [await admitted(product)],
+          relays: (options.relayUrls ?? []).map((relayUrl: string) => ({
             relayUrl,
             status: "success",
             eventCount: 1,
           })),
-          eventsVerified: true,
         }
       }) as never,
     })

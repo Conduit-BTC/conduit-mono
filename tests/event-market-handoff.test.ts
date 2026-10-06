@@ -22,6 +22,8 @@ import {
   type FutureMarketReadyReceiptSchema,
 } from "@conduit/core"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
+import { admitFixture } from "./helpers/public-event"
 import {
   __resetProtectedReadSigner,
   installProtectedReadSigner,
@@ -144,17 +146,20 @@ describe("current Event Market private inbox authority and bounded scanning", ()
         },
         ORGANIZER_SECRET
       )
-    const resolve = (relayUrl: string, createdAt: number) =>
-      resolveEventMarketOrganizerInbox(ORGANIZER, {
+    const resolve = async (relayUrl: string, createdAt: number) => {
+      const observed = await admitFixture(declaration(relayUrl, createdAt))
+      attachEventSourceRelayUrl(observed as never, isolatedRelayUrl)
+      return resolveEventMarketOrganizerInbox(ORGANIZER, {
         relayUrls: [isolatedRelayUrl],
         now: () => createdAt * 1_000,
         fetchEventsWithDiagnostics: async () => ({
-          events: [new NDKEvent(undefined, declaration(relayUrl, createdAt))],
+          events: [observed],
           attemptedRelayUrls: [isolatedRelayUrl],
           successfulRelayUrls: [isolatedRelayUrl],
           failedRelayUrls: [],
         }),
       })
+    }
 
     await expect(resolve(isolatedRelayUrl, ISSUED_AT)).resolves.toEqual({
       state: "ready",
@@ -179,12 +184,14 @@ describe("current Event Market private inbox authority and bounded scanning", ()
       },
       ORGANIZER_SECRET
     )
+    const observed = await admitFixture(declaration)
+    attachEventSourceRelayUrl(observed as never, "wss://discovery.relay.dev")
     await expect(
       resolveEventMarketOrganizerInbox(ORGANIZER, {
         relayUrls: ["wss://discovery.relay.dev"],
         now: () => ISSUED_AT * 1_000,
         fetchEventsWithDiagnostics: async () => ({
-          events: [new NDKEvent(undefined, declaration)],
+          events: [observed],
           attemptedRelayUrls: ["wss://discovery.relay.dev"],
           successfulRelayUrls: ["wss://discovery.relay.dev"],
           failedRelayUrls: [],

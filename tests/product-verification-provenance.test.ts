@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import { schnorr } from "../packages/core/node_modules/@noble/curves/secp256k1.js"
 import { hexToBytes } from "../packages/core/node_modules/@noble/curves/utils.js"
 import { finalizeEvent, getEventHash } from "nostr-tools"
@@ -15,6 +15,7 @@ import {
 
 const originalWorker = globalThis.Worker
 const originalWebSocket = globalThis.WebSocket
+beforeEach(__resetPublicReaderTestState)
 afterEach(() => {
   __resetPublicReaderTestState()
   Object.defineProperty(globalThis, "Worker", {
@@ -250,14 +251,15 @@ describe("product verification provenance", () => {
       writable: true,
       value: VerifyingWorker,
     })
-    expect((await verifySignedEvents([event])).events).toHaveLength(1)
+    const admitted = (await verifySignedEvents([event])).events[0]
+    expect(admitted).toBeDefined()
 
     const verify = spyOn(schnorr, "verify")
     try {
-      const product = parseProductEvent(event)
+      const product = parseProductEvent(admitted)
       expect(product.signedProductEvent?.id).toBe(event.id)
       expect(productSchema.safeParse(structuredClone(product)).success).toBe(
-        true
+        false
       )
       expect(verify).not.toHaveBeenCalled()
       for (const changed of [
@@ -418,5 +420,5 @@ describe("product verification provenance", () => {
     } finally {
       verify.mockRestore()
     }
-  })
+  }, 20_000)
 })

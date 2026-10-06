@@ -502,7 +502,13 @@ export async function wrapPrivateMessage(
   })
   if (!isValidSignedPublicNostrEvent(seal) || seal.pubkey !== pubkey)
     throw new NostrSignerError("invalid_response")
-  return new NDKEvent(event.ndk, createWrap(seal, recipient.pubkey))
+  return new NDKEvent(
+    event.ndk,
+    createWrap(
+      { ...seal, tags: seal.tags.map((tag) => [...tag]) },
+      recipient.pubkey
+    )
+  )
 }
 
 /** Validate both envelopes and the unsigned rumor before returning private data. */

@@ -27,10 +27,11 @@ import {
   readRetainedOwnerRelayList,
   type OwnerRelayListEvidenceRepository,
 } from "./owner-relay-list-evidence"
+import type { SignedPublicNostrEvent } from "./signed-event"
 import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 
 export { normalizeSecureRelayUrls as secureRelayUrls } from "./relay-settings"
 
@@ -772,9 +773,9 @@ async function readDurableOwnerReadRelayUrls(
 }
 
 function declarationEventsNewestFirst(
-  events: readonly SignedPublicNostrEvent[],
+  events: readonly VerifiedNostrEvent[],
   pubkey: string
-): SignedPublicNostrEvent[] {
+): VerifiedNostrEvent[] {
   return events
     .filter(
       (event) =>
@@ -790,9 +791,9 @@ function declarationEventsNewestFirst(
 }
 
 function toSignedDeclarationEvent(
-  event: SignedPublicNostrEvent,
+  event: VerifiedNostrEvent,
   pubkey: string
-): SignedPublicNostrEvent | null {
+): VerifiedNostrEvent | null {
   try {
     const signed = event
     const canonical =
@@ -803,17 +804,7 @@ function toSignedDeclarationEvent(
       /^[0-9a-f]{64}$/.test(signed.pubkey) &&
       /^[0-9a-f]{64}$/.test(signed.id) &&
       /^[0-9a-f]{128}$/.test(signed.sig)
-    return canonical && isValidSignedPublicNostrEvent(signed)
-      ? {
-          id: signed.id,
-          pubkey: signed.pubkey,
-          created_at: signed.created_at,
-          kind: signed.kind,
-          tags: signed.tags.map((tag) => [...tag]),
-          content: signed.content,
-          sig: signed.sig,
-        }
-      : null
+    return canonical && isVerifiedNostrEvent(signed) ? signed : null
   } catch {
     return null
   }

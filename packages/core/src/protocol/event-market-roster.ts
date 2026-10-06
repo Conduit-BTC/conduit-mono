@@ -11,9 +11,12 @@ import { EVENT_KINDS } from "./kinds"
 import { parseProductEvent } from "./products"
 import {
   compareReplaceableEventFrontiers,
-  isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 
 const HEX_64 = /^[0-9a-f]{64}$/
 const CONTROL_CHARACTER = /\p{Cc}/u
@@ -128,11 +131,11 @@ export function buildEventMarketRosterDraft(
 }
 
 export function parseEventMarketRosterEvent(
-  event: SignedPublicNostrEvent
+  event: VerifiedNostrEvent
 ): ParsedEventMarketRoster | null {
   if (
     event.kind !== EVENT_KINDS.EVENT_MARKET ||
-    !isValidSignedPublicNostrEvent(event) ||
+    !isVerifiedNostrEvent(event) ||
     new TextEncoder().encode(JSON.stringify(event)).length > MAX_EVENT_BYTES
   ) {
     return null
@@ -217,8 +220,9 @@ export function resolveEventMarketRoster(input: {
         event.tags.some(
           (tag) => tag[0] === "d" && tag[1] === coordinate.dTag
         ) &&
-        isValidSignedPublicNostrEvent(event)
+        isVerifiedNostrEvent(event)
     )
+    .filter(isVerifiedNostrEvent)
     .sort(
       (left, right) =>
         -compareReplaceableEventFrontiers(
@@ -297,8 +301,9 @@ export function resolveEventMarketCalendar(input: {
             `${event.kind}:${event.pubkey}:${tag[1]}` ===
               input.market.calendarCoordinate
         ) &&
-        isValidSignedPublicNostrEvent(event)
+        isVerifiedNostrEvent(event)
     )
+    .filter(isVerifiedNostrEvent)
     .sort(
       (left, right) =>
         -compareReplaceableEventFrontiers(
@@ -373,8 +378,9 @@ export function resolveEventMarketProduct(input: {
         event.tags.some(
           (tag) => tag[0] === "d" && tag[1] === coordinate.dTag
         ) &&
-        isValidSignedPublicNostrEvent(event)
+        isVerifiedNostrEvent(event)
     )
+    .filter(isVerifiedNostrEvent)
     .sort(
       (left, right) =>
         -compareReplaceableEventFrontiers(

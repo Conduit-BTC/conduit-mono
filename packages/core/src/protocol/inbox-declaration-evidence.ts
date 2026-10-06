@@ -19,10 +19,8 @@ import {
   type NetworkPreferenceDistributionOutcomeUpdate,
   type NetworkPreferenceReadbackObservation,
 } from "./network-preference-delivery"
-import {
-  isValidSignedPublicNostrEvent,
-  type SignedPublicNostrEvent,
-} from "./signed-event"
+import { type SignedPublicNostrEvent } from "./signed-event"
+import { admitPublicEvent, isVerifiedNostrEvent } from "./verified-public-event"
 import {
   normalizeOwnerSelectedRelayUrls,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -158,7 +156,7 @@ export function normalizeInboxDeclarationEvidencePubkey(
 }
 
 function cloneSignedEvent<T extends SignedPublicNostrEvent>(event: T): T {
-  return structuredClone(event)
+  return isVerifiedNostrEvent(event) ? event : structuredClone(event)
 }
 
 /**
@@ -173,7 +171,10 @@ function normalizeRetainedRelayUrls(relayUrls: readonly string[]): string[] {
 export function cloneInboxDeclarationEventEvidence<
   T extends InboxDeclarationEventEvidence,
 >(evidence: T): T {
-  return structuredClone(evidence)
+  return {
+    ...structuredClone(evidence),
+    signedEvent: cloneSignedEvent(evidence.signedEvent),
+  }
 }
 
 function assertCanonicalStoredEventEvidence(
@@ -228,6 +229,17 @@ export function cloneInboxDeclarationEvidenceRecord<
   T extends InboxDeclarationEvidenceRecord,
 >(record: T): T {
   const cloned = structuredClone(record)
+  cloned.current.signedEvent = cloneSignedEvent(record.current.signedEvent)
+  if (cloned.lastUsable && record.lastUsable) {
+    cloned.lastUsable.signedEvent = cloneSignedEvent(
+      record.lastUsable.signedEvent
+    )
+  }
+  if (cloned.pendingDistribution && record.pendingDistribution) {
+    cloned.pendingDistribution.signedEvent = cloneSignedEvent(
+      record.pendingDistribution.signedEvent
+    )
+  }
   const pubkey = normalizeInboxDeclarationEvidencePubkey(cloned.pubkey)
   if (!pubkey || pubkey !== cloned.pubkey) {
     throw new Error(
@@ -344,8 +356,10 @@ function assertValidDeclarationEvent(
   pubkey: NormalizedInboxDeclarationPubkey,
   event: SignedPublicNostrEvent
 ): void {
-  if (!isValidSignedPublicNostrEvent(event)) {
-    throw new Error("Inbox declaration evidence requires a valid signed event")
+  if (!isVerifiedNostrEvent(event)) {
+    throw new Error(
+      "Inbox declaration evidence requires an admitted signed event"
+    )
   }
   if (
     event.id !== event.id.toLowerCase() ||
@@ -706,7 +720,10 @@ function pendingForCurrent(
   currentEventId: string
 ): PendingInboxDeclarationDistribution | undefined {
   return pending?.signedEvent.id === currentEventId
-    ? structuredClone(pending)
+    ? {
+        ...structuredClone(pending),
+        signedEvent: cloneSignedEvent(pending.signedEvent),
+      }
     : undefined
 }
 
@@ -1870,6 +1887,32 @@ function sameOrderedStrings(
   )
 }
 
+async function admitInboxRecord(
+  record: InboxDeclarationEvidenceRecord | undefined
+): Promise<InboxDeclarationEvidenceRecord | undefined> {
+  if (!record) return undefined
+  const admitted = structuredClone(record)
+  const admit = async (event: SignedPublicNostrEvent) => {
+    const result = await admitPublicEvent(event)
+    if (result.status !== "verified") {
+      throw new Error("Retained inbox declaration evidence is not verified")
+    }
+    return result.event
+  }
+  admitted.current.signedEvent = await admit(admitted.current.signedEvent)
+  if (admitted.lastUsable) {
+    admitted.lastUsable.signedEvent = await admit(
+      admitted.lastUsable.signedEvent
+    )
+  }
+  if (admitted.pendingDistribution) {
+    admitted.pendingDistribution.signedEvent = await admit(
+      admitted.pendingDistribution.signedEvent
+    )
+  }
+  return admitted
+}
+
 function createDexieRepository(
   now: () => number = Date.now
 ): InboxDeclarationEvidenceRepository {
@@ -1880,15 +1923,20 @@ function createDexieRepository(
     if (!pubkey) {
       throw new Error("Inbox declaration evidence requires a valid hex pubkey")
     }
+    const before = await db.inboxDeclarationEvidence.get(pubkey)
+    const admittedBefore = await admitInboxRecord(before)
     return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
       const existing = await db.inboxDeclarationEvidence.get(pubkey)
-      if (!existing) {
+      if (!existing || !admittedBefore) {
         throw new Error(
           "Inbox cutover readback requires an existing locally planned batch"
         )
       }
+      if (JSON.stringify(existing) !== JSON.stringify(before)) {
+        throw new Error("Inbox declaration changed during verification")
+      }
       let finalRecord = applyInboxDeclarationCutoverRecoveryReadback(
-        existing,
+        admittedBefore,
         input
       )
       const pending = finalRecord.pendingDistribution
@@ -1920,11 +1968,21 @@ function createDexieRepository(
     inputs: readonly MergeInboxDeclarationEvidenceInput[]
   ): Promise<InboxDeclarationEvidenceRecord> => {
     const candidates = createMergeCandidates(inputs, now)
+    const before = await db.inboxDeclarationEvidence.get(candidates[0]!.pubkey)
+    let admittedBefore: InboxDeclarationEvidenceRecord | undefined
+    try {
+      admittedBefore = await admitInboxRecord(before)
+    } catch {
+      admittedBefore = undefined
+    }
     return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
       const existing = await db.inboxDeclarationEvidence.get(
         candidates[0]!.pubkey
       )
-      let finalRecord = existing
+      if (JSON.stringify(existing) !== JSON.stringify(before)) {
+        throw new Error("Inbox declaration changed during verification")
+      }
+      let finalRecord = admittedBefore
       for (const candidate of candidates) {
         finalRecord = applyEvidenceMerge(finalRecord, candidate)
       }
@@ -1942,15 +2000,16 @@ function createDexieRepository(
 
   return {
     async get(pubkey) {
-      return db.transaction("rw", db.inboxDeclarationEvidence, async () => {
-        const stored = await db.inboxDeclarationEvidence.get(pubkey)
-        if (!stored) return undefined
-        const canonical = cloneInboxDeclarationEvidenceRecord(stored)
-        if (JSON.stringify(stored) !== JSON.stringify(canonical)) {
-          await db.inboxDeclarationEvidence.put(canonical)
-        }
-        return cloneInboxDeclarationEvidenceRecord(canonical)
-      })
+      const stored = await db.inboxDeclarationEvidence.get(pubkey)
+      if (!stored) return undefined
+      try {
+        const admitted = await admitInboxRecord(stored)
+        return admitted
+          ? cloneInboxDeclarationEvidenceRecord(admitted)
+          : undefined
+      } catch {
+        return undefined
+      }
     },
 
     merge: (input) => mergeBatch([input]),
@@ -1980,7 +2039,12 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
   ): Promise<InboxDeclarationEvidenceRecord> => {
     const candidates = createMergeCandidates(inputs, now)
     const pubkey = candidates[0]!.pubkey
-    let merged = records.get(pubkey)
+    let merged: InboxDeclarationEvidenceRecord | undefined
+    try {
+      merged = await admitInboxRecord(records.get(pubkey))
+    } catch {
+      merged = undefined
+    }
     for (const candidate of candidates) {
       merged = applyEvidenceMerge(merged, candidate)
     }
@@ -1995,7 +2059,7 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
     if (!pubkey) {
       throw new Error("Inbox declaration evidence requires a valid hex pubkey")
     }
-    const existing = records.get(pubkey)
+    const existing = await admitInboxRecord(records.get(pubkey))
     if (!existing) {
       throw new Error(
         "Inbox cutover readback requires an existing locally planned batch"
@@ -2025,7 +2089,14 @@ export function createInMemoryInboxDeclarationEvidenceRepository(
   return {
     async get(pubkey) {
       const record = records.get(pubkey)
-      return record ? cloneInboxDeclarationEvidenceRecord(record) : undefined
+      try {
+        const admitted = await admitInboxRecord(record)
+        return admitted
+          ? cloneInboxDeclarationEvidenceRecord(admitted)
+          : undefined
+      } catch {
+        return undefined
+      }
     },
 
     merge: (input) => mergeBatch([input]),
