@@ -11,7 +11,7 @@ const buttonVariants = cva(
         primary:
           "bg-primary-500 text-white hover:bg-primary-600 focus-visible:ring-primary-500",
         secondary:
-          "bg-secondary-500 text-white hover:bg-secondary-600 focus-visible:ring-secondary-500",
+          "bg-secondary-700 text-white hover:bg-secondary-800 focus-visible:ring-secondary-500",
         accent:
           "bg-accent-500 text-white hover:bg-accent-600 focus-visible:ring-accent-500",
         outline:
@@ -21,14 +21,14 @@ const buttonVariants = cva(
         muted:
           "bg-[var(--surface-elevated)] text-[var(--text-primary)] hover:opacity-90 focus-visible:ring-primary-500",
         destructive:
-          "bg-error text-white hover:bg-red-600 focus-visible:ring-red-500",
-        link: "text-primary-500 underline-offset-4 hover:underline focus-visible:ring-primary-500",
+          "bg-[var(--destructive-action)] text-white hover:bg-[var(--destructive-action-hover)] focus-visible:ring-[var(--error-text)]",
+        link: "text-[var(--link-text)] underline-offset-4 hover:underline focus-visible:ring-primary-500",
       },
       size: {
-        sm: "h-8 px-3 text-xs",
-        md: "h-10 px-4 text-sm",
+        sm: "h-11 px-3 text-xs sm:h-8 [@media(pointer:coarse)]:h-11",
+        md: "h-11 px-4 text-sm sm:h-10 [@media(pointer:coarse)]:h-11",
         lg: "h-12 px-6 text-base",
-        icon: "h-10 w-10",
+        icon: "h-11 w-11 sm:h-10 sm:w-10 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11",
       },
     },
     defaultVariants: {
@@ -39,7 +39,8 @@ const buttonVariants = cva(
 )
 
 export interface ButtonProps
-  extends ButtonHTMLAttributes<HTMLButtonElement>,
+  extends
+    ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
   asChild?: boolean
 }

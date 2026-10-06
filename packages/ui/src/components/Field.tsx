@@ -45,7 +45,7 @@ export function Field({
       {error ? (
         <p
           id={errorId}
-          className="text-pretty text-sm font-medium text-[var(--error)]"
+          className="text-pretty text-sm font-medium text-[var(--error-text)]"
         >
           {error}
         </p>

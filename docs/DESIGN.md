@@ -181,7 +181,7 @@ Use token mapping rather than copying raw asset colors into components.
 
 - Use `text-[var(--text-primary)]` for default foreground text.
 - Use `text-[var(--text-secondary)]` for supporting copy.
-- Use `text-[var(--text-muted)]` for tiny metadata, hints, and inactive labels.
+- Use `text-[var(--text-secondary)]` for readable metadata and hints. Reserve `--text-muted` for nonessential decoration or disabled controls; verify contrast before using it for text.
 - Prefer `--text-secondary` over ad hoc opacity on `--text-primary` unless a specific art direction calls for it.
 
 ### Actions And Emphasis
@@ -193,13 +193,14 @@ Use token mapping rather than copying raw asset colors into components.
 
 ### Status Colors
 
-- Use `success`, `warning`, `error`, and `info` tokens for system state.
+- Use `success`, `warning`, `error`, and `info` for signal fills. Use the matching `--success-text`, `--warning-text`, `--error-text`, and `--info-text` roles for readable state labels in both themes.
+- Passive status uses `StatusPill` (historical export name): icon and text, without a capsule. Use a small rectangular `Badge` for attention or classification, plain text for routine counts, and a real pressed/removable control for an active filter.
 - Do not use Tailwind palette shortcuts like `text-emerald-400`, `text-amber-300`, or `bg-fuchsia-500` in app UI.
 
 ### Shadows And Effects
 
-- Use Tailwind shadow tokens (`shadow-sm`, `shadow-md`, `shadow-lg`, `shadow-xl`) when they fit.
-- Use `shadow-[var(--shadow-glass-inset)]` for the recurring glass top-edge highlight.
+- Persistent content is flat by default. Use spacing and rules before adding a containing card.
+- Reserve depth for overlays. Do not add glass highlights or hover shadows to passive labels, product listings or settings groups.
 - Use `shadow-[var(--shadow-dialog)]` for dialog depth.
 - Decorative glow effects should derive from token colors via `color-mix(...)`, not raw `rgba(...)` values.
 
@@ -220,7 +221,7 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 ### Surfaces
 
 - Keep most panels restrained and readable.
-- Let texture come from subtle border, blur, and highlight treatment rather than heavy gradients everywhere.
+- Let product imagery, merchant identity, type and aligned information provide character. Avoid repeating a panel around every section or nesting panels solely for visual grouping.
 - Reserve stronger gradients for onboarding, confirmations, charts, and brand storytelling moments.
 
 ### Motion
@@ -238,21 +239,22 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 ### Radius And Shape
 
 - Use the radius tokens from `theme.css` and Tailwind config.
-- Larger panels may use `rounded-[2rem]` when they are hero surfaces or modal shells.
-- Smaller controls should stay within the shared radius system.
+- Default to 4 px for tags/media/segmented choices, 8 px for contained cards and 12 px for dialogs. Most buttons and fields retain the established small control radius.
+- Settings use headings and rules. Product listings use unframed identity/price content below the image.
+- Fully round geometry belongs to avatars, switches and genuine circular controls. Do not use a capsule as the default for status, metadata or navigation.
 
-## Approved Patterns
+## Shared Patterns
 
 ### Standard Card
 
 ```tsx
-<section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+<section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
 ```
 
-### Elevated Input Or Nested Panel
+### Selected Control Surface
 
 ```tsx
-<div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+<div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)]">
 ```
 
 ### Dialog Shell
@@ -261,7 +263,9 @@ If a hardcoded value is temporary or intentionally local, keep it close to the c
 <DialogContent className="border-[var(--border)] bg-[var(--surface-dialog)] shadow-[var(--shadow-dialog)]" />
 ```
 
-### Decorative Glow Using Tokens
+### Exceptional Brand Treatment
+
+Reserve this for a specifically reviewed brand composition, never routine controls or status.
 
 ```tsx
 <div className="bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_16%,transparent),transparent_36%)]" />

@@ -103,21 +103,60 @@ management dependency. No shared component owns signer, payment, inventory or
 relay authority. Other existing components remain available; this candidate
 does not deprecate them merely because they lack a story in the initial reference.
 
-## Visual decisions and known gaps
+## Visual research applied to the candidate
 
-Recommended direction: retain Conduit's identity and strong compositions; adopt
-the spacing/density recipes and neutral checkout hierarchy with one purple next
-action. Preserve the more rounded settings grouping for this bounded slice.
-Review that radius distinction, the 16/24 px gutters and comfortable/compact
-density on phone and desktop before broad adoption.
+The follow-up critique used [Impeccable's craft floor](https://github.com/pbakaus/impeccable/blob/cf3d2fa07d3ad1814ac5fbbbb5b2043b795eaef1/.agents/skills/impeccable/reference/craft-floor.md)
+as a UI quality checklist, with Conduit intent taking precedence over its stylistic defaults.
+Direct desktop/phone inspection of [MUJI's catalogue](https://www.muji.us/collections/paper-goods)
+informed unframed merchandise, readable prices and quiet metadata. Its clipped mobile
+names were not adopted. [McMaster's materials catalogue](https://www.mcmaster.com/products/materials/)
+informed aligned, task-specific information, not its narrow-screen layout.
+[GOV.UK tags](https://design-system.service.gov.uk/components/tag/) and
+[summary lists](https://design-system.service.gov.uk/components/summary-list/)
+informed noninteractive status and ruled key/value information.
+[Carbon tags](https://carbondesignsystem.com/components/tag/usage/) informed the
+separation between classification, filtering and selection. None is an implementation dependency.
 
-Accessibility corrections do not depend on aesthetic preference. The inherited
-Day Market ProductCard price computes to `rgb(234, 152, 97)` on white, a 2.29:1
-contrast ratio. Some existing status/disabled-looking accents and compact touch
-targets also need a systematic check. These are exposed in the reference and
-must be corrected or explicitly bounded before it becomes an approved baseline.
-Current screenshots are design-review evidence, not an accessibility sign-off.
+Applied changes:
 
-Review disposition: **targeted human QA**, with visual checkpoint still pending.
-Browser checks and remaining gaps are recorded with the candidate's review
-handoff. No source inspection or automated test substitutes for that decision.
+- Passive status is icon plus text; attention tags are small rectangles and counts are plain text.
+- Tabs use an underline, segmented choices use flat rectangles, and settings use headings and rules.
+- Product and event compositions lose their enclosing window, hover shadow and passive glow.
+- Bricolage, purple primary actions, product imagery, merchant identity and event time/place remain.
+- Checkout uses aligned receipt-like totals without a nested pickup card.
+- The default shape vocabulary is 4/8/12 px, with round avatars and switches retained.
+- Product/merchant names wrap. Cart quantity controls stay visible and preserve the focused first action.
+- Readable foreground roles correct status/validation colors independently of existing signal fills.
+  The previous Day price accent (2.29:1 on white) is replaced by the primary text role.
+- Buttons/selectors use 44 px phone and coarse-pointer hit areas; the switch has a 44 px target
+  around its compact track. Existing desktop density remains available.
+- Preview controls collapse, reducing phone chrome while keeping all nine sections discoverable.
+
+No new primitive family, font, icon library, animation, decorative ticket motif,
+theme interoperability or theme-runtime migration was added in this visual pass.
+
+## Review disposition
+
+**Targeted human QA.** Review the flatter commerce/settings compositions, neutral
+price hierarchy, 4/8/12 px shape scale and compact/comfortable density before
+broad route adoption. Browser contrast/geometry and focus checks are evidence,
+not a full accessibility certification. Physical-device and screen-reader checks
+remain distinct from a desktop browser resized to phone dimensions.
+
+## Local workbench observations
+
+At 1280 px desktop and 390/320 px phone widths, the revised examples preserve
+reading order and keep tables in named horizontal scroll regions. The initial
+product starts at 342 px on the 390 px viewport, compared with roughly 727 px in
+the earlier candidate. Buttons, cart steppers and selectors measured 44 px high
+on that phone layout. Long product and merchant names remain visible.
+
+Measured Day Market product price contrast is 14.64:1 on the actual page canvas;
+unavailable-media text is 10.39:1 on its surface. The sampled status labels and
+attention tags exceed 4.5:1 in both themes (lowest sampled Day tag: 4.96:1).
+These measurements cover the workbench examples, not arbitrary caller overrides.
+
+Keyboard checks covered cart Add/Remove focus retention, form invalid-field
+focus and recovery, dialog focus wrap/Escape/return, safe initial focus in a
+destructive confirmation, menu skipping of disabled items and arrow-key tabs.
+No signer, payment or relay action was performed.

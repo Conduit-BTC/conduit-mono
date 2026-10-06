@@ -3,22 +3,19 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "../utils"
 
 const badgeVariants = cva(
-  "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--primary-500)] focus:ring-offset-2",
+  "inline-flex max-w-full items-center rounded-[var(--radius-sm)] px-2 py-1 text-xs font-medium leading-4",
   {
     variants: {
       variant: {
-        default:
-          "border-[var(--border)] bg-[var(--primary-500)] text-[var(--on-primary)] shadow-[var(--shadow-glass-inset)]",
-        secondary:
-          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[var(--surface)] hover:border-[var(--text-secondary)]",
+        default: "bg-[var(--muted)] text-[var(--text-primary)]",
+        secondary: "bg-[var(--muted)] text-[var(--text-secondary)]",
         success:
-          "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success)]",
+          "bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success-text)]",
         warning:
-          "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_12%,transparent)] text-[var(--warning)]",
+          "bg-[color-mix(in_srgb,var(--warning)_12%,transparent)] text-[var(--warning-text)]",
         destructive:
-          "border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_12%,transparent)] text-[var(--error)]",
-        outline:
-          "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] hover:border-[var(--text-secondary)]",
+          "bg-[color-mix(in_srgb,var(--error)_12%,transparent)] text-[var(--error-text)]",
+        outline: "border border-[var(--border)] text-[var(--text-secondary)]",
       },
     },
     defaultVariants: {

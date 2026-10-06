@@ -35,7 +35,7 @@ It binds to loopback. No deployment workflow publishes it.
 | Settings / status | Existing PreferenceSectionCard, settings rows, switch, unavailable connection and restore progress                        |
 | Baseline report   | Retained patterns, prior art, proposed component families, exclusions and review choices                                  |
 
-Use the toolbar to change themes, show long content or choose a state. State
+Expand Preview controls to change themes, show long content or choose a state. State
 selection applies to Commerce and Event / inventory; density applies to tables.
 Check phone and desktop widths. On phones, section selection uses the existing
 Select; desktop uses Tabs. Demo actions only change local React state.
@@ -54,8 +54,10 @@ is an intentional second example. Do not add credentials or live mutations here.
 3. Use `Field` around one input, textarea or select trigger. Spread its supplied
    control props to preserve the visible label and help/error relationships.
    Use the feature's existing validation library; Field does not own validation.
-4. Use Card for ordinary sections and PreferenceSectionCard for settings groups.
-   Use SummaryList/SummaryRow for key/value totals. Avoid a new price-panel style.
+4. Use headings, spacing and rules for ordinary sections. Use Card only when a
+   contained object is useful (for example, checkout or a focused form).
+   PreferenceSectionCard provides ruled settings groups; SummaryList/SummaryRow
+   provides aligned key/value totals. Avoid nested decorative frames.
 5. Use the native Table family for relational data and provide a meaningful
    `scrollLabel`. Row actions remain real buttons/links with explicit selected
    state. No sorting, virtualization or hidden data transformation is implied.
@@ -65,6 +67,17 @@ is an intentional second example. Do not add credentials or live mutations here.
 7. Add a representative workbench example when adding a reusable capability.
    Reuse an existing primitive first. Promote repeated or clearly needed
    compositions into `packages/ui/src/components` and export them from its index.
+
+### Visual grammar
+
+- StatusPill is an icon/text label, despite its historical name. It is not an action.
+- Badge is a small rectangular classification/attention tag. Counts are plain text.
+- Use a real pressed button for filters and segmented choices. Tabs have an active underline.
+- Keep primary price neutral, prominent and tabular. Orange is not a readable price role in Day Market.
+- Product and merchant names wrap. An accessible name alone does not reveal clipped content to sighted readers.
+- Phone and coarse-pointer actions, selectors, switch targets and cart quantity controls use 44 px hit areas. Desktop compact variants remain available.
+- Quantity controls remain visible after adding an item, with focus preserved as Add becomes Remove and back.
+- Use 4/8/12 px radii intentionally. Do not add glass highlights, passive hover shadows, decorative ticket shapes or a new font.
 
 ### Owners
 
@@ -90,9 +103,9 @@ workbench typecheck/build. Inspect both themes at desktop and phone widths with
 long content and all relevant states. Check keyboard-only use, focus return,
 error recovery, contrast and scroll containment. Physical-device, screen-reader,
 zoom and reduced-motion checks remain separate evidence from a desktop browser
-resized to phone dimensions. The reference has known inherited contrast and
-compact-control gaps listed in the baseline report; resolve those before
-calling the reference approved.
+resized to phone dimensions. The research pass corrects the recorded price/status contrast, clipped names
+and small phone controls. Broader app adoption and visual acceptance still
+require review; the workbench is not a claim that all existing routes conform.
 
 Workbench examples are composition evidence, not cryptographic, payment,
 signer, relay-delivery or authenticated workflow tests.

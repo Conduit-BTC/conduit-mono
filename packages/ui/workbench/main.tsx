@@ -2,7 +2,6 @@ import { StrictMode, useState, useSyncExternalStore } from "react"
 import { createRoot } from "react-dom/client"
 import {
   ActionRow,
-  Badge,
   Field,
   PageHeader,
   PageLayout,
@@ -55,99 +54,109 @@ function Workbench() {
     getServerThemeSnapshot
   )
   return (
-    <PageLayout>
+    <PageLayout className="space-y-4 sm:space-y-6">
       <a href="#examples" className="sr-only focus:not-sr-only focus:underline">
         Skip to examples
       </a>
       <PageHeader
         title="Conduit UI workbench"
-        description="One shared foundation for Market, Merchant and the next feature. Explore real components, composed examples and the states between them."
-        actions={
-          <>
-            <Badge variant="outline">Review candidate</Badge>
-            <ThemeToggleButton />
-          </>
-        }
+        description="Shared components · Review candidate"
+        className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 [&_h1]:text-2xl sm:[&_h1]:text-3xl [&_p]:text-sm"
+        actions={<ThemeToggleButton />}
       />
-      <div className="flex flex-wrap items-end gap-5 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
-        <div className="min-w-40">
-          <Field label="Theme">
-            {(props) => (
-              <Select
-                value={theme.preference}
-                onValueChange={(value) => {
-                  if (
-                    value === "system" ||
-                    value === "day-market" ||
-                    value === "night-market"
-                  )
-                    setThemePreference(value)
-                }}
-              >
-                <SelectTrigger {...props}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="system">System</SelectItem>
-                  <SelectItem value="day-market">Day Market</SelectItem>
-                  <SelectItem value="night-market">Night Market</SelectItem>
-                </SelectContent>
-              </Select>
-            )}
-          </Field>
-        </div>
-        <div className="min-w-36">
-          <Field label="Example state">
-            {(props) => (
-              <Select
-                value={state}
-                onValueChange={(value) => {
-                  if (
-                    ["ready", "loading", "empty", "error", "pending"].includes(
-                      value
+      <details className="border-y border-[var(--border)]">
+        <summary className="cursor-pointer py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]">
+          Preview controls ·{" "}
+          {theme.resolvedTheme === "day-market" ? "Day" : "Night"} · {state}
+        </summary>
+        <div className="flex flex-wrap items-end gap-5 border-t border-[var(--border)] p-4">
+          <div className="min-w-40">
+            <Field label="Theme">
+              {(props) => (
+                <Select
+                  value={theme.preference}
+                  onValueChange={(value) => {
+                    if (
+                      value === "system" ||
+                      value === "day-market" ||
+                      value === "night-market"
                     )
-                  )
-                    setState(value as ExampleState)
-                }}
-              >
-                <SelectTrigger {...props}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["ready", "loading", "empty", "error", "pending"].map(
-                    (value) => (
-                      <SelectItem key={value} value={value}>
-                        {value[0].toUpperCase() + value.slice(1)}
-                      </SelectItem>
+                      setThemePreference(value)
+                  }}
+                >
+                  <SelectTrigger {...props}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="system">System</SelectItem>
+                    <SelectItem value="day-market">Day Market</SelectItem>
+                    <SelectItem value="night-market">Night Market</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            </Field>
+          </div>
+          <div className="min-w-36">
+            <Field label="Example state">
+              {(props) => (
+                <Select
+                  value={state}
+                  onValueChange={(value) => {
+                    if (
+                      [
+                        "ready",
+                        "loading",
+                        "empty",
+                        "error",
+                        "pending",
+                      ].includes(value)
                     )
-                  )}
-                </SelectContent>
-              </Select>
-            )}
-          </Field>
+                      setState(value as ExampleState)
+                  }}
+                >
+                  <SelectTrigger {...props}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["ready", "loading", "empty", "error", "pending"].map(
+                      (value) => (
+                        <SelectItem key={value} value={value}>
+                          {value[0].toUpperCase() + value.slice(1)}
+                        </SelectItem>
+                      )
+                    )}
+                  </SelectContent>
+                </Select>
+              )}
+            </Field>
+          </div>
+          <ActionRow className="min-h-10">
+            <Switch
+              id="long-content"
+              checked={long}
+              onCheckedChange={setLong}
+            />
+            <label htmlFor="long-content" className="text-sm">
+              Long content
+            </label>
+          </ActionRow>
+          <ActionRow className="min-h-10">
+            <Switch
+              id="compact-rows"
+              checked={compact}
+              onCheckedChange={setCompact}
+            />
+            <label htmlFor="compact-rows" className="text-sm">
+              Compact tables
+            </label>
+          </ActionRow>
+          <p className="basis-full text-pretty text-xs text-[var(--text-secondary)]">
+            State controls apply to Commerce and Event / inventory. All data is
+            fictional; no signer, wallet, relay or account action runs. Resize
+            the browser to inspect phone and desktop layouts.
+          </p>
         </div>
-        <ActionRow className="min-h-10">
-          <Switch id="long-content" checked={long} onCheckedChange={setLong} />
-          <label htmlFor="long-content" className="text-sm">
-            Long content
-          </label>
-        </ActionRow>
-        <ActionRow className="min-h-10">
-          <Switch
-            id="compact-rows"
-            checked={compact}
-            onCheckedChange={setCompact}
-          />
-          <label htmlFor="compact-rows" className="text-sm">
-            Compact tables
-          </label>
-        </ActionRow>
-      </div>
-      <p className="text-pretty text-xs text-[var(--text-secondary)]">
-        State controls apply to Commerce and Event / inventory. All data is
-        fictional; no signer, wallet, relay or account action runs. Resize the
-        browser to inspect phone and desktop layouts.
-      </p>
+      </details>
       <main id="examples" tabIndex={-1}>
         <Tabs value={section} onValueChange={setSection}>
           <div className="mb-5 sm:hidden">

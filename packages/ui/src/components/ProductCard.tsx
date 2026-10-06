@@ -1,11 +1,8 @@
-import { Check, ShoppingCart } from "lucide-react"
+import { Check, Minus, Plus, ShoppingCart } from "lucide-react"
 import {
   type FocusEventHandler,
   type PointerEventHandler,
   type ReactNode,
-  useEffect,
-  useRef,
-  useState,
 } from "react"
 import type { ProductImage } from "@conduit/core"
 import { Badge } from "./Badge"
@@ -77,7 +74,7 @@ export function ProductCard({
   const firstImage = images[0]
 
   const merchantNameContent = merchantNamePending ? (
-    <span className="inline-block max-w-full animate-pulse truncate leading-5">
+    <span className="inline-block max-w-full animate-pulse break-words leading-5">
       {merchantName}
     </span>
   ) : (
@@ -90,15 +87,21 @@ export function ProductCard({
       tabIndex={onActivate ? 0 : undefined}
       data-availability={soldOut ? "sold-out" : "available"}
       className={cn(
-        "group flex h-full flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-[var(--shadow-md)] transition-[border-color,box-shadow,transform,background-color] duration-200 hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:shadow-[var(--shadow-lg)]",
-        onActivate && "cursor-pointer",
+        "group flex h-full min-w-0 flex-col text-[var(--text-primary)]",
+        onActivate &&
+          "cursor-pointer rounded-[var(--radius-sm)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
         className
       )}
       onClick={onActivate}
       onPointerEnter={onPointerEnter}
       onFocus={onFocus}
       onKeyDown={(event) => {
-        if (!onActivate || (event.key !== "Enter" && event.key !== " ")) return
+        if (
+          event.target !== event.currentTarget ||
+          !onActivate ||
+          (event.key !== "Enter" && event.key !== " ")
+        )
+          return
         event.preventDefault()
         onActivate()
       }}
@@ -107,16 +110,19 @@ export function ProductCard({
         image={firstImage}
         title={title}
         imageLoading={imageLoading}
-        enableHoverZoom={!disableImageHoverZoom}
+        enableHoverZoom={Boolean(onActivate) && !disableImageHoverZoom}
         soldOut={soldOut}
         onInvalidImage={onInvalidImage}
-        className={mediaClassName}
+        className={cn(
+          "rounded-[var(--radius-sm)] border border-[var(--border)]",
+          mediaClassName
+        )}
       />
 
-      <div className="flex flex-1 flex-col p-3">
+      <div className="flex flex-1 flex-col py-3">
         <div className="min-h-[3.25rem] space-y-1">
           <div className="flex items-start justify-between gap-2">
-            <h3 className="min-w-0 flex-1 truncate text-sm font-semibold leading-snug text-[var(--text-primary)]">
+            <h3 className="min-w-0 flex-1 break-words text-base font-semibold leading-snug text-[var(--text-primary)]">
               {title}
             </h3>
             {titleAside || soldOut ? (
@@ -129,7 +135,7 @@ export function ProductCard({
           {onMerchantActivate ? (
             <button
               type="button"
-              className="block w-full min-w-0 max-w-full truncate text-left text-xs leading-5 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              className="block min-h-11 w-full min-w-0 max-w-full break-words text-left text-sm leading-5 text-[var(--text-secondary)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
               aria-label={merchantNamePending ? "Open store" : undefined}
               onClick={(event) => {
                 event.preventDefault()
@@ -140,14 +146,19 @@ export function ProductCard({
               {merchantNameContent}
             </button>
           ) : (
-            <div className="w-full min-w-0 max-w-full truncate text-left text-xs leading-5 text-[var(--text-muted)]">
+            <div className="w-full min-w-0 max-w-full break-words text-left text-sm leading-5 text-[var(--text-secondary)]">
               {merchantNameContent}
             </div>
           )}
         </div>
 
         {options ? (
-          <div className={cn("pt-3", optionsClassName)}>{options}</div>
+          <div
+            className={cn("pt-3", optionsClassName)}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {options}
+          </div>
         ) : null}
 
         {notice ? (
@@ -161,16 +172,16 @@ export function ProductCard({
           </div>
         ) : null}
 
-        <div className="mt-auto flex items-end justify-between gap-2 pt-3">
+        <div className="mt-auto flex flex-wrap items-end justify-between gap-3 pt-4">
           <div className="min-w-0 tabular-nums">
-            <div className="min-h-5 truncate text-sm font-bold text-secondary-400">
+            <div className="min-h-5 break-words text-lg font-semibold text-[var(--text-primary)]">
               {primaryPrice}
             </div>
-            <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
+            <div className="min-h-[1rem] break-words text-xs text-[var(--text-secondary)]">
               {secondaryPrice ?? "\u00a0"}
             </div>
             {approximateUsdPrice !== undefined ? (
-              <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
+              <div className="min-h-[1rem] break-words text-xs text-[var(--text-secondary)]">
                 {approximateUsdPrice ?? "\u00a0"}
               </div>
             ) : null}
@@ -179,14 +190,10 @@ export function ProductCard({
             <div className="relative shrink-0">{action}</div>
           ) : cartQuantity > 0 ? (
             <div className="relative shrink-0">
-              <Button
-                variant="muted"
-                size="sm"
-                className="h-7 shrink-0 gap-1 rounded-md border border-secondary-400/40 bg-secondary-500/10 px-2.5 text-xs font-medium text-secondary-300"
-              >
-                <Check className="h-3.5 w-3.5 shrink-0" />
+              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
+                <Check className="size-3.5 shrink-0" aria-hidden="true" />
                 In cart ({cartQuantity})
-              </Button>
+              </span>
             </div>
           ) : null}
         </div>
@@ -218,116 +225,104 @@ export function ProductCartAction({
   disabled = false,
   disabledLabel = "Unavailable",
 }: ProductCartActionProps) {
-  const [didJustAdd, setDidJustAdd] = useState(false)
-  const previousQuantityRef = useRef(cartQuantity)
-
-  useEffect(() => {
-    if (cartQuantity > previousQuantityRef.current) {
-      setDidJustAdd(true)
-      const timeoutId = window.setTimeout(() => setDidJustAdd(false), 220)
-      previousQuantityRef.current = cartQuantity
-      return () => window.clearTimeout(timeoutId)
-    }
-
-    previousQuantityRef.current = cartQuantity
-    return undefined
-  }, [cartQuantity])
-
+  const canAdjust =
+    !soldOut && !disabled && cartQuantity > 0 && onIncrement && onDecrement
   return (
-    <>
+    <div
+      role="group"
+      aria-label={`Cart action for ${title}`}
+      className={cn(
+        "inline-flex items-center",
+        canAdjust &&
+          "overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)]"
+      )}
+    >
       <Button
-        variant={soldOut || disabled || cartQuantity > 0 ? "muted" : "primary"}
-        size="sm"
-        disabled={soldOut || atStockLimit || disabled}
-        className={cn(
-          "h-7 shrink-0 gap-1 rounded-md px-2.5 text-xs font-medium transition-all duration-200",
-          cartQuantity > 0 && !soldOut
-            ? "border border-secondary-400/40 bg-secondary-500/10 text-secondary-300 hover:bg-secondary-500/16 [@media(hover:none)]:pointer-events-none [@media(hover:none)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-0 group-focus-within:opacity-0"
-            : "",
-          cartQuantity > 0 && !soldOut
-            ? "[@media(hover:hover)]:group-hover:pointer-events-none group-focus-within:pointer-events-none"
-            : "",
-          didJustAdd ? "scale-[1.06]" : "scale-100"
-        )}
+        variant={
+          canAdjust
+            ? "ghost"
+            : soldOut || disabled || cartQuantity > 0
+              ? "muted"
+              : "primary"
+        }
+        size={canAdjust ? "icon" : "sm"}
+        className={canAdjust ? "rounded-none sm:size-8" : undefined}
+        disabled={canAdjust ? false : soldOut || atStockLimit || disabled}
+        aria-label={
+          canAdjust
+            ? `Remove one ${title} from cart`
+            : !soldOut && !disabled && cartQuantity === 0
+              ? `Add ${title} to cart`
+              : undefined
+        }
         onClick={(event) => {
           event.preventDefault()
           event.stopPropagation()
-          if (soldOut || atStockLimit || disabled) return
-          onAddToCart()
+          if (canAdjust) onDecrement?.()
+          else if (!soldOut && !atStockLimit && !disabled) onAddToCart()
         }}
       >
-        {cartQuantity > 0 && !soldOut ? (
-          <Check className="h-3.5 w-3.5 shrink-0" />
+        {canAdjust ? (
+          <Minus className="size-3.5" aria-hidden="true" />
         ) : (
-          <ShoppingCart className="h-3.5 w-3.5 shrink-0" />
+          <>
+            {!soldOut && !disabled && (
+              <ShoppingCart className="size-3.5 shrink-0" aria-hidden="true" />
+            )}
+            {soldOut
+              ? "Sold out"
+              : disabled
+                ? disabledLabel
+                : cartQuantity > 0
+                  ? `In cart (${cartQuantity})`
+                  : "Add"}
+          </>
         )}
-        {soldOut
-          ? "Sold out"
-          : disabled
-            ? disabledLabel
-            : cartQuantity > 0
-              ? `In cart (${cartQuantity})`
-              : "Add"}
       </Button>
-
-      {!soldOut &&
-        !disabled &&
-        cartQuantity > 0 &&
-        onIncrement &&
-        onDecrement && (
-          <div className="pointer-events-auto absolute inset-0 flex items-center justify-center opacity-100 transition-all duration-200 [@media(hover:hover)]:pointer-events-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:pointer-events-auto [@media(hover:hover)]:group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
-            <div className="flex h-7 items-center overflow-hidden rounded-md border border-secondary-400/40 bg-[var(--surface)] shadow-md">
-              <button
-                type="button"
-                className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
-                aria-label={`Remove one ${title} from cart`}
-                onClick={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  onDecrement()
-                }}
-              >
-                -
-              </button>
-              <div className="flex h-full min-w-8 items-center justify-center border-x border-[var(--border)] px-1 text-xs font-medium text-[var(--text-primary)]">
-                {cartQuantity}
-              </div>
-              <button
-                type="button"
-                disabled={atStockLimit}
-                className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] disabled:cursor-not-allowed disabled:opacity-40"
-                aria-label={
-                  atStockLimit
-                    ? `Stock limit reached for ${title}`
-                    : `Add one more ${title} to cart`
-                }
-                onClick={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  if (atStockLimit) return
-                  onIncrement()
-                }}
-              >
-                +
-              </button>
-            </div>
-          </div>
-        )}
-    </>
+      {canAdjust && (
+        <>
+          <span
+            className="min-w-8 text-center text-sm tabular-nums"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {cartQuantity}
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-none sm:size-8"
+            disabled={atStockLimit}
+            aria-label={
+              atStockLimit
+                ? `Stock limit reached for ${title}`
+                : `Add one more ${title} to cart`
+            }
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (!atStockLimit) onIncrement?.()
+            }}
+          >
+            <Plus className="size-3.5" aria-hidden="true" />
+          </Button>
+        </>
+      )}
+    </div>
   )
 }
 
 export function ProductCardSkeleton() {
   return (
-    <div className="flex animate-pulse flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
-      <div className="aspect-[4/3] bg-[var(--surface-elevated)]" />
-      <div className="flex flex-1 flex-col p-3">
+    <div className="flex animate-pulse flex-col">
+      <div className="aspect-[4/3] rounded-[var(--radius-sm)] bg-[var(--surface-elevated)]" />
+      <div className="flex flex-1 flex-col py-3">
         <div className="min-h-[3.25rem] space-y-1.5">
           <div className="h-4 w-4/5 rounded bg-[var(--surface-elevated)]" />
           <div className="h-4 w-3/5 rounded bg-[var(--surface-elevated)]" />
           <div className="h-3 w-1/2 rounded bg-[var(--surface-elevated)]" />
         </div>
-        <div className="mt-auto flex items-end justify-between gap-2 pt-3">
+        <div className="mt-auto flex flex-wrap items-end justify-between gap-3 pt-4">
           <div className="space-y-1">
             <div className="h-5 w-20 rounded bg-[var(--surface-elevated)]" />
             <div className="h-3 w-16 rounded bg-[var(--surface-elevated)]" />

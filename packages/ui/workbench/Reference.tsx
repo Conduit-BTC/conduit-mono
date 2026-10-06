@@ -1,10 +1,5 @@
 import {
   Badge,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
   SectionGrid,
   SummaryList,
   SummaryRow,
@@ -74,14 +69,14 @@ export function Foundations() {
   return (
     <div className="space-y-6">
       <SectionGrid>
-        <Card>
-          <CardHeader>
-            <CardTitle>Typography</CardTitle>
-            <CardDescription>
+        <section className="space-y-5 border-t border-[var(--border)] pt-6">
+          <header className="space-y-1.5">
+            <h2 className="text-lg font-semibold">Typography</h2>
+            <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
               Existing Bricolage Grotesque roles; no new font or theme branch.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
+            </p>
+          </header>
+          <div className="space-y-4">
             <p className="voice-3xl text-balance">Page title · 30 / 42</p>
             <p className="voice-xl text-balance">Section heading · 20 / 28</p>
             <p className="voice-base text-pretty">
@@ -92,17 +87,19 @@ export function Foundations() {
             <p className="font-mono text-sm tabular-nums">
               SAMPLE-1042 · 24,000 sats
             </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Spacing, density and shape</CardTitle>
-            <CardDescription>
+          </div>
+        </section>
+        <section className="space-y-5 border-t border-[var(--border)] pt-6">
+          <header className="space-y-1.5">
+            <h2 className="text-lg font-semibold">
+              Spacing, density and shape
+            </h2>
+            <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
               Proposed composition rules using existing Tailwind spacing and
               radius tokens.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+            </p>
+          </header>
+          <div>
             <SummaryList>
               <SummaryRow label="Related inline controls">
                 8 px · gap-2
@@ -112,51 +109,54 @@ export function Foundations() {
               <SummaryRow label="Page gutters">16 / 24 px</SummaryRow>
               <SummaryRow label="Content width">max-w-7xl</SummaryRow>
               <SummaryRow label="Reading width">max-w-prose</SummaryRow>
-              <SummaryRow label="Controls / cards">
-                radius-md / radius-xl
+              <SummaryRow label="Controls / cards">4 / 8 px</SummaryRow>
+              <SummaryRow label="Dialogs">12 px · radius-lg</SummaryRow>
+              <SummaryRow label="Settings sections">
+                Headings and rules
               </SummaryRow>
-              <SummaryRow label="Settings cards">Existing 1.75 rem</SummaryRow>
               <SummaryRow label="Table rows">8 / 16 px vertical</SummaryRow>
             </SummaryList>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </SectionGrid>
-      <Card>
-        <CardHeader>
-          <CardTitle>Semantic surfaces</CardTitle>
-          <CardDescription>
+      <section className="space-y-5 border-t border-[var(--border)] pt-6">
+        <header className="space-y-1.5">
+          <h2 className="text-lg font-semibold">Semantic surfaces</h2>
+          <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Theme values remain in the shared CSS owner. Change themes with the
             control above.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+          </p>
+        </header>
+        <div>
           <div className="grid gap-4 sm:grid-cols-3">
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-6">
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--background)] p-6">
               <p className="font-medium">Background</p>
               <p className="text-sm text-[var(--text-secondary)]">
                 Page canvas
               </p>
             </div>
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6">
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] p-6">
               <p className="font-medium">Surface</p>
               <p className="text-sm text-[var(--text-secondary)]">
                 Persistent content
               </p>
             </div>
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-6">
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)] p-6">
               <p className="font-medium">Elevated surface</p>
               <p className="text-sm text-[var(--text-secondary)]">
                 Nested controls / selected row
               </p>
             </div>
           </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Accessibility and responsive rules</CardTitle>
-        </CardHeader>
-        <CardContent>
+        </div>
+      </section>
+      <section className="space-y-5 border-t border-[var(--border)] pt-6">
+        <header className="space-y-1.5">
+          <h2 className="text-lg font-semibold">
+            Accessibility and responsive rules
+          </h2>
+        </header>
+        <div>
           <ul className="list-disc space-y-3 pl-5 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             <li>
               Preserve the same reading order on phone and desktop. Stack
@@ -177,13 +177,13 @@ export function Foundations() {
               empty; pending is not success; delivery is not payment.
             </li>
             <li>
-              Wrap prose and important labels. Truncated product names need a
-              full-name detail route. Test 200% zoom, reduced motion and long
-              content before adoption.
+              Wrap prose, product names and merchant names. Do not hide full
+              names only in accessible labels. Test 200% zoom, reduced motion
+              and long content before adoption.
             </li>
           </ul>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </div>
   )
 }
@@ -191,16 +191,18 @@ export function Foundations() {
 export function Baseline() {
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Baseline and proposed inventory</CardTitle>
-          <CardDescription>
+      <section className="space-y-5 border-t border-[var(--border)] pt-6">
+        <header className="space-y-1.5">
+          <h2 className="text-lg font-semibold">
+            Baseline and proposed inventory
+          </h2>
+          <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Review candidate from Conduit main dacdd946 and Ditto source
             359e76f8. Current implementation is evidence, not automatic design
             approval.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          </p>
+        </header>
+        <div className="space-y-4">
           <Badge variant="warning">Visual checkpoint pending</Badge>
           <p className="text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Conduit already has a substantial shared system: 77 component source
@@ -208,8 +210,8 @@ export function Baseline() {
             runtime and many domain compositions. This slice makes it
             discoverable and supplies a small missing composition layer.
           </p>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
       <Table scrollLabel="Proposed component inventory">
         <TableCaption>
           Retain the existing primitives; add only the composition gaps
@@ -233,11 +235,11 @@ export function Baseline() {
         </TableBody>
       </Table>
       <SectionGrid>
-        <Card>
-          <CardHeader>
-            <CardTitle>Retained from Conduit</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <section className="space-y-5 border-t border-[var(--border)] pt-6">
+          <header className="space-y-1.5">
+            <h2 className="text-lg font-semibold">Retained from Conduit</h2>
+          </header>
+          <div>
             <ul className="list-disc space-y-3 pl-5 text-sm leading-6">
               <li>
                 Bricolage typography, named themes, semantic surfaces, existing
@@ -259,13 +261,13 @@ export function Baseline() {
                 and existing cmdk combobox.
               </li>
             </ul>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Informed by Ditto and shadcn</CardTitle>
-          </CardHeader>
-          <CardContent>
+          </div>
+        </section>
+        <section className="space-y-5 border-t border-[var(--border)] pt-6">
+          <header className="space-y-1.5">
+            <h2 className="text-lg font-semibold">Informed by prior art</h2>
+          </header>
+          <div>
             <ul className="list-disc space-y-3 pl-5 text-sm leading-6">
               <li>
                 Ditto’s shared PageHeader, EmbeddedCardShell and RelayListRow
@@ -282,20 +284,26 @@ export function Baseline() {
                 its FeedEmptyState carries explicit retry/offline context.
               </li>
               <li>
+                MUJI informed unframed merchandise; GOV.UK informed
+                noninteractive status and ruled summaries. Carbon informed the
+                separation of status, classification and selected controls.
+                Impeccable supplied the craft and accessibility critique.
+              </li>
+              <li>
                 shadcn’s composable semantic table and field association
                 patterns inform the new Table and Field. No table engine or new
                 form dependency.
               </li>
             </ul>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </SectionGrid>
       <SectionGrid>
-        <Card>
-          <CardHeader>
-            <CardTitle>Deliberately not added</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <section className="space-y-5 border-t border-[var(--border)] pt-6">
+          <header className="space-y-1.5">
+            <h2 className="text-lg font-semibold">Deliberately not added</h2>
+          </header>
+          <div>
             <ul className="list-disc space-y-3 pl-5 text-sm leading-6">
               <li>
                 Ditto codecs, theme events, private appearance sync or a new
@@ -318,17 +326,17 @@ export function Baseline() {
                 recipes when materially changed.
               </li>
             </ul>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Review choices</CardTitle>
-          </CardHeader>
-          <CardContent>
+          </div>
+        </section>
+        <section className="space-y-5 border-t border-[var(--border)] pt-6">
+          <header className="space-y-1.5">
+            <h2 className="text-lg font-semibold">Review choices</h2>
+          </header>
+          <div>
             <ol className="list-decimal space-y-3 pl-5 text-sm leading-6">
               <li>
-                Retain the restrained standard cards and the existing more
-                rounded settings sections, or unify their shape later?
+                Review the flatter product and settings compositions, 4/8/12 px
+                shape scale and reduced container framing.
               </li>
               <li>
                 Approve 16/24 px page gutters, 24 px section gaps and
@@ -336,15 +344,16 @@ export function Baseline() {
               </li>
               <li>
                 Approve a neutral checkout hierarchy with purple for the next
-                action; keep orange primarily in existing price treatments?
+                action and readable neutral prices?
               </li>
               <li>
-                Resolve low-contrast Day Market price/status accents and compact
-                phone controls before promoting the reference as approved.
+                Inspect the corrected status/price contrast, full product names
+                and 44 px phone controls before promoting the reference as
+                approved.
               </li>
             </ol>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </SectionGrid>
       <p className="text-pretty text-sm text-[var(--text-secondary)]">
         Sources:{" "}

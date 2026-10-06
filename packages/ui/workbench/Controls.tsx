@@ -67,16 +67,16 @@ export function Controls() {
   const [view, setView] = useState("List")
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Action hierarchy</CardTitle>
-          <CardDescription>
+      <section className="space-y-5 border-t border-[var(--border)] pt-6">
+        <header className="space-y-1.5">
+          <h2 className="text-lg font-semibold">Action hierarchy</h2>
+          <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             One primary action per decision. Outline for alternatives; ghost for
             supporting actions. Warm and accent variants remain available for
             existing compositions.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5">
+          </p>
+        </header>
+        <div className="space-y-5">
           <ActionRow>
             <Button onClick={() => setMessage("Primary action selected")}>
               Continue
@@ -114,23 +114,24 @@ export function Controls() {
             <Button variant="secondary">Warm legacy action</Button>
             <Button variant="accent">Accent legacy action</Button>
             <Button variant="link">Text action</Button>
-            <Badge>Selected</Badge>
-            <Badge variant="outline">Metadata</Badge>
+            <span className="text-sm text-[var(--text-secondary)]">
+              12 products
+            </span>
           </ActionRow>
           <p role="status" className="text-sm text-[var(--text-secondary)]">
             {message}
           </p>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
       <SectionGrid>
-        <Card>
-          <CardHeader>
-            <CardTitle>Fields and choices</CardTitle>
-            <CardDescription>
+        <section className="space-y-5 border-t border-[var(--border)] pt-6">
+          <header className="space-y-1.5">
+            <h2 className="text-lg font-semibold">Fields and choices</h2>
+            <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
               Visible labels, local hints and native paste behavior.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
+            </p>
+          </header>
+          <div className="space-y-5">
             <Field
               label="Search catalog"
               description="Use a product name or category."
@@ -171,17 +172,17 @@ export function Controls() {
               <Checkbox defaultChecked />
               Include archived examples
             </label>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Navigation and status</CardTitle>
-            <CardDescription>
+          </div>
+        </section>
+        <section className="space-y-5 border-t border-[var(--border)] pt-6">
+          <header className="space-y-1.5">
+            <h2 className="text-lg font-semibold">Navigation and status</h2>
+            <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
               Tabs change a panel; navigation links change a location. Color
               always has a text label.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
+            </p>
+          </header>
+          <div className="space-y-6">
             <Breadcrumb
               items={[
                 {
@@ -236,6 +237,14 @@ export function Controls() {
                 </StatusPill>
               ))}
             </ActionRow>
+            <ActionRow>
+              <Badge variant="warning">Stock running low</Badge>
+              <Badge variant="destructive">Action required</Badge>
+            </ActionRow>
+            <p className="text-sm text-[var(--text-secondary)]">
+              Use a tinted tag when attention is needed. Routine status and
+              counts stay unboxed.
+            </p>
             <div
               aria-busy="true"
               aria-label="Loading sample rows"
@@ -251,8 +260,8 @@ export function Controls() {
               title="Change pending"
               description="Keep the current state visible while awaiting confirmation."
             />
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </SectionGrid>
     </div>
   )
@@ -353,7 +362,7 @@ export function FormExample() {
         />
         <StatePanel
           title="Long content"
-          description="Titles and descriptions wrap; technical references may break anywhere. Dense product names can truncate only when the full name is available in the detail view or accessible name."
+          description="Titles and descriptions wrap; technical references may break anywhere. Product and merchant names stay visible; do not rely on an accessible name alone to reveal text to sighted readers."
         />
       </div>
     </SectionGrid>
@@ -365,15 +374,15 @@ export function Overlays() {
   const cancelRef = useRef<HTMLButtonElement>(null)
   const [message, setMessage] = useState("")
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Dialogs, sheets and menus</CardTitle>
-        <CardDescription>
+    <section className="space-y-5 border-t border-[var(--border)] pt-6">
+      <header className="space-y-1.5">
+        <h2 className="text-lg font-semibold">Dialogs, sheets and menus</h2>
+        <p className="max-w-prose text-pretty text-sm leading-6 text-[var(--text-secondary)]">
           Open each surface, tab through its controls, then press Escape. Focus
           returns to its trigger.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-6">
+        </p>
+      </header>
+      <div className="space-y-6">
         <ActionRow>
           <Dialog>
             <DialogTrigger asChild>
@@ -506,8 +515,8 @@ export function Overlays() {
           title="Overlay rules"
           description="Give each dialog a title and description. Keep cancellation visible, put initial focus on the safe action for destructive confirmation, and preserve keyboard focus when the surface closes."
         />
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }
 
@@ -519,7 +528,7 @@ export function Settings() {
       <PreferenceSectionCard
         headingId="settings-example"
         title="Preferences"
-        description="Retained Conduit section card, body and divider with a shared settings row."
+        description="Shared settings rows use headings and rules, with no surrounding window."
       >
         <PreferenceSectionDivider />
         <PreferenceSectionBody className="space-y-6">

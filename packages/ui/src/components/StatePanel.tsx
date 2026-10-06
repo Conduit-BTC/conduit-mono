@@ -17,13 +17,13 @@ export function StatePanel({
   const Icon =
     tone === "error" ? TriangleAlert : tone === "pending" ? Clock3 : PackageOpen
   return (
-    <div className="flex flex-col items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6">
+    <div className="flex flex-col items-start gap-3 border-l-2 border-[var(--border)] py-2 pl-4">
       <Icon
         aria-hidden="true"
         className={cn(
           "size-6",
           tone === "error"
-            ? "text-[var(--error)]"
+            ? "text-[var(--error-text)]"
             : "text-[var(--text-secondary)]"
         )}
       />

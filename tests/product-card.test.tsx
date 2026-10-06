@@ -48,9 +48,8 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain(
-      'class="relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)] test-media-wrapper"'
-    )
+    expect(html).toContain("test-media-wrapper")
+    expect(html).toContain("aspect-[4/3]")
     expect(html).not.toContain("rounded-t-xl")
   })
 
@@ -153,10 +152,10 @@ describe("ProductCard", () => {
     expect(html).not.toContain("group-hover:scale-105")
   })
 
-  it("truncates product titles to one line without constraining title badges", () => {
+  it("keeps long product titles and their badges available without clipping", () => {
     const html = renderToStaticMarkup(
       <ProductCard
-        title="An intentionally long product title that must not take a second line"
+        title="An intentionally long product title that remains fully visible"
         titleAside={<span>Featured</span>}
         merchantName="Alice Store"
         images={[]}
@@ -165,7 +164,7 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain("min-w-0 flex-1 truncate")
+    expect(html).not.toContain("truncate")
     expect(html).not.toContain("line-clamp-2")
     expect(html).not.toContain("min-h-[2.5rem]")
     expect(html).toContain(">Featured<")
@@ -185,7 +184,7 @@ describe("ProductCard", () => {
       />
     )
 
-    expect(html).toContain("block w-full min-w-0 max-w-full truncate text-left")
+    expect(html).not.toContain("truncate")
     expect(html).toContain(merchantName)
   })
 

@@ -2,7 +2,6 @@ import { useState } from "react"
 import { ArrowRight, Package } from "lucide-react"
 import {
   ActionRow,
-  Badge,
   Button,
   Card,
   CardContent,
@@ -14,6 +13,7 @@ import {
   Field,
   Input,
   ProductCard,
+  ProductCartAction,
   ProductCardSkeleton,
   SectionGrid,
   Skeleton,
@@ -78,7 +78,7 @@ export function Commerce({
       />
     )
   return (
-    <SectionGrid>
+    <SectionGrid className="lg:grid-cols-[minmax(0,1.25fr)_minmax(18rem,0.85fr)]">
       <section className="space-y-4" aria-labelledby="products-heading">
         <h2
           id="products-heading"
@@ -87,8 +87,8 @@ export function Commerce({
           Product cards
         </h2>
         <p className="text-pretty text-sm text-[var(--text-secondary)]">
-          Existing ProductCard, selection and availability slots. Public
-          placeholder media; fictional catalog.
+          Freshly roasted Colombian coffee in two bag sizes, ready for Saturday
+          market pickup.
         </p>
         <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
           {state === "loading" ? (
@@ -105,6 +105,7 @@ export function Commerce({
                 quantity={quantity}
                 onSizeChange={setSize}
                 onAdd={() => setQuantity(quantity + 1)}
+                onRemove={() => setQuantity(Math.max(0, quantity - 1))}
               />
               <ProductCard
                 title="Seasonal coffee sampler"
@@ -144,6 +145,7 @@ function SampleProduct({
   quantity,
   onSizeChange,
   onAdd,
+  onRemove,
 }: {
   state: ExampleState
   long: boolean
@@ -151,6 +153,7 @@ function SampleProduct({
   quantity: number
   onSizeChange: (size: string) => void
   onAdd: () => void
+  onRemove: () => void
 }) {
   return (
     <ProductCard
@@ -185,13 +188,15 @@ function SampleProduct({
       }
       notice="Pickup at the Saturday market. Availability is checked at checkout."
       action={
-        <Button size="sm" disabled={state === "pending"} onClick={onAdd}>
-          {state === "pending"
-            ? "Checking…"
-            : quantity
-              ? `Added (${quantity})`
-              : "Add to cart"}
-        </Button>
+        <ProductCartAction
+          title={`${size} g Colombia whole-bean coffee`}
+          cartQuantity={quantity}
+          onAddToCart={onAdd}
+          onIncrement={onAdd}
+          onDecrement={onRemove}
+          disabled={state === "pending"}
+          disabledLabel="Checking…"
+        />
       }
     />
   )
@@ -256,14 +261,14 @@ function CheckoutExample({
                 {total} sats
               </SummaryRow>
             </SummaryList>
-            <div className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-              <p className="text-sm font-medium">Saturday market pickup</p>
-              <p className="text-pretty text-sm text-[var(--text-secondary)]">
+            <SummaryList>
+              <SummaryRow label="Pickup location">
                 {long
                   ? "Community hall, north entrance, ground floor collection desk beside the accessible courtyard entrance. Bring your order reference."
-                  : "Community hall · Saturday, 10 am–4 pm"}
-              </p>
-            </div>
+                  : "Community hall · North entrance"}
+              </SummaryRow>
+              <SummaryRow label="Pickup time">Saturday · 10 am–4 pm</SummaryRow>
+            </SummaryList>
             {state === "pending" ? (
               <StatePanel
                 tone="pending"
@@ -397,7 +402,7 @@ export function Events({
               ? "Saturday neighborhood market, independent makers and seasonal food collective"
               : "Saturday neighborhood market"
           }
-          summary="A fictional event showing the existing event card and its content slots."
+          summary="Meet local makers, browse seasonal produce and pick up your weekly coffee."
           organizerName="Sample community collective"
           schedule="Saturday, October 17 · 10 am–4 pm"
           location="Community hall · North entrance"
@@ -488,7 +493,9 @@ function InventoryRows({
         <StatusPill variant={state === "pending" ? "warning" : "success"}>
           {state === "pending" ? "Assignment pending" : "Assignment confirmed"}
         </StatusPill>
-        <Badge variant="outline">12 available</Badge>
+        <span className="text-sm tabular-nums text-[var(--text-secondary)]">
+          12 available
+        </span>
       </ActionRow>
       <Table
         scrollLabel="Sample inventory allocation"

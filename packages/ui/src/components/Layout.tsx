@@ -21,13 +21,20 @@ export function PageHeader({
   title,
   description,
   actions,
+  className,
 }: {
   title: string
   description?: ReactNode
   actions?: ReactNode
+  className?: string
 }) {
   return (
-    <header className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <header
+      className={cn(
+        "flex min-w-0 flex-col gap-4 sm:flex-row sm:items-start sm:justify-between",
+        className
+      )}
+    >
       <div className="min-w-0 space-y-2">
         <h1 className="text-balance font-heading text-3xl font-semibold">
           {title}
@@ -62,7 +69,10 @@ export function SectionGrid({
 }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("grid min-w-0 gap-6 lg:grid-cols-2", className)}
+      className={cn(
+        "grid min-w-0 grid-cols-1 items-start gap-6 lg:grid-cols-2",
+        className
+      )}
       {...props}
     />
   )

@@ -17,7 +17,7 @@ export const Table = forwardRef<
       role="region"
       aria-label={scrollLabel}
       tabIndex={0}
-      className="max-w-full overflow-x-auto rounded-xl border border-[var(--border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      className="max-w-full overflow-x-auto border-y border-[var(--border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
     >
       <table
         ref={ref}

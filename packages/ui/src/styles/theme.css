@@ -111,6 +111,15 @@
   --error: hsla(0, 84%, 60%, 1);
   --info: hsla(217, 91%, 60%, 1);
 
+  /* Readable labels on base surfaces; signal fills retain their existing values. */
+  --success-text: hsla(142, 60%, 62%, 1);
+  --warning-text: hsla(38, 92%, 65%, 1);
+  --error-text: hsla(0, 84%, 75%, 1);
+  --info-text: hsla(217, 91%, 75%, 1);
+  --link-text: var(--primary-300);
+  --destructive-action: hsla(0, 74%, 42%, 1);
+  --destructive-action-hover: hsla(0, 74%, 35%, 1);
+
   /* Text on colored/dark surfaces (e.g. gradient buttons, filled badges) */
   --on-primary: hsla(0, 0%, 100%, 1);
 
@@ -226,6 +235,12 @@
   --background: var(--neutral-150);
   --foreground: var(--neutral-900);
   --theme-color: var(--background);
+
+  --success-text: hsla(142, 70%, 26%, 1);
+  --warning-text: hsla(32, 90%, 28%, 1);
+  --error-text: hsla(0, 74%, 40%, 1);
+  --info-text: hsla(217, 80%, 36%, 1);
+  --link-text: var(--primary-600);
 
   /* Brainstorm global score */
   --brainstorm-score-bg: #f5f0ff;
