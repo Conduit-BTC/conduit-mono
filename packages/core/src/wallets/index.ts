@@ -324,3 +324,5 @@ export class WalletRegistry {
 }
 
 export * from "./provider"
+
+export * from "./breez-lightning-address"
