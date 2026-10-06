@@ -375,7 +375,7 @@ function resultMessage(
   }
   const pending = result.checkpoints.some((checkpoint) => checkpoint.pending)
   return pending
-    ? "The exact signed preferences are staged. Some relay confirmation remains retryable."
+    ? "Your signed relay preferences are saved on this device. Relay confirmation is still pending. You can keep editing or retry confirmation."
     : "The exact signed preferences were confirmed on the planned relays."
 }
 
@@ -701,20 +701,12 @@ export function useAccountNetworkSettings(
         "Wait for saved Network settings to load before making changes."
       )
     }
-    if (
-      baseView.pendingExactDeliveries.some((pending) => pending.retryAvailable)
-    ) {
-      throw new Error(
-        "Retry the exact staged Network update before preparing another change."
-      )
-    }
     return { reconciliation, localState: activeLocal.state }
   }, [
     accountPreferences.localReady,
     activeLocal?.ready,
     activeLocal?.state,
     reconciliation,
-    baseView.pendingExactDeliveries,
   ])
 
   const validate = useCallback(
