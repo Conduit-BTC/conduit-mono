@@ -30,12 +30,13 @@ describe("settled router guest UI contracts", () => {
     expect(orders).not.toContain("canUseCheckoutSparkLocalRouterCanary()")
   })
 
-  it("describes hosted pricing without a local test destination claim", () => {
+  it("composes hosted pricing and approval without a local test destination claim", () => {
     expect(checkout).not.toContain("configured test fee destination")
     expect(checkout).not.toContain("local router rehearsal")
-    expect(checkout).toContain(
-      "coordination fee is included in the payment total."
-    )
+    expect(checkout).toContain("<CheckoutCoordinationSummary")
+    expect(checkout).toContain("price={routerPrice}")
+    expect(checkout).toContain("<CheckoutSparkNativeTreasuryNotice")
+    expect(checkout).toContain("fixedCheckoutTotalSats={routerPrice.totalSats}")
   })
 
   it("uses one same-tab order identity and structured private guest contact", () => {
